@@ -157,6 +157,7 @@ def _inputs(
     env_mmproj = 0,
     env_mmproj_unsized = False,
     separate_draft = False,
+    n_ctx = 32768,
 ):
     return {
         "model_size": model_size,
@@ -171,7 +172,7 @@ def _inputs(
         "gpu_indices": indices,
         "soft_overhead": 0,
         "model_path": "/models/stub.gguf",
-        "n_ctx": 32768,
+        "n_ctx": n_ctx,
         "n_parallel": n_parallel,
         "shared_gpu_ids": set() if shared is None else set(shared),
         "separate_draft_on_gpu": separate_draft,
@@ -347,13 +348,33 @@ def test_a_moe_load_is_declined_because_the_fitter_places_it_the_same_way():
 
     The pattern SHAPE this used to assert is a planner-level claim and is
     asserted there, ungated, by test_offload_planner.py.
+
+    At n_ctx 16384 rather than the helper's 32768: one slot at 32768 tokens is the
+    long-prompt operating point where the MoE gate now fires BEFORE the ranking,
+    on a measurement the ranking cannot see (see the sibling below). The tie is
+    the property this test is about, and it is the same tie at 16384.
     """
-    got = _plan(_Stub(moe = 40), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024)
+    got = _plan(
+        _Stub(moe = 40), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024, n_ctx = 16384
+    )
     assert got is not None
     assert not got.spills_anything
     assert "not worth it" in got.reason
     costs = re.findall(r"(\d+) ms", got.reason)
     assert len(costs) == 2 and costs[0] == costs[1], got.reason
+
+
+def test_a_moe_load_at_a_long_prompt_is_left_to_the_fitter_before_it_is_ranked():
+    """The same cell one slot at 32768 tokens declines on the MEASURED long-prompt
+    loss, not on the ranking: -ot lost to llama.cpp's layerwise fit at a 32K
+    prompt on 5 cells, 2 models and 3 hosts, and the cost model cannot see that
+    because both arms spill through the same mechanism. The reason therefore
+    carries no millisecond figures at all."""
+    got = _plan(_Stub(moe = 40), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024)
+    assert got is not None
+    assert not got.spills_anything
+    assert "tokens per slot" in got.reason and "32K" in got.reason, got.reason
+    assert not re.findall(r"(\d+) ms", got.reason), got.reason
 
 
 def test_lm_head_is_only_spilled_after_ffn():

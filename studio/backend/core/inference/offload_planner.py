@@ -148,9 +148,13 @@ class SpillOrder(Enum):
     exactly 1.000. It is recorded here because it was briefly mistaken for the
     effect size, which is the error this docstring now exists to prevent.
 
-    The default stays LARGEST_FIRST pending its own change: byte-minimality is a
-    guarantee, +0.7% is a measurement, and swapping a guarantee for an average
-    deserves a commit that argues for it rather than a drive-by.
+    The default is BACK_FIRST. Re-scored over 98 cells that ran both orders, five
+    hosts, the median is 1.0073, better by more than 3% in 10 and worse in 0,
+    worst cell 0.977. That is the same one-sided shape on 2.4x the sample, and it
+    is enough to swap a byte-minimality guarantee for it: the guarantee bought a
+    few MiB of overshoot, the order buys throughput and never costs it.
+    LARGEST_FIRST stays selectable for the byte-minimal answer and for the
+    benchmark's controls.
 
     An earlier version of this docstring said UNMEASURED, which was true when
     every -ot run spilled all blocks or none. It is no longer true.
@@ -158,6 +162,7 @@ class SpillOrder(Enum):
 
     # Best-fit-decreasing: fewest blocks AND least overshoot. Overshoot is real
     # bandwidth -- a 209 MiB block for a 50 MiB deficit wastes 159 MiB per token.
+    # No longer the default, see above.
     LARGEST_FIRST = "largest_first"
     FRONT_FIRST = "front_first"
     BACK_FIRST = "back_first"
@@ -232,7 +237,7 @@ class PlanOptions:
     host_ram_headroom_bytes: int = 2 * GIB
     context_policy: ContextPolicy = ContextPolicy.NEVER_REDUCE
     min_ctx: int = 4096
-    spill_order: SpillOrder = SpillOrder.LARGEST_FIRST
+    spill_order: SpillOrder = SpillOrder.BACK_FIRST
     # How finely a block's FFN may be broken up. MEASURED, and the answer was
     # not the obvious one.
     #
@@ -1902,6 +1907,31 @@ def _cost_gate(
         # Nothing to lose to: the fitter cannot place this load either, so the
         # spill is the only thing standing between the caller and a failed launch.
         return None, 0.0, 0.0
+
+    n_slots = max(1, knobs.n_parallel if knobs is not None else opts.n_parallel)
+    per_slot_ctx = n_ctx // n_slots
+    if layout.is_moe and opts.moe_long_prompt_ctx > 0 and per_slot_ctx >= opts.moe_long_prompt_ctx:
+        # MEASURED, and the cost model cannot see it: -ot on an MoE loses to
+        # llama.cpp's layerwise fit at a 32K prompt (0.94 to 0.97x on 5 cells, 2
+        # models, 3 hosts: gemma-4-26B-A4B on A100 and G4, Qwen3.6-35B-A3B on
+        # A100 and L4) while winning 1.05 to 1.08x at 2K. Both arms keep the
+        # cache resident on MoE, so there is no KV advantage to grow with the
+        # prompt, and the planner's placement only costs graph splits at the
+        # prefill-bound end. The fallback below is priced through the same -ot
+        # mechanism, so rank() can only ever call this a near-tie.
+        return (
+            Plan(
+                n_ctx = n_ctx,
+                declined_by_gate = True,
+                reason = (
+                    f"MoE at {per_slot_ctx} tokens per slot: -ot measured 0.94 to 0.97x of "
+                    "llama.cpp's own layerwise fit at a 32K prompt (5 cells, 2 models, 3 "
+                    "hosts), so it is left to --fit on"
+                ),
+            ),
+            0.0,
+            0.0,
+        )
 
     scored = rank(
         [plan, fallback],
