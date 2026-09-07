@@ -2277,9 +2277,14 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
                 sp = parse_spec(raw)
                 if sp is None:
                     continue
-                out.pop(sp.name, None)
-                pinned.discard(sp.name)
-                upper_bounds.pop(sp.name, None)
+                # PEP 503 treats `huggingface_hub` and `huggingface-hub` as the same project,
+                # and the snapshot is keyed the second way. Popping the spelling as written
+                # left the removed package in place, and the rules then judged a version the
+                # cell had just deleted.
+                for key in {sp.name, sp.name.replace("_", "-")}:
+                    out.pop(key, None)
+                    pinned.discard(key)
+                    upper_bounds.pop(key, None)
             continue
         for raw in inv.packages:
             sp = parse_spec(raw)
@@ -2398,7 +2403,9 @@ def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[
     return findings
 
 
-def _removed_by_cell(install_cell: str, name: str) -> bool:
+def _removed_by_cell(
+    install_cell: str, name: str, environment: dict[str, str] | None = None
+) -> bool:
     """Did this cell uninstall `name`, rather than simply never mention it?
 
     `resolved_set` drops an uninstalled package, and the rules below read that as "no
@@ -2414,6 +2421,8 @@ def _removed_by_cell(install_cell: str, name: str) -> bool:
                 continue
             if _is_dry_run(inv):
                 continue  # `--dry-run` reports what pip WOULD do and changes nothing
+            if inv.action == "install" and not _requirement_applies(raw, environment):
+                continue  # pip skips a requirement its marker excludes, so nothing is put back
             # Replayed in order: `pip uninstall x; pip install x` leaves x installed, and
             # answering on the first uninstall it met claimed the cell removes a dependency
             # pip puts straight back.
@@ -2451,7 +2460,7 @@ def rule_inst_002_no_deps_transitive(
                     continue
                 resolved_target = res.get(target.replace("_", "-"), res.get(target))
                 if resolved_target is None:
-                    if not _removed_by_cell(install_cell, target):
+                    if not _removed_by_cell(install_cell, target, environment):
                         continue
                     findings.append(
                         Finding(
@@ -2847,6 +2856,16 @@ def _effective_version(
                 # checks running at all: `pip install "torch>2.11"` beside torchcodec 0.10
                 # went unreported while the equivalent `torch>=2.11.1` was caught.
                 current, exact_known = floor, False
+            elif (
+                forced_off
+                and landing is not None
+                and cmp_versions(version_minor(current), landing) == 0
+            ):
+                # `--upgrade "x<0.12"` on an installed 0.11 cannot leave the 0.11 line: it may
+                # not go above the ceiling and an upgrade does not go below what is there. The
+                # minor is therefore known, which is the granularity these rules compare, and
+                # dropping it hid a pairing every admitted release breaks.
+                current, exact_known = landing, True
             elif forced_off:
                 # `--upgrade` moves to the newest available release, so whatever is installed
                 # is not where it lands. With a ceiling and no floor nothing here names the
@@ -3032,7 +3051,9 @@ def rule_inst_005_transformers_tokenizers(
     tok = res.get("tokenizers")
     if not tf:
         return findings
-    tokenizers_removed = tok is None and _removed_by_cell(install_cell, "tokenizers")
+    tokenizers_removed = tok is None and _removed_by_cell(
+        install_cell, "tokenizers", _marker_environment(colab)
+    )
     if tok is None and not tokenizers_removed:
         return findings
     # Find the transformers pin and check for --no-deps.

@@ -5041,3 +5041,58 @@ def test_a_shell_local_prefix_still_reaches_a_function():
     # The wrappers that go looking for an executable still reach nothing.
     for cell in ("!f(){ pip install a; }; env f", "!f(){ pip install a; }; nohup f"):
         assert nv._split_chained(cell) == [("!f", False)], cell
+
+
+def test_an_upgrade_under_a_ceiling_stays_in_the_line_it_is_in():
+    """`--upgrade "x<0.12"` over an installed 0.11 cannot leave 0.11.
+
+    An upgrade does not go backwards and the ceiling bars anything above, so the minor is
+    determinate even though no floor is written. Reporting it unknown hid a pairing every
+    release the window admits breaks.
+    """
+    nv = _load_notebook_validator_module()
+
+    cell = '!pip install --upgrade "torch==2.12" "torchcodec<0.12"'
+    assert nv._effective_version(cell, "torchcodec", "0.11.1+cu128") == ("0.11", True)
+    # No ceiling to bound it, so the landing really is only in the index.
+    assert nv._effective_version("!pip install --upgrade torchcodec", "torchcodec", "0.11.1") == (
+        None,
+        True,
+    )
+    # A ceiling well above what is installed leaves the landing to the index, since which
+    # of the admitted minors carries a release is not written in the cell.
+    assert nv._effective_version(
+        '!pip install --upgrade "torchcodec<0.16"', "torchcodec", "0.11.1"
+    ) == (None, True)
+
+
+def test_an_uninstall_is_matched_on_the_canonical_project_name():
+    """PEP 503 makes `huggingface_hub` and `huggingface-hub` one project.
+
+    The Colab snapshot is keyed the second way, so popping the spelling as written left the
+    removed package in the resolved set and the rules judged a version the cell deleted.
+    """
+    nv = _load_notebook_validator_module()
+
+    colab = {"huggingface-hub": "1.2.0", "torch": "2.11.0", "python": "3.13.15"}
+    assert "huggingface-hub" not in nv.resolved_set("!pip uninstall -y huggingface_hub", colab)
+    # The accumulated bound goes with it, so a later reinstall does not inherit one.
+    assert nv.resolved_set(
+        '!pip install "huggingface_hub<=1.0"\n!pip uninstall -y huggingface-hub', colab
+    ).get("huggingface-hub") is None
+
+
+def test_a_marker_false_reinstall_does_not_put_a_package_back():
+    """pip skips a requirement whose marker excludes the interpreter.
+
+    Counting one as an install reset the removal, and the rule that fires on a missing
+    tokenizers went quiet on a notebook that really had removed it.
+    """
+    nv = _load_notebook_validator_module()
+
+    colab = {"python": "3.13.15"}
+    cell = "!pip uninstall -y tokenizers\n!pip install \"tokenizers; python_version < '3.10'\""
+    assert nv._removed_by_cell(cell, "tokenizers", nv._marker_environment(colab)) is True
+    # A marker the interpreter does satisfy still puts it back.
+    applies = "!pip uninstall -y tokenizers\n!pip install \"tokenizers; python_version >= '3.10'\""
+    assert nv._removed_by_cell(applies, "tokenizers", nv._marker_environment(colab)) is False
