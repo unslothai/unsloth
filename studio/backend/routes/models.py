@@ -3756,6 +3756,11 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
 
             if not _is_valid_repo_id(repo_id):
                 return None, 0
+            from hub.utils.gguf_sources import cached_gguf_sources
+
+            source = cached_gguf_sources(repo_id).get((quant or "").strip().lower())
+            if source is not None:
+                return _resolve_quant_gguf(str(source.snapshot), quant, True)
             roots = []
             for entry in iter_repo_cache_dirs("model", repo_id):
                 snaps = entry / "snapshots"

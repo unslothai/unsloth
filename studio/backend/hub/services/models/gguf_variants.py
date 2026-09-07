@@ -1045,7 +1045,7 @@ async def get_gguf_variants_answer(
     answered_locally = [False]
     variant_context_sources: dict[str, str] = {}
 
-    def _compute() -> GgufVariantsResponse:
+    def _compute(local_path: Optional[str] = local_path) -> GgufVariantsResponse:
         repo_cache_dir = (
             None if is_local_path(repo_id) else _repo_cache_dir_for_request(repo_id, local_path)
         )
@@ -1691,6 +1691,8 @@ async def get_gguf_variants_answer(
                 raise
         if sources and not answered_locally[0]:
             variants = {v.quant.lower(): v for v in response.variants}
+            online_answer = not (prefer_local_cache or offline or answered_from[0])
+            scoped_responses = {}
             for key, source in sources.items():
                 v = source.variant
                 previous = variants.get(key)
@@ -1702,7 +1704,7 @@ async def get_gguf_variants_answer(
                         variant_context_sources[key] = str(source.snapshot / v.filename)
                     continue
                 variant_context_sources[key] = str(source.snapshot / v.filename)
-                variants[key] = GgufVariantDetail(
+                detail = GgufVariantDetail(
                     filename = v.filename,
                     quant = v.quant,
                     display_label = v.display_label,
@@ -1711,13 +1713,29 @@ async def get_gguf_variants_answer(
                     download_size_bytes = v.size_bytes,
                     downloaded = True,
                     cache_path = source.cache_path,
-                    update_available = bool(
-                        previous
-                        and previous.update_available
-                        and source.cache_path == str(_repo_cache_dir_for_request(repo_id, None))
-                    ),
                     dependency_key = _variant_dependency_key(repo_id, v.filename),
                 )
+                if online_answer:
+                    # Apply the same readiness and update checks as a request for this snapshot.
+                    if source.snapshot not in scoped_responses:
+                        original_source = answered_from[0]
+                        try:
+                            scoped = _compute(str(source.snapshot))
+                        finally:
+                            answered_from[0] = original_source
+                        scoped_responses[source.snapshot] = {
+                            item.quant.lower(): item for item in scoped.variants
+                        }
+                    checked = scoped_responses[source.snapshot].get(key)
+                    if checked is not None:
+                        detail = checked.model_copy(update = {"cache_path": source.cache_path})
+                        if detail.downloaded:
+                            detail.filename = v.filename
+                            detail.size_bytes = v.size_bytes
+                            detail.shard_count = int(getattr(v, "shard_count", 0) or 0)
+                        else:
+                            variant_context_sources.pop(key, None)
+                variants[key] = detail
             response.variants = list(variants.values())
             response.has_vision = response.has_vision or any(s.has_vision for s in sources.values())
             if not response.default_variant:

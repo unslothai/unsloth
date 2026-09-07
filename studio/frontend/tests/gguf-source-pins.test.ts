@@ -31,14 +31,20 @@ test("GGUF pins survive deleting a duplicate and disappear with the last copy", 
       compilerOptions: { target: ts.ScriptTarget.ES2020 },
     }).outputText + "; return reconcileGgufPinsAfterDelete;",
   );
-  for (const remaining of [true, false, "unavailable"]) {
+  for (const remaining of [true, false, "partial", "unavailable"]) {
     let pinned = ["Org/Model", pinKey("Org/Model", "Q8_0")];
     const run = compile(
       async () => {
         if (remaining === "unavailable") throw new Error("scan unavailable");
         return remaining ? [{ repo_id: "Org/Model" }] : [];
       },
-      async () => ({ variants: [{ quant: "Q8_0", downloaded: true }] }),
+      async () => ({
+        variants: [{
+          quant: "Q8_0",
+          downloaded: remaining !== "partial",
+          partial: remaining === "partial",
+        }],
+      }),
       pinKey,
       pinnedQuantEntries,
       {
@@ -51,6 +57,9 @@ test("GGUF pins survive deleting a duplicate and disappear with the last copy", 
       },
     );
     await run("Org/Model");
-    assert.equal(pinned.length, remaining ? 2 : 0);
+    assert.equal(
+      pinned.length,
+      remaining === true || remaining === "unavailable" ? 2 : 0,
+    );
   }
 });

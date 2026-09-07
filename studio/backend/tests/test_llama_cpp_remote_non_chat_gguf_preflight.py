@@ -648,6 +648,7 @@ def _hub_cache(monkeypatch, root):
         "get_hf_cache_paths",
         lambda: _types.SimpleNamespace(hub_cache = Path(root)),
     )
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda: [Path(root)])
 
 
 def _cached_gguf(root: Path, name: str, payload: bytes) -> Path:

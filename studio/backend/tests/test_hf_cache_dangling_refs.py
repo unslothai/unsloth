@@ -316,6 +316,7 @@ def _autoload_rows(
     from types import SimpleNamespace
 
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [cache_root])
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [cache_root])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = cache_root),
@@ -444,8 +445,7 @@ def test_load_id_names_the_snapshot_holding_the_safetensors_payload(tmp_path, mo
 
 
 def test_load_id_names_the_snapshot_holding_the_advertised_gguf_quant(tmp_path, monkeypatch):
-    """Same for GGUF: the row's size sums quants across revisions, while local variant resolution
-    only ever reads the one directory in ``load_id``."""
+    """A logical chat GGUF identity must load the snapshot holding its advertised quant."""
     from hub.utils.gguf import list_local_gguf_variants
 
     repo_dir = _two_snapshot_repo(
@@ -458,7 +458,7 @@ def test_load_id_names_the_snapshot_holding_the_advertised_gguf_quant(tmp_path, 
 
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     assert rows[0]["size_bytes"] == 32
-    load_dir = Path(rows[0]["load_id"])
+    load_dir = _gguf_load_dir(rows[0], "Q4_K_M")
     variants, _has_vision = list_local_gguf_variants(str(load_dir))
     assert [v.quant for v in variants] == [
         "Q4_K_M"
@@ -524,6 +524,18 @@ def test_load_id_stays_the_repo_id_when_main_resolves_onto_the_payload(tmp_path,
 # --- everything the row advertises must resolve under its load id ------------
 
 
+def _gguf_load_dir(row: dict, quant: str = "Q4_K_M") -> Path:
+    """Resolve the logical chat identity through the loader; partial rows stay folder-scoped."""
+    if row["partial"]:
+        return Path(row["load_id"])
+    from core.inference.llama_cpp import cached_gguf_for_load
+
+    assert row["load_id"] == row["repo_id"]
+    path = cached_gguf_for_load(row["load_id"], quant)
+    assert path is not None, f"{quant} does not resolve under {row['load_id']}"
+    return Path(path).parent
+
+
 def _local_gguf_variants_for_autoload(row: dict, cache_root: Path) -> list[str]:
     """The quants chat auto-load is offered: GET /api/models/gguf-variants with ``preferLocalCache``
     and the row's ``cache_path``, exactly as chat-adapter calls it before /load."""
@@ -561,7 +573,7 @@ def _listed_gguf_variants(row: dict, cache_root: Path) -> list[str]:
 def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_path, monkeypatch):
     """The newest snapshot can hold shard 1 of an interrupted split download while a complete quant
     sits in an older one. Both ends are asserted because they are only correct together: the load id
-    and the quants offered under it must name one directory."""
+    and each quant offered under it must resolve to a complete source."""
     from hub.utils.gguf import list_local_gguf_variants
 
     repo_dir = _two_snapshot_repo(
@@ -573,7 +585,7 @@ def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_pat
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
-    load_dir = Path(rows[0]["load_id"])
+    load_dir = _gguf_load_dir(rows[0], "Q4_K_M")
     held = {v.quant for v in list_local_gguf_variants(str(load_dir))[0] if v.quant}
     complete = inventory_scan._completed_gguf_variants(load_dir)
     assert held and held <= complete, (
@@ -626,7 +638,7 @@ def test_gguf_variants_still_list_when_no_snapshot_is_complete(
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 
-    load_dir = Path(rows[0]["load_id"])
+    load_dir = _gguf_load_dir(rows[0], "Q8_0")
     assert load_dir == repo_dir / "snapshots" / NEWER
     assert _listed_gguf_variants(rows[0], tmp_path) == listed
     assert _local_gguf_variants_for_autoload(rows[0], tmp_path) == offered
@@ -677,7 +689,7 @@ def test_a_whole_quant_in_a_mixed_newest_snapshot_beats_an_older_larger_one(tmp_
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
-    load_dir = Path(rows[0]["load_id"])
+    load_dir = _gguf_load_dir(rows[0], "Q4_K_M")
     assert load_dir == repo_dir / "snapshots" / NEWER
     offered = _local_gguf_variants_for_autoload(rows[0], tmp_path)
     assert offered == ["Q4_K_M"]
@@ -861,7 +873,7 @@ def test_vision_is_reported_only_from_the_snapshot_the_row_pins(
     )
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
-    load_dir = Path(rows[0]["load_id"])
+    load_dir = _gguf_load_dir(rows[0], "Q4_K_M")
     assert load_dir == repo_dir / "snapshots" / OLDER
 
     listed = list_gguf_variants_from_hf_cache("Org/Model", root = tmp_path)
@@ -951,7 +963,7 @@ def test_a_repo_root_drafter_still_leaves_a_real_quant_selectable(tmp_path, monk
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 
-    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
+    assert _gguf_load_dir(rows[0], "Q8_0") == repo_dir / "snapshots" / NEWER
 
 
 def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
@@ -1047,7 +1059,7 @@ def test_gguf_partial_is_judged_against_the_snapshot_the_row_advertises(tmp_path
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 
-    load_dir = Path(rows[0]["load_id"])
+    load_dir = _gguf_load_dir(rows[0], "Q4_K_M")
     assert load_dir == repo_dir / "snapshots" / OLDER
     variants, _has_vision = list_local_gguf_variants(str(load_dir))
     assert [v.quant for v in variants] == ["Q4_K_M"]
@@ -1110,7 +1122,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 
-    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
+    assert _gguf_load_dir(rows[0], "Q4_K_M") == repo_dir / "snapshots" / OLDER
     assert rows[0].get("partial") is partial
     assert rows[0]["capabilities"].get("can_chat") is not partial
 
@@ -1381,7 +1393,7 @@ def test_a_gguf_variant_manifest_is_scoped_to_the_snapshot_the_row_pins(
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 
-    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / advertised
+    assert _gguf_load_dir(rows[0], "Q4_K_M") == repo_dir / "snapshots" / advertised
     assert rows[0].get("partial") is partial
     assert rows[0]["capabilities"].get("can_chat") is not partial
 
@@ -1406,7 +1418,7 @@ def test_a_gguf_variant_marker_from_a_newer_attempt_does_not_disable_the_pinned_
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 
-    load_dir = Path(rows[0]["load_id"])
+    load_dir = _gguf_load_dir(rows[0], "Q4_K_M")
     assert load_dir == repo_dir / "snapshots" / OLDER
     # The quant the marker names resolves under the load id.
     assert [v.quant for v in list_local_gguf_variants(str(load_dir))[0]] == ["Q4_K_M"]
@@ -1453,7 +1465,7 @@ def test_a_marker_for_another_quant_still_leaves_the_pinned_one_chattable(tmp_pa
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 
-    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
+    assert _gguf_load_dir(rows[0], "Q4_K_M") == repo_dir / "snapshots" / OLDER
     assert rows[0].get("partial") is False
     assert rows[0]["capabilities"].get("can_chat") is True
 
@@ -1496,7 +1508,7 @@ def test_the_row_and_the_picker_agree_on_equal_mtime_snapshots(tmp_path, monkeyp
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 
-    load_dir = Path(rows[0]["load_id"])
+    load_dir = _gguf_load_dir(rows[0], "Q8_0")
     offered = _local_gguf_variants_for_autoload(rows[0], tmp_path)
     resolvable = {v.quant for v in list_local_gguf_variants(str(load_dir))[0] if v.quant}
     assert set(offered) <= resolvable, (

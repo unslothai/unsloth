@@ -274,3 +274,69 @@ def test_cached_quant_keeps_its_own_context(cache_locations, cache_client, missi
         if v["downloaded"]
     }
     assert actual == contexts
+
+
+@pytest.mark.parametrize("undersized", [False, True])
+def test_inactive_source_uses_scoped_online_status(cache_locations, monkeypatch, undersized):
+    from hub.utils.download_manifest import ExpectedFile
+    from hub.utils.gguf import GgufVariantInfo
+    from hub.utils.gguf_plan import plan_from_expected_files
+
+    repo_id, expected = cache_locations
+    quant, (repo, path) = next(
+        (q, source)
+        for q, source in expected.items()
+        if source[0].parent != hf_cache_settings.get_hf_cache_paths().hub_cache
+    )
+    # A normal HF snapshot symlink identifies the old blob independently of its byte size.
+    payload = path.read_bytes()
+    path.unlink()
+    blob = repo / "blobs" / ("a" * 64)
+    blob.parent.mkdir(exist_ok = True)
+    blob.write_bytes(payload[:32] if undersized else payload)
+    path.symlink_to(blob)
+    variant = GgufVariantInfo(filename = path.name, quant = quant, size_bytes = 256)
+    requirement = plan_from_expected_files(quant, [ExpectedFile(path.name, 256, "b" * 64)])
+    monkeypatch.setattr(
+        gguf_variants, "list_gguf_variants", lambda *a, **kw: ([variant], False, [])
+    )
+    monkeypatch.setattr(gguf_variants, "_variant_requirement_cache_get", lambda *a: requirement)
+    inventory_scan.invalidate_hf_cache_scans()
+    scoped = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            repo_id,
+            local_path = str(path.parent),
+        )
+    )
+    merged = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            repo_id,
+            include_cache_locations = True,
+        )
+    )
+    direct = next(v for v in scoped.variants if v.quant == quant)
+    actual = next(v for v in merged.variants if v.quant == quant)
+    assert direct.downloaded is not undersized
+    assert direct.update_available is not undersized
+    assert (actual.downloaded, actual.partial, actual.update_available) == (
+        direct.downloaded,
+        direct.partial,
+        direct.update_available,
+    )
+
+
+def test_memory_estimate_uses_the_copy_selected_for_load(cache_locations):
+    from core.inference.llama_cpp import cached_gguf_for_load
+    from routes.models import _resolve_quant_gguf
+
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    for repo, path in expected.values():
+        (path.parent / "Model-Q4_K_M.gguf").write_bytes(
+            b"0" * (128 if repo.parent == active else 512)
+        )
+    inventory_scan.invalidate_hf_cache_scans()
+    loaded = cached_gguf_for_load(repo_id, "Q4_K_M")
+    estimated, size = _resolve_quant_gguf(repo_id, "Q4_K_M", False)
+    assert estimated == loaded
+    assert size == 128

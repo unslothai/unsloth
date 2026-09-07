@@ -23,7 +23,10 @@ export async function reconcileGgufPinsAfterDelete(
         ).variants
       : [];
     const state = usePinnedModelsStore.getState();
-    if (!present && state.pinned.includes(pinKey(repoId)))
+    if (
+      !variants.some((v) => v.downloaded && !v.partial) &&
+      state.pinned.includes(pinKey(repoId))
+    )
       state.togglePinned(repoId);
     for (const pin of pinnedQuantEntries(state.pinned)) {
       if (
