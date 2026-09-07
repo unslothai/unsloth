@@ -1186,8 +1186,7 @@ def test_a_parallel_batch_shares_one_decode_attempt_budget():
     mcp_images._png_data_url = lambda data: (attempts.append(data), None)[1]
     try:
         results = [
-            [{"data": f"junk{r}-{i}", "mimeType": "image/png"} for i in range(8)]
-            for r in range(25)
+            [{"data": f"junk{r}-{i}", "mimeType": "image/png"} for i in range(8)] for r in range(25)
         ]
         assert mcp_images._decoded_urls_per_result(results) == []
     finally:
@@ -1201,6 +1200,7 @@ def test_a_parallel_batch_shares_one_decode_attempt_budget():
 def test_the_shared_budget_still_reaches_a_good_result_behind_bad_ones():
     """The bound must not defeat what it protects: the newest result failing must
     still leave enough attempts to find the real pictures behind it."""
+
     def _url(data):
         return None if data.startswith("bad") else "data:image/png;base64," + _png()
 
@@ -1232,9 +1232,7 @@ def test_a_complete_turn_keeps_its_total_when_the_cap_first_trims_it():
     mcp_images.trim_image_turns(conversation, payloads)
 
     kept = sum(1 for part in conversation[0]["content"] if part.get("type") == "image")
-    note = next(
-        part["text"] for part in conversation[0]["content"] if part.get("type") == "text"
-    )
+    note = next(part["text"] for part in conversation[0]["content"] if part.get("type") == "text")
     assert kept == 2
     assert f"({kept} of 4)" in note, note
 
