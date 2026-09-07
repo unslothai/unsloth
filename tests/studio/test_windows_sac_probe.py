@@ -188,7 +188,14 @@ def test_the_poller_abandons_a_read_at_the_frontend_timeout_and_measures_the_sta
     assert "timeout = self.read_timeout" in status_call[: status_call.index(")")]
     assert "poller.join(timeout = STATUS_READ_TIMEOUT_S + 15)" in source
 
-    def stalled(base_url, method, path, payload = None, token = None, timeout = 900):
+    def stalled(
+        base_url,
+        method,
+        path,
+        payload = None,
+        token = None,
+        timeout = 900,
+    ):
         # What _request returns once urllib gives up at `timeout`.
         threading.Event().wait(timeout)
         return 0, "timed out"
@@ -217,7 +224,14 @@ def test_an_empty_bootstrap_file_means_rotated(tmp_path, monkeypatch):
     (tmp_path / "auth" / ".bootstrap_password").write_text("", encoding = "utf-8")
     posted: list[tuple[str, dict]] = []
 
-    def fake(base_url, method, path, payload = None, token = None, timeout = 900):
+    def fake(
+        base_url,
+        method,
+        path,
+        payload = None,
+        token = None,
+        timeout = 900,
+    ):
         posted.append((path, payload or {}))
         return 200, {"access_token": "tok"}
 
@@ -227,14 +241,23 @@ def test_an_empty_bootstrap_file_means_rotated(tmp_path, monkeypatch):
     assert not any(p[0] == "/api/auth/change-password" for p in posted)
 
 
-def test_a_model_already_resident_is_evicted_first_and_never_counts_as_loaded(tmp_path, monkeypatch):
+def test_a_model_already_resident_is_evicted_first_and_never_counts_as_loaded(
+    tmp_path, monkeypatch
+):
     """/load answers already_loaded for a resident model and starts nothing, so
     no PE is loaded inside the evidence window and the absence of events would
     read as an allow."""
     s = _load_scenario()
     calls: list[tuple[str, str]] = []
 
-    def fake(base_url, method, path, payload = None, token = None, timeout = 900):
+    def fake(
+        base_url,
+        method,
+        path,
+        payload = None,
+        token = None,
+        timeout = 900,
+    ):
         calls.append((method, path))
         if path == "/api/liveness":
             return 200, {}
@@ -249,7 +272,21 @@ def test_a_model_already_resident_is_evicted_first_and_never_counts_as_loaded(tm
     monkeypatch.setattr(
         sys,
         "argv",
-        ["studio_scenario.py", "--model", "m", "--out", str(tmp_path), "--port", "1", "--password", "pw", "--home", str(tmp_path), "--poll-seconds", "0.05"],
+        [
+            "studio_scenario.py",
+            "--model",
+            "m",
+            "--out",
+            str(tmp_path),
+            "--port",
+            "1",
+            "--password",
+            "pw",
+            "--home",
+            str(tmp_path),
+            "--poll-seconds",
+            "0.05",
+        ],
     )
     assert s.main() == 1
     paths = [c[1] for c in calls]
@@ -267,7 +304,9 @@ def test_a_tool_end_carrying_a_refusal_or_error_is_not_an_execution(monkeypatch)
     assert s.tool_end_failure("") is not None
     assert s.tool_end_failure(None) is not None
     assert s.tool_end_failure(s.TOOL_REJECTED_MESSAGE) == "declined before running"
-    assert s.tool_end_failure("Error: lost connection to llama-server before the tool call completed.")
+    assert s.tool_end_failure(
+        "Error: lost connection to llama-server before the tool call completed."
+    )
     assert s.tool_end_failure('{"results": [{"title": "Burj Khalifa"}]}') is None
     monkeypatch.setattr(
         s,
@@ -282,7 +321,11 @@ def test_a_tool_end_carrying_a_refusal_or_error_is_not_an_execution(monkeypatch)
         ),
     )
     turn = s.chat("http://x", "t", "m", "look it up", tools = True)
-    assert turn["ok"] is False and turn["tools_run"] == [] and turn["tools_failed"][0]["why"] == "declined before running"
+    assert (
+        turn["ok"] is False
+        and turn["tools_run"] == []
+        and turn["tools_failed"][0]["why"] == "declined before running"
+    )
 
 
 def test_the_powershell_probe_collects_honestly_and_never_installs_from_run():
@@ -291,7 +334,10 @@ def test_the_powershell_probe_collects_honestly_and_never_installs_from_run():
     assert "Initialize-Studio $dir $false" in ps1 and "Initialize-Studio $dir $true" in ps1
     assert "function Initialize-Studio([string] $dir, [bool] $allowInstall)" in ps1
     # No policy list is a failed setup, not a warning.
-    assert "CiTool listed no policies" in ps1 and "could not be verified as active; read the 3076 count" not in ps1
+    assert (
+        "CiTool listed no policies" in ps1
+        and "could not be verified as active; read the 3076 count" not in ps1
+    )
     # Only "nothing matched" is an empty window; any other query failure is recorded and fatal.
     assert "NoMatchingEventsFound*" in ps1 and "events-collection-error.txt" in ps1
     assert 'Write-Warning "no CodeIntegrity events in the window' not in ps1
@@ -300,7 +346,9 @@ def test_the_powershell_probe_collects_honestly_and_never_installs_from_run():
 
 
 def test_the_new_guard_runs_in_the_unfiltered_lint_job():
-    lint = (REPO_ROOT / ".github" / "workflows" / "workflow-trigger-lint.yml").read_text(encoding = "utf-8")
+    lint = (REPO_ROOT / ".github" / "workflows" / "workflow-trigger-lint.yml").read_text(
+        encoding = "utf-8"
+    )
     assert "tests/studio/test_windows_sac_probe.py" in lint
 
 
