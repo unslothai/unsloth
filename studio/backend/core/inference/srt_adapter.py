@@ -116,7 +116,12 @@ class SrtError(RuntimeError):
 
 def installation_identity() -> str:
     digest = hashlib.sha256()
-    for name in ("bridge.mjs", "integrity.json", "package-lock.json"):
+    for name in (
+        "bridge.mjs",
+        "integrity.json",
+        "package-lock.json",
+        "installed-runtime-settings.json",
+    ):
         path = RUNTIME / name
         digest.update(name.encode())
         try:
@@ -249,7 +254,7 @@ def request_for(
         for root in roots
         if not any(root == mount or root.startswith(mount + os.sep) for mount in denied)
     ]
-    return {
+    request = {
         "v": 1,
         "operation": operation,
         "executable": executable,
@@ -262,6 +267,25 @@ def request_for(
         "privateUnixSockets": sys.platform == "linux",
         "timeoutMs": None if timeout is None else max(1, int(timeout * 1000)),
     }
+    if sys.platform == "win32":
+        settings_path = RUNTIME / "installed-runtime-settings.json"
+        if settings_path.exists():
+            try:
+                settings = json.loads(settings_path.read_text(encoding = "utf-8"))
+                ports = settings["windowsProxyPortRange"]
+                if (
+                    set(settings) != {"windowsProxyPortRange"}
+                    or not isinstance(ports, list)
+                    or len(ports) != 2
+                    or any(type(port) is not int for port in ports)
+                    or not 1024 <= ports[0] < ports[1] <= 65535
+                    or ports[1] - ports[0] > 99
+                ):
+                    raise ValueError("invalid port range")
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise SrtError("Invalid installed SRT Windows port settings; rerun setup") from exc
+            request["windowsProxyPortRange"] = ports
+    return request
 
 
 def spawn(
@@ -396,8 +420,9 @@ def _spawn_windows(
         encoded = json.dumps(message, ensure_ascii = True, separators = (",", ":")).encode() + b"\n"
         if len(encoded) > MAX_REQUEST:
             raise SrtError("SRT launch request exceeds the protocol bound")
-        timeout_ms = request.get("timeoutMs")
-        deadline = time.monotonic() + (30 if timeout_ms is None else min(30, timeout_ms / 1000))
+        # Upstream Windows session ACL setup can take tens of seconds on a cold
+        # host. The payload timeout starts after spawn; cancellation stays live.
+        deadline = time.monotonic() + 120
 
         def check_wait():
             if cancel_event is not None and cancel_event.is_set():

@@ -2,12 +2,30 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import os
+import json
+import sys
 from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 
 from core.inference import srt_adapter
+
+
+@pytest.mark.parametrize("ports", [[55080, 55089], [1, 2], [55080, 55300], [True, 55089]])
+def test_installed_windows_range_is_validated_before_launch(tmp_path, monkeypatch, ports):
+    monkeypatch.setattr(srt_adapter.sys, "platform", "win32")
+    monkeypatch.setattr(srt_adapter, "RUNTIME", tmp_path)
+    monkeypatch.setattr(srt_adapter, "read_roots", lambda executable: [str(tmp_path)])
+    (tmp_path / "installed-runtime-settings.json").write_text(
+        json.dumps({"windowsProxyPortRange": ports})
+    )
+    if ports == [55080, 55089]:
+        request = srt_adapter.request_for([sys.executable, "-c", "print(1)"], str(tmp_path), {}, 30)
+        assert request["windowsProxyPortRange"] == ports
+    else:
+        with pytest.raises(srt_adapter.SrtError, match = "Invalid installed"):
+            srt_adapter.request_for([sys.executable, "-c", "print(1)"], str(tmp_path), {}, 30)
 
 
 @pytest.fixture

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
@@ -163,6 +163,24 @@ test('TCP control authenticates before security records',async()=>{
   socket.destroy();peer.destroy();await new Promise((resolve)=>server.close(resolve));
 });
 
+test('bridge exits after flushing control while its controller keeps TCP open',async()=>{
+  const server=net.createServer({allowHalfOpen:true});
+  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
+  let peer;let received='';
+  server.on('connection',(socket)=>{peer=socket;socket.on('data',(data)=>{received+=data;});});
+  const child=spawn(process.execPath,[path.join(here,'bridge.mjs'),'--control-socket'],{stdio:['pipe','pipe','pipe']});
+  const timer=setTimeout(()=>child.kill(),5000);
+  try {
+    const missing=path.join(os.tmpdir(),`unsloth-missing-${process.pid}-${Date.now()}`);
+    child.stdin.end(JSON.stringify({...request(),executable:process.execPath,cwd:missing,writeRoots:[missing],controlSocket:{port:server.address().port,token:'c'.repeat(64)}}));
+    const status=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>resolve({code,signal}));});
+    assert.deepEqual(status,{code:125,signal:null});
+    const records=received.trim().split('\n').map(JSON.parse);
+    assert.deepEqual(records.map((r)=>r.event),['hello','error']);
+    assert.equal(records[0].token,'c'.repeat(64));
+  } finally {clearTimeout(timer);peer?.destroy();await new Promise((resolve)=>server.close(resolve));}
+});
+
 test('public Windows wrapper preserves argument data and upstream proxy authority',async()=>{
   const calls=[];
   const manager={wrapWithSandboxArgv:async(command,shell,_config,_signal,cwd)=>{
@@ -182,12 +200,17 @@ test('public Windows wrapper preserves argument data and upstream proxy authorit
 });
 
 test('supported configuration uses session grants and never enables TLS interception',()=>{
-  const value={...request(),denyWriteRoots:['/denied'],nativeAllowedDomains:['pypi.org']};
+  const value={...request(),denyWriteRoots:['/denied'],nativeAllowedDomains:['pypi.org'],windowsProxyPortRange:[62080,62089]};
   const config=supportedConfig(value,'C:\\trusted\\srt-win.exe');
   assert.deepEqual(config.filesystem.allowRead,value.readRoots);
   assert.deepEqual(config.filesystem.denyWrite,['/denied']);
   assert.deepEqual(config.network,{allowedDomains:['pypi.org'],deniedDomains:[]});
   assert.equal(config.windows.srtWin.path,'C:\\trusted\\srt-win.exe');
+  assert.deepEqual(config.windows.proxyPortRange,[62080,62089]);
+  for (const ports of [[0,9],[62080,62080],[62080,62180],[65530,65539],[62080,62089,62090],['62080',62089]]) {
+    assert.throws(()=>validateRequest({...request(),windowsProxyPortRange:ports}));
+  }
+  assert.deepEqual(validateRequest({...request(),windowsProxyPortRange:[62080,62089]}).windowsProxyPortRange,[62080,62089]);
 });
 
 test('supported lifecycle completes cleanup before attestation and refuses cleanup failure',async()=>{

@@ -85,9 +85,8 @@ def test_native_cancellation_returns_promptly(native_workdir):
     try:
         tools._python_exec(
             "import time\ntime.sleep(60)",
-            None,
-            30,
-            "native-platform",
+            timeout = 30,
+            session_id = "native-platform",
             cancel_event = cancel,
             launch_record_callback = records.append,
         )

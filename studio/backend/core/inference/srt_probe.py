@@ -180,6 +180,13 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
             output, _ = proc.communicate(timeout = 35)
             if proc.returncode == 0:
                 srt_adapter.verify_success(proc)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            proc.wait(timeout = 5)
+            output = exc.output or b""
+            raise srt_adapter.SrtError(
+                "SRT probe timed out after launch: " + output.decode(errors = "replace")[-1500:]
+            ) from exc
         except Exception:
             proc.kill()
             proc.wait(timeout = 5)
@@ -240,6 +247,13 @@ print('UNSLOTH_SRT_SUPPORTED_PROBE_OK')
             output, _ = proc.communicate(timeout = 35)
             if proc.returncode == 0:
                 srt_adapter.verify_success(proc)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            proc.wait(timeout = 5)
+            output = exc.output or b""
+            raise srt_adapter.SrtError(
+                "SRT probe timed out after launch: " + output.decode(errors = "replace")[-1500:]
+            ) from exc
         except Exception:
             proc.kill()
             proc.wait(timeout = 5)

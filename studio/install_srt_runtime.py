@@ -7,19 +7,53 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 
-def install(*, offline: bool = False, windows_install: bool = False) -> int:
+def _port_range(value):
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 2
+        or any(type(port) is not int for port in value)
+    ):
+        raise RuntimeError("Windows proxy range requires two integer ports.")
+    low, high = value
+    if not 1024 <= low < high <= 65535 or high - low >= 100:
+        raise RuntimeError(
+            "Windows proxy range must contain 2 to 100 ports between 1024 and 65535."
+        )
+    return [low, high]
+
+
+def install(
+    *,
+    offline: bool = False,
+    windows_install: bool = False,
+    windows_proxy_port_range = None,
+    windows_force: bool = False,
+) -> int:
     if sys.platform not in ("linux", "darwin", "win32"):
         raise RuntimeError("SRT does not support this platform.")
     if windows_install and sys.platform != "win32":
         raise RuntimeError("--windows-install requires Windows.")
+    if (windows_proxy_port_range is not None or windows_force) and not windows_install:
+        raise RuntimeError("Windows configuration options require --windows-install.")
     root = Path(__file__).resolve().parent / "backend/core/inference/srt_runtime"
+    settings_path = root / "installed-runtime-settings.json"
+    selected_range = None
+    if settings_path.exists():
+        settings = json.loads(settings_path.read_text(encoding = "utf-8"))
+        if not isinstance(settings, dict) or set(settings) != {"windowsProxyPortRange"}:
+            raise RuntimeError("Invalid installed SRT runtime settings.")
+        selected_range = _port_range(settings["windowsProxyPortRange"])
+    if windows_proxy_port_range is not None:
+        selected_range = _port_range(windows_proxy_port_range)
     node, npm = shutil.which("node"), shutil.which("npm")
     if not node or not npm:
         raise RuntimeError(
@@ -73,7 +107,27 @@ def install(*, offline: bool = False, windows_install: bool = False) -> int:
                 flush = True,
             )
             cli = root / "node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js"
-            subprocess.run([node, str(cli), "windows-install"], cwd = root, check = True, timeout = 150)
+            install_command = [node, str(cli), "windows-install"]
+            if selected_range is not None:
+                install_command.extend(
+                    ["--proxy-port-range", f"{selected_range[0]}-{selected_range[1]}"]
+                )
+            if windows_force:
+                install_command.append("--force")
+            subprocess.run(install_command, cwd = root, check = True, timeout = 150)
+            if selected_range is not None:
+                temporary = None
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        mode = "w", encoding = "utf-8", dir = root, delete = False
+                    ) as stream:
+                        temporary = stream.name
+                        json.dump({"windowsProxyPortRange": selected_range}, stream)
+                    os.replace(temporary, settings_path)
+                    temporary = None
+                finally:
+                    if temporary is not None:
+                        Path(temporary).unlink(missing_ok = True)
         else:
             print(
                 "SRT helper verified. Complete one-time privileged setup with: python studio/install_srt_runtime.py --windows-install"
@@ -106,9 +160,26 @@ def main() -> int:
         action = "store_true",
         help = "Explicitly provision upstream Windows sandbox account and WFP filters (may request elevation)",
     )
+    parser.add_argument(
+        "--windows-proxy-port-range",
+        nargs = 2,
+        type = int,
+        metavar = ("START", "END"),
+        help = "Select 2 to 100 proxy ports for explicit Windows setup",
+    )
+    parser.add_argument(
+        "--windows-force",
+        action = "store_true",
+        help = "Explicitly reconcile conflicting upstream Windows setup",
+    )
     args = parser.parse_args()
     try:
-        return install(offline = args.offline, windows_install = args.windows_install)
+        return install(
+            offline = args.offline,
+            windows_install = args.windows_install,
+            windows_proxy_port_range = args.windows_proxy_port_range,
+            windows_force = args.windows_force,
+        )
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         print(
             f"SRT setup unavailable: {exc}. Required mode will not execute on the host.",

@@ -257,3 +257,6 @@ Speech_12dB_s16.flac
 
 # launch.py --outdir scratch from a local run
 /out/
+
+# Machine-local SRT provisioning options; never distribute as source defaults.
+/studio/backend/core/inference/srt_runtime/installed-runtime-settings.json

@@ -24,7 +24,7 @@ export function payloadCommand(request) {
 
 export function validateRequest(value) {
   if (!plain(value) || value.v !== 1 || !['probe', 'run'].includes(value.operation)) fail('Invalid SRT protocol version or operation');
-  const keys = new Set(['v', 'operation', 'executable', 'argv', 'cwd', 'env', 'readRoots', 'writeRoots', 'denyReadRoots', 'denyWriteRoots', 'network', 'nativeAllowedDomains', 'timeoutMs', 'controlFd', 'controlSocket', 'privateUnixSockets']);
+  const keys = new Set(['v', 'operation', 'executable', 'argv', 'cwd', 'env', 'readRoots', 'writeRoots', 'denyReadRoots', 'denyWriteRoots', 'network', 'nativeAllowedDomains', 'windowsProxyPortRange', 'timeoutMs', 'controlFd', 'controlSocket', 'privateUnixSockets']);
   if (Object.keys(value).some((key) => !keys.has(key))) fail('Unknown SRT request field');
   for (const key of ['executable', 'cwd']) if (!string(value[key]) || !path.isAbsolute(value[key])) fail(`${key} must be an absolute path`);
   if (!Array.isArray(value.argv) || value.argv.length > 1024 || !value.argv.every(string)) fail('argv must contain bounded strings');
@@ -36,6 +36,10 @@ export function validateRequest(value) {
   if (value.denyReadRoots !== undefined && (!Array.isArray(value.denyReadRoots) || value.denyReadRoots.length > 128 || !value.denyReadRoots.every((p) => string(p) && path.isAbsolute(p) && p !== '/' && !/[*?\[\]{}]/.test(p)))) fail('denyReadRoots must contain explicit absolute paths');
   if (value.denyWriteRoots !== undefined && (!Array.isArray(value.denyWriteRoots) || value.denyWriteRoots.length > 128 || !value.denyWriteRoots.every((p) => string(p) && path.isAbsolute(p) && p !== '/' && !/[*?\[\]{}]/.test(p)))) fail('denyWriteRoots must contain explicit absolute paths');
   if (value.nativeAllowedDomains !== undefined && (!Array.isArray(value.nativeAllowedDomains) || value.nativeAllowedDomains.length > 256 || !value.nativeAllowedDomains.every((p) => string(p) && p.length > 0 && p.length <= 253))) fail('Invalid native allowed domains');
+  if (value.windowsProxyPortRange !== undefined) {
+    const ports = value.windowsProxyPortRange;
+    if (!Array.isArray(ports) || ports.length !== 2 || !ports.every((p) => Number.isInteger(p) && p >= 1024 && p <= 65535) || ports[1] - ports[0] < 1 || ports[1] - ports[0] > 99) fail('Invalid Windows proxy port range');
+  }
   if (value.network !== undefined) {
     if (!plain(value.network) || Object.keys(value.network).some((key) => !['httpSocketPath','socksSocketPath','socatPath'].includes(key))) fail('Invalid network transport');
     for (const key of ['httpSocketPath','socksSocketPath']) {
@@ -110,7 +114,7 @@ async function executeLinux(request, emit) {
   validateRequest(request);
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (major < 20 || (major === 20 && minor < 11)) fail('SRT requires Node.js >=20.11.0');
-  if (request.nativeAllowedDomains !== undefined || request.denyWriteRoots !== undefined) fail('Native policy fields cannot alter the Linux profile');
+  if (request.nativeAllowedDomains !== undefined || request.denyWriteRoots !== undefined || request.windowsProxyPortRange !== undefined) fail('Native policy fields cannot alter the Linux profile');
   if (!['x64', 'arm64'].includes(process.arch)) fail('SRT Unix socket filtering is unavailable for this architecture');
   // The trusted Python launcher installs the exact inherited host-IPC filter.
   // This check is an additional prerequisite, not proof of the filter policy.
@@ -182,7 +186,7 @@ export function supportedConfig(request, windowsHelper) {
     network: { allowedDomains: request.nativeAllowedDomains ?? [], deniedDomains: [] },
     filesystem: { allowRead: request.readRoots, denyRead: request.denyReadRoots ?? [], allowWrite: request.writeRoots, denyWrite: request.denyWriteRoots ?? [] },
   };
-  if (windowsHelper) config.windows = { srtWin: { path: windowsHelper } };
+  if (windowsHelper) config.windows = { srtWin: { path: windowsHelper }, ...(request.windowsProxyPortRange ? {proxyPortRange:request.windowsProxyPortRange} : {}) };
   return config;
 }
 
@@ -265,8 +269,11 @@ export async function executeSupported(request, emit, options = {}) {
     clearTimeout(timer);clearTimeout(hardTimer);clearInterval(parentTimer);
     process.removeListener('SIGTERM',onTerm);process.removeListener('SIGINT',onTerm);
     options.signal?.removeEventListener('abort',onControlClose);
-    if (child && platform === 'darwin') { try { process.kill(-child.pid,'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
-    try { if (manager) { manager.cleanupAfterCommand(); await manager.reset(); } }
+    try {
+      try { if (child && platform === 'darwin') process.kill(-child.pid,'SIGKILL'); }
+      catch (error) { if (error.code !== 'ESRCH') throw error; }
+      finally { if (manager) { manager.cleanupAfterCommand(); await manager.reset(); } }
+    }
     finally { process.stdout.write = originals[0];process.stderr.write = originals[1]; }
   }
   emit({event:'exit',code:result.code,signal:result.signal,reason:reason ?? 'completed'});
@@ -320,7 +327,7 @@ async function main() {
     try { emit({ event: 'error', message: String(error.message).slice(0, 2048) }); } catch { /* The controller has exited. */ }
     return 125;
   } finally {
-    if (connection && !connection.destroyed) await new Promise((resolve) => connection.end(resolve));
+    if (connection && !connection.destroyed) await new Promise((resolve) => connection.end(() => { connection.destroy(); resolve(); }));
   }
 }
 

@@ -194,3 +194,50 @@ def test_integrity_failure_is_not_reported_as_installed(installer, monkeypatch):
     monkeypatch.setattr(module.subprocess, "run", run)
     with pytest.raises(module.subprocess.CalledProcessError):
         module.install()
+
+
+@pytest.mark.parametrize("succeeds", [True, False])
+def test_custom_windows_range_saved_only_after_success(installer, monkeypatch, succeeds):
+    module, root = installer
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    npm_cli = root / "node_modules/npm/bin/npm-cli.js"
+    npm_cli.parent.mkdir(parents = True)
+    npm_cli.write_text("// fixture")
+    monkeypatch.setattr(module.shutil, "which", lambda name: str(root / name))
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if "windows-install" in argv and not succeeds:
+            raise module.subprocess.CalledProcessError(2, argv)
+        return SimpleNamespace(stdout = "v24.13.0")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    settings = root / "installed-runtime-settings.json"
+    args = dict(windows_install = True, windows_proxy_port_range = [55080, 55089], windows_force = True)
+    if succeeds:
+        module.install(**args)
+        assert json.loads(settings.read_text()) == {"windowsProxyPortRange": [55080, 55089]}
+        assert calls[-1][-3:] == ["--proxy-port-range", "55080-55089", "--force"]
+        before = settings.read_bytes()
+        module.install(offline = True)
+        assert settings.read_bytes() == before
+    else:
+        with pytest.raises(module.subprocess.CalledProcessError):
+            module.install(**args)
+        assert not settings.exists()
+
+
+@pytest.mark.parametrize(
+    "value", [[1, 10], [55080, 55080], [55000, 55100], [True, 55089], "55080-55089"]
+)
+def test_invalid_installed_range_refuses_before_process(installer, monkeypatch, value):
+    module, root = installer
+    (root / "installed-runtime-settings.json").write_text(
+        json.dumps({"windowsProxyPortRange": value})
+    )
+    monkeypatch.setattr(
+        module.subprocess, "run", lambda *a, **k: pytest.fail("invalid settings launched process")
+    )
+    with pytest.raises(RuntimeError, match = "range"):
+        module.install()

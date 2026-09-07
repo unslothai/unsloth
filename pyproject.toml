@@ -102,6 +102,8 @@ exclude = [
 # files as data of the surviving parent (pypa/setuptools#3260), and only
 # exclude-package-data outranks that.
 [tool.setuptools.exclude-package-data]
+"studio.backend.core.inference.srt_runtime" = ["installed-runtime-settings.json"]
+"studio.backend.core.inference" = ["srt_runtime/installed-runtime-settings.json"]
 "studio.backend" = ["tests/*"]
 "studio.backend.hub" = ["tests/*"]
 # Same mechanism, applied to the frontend source tree. package-data above names
@@ -125,6 +127,7 @@ exclude = [
 # exception and stays, because install.sh reads icon.icns and icon.png back out of
 # site-packages/studio/src-tauri/icons to build the macOS and Linux launchers.
 "studio" = [
+    "backend/core/inference/srt_runtime/installed-runtime-settings.json",
     "frontend/public/**",
     "frontend/src/**",
     "frontend/package-lock.json",
