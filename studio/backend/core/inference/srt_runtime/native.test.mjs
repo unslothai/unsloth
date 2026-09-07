@@ -29,7 +29,7 @@ if(run.status!==0)throw Error(run.stderr);
 console.log('LATE_ROOT_DENIED');
 `);
   try {
-    const args=['--unshare-user','--unshare-pid','--die-with-parent','--bind',fake,'/','--ro-bind','/usr','/usr','--ro-bind','/etc/alternatives','/etc/alternatives','--symlink','usr/bin','/bin','--symlink','usr/lib','/lib','--symlink','usr/lib64','/lib64','--proc','/proc','--dev','/dev','--dir','/sys','--ro-bind',path.dirname(bridge),'/bundle','--ro-bind',script,'/probe.mjs','--chdir','/work','--','/usr/bin/node','/probe.mjs'];
+    const args=['--unshare-user','--unshare-pid','--die-with-parent','--bind',fake,'/','--ro-bind','/usr','/usr','--ro-bind','/etc/alternatives','/etc/alternatives','--symlink','usr/bin','/bin','--symlink','usr/lib','/lib','--symlink','usr/lib64','/lib64','--proc','/proc','--dev','/dev','--dir','/sys','--ro-bind',path.dirname(bridge),'/bundle','--ro-bind',fs.realpathSync(process.execPath),'/test-node','--ro-bind',script,'/probe.mjs','--chdir','/work','--','/test-node','/probe.mjs'];
     const run=spawnSync('/usr/bin/bwrap',args,{encoding:'utf8',timeout:60000});
     assert.equal(run.status,0,run.stderr);
     assert.equal(run.stdout.trim(),'LATE_ROOT_DENIED');

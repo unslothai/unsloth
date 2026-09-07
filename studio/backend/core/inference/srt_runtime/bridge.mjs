@@ -67,6 +67,7 @@ function checkPaths(request) {
   if (!fs.statSync(cwd).isDirectory()) fail('cwd is not a directory');
   const within = (p, root) => p === root || p.startsWith(root + path.sep);
   const writes = request.writeRoots.map((p) => fs.realpathSync(p));
+  if ([cwd, ...writes, ...request.readRoots.map((p) => fs.realpathSync(p))].includes('/tmp')) fail('Host /tmp cannot replace the private temporary root');
   if (!writes.length || writes.some((p) => !within(p, cwd))) fail('Writes must stay within the private workdir');
   if (request.readRoots.some((p) => fs.realpathSync(p) === '/')) fail('Root read grant is forbidden');
   const denied = ['/sys', ...(request.denyReadRoots ?? [])].map((p) => fs.realpathSync(p));

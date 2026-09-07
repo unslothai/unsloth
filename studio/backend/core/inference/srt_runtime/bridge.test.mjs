@@ -117,3 +117,27 @@ test('missing or corrupted installed files fail before the payload', {skip:proce
     }
   } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test('host temp grants and symlink aliases fail before payload execution', {skip:process.platform!=='linux'}, () => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'unsloth-srt-temp-grant-'));
+  const work=path.join(root,'work');fs.mkdirSync(work);
+  const alias=path.join(root,'tmp-alias');fs.symlinkSync('/tmp',alias);
+  const marker=path.join(work,'MUST_NOT_RUN');
+  const control=path.join(root,'control');
+  try {
+    for(const target of ['/tmp',alias]) {
+      for(const update of [{cwd:target},{readRoots:[target]},{writeRoots:[target]}]) {
+        const fd=fs.openSync(control,'w');let run;
+        try {
+          const value={...request(),cwd:work,writeRoots:[work],argv:['-c',`open(${JSON.stringify(marker)},'w').write('bad')`],...update};
+          run=spawnSync(process.execPath,[path.join(here,'bridge.mjs'),'3'],{input:JSON.stringify(value),stdio:['pipe','pipe','pipe',fd],timeout:10000});
+        } finally {fs.closeSync(fd);}
+        assert.equal(run.status,125);
+        assert.equal(fs.existsSync(marker),false);
+        const records=fs.readFileSync(control,'utf8').trim().split('\n').map(JSON.parse);
+        assert.equal(records.length,1);assert.equal(records[0].event,'error');
+        assert.match(records[0].message,/Host \/tmp cannot replace/);
+      }
+    }
+  } finally {fs.rmSync(root,{recursive:true,force:true});}
+});
