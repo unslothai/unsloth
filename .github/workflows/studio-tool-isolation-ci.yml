@@ -1,0 +1,84 @@
+name: Studio tool isolation
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/core/inference/**'
+      - 'studio/backend/tests/test_srt*'
+      - 'studio/backend/tests/test_network_proxy.py'
+      - 'studio/frontend/src/features/chat/**'
+      - 'studio/frontend/src/components/assistant-ui/tool-ui-*.tsx'
+      - 'studio/frontend/tests/tool-isolation*'
+      - 'studio/frontend/tests/tool-network-policy.test.ts'
+      - 'studio/install_srt_runtime.py'
+      - 'studio/setup.*'
+      - 'pyproject.toml'
+      - '.github/workflows/studio-tool-isolation-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: studio-tool-isolation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-native:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONPATH: studio/backend
+      UNSLOTH_STUDIO_HOME: ${{ runner.temp }}/srt-studio-home
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Install Linux prerequisites without changing host confinement policy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap socat ripgrep
+          python -m pip install pytest pytest-timeout structlog psutil Pillow fastapi
+      - name: Install and verify the shipped locked helper
+        run: python studio/install_srt_runtime.py
+      - name: Reinstall from the populated offline cache
+        run: python studio/install_srt_runtime.py --offline
+      - name: Protocol and native positive/negative controls
+        working-directory: studio/backend/core/inference/srt_runtime
+        env:
+          UNSLOTH_SRT_NATIVE_TESTS: '1'
+        run: npm test
+      - name: Selected Python and shell live capability probe
+        run: |
+          python -c 'from core.inference.os_sandbox import capability_snapshot; c = capability_snapshot(force=True); print(c); assert c.available, c.reason; assert not c.qualified'
+      - name: Installer and proxy regressions
+        run: python -m pytest --noconftest studio/backend/tests/test_srt_install.py studio/backend/tests/test_srt_adapter.py studio/backend/tests/test_srt_seccomp.py studio/backend/tests/test_srt_launch_contract.py studio/backend/tests/test_srt_network.py studio/backend/tests/test_network_proxy.py -q --timeout=60
+      - name: Actual Required tools, selected Pillow runtime and HTTPS allowlist
+        env:
+          UNSLOTH_SRT_NATIVE_TESTS: '1'
+        run: python -m pytest --noconftest studio/backend/tests/test_srt_native_tools.py -q --timeout=120
+
+  frontend-policy:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Install locked frontend dependencies
+        working-directory: studio/frontend
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Consent, queued policy and record provenance
+        working-directory: studio/frontend
+        run: node --experimental-strip-types --test tests/tool-isolation-*.test.ts tests/tool-network-policy.test.ts
+      - name: Typecheck
+        working-directory: studio/frontend
+        run: npm run typecheck

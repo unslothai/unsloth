@@ -854,7 +854,14 @@ class TestOneChatsOutputStaysItsOwn:
         monkeypatch.setattr(tools, "_truncate", _recording)
         # Builtin printf over a brace expansion: no command substitution, because the
         # sandbox caps processes and a fork fails the call before it ever truncates.
-        tools._bash_exec("printf 'x%.0s' {1..5000}", None, 30, session_id, thread_id = thread_id)
+        tools._bash_exec(
+            "printf 'x%.0s' {1..5000}",
+            None,
+            30,
+            session_id,
+            thread_id = thread_id,
+            disable_sandbox = True,
+        )
         return seen
 
     def test_a_call_without_a_session_does_not_spill(self, monkeypatch, tmp_path):
@@ -2140,6 +2147,7 @@ class TestTheResultIsFittedAsItIsReplayed:
             "terminal",
             {"command": "seq 4000 | sed 's/.*/__FILES__:x/'"},
             result_budget_tokens = 400,
+            disable_sandbox = True,
         )
 
         head, _, notice = out.partition("\n\n... (truncated to ")

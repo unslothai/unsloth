@@ -20,12 +20,16 @@ import { ToolResultOutput } from "./tool-result-output";
 import { SandboxFiles } from "./sandbox-files-view";
 import { isSandboxToolResult, type SandboxFile } from "./sandbox-files";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  toolExecutionRecordLabel,
+} from "@/features/chat/types/api";
 
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
   preferSanitizedFullToolOutput,
   useToolAwaitingApproval,
   useToolOutputFor,
+  useToolExecutionRecordFor,
   useToolPaneScope,
 } from "@/features/chat";
 
@@ -36,6 +40,9 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   status,
 }) => {
   const command = toolArgText((args as { command?: unknown })?.command);
+  const executionLabel = toolExecutionRecordLabel(
+    useToolExecutionRecordFor(toolCallId),
+  );
   const isRunning = status?.type === "running";
   // Args still streaming = the model is WRITING the command, not running it yet.
   const { propStatus } = useToolArgsStatus();
@@ -86,6 +93,14 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         status={status}
         icon={TerminalIcon}
       />
+      {executionLabel ? (
+        <div
+          data-slot="tool-execution-protection"
+          className="ml-5 w-fit rounded-full border border-border px-2 py-0.5 text-ui-11 text-muted-foreground"
+        >
+          {executionLabel}
+        </div>
+      ) : null}
       <ToolFallbackContent>
         {command && (
           <ToolCodeCell

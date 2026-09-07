@@ -14,11 +14,14 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference.tool_loop_controller import (
+    TOOL_EXECUTION_RECORD_ARG_KEY,
+    ToolCallDecision,
     ToolLoopController,
     append_deferred_nudges,
     canonical_tool_call_key,
     coerce_arguments_by_schema,
     coerce_tool_arguments,
+    sanitize_untrusted_tool_arguments,
     status_for_tool,
     strip_result_for_model,
     tool_event_provenance,
@@ -60,6 +63,57 @@ def _call(
             "arguments": json.dumps(args) if isinstance(args, dict) else args,
         },
     }
+
+
+def test_reserved_execution_metadata_is_stripped_without_mutating_arguments():
+    nested = {"kept": True}
+    arguments = {
+        "code": "print('ok')",
+        "nested": nested,
+        TOOL_EXECUTION_RECORD_ARG_KEY: {"backend": "spoofed"},
+    }
+
+    sanitized = sanitize_untrusted_tool_arguments(arguments)
+
+    assert sanitized == {"code": "print('ok')", "nested": nested}
+    assert sanitized is not arguments
+    assert sanitized["nested"] is nested
+    assert TOOL_EXECUTION_RECORD_ARG_KEY in arguments
+
+
+def test_direct_decision_cannot_replay_reserved_execution_metadata():
+    decision = ToolCallDecision(
+        action = "execute",
+        tool_name = "python",
+        arguments = {
+            "code": "print('ok')",
+            TOOL_EXECUTION_RECORD_ARG_KEY: {"backend": "spoofed"},
+        },
+    )
+
+    replayed = json.loads(decision.as_assistant_tool_call()["function"]["arguments"])
+    assert replayed == {"code": "print('ok')"}
+
+
+def test_controller_strips_reserved_metadata_before_events_execution_and_replay():
+    controller = ToolLoopController(tools = [_tool("python")])
+    decision = controller.prepare_call(
+        _call(
+            "python",
+            {
+                "code": "print('ok')",
+                TOOL_EXECUTION_RECORD_ARG_KEY: {
+                    "backend": "linux-bubblewrap",
+                    "os_isolation": True,
+                },
+            },
+        )
+    )
+
+    assert decision.arguments == {"code": "print('ok')"}
+    assert decision.tool_start_event()["arguments"] == {"code": "print('ok')"}
+    replayed = json.loads(decision.as_assistant_tool_call()["function"]["arguments"])
+    assert replayed == {"code": "print('ok')"}
 
 
 def test_canonical_tool_call_key_sorts_arguments():
@@ -136,12 +190,33 @@ def test_prepare_execute_builds_visible_events_and_model_tool_message():
 
     assert completion.tool_end_payload()["result"] == "Search result\n__IMAGES__:{...}"
     assert completion.tool_end_event()["type"] == "tool_end"
+    assert "execution_record" not in completion.tool_end_event()
     assert completion.tool_message() == {
         "role": "tool",
         "name": "web_search",
         "content": "Search result",
         "tool_call_id": "call_0",
     }
+
+
+def test_tool_end_carries_the_authoritative_execution_record():
+    controller = ToolLoopController(tools = [_tool("python")])
+    decision = controller.prepare_call(_call("python", {"code": "print(1)"}))
+    execution_record = {
+        "effective_mode": "os_isolation_required",
+        "backend": "linux-bubblewrap",
+        "os_isolation": True,
+    }
+
+    completion = controller.record_result(
+        decision,
+        "1\n",
+        execution_record = execution_record,
+    )
+
+    event = completion.tool_end_event()
+    assert event["execution_state"] == "completed"
+    assert event["execution_record"] is execution_record
 
 
 def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():

@@ -69,6 +69,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     canonical_arguments_text,
     mcp_display_parts,
+    sanitize_untrusted_tool_arguments,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
@@ -191,8 +192,7 @@ def _carries_image_sentinel(result: str) -> bool:
 
 def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
     """The part of a hosted tool's arguments worth showing the model."""
-    if not isinstance(arguments, dict):
-        return {}
+    arguments = sanitize_untrusted_tool_arguments(arguments)
     return {
         key: value
         for key, value in arguments.items()
@@ -359,6 +359,9 @@ class ToolLoopRun:
     model: str | None = None
     tool_choice: Any = None
     continue_final_message: bool = False
+    current_subject: str | None = None
+    tool_ui_session_id: str | None = None
+    limited_grant: str | None = None
 
 
 @dataclass(frozen = True)
@@ -374,6 +377,9 @@ class ToolLoopPolicy:
     auto_heal: bool | None = None
     # None follows UNSLOTH_TOOL_CALL_NUDGE; explicit booleans win.
     nudge_tool_calls: bool | None = None
+    tool_execution_mode: str = "os_isolation_required"
+    # "deny" or "allowlist"; only meaningful under os_isolation_required.
+    network_policy: str = "deny"
 
 
 def _reject_json_constant(name: str) -> Any:
@@ -1217,6 +1223,8 @@ async def stream_with_studio_tools(
     confirm_tool_calls = policy.confirm_calls
     bypass_permissions = policy.bypass_permissions
     rag_scope = policy.rag_scope
+    tool_execution_mode = policy.tool_execution_mode
+    network_policy = policy.network_policy
 
     # The promotion allowlist is the selected catalog, never None: an unrestricted parse re-opens markerless tool-call
     # promotion.
@@ -1599,10 +1607,17 @@ async def stream_with_studio_tools(
             decision_slot = (
                 begin_tool_decision(session_id, approval_id) if needs_confirmation else None
             )
+            records_local_launch = name in ("python", "terminal") and accepts_kwarg(
+                execute_tool, "launch_record_callback"
+            )
 
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirmation
+            if records_local_launch:
+                start_event["execution_state"] = (
+                    "awaiting_approval" if needs_confirmation else "pending"
+                )
             denied = False
             try:
                 # A gated call has not started, so it must not read as running.
@@ -1665,7 +1680,27 @@ async def stream_with_studio_tools(
                 reprompts = max_reprompts
                 continue
 
-            def _invoke(output_callback: Any, call = decision) -> str:
+            execution_record: dict[str, Any] = {}
+
+            def _launch_event(record: Any) -> dict[str, Any]:
+                record_payload = record.as_dict()
+                execution_record["value"] = record_payload
+                event = decision.tool_start_event()
+                event.update(
+                    {
+                        "approval_id": approval_id,
+                        "awaiting_confirmation": False,
+                        "execution_state": "started",
+                        "execution_record": record_payload,
+                    }
+                )
+                return event
+
+            def _invoke(
+                output_callback: Any,
+                launch_record_callback: Any = None,
+                call = decision,
+            ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -1696,6 +1731,17 @@ async def stream_with_studio_tools(
                         pass
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
+                for key, value in (
+                    ("tool_execution_mode", tool_execution_mode),
+                    ("network_policy", network_policy),
+                    ("current_subject", run.current_subject),
+                    ("tool_ui_session_id", run.tool_ui_session_id),
+                    ("limited_grant", run.limited_grant),
+                ):
+                    if accepts_kwarg(execute_tool, key):
+                        kwargs[key] = value
+                if records_local_launch and launch_record_callback is not None:
+                    kwargs["launch_record_callback"] = launch_record_callback
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
@@ -1706,6 +1752,7 @@ async def stream_with_studio_tools(
                 tool_name = name,
                 tool_call_id = card_id,
                 cancel_event = cancel_event,
+                launch_event_factory = _launch_event if records_local_launch else None,
             )
             outcome: dict[str, Any] = {}
             step_task: Any = None
@@ -1747,7 +1794,11 @@ async def stream_with_studio_tools(
                 await _drain_step_task(step_task, cancel_event)
                 tool_stream.close()
 
-            completion = controller.record_result(decision, result)
+            completion = controller.record_result(
+                decision,
+                result,
+                execution_record = execution_record.get("value"),
+            )
             # Counted whether or not the tool succeeded: a failing call has already done its work (and possibly its side
             # effects), so letting it run for free would put the budget past max_calls. Counted per call rather than per
             # turn, so parallel calls each spend one.

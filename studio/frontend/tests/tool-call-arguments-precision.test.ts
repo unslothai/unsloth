@@ -114,7 +114,10 @@ const PROMPT_STORAGE = readFileSync(
 );
 
 test("the adapter builds tool-call argument text through the helpers", () => {
-  assert.match(ADAPTER, /toolCallArgumentsText\(\s*toolEvent\.arguments_text/);
+  assert.match(
+    ADAPTER,
+    /toolCallArgumentsText\(\s*hadReservedMetadata \? undefined : toolEvent\.arguments_text/,
+  );
   assert.match(ADAPTER, /argsText: mergedToolCallArgumentsText\(/);
   assert.equal(ADAPTER.includes("argsText: JSON.stringify(toolArgs)"), false);
   assert.equal(

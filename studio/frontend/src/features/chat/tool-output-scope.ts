@@ -8,6 +8,7 @@ import { createContext, useContext } from "react";
 
 import { stripAnsi } from "../../lib/strip-ansi";
 import type { ModelType } from "./types";
+import { type ToolExecutionRecord, toolExecutionRecordFromCard } from "./types/api";
 
 /** Pane scope prefix for the transient tool-output store keys. Local GGUF tool ids are only
  *  unique within one response ("call_0", "call_1", ...), and panes stream concurrently, so a
@@ -21,6 +22,17 @@ export function toolPaneScope(modelType?: ModelType, pairId?: string): string {
  *  without the thread in the key they share a store entry and swap outputs. */
 export function toolThreadScope(paneScope: string, threadId?: string): string {
   return `${paneScope}\u0000${threadId ?? ""}`;
+}
+
+/** Narrow a thread scope to one assistant message: local card ids restart at `tool_call_0`
+ *  every turn, so with the thread alone a later turn's launch record would label an earlier
+ *  turn's card. The adapter gets `unstable_assistantMessageId`, which assistant-ui sources
+ *  from `message.id`, the value the card reads. */
+export function toolExecutionRecordScope(
+  threadScope: string,
+  assistantMessageId?: string,
+): string {
+  return `${threadScope}\u0000${assistantMessageId ?? ""}`;
 }
 
 export const ToolPaneScopeContext = createContext<string>(toolPaneScope());
@@ -123,4 +135,26 @@ export function preferSanitizedFullToolOutput(
   result: string,
 ): string {
   return preferFullToolOutput(stripAnsi(full), stripAnsi(result));
+}
+
+/** The launch record for one card, read under this component's pane+thread+message scope. A
+ *  run that started before its thread had an id filed its records under the unresolved scope,
+ *  so that is consulted too, but only while the thread is still running (see useToolOutputFor). */
+export function useToolExecutionRecordFor(
+  toolCallId: string,
+): ToolExecutionRecord | null {
+  const paneScope = useToolPaneScope();
+  const unresolvedScope = useUnresolvedToolPaneScope();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const own = toolExecutionRecordFromCard(
+    toolCallId,
+    toolExecutionRecordScope(paneScope, messageId),
+  );
+  if (own !== null) return own;
+  if (!isRunning || paneScope === unresolvedScope) return null;
+  return toolExecutionRecordFromCard(
+    toolCallId,
+    toolExecutionRecordScope(unresolvedScope, messageId),
+  );
 }

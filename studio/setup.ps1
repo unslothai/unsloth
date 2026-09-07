@@ -3578,6 +3578,9 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
 
+# Windows SRT needs privileged account/WFP setup and does not meet our DNS contract.
+substep "SRT Required is unavailable on Windows; no sandbox account or host policy was installed." "Yellow"
+
 Remove-AgentInstructionFiles -Roots @(
     (Join-Path $FrontendDir "node_modules"),
     (Join-Path $OxcValidatorDir "node_modules")

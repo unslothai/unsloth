@@ -34,6 +34,8 @@ if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
 from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+from core.inference import os_sandbox
+from core.inference import tools as tools_module
 from core.inference.tool_stream_exec import (
     TOOL_OUTPUT_STREAM_MAX_CHARS,
     stream_tool_execution,
@@ -41,6 +43,30 @@ from core.inference.tool_stream_exec import (
 from core.inference.tools import _bash_exec, _python_exec
 
 from test_llama_cpp_tool_loop import _done, _make_backend, _sse
+
+
+@pytest.fixture(autouse = True)
+def _tool_lifecycle_backend_on_unqualified_hosts(monkeypatch):
+    """Keep lifecycle tests portable without qualifying an unsupported host.
+
+    The dedicated OS-sandbox tests own fail-closed and live enforcement proof.
+    This module isolates streaming/timeout/cancellation behavior, so on Windows,
+    WSL, containers, or a host lacking the native primitive it substitutes only
+    the backend preparation step and still runs the real child lifecycle.
+    """
+    if os_sandbox.sandbox_capability().available:
+        return
+
+    def prepare(spec):
+        return os_sandbox.PreparedSandboxLaunch(
+            argv = spec.argv,
+            workdir = spec.workdir,
+            env = spec.env,
+            preexec_fn = spec.preexec_fn,
+            backend = "test-lifecycle-passthrough",
+        )
+
+    monkeypatch.setattr(tools_module, "prepare_tool_launch", prepare)
 
 
 # ── grandchild-survival probes ───────────────────────────────────
@@ -118,6 +144,31 @@ def test_incremental_output_streams_as_tool_output_events():
     assert "".join(e["text"] for e in outputs) == "line 1\nline 2\n"
     assert all(e["tool_name"] == "python" for e in outputs)
     assert all(e["tool_call_id"] == "call_1" for e in outputs)
+
+
+def test_launch_event_precedes_output_in_the_same_fifo():
+    class Record:
+        def as_dict(self):
+            return {"effective_mode": "limited", "os_isolation": False}
+
+    def tool(output_callback, launch_callback):
+        launch_callback(Record())
+        output_callback("first output\n")
+        return "done"
+
+    events, result = _run_stream(
+        tool,
+        tool_name = "python",
+        tool_call_id = "call_1",
+        launch_event_factory = lambda record: {
+            "type": "tool_start",
+            "execution_record": record.as_dict(),
+        },
+    )
+
+    assert result == "done"
+    assert [event["type"] for event in events] == ["tool_start", "tool_output"]
+    assert events[0]["execution_record"] == {"effective_mode": "limited", "os_isolation": False}
 
 
 def test_heartbeats_emitted_while_tool_blocks():
@@ -464,12 +515,7 @@ def test_python_exec_result_identical_with_streaming():
 
 def test_python_exec_streams_lines_incrementally():
     # The first of two sleep-separated prints must reach the callback well before exit.
-    code = (
-        "import time\n"
-        "print('first', flush=True)\n"
-        "time.sleep(1.0)\n"
-        "print('second', flush=True)\n"
-    )
+    code = "import time\nprint('first', flush=True)\ntime.sleep(1.0)\nprint('second', flush=True)\n"
     first_seen_at: list[float] = []
 
     def on_chunk(_text: str) -> None:
@@ -566,7 +612,7 @@ def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     # communicate(timeout=None), so the late output is included.
     command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
     chunks: list[str] = []
-    result = _bash_exec(command, timeout = None, output_callback = chunks.append)
+    result = _bash_exec(command, timeout = None, output_callback = chunks.append, disable_sandbox = True)
     assert "parent-done" in result
     assert "late-grandchild-output" in result
     assert "late-grandchild-output" in "".join(chunks)
@@ -580,7 +626,12 @@ def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
     sentinel = tmp_path / "grandchild_ran"
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
-    result = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
+    result = _bash_exec(
+        command,
+        timeout = 1,
+        output_callback = lambda _t: None,
+        disable_sandbox = True,
+    )
     assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
 
@@ -594,7 +645,9 @@ def test_bash_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     sentinel = tmp_path / "grandchild_ran"
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
-    result = _bash_exec(command, timeout = 1)  # no output_callback -> communicate path
+    result = _bash_exec(
+        command, timeout = 1, disable_sandbox = True
+    )  # no output_callback -> communicate path
     assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
 
@@ -855,6 +908,87 @@ def test_gguf_loop_emits_tool_output_between_start_and_end(monkeypatch):
         if e["type"] == "tool_output":
             assert e["tool_name"] == "python"
             assert e["tool_call_id"] == "call_1"
+
+
+def test_gguf_loop_records_the_actual_launch_before_output(monkeypatch):
+    record_payload = {
+        "requested_mode": "limited",
+        "effective_mode": "limited",
+        "environment": "windows",
+        "backend": "limited",
+        "profile_id": "limited-v1",
+        "probe_generation": "generation-1",
+        "os_isolation": False,
+        "retained_safeguards": ["process_guard"],
+    }
+
+    class Record:
+        def as_dict(self):
+            return dict(record_payload)
+
+    execute_kwargs = {}
+
+    def recorded_tool(
+        name,
+        arguments,
+        output_callback = None,
+        launch_record_callback = None,
+        **_kwargs,
+    ):
+        execute_kwargs.update(_kwargs)
+        launch_record_callback(Record())
+        output_callback("started\n")
+        return "started\n"
+
+    tool_stream = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "index": 0,
+                        "function": {
+                            "name": "python",
+                            "arguments": json.dumps({"code": "print('hi')"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "All done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    monkeypatch.setattr("core.inference.tools.execute_tool", recorded_tool)
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run it"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+            tool_execution_mode = "limited",
+            current_subject = "actor-1",
+            tool_ui_session_id = "ui-session-1",
+            limited_grant = "grant-1",
+        )
+    )
+    starts = [event for event in events if event["type"] == "tool_start"]
+    end = next(event for event in events if event["type"] == "tool_end")
+    output_index = next(i for i, event in enumerate(events) if event["type"] == "tool_output")
+    recorded_start_index = next(
+        i for i, event in enumerate(events) if event.get("execution_record") == record_payload
+    )
+
+    assert starts[0]["execution_state"] == "pending"
+    assert "execution_record" not in starts[0]
+    assert starts[1]["execution_state"] == "started"
+    assert starts[1]["execution_record"] == record_payload
+    assert recorded_start_index < output_index
+    assert end["execution_record"] == record_payload
+    assert execute_kwargs["tool_execution_mode"] == "limited"
+    assert execute_kwargs["current_subject"] == "actor-1"
+    assert execute_kwargs["tool_ui_session_id"] == "ui-session-1"
+    assert execute_kwargs["limited_grant"] == "grant-1"
 
 
 def test_gguf_loop_plain_tool_yields_no_tool_output(monkeypatch):
@@ -1253,7 +1387,12 @@ def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_pa
     timer.start()
     started = time.monotonic()
     try:
-        result = _bash_exec(command, cancel_event = cancel_event, timeout = 30)
+        result = _bash_exec(
+            command,
+            cancel_event = cancel_event,
+            timeout = 30,
+            disable_sandbox = True,
+        )
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
@@ -1275,7 +1414,12 @@ def test_python_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_
     timer.start()
     started = time.monotonic()
     try:
-        result = _python_exec(code, cancel_event = cancel_event, timeout = 30)
+        result = _python_exec(
+            code,
+            cancel_event = cancel_event,
+            timeout = 30,
+            disable_sandbox = True,
+        )
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
