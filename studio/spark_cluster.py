@@ -3107,6 +3107,72 @@ GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.71, 32: 1.09}  # both over two groups alon
 # At or above this many concurrent rows a split asks for groups AND speculation, below it for
 # one context with speculation. The geometric mean of the measured 8 and 32.
 GROUPS_X_MTP_CROSSOVER_ROWS = 16
+
+# ---------------------------------------------------------------------------------------------
+# How a layer split scales with CONCURRENT ROWS, and where the layer boundary belongs.
+#
+# The table above holds --parallel at 32 and varies the arms. This one holds the arms and varies
+# the rows, because the rows turned out to matter more. Measured 2026-09-06, Qwen3.8-27B
+# UD-Q4_K_XL, two DGX Sparks, BOTH nodes pinned at 300,1700 MHz for the whole two-hour block with
+# no thermal-guard transition inside any cell, --kv-unified, --cache-ram 0, -fa on, npp 128 /
+# ntg 256, no speculation, and --parallel R with -c 512*R so every slot keeps the same 512-token
+# context at every point. Twenty cells, every rows point run forward and then with the arms
+# reversed; both passes agree to 3 percent.
+#
+#   rows | one context (fwd/rev) | two groups (fwd/rev) | two groups over one context
+#      8 |      50.8   51.1      |     67.6   68.4      |   1.33x  1.34x
+#     16 |      74.6   75.5      |     99.8  100.4      |   1.34x  1.33x
+#     32 |      97.5   97.5      |    144.2  142.6      |   1.48x  1.46x
+#     64 |     113.4  112.5      |    172.5  176.1      |   1.52x  1.57x
+#    128 |     115.3  117.9      |    200.9  201.5      |   1.74x  1.71x
+#
+# Two things follow, and the second is the surprise.
+#
+# 1. Two pipeline groups win at EVERY concurrency measured here, including 8 rows, where an
+#    earlier table had them losing. That table sized the server at --parallel 32 and then sent
+#    only 8 clients; this one sizes --parallel and -c to the concurrency actually offered. So the
+#    sizing is what decided it, not the topology. This does NOT restate the groups-versus-
+#    speculation crossover above: no cell here used a drafter, and GROUPS_X_MTP_CROSSOVER_ROWS is
+#    untouched.
+# 2. The gain GROWS with rows, from 1.33x to 1.74x, and it grows faster than a fixed-cost model
+#    predicts. Decode step time on this hardware is NOT c0 + c1*b: fitted between adjacent points,
+#    the marginal cost per row rises from about 6.0 ms at 8-16 rows to 6.3 at 16-32, 6.8-7.0 at
+#    32-64 and 7.9-8.4 at 64-128. Two groups of 64 therefore sit at a cheaper point on that curve
+#    than one context of 128, and at 128 rows the extra per-step cost of splitting the batch is
+#    fully repaid: the two arms do the SAME GPU work per token to within 1 percent.
+SPLIT_GROUPS_ROWS_MEASUREMENT = (
+    "Qwen3.8-27B-UD-Q4_K_XL, llama-server --kv-unified --cache-ram 0 -fa on --device RPC0,CUDA0 "
+    "-sm layer, --parallel R with -c 512*R, unslothai/llama.cpp PR #187 a1dd7c5e8, two DGX "
+    "Sparks both pinned at 1700 MHz, 2026-09-06, npp 128 / ntg 256, no speculation, two passes "
+    "in opposite arm order"
+)
+# concurrent rows -> (one context, two groups) decode tok/s, mean of the two passes
+SPLIT_GROUPS_ROWS_TOKS = {
+    8: (50.9, 68.0),
+    16: (75.1, 100.1),
+    32: (97.5, 143.4),
+    64: (112.9, 174.3),
+    128: (116.6, 201.2),
+}
+# Rows at and above which a layer split should ask for two pipeline groups WITHOUT a drafter.
+# Two groups win at every point measured, so this is the lowest measured point rather than a
+# crossing; nothing below 8 rows has been measured.
+SPLIT_GROUPS_MIN_ROWS = 8
+
+# The layer boundary. With no --tensor-split, llama.cpp divides the layers by each device's FREE
+# MEMORY at load time, so the boundary moves with whatever else the nodes are holding and is not
+# reproducible between two loads of the same model; a load-time probe caught the default putting
+# 34 of this model's 64 blocks on the peer. Measured at 128 rows with two groups, both nodes
+# pinned, peer blocks -> decode tok/s:
+#     27 -> 192.1    30 -> 200.2 / 199.1    33 -> 203.7 / 209.2    34 (default) -> 200.9 / 201.5
+#     36 -> 192.5
+# 33 wins in both passes and is where the two GPUs' busy fractions come out equal. An explicit
+# even --tensor-split lands there, because llama.cpp indexes the split over n_layer + 1 slots
+# (the last is the output block), so half of 66 is 33 and blocks 0..32 go to the first device.
+# Worth about 2.6 percent over the wandering default, and it makes the boundary the same on
+# every load, which is worth more.
+SPLIT_TENSOR_SPLIT_EVEN = "0.5,0.5"
+SPLIT_TENSOR_SPLIT_MEASURED_PEER_BLOCKS = {27: 192.1, 30: 199.7, 33: 206.4, 34: 201.2, 36: 192.5}
 REPLICAS_MIN_USERS = 8
 REPLICAS_FEW_USERS_SPEEDUP = 1.13  # 2 to 4 users, prompt 512
 TOPOLOGIES = ("single", "replicas", "layer_split")

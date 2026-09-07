@@ -214,6 +214,13 @@ _GROUPS_REFUSED_FLAGS = frozenset(
 GROUPS_X_MTP_MIN_ROWS = 16  # spark_cluster.GROUPS_X_MTP_CROSSOVER_ROWS
 GROUPS_X_MTP_OVER_MTP_ONLY = {8: 0.97, 32: 1.36}  # both over one context with MTP
 GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.71, 32: 1.09}  # both over two groups alone
+# Mirror of spark_cluster.SPLIT_TENSOR_SPLIT_EVEN. An EXPLICIT even --tensor-split, because
+# llama.cpp's default divides the layers by each device's free memory at load time and so does
+# not put the boundary in the same place twice. Measured 2026-09-06 at 128 rows with two groups,
+# both nodes pinned at 1700 MHz, peer blocks -> decode tok/s: 27 -> 192.1, 30 -> 199.7,
+# 33 -> 206.4, 34 (what the default chose that day) -> 201.2, 36 -> 192.5. The even split lands
+# on 33 and is the best of the five, worth about 2.6 percent, and it is reproducible.
+SPLIT_TENSOR_SPLIT_EVEN = "0.5,0.5"
 # What a layer split was launched as, for the status surface beside ``mtp``.
 SPLIT_CONFIG_BOTH = "groups + speculation"
 SPLIT_CONFIG_SPEC = "one context + speculation"
@@ -1464,7 +1471,29 @@ def layer_split_extra_args(
     # 33 s median TTFT with the cache on against 99.7 and 7.5 s with it off; with two groups the
     # other group starves (6.9 tok/s). This disables only that save/restore cache; the KV prefix
     # reuse inside a slot is untouched, and the sticky router keeps a conversation on its slot.
-    out = ["--rpc", f"{peer}:{port}", "--device", "RPC0,CUDA0", "-sm", "layer", "--cache-ram", "0"]
+    # --tensor-split 0.5,0.5, explicitly, because the DEFAULT is not a half. With no -ts
+    # llama.cpp divides the layers by each device's FREE MEMORY at load time
+    # (llama-model.cpp, "default split, by free memory"), so the boundary depends on whatever
+    # else the two nodes happened to be holding, and it is not reproducible between two loads
+    # of the same model. Two earlier benchmark arms of the same 27B landed on different
+    # boundaries for exactly this reason, and a load-time probe on 2026-09-06 caught the
+    # default putting 34 of the 64 blocks on the peer rather than 32.
+    #
+    # Measured, 2026-09-06, Qwen3.8-27B UD-Q4_K_XL, two groups, 128 concurrent rows, both
+    # nodes pinned at 1700 MHz, peer blocks -> decode tok/s:
+    #     27 -> 192.1     30 -> 200.2 / 199.1     33 -> 203.7 / 209.2
+    #     34 (the free-memory default) -> 200.9 / 201.5     36 -> 192.5
+    # 33 wins in both passes, and it is where the two GPUs' busy fractions come out equal
+    # (84 and 87 percent, against 90/66 at 27 blocks and 71/88 at 36). Explicit 0.5,0.5 is
+    # worth about 2.6 percent over the wandering default and, more importantly, makes the
+    # boundary the same on every load.
+    #
+    # 0.5,0.5 lands on 33 rather than 32 because llama.cpp indexes the split over
+    # n_layer + 1 assignment slots, the last of which is the output block: half of 66 is 33,
+    # so blocks 0..32 go to the first device. The output block stays on the LAST device
+    # either way, which is why the device order above is RPC first.
+    out = ["--rpc", f"{peer}:{port}", "--device", "RPC0,CUDA0", "-sm", "layer",
+           "--tensor-split", SPLIT_TENSOR_SPLIT_EVEN, "--cache-ram", "0"]
     if pipeline_groups and int(pipeline_groups) > 1:
         out += [PIPELINE_GROUPS_FLAG, str(int(pipeline_groups))]
     return out

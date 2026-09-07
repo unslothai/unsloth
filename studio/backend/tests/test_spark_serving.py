@@ -416,6 +416,8 @@ def test_rpc_server_and_layer_split_arguments():
         "RPC0,CUDA0",
         "-sm",
         "layer",
+        "--tensor-split",
+        "0.5,0.5",
         "--cache-ram",
         "0",
     ]
@@ -431,6 +433,8 @@ def test_rpc_server_and_layer_split_arguments():
         "RPC0,CUDA0",
         "-sm",
         "layer",
+        "--tensor-split",
+        "0.5,0.5",
         "--cache-ram",
         "0",
         "--pipeline-groups",
@@ -446,6 +450,8 @@ def test_rpc_server_and_layer_split_arguments():
         "RPC0,CUDA0",
         "-sm",
         "layer",
+        "--tensor-split",
+        "0.5,0.5",
         "--cache-ram",
         "0",
     ]
@@ -611,6 +617,8 @@ def test_before_load_turns_a_too_large_model_into_a_layer_split(cluster, monkeyp
         "RPC0,CUDA0",
         "-sm",
         "layer",
+        "--tensor-split",
+        "0.5,0.5",
         "--cache-ram",
         "0",
     ]
@@ -1090,6 +1098,8 @@ def test_before_load_adds_pipeline_groups_when_the_bundle_has_the_flag(
         "RPC0,CUDA0",
         "-sm",
         "layer",
+        "--tensor-split",
+        "0.5,0.5",
         "--cache-ram",
         "0",
         "--pipeline-groups",
@@ -1126,6 +1136,8 @@ def test_before_load_launches_as_before_without_the_flag(cluster, monkeypatch, t
         "RPC0,CUDA0",
         "-sm",
         "layer",
+        "--tensor-split",
+        "0.5,0.5",
         "--cache-ram",
         "0",
     ], "no --pipeline-groups and no --parallel override on a bundle without the flag"
@@ -1331,6 +1343,8 @@ def test_before_load_asks_for_the_spark_draft_depth_in_every_topology(
         "RPC0,CUDA0",
         "-sm",
         "layer",
+        "--tensor-split",
+        "0.5,0.5",
         "--cache-ram",
         "0",
     ]
@@ -1649,6 +1663,67 @@ def test_the_crossover_constants_are_the_planners_measured_numbers(cluster):
         )
     ]
     assert "--kv-unified" in mirror, "the mirrored cells must name the flag they were measured with"
+
+
+def _load_spark_cluster():
+    """spark_cluster is not importable as a package from here; load it by path, as the
+    crossover test above does."""
+    import importlib.util
+
+    path = Path(ss.__file__).resolve().parents[3] / "spark_cluster.py"
+    spec = importlib.util.spec_from_file_location("spark_cluster_for_rows_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_layer_boundary_is_explicit_and_the_rows_table_is_consistent():
+    """The split must pin its own layer boundary, and the rows table must say what it measured.
+
+    llama.cpp's DEFAULT layer split divides by each device's free memory at load time, so the
+    boundary follows whatever else the two nodes are holding and is not the same twice. That is
+    not a tuning detail: two benchmark arms of the same model landed on different boundaries
+    because of it, which quietly made them incomparable. So the launch names the split itself.
+    """
+    sc = _load_spark_cluster()
+    extra = ss.layer_split_extra_args("192.168.200.13", 50052)
+    assert "--tensor-split" in extra, "the split must not inherit llama.cpp's free-memory boundary"
+    assert extra[extra.index("--tensor-split") + 1] == ss.SPLIT_TENSOR_SPLIT_EVEN
+    assert ss.SPLIT_TENSOR_SPLIT_EVEN == sc.SPLIT_TENSOR_SPLIT_EVEN, "mirror drifted"
+    # The device order is what keeps the output block, and therefore the F32 logits, local.
+    assert extra.index("--device") < extra.index("--tensor-split")
+    assert extra[extra.index("--device") + 1] == "RPC0,CUDA0"
+
+    # The boundary that won is the one the even split lands on, and it beat both neighbours.
+    by_blocks = sc.SPLIT_TENSOR_SPLIT_MEASURED_PEER_BLOCKS
+    assert max(by_blocks, key = by_blocks.get) == 33, (
+        "the even split of 66 assignment slots puts 33 blocks on the first device"
+    )
+    for blocks in (30, 34, 36, 27):
+        assert by_blocks[blocks] < by_blocks[33], blocks
+
+    # Two groups won at every rows point measured, and the margin grows with rows. Anyone who
+    # re-measures has to say which argv they used, and it has to be one --parallel per client.
+    rows = sorted(sc.SPLIT_GROUPS_ROWS_TOKS)
+    assert rows == [8, 16, 32, 64, 128], "five points; the whole value of the block was the fifth"
+    gains = [sc.SPLIT_GROUPS_ROWS_TOKS[r][1] / sc.SPLIT_GROUPS_ROWS_TOKS[r][0] for r in rows]
+    assert all(g > 1.0 for g in gains), "two groups won at every measured concurrency"
+    # The gain grows with rows from 16 up. It does NOT grow between 8 and 16: those two are
+    # 1.336 and 1.333, the same to within the 3 percent the two passes disagree by, and saying
+    # otherwise would read a trend into noise. The rise is real from 16 rows on, 1.33 to 1.74.
+    assert abs(gains[0] - gains[1]) < 0.02, "8 and 16 rows are one point, not two"
+    assert gains[1:] == sorted(gains[1:]), "from 16 rows up the gain grows with rows"
+    assert gains[-1] / gains[1] > 1.25, "and it grows a lot: 1.33x at 16 rows, 1.74x at 128"
+    assert sc.SPLIT_GROUPS_MIN_ROWS == min(rows), "not a crossing: the lowest point measured"
+    assert "--kv-unified" in sc.SPLIT_GROUPS_ROWS_MEASUREMENT
+    assert "512*R" in sc.SPLIT_GROUPS_ROWS_MEASUREMENT, (
+        "the rows point is only meaningful if -c scales with --parallel; an earlier table held "
+        "--parallel at 32 and varied only the client count, and reached the opposite verdict "
+        "at 8 rows"
+    )
+    # This block carried no drafter, so it cannot and must not move the speculation crossover.
+    assert sc.GROUPS_X_MTP_CROSSOVER_ROWS == 16
+    assert "no speculation" in sc.SPLIT_GROUPS_ROWS_MEASUREMENT
 
 
 def test_before_load_leaves_the_callers_speculation_alone(cluster, monkeypatch, tmp_path):
