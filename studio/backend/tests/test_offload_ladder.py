@@ -266,9 +266,7 @@ def test_the_emitted_patterns_move_exactly_the_bytes_the_plan_charged_itself():
         plan = plan_placement(layout, [vram * GIB], 94 * GIB, 8192, opts = opts())
         if not plan.spills_anything:
             continue
-        matched = sum(
-            n for name, n in table if any(re.search(p, name) for p in plan.ot_patterns)
-        )
+        matched = sum(n for name, n in table if any(re.search(p, name) for p in plan.ot_patterns))
         assert matched == moved_bytes(plan, layout), (vram, plan.reason)
 
 
@@ -333,9 +331,7 @@ def test_attention_and_the_cache_are_off_the_ladder_by_default():
 def test_the_attention_rung_exists_and_sits_below_lm_head():
     """Implemented so the ladder is complete and a benchmark can reach it."""
     layout = graded_moe(n_blocks = 8, attn = 0.4)
-    plan = plan_placement(
-        layout, [2 * GIB], 94 * GIB, 8192, opts = opts(allow_attention_spill = True)
-    )
+    plan = plan_placement(layout, [2 * GIB], 94 * GIB, 8192, opts = opts(allow_attention_spill = True))
     assert plan.spills_anything
     assert plan.spilled_lm_head, "lm_head goes before any attention weight does"
     assert any("attn_" in p for p in plan.ot_patterns)
@@ -447,9 +443,7 @@ def test_the_rung_order_is_configurable_and_costs_the_same_either_way(order):
     ordering as an open question a benchmark can answer.
     """
     layout = graded_moe()
-    plan = plan_placement(
-        layout, [19 * GIB], 94 * GIB, 8192, opts = opts(ffn_rung_order = order)
-    )
+    plan = plan_placement(layout, [19 * GIB], 94 * GIB, 8192, opts = opts(ffn_rung_order = order))
     assert plan.spills_anything
     first = spill_pattern_for_class(layout, order[0], [0]).split(".", 2)[-1]
     assert first in plan.ot_patterns[0]
@@ -623,8 +617,12 @@ def test_sliding_window_without_a_measurement_abstains_rather_than_guessing():
     # With the cache priced, it plans normally again -- and on this budget the
     # right answer is that nothing needs to move at all.
     measured = plan_placement(
-        layout, [4 * GIB], 200 * GIB, 9216,
-        kv_bytes_floor = 48 * 1024**2, opts = shipped(),
+        layout,
+        [4 * GIB],
+        200 * GIB,
+        9216,
+        kv_bytes_floor = 48 * 1024**2,
+        opts = shipped(),
     )
     assert not measured.spills_anything
     assert "fits in VRAM" in measured.reason
@@ -634,7 +632,8 @@ def test_sliding_window_without_a_measurement_abstains_rather_than_guessing():
 # Per-layer attention.head_count_kv
 # ---------------------------------------------------------------------------
 
-def _reader_with_kv_heads(value, n_layers=6):
+
+def _reader_with_kv_heads(value, n_layers = 6):
     """A stand-in GGUFReader exposing just the fields the layout reads."""
     fields = {
         "general.architecture": "gemma4",
@@ -647,11 +646,14 @@ def _reader_with_kv_heads(value, n_layers=6):
     }
 
     class _F:
-        def __init__(self, v): self.v = v
+        def __init__(self, v):
+            self.v = v
 
     class _R:
         tensors = ()
-        def __init__(self): self.fields = {k: _F(v) for k, v in fields.items()}
+
+        def __init__(self):
+            self.fields = {k: _F(v) for k, v in fields.items()}
 
     return _R(), fields
 
@@ -690,7 +692,6 @@ def test_a_mixed_kv_head_list_is_summed_not_multiplied():
 def test_a_short_kv_head_list_pads_with_its_last_value():
     """Trailing layers beyond the list reuse its last width rather than crash."""
     from core.inference import offload_layout as OL
-
     assert OL._kv_heads_total([8, 2], 4) == 8 + 2 + 2 + 2
 
 
@@ -719,7 +720,7 @@ def test_no_ladder_rung_can_reach_a_unified_memory_host():
     )
 
     layout = graded_moe()
-    gib = 1024 ** 3
+    gib = 1024**3
     base = PlanOptions()
 
     reasons = set()
@@ -806,7 +807,11 @@ def test_the_selection_matches_an_independent_minimal_walk():
     assert checked >= 5, f"only {checked} budgets spilled; the sweep is vacuous"
 
 
-def _typed_moe(down_type: str, up_type: str, n_blocks: int = 40) -> ModelLayout:
+def _typed_moe(
+    down_type: str,
+    up_type: str,
+    n_blocks: int = 40,
+) -> ModelLayout:
     """A graded MoE carrying real GGUF quant type names on its rungs."""
     base = graded_moe(n_blocks)
     return ModelLayout(
@@ -853,22 +858,18 @@ def test_the_quant_rule_reproduces_every_measured_moe_verdict():
     threshold, which is the property that makes the type-name version usable.
     """
     cases = [
-        ("IQ4_NL", "IQ2_XS", FfnGranularity.ALL),       # gemma-26B Q2
-        ("IQ4_NL", "IQ3_XXS", FfnGranularity.ALL),      # gemma-26B Q3
+        ("IQ4_NL", "IQ2_XS", FfnGranularity.ALL),  # gemma-26B Q2
+        ("IQ4_NL", "IQ3_XXS", FfnGranularity.ALL),  # gemma-26B Q3
         ("IQ3_XXS", "IQ2_XS", FfnGranularity.BOUNDARY),  # Qwen35B Q2, flat
-        ("Q5_1", "Q4_K", FfnGranularity.BOUNDARY),       # gemma-26B Q4
-        ("Q6_K", "Q5_K", FfnGranularity.BOUNDARY),       # Qwen35B Q6
-        ("Q5_K", "Q4_K", FfnGranularity.BOUNDARY),       # Qwen35B Q4
+        ("Q5_1", "Q4_K", FfnGranularity.BOUNDARY),  # gemma-26B Q4
+        ("Q6_K", "Q5_K", FfnGranularity.BOUNDARY),  # Qwen35B Q6
+        ("Q5_K", "Q4_K", FfnGranularity.BOUNDARY),  # Qwen35B Q4
     ]
     for down, up, expected in cases:
         layout = _typed_moe(down, up)
-        chosen = _effective_granularity(
-            layout, opts(granularity_from_quant = True)
-        )
+        chosen = _effective_granularity(layout, opts(granularity_from_quant = True))
         ratio = moe_down_up_bpw_ratio(layout)
-        assert chosen is expected, (
-            f"{down}/{up} ratio {ratio:.3f} chose {chosen} not {expected}"
-        )
+        assert chosen is expected, f"{down}/{up} ratio {ratio:.3f} chose {chosen} not {expected}"
 
 
 def test_the_quant_rule_is_off_by_default_and_changes_no_plan():
@@ -879,7 +880,10 @@ def test_the_quant_rule_is_off_by_default_and_changes_no_plan():
 
     off = plan_placement(layout, [16 * GIB], 94 * GIB, 8192, opts = shipped())
     forced = plan_placement(
-        layout, [16 * GIB], 94 * GIB, 8192,
+        layout,
+        [16 * GIB],
+        94 * GIB,
+        8192,
         opts = shipped(ffn_granularity = FfnGranularity.BOUNDARY),
     )
     assert moved_bytes(off, layout) == moved_bytes(forced, layout)
@@ -895,15 +899,16 @@ def test_the_quant_rule_abstains_rather_than_guessing():
     """
     untyped = graded_moe()
     assert moe_down_up_bpw_ratio(untyped) is None
-    assert _effective_granularity(
-        untyped, opts(granularity_from_quant = True)
-    ) is FfnGranularity.ALL  # falls through to whatever opts asked for
+    assert (
+        _effective_granularity(untyped, opts(granularity_from_quant = True)) is FfnGranularity.ALL
+    )  # falls through to whatever opts asked for
 
     dense = ModelLayout(**{**_typed_moe("Q3_K", "Q2_K").__dict__, "is_moe": False})
     assert moe_down_up_bpw_ratio(dense) is None
-    assert _effective_granularity(
-        dense, shipped(granularity_from_quant = True)
-    ) is FfnGranularity.BOUNDARY
+    assert (
+        _effective_granularity(dense, shipped(granularity_from_quant = True))
+        is FfnGranularity.BOUNDARY
+    )
 
 
 def test_the_rung_order_is_projector_then_slots_then_draft_then_weights():
@@ -943,7 +948,11 @@ def test_the_rung_order_is_projector_then_slots_then_draft_then_weights():
         dict(mmproj_movable = False, n_parallel = 2, min_parallel = 2),
     ):
         alone = plan_placement(
-            layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor,
+            layout,
+            [card],
+            64 * GIB,
+            ctx,
+            kv_bytes_floor = floor,
             opts = PlanOptions(**{**o.__dict__, **single}),
         )
         assert len(alone.spilled_blocks) > len(plan.spilled_blocks), single

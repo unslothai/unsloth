@@ -1546,8 +1546,12 @@ def test_a_sliding_window_model_abstains_on_a_multi_gpu_split():
     # a smaller deficit than the layout's own over-count would have invented,
     # which is the whole point of preferring the measurement.
     measured = plan_placement(
-        swa, [_ALL_SPILL_VRAM], 256 * GIB, 4096,
-        opts = _NO_OVERHEAD, kv_bytes_floor = 48 * MIB,
+        swa,
+        [_ALL_SPILL_VRAM],
+        256 * GIB,
+        4096,
+        opts = _NO_OVERHEAD,
+        kv_bytes_floor = 48 * MIB,
     )
     assert measured.changed is True
     assert "sliding-window" not in measured.reason
@@ -1783,7 +1787,13 @@ _R_CTX = 4096
 _R_OPTS = dict(overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0)
 
 
-def _card_short_by(layout: ModelLayout, short: int, *, floor: int = 0, n_seq: int = 1) -> int:
+def _card_short_by(
+    layout: ModelLayout,
+    short: int,
+    *,
+    floor: int = 0,
+    n_seq: int = 1,
+) -> int:
     """A single card whose usable budget is ``short`` bytes below the resident load."""
     needed = all_resident_bytes(layout, _R_CTX, kv_bytes_floor = floor, n_seq = n_seq)
     return needed + GIB - short
@@ -1847,9 +1857,7 @@ def test_rung1_respects_min_parallel():
         64 * GIB,
         _R_CTX,
         kv_bytes_floor = floor,
-        opts = PlanOptions(
-            **_R_OPTS, n_parallel = 4, min_parallel = 3, kv_bytes_floor_by_parallel = table
-        ),
+        opts = PlanOptions(**_R_OPTS, n_parallel = 4, min_parallel = 3, kv_bytes_floor_by_parallel = table),
     )
     # Two slots would have covered it; the floor of three means blocks go instead.
     assert plan.n_parallel == 3
@@ -1902,7 +1910,9 @@ def test_the_linear_slot_fallback_never_undercuts_the_layout_product():
         assert cache_bytes(layout, _R_CTX, kv_bytes_floor = scaled) >= layout.kv_bytes(_R_CTX)
     assert _kv_floor_at(replace(layout, has_swa = True), opts, 64 * MIB, _R_CTX, _R_CTX, 2) is None
     # The caller's own slot count is always priceable, SWA or not.
-    assert _kv_floor_at(replace(layout, has_swa = True), opts, 64 * MIB, _R_CTX, _R_CTX, 4) == 64 * MIB
+    assert (
+        _kv_floor_at(replace(layout, has_swa = True), opts, 64 * MIB, _R_CTX, _R_CTX, 4) == 64 * MIB
+    )
 
 
 def test_the_recurrent_state_is_charged_per_slot():
@@ -1999,12 +2009,20 @@ def test_max_context_for_honours_the_measured_floor():
     assert abs(doubled - bare // 2) <= 1024, (bare, doubled)
     swa = replace(layout, has_swa = True)
     flat_a = max_context_for(
-        swa, [16 * GIB], spill_all_ffn = True, opts = FIXED_OVERHEAD_OPTS,
-        kv_bytes_floor = GIB, floor_ctx = 32768,
+        swa,
+        [16 * GIB],
+        spill_all_ffn = True,
+        opts = FIXED_OVERHEAD_OPTS,
+        kv_bytes_floor = GIB,
+        floor_ctx = 32768,
     )
     flat_b = max_context_for(
-        swa, [16 * GIB], spill_all_ffn = True, opts = FIXED_OVERHEAD_OPTS,
-        kv_bytes_floor = GIB, floor_ctx = 4096,
+        swa,
+        [16 * GIB],
+        spill_all_ffn = True,
+        opts = FIXED_OVERHEAD_OPTS,
+        kv_bytes_floor = GIB,
+        floor_ctx = 4096,
     )
     # A windowed cache is flat in context, so the context it was measured at is irrelevant
     # and the answer is bounded only by the training length and the reserve.

@@ -42,7 +42,16 @@ DENSE = {
 }
 
 
-def _launch_with(tmp_path, monkeypatch, plan, *, owns = True, n_ctx = 0, n_parallel = 4, caps = None):
+def _launch_with(
+    tmp_path,
+    monkeypatch,
+    plan,
+    *,
+    owns = True,
+    n_ctx = 0,
+    n_parallel = 4,
+    caps = None,
+):
     """Launch a load the planner is consulted on, returning (cmd, backend, seen inputs)."""
     if owns:
         monkeypatch.setenv("UNSLOTH_SMART_OFFLOAD", "1")
@@ -68,7 +77,12 @@ def _launch_with(tmp_path, monkeypatch, plan, *, owns = True, n_ctx = 0, n_paral
     backend._available_system_memory_mib = lambda: 64 * 1024
     seen = {}
 
-    def fake_plan(inputs, *, extra_args = None, env = None):
+    def fake_plan(
+        inputs,
+        *,
+        extra_args = None,
+        env = None,
+    ):
         seen["inputs"] = inputs
         seen["extra_args"] = extra_args
         return plan
@@ -78,7 +92,11 @@ def _launch_with(tmp_path, monkeypatch, plan, *, owns = True, n_ctx = 0, n_paral
     return launched["cmd"], backend, seen
 
 
-def _flag(cmd, name, default = None):
+def _flag(
+    cmd,
+    name,
+    default = None,
+):
     return cmd[cmd.index(name) + 1] if name in cmd else default
 
 
@@ -95,7 +113,11 @@ def test_a_plan_that_lowers_the_slots_rewrites_parallel_in_place_and_records_the
     # The local is rebound too, not only the token: the context integrity flags
     # below the consumer read it, and --kv-unified is a multi-slot flag.
     assert "--kv-unified" not in cmd
-    four, _b, _s = _launch_with(tmp_path, monkeypatch, Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,)))
+    four, _b, _s = _launch_with(
+        tmp_path,
+        monkeypatch,
+        Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,)),
+    )
     assert "--kv-unified" in four
 
 
@@ -164,7 +186,12 @@ def test_a_typed_parallel_pins_the_floor_of_the_slot_rung(tmp_path, monkeypatch)
     backend.probe_server_capabilities = lambda _binary = None: {"supports_kv_unified": True}
     seen = {}
 
-    def fake_plan(inputs, *, extra_args = None, env = None):
+    def fake_plan(
+        inputs,
+        *,
+        extra_args = None,
+        env = None,
+    ):
         seen["inputs"] = inputs
         return plan
 
@@ -184,7 +211,9 @@ def test_the_cache_ram_clamp_is_emitted_on_the_fallback_and_rewritten_by_the_pla
     assert seen["inputs"]["cache_ram_default_mib"] == 8192
     assert seen["inputs"]["cache_ram_user_set"] is False
 
-    plan = Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), cache_ram_mib = 1024)
+    plan = Plan(
+        changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), cache_ram_mib = 1024
+    )
     cmd, backend, _ = _launch_with(tmp_path, monkeypatch, plan)
     assert _flag(cmd, "--cache-ram") == "1024"
     assert cmd.count("--cache-ram") == 1
@@ -194,14 +223,20 @@ def test_the_cache_ram_clamp_is_emitted_on_the_fallback_and_rewritten_by_the_pla
 def test_a_load_mode_the_plan_chose_rides_the_fit_record(tmp_path, monkeypatch):
     """The pair reaches the argv only through _fit_load_mode_flags, so every
     retry that strips the fit's load mode strips the plan's too."""
-    plan = Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), load_mode_none = True)
+    plan = Plan(
+        changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), load_mode_none = True
+    )
     cmd, backend, _ = _launch_with(tmp_path, monkeypatch, plan, caps = {"supports_load_mode": True})
     assert _flag(cmd, "--load-mode") == "none"
     assert backend._fit_load_mode_flags and "--load-mode" in backend._fit_load_mode_flags
     assert "--load-mode" not in backend._spill_plan_flags
 
-    mmap_plan = Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), load_mode_none = False)
-    cmd, backend, _ = _launch_with(tmp_path, monkeypatch, mmap_plan, caps = {"supports_load_mode": True})
+    mmap_plan = Plan(
+        changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), load_mode_none = False
+    )
+    cmd, backend, _ = _launch_with(
+        tmp_path, monkeypatch, mmap_plan, caps = {"supports_load_mode": True}
+    )
     assert "--load-mode" not in cmd
 
 

@@ -457,7 +457,9 @@ def test_the_moe_gate_is_per_slot_not_total():
     got = plan_placement(layout, [12 * GIB], 94 * GIB, 65536, opts = opts)
     # 65536 over four slots is 16384 per slot: not the long-prompt point.
     assert "tokens per slot" not in got.reason, got.reason
-    one_slot = plan_placement(layout, [12 * GIB], 94 * GIB, 65536, opts = gated(host = HostProfile(threads = 6)))
+    one_slot = plan_placement(
+        layout, [12 * GIB], 94 * GIB, 65536, opts = gated(host = HostProfile(threads = 6))
+    )
     assert "tokens per slot" in one_slot.reason, one_slot.reason
 
 

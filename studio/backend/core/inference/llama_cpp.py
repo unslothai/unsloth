@@ -5941,6 +5941,8 @@ def _reserve_floor_bytes(withheld_per_device) -> int:
     if not withheld:
         return 0
     return max(0, _VALIDATED_DEVICE_RESERVE_BYTES - min(withheld))
+
+
 # Appended to whichever shortfall warning an oversized non-pageable launch produced,
 # after _page_an_oversized_unmapped_load rewrote the mode. One string, so the three
 # call sites cannot describe the same override differently.
@@ -11032,8 +11034,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _effective_prompt_cache_bytes(
-        cache_ram: Optional[int],
-        server_caps: Optional[Mapping[str, object]] = None,
+        cache_ram: Optional[int], server_caps: Optional[Mapping[str, object]] = None
     ) -> int:
         """Host RAM llama-server may take for its prompt cache on this launch.
 
@@ -22372,7 +22373,9 @@ class LlamaCppBackend:
                             _np_at = cmd.index("--parallel")
                             self._spill_plan_restore["--parallel"] = cmd[_np_at + 1]
                             cmd[_np_at + 1] = str(_spill.n_parallel)
-                            n_parallel = _spill.n_parallel  # allow-slot-clamp: the plan priced the cache at fewer slots
+                            n_parallel = (
+                                _spill.n_parallel
+                            )  # allow-slot-clamp: the plan priced the cache at fewer slots
                             _effective_ubatch = _ubatch_for_slots(n_parallel)
                         if _spill.n_ctx and _spill.n_ctx != effective_ctx and "-c" in cmd:
                             _c_at = cmd.index("-c")
@@ -27105,8 +27108,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _planner_may_run(
-        extra_args: Optional[Iterable[str]] = None,
-        env: Optional[Mapping[str, str]] = None,
+        extra_args: Optional[Iterable[str]] = None, env: Optional[Mapping[str, str]] = None
     ) -> bool:
         """Whether the spill planner may own this launch's placement at all.
 
@@ -27238,7 +27240,6 @@ class LlamaCppBackend:
         if self._integrated_cuda_unified_memory(inputs.get("gpu_indices")):
             logger.debug("Tensor spill: declined, an integrated CUDA device is unified memory")
             return None
-
 
         # Slots are SIZING, not placement, and these numbers were priced at Unsloth's
         # own --parallel. A pass-through is appended after it and llama.cpp is
@@ -27480,9 +27481,7 @@ class LlamaCppBackend:
         # #67 was calibrated on. Applied last, after the projector's surcharge has been
         # handed to the planner as its own term, so moving the projector cannot dip
         # the reserve under the floor. Absent from the snapshot means no floor.
-        overhead_per_device = max(
-            overhead_per_device, int(inputs.get("reserve_floor_bytes") or 0)
-        )
+        overhead_per_device = max(overhead_per_device, int(inputs.get("reserve_floor_bytes") or 0))
 
         decode_threads = _spilled_decode_threads(
             inputs.get("n_threads"),

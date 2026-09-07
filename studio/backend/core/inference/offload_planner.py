@@ -54,10 +54,25 @@ MIB = 1024**2
 # Used ONLY by :func:`moe_down_up_bpw_ratio`, which decides a granularity, never
 # to size anything. A byte count always comes from the tensor table.
 _NOMINAL_BPW: dict[str, float] = {
-    "Q2_K": 2.5625, "Q3_K": 3.4375, "Q4_K": 4.5, "Q5_K": 5.5, "Q6_K": 6.5625,
-    "Q8_0": 8.5, "Q4_0": 4.5, "Q4_1": 5.0, "Q5_0": 5.5, "Q5_1": 6.0,
-    "IQ2_XXS": 2.0625, "IQ2_XS": 2.3125, "IQ2_S": 2.5, "IQ3_XXS": 3.0625,
-    "IQ3_S": 3.4375, "IQ4_NL": 4.5, "IQ4_XS": 4.25, "F16": 16.0, "BF16": 16.0,
+    "Q2_K": 2.5625,
+    "Q3_K": 3.4375,
+    "Q4_K": 4.5,
+    "Q5_K": 5.5,
+    "Q6_K": 6.5625,
+    "Q8_0": 8.5,
+    "Q4_0": 4.5,
+    "Q4_1": 5.0,
+    "Q5_0": 5.5,
+    "Q5_1": 6.0,
+    "IQ2_XXS": 2.0625,
+    "IQ2_XS": 2.3125,
+    "IQ2_S": 2.5,
+    "IQ3_XXS": 3.0625,
+    "IQ3_S": 3.4375,
+    "IQ4_NL": 4.5,
+    "IQ4_XS": 4.25,
+    "F16": 16.0,
+    "BF16": 16.0,
     "F32": 32.0,
 }
 
@@ -554,7 +569,9 @@ def _usable_vram(
     pooled = sum(max(0, v - reserve) for v in vram_bytes_per_device)
     split = max(0, len(vram_bytes_per_device) - 1) * max(0, opts.pipeline_overhead_bytes)
     outside = (
-        _outside_layout_bytes(opts) if outside_layout_bytes is None else max(0, outside_layout_bytes)
+        _outside_layout_bytes(opts)
+        if outside_layout_bytes is None
+        else max(0, outside_layout_bytes)
     )
     return pooled - split - outside
 
@@ -637,7 +654,9 @@ class SpillUnit:
 
 def _units_of(blocks: Sequence[BlockLayout], cls: Optional[SpillClass]) -> list[SpillUnit]:
     if cls is None:
-        return [SpillUnit(b.index, None, b.spillable_bytes) for b in blocks if b.spillable_bytes > 0]
+        return [
+            SpillUnit(b.index, None, b.spillable_bytes) for b in blocks if b.spillable_bytes > 0
+        ]
     return [SpillUnit(b.index, cls, b.class_bytes(cls)) for b in blocks if b.class_bytes(cls) > 0]
 
 
@@ -677,11 +696,7 @@ def _select_units(
 
 
 def _grade_the_boundary_block(
-    layout: ModelLayout,
-    opts: PlanOptions,
-    taken: list[SpillUnit],
-    freed: int,
-    deficit: int,
+    layout: ModelLayout, opts: PlanOptions, taken: list[SpillUnit], freed: int, deficit: int
 ) -> tuple[list[SpillUnit], int]:
     """Trim the LAST whole block taken down to the rungs actually needed.
 
@@ -754,7 +769,7 @@ _RUNG_NAMES: dict[Optional[SpillClass], str] = {
 
 
 def _rung_description(units: Sequence[SpillUnit], layout: ModelLayout) -> str:
-    """"the ffn_down of every block plus the ffn_up/gate_up of 5 of 40 blocks".
+    """ "the ffn_down of every block plus the ffn_up/gate_up of 5 of 40 blocks".
 
     Spelled out per rung because "spilled 40 blocks" is the sentence that made
     #9861 hard to read: it says nothing about how much of each block moved, which
@@ -794,10 +809,7 @@ def _effective_granularity(layout: ModelLayout, opts: PlanOptions) -> FfnGranula
     ratio = moe_down_up_bpw_ratio(layout)
     if ratio is None:
         return opts.ffn_granularity
-    return (
-        FfnGranularity.ALL if ratio >= _LADDER_BPW_THRESHOLD
-        else FfnGranularity.BOUNDARY
-    )
+    return FfnGranularity.ALL if ratio >= _LADDER_BPW_THRESHOLD else FfnGranularity.BOUNDARY
 
 
 def _rung_classes(layout: ModelLayout, opts: PlanOptions) -> tuple[Optional[SpillClass], ...]:
@@ -1797,7 +1809,11 @@ def _select_units_per_device(
     by_index = {block.index: block for block in layout.blocks}
     chosen: list[SpillUnit] = []
     for device, (used, rows) in enumerate(zip(usage, slots)):
-        deficit = used + _fixed_device_reserve(opts, n_ctx, device) - max(0, vram_bytes_per_device[device])
+        deficit = (
+            used
+            + _fixed_device_reserve(opts, n_ctx, device)
+            - max(0, vram_bytes_per_device[device])
+        )
         if deficit <= 0:
             continue
         local_blocks = [by_index[row] for row in rows if row in by_index]
@@ -1805,7 +1821,9 @@ def _select_units_per_device(
         for cls in _rung_classes(layout, opts):
             if freed >= deficit:
                 break
-            picked, got = _select_units(_units_of(local_blocks, cls), deficit - freed, opts.spill_order)
+            picked, got = _select_units(
+                _units_of(local_blocks, cls), deficit - freed, opts.spill_order
+            )
             chosen.extend(picked)
             freed += got
         if freed < deficit:
@@ -1990,7 +2008,12 @@ def _plan_at(
         """
         moved = _moved_by_index(units)
         full = all(moved.get(b.index, 0) >= b.spillable_bytes for b in spillable)
-        if n_devices > 1 and not full and not per_device_selected and not opts.trust_device_row_model:
+        if (
+            n_devices > 1
+            and not full
+            and not per_device_selected
+            and not opts.trust_device_row_model
+        ):
             # A pooled budget is not a per-device fit test for a PARTIAL spill.
             # llama.cpp fixes the split before any override exists -- free memory
             # per device at llama-model.cpp:1425-1433, prefix-summed at :1439-1447,
@@ -2158,9 +2181,7 @@ def _plan_at(
         taken = taken + attn
 
     if opts.allow_kv_host_fallback and not opts.kv_on_host:
-        cache = cache_bytes(
-            layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor
-        )
+        cache = cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
         if freed + cache + layout.recurrent_bytes >= deficit:
             return attempt(
                 taken,

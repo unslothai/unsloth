@@ -20,7 +20,12 @@ import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.offload_layout import LM_HEAD_PATTERN, BlockLayout, ModelLayout
-from core.inference.offload_planner import ContextPolicy, Plan, plan_placement, smart_offload_enabled
+from core.inference.offload_planner import (
+    ContextPolicy,
+    Plan,
+    plan_placement,
+    smart_offload_enabled,
+)
 
 # The planner's decision table is covered in test_offload_planner.py. HERE is the
 # seam: whether the launch path declines when it should, emits the tokens
@@ -385,9 +390,7 @@ def test_a_moe_load_is_declined_because_the_fitter_places_it_the_same_way():
     on a measurement the ranking cannot see (see the sibling below). The tie is
     the property this test is about, and it is the same tie at 16384.
     """
-    got = _plan(
-        _Stub(moe = 40), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024, n_ctx = 16384
-    )
+    got = _plan(_Stub(moe = 40), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024, n_ctx = 16384)
     assert got is not None
     assert not got.spills_anything
     assert "not worth it" in got.reason
@@ -2461,9 +2464,7 @@ def _captured_opts(monkeypatch, stub, **kw):
     extra_args = kw.pop("extra_args", None)
     inputs = _inputs(**{k: v for k, v in kw.items() if k in _inputs.__code__.co_varnames})
     inputs.update({k: v for k, v in kw.items() if k not in _inputs.__code__.co_varnames})
-    stub._planned_tensor_spill(
-        inputs, extra_args = extra_args, env = {"UNSLOTH_SMART_OFFLOAD": "1"}
-    )
+    stub._planned_tensor_spill(inputs, extra_args = extra_args, env = {"UNSLOTH_SMART_OFFLOAD": "1"})
     assert "kwargs" in seen, "the seam declined before reaching the planner"
     return seen["kwargs"]["opts"], seen
 
@@ -2597,7 +2598,9 @@ def test_a_knob_only_plan_earns_the_pin_and_never_a_load_mode():
     assert flags(Plan(changed = True, n_parallel = 2)) == ["-ngl", "-1", "--fit", "off"]
     assert flags(Plan(changed = True, mmproj_to_host = True)) == ["-ngl", "-1", "--fit", "off"]
     assert flags(Plan(changed = True, draft_dropped = True)) == ["-ngl", "-1", "--fit", "off"]
-    spilled = flags(Plan(changed = True, ot_patterns = ("x",), spilled_blocks = (1,), load_mode_none = True))
+    spilled = flags(
+        Plan(changed = True, ot_patterns = ("x",), spilled_blocks = (1,), load_mode_none = True)
+    )
     assert spilled == ["-ngl", "-1", "--fit", "off", "-ot", "x=CPU"]
     assert "--load-mode" not in spilled
     # A load mode alone is not a reshaping, and neither is a plan that changed nothing.
@@ -2618,11 +2621,23 @@ def test_the_revocation_restores_the_values_the_plan_rewrote():
     )
     got = stub._drop_tensor_spill(cmd, "startup failure")
     assert got == [
-        "llama-server", "--parallel", "4", "-c", "8192", "--cache-ram", "8192", "--fit", "on",
+        "llama-server",
+        "--parallel",
+        "4",
+        "-c",
+        "8192",
+        "--cache-ram",
+        "8192",
+        "--fit",
+        "on",
     ]
     bare = _Stub()
     bare._spill_plan_flags = ["-ngl", "-1", "--fit", "off"]
-    assert bare._drop_tensor_spill(["x", "-ngl", "-1", "--fit", "off"], "retry") == ["x", "--fit", "on"]
+    assert bare._drop_tensor_spill(["x", "-ngl", "-1", "--fit", "off"], "retry") == [
+        "x",
+        "--fit",
+        "on",
+    ]
 
 
 @pytest.mark.parametrize(

@@ -327,8 +327,7 @@ def _kv_heads_total(n_kv_head, n_attention: int) -> int:
         heads = [int(h) for h in n_kv_head]
         if not heads:
             return 0
-        return sum(heads[i] if i < len(heads) else heads[-1]
-                   for i in range(n_attention))
+        return sum(heads[i] if i < len(heads) else heads[-1] for i in range(n_attention))
     try:
         return n_attention * int(n_kv_head)
     except (TypeError, ValueError):
@@ -556,7 +555,9 @@ def spill_pattern_for(layout: ModelLayout, indices: Optional[list[int]] = None) 
 
 
 def spill_pattern_for_class(
-    layout: ModelLayout, cls: SpillClass, indices: Optional[list[int]] = None
+    layout: ModelLayout,
+    cls: SpillClass,
+    indices: Optional[list[int]] = None,
 ) -> str:
     """The anchored ``-ot`` pattern for one rung over ``indices``.
 
@@ -567,7 +568,9 @@ def spill_pattern_for_class(
     """
     body = _CLASS_BODIES[cls][0 if layout.is_moe else 1]
     if not body:
-        raise ValueError(f"{cls.value} has no tensors on a {'MoE' if layout.is_moe else 'dense'} model")
+        raise ValueError(
+            f"{cls.value} has no tensors on a {'MoE' if layout.is_moe else 'dense'} model"
+        )
     if indices is None:
         block = r"\d+"
     else:

@@ -156,9 +156,9 @@ def test_cgroup_v1_reclaims_hierarchical_inactive_file_cache(tmp_path, monkeypat
 
 # ------------------------------------------------- prompt cache in the footprint
 
+
 def _cache_bytes(cache_ram, caps = None):
     from core.inference.llama_cpp import LlamaCppBackend
-
     return LlamaCppBackend._effective_prompt_cache_bytes(cache_ram, caps)
 
 
@@ -222,8 +222,8 @@ def test_the_load_mode_rule_matches_a_measured_ram_boundary_crossing():
     switch at the stated point. That is worth pinning so a change is deliberate.
     This test does not claim the switch point is right or wrong.
     """
-    mib = 1024 ** 2
-    gib = 1024 ** 3
+    mib = 1024**2
+    gib = 1024**3
     backend = object.__new__(LlamaCppBackend)
 
     need = int(18.4 * gib) + 5520 * mib
@@ -231,7 +231,10 @@ def test_the_load_mode_rule_matches_a_measured_ram_boundary_crossing():
 
     def mode_at(ram_gib):
         fits = backend._fits_without_paging(
-            need, gpus, avail_mib = int(ram_gib * 1024), headroom_mib = 2048,
+            need,
+            gpus,
+            avail_mib = int(ram_gib * 1024),
+            headroom_mib = 2048,
         )
         return "none" if fits is True else ("mmap" if fits is False else None)
 

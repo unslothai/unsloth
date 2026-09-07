@@ -662,7 +662,9 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     )
     # ...and the planner's slot rung is the last of those, after the fit-time one
     planner_reduction = compact.index("n_parallel=_spill.n_parallel")
-    assert planner_reduction > compact.index("gpu_indices,use_fit,n_parallel=_gi_slots,False,_slots")
+    assert planner_reduction > compact.index(
+        "gpu_indices,use_fit,n_parallel=_gi_slots,False,_slots"
+    )
     assert compact.index("_launched_ubatch=_ubatch_for_slots") > planner_reduction
 
 
