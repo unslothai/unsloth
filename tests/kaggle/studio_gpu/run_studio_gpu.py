@@ -126,15 +126,12 @@ MIN_FREE_GB = 25.0
 # once per session before anything needs it. Generous, because the cost of
 # being too tight is a red that reads like a selection bug.
 LLAMA_CPP_INSTALL_TIMEOUT_S = 900.0
-# STUDIO_UI_WALL_TIMEOUT_S cannot size a backstop any more: it measures silence between
-# progress reports, so the driver's exit lands one budget after its LAST step, at a
-# wall-clock time this side cannot predict, and any fixed number here is a guess that a
-# still-progressing run can beat. Winning that race costs the traceback and thread dump
-# the driver exits with, since SIGKILL leaves TimeoutExpired holding no stderr.
-# So the driver is given a total instead. STUDIO_UI_TOTAL_TIMEOUT_S is a ceiling no kick
-# moves, which makes the backstop below a sum rather than a guess: the driver is out by
-# UI_DRIVER_TOTAL_TIMEOUT_S, always, and this waits 300s longer than that. Six times the
-# lane's ~10 minute healthy pass, and inside its 120 minute job.
+# STUDIO_UI_WALL_TIMEOUT_S measures silence between progress reports, so it cannot size a
+# backstop: the driver exits one budget after its LAST step, and any fixed number here is a
+# guess a still-progressing run can beat. So hand the driver a total, which no kick moves,
+# and the backstop becomes a sum. Six times the lane's ~10 min healthy pass, inside its
+# 120 min job. Losing the race costs the driver's traceback: SIGKILL leaves
+# TimeoutExpired holding no stderr.
 UI_DRIVER_TOTAL_TIMEOUT_S = 3600.0
 UI_DRIVER_PROC_TIMEOUT_S = UI_DRIVER_TOTAL_TIMEOUT_S + 300.0
 # How long to let VRAM fall after an unload before calling it the baseline.

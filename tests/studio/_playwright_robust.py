@@ -759,11 +759,9 @@ class _WallClockWatchdog:
         self._on_expiry = on_expiry
         self._lock = threading.Lock()
         started = time.monotonic()
-        # A kick can push the budget out forever, so a caller that has to SIZE something
-        # around this watchdog has nothing to size against. `total_deadline_s` gives it
-        # one: a ceiling no kick can move, so an outer bound is a sum and not a guess.
-        # Unset by default, because the ceiling is the very thing that cuts a wait off
-        # before it can name itself.
+        # A kick moves the deadline forever, so a caller sizing an outer bound has nothing
+        # to size against. `total_deadline_s` is a ceiling no kick moves, which makes that
+        # bound a sum. Off by default: a ceiling is what cuts a wait off mid-flight.
         self._ceiling = started + float(total_deadline_s) if total_deadline_s else None
         self._deadline = self._clamp(started + self._budget_s)
         self._cancelled = threading.Event()

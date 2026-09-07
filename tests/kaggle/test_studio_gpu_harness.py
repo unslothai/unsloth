@@ -1219,12 +1219,8 @@ def test_the_ui_driver_gets_a_freshly_seeded_account():
 def test_the_driver_subprocess_timeout_does_not_track_the_ui_wall_budget():
     """The parent must not out-race the watchdog it is a backstop for.
 
-    STUDIO_UI_WALL_TIMEOUT_S used to bound the driver's whole run, so
-    `ui_wall_timeout + 300` was guaranteed to be the looser of the two. It now
-    bounds the silence between two progress reports, so the driver's own exit
-    lands one budget after its LAST step, at a wall-clock time this side cannot
-    predict -- and losing that race throws away the traceback and thread dump the
-    driver exits with, since SIGKILL leaves TimeoutExpired holding no stderr.
+    `ui_wall_timeout + 300` was the looser of the two only while that budget bounded the
+    whole run. It bounds silence now, so the backstop has to come from the total instead.
 
     Asserted on the source because reaching the call needs a live server."""
     source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
@@ -1236,8 +1232,7 @@ def test_the_driver_subprocess_timeout_does_not_track_the_ui_wall_budget():
     assert "ui_wall_timeout" not in call, call
 
     module = _load_payload()
-    # The backstop is a sum, not a guess: the driver is handed a total that no progress
-    # report can move, and this waits out that total and then some.
+    # A sum, not a guess: the driver is handed a total no progress report can move.
     assert "STUDIO_UI_TOTAL_TIMEOUT_S" in body, body
     assert module.UI_DRIVER_PROC_TIMEOUT_S > module.UI_DRIVER_TOTAL_TIMEOUT_S
     # Six times the ~10 minute healthy pass, and inside the lane's 120 minute job.

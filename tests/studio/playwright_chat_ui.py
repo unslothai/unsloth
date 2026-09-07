@@ -70,14 +70,12 @@ FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
 LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
 
 # Budget for ONE wait, restarted by `wall_kick()`. It must outlast the longest single wait
-# or it hard-exits mid-wait and the run says only "wedged somewhere". Two waits compete for
-# longest, and both are configured per runner, so take the max of the pair rather than
-# whichever happens to win at today's values: the rapid-submit settle at 2x the turn timeout
-# (1080s where studio-mac-ui-smoke.yml sets STUDIO_UI_TURN_TIMEOUT_MS=540000, against the
-# 720s this was pinned at), the /api/inference/load fetch (600s on the Kaggle lane), and the
-# ordinary fetch budget. Every one of the three is an env var, so take the max of all three
-# rather than whichever wins at today's values. Not a total: `send_and_wait` budgets 4x the
-# turn timeout across seven turns. Linux, raising none of them, keeps its 720s floor.
+# or it hard-exits mid-wait and the run says only "wedged somewhere". All three candidates
+# are env vars, so take the max of all three rather than whichever wins at today's values:
+# the rapid-submit settle at 2x the turn timeout (1080s where studio-mac-ui-smoke.yml sets
+# 540000, against the 720s this was pinned at), the load fetch (600s on the Kaggle lane),
+# and the ordinary fetch. Not a total: `send_and_wait` budgets 4x the turn timeout across
+# seven turns. Linux, raising none of them, keeps its 720s floor.
 _WALL_FLOOR_S = 720.0
 _LONGEST_WAIT_S = max(
     (TURN_TIMEOUT_MS / 1000) * 2,
@@ -90,10 +88,9 @@ WALL_TIMEOUT_S = float(
         max(_WALL_FLOOR_S, _LONGEST_WAIT_S + 120),
     )
 )
-# Unset by default, so the budget above stays per-wait and the run has no total. A caller
-# that must SIZE an outer bound around this process has nothing to size against otherwise,
-# since a kick moves the deadline; setting this trades a wait's right to finish for an
-# outer bound that is a sum rather than a guess. tests/kaggle/studio_gpu sets it.
+# Off by default, so the run has no total; see `_WallClockWatchdog`. Set by the callers
+# that must size an outer bound around this process: tests/kaggle/studio_gpu and
+# .github/scripts/run-studio-permission-browser.sh.
 TOTAL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_TOTAL_TIMEOUT_S", "0")) or None
 
 _n = [0]
@@ -801,9 +798,8 @@ with sync_playwright() as p:
     # page/reload between tries so a mid-try rerender doesn't poison the next.
     form_err: Exception | None = None
     for _form_attempt in range(3):
-        # Each attempt is forward progress, but it reports itself with bare print(), so
-        # nothing here resets the budget: two failed attempts of goto/settle/fill spend
-        # the whole Linux 720s and the third is hard-exited part way through.
+        # Forward progress that reports itself with bare print(), so nothing else here
+        # resets the budget: two failed attempts spend the whole Linux 720s.
         wall_kick()
         try:
             page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
