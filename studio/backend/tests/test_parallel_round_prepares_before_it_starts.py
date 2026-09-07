@@ -26,7 +26,6 @@ from core.inference import tool_loop_controller as controller_mod  # noqa: E402
 from test_tool_calls_within_one_turn_overlap import _gguf_events  # noqa: E402
 
 
-
 def _fast_sizing(monkeypatch):
     """The fake backend has no llama-server to count against, and every call's sizing
     would otherwise wait out an HTTP failure; a flat estimate keeps the starts together so
@@ -74,9 +73,9 @@ class TestEveryCallIsAttachedBeforeAnyStarts:
         starts = [i for i, (kind, _name) in enumerate(order) if kind == "start"]
         attaches = [i for i, (kind, _name) in enumerate(order) if kind == "attach"]
         assert len(starts) == 3 and len(attaches) >= 3
-        assert max(attaches) < min(starts), (
-            f"a driver started before the round was attached: {order}"
-        )
+        assert max(attaches) < min(
+            starts
+        ), f"a driver started before the round was attached: {order}"
 
 
 class TestARoundIsBounded:
@@ -118,6 +117,6 @@ class TestARoundIsBounded:
         events, _payloads = _gguf_events(monkeypatch, calls, _execute)
         ends = [e for e in events if e.get("type") == "tool_end"]
         assert len(ends) == 8
-        assert all("TOGETHER" in (end.get("result") or "") for end in ends), (
-            f"a round at the cap serialised: {[end.get('result') for end in ends]}"
-        )
+        assert all(
+            "TOGETHER" in (end.get("result") or "") for end in ends
+        ), f"a round at the cap serialised: {[end.get('result') for end in ends]}"
