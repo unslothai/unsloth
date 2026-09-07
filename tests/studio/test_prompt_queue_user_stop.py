@@ -4,8 +4,7 @@
 from pathlib import Path
 
 THREAD = (
-    Path(__file__).resolve().parents[2]
-    / "studio/frontend/src/components/assistant-ui/thread.tsx"
+    Path(__file__).resolve().parents[2] / "studio/frontend/src/components/assistant-ui/thread.tsx"
 ).read_text(encoding = "utf-8")
 
 
