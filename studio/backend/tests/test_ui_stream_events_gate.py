@@ -593,6 +593,20 @@ def test_the_mlx_counter_honours_tool_choice_none():
     assert 'tool_choice", None) != "none"' in src
 
 
+def test_tool_choice_none_withdraws_the_catalogue_but_not_the_capability():
+    # _sf_template_tools decides which branch of a named template is READ, not what is
+    # rendered. Following tool_choice there reads the plain branch for a tool
+    # conversation, which turns off _sf_client_tools and drops the assistant's tool_calls
+    # and the tool result's correlation fields -- exactly when "none" asks for the final
+    # answer. The withdrawal belongs to _sf_tools_on and _sf_tools_to_use instead.
+    src = inspect.getsource(produce_openai_chat_completions)
+    detect = src[src.index("_sf_template_tools = ") :][:400]
+    assert 'payload.tool_choice != "none"' not in detect
+    assert "m.role == \"tool\" or m.tool_calls" in detect
+    # The catalogue itself is still withdrawn for "none".
+    assert 'if payload.tool_choice == "none":\n        _sf_tools_on = False' in src
+
+
 def test_external_provider_relay_drops_control_frames_too():
     # The provider proxy returns before the local producer's per-yield gates and relays
     # stream_with_studio_tools' frames verbatim, so it filters the same vocabulary.

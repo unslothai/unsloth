@@ -23362,8 +23362,18 @@ async def produce_openai_chat_completions(
     _sf_server_tool_intent = payload.tool_choice != "none" and bool(
         _sf_tools_on or _explicit_studio_tool_loop_requested(payload)
     )
-    _sf_template_tools = payload.tools if payload.tool_choice != "none" else None
-    if not _sf_template_tools and _sf_server_tool_intent:
+    # Detection only -- this picks which branch of a named template is READ, and never what
+    # is rendered; the catalogue is withdrawn above and in _sf_tools_to_use. So it must not
+    # follow tool_choice: a conversation carrying client tools or tool history is a tool
+    # conversation whatever the field says, and reading the plain branch for it turns off
+    # _sf_client_tools, which is what routes the history through
+    # _structured_tool_history_for_local_template. Without that the assistant's tool_calls
+    # and the tool result's correlation fields are dropped by _extract_content_parts --
+    # exactly when "none" is used to ask for the final answer.
+    _sf_template_tools = payload.tools or None
+    if not _sf_template_tools and (
+        _sf_server_tool_intent or any(m.role == "tool" or m.tool_calls for m in payload.messages)
+    ):
         _sf_template_tools = ({},)
 
     # What the prefill probe renders, built to match what generation renders: a template may
