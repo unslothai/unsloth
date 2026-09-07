@@ -10,14 +10,18 @@ Playwright at import, so its half is read from source; the watchdog is run for r
 from __future__ import annotations
 
 import ast
+import contextlib
+import io
 import sys
 import threading
 import time
 from pathlib import Path
+from unittest import mock
 
 STUDIO_TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(STUDIO_TESTS))
 
+import _playwright_robust as robust  # noqa: E402
 from _playwright_robust import _WallClockWatchdog  # noqa: E402
 
 CHAT_UI = STUDIO_TESTS / "playwright_chat_ui.py"
@@ -61,6 +65,25 @@ def test_a_kick_restarts_the_budget():
 
 def test_a_cancelled_watchdog_does_not_fire():
     assert not _fired(0.8, cancel_after = 0.2, run_for = 1.4)
+
+
+def _watchdog_message(kick):
+    """The line a real `install_wall_clock_watchdog` prints on expiry, minus the exit."""
+    watchdog = robust.install_wall_clock_watchdog(30.0, label = "ui")
+    watchdog.cancel()
+    if kick:
+        watchdog.kick()
+    buf = io.StringIO()
+    with mock.patch.object(robust.os, "_exit"), contextlib.redirect_stderr(buf):
+        watchdog._on_expiry()
+    return buf.getvalue().splitlines()[0]
+
+
+def test_the_message_names_what_actually_ran_out():
+    # The scripts that never kick are measuring the whole run, not inactivity; telling
+    # their reader to look for a step sends them after one that never existed.
+    assert "hit 30s wall-clock deadline" in _watchdog_message(kick = False)
+    assert "30s with no step reported" in _watchdog_message(kick = True)
 
 
 def _chat_ui_wall_timeout_s(turn_timeout_ms):

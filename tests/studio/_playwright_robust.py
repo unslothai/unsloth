@@ -756,6 +756,7 @@ class _WallClockWatchdog:
         self._deadline = time.monotonic() + self._budget_s
         self._cancelled = threading.Event()
         self._thread = threading.Thread(target = self._run, daemon = True)
+        self.kicked = False
 
     def start(self) -> "_WallClockWatchdog":
         self._thread.start()
@@ -764,6 +765,7 @@ class _WallClockWatchdog:
     def kick(self) -> None:
         """Progress was made: restart the budget."""
         with self._lock:
+            self.kicked = True
             self._deadline = time.monotonic() + self._budget_s
 
     def cancel(self) -> None:
@@ -793,8 +795,15 @@ def install_wall_clock_watchdog(
     """Hard-exit `deadline_s` after the last `kick()`; returned so the caller can `.cancel()`."""
 
     def _kaboom() -> None:
+        # A caller that kicks is measuring inactivity, one that does not is measuring the
+        # whole run. Saying "no step" to a script that never reports one sends its reader
+        # looking for a step that was never going to come.
+        spent = (
+            f"{deadline_s:.0f}s with no step reported" if watchdog.kicked
+            else f"hit {deadline_s:.0f}s wall-clock deadline"
+        )
         msg = (
-            f"[{label}] WATCHDOG: {deadline_s:.0f}s with no step reported; "
+            f"[{label}] WATCHDOG: {spent}; "
             f"forcing exit(2). The script wedged somewhere "
             f"the per-action timeouts could not bound. Inspect the "
             f"most recent step printed above to localise."
