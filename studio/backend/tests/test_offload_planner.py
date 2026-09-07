@@ -832,9 +832,7 @@ def test_prefer_resident_still_spills_when_even_min_ctx_will_not_fit():
         [10 * GIB],
         64 * GIB,
         65536,
-        opts = PlanOptions(
-            context_policy = ContextPolicy.PREFER_RESIDENT, overhead_bytes_per_token = 0
-        ),
+        opts = PlanOptions(context_policy = ContextPolicy.PREFER_RESIDENT, overhead_bytes_per_token = 0),
     )
     assert plan.spilled_blocks, "shrinking cannot save this one, so spill"
 
@@ -1258,7 +1256,9 @@ def test_the_context_reserve_declines_a_load_the_flat_one_accepted():
     assert aware.insufficient is True, "the context reserve must not"
 
     # Same card, short context: identical answers, so nothing below the free context moves.
-    a = plan_placement(layout, [9 * GIB], 64 * GIB, 8192, opts = PlanOptions(overhead_bytes_per_token = 0))
+    a = plan_placement(
+        layout, [9 * GIB], 64 * GIB, 8192, opts = PlanOptions(overhead_bytes_per_token = 0)
+    )
     b = plan_placement(layout, [9 * GIB], 64 * GIB, 8192)
     assert a.ot_patterns == b.ot_patterns and a.n_ctx == b.n_ctx
 
