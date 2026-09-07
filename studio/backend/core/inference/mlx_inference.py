@@ -41,17 +41,12 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
-# Prefix reuse for mlx-vlm generation, owned by Studio.
-#
-# A forward pass is not shape-invariant, so a reused turn answers as an unreused one
-# only when both run the same chunks over the same rows: every request prefills on one
-# fixed grid, and the cache is snapshotted where a chunk of that grid ends, by counting
-# the language model's forwards. mlx-vlm is driven through public generation kwargs
-# only: ``prompt_cache``, ``prompt_cache_state`` and ``prefill_step_size``.
+# Prefix reuse for mlx-vlm generation, owned by Studio. A forward is not shape-invariant,
+# so a reused turn answers as an unreused one only when both chunk the same rows: every
+# request prefills on one grid and snapshots where a chunk of it ends, counting forwards.
+# Driven through public kwargs only: prompt_cache, prompt_cache_state, prefill_step_size.
 
-# The grid the reuse boundary sits on, so it also decides how much of a short turn
-# can be reused: a prompt shorter than the step has no boundary at all. Cold prefill
-# is within noise of mlx-vlm's own step at 1k, 4k and 16k tokens.
+# The grid the boundary sits on: a prompt shorter than the step has no boundary at all.
 VLM_PROMPT_CACHE_PREFILL_STEP = 256
 VLM_PROMPT_CACHE_ENTRIES = 6
 
@@ -429,13 +424,11 @@ class VLMPromptCacheSession:
     def __exit__(self, *exc):
         try:
             for host in self._patched_hosts:
-                # ``policy_hosts`` is (model, language_model), which name one object twice
-                # when the wrapper exposes no separate language model, so the same host can
-                # be unpatched twice. Idempotent rather than a second ``del`` that raises.
+                # policy_hosts is (model, language_model), which name one object twice when
+                # the wrapper exposes none, so unpatch idempotently rather than del twice.
                 host.__dict__.pop("chunked_prefill_policy", None)
         finally:
-            # Whatever the policies did, the model gets its class back: one left wrapped
-            # answers every later request on this load through a stale forward record.
+            # The class goes back regardless: one left wrapped serves every later request.
             self._forward.__exit__(*exc)
         return False
 
@@ -484,8 +477,7 @@ class VLMPromptCacheSession:
     def _detach_served(self, offset):
         prefix_ids = self._token_ids[: self.reused_tokens]
         if offset != self.reused_tokens:
-            # Declined: mlx-vlm prefills from its fresh cache, so these arrays go
-            # now, before its media pass is evaluated.
+            # Declined: freed now, before the fresh-cache request's media pass evaluates.
             self._store.discard((self._key, tuple(prefix_ids)))
             try:
                 release_cache_entries(self.cache)
@@ -2105,8 +2097,8 @@ class MLXInferenceBackend:
             self._vlm_snapshot_store_unavailable = True
             logger.info("MLX VLM prompt cache disabled by budget")
             return None
-        # Reuse needs a dispatcher that primes mRoPE state for a resumed cache, reports
-        # what it reused and routes diffusion itself: all three came with cached_tokens.
+        # Needs a dispatcher that primes mRoPE state, reports reuse and routes diffusion
+        # itself: all three arrived with cached_tokens.
         try:
             from mlx_vlm.generate import GenerationResult
             from mlx_vlm.generate.diffusion import is_diffusion_model
@@ -3353,8 +3345,7 @@ class MLXInferenceBackend:
                 session_scope,
             ):
                 if images and session is None:
-                    # The vision pass gets the headroom; under the lock, so a text turn
-                    # still finishing cannot refill the store behind it.
+                    # The vision pass gets the headroom, under the lock so nothing refills it.
                     self._release_vlm_snapshots()
                 final_response = None
                 try:
@@ -3408,8 +3399,8 @@ class MLXInferenceBackend:
                     if final_response is not None:
                         tokenizer = getattr(self._processor, "tokenizer", self._processor)
                         stop_ids = _mlx_stop_token_ids(tokenizer, self._model)
-                        # mlx-vlm rates the whole prompt against the prefill it ran,
-                        # which leaves out the rows the session produced first.
+                        # mlx-vlm rates the whole prompt against the prefill it ran, which
+                        # leaves out the rows the session produced first.
                         prompt_n = int(getattr(final_response, "prompt_tokens", 0) or 0)
                         prefilled_n = max(prompt_n - cached_n, 0)
                         prompt_tps = float(getattr(final_response, "prompt_tps", 0.0) or 0.0)
