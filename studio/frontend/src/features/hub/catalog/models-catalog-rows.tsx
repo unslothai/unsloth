@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { reconcileGgufPinsAfterDelete } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
+import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
 
 import {
   Tooltip,
@@ -796,10 +796,11 @@ export const InventoryRow = memo(function InventoryRow({
                 undefined,
                 rowCachePath,
               );
-              // Deleted repos can't stay pinned: drop the repo pin and any of
-              // its per-quant pins so stale rows don't linger up top.
-              if (row.isGguf) await reconcileGgufPinsAfterDelete(deletableRepoId);
-              else usePinnedModelsStore.getState().unpinRepo(deletableRepoId);
+              if (row.isGguf && isChatGgufTask(row.pipelineTag)) {
+                await reconcileGgufPinsAfterDelete(deletableRepoId);
+              } else {
+                usePinnedModelsStore.getState().unpinRepo(deletableRepoId);
+              }
             }
           },
           onDeleted: onChange,

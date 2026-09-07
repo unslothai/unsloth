@@ -549,7 +549,7 @@ test("unpinning a repo that was never pinned writes nothing", () => {
   assert.equal(storedPinned(), null, "no write, so the record is untouched");
 });
 
-test("GGUF deletes reconcile surviving copies while other model deletes clear pins", async () => {
+test("chat GGUF deletes reconcile surviving copies while other model deletes clear pins", async () => {
   // The picker's partial repo row and the Hub's cache row do the same delete, so they must not
   // drift into two answers about what a pin outlives.
   const pickers = await readFile(
@@ -561,8 +561,8 @@ test("GGUF deletes reconcile surviving copies while other model deletes clear pi
   );
   assert.equal(
     pickers.split("unpinRepo(c.repo_id);").length - 1,
-    1,
-    "the non-GGUF cached model row clears repository pins",
+    2,
+    "non-GGUF and media cached model rows clear repository pins",
   );
   assert.ok(pickers.includes("reconcileGgufPinsAfterDelete(c.repo_id"));
   assert.ok(

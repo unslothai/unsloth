@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { reconcileGgufPinsAfterDelete } from "./reconcile-gguf-pins";
+import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "./reconcile-gguf-pins";
 
 import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
@@ -2232,10 +2232,13 @@ function GgufVariantExpander({
                           disabled: deleteDisabled,
                           onConfirm: async () => {
                             await onDeleteVariant(v.quant);
-                            await reconcileGgufPinsAfterDelete(repoId, hfToken);
+                            if (isChatGgufTask(pipelineTag)) {
+                              await reconcileGgufPinsAfterDelete(repoId, hfToken);
+                            } else if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
+                              togglePinnedQuant(repoId, v.quant);
+                            }
                             // Re-fetch this expander's variants so the deleted quant stops showing as
                             // downloaded while other cached quants remain.
-                            // repo still has other cached quants.
                             setRefreshKey((key) => key + 1);
                           },
                         }
@@ -5189,7 +5192,11 @@ export function HubModelPicker({
                   hfToken || undefined,
                 );
                 refreshCachedLists();
-                await reconcileGgufPinsAfterDelete(entry.repoId, hfToken || undefined);
+                if (isChatGgufTask(diffusionTaskById.get(entry.repoId.toLowerCase()))) {
+                  await reconcileGgufPinsAfterDelete(entry.repoId, hfToken || undefined);
+                } else {
+                  togglePinned(entry.repoId, entry.quant);
+                }
               },
             }}
           />
@@ -5321,7 +5328,11 @@ export function HubModelPicker({
                   hfToken || undefined,
                   variant.cache_path || (mediaPageForTask(c.task) ? c.cache_path : undefined) || undefined,
                 );
-                await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
+                if (isChatGgufTask(c.task)) {
+                  await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
+                } else if (isPinned) {
+                  togglePinned(c.repo_id, variant.quant);
+                }
                 prunePinnedQuantValidation(c.repo_id, variant.quant);
                 refreshCachedLists();
               },
@@ -5412,8 +5423,12 @@ export function HubModelPicker({
                       hfToken || undefined,
                       c.cache_path || undefined,
                     );
-                    // Another remembered folder may still hold a pinned quant.
-                    await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
+                    if (isChatGgufTask(c.task)) {
+                      // Another remembered folder may still hold a pinned quant.
+                      await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
+                    } else {
+                      unpinRepo(c.repo_id);
+                    }
                   },
                   onDeleted: refreshCachedLists,
                 }}

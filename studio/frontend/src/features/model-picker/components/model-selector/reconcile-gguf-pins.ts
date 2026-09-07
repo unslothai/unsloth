@@ -9,6 +9,10 @@ import {
   modelIdsMatchForPicker,
 } from "./row-identity";
 
+export function isChatGgufTask(task: string | null | undefined): boolean {
+  return !task || task === "text-generation" || task === "image-text-to-text";
+}
+
 export async function reconcileGgufPinsAfterDelete(
   repoId: string,
   hfToken?: string,
