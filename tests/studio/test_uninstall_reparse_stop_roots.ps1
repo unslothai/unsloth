@@ -46,8 +46,7 @@ Check "the stop scan is given the managed paths under the target" `
     ($ps1Text -match '_StopProcessesLockingRoots -Roots \(\$stopRoots \+ @\(_ManagedPathsUnderReparseTargets \$knownRoots\)\)')
 
 # Both reparse kinds, because the helper reads nothing but .Target. A directory SYMLINK needs
-# elevation or Developer Mode and a JUNCTION never does, so the junction row is the one that
-# always executes, and CI, whose Windows runner is an administrator, still covers both.
+# elevation and a JUNCTION never does, so the junction row is the one that always executes.
 # $IsWindows only exists on PowerShell 6+; on 5.1 it is $null, and 5.1 runs nowhere else.
 $onWindows = if ($null -ne $IsWindows) { $IsWindows } else { $true }
 

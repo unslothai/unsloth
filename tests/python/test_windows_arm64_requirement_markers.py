@@ -187,8 +187,8 @@ def test_no_row_is_dead_on_arrival(label, reqs):
 # Which packages carry a Windows-on-ARM row, PER SOURCE, and in which shape.
 #   "split"   -- a positive `platform_machine == "ARM64"` row giving a different version
 #   "dropped" -- only the negative row, so the package is absent on Windows on ARM
-# Checked per source rather than globally: studio.txt and pyproject[studio] mirror each other, so
-# a global check stays green when one loses a row. The shape matters for the same reason.
+# Checked per source and by shape: studio.txt and pyproject[studio] mirror each other, so a global
+# check stays green when one loses a row.
 WOA_ROWS_BY_SOURCE = {
     "extras.txt": {"av": "split", "scikit-learn": "split"},
     "no-torch-runtime.txt": {"pymupdf": "split", "hf-transfer": "dropped"},

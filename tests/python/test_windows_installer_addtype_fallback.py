@@ -1613,9 +1613,8 @@ def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
 
 
 # Split-Path's -LiteralPath lives in its own parameter set in Windows PowerShell 5.1, so naming
-# -Parent with it throws AmbiguousParameterSet at runtime rather than at parse time, which is why
-# eight of them reached a release in scripts/uninstall.ps1. -LiteralPath alone already splits off
-# the parent, and -Path globs, so an install root containing [ ] would be read as a wildcard.
+# -Parent with it throws AmbiguousParameterSet at runtime, not at parse time, which is why eight of
+# them reached a release. -LiteralPath alone already splits off the parent, and -Path globs.
 # Static, because CI has no Windows PowerShell 5.1 to run the scripts under.
 _SPLIT_PATH_LITERAL_PARENT = re.compile(
     r"Split-Path\b[^\r\n|;]*?-LiteralPath\b[^\r\n|;]*?-Parent\b"

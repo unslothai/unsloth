@@ -302,9 +302,8 @@ def cli_run_gpu_failure(
         return None, detail
 
     before = apps_before or {}
-    # A pid that APPEARED but carries no figure is the mixed-listing case: a readable row on
-    # another GPU keeps the mapping nonempty, so the all-[N/A] guard never fires and the server
-    # is merely unattributable. Defer to the device-wide delta rather than reporting CPU.
+    # A pid that APPEARED but carries no figure is the mixed-listing case: the all-[N/A] guard
+    # never fires, so defer to the device-wide delta rather than reporting CPU.
     if listed_before is not None and listed_after is not None:
         appeared_unattributed = sorted((listed_after - set(listed_before)) - set(apps_after))
         if appeared_unattributed:
@@ -2875,8 +2874,7 @@ class Payload:
         # ends by stopping the server, so by here the port is free, the card is
         # empty, and the VRAM delta below measures this launch alone.
         # Stopped here, not only at the end of assert_chat_ui: with --skip-ui that driver never
-        # runs, so a live llama-server read as a co-tenant and the device-delta fallback was
-        # refused. Idempotent when assert_chat_ui already stopped it.
+        # runs, so a live llama-server read as a co-tenant. Idempotent if already stopped.
         self.stop_server()
         self.assert_cli_run()
 

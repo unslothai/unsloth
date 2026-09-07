@@ -309,8 +309,7 @@ def write_manifest(
     # eGPU with no repair offered. Absent means unknown, as with every other additive key.
     if expected_torch_tag_pinned is not None:
         payload["expected_torch_tag_pinned"] = bool(expected_torch_tag_pinned)
-    # Windows on ARM has no CUDA wheels on download.pytorch.org, so a fresh-shell update cannot
-    # re-derive the index from the driver.
+    # Windows on ARM has no CUDA wheels on download.pytorch.org, so a fresh shell cannot re-derive.
     # Only NVIDIA's own channels, with no userinfo, query or fragment: a mirror is not persisted.
     if woa_torch_index:
         candidate = str(woa_torch_index).strip()

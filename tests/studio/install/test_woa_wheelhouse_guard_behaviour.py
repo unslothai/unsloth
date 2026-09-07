@@ -190,10 +190,9 @@ def test_a_pypi_version_below_a_floor_keeps_the_drop(version, still_dropped):
 
 
 # A uv config can take PyPI out of the resolve as decisively as UV_OFFLINE can. Every case below
-# is one install.ps1's subset parser got WRONG until it learned to scan for quotes, each
-# answering "PyPI is reachable" for a config that had replaced or disabled it: that direction
-# deletes wheelhouse copies of wheels the resolve can never fetch. Expectations were derived by
-# reading each fixture with tomllib against uv's documented precedence, not written by hand.
+# is one install.ps1's subset parser got WRONG until it learned to scan for quotes, each answering
+# "PyPI is reachable" for a config that had disabled it, which deletes wheelhouse copies of wheels
+# the resolve can never fetch. Expectations derived with tomllib, not written by hand.
 UV_CONFIG_CASES = [
     # A comment needs no whitespace in front of it. `(^|\s)#` missed this one entirely.
     ("comment_nospace", "uv.toml", "no-index = true# offline lab\n", False),

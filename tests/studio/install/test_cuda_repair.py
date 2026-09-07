@@ -796,8 +796,7 @@ def _run_flavor_invariant(
         patch.object(stack_mod.platform, "machine", return_value = "AMD64"),
         patch.object(stack_mod, "_is_windows_arm64", return_value = win_arm64),
         # The interpreter's arch, which the CUDA-preservation shortcut reads.
-        # They separate on an ARM64 machine running an emulated x64 python, which is every
-        # install predating native support.
+        # They separate on an ARM64 machine running an emulated x64 python.
         patch.object(
             stack_mod,
             "_is_win_arm64_interpreter",

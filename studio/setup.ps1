@@ -6282,10 +6282,8 @@ if ($LocalLlamaCppLinked) {
                 $_nvidiaKinds = if (Test-WinArm64Venv) {
                     if ($_arm64CudaOptOut) { @("windows-arm64") } else { @("windows-arm64-cuda", "windows-arm64") }
                 } else { @("windows-cuda") }
-                # A probe that did not answer is not evidence the GPU is gone: a transient
-                # nvidia-smi failure used to delete a working install for the CPU bundle.
-                # Read here, not from the dependency pass, which $SkipPythonDeps skips whole: that
-                # read as "no evidence" and deleted a working CUDA install on a no-op update.
+                # A probe that did not answer is not evidence the GPU is gone.
+                # Read here, not from the dependency pass, which $SkipPythonDeps skips whole.
                 $_woaEvidenceIndex = if ($WinArm64EffectiveTorchIndexUrl) { $WinArm64EffectiveTorchIndexUrl }
                     else {
                         $_p = Get-PinnedTorchIndexUrl

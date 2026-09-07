@@ -113,7 +113,6 @@ Environment:
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         # Anchor a relative reparse-point target to the link's own parent, or Join-Path
         # resolves it from the uninstaller's working directory and the db test reads false.
-        #
         # Split-Path -LiteralPath takes no -Parent: 5.1 puts them in different parameter sets and
         # the call throws. -LiteralPath alone already splits off the parent, and -Path globs.
         $resolveTarget = {
@@ -395,7 +394,6 @@ Environment:
     # The .cmd is the interpreter-based launcher install.ps1 writes beside the .exe for
     # machines whose Application Control policy denies the generated console script. An
     # install whose .exe was removed by that policy's quarantine still owns its root.
-    #
     # Plus the venv shapes older installers left, or the gate strands them. On Windows
     # share\studio.conf is never written, so the three sentinels that decide a Windows root all
     # postdate the bin\ shim dir, while install.ps1 still migrates <root>\.venv. So also accept
