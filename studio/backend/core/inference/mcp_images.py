@@ -110,6 +110,14 @@ def has_images(result: str) -> bool:
     return bool(split_images(result)[1])
 
 
+def mentions_images(result: str) -> bool:
+    """Substring only, for deciding WHERE to run: has_images json-parses the whole
+    array, and doing that on the event loop to decide whether to leave the event
+    loop parsed a permitted 12 MB envelope right there. A false positive here costs
+    a thread hop; the worker validates for real."""
+    return ("\n" + SENTINEL) in result
+
+
 def _decoded_urls(
     images: Sequence[dict],
     limit: int = MAX_MODEL_IMAGES,
@@ -235,8 +243,14 @@ def png_payloads_per_result(results: Sequence[Sequence[dict]]) -> list[str]:
     """For the local marker paths: at most LOCAL_MAX_IMAGES_PER_TURN pictures, taken
     from the NEWEST result that decodes, since a batch lands as one turn and a
     non-GGUF message takes one image."""
+    # One attempt budget across the batch, as _decoded_urls_per_result keeps: reset
+    # per result, a 25-call turn of malformed results bought 25 allowances of Pillow
+    # decodes for a path that keeps a single picture.
+    attempts = [LOCAL_MAX_IMAGES_PER_TURN + DECODE_FAILURE_ALLOWANCE]
     for images in reversed(list(results)):
-        urls = _decoded_urls(images, LOCAL_MAX_IMAGES_PER_TURN)
+        if attempts[0] <= 0:
+            break
+        urls = _decoded_urls(images, LOCAL_MAX_IMAGES_PER_TURN, attempts = attempts)
         if urls:
             return [url.split(",", 1)[1] for url in urls]
     return []
@@ -729,7 +743,15 @@ def top_up_image_markers(
                 content = message.get("content", "")
                 markers = [{"type": "image"} for _ in range(missing)]
                 if isinstance(content, list):
-                    out[index] = {**message, "content": [*content, *markers]}
+                    # A replay merged into this turn already left a marker here. A
+                    # non-GGUF message takes one image, so the attachment displaces
+                    # it; pixels_in_marker_order drops the orphaned payload.
+                    kept = [
+                        part
+                        for part in content
+                        if not (isinstance(part, dict) and part.get("type") == "image")
+                    ]
+                    out[index] = {**message, "content": [*kept, *markers]}
                 else:
                     out[index] = {
                         **message,
@@ -779,17 +801,18 @@ def pixels_in_marker_order(
     when the attachment came with an earlier question and a tool returned pictures
     after it, so the order is read off the conversation rather than assumed.
     """
-    prior_ids = {id(part) for part in prior_markers}
-    remaining = list(prior_payloads)
+    # Each history payload rides with ITS marker, by identity. Popping from the front
+    # let a displaced marker's payload slide onto the marker after it, which is the
+    # off-by-one the whole positional scheme exists to prevent.
+    by_marker = {id(part): payload for part, payload in zip(prior_markers, prior_payloads)}
     ordered = []
     placed_new = False
     for part in image_marker_parts(conversation):
-        # A marker that predates the top-up belongs to history for as long as
-        # history has pixels left to give it. Once those run out, a pre-existing
-        # marker is the attachment's own -- the client may have marked it before
-        # the request ever reached this path.
-        if id(part) in prior_ids and remaining:
-            ordered.append(remaining.pop(0))
+        # A marker that predates the top-up belongs to history when history has a
+        # pixel for it. A pre-existing marker with none is the attachment's own --
+        # the client may have marked it before the request ever reached this path.
+        if id(part) in by_marker:
+            ordered.append(by_marker[id(part)])
         elif not placed_new:
             # Where the attachment landed, so the loop's cap can leave it alone: it
             # is not always last, and the sink's positions are all that name it.
@@ -797,8 +820,6 @@ def pixels_in_marker_order(
                 placed_at.append(len(ordered))
             ordered.append(new_payload)
             placed_new = True
-        elif remaining:
-            ordered.append(remaining.pop(0))
     return ordered
 
 
@@ -824,6 +845,15 @@ def is_synthetic_image_turn(message) -> bool:
     )
 
 
+def _with_attachment_markers(message: dict, markers: list[dict]) -> dict:
+    """_with_parts for the ATTACHMENT's markers: any image marker already on the turn
+    was a replay merged into it, and a non-GGUF message carries one picture."""
+    content = message.get("content")
+    own = list(content) if isinstance(content, list) else [{"type": "text", "text": content or ""}]
+    own = [p for p in own if not (isinstance(p, dict) and p.get("type") == "image")]
+    return {**message, "content": [*markers, *own]}
+
+
 def mark_last_user_turn(
     messages: Sequence[dict],
     count: int,
@@ -836,6 +866,10 @@ def mark_last_user_turn(
     only the right guess when the attachment came with the newest question: the
     extractor takes the newest user image from anywhere in the thread, so a
     text-only latest turn would otherwise be told it supplied an older picture.
+
+    A replay marker already merged into that turn is displaced: a non-GGUF message
+    takes one image, and the attachment is the one the question is about. The
+    displaced payload drops in pixels_in_marker_order rather than sliding on.
     """
     out = list(messages)
     markers = [{"type": "image"} for _ in range(count)]
@@ -847,12 +881,12 @@ def mark_last_user_turn(
             if message.get("role") != "user" or is_synthetic_image_turn(message):
                 continue
             if seen == ordinal:
-                out[index] = _with_parts(message, markers)
+                out[index] = _with_attachment_markers(message, markers)
                 return out
             seen += 1
     for index in range(len(out) - 1, -1, -1):
         if out[index].get("role") == "user":
-            out[index] = _with_parts(out[index], markers)
+            out[index] = _with_attachment_markers(out[index], markers)
             break
     return out
 

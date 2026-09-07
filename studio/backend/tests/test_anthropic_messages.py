@@ -5332,3 +5332,14 @@ def test_repeated_anthropic_call_ids_are_paired_positionally():
         "mcp__shot__capture",
         "read_file",
     ]
+
+
+def test_promoted_parts_take_the_anthropic_normalizer_off_the_loop():
+    """_anthropic_has_image was read off the original blocks, so a replay-only request
+    took the synchronous branch and re-decoded up to eight promoted PNGs on the loop."""
+    import inspect
+
+    from routes import inference
+
+    src = inspect.getsource(inference.anthropic_messages)
+    assert "if _anthropic_has_image or _anthropic_replayed_image_parts:" in src

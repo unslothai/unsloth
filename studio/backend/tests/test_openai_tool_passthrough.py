@@ -10304,9 +10304,11 @@ class TestMcpImageAdmissionAndCaps:
             assert self._PNG not in json.dumps(estimate), vision
 
     def test_an_attachment_counts_against_the_replay_cap(self):
-        """promote_history_local caps the replay alone. The attachment is appended
-        after it, so without a second trim the backend receives nine pixels and
-        nine markers against a declared cap of eight."""
+        """promote_history_local caps the replay alone; the attachment lands after it.
+        Its marker goes on the newest user turn -- here a placeholder already holding
+        a replay marker -- and a non-GGUF message carries one picture, so the replay
+        marker is displaced and pixels_in_marker_order drops its payload rather than
+        sliding it onto the next marker. Markers and pixels stay in step at the cap."""
         from core.inference import mcp_images
 
         conversation = []
@@ -10314,16 +10316,18 @@ class TestMcpImageAdmissionAndCaps:
         for _ in range(mcp_images.MAX_TOTAL_MODEL_IMAGES):
             conversation.append(mcp_images.placeholder_turn(1, 1))
             payloads.append("AAAA")
+        prior = mcp_images.image_marker_parts(conversation)
         # what the route does when an image is attached on top
         conversation = mcp_images.mark_last_user_turn(conversation, 1)
-        payloads.append("BBBB")
-        mcp_images.trim_image_turns(conversation, payloads)
+        pixels = mcp_images.pixels_in_marker_order(conversation, prior, payloads, "BBBB")
+        mcp_images.trim_image_turns(conversation, pixels)
 
         markers = mcp_images.count_image_parts(conversation, "image")
-        assert len(payloads) == mcp_images.MAX_TOTAL_MODEL_IMAGES
-        assert markers == len(payloads)
-        # The newest picture is the attachment, so it is the one that survives.
-        assert payloads[-1] == "BBBB"
+        assert len(pixels) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+        assert markers == len(pixels)
+        # The attachment is the one that survives on its turn, and it is the newest.
+        assert pixels[-1] == "BBBB"
+        assert pixels.count("AAAA") == mcp_images.MAX_TOTAL_MODEL_IMAGES - 1
 
     def test_the_route_trims_both_local_paths(self):
         import inspect

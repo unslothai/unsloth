@@ -3289,6 +3289,7 @@ from core.inference.mcp_images import (
     trim_image_turns as trim_mcp_image_turns,
     MAX_TOTAL_MODEL_IMAGES as _MCP_MAX_TOTAL_MODEL_IMAGES,
     has_images as mcp_images_sentinel_in,
+    mentions_images as mcp_images_mentioned_in,
     mark_last_user_turn as mark_mcp_image_turn,
     promote_history as promote_mcp_history_images,
     promote_history_local as promote_mcp_history_images_local,
@@ -7913,8 +7914,24 @@ def _messages_have_mcp_image_envelope(messages) -> bool:
     return False
 
 
+def _messages_mention_mcp_images(messages) -> bool:
+    """Dispatch only -- whether the work belongs off the loop. Substring, never a
+    parse: the exact check json-loads the whole array, and doing that on the loop
+    to decide whether to leave it parsed a 12 MB envelope right there."""
+    for message in messages or ():
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        if role != "tool":
+            continue
+        content = (
+            message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+        )
+        if isinstance(content, str) and mcp_images_mentioned_in(content):
+            return True
+    return False
+
+
 def _request_has_replayed_mcp_images(payload) -> bool:
-    return _messages_have_mcp_image_envelope(payload.messages)
+    return _messages_mention_mcp_images(payload.messages)
 
 
 def _request_has_promotable_mcp_images(payload) -> bool:
@@ -7924,13 +7941,21 @@ def _request_has_promotable_mcp_images(payload) -> bool:
     trailing suffix as images here refuses a countable prompt and can buy a
     model-catalog fetch nothing needs.
     """
-    return any(
-        getattr(message, "role", None) == "tool"
-        and isinstance(getattr(message, "content", None), str)
-        and mcp_images_sentinel_in(message.content)
-        and not _names_a_non_mcp_tool(message)
-        for message in payload.messages
-    )
+    # The same positional correlation generation applies: an unnamed result whose
+    # call was a non-MCP tool is never promoted, and reading it as promotable here
+    # refused a countable prompt and bought a catalog fetch for nothing.
+    names = _mcp_resolve_tool_names(payload.messages)
+    for index, message in enumerate(payload.messages):
+        if getattr(message, "role", None) != "tool":
+            continue
+        content = getattr(message, "content", None)
+        if not isinstance(content, str) or not mcp_images_sentinel_in(content):
+            continue
+        name = getattr(message, "name", None) or names.get(index)
+        if isinstance(name, str) and name and not name.startswith("mcp__"):
+            continue
+        return True
+    return False
 
 
 def _request_has_image(payload) -> bool:
@@ -20448,7 +20473,7 @@ async def _promote_mcp_history_images_async(
 ):
     """Promotion off the shared loop when there is really an envelope to rebuild.
     Same hop, and the same reason, as the local and external replay paths take."""
-    if vision and _messages_have_mcp_image_envelope(messages):
+    if vision and _messages_mention_mcp_images(messages):
         return await asyncio.to_thread(
             promote_mcp_history_images, messages, vision = vision, promoted_out = promoted_out
         )
@@ -20459,7 +20484,7 @@ async def _promote_local_mcp_images_async(messages, *, vision: bool):
     """Rebuilding a replayed envelope decodes and re-encodes every picture in it.
     A permitted image runs to 40 megapixels, so that belongs off the shared loop --
     the same hop the GGUF and external replay paths already take."""
-    if vision and _messages_have_mcp_image_envelope(messages):
+    if vision and _messages_mention_mcp_images(messages):
         return await asyncio.to_thread(promote_mcp_history_images_local, messages, vision = vision)
     return promote_mcp_history_images_local(messages, vision = vision)
 
@@ -20472,7 +20497,7 @@ async def _build_external_messages_async(messages, supports_vision, **kwargs) ->
     promote = kwargs.get("promote_mcp_images")
     if promote is None:
         promote = supports_vision
-    if promote and _messages_have_mcp_image_envelope(messages):
+    if promote and _messages_mention_mcp_images(messages):
         return await asyncio.to_thread(
             _build_external_messages, messages, supports_vision, **kwargs
         )
@@ -31325,7 +31350,10 @@ async def anthropic_messages(
 
     # Enforce vision guard + re-encode embedded images to PNG so the Anthropic
     # endpoint matches /v1/chat/completions.
-    if _anthropic_has_image:
+    # Promoted parts count too: _anthropic_has_image was read off the original
+    # blocks, so a replay-only request took the synchronous branch and re-decoded up
+    # to eight promoted PNGs on the shared loop.
+    if _anthropic_has_image or _anthropic_replayed_image_parts:
         _has_image = await asyncio.to_thread(
             _normalize_anthropic_openai_images,
             openai_messages,

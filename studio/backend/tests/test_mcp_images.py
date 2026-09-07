@@ -1779,3 +1779,95 @@ def test_the_external_loop_detaches_the_note_for_a_multi_result_batch():
         if part.get("type") == "text"
     )
     assert note.startswith(mcp_images.DETACHED_IMAGE_TURN_TEXT)
+
+
+def test_the_attachment_displaces_a_replay_marker_merged_into_its_turn():
+    """A replayed picture merges its marker into the following user turn; if that turn
+    then owns the attachment, the top-up added a second marker. Non-GGUF messages
+    take one image, so that shape failed at render, past the request validation. The
+    attachment wins, and the displaced payload drops rather than sliding onto the
+    next marker."""
+    replay = {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "and this?"}]}
+    conversation = [{"role": "user", "content": "first"}, replay]
+    prior = mcp_images.image_marker_parts(conversation)
+    assert len(prior) == 1
+
+    topped = mcp_images.top_up_image_markers(conversation, 2, ordinal = 1)
+
+    turn = topped[1]["content"]
+    assert sum(1 for p in turn if p.get("type") == "image") == 1, turn
+    ordered = mcp_images.pixels_in_marker_order(topped, prior, ["REPLAY"], "ATTACHMENT")
+    assert ordered == ["ATTACHMENT"], ordered
+
+
+def test_pixels_follow_their_own_marker_not_a_queue():
+    """Two replay markers, the first displaced: its payload must vanish, not bind to
+    the second marker."""
+    a = {"type": "image"}
+    b = {"type": "image"}
+    conversation = [{"role": "user", "content": [b, {"type": "text", "text": "x"}]}]
+    ordered = mcp_images.pixels_in_marker_order(conversation, [a, b], ["PA", "PB"], "NEW")
+    assert ordered == ["PB"], ordered
+
+
+def test_the_local_batch_shares_one_decode_attempt_budget():
+    attempts: list = []
+    original = mcp_images._png_data_url
+    mcp_images._png_data_url = lambda data: (attempts.append(data), None)[1]
+    try:
+        results = [[{"data": f"j{r}-{i}", "mimeType": "image/png"} for i in range(8)] for r in range(25)]
+        assert mcp_images.png_payloads_per_result(results) == []
+    finally:
+        mcp_images._png_data_url = original
+    assert len(attempts) <= mcp_images.LOCAL_MAX_IMAGES_PER_TURN + mcp_images.DECODE_FAILURE_ALLOWANCE, len(attempts)
+
+
+def test_the_dispatch_check_never_parses_the_envelope():
+    """has_images json-loads the whole array; the async wrappers only need to know
+    whether to leave the event loop, and a 12 MB parse on the loop to decide that
+    stalled everything beside it."""
+    import inspect
+
+    from routes import inference
+
+    assert mcp_images.mentions_images("x\n" + mcp_images.SENTINEL + "[not even json")
+    assert not mcp_images.mentions_images("plain text")
+    for fn in (
+        inference._build_external_messages_async,
+        inference._promote_local_mcp_images_async,
+        inference._promote_mcp_history_images_async,
+    ):
+        src = inspect.getsource(fn)
+        assert "_messages_mention_mcp_images(messages)" in src, fn.__name__
+        assert "_messages_have_mcp_image_envelope(messages)" not in src, fn.__name__
+
+
+def test_the_promotable_check_correlates_an_unnamed_result():
+    """chat_count_tokens refuses a prompt it reads as carrying a promotable image. An
+    unnamed result whose call was read_file is never promoted, so refusing on it
+    turned away a countable text prompt."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _request_has_promotable_mcp_images
+
+    def _req(tool):
+        return ChatCompletionRequest(
+            model = "default",
+            messages = [
+                _call("call_0", tool),
+                {"role": "tool", "tool_call_id": "call_0", "content": _envelope("[1]", _image())},
+            ],
+        )
+
+    assert not _request_has_promotable_mcp_images(_req("read_file"))
+    assert _request_has_promotable_mcp_images(_req("mcp__shot__capture"))
+
+
+def test_the_server_tool_route_placement_also_displaces_a_merged_replay_marker():
+    """mark_last_user_turn is the server-tool route's placement; it has to follow the
+    same one-image rule as the top-up or that path keeps building two-image turns."""
+    conversation = [
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "and this?"}]},
+    ]
+    marked = mcp_images.mark_last_user_turn(conversation, 1, ordinal = 1)
+    assert sum(1 for p in marked[1]["content"] if p.get("type") == "image") == 1, marked[1]
