@@ -1086,15 +1086,18 @@ class _ModelDownloadProgress:
                 self.poll()
                 return
             bytes_read = max(0, int(reading.get("downloaded_bytes") or 0))
-            if reading.get("cache_measured") is False and bytes_read == 0:
-                # An unreadable root reports zero, and that is unknown rather than empty
-                # (`snapshot_progress.py`), so believing it would drop the count and let
-                # the next real reading of the same cached bytes look like fresh growth.
-                # Only zero is ignored: any positive reading is a real change and counts
-                # in either direction, the same rule the download manager reconciles on
-                # (`hub/download-manager/progress-reconcile.ts`). A high-water floor would
-                # hide the restart when an XET run falls back to HTTP and re-fetches from
-                # a lower count -- a live transfer this loop must not shut down.
+            if reading.get("cache_measured") is False and bytes_read <= self._downloaded_bytes:
+                # A scan that could not read every root is only a lower bound
+                # (`snapshot_progress.py`), so it may raise this count but never lower it:
+                # letting it lower the count turns the next complete scan of the very same
+                # cached bytes into apparent growth, and recurring mount errors would renew
+                # the deadline forever for a server that is downloading nothing.
+                # A complete scan is believed in both directions, so a transfer that really
+                # does restart lower -- an XET run falling back to HTTP -- is picked up as
+                # soon as any reading measures the whole cache. The asymmetry is deliberate:
+                # the download manager accepts every non-zero change because it is drawing a
+                # bar, where a wrong move costs a repaint, while here it decides whether to
+                # keep waiting, so a false renewal costs an unbounded hang.
                 raise _UnmeasuredReading
             self._downloaded_bytes = bytes_read
             self._failures = 0

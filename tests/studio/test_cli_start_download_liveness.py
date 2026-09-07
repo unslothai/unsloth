@@ -86,6 +86,7 @@ class Harness:
         unmeasured_every = 0,
         unmeasured_grows = False,
         reset_at = 0,
+        rebound = False,
         ready_at = None,
         tail = KEY_LINE,
     ):
@@ -100,6 +101,7 @@ class Harness:
         self.unmeasured = 0
         self.reset_at = reset_at
         self.reset_seen = False
+        self.rebound = rebound
         self.downloaded_bytes = downloaded_bytes
         self.chunk_bytes = chunk_bytes
         self.ready_at = ready_at
@@ -138,16 +140,34 @@ class Harness:
             ):
                 self.failures += 1
                 raise TimeoutError("the server took too long to answer")
+            if self.rebound:
+                # Two roots, one intermittently unreadable and nothing downloading: the
+                # partial scan sees less than the complete one, over and over.
+                if self.polls % 2 == 0:
+                    return {
+                        "downloaded_bytes": 12 * 1024**3,
+                        "expected_bytes": EXPECTED_BYTES,
+                        "progress": 0,
+                        "cache_measured": True,
+                    }
+                self.unmeasured += 1
+                return {
+                    "downloaded_bytes": 5 * 1024**3,
+                    "expected_bytes": EXPECTED_BYTES,
+                    "progress": 0,
+                    "cache_measured": False,
+                }
             if self.reset_at and self.polls == self.reset_at:
-                # An XET run falling back to HTTP purges the partial and re-fetches, so
-                # the counter legitimately restarts from a lower figure.
+                # An XET run falling back to HTTP purges the partial and re-fetches. A
+                # complete scan reports the smaller figure, so it is a real reset rather
+                # than a root that could not be read.
                 self.downloaded_bytes = self.chunk_bytes
                 self.reset_seen = True
                 return {
                     "downloaded_bytes": self.downloaded_bytes,
                     "expected_bytes": EXPECTED_BYTES,
                     "progress": 0,
-                    "cache_measured": False,
+                    "cache_measured": True,
                 }
             if self.unmeasured_every and self.polls % self.unmeasured_every == 0:
                 # A scan the server could not finish: 200, cache_measured false. Zero bytes
@@ -352,9 +372,9 @@ def test_a_growing_unmeasured_reading_still_counts(monkeypatch):
 
 
 def test_a_restarted_transfer_is_not_held_to_its_old_high_water_mark(monkeypatch):
-    # An unmeasured reading is not a floor. When an XET transfer falls back to HTTP the
-    # partial is purged and the count restarts lower, and requiring it to beat the old
-    # figure first would shut down a download that is running the whole time.
+    # A complete scan is believed in both directions. When an XET transfer falls back to
+    # HTTP the partial is purged and the count restarts lower, and holding the old figure
+    # as a floor would shut down a download that is running the whole time.
     harness = Harness(
         monkeypatch,
         chunk_bytes = 1024**3,
@@ -371,3 +391,18 @@ def test_a_restarted_transfer_is_not_held_to_its_old_high_water_mark(monkeypatch
     assert server is harness.server
     assert harness.shutdowns == []
     assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
+
+
+def test_a_partial_scan_rebound_is_not_progress(monkeypatch, capsys):
+    # Nothing is downloading; one cache root simply comes and goes. Letting the partial
+    # scan lower the baseline would turn the next complete scan of the very same bytes
+    # into growth, and a wedged server would be renewed for as long as the mount flaps.
+    harness = Harness(monkeypatch, rebound = True)
+
+    with pytest.raises(typer.Exit):
+        harness.start()
+
+    assert harness.unmeasured > 0
+    assert harness.shutdowns == [harness.server]
+    assert f"made no progress for {start_cli._SERVER_START_TIMEOUT_S}s" in capsys.readouterr().err
+    assert harness.clock.elapsed < 2 * start_cli._SERVER_START_TIMEOUT_S
