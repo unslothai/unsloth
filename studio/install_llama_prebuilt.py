@@ -7834,6 +7834,7 @@ def _amd_vulkan_icd_present() -> bool:
     towards the status quo -- an unreadable registry or search path leaves the install on
     the backend it already had.
     """
+
     def _is_amd_64_bit(name: str) -> bool:
         stem = PurePath(name).stem.lower().replace("-", "_")
         if stem.endswith("32") or any(n in stem for n in _AMD_VULKAN_ICD_32_BIT_NEEDLES):
