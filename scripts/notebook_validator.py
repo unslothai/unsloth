@@ -296,7 +296,12 @@ def code_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
 
 # A shell line that runs pip somewhere in it. Anchored on `!` so a `pip install` inside a
 # Python string is not a cell, open after it so chained and compound commands are.
-_PIP_CELL_RE = re.compile(r"^[ \t]*!.*\b(?:uv\s+)?pip\s+(?:install|uninstall)\b", re.MULTILINE)
+# `-mpip` as well as a bare `pip`: `python -mpip install ...` is a valid CPython invocation
+# and `\b` finds no boundary between the `m` and the `p`, so the cell was never discovered.
+_PIP_CELL_RE = re.compile(
+    r"^[ \t]*!.*(?:\b(?:uv\s+)?pip|-m(?:uv\s+)?pip)\s+(?:install|uninstall)\b",
+    re.MULTILINE,
+)
 
 
 def install_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
@@ -421,7 +426,9 @@ PIP_LINE_RE = re.compile(
     # `python -W ignore -m pip install git+...` matched nothing while requiring every
     # intervening word to start with `-`. The operand form is tried first.
     + r"(?:\s+-[WX]\s*\S+|\s+--check-hash-based-pycs\s+\S+|\s+-[A-Za-z]\w*)*"
-    + r"\s+-m\s+(?:uv\s+)?pip)\s+"
+    # `-m mod` may be written attached: `python -mpip install ...` runs pip, and requiring a
+    # separate word after `-m` missed it in both this pattern and cell discovery.
+    + r"\s+-m\s*(?:uv\s+)?pip)\s+"
     r"(?P<action>install|uninstall)\b(?P<rest>.*)$",
     re.IGNORECASE | re.VERBOSE,
 )
@@ -518,7 +525,9 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
 # `time` is bash's reserved word; only an explicit path reaches the GNU binary.
 _GNU_TIME = "/usr/bin/time"
 _SHELL_EXEC_PREFIXES = frozenset({"command", "env", "exec", "nohup", "time", "sudo", _GNU_TIME})
-_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
+# `PATH+=:/opt/bin cmd` is an assignment prefix too: bash runs the child with the appended
+# value, so leaving the `+=` word standing made it the supposed executable.
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*\+?=")
 # Per prefix, the options taking a SEPARATE operand; everything else starting with `-` is a
 # lone flag and `--` ends them. This is what tells a prefix's operand from the command it
 # runs: in `env -u pip pip install ...` the first `pip` is the variable being unset.
@@ -675,11 +684,15 @@ def _split_first_word(text: str) -> tuple[str, str]:
     return "".join(word), text[index:].strip()
 
 
-def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
+def _strip_exec_prefixes(text: str, seen: list[str] | None = None) -> tuple[str, bool]:
     """Drop `env -u VAR`, `sudo -u root`, `nohup`, `A=1` ... and return the command they run.
 
     Positional, not pattern-matched: each prefix's own options and operands are consumed in
     order, so the executable is whatever word is left, even when an operand is spelled `pip`.
+
+    `seen` collects the prefix names in the order they were consumed, for the one caller that
+    has to know WHICH ran: `command exec pip ...` hands the shell over exactly as `exec pip`
+    does, and a raw first-word test answered `command` and missed it.
     """
     prefixed = False
     while True:
@@ -690,11 +703,20 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
             prefixed = True
             text = rest
             continue
+        if _REDIRECTION_RE.match(word):
+            # A redirection may sit before the command name: `>/tmp/log pip install ...` and
+            # `FOO=1 2>/dev/null python -m pip ...` both run pip, and stopping here left the
+            # redirection standing as the executable.
+            prefixed = True
+            text = _split_first_word(rest)[1] if _REDIRECTION_RE.fullmatch(word) else rest
+            continue
         name = word.lower()
         if name.endswith("/time"):
             name = _GNU_TIME  # an explicit path runs the BINARY, which takes GNU's options
         if name not in _SHELL_EXEC_PREFIXES:
             break
+        if seen is not None:
+            seen.append(name)
         prefixed = True
         operand_flags = _PREFIX_OPERAND_FLAGS.get(name, frozenset())
         while rest:
@@ -986,18 +1008,9 @@ def _command_execs(command: str) -> bool:
     With NO utility, `exec >/tmp/install.log` only makes the redirections permanent and the
     shell carries on, so it hands nothing over and the commands after it still run.
     """
-    text = command.lstrip("!").strip()
-    while text:
-        word, rest = _split_first_word(text)
-        if not word:
-            return False
-        if _ENV_ASSIGNMENT_RE.match(word):
-            text = rest
-            continue
-        if word.lower() != "exec":
-            return False
-        break
-    else:
+    seen: list[str] = []
+    rest = _strip_exec_prefixes(command.lstrip("!").strip(), seen)[0]
+    if "exec" not in seen:
         return False
     while rest:
         word, tail = _split_first_word(rest)
