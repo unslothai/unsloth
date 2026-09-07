@@ -417,11 +417,46 @@ def at_least(version: str, floor: str) -> bool:
     return not prerelease
 
 
+# PEP 440 orders the prerelease phases `dev` < `a` < `b` < `rc`, and any of them below the
+# release itself. `c`, `alpha`, `beta` and `pre`/`preview` are the spellings it normalizes
+# into that same order.
+_PRERELEASE_ORDER = {
+    "dev": 0,
+    "a": 1,
+    "alpha": 1,
+    "b": 2,
+    "beta": 2,
+    "c": 3,
+    "rc": 3,
+    "pre": 3,
+    "preview": 3,
+}
+
+
+def _prerelease_key(version: str) -> tuple[int, int]:
+    """How a version's prerelease suffix sorts: the release itself is above every one.
+
+    Reading the suffix's digits as another release component put `0.12.0rc1` ABOVE `0.12.0`,
+    so a floor the cell upgrades past looked already met and R-INST-004 reported an
+    incompatibility the cell fixes.
+    """
+    core, is_pre = _split_prerelease(version)
+    if not is_pre:
+        return (len(_PRERELEASE_ORDER) + 1, 0)
+    match = _PRERELEASE_RE.search(str(version).split("+", 1)[0].strip().lower())
+    if match is None:
+        return (len(_PRERELEASE_ORDER) + 1, 0)
+    text = match.group(0)
+    digits = re.search(r"\d+$", text)
+    phase = text[: digits.start()] if digits else text
+    return (_PRERELEASE_ORDER.get(phase, 0), int(digits.group(0)) if digits else 0)
+
+
 def cmp_versions(a: str, b: str) -> int:
-    """Return -1/0/+1. Compares dotted numeric components only."""
+    """Return -1/0/+1, PEP 440 order over the release core and its prerelease suffix."""
 
     def to_tuple(v: str) -> tuple[int, ...]:
-        return tuple(int(x) for x in re.findall(r"\d+", normalise_version(v)))
+        return tuple(int(x) for x in re.findall(r"\d+", normalise_version(_split_prerelease(v)[0])))
 
     ta, tb = to_tuple(a), to_tuple(b)
     # PEP 440 zero-pads the shorter release, so `0.11` == `0.11.0`. Raw tuples sorted `0.11`
@@ -429,9 +464,12 @@ def cmp_versions(a: str, b: str) -> int:
     width = max(len(ta), len(tb))
     ta = ta + (0,) * (width - len(ta))
     tb = tb + (0,) * (width - len(tb))
-    if ta < tb:
+    # The suffix decides only a tie on the release core: `0.12.0rc1` sits below `0.12.0` and
+    # above `0.11.9`, which reading its digits as another component got backwards.
+    ka, kb = ta + _prerelease_key(a), tb + _prerelease_key(b)
+    if ka < kb:
         return -1
-    if ta > tb:
+    if ka > kb:
         return 1
     return 0
 
@@ -584,6 +622,10 @@ _SHELL_EXEC_PREFIXES = frozenset({"command", "env", "exec", "nohup", "time", "su
 # The subset bash resolves in-process. Everything else here is an external program, and an
 # `exec` behind one is an argument to it rather than the builtin.
 _SHELL_RESOLVED_PREFIXES = frozenset({"command", "exec", "time"})
+# The prefixes that are external programs, so an absolute path names the same one. `time` is
+# excluded because bash's reserved word and `/usr/bin/time` take different options, which
+# `_GNU_TIME` already tells apart.
+_PATH_QUALIFIED_PREFIXES = frozenset({"env", "nohup", "sudo"})
 # Options that make a prefix report something and exit instead of running its operands.
 _PREFIX_TERMINAL_FLAGS = frozenset({"--help", "--version"})
 # Per prefix, the options that turn it into a lookup rather than an execution.
@@ -782,6 +824,12 @@ def _strip_exec_prefixes(text: str, seen: list[str] | None = None) -> tuple[str,
         name = word.lower()
         if name.endswith("/time"):
             name = _GNU_TIME  # an explicit path runs the BINARY, which takes GNU's options
+        elif "/" in name and name.rsplit("/", 1)[1] in _PATH_QUALIFIED_PREFIXES:
+            # `/usr/bin/env pip install ...` runs pip exactly as the bare `env` form does, and
+            # stopping at the path left the install invisible to every rule, R-INST-001
+            # included. Only the external programs: `command` and `exec` are builtins, and a
+            # path spelling of either names some other file.
+            name = name.rsplit("/", 1)[1]
         if name not in _SHELL_EXEC_PREFIXES:
             break
         if seen is not None:
@@ -1246,19 +1294,19 @@ def _piece_success_model(
     # the loop below counts; eating it there read `! false` as a failure.
     if notebook_bang and text.startswith("!"):
         text = text[1:].lstrip()
-    negations = 0
-    while True:
-        word, rest = _split_first_word(text)
-        if word != "!":
-            break
-        negations += 1
-        text = rest.strip()
+    text, negations = _strip_negations(text)
     stripped = _strip_exec_prefixes(text)[0].strip()
     word = _split_first_word(stripped)[0] if stripped else ""
     if word in _ALWAYS_SUCCEEDS or _piece_is_pip(stripped):
         model: bool | None = True
     elif word == "false":
         model = False
+    elif word in ("return", "exit") and _split_first_word(stripped)[1].strip().isdigit():
+        # `help return`: "Causes a function to exit with the return value specified by N."
+        # A called body exits with it, so `setup() { return 0; }; setup && pip install ...`
+        # always installs; reading the status as unknown dropped it from the replay. A BARE
+        # `return` carries the previous command's status, which nothing here names.
+        model = _split_first_word(stripped)[1].strip() == "0"
     elif functions is not None and word in functions:
         # A call exits with its body's status, so `f() { pip install x; }; f && ...` reaches
         # the tail under the same pip-succeeds model a bare `pip install x &&` rests on.
@@ -1268,6 +1316,31 @@ def _piece_success_model(
     if model is None or not negations % 2:
         return model
     return not model
+
+
+def _strip_negations(text: str) -> tuple[str, int]:
+    """The command behind bash's `!` reserved words, and how many there were."""
+    negations = 0
+    while True:
+        word, rest = _split_first_word(text)
+        if word != "!":
+            break
+        negations += 1
+        text = rest.strip()
+    return text, negations
+
+
+def _pipeline_negations(piece: str, notebook_bang: bool = True) -> int:
+    """How many `!` lead this pipeline. Bash negates the WHOLE pipeline's status.
+
+    `! true | false` succeeds, because the pipeline exits with `false` and the `!` in front of
+    it turns that around. Reading the negation as part of the first command alone discarded it
+    at the pipe, and the `&&` behind it then read the pipeline's status inverted.
+    """
+    text = _unwrap_shell_group(piece)[0]
+    if notebook_bang and text.startswith("!"):
+        text = text[1:].lstrip()
+    return _strip_negations(text)[1]
 
 
 def _piece_assumes_pip(piece: str) -> bool:
@@ -1331,6 +1404,7 @@ def _fold_pending(
     pending: str,
     notebook_bang: bool = True,
     spoken_for: bool = False,
+    negations: int = 0,
 ) -> None:
     """Fold the command in hand into the list, unless a group already spoke for it.
 
@@ -1344,7 +1418,17 @@ def _fold_pending(
     """
     if spoken_for or not _unwrap_shell_group(pending)[0].strip():
         return
-    _fold_and_or(assured, prev_ops, _piece_success_model(pending, None, notebook_bang) is True)
+    # `negations` is the `!` in front of the PIPELINE this piece ends, which turns its status
+    # around: `! true | true` fails, and folding the raw `true` carried a list bash does not.
+    piece = _negated(_piece_success_model(pending, None, notebook_bang), negations)
+    _fold_and_or(assured, prev_ops, piece is True)
+
+
+def _negated(status: bool | None, negations: int) -> bool | None:
+    """Turn a status around once per `!`. An unknown one stays unknown."""
+    if status is None or not negations % 2:
+        return status
+    return not status
 
 
 def _fold_and_or(assured: list[bool], prev_ops: list[str], piece_is_pip: bool) -> None:
@@ -1550,6 +1634,10 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # carries it, and the text still in hand is that group's own last command plus its
     # bracket. Folding that again as a fresh command wiped what the group contributed.
     closed_pending = False
+    # `!` in front of a pipeline belongs to the whole pipeline, so it has to outlive the pipe
+    # that ended its first command.
+    pipe_negations = 0
+    in_pipeline = False
     # Inside the empty parens of a function header, whose brackets open no group.
     func_parens = False
     # Per level: was this tail made unconditional by the pip-succeeds assumption? Reporting an
@@ -1651,7 +1739,15 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             left_model = _left_hand_status(
                 list_models, prev_ops, "".join(buf), func_status, not out, closed_pending
             )
-            _fold_pending(list_has_pip, prev_ops, "".join(buf), not out, closed_pending)
+            # The pipeline this operator closes exits with its last command's status, turned
+            # around by the `!` in front of the whole thing.
+            left_model = _negated(left_model, pipe_negations)
+            if pipe_negations % 2:
+                list_models[-1] = left_model
+            _fold_pending(
+                list_has_pip, prev_ops, "".join(buf), not out, closed_pending, pipe_negations
+            )
+            pipe_negations, in_pipeline = 0, False
             prev_ops[-1] = "||"
             flush("||")
             tails[-1] = left_model is not False
@@ -1673,7 +1769,15 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             left_and = _left_hand_status(
                 list_models, prev_ops, "".join(buf), func_status, not out, closed_pending
             )
-            _fold_pending(list_has_pip, prev_ops, "".join(buf), not out, closed_pending)
+            # The pipeline this operator closes exits with its last command's status, turned
+            # around by the `!` in front of the whole thing.
+            left_and = _negated(left_and, pipe_negations)
+            if pipe_negations % 2:
+                list_models[-1] = left_and
+            _fold_pending(
+                list_has_pip, prev_ops, "".join(buf), not out, closed_pending, pipe_negations
+            )
+            pipe_negations, in_pipeline = 0, False
             prev_ops[-1] = "&&"
             # Reaching this tail rests on the replay's own model of pip succeeding, which is
             # fine for reporting an install but must not make anything UNREACHABLE.
@@ -1705,6 +1809,16 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             folded = _left_hand_status(
                 list_models, prev_ops, "".join(buf), func_status, not out, closed_pending
             )
+            if ch == "|":
+                if not in_pipeline:
+                    # Only the head carries it: `a | ! b` is a syntax error, so no later
+                    # segment can introduce one.
+                    pipe_negations = _pipeline_negations("".join(buf), not out)
+                    in_pipeline = True
+            else:
+                folded = _negated(folded, pipe_negations)
+                list_models[-1] = folded
+                pipe_negations, in_pipeline = 0, False
             flush(ch if ch in "&|" else ";")
             last_ok[-1] = folded
             tails[-1] = False
@@ -1834,6 +1948,10 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     openers: list[str] = []
     arm_reached: list[bool] = []
     cond_assumed: list[bool] = []
+    # The same condition folded with pip's status left UNKNOWN. Comparing the two says whether
+    # the replay's pip-succeeds assumption is what decided the condition, which a sticky flag
+    # could not: `if false && pip install x` fails whatever pip does.
+    cond_models: list[bool | None] = []
     # Where each function's body landed in `ordered`, and the names invoked unconditionally.
     body_entries: dict[str, list[tuple[int, bool]]] = {}
     # Per function body, the names it invokes unconditionally WITHIN that body. Reached only
@@ -1876,6 +1994,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 openers.append("case")
                 arm_reached.append(False)
                 cond_assumed.append(False)
+                cond_models.append(None)
             elif keyword in _SHELL_TEST_KEYWORDS:
                 body_levels.append(False)  # the test itself runs whenever the line does
                 test_models.append(None)
@@ -1884,6 +2003,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 openers.append(keyword)
                 arm_reached.append(True)
                 cond_assumed.append(False)
+                cond_models.append(None)
             elif keyword in _SHELL_BODY_KEYWORDS:
                 if body_levels:
                     body_levels[-1] = True
@@ -1906,12 +2026,14 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                             )
                             arms_failed[-1] = arms_failed[-1] and model is False
                         test_models[-1] = model
+                        cond_models[-1] = model
                     elif keyword == "else":
                         # `else` runs exactly when every arm failed. Inverting the arm in hand
                         # answered that only for a bare `if`/`else`.
                         test_models[-1] = (
                             True if arms_failed[-1] else (False if arms_known[-1] else None)
                         )
+                        cond_models[-1] = test_models[-1]
                     elif keyword == "elif":
                         # Its test is reached only when every earlier arm failed, and while it
                         # is being read the level is back in a test region.
@@ -1920,6 +2042,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                         openers[-1] = "if"
                         cond_assumed[-1] = False
                         test_models[-1] = True if arms_failed[-1] else None
+                        cond_models[-1] = test_models[-1]
                 else:
                     # A body word with no open compound above it: every stack has to grow
                     # together, or the matching `fi` pops one that was never pushed and the
@@ -1931,6 +2054,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     openers.append("")
                     arm_reached.append(False)
                     cond_assumed.append(False)
+                    cond_models.append(None)
             elif body_levels:
                 body_levels.pop()  # fi / done / esac
                 test_models.pop()
@@ -1939,6 +2063,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 openers.pop()
                 arm_reached.pop()
                 cond_assumed.pop()
+                cond_models.pop()
         # `flag` alone is the separator-level state: a substitution inside a compound body or
         # a case arm is expanded only when that body runs, so it inherits those too.
         # A level speaks only once its BODY has started, and what it says is the outcome of
@@ -2015,7 +2140,19 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     if joiner not in ("&&", "||")
                     else _fold_status(test_models[-1], joiner, model)
                 )
-                cond_assumed[-1] = cond_assumed[-1] or _piece_assumes_pip(text)
+                # Only while the assumption still DECIDES the condition. `if false && pip
+                # install x` is known to fail whatever pip does, and a sticky flag turned that
+                # certainty into a guess, which marked an `else` bash always runs conditional
+                # and dropped its install from the replay. Folding the same condition with
+                # pip's status unknown answers it: the two differ exactly when the assumption
+                # is load-bearing, which `if ! pip install x` still is.
+                unassumed = None if _piece_assumes_pip(text) else model
+                cond_models[-1] = (
+                    unassumed
+                    if joiner not in ("&&", "||")
+                    else _fold_status(cond_models[-1], joiner, unassumed)
+                )
+                cond_assumed[-1] = cond_models[-1] is not test_models[-1]
             # A bare `setup` invokes it. Only the FIRST word: `setup --dry-run` still calls
             # it, while `echo setup` does not.
             # The RAW first word. `env f`, `nohup f` and `command f` all look for an

