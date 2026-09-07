@@ -108,8 +108,7 @@ def test_captioned_image_keeps_its_text_block(monkeypatch):
 
 
 def test_text_only_empty_block_drops_the_whole_message(monkeypatch):
-    # Nothing usable survives, and an empty content array 400s with
-    # "at least one block is required".
+    # Nothing usable survives, and an empty content array 400s too.
     captured = _capture(
         monkeypatch,
         [

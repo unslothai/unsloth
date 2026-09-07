@@ -8,9 +8,8 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-// chat-adapter.ts drags in the stores and the toast layer, so lift the shipped
-// source the way tests/search-images.test.ts does. Only the user branch of
-// toOpenAIMessages is exercised, so the assistant serialiser stays a stub.
+// chat-adapter.ts drags in the stores, so lift the source like
+// tests/search-images.test.ts. Only the user branch runs; assistant is a stub.
 const adapterSource = readFileSync(
   fileURLToPath(
     new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
