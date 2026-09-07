@@ -14,6 +14,7 @@ from pydantic import (
     BaseModel,
     Discriminator,
     Field,
+    PrivateAttr,
     Tag,
     field_validator,
     model_validator,
@@ -36,6 +37,7 @@ class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    _gguf_companion_roots: tuple[str, ...] = PrivateAttr(default = ())
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,
@@ -4365,7 +4367,11 @@ class AudioSpeechRequest(BaseModel):
 
     input: str = Field(..., min_length = 1, description = "The text to synthesize.")
     model: Optional[str] = Field(
-        None, description = "Model id (informational; the loaded audio model is used)."
+        None,
+        description = (
+            "Model id. A downloaded text-to-speech model named here is loaded first when "
+            "model auto-switch is on; otherwise the loaded audio model is used."
+        ),
     )
     voice: Optional[str] = Field(None, description = "Voice name (accepted, unused).")
     response_format: Optional[str] = Field(
