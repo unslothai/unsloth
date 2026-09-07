@@ -77,11 +77,9 @@ class TestWaitForHealthResilience:
         assert any("health check timed out" in ln for ln in b._stdout_lines)
 
     def test_a_teardown_during_the_wait_is_a_failed_load_not_a_crash(self, monkeypatch):
-        """App shutdown kills llama-server and clears the reference from another
-        thread while this wait is still running, so the wait has to read the
-        process once and treat its absence as "the server is gone" (#10353).
-        Before this it raised AttributeError, which surfaced to the user as
-        "Error loading model: 'NoneType' object has no attribute 'poll'"."""
+        """Shutdown clears the reference mid-wait; reading it once and treating
+        its absence as "gone" is what stops the AttributeError the user saw as
+        "Error loading model: 'NoneType' object has no attribute 'poll'" (#10353)."""
         b = _make_backend()
         b._process.poll.return_value = None
         probes = []
@@ -96,7 +94,6 @@ class TestWaitForHealthResilience:
         assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
         assert len(probes) == 2
         assert not any("health check timed out" in ln for ln in b._stdout_lines)
-        # The contract _spawn_and_wait relies on: see the test below.
         assert b._health_wait_cancelled is True
 
     def test_a_teardown_before_the_first_probe_is_still_not_a_crash(self, monkeypatch):
@@ -107,12 +104,8 @@ class TestWaitForHealthResilience:
         assert b._health_wait_cancelled is True
 
     def test_a_teardown_is_terminal_so_the_caller_reads_no_exit_code(self, monkeypatch):
-        """Returning False is not enough on its own. _spawn_and_wait only stops on
-        _health_wait_cancelled; without it, it falls through to
-        `self._process.poll()` for a startup exit code and raises the very
-        AttributeError this guard exists to prevent, one frame further up. Marking
-        the wait terminal also keeps the --fit / ROCm / CPU-fallback retry ladder
-        from spawning a replacement llama-server after shutdown killed the first."""
+        """False alone is not enough: _spawn_and_wait stops only on this flag, else
+        it reads the cleared reference and raises one frame up, and respawns."""
         b = _make_backend()
         b._process = None
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
@@ -124,9 +117,8 @@ class TestWaitForHealthResilience:
         ) is False
 
     def test_a_crash_leaves_the_wait_unmarked_so_the_retries_still_run(self, monkeypatch):
-        """The other side of the guard above: a real startup crash must NOT look
-        terminal, or the --fit off and CPU fallbacks stop recovering loads that
-        used to recover."""
+        """The other side: a real crash must NOT look terminal, or the --fit off
+        and CPU fallbacks stop recovering loads that used to recover."""
         b = _make_backend()
         b._process.poll.return_value = 1
         b._process.returncode = 1
@@ -135,8 +127,6 @@ class TestWaitForHealthResilience:
         assert b._health_wait_cancelled is False
 
     def test_a_teardown_marker_does_not_leak_into_the_next_load(self, monkeypatch):
-        """The flag is per-wait. A load following a torn-down one must not inherit
-        its abort, or the first load after a cancelled quit silently fails."""
         b = _make_backend()
         b._process = None
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 200))
@@ -148,10 +138,8 @@ class TestWaitForHealthResilience:
         assert b._health_wait_cancelled is False
 
     def test_a_teardown_from_a_real_thread_is_not_a_crash(self, monkeypatch):
-        """The production race is two threads, not a callback: the shutdown thread
-        clears _process while the load thread is inside the probe. Reading the
-        attribute once per iteration is what makes that safe, so drive it that way
-        rather than only through a monkeypatched probe."""
+        """Two real threads, not a probe callback: the once-per-iteration read is
+        what makes it safe, so drive it that way."""
         b = _make_backend()
         b._process.poll.return_value = None
         in_probe = threading.Event()
@@ -538,15 +526,8 @@ class TestCancelledWaitEndsTheLoad:
         )
 
     def test_a_teardown_mid_load_ends_the_load_instead_of_raising(self, tmp_path, monkeypatch):
-        """The whole race, through the real caller (#10353).
-
-        The three waiter tests above call _wait_for_health directly, so none of
-        them reach _spawn_and_wait, which is where the reported traceback actually
-        resurfaced: it stops early only on _health_wait_cancelled, and otherwise
-        reads self._process.poll() for a startup exit code. With the reference
-        cleared that is the same "'NoneType' object has no attribute 'poll'" the
-        user saw, one frame up. This drives load_model with a live child and lets
-        the shutdown kill land inside the health probe."""
+        """The whole race through the real caller (#10353): the waiter tests above
+        never reach _spawn_and_wait, which is where the traceback resurfaced."""
         import subprocess
 
         from core.inference.llama_cpp import GgufLoadIntent
@@ -571,10 +552,7 @@ class TestCancelledWaitEndsTheLoad:
 
         def _popen(*a, **kw):
             argv = [str(x) for x in (a[0] if a else kw.get("args") or [])]
-            # A load also shells out to probe_server_capabilities (`<binary>
-            # --help`) and to nvidia-smi for the VRAM read. Neither is a server
-            # launch, and subprocess.run needs the real Popen for its context
-            # manager, so only argv naming the model counts here.
+            # `--help` and nvidia-smi are not launches; run() needs a real Popen.
             if str(gguf) not in argv:
                 return _real_popen(*a, **kw)
             spawns.append(argv)
@@ -601,8 +579,7 @@ class TestCancelledWaitEndsTheLoad:
             )
             is False
         )
-        # A teardown is terminal, so no fallback may start a second llama-server:
-        # it would outlive the app whose shutdown just killed the first.
+        # A second server would outlive the app whose shutdown killed the first.
         assert len(spawns) == 1, f"respawned after shutdown (spawns={len(spawns)})"
 
 

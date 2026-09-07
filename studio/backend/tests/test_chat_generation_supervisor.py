@@ -199,20 +199,14 @@ async def test_background_producer_persists_chunks_and_completes(durable_run, mo
 
 @pytest.mark.asyncio
 async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, monkeypatch):
-    """A 250K-token prefill can run for 40 minutes before the first token, which
-    is longer than the 1200 second lease. llama-server reports progress while it
-    works, and those events carry a null-content delta, so they must reach the
-    database like any other chunk: it is the write that renews the lease, and a
-    filter that dropped content-less chunks would reap a healthy prefill.
-
-    Sampled mid-run, before any token exists, because after the run every chunk
-    has landed and the distinction disappears."""
+    """A 250K prefill outruns the 1200s lease before its first token, and the
+    write is what renews it, so dropping content-less progress chunks would reap a
+    healthy prefill. Sampled mid-run: afterwards every chunk has landed."""
     released = asyncio.Event()
     sampled: dict = {}
 
     def _progress(processed):
-        # The shape llama-server sends on /v1/chat/completions with
-        # return_progress: a delta with no content, alongside the progress.
+        # What llama-server sends under return_progress: a content-less delta.
         return {
             "choices": [{"delta": {"role": "assistant", "content": None}, "finish_reason": None}],
             "prompt_progress": {
@@ -226,11 +220,8 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
     async def body():
         for processed in (1024, 8192, 65536):
             yield f"data: {json.dumps(_progress(processed))}\n\n"
-        # Wait for the producer's idle flush, then look at the lease while the
-        # model still has not emitted a token. Polled rather than slept: the flush
-        # is on a 0.1s timer (_EVENT_BATCH_SECONDS) and a fixed sleep sized against
-        # it is a coin flip on a loaded CI runner. The deadline only bounds a
-        # failure, so a slow host waits instead of flaking.
+        # Polled, not slept: the idle flush is on a 0.1s timer
+        # (_EVENT_BATCH_SECONDS) and a sleep sized against it flakes under load.
         _deadline = time.monotonic() + 10.0
         while time.monotonic() < _deadline:
             sampled["events"] = [
@@ -253,8 +244,7 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
     assert released.is_set()
     assert len(sampled["events"]) == 3, sampled["events"]
     assert all("prompt_progress" in e for e in sampled["events"])
-    # Three chunk writes: the lease counts them, so it has been renewed three
-    # times before the first token.
+    # The lease counts writes, so it renewed three times before the first token.
     assert sampled["progress"][1] == 3, sampled["progress"]
     assert runs_db.get_run("run-1", "alice")["status"] == "completed"
 
