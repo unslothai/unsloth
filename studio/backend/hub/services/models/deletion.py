@@ -586,8 +586,8 @@ def reclaim_replaced_gguf_variant(
     }
 
 
-def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
-    """Match a loaded repo ID or an on-disk path inside any copy of the repo."""
+def _loaded_id_matches_repo(loaded_id: str, repo_id: str, cache_path: Optional[str] = None) -> bool:
+    """Match a resident path in the targeted copy; an unresolved repo ID blocks all copies."""
     rid = repo_id.lower()
     lid = loaded_id.lower()
     if lid == rid or lid.startswith(f"{rid}/"):
@@ -597,9 +597,19 @@ def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
         loaded_path = Path(loaded_id).expanduser().resolve(strict = False)
     except (OSError, RuntimeError, ValueError):
         return False
-    for repo_dir in iter_repo_cache_dirs("model", repo_id):
+    repo_dirs = list(iter_repo_cache_dirs("model", repo_id))
+    target_root = (
+        resolve_delete_target_root("model", repo_id, cache_path, [p.parent for p in repo_dirs])
+        if cache_path
+        else None
+    )
+    for repo_dir in repo_dirs:
         try:
             resolved_repo = repo_dir.resolve(strict = False)
+            if target_root is not None and resolved_repo.parent != target_root.resolve(
+                strict = False
+            ):
+                continue
             if loaded_path == resolved_repo or loaded_path.is_relative_to(resolved_repo):
                 return True
         except (OSError, RuntimeError, ValueError):
@@ -608,9 +618,13 @@ def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
 
 
 def _loaded_repo_variant_blocks_delete(
-    loaded_id: str, repo_id: str, delete_variant: Optional[str], loaded_variant: Optional[str]
+    loaded_id: str,
+    repo_id: str,
+    delete_variant: Optional[str],
+    loaded_variant: Optional[str],
+    cache_path: Optional[str] = None,
 ) -> bool:
-    if not _loaded_id_matches_repo(loaded_id, repo_id):
+    if not _loaded_id_matches_repo(loaded_id, repo_id, cache_path):
         return False
     if not delete_variant:
         return True
@@ -625,7 +639,9 @@ _LOAD_STATE_UNVERIFIABLE_DETAIL = (
 )
 
 
-def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
+def _llama_cpp_blocks_delete(
+    repo_id: str, variant: Optional[str], cache_path: Optional[str] = None
+) -> bool:
     """Whether the llama.cpp backend holds *repo_id* (/variant). Acquiring fails open (import error means nothing loaded); reading load state is unguarded so a raise propagates and the caller fails closed rather than delete a live model."""
     try:
         from routes.inference import get_llama_cpp_backend
@@ -641,13 +657,15 @@ def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
             repo_id,
             variant,
             loaded_variant,
+            cache_path,
         )
     if backend.is_loaded and loaded_id:
         return _loaded_repo_variant_blocks_delete(
-            loaded_id,
+            getattr(backend, "gguf_path", None) or loaded_id,
             repo_id,
             variant,
             loaded_variant,
+            cache_path,
         )
     return False
 
@@ -805,7 +823,7 @@ async def delete_cached_model_response(
 
     # Fail closed with 503 rather than unlink weights under a running process.
     def _load_state_blocks_delete() -> Optional[str]:
-        if _llama_cpp_blocks_delete(repo_id, variant) or (
+        if _llama_cpp_blocks_delete(repo_id, variant, cache_path) or (
             _inference_backend_blocks_delete(repo_id)
         ):
             return "Unload the model before deleting"

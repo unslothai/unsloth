@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -127,3 +128,47 @@ def test_cache_actions_target_selected_copy(cache_locations, cache_client, monke
     deletion._delete_cached_model_blocking(repo_id, "Q8_0", None, selected_path)
     assert not default_q8.exists()
     assert expected["Q8_0"][1].is_file()
+
+
+@pytest.mark.parametrize("logical_id", [False, True])
+def test_delete_other_copy_of_loaded_quant(cache_locations, cache_client, monkeypatch, logical_id):
+    repo_id, expected = cache_locations
+    default_repo, q6 = expected["Q6_K"]
+    custom_repo, loaded_file = expected["Q8_0"]
+    default_q8 = q6.with_name("Model-Q8_0.gguf")
+    default_q8.write_bytes(b"\0" * 128)
+    inventory_scan.invalidate_hf_cache_scans()
+    backend = SimpleNamespace(
+        is_active = True,
+        is_loaded = True,
+        model_identifier = repo_id if logical_id else str(loaded_file.parent),
+        hf_variant = "Q8_0",
+        gguf_path = str(loaded_file),
+    )
+    monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(deletion, "_inference_backend_blocks_delete", lambda *args: False)
+    monkeypatch.setattr(deletion, "_diffusion_blocks_delete", lambda *args: None)
+    monkeypatch.setattr(deletion, "_video_blocks_delete", lambda *args: None)
+    payload = {"repo_id": repo_id, "variant": "Q8_0", "cache_path": str(default_repo)}
+    response = cache_client.request("DELETE", "/api/hub/delete-cached", json = payload)
+    assert response.status_code == 200, response.text
+    assert not default_q8.exists()
+    assert loaded_file.is_file()
+    payload["cache_path"] = str(custom_repo)
+    response = cache_client.request("DELETE", "/api/hub/delete-cached", json = payload)
+    assert response.status_code == 400, response.text
+    assert "Unload" in response.json()["detail"]
+    assert loaded_file.is_file()
+
+
+def test_unknown_loaded_copy_keeps_delete_guard(cache_locations, monkeypatch):
+    repo_id, expected = cache_locations
+    backend = SimpleNamespace(
+        is_active = True,
+        is_loaded = True,
+        model_identifier = repo_id,
+        hf_variant = "Q8_0",
+        gguf_path = None,
+    )
+    monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
+    assert deletion._llama_cpp_blocks_delete(repo_id, "Q8_0", str(expected["Q6_K"][0]))

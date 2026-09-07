@@ -24,6 +24,7 @@ export function DownloadSection({
   gpuCount,
   systemRamGb,
   cachePath,
+  activeCache,
   knownBytes,
   onLoad,
   onUseInChat,
@@ -51,6 +52,7 @@ export function DownloadSection({
   gpuCount?: number;
   systemRamGb?: number;
   cachePath?: string | null;
+  activeCache?: boolean | null;
   knownBytes?: number | null;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
   onUseInChat?: () => void;
@@ -76,6 +78,7 @@ export function DownloadSection({
         gpuCount={gpuCount}
         systemRamGb={systemRamGb}
         cachePath={cachePath}
+        activeCache={activeCache}
         isPartial={isPartial}
         onLoad={onLoad}
         onUseInChat={onUseInChat}

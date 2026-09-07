@@ -5456,8 +5456,10 @@ export function HubModelPicker({
             systemRamGb={expanderRamGb || undefined}
             budgetKnown={expanderBudgetGpu.budgetKnown}
             variantActions={{
-              onUpdate: (quant, expectedBytes) =>
-                updateGgufVariant(c.repo_id, quant, expectedBytes),
+              onUpdate: c.active_cache === false
+                ? undefined
+                : (quant, expectedBytes) =>
+                    updateGgufVariant(c.repo_id, quant, expectedBytes),
               updateDisabled: loadedModelId === c.repo_id,
               onDelete: async (quant) => {
                 await deleteCachedModel(

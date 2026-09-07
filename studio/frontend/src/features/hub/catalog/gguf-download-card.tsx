@@ -570,6 +570,7 @@ export function GgufDownloadCard({
   gpuCount,
   systemRamGb,
   cachePath,
+  activeCache,
   preferLocalCache = false,
   isPartial = false,
   onLoad,
@@ -590,6 +591,7 @@ export function GgufDownloadCard({
   gpuCount?: number;
   systemRamGb?: number;
   cachePath?: string | null;
+  activeCache?: boolean | null;
   preferLocalCache?: boolean;
   isPartial?: boolean;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
@@ -800,6 +802,7 @@ export function GgufDownloadCard({
     ? ggufVariantTransferLabel(selected)
     : null;
   const updateAvailable =
+    activeCache !== false &&
     selected?.downloaded === true && selected.update_available === true;
   const selectedVariantKey = selectedQuant
     ? normalizeGgufVariantIdentity(selectedQuant)
@@ -891,7 +894,7 @@ export function GgufDownloadCard({
   // new revision lands. Completion refreshes the variant list, whose metadata
   // carries the "Update available" cue.
   const handleConfirmUpdate = useCallback(() => {
-    if (!updateTarget) return;
+    if (!updateTarget || activeCache === false) return;
     const variant = updateTarget;
     const expectedBytes =
       updateTargetVariant?.download_size_bytes ??
@@ -904,7 +907,7 @@ export function GgufDownloadCard({
       variant,
       expectedBytes,
     });
-  }, [updateTarget, updateTargetVariant, repoId]);
+  }, [updateTarget, updateTargetVariant, repoId, activeCache]);
   const variantListUnavailable = !sortedVariants || sortedVariants.length === 0;
   const showVariantLoadingState = loading && variantListUnavailable;
 
