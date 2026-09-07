@@ -281,7 +281,6 @@ function Install-UnslothStudio {
     $script:WoaNativeCudaTorch = $false
     $script:WoaTorchIndexUrl = $null
 
-    # GA first, nightly behind it; UNSLOTH_TORCH_INDEX_URL still overrides everything.
     $script:WoaNvidiaTorchIndexUrls = if ($env:UNSLOTH_WOA_TORCH_INDEX_URL) {
         @($env:UNSLOTH_WOA_TORCH_INDEX_URL.Trim().TrimEnd('/'))
     } else {
@@ -487,8 +486,8 @@ function Install-UnslothStudio {
         return $Line
     }
 
-    # Which index a uv resolve uses, from uv.toml / pyproject.toml. A subset parser (PS 5.1 has no
-    # TOML reader), quote-aware: `true# offline` is a comment and `"https://h/simple#frag"` is not.
+    # Which index a uv resolve uses, from uv.toml / pyproject.toml. Quote-aware, and a subset
+    # parser because PS 5.1 has no TOML reader.
     function Remove-WoaTomlComment {
         param([string]$Line)
         $inD = $false; $inS = $false
@@ -755,8 +754,7 @@ function Install-UnslothStudio {
         return $false
     }
 
-    # constraints.txt floors ARM64 pyarrow at 21.0.0 and staging pins the chosen wheel exactly, so a
-    # tag-compatible 19.x would select native and then not resolve.
+    # constraints.txt floors ARM64 pyarrow at 21.0.0 and staging pins exactly, so a 19.x cannot resolve.
     $script:WoaPyarrowFloor = "21.0.0"
     function Test-WoaPyarrowWheelUsable {
         param([string]$Name, [string]$PyTag, [string]$AbiTag)
@@ -767,8 +765,7 @@ function Install-UnslothStudio {
         return (Test-WoaVersionAtLeast -Version $fields[1] -Floor $script:WoaPyarrowFloor)
     }
 
-    # uv's --overrides replace a requirement's version even when it is named on the command line
-    # (0.10.7), so the trio floors would discard the exact CUDA pins. Drop the trio only, here only.
+    # uv's --overrides beat a spec named on the command line (0.10.7): drop the trio only, here only.
     function New-WoaTorchStepOverrideValue {
         param([string]$Value, [string]$Dir = "")
         $result = @{ Value = $null; Temps = @() }
@@ -786,8 +783,7 @@ function Install-UnslothStudio {
             }
             if (-not $dropped) { $files += $path; continue }
             # Flattened, because dropping a line from an include means it cannot come along by
-            # reference. Under the WoA directory, not %TEMP%, which may contain a space. Recorded
-            # for deletion: it can carry an authenticated URL.
+            # reference. Recorded for deletion: it can carry an authenticated URL.
             $tmp = if ($Dir -and (Test-Path -LiteralPath $Dir -PathType Container)) {
                 Join-Path $Dir ("torch-step-" + [System.IO.Path]::GetRandomFileName() + ".txt")
             } else { [System.IO.Path]::GetTempFileName() }
@@ -832,7 +828,6 @@ function Install-UnslothStudio {
         if (-not $AbiTag) { $AbiTag = $tag }
         # Cleared on entry: this runs twice and a leftover name would pin a stale version.
         $script:WoaPyarrowWheelName = $null
-        # Tags AND readability: staging trusts the .whl name.
         if ($env:UNSLOTH_PYARROW_WHEEL) {
             $_paWheel = $env:UNSLOTH_PYARROW_WHEEL
             if (Test-Path -LiteralPath $_paWheel -PathType Leaf) {
@@ -849,8 +844,7 @@ function Install-UnslothStudio {
                 substep "windows on arm: UNSLOTH_PYARROW_WHEEL does not exist -- ignoring it." "Yellow"
             }
         }
-        # Only where the resolve will look at PyPI: no-index or an exclusive default-index in a
-        # uv.toml means the dependency pass will not, even though this probe can.
+        # Only where the resolve will look at PyPI: no-index or an exclusive default-index means not.
         if (Test-WoaResolveReachesPyPI) { try {
             $body = [string](Invoke-RestMethod -Uri "https://pypi.org/simple/pyarrow/" -UseBasicParsing -TimeoutSec 20)
             foreach ($match in [regex]::Matches($body, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
@@ -937,8 +931,7 @@ function Install-UnslothStudio {
     }
 
     # CUDA is established POSITIVELY by requiring +cuNNN: PyPI's own win_arm64 torch carries no
-    # local version, so a "not +cpu" test sent hosts native on CPU torch. A companion belongs to a
-    # torch BUILD, so the .dev stamp and +cuXXX tag identify it.
+    # local version. A companion belongs to a torch BUILD, so the stamp and +cuXXX tag identify it.
     function Test-WoaWheelPairsWithTorch {
         param([string]$TorchVersion, [string]$OtherVersion, [string]$Project = "torchvision")
         if (-not $TorchVersion -or -not $OtherVersion) { return $false }
@@ -955,8 +948,7 @@ function Install-UnslothStudio {
         if ((& $stamp $TorchVersion) -ne (& $stamp $OtherVersion)) { return $false }
         if ((& $local $TorchVersion) -ne (& $local $OtherVersion)) { return $false }
         if (& $stamp $TorchVersion) { return $true }
-        # Stable releases all have an empty stamp, so they pair by offset: torchvision 0.(M+15)
-        # requires torch 2.M, and torchaudio agrees on major.minor.
+        # Stable releases share an empty stamp, so they pair by offset: torchvision 0.(M+15) to 2.M.
         $rel = {
             param($v)
             $m = [regex]::Match($v, '^(\d+)\.(\d+)')
@@ -1088,8 +1080,7 @@ function Install-UnslothStudio {
         $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -AbiTag $_woaAbiTag
         $_woaAudioVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchaudio" -AbiTag $_woaAbiTag -PairWith $_woaTorchVersion
         $script:WoaTorchAudio = Test-WoaAudioMatchesTorch -TorchVersion $_woaTorchVersion -AudioVersion $_woaAudioVersion
-        # Kept so the install pins what the probe SELECTED: unsafe-best-match spans ALL indexes, so
-        # an open-ended spec falls to PyPI's CPU wheel.
+        # Kept so the install pins what the probe SELECTED: unsafe-best-match spans ALL indexes.
         $script:WoaTorchWheelVersion = $_woaTorchVersion
         $script:WoaAudioWheelVersion = $_woaAudioVersion
         $script:WoaVisionWheelVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchvision" -AbiTag $_woaAbiTag -PairWith $_woaTorchVersion
@@ -5333,8 +5324,7 @@ exit 0
         try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
     }
 
-    # The venv itself has to be ARM64 and nothing downstream re-checks: the index keys on the flag
-    # while the spec lift keys on the venv tag, so an x64 venv aborts on a win_arm64-only index.
+    # The venv itself has to be ARM64 and nothing downstream re-checks: an x64 one aborts here.
     $WoaVenvMinor = if ($DetectedPython) { $DetectedPython.Version } else { $PythonVersion }
     if ($script:WoaNativeCudaTorch) {
         $_woaVenvPlatform = ""
@@ -5546,8 +5536,7 @@ exit 0
         }
     }
     if ($script:WoaNativeCudaTorch) {
-        # Overrides for what win_arm64 cannot resolve: an AMD64-only line makes the requirement
-        # vanish here and leaves x64 untouched. Replacements, never new requirements added.
+        # Overrides for what win_arm64 cannot resolve: an AMD64-only line leaves x64 untouched.
         $WoaOverrides = Join-Path $WoaDir "overrides.txt"
         # A hosted wheel must not also be dropped, but only one tagged for THIS interpreter.
         $WoaWheelTag = "cp" + ($WoaVenvMinor -replace '\.', '')
@@ -5631,13 +5620,11 @@ exit 0
         # Released unsloth metadata caps torch below the only win_arm64 CUDA build (a 2.15 nightly).
         $WoaOverrideLines += 'torch>=2.4'
         $WoaOverrideLines += 'torchvision>=0.19'
-        # Without this uv takes the newest pyarrow on PyPI, an sdist here. For the PyPI route too:
-        # it means a compatible WHEEL exists, not that the newest release is one.
+        # Without this uv takes the newest pyarrow on PyPI, an sdist here. For the PyPI route too.
         if ($script:WoaPyarrowWheelName -and $script:WoaPyarrowWheelName -match '^pyarrow-([^-]+)-') {
             $WoaOverrideLines += "pyarrow==$($Matches[1])"
         }
-        # uv COMBINES override files and two naming one package is an error: neither overwrite nor
-        # blind append is safe.
+        # uv COMBINES override files and two naming one package is an error: no overwrite, no append.
         $_woaOwnNames = @{}
         foreach ($_woaLine in $WoaOverrideLines) {
             if ($_woaLine -match '^\s*(#|$)') { continue }
@@ -7164,8 +7151,7 @@ exit 0
                     $_torchSpecs += if ($script:WoaAudioWheelVersion) { "torchaudio==$($script:WoaAudioWheelVersion)" } else { "torchaudio>=2.4" }
                     substep "windows on arm: this index publishes torchaudio; installing the full trio."
                 }
-                # NVIDIA's index publishes only the trio, so PyPI serves the shared dependencies;
-                # best-match comes with that, or uv's first-index default takes PyPI's torch.
+                # NVIDIA's index publishes only the trio, so PyPI serves the shared dependencies.
                 $_torchExtraArgs = @(
                     "--index-strategy", "unsafe-best-match",
                     "--extra-index-url", "https://pypi.org/simple"
@@ -7569,7 +7555,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     }
 
     # This script is fetched live while `unsloth` comes from PyPI, so setup.ps1 can predate ARM64
-    # support and reinstall a cu130 with no win_arm64 wheel. Tested by capability, not version.
+    # support. Tested by capability, not version.
     if ($script:WoaNativeCudaTorch) {
         $WoaStudioSetup = $null
         try {
@@ -7646,8 +7632,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     $env:UNSLOTH_WOA_HAS_TORCHAUDIO = if ($script:WoaNativeCudaTorch -and $script:WoaTorchAudio) { "1" } else { "0" }
     # And whether that torch is a prerelease: testing the URL for "nightly" misses a quiet mirror.
     $env:UNSLOTH_WOA_TORCH_PRERELEASE = if ($script:WoaNativeCudaTorch -and $script:WoaTorchIsPrerelease) { "1" } else { "0" }
-    # And WHICH index, or setup.ps1 derives cu130 from the driver. Deliberately NOT
-    # UNSLOTH_WOA_TORCH_INDEX_URL: a later run would read this choice as a hand pin.
+    # And WHICH index. Deliberately NOT UNSLOTH_WOA_TORCH_INDEX_URL: a later run reads it as a pin.
     if ($script:WoaNativeCudaTorch -and $script:WoaTorchIndexUrl) {
         $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $script:WoaTorchIndexUrl
     } else {

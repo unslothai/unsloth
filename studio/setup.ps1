@@ -5169,8 +5169,7 @@ if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {
     $_woaMarkerIndex = $_woaPinnedIndex
     if ($_woaMarkerIndex) { $_woaMarkerIndex = $_woaMarkerIndex.Trim().TrimEnd('/') }
     else { $_woaMarkerIndex = $WinArm64TorchIndexUrl }
-    # install.ps1's flags were measured on the index it probed; a moved pin makes them describe
-    # another channel. For the NEXT run in the same shell.
+    # install.ps1's flags were measured on the index it probed, so a moved pin invalidates them.
     if ($_woaMarkerIndex -ne $_woaHandoffIndex) {
         Remove-Item Env:UNSLOTH_WOA_HAS_TORCHAUDIO -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_WOA_TORCH_PRERELEASE -ErrorAction SilentlyContinue

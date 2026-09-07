@@ -1,9 +1,7 @@
 # The native Windows on ARM install path, run on Windows on ARM: wheel-tag arithmetic, path
 # handling and PowerShell parsing, none of which fails the same way on x64. No GPU, CUDA or
-# compiler, which is what makes this leg cheap; a full install or a Tauri build is out of scope.
-#
-# A build leg added later would need clang on PATH: ring and aws-lc-sys assemble their aarch64
-# sources through cc-rs, which calls clang rather than cl.exe.
+# compiler, so a full install or a Tauri build is out of scope; a build leg would need clang on
+# PATH, because ring and aws-lc-sys assemble their aarch64 sources through cc-rs.
 name: Windows ARM64 CI
 
 on:
@@ -91,8 +89,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          # Required: the image ships an emulated x64 Python whose sysconfig says win-amd64, and
-          # half the assertions here are about wheel tags.
+          # Required: the image ships an emulated x64 Python whose sysconfig says win-amd64.
           architecture: 'arm64'
 
       - name: The interpreter really is ARM64

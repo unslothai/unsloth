@@ -181,8 +181,7 @@ class TestInstallPs1Mirror:
 
     def test_uv_override_is_space_safe(self):
         source = INSTALL_PS1.read_text(encoding = "utf-8")
-        # uv reads UV_OVERRIDE as a space-separated list, so EVERY entry has to go through the
-        # 8.3 helper, not just the first.
+        # uv reads UV_OVERRIDE as a space-separated list, so EVERY entry needs the 8.3 helper.
         assert re.search(r"\$_woaOverrideValue\s*=\s*@\(Get-UvSafePath\s+\$WoaOverrides\)", source)
         assert "$_woaOverrideValue += (Get-UvSafePath $_woaKeepFile)" in source
         assert re.search(r'\$env:UV_OVERRIDE\s*=\s*\(\$_woaOverrideValue -join " "\)', source)
@@ -297,8 +296,7 @@ class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
         block = block[: block.index("$WoaDropCandidates")]
         first = block[block.index("foreach ($pyTag in") :]
         first = first[: first.index("$compatible = $true; break") + 30]
-        # $WoaWheelAbi, not $WoaWheelTag: a free-threaded venv installs cp313t while its python
-        # tag is still cp313, so the python tag here would keep the wheels it cannot use.
+        # $WoaWheelAbi, not $WoaWheelTag: a free-threaded venv installs cp313t but is tagged cp313.
         assert (
             "$abiTags -contains $WoaWheelAbi" in first
         ), "the exact-python-tag branch must also require a usable ABI"
@@ -449,8 +447,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
             ("1.0.0", "!=1.0.0", False),
             ("1.0.1", "!=1.0.0", True),
             ("1.0", "", True),
-            # packaging answers these now: an epoch does not vanish, arbitrary equality matches,
-            # and an unparseable version is not one a resolver would take. None without packaging.
+            # packaging answers these now; None is still the contract without packaging.
             ("1!2.0", "==2.0", False),
             ("1.0", "===1.0", True),
             ("not-a-version", "==1.0", False),
@@ -461,8 +458,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
 
     def test_pins_are_read_canonically_and_markers_evaluated(self, ips, tmp_path):
         req = tmp_path / "r.txt"
-        # One marker true on every host and one true on none, so the answer cannot depend on the
-        # box: `sys_platform != 'win32'` would pass on Linux CI and fail on Windows.
+        # One marker true on every host and one true on none, so the answer cannot depend on the box.
         req.write_text(
             "# comment\n"
             "-r other.txt\n"
@@ -483,8 +479,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
 class TestDuplicateRequirementRowsAreSplitByMarker:
     """extras.txt states MeCab twice, once per marker."""
 
-    # One marker true on every host and one true on none. The real pair would answer differently
-    # on a macOS 3.14 box than on Linux CI, the host dependence taken out of the test above.
+    # One marker true on every host and one true on none; the real pair is host-dependent.
     ACTIVE = 'python_version >= "3"'
     INACTIVE = 'sys_platform == "nonesuch"'
 
@@ -1015,8 +1010,8 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
         ):
             monkeypatch.delenv(var, raising = False)
         (tmp_path / "proj").mkdir()
-        # uv reads the user file from %APPDATA%\uv\uv.toml on Windows and $XDG_CONFIG_HOME
-        # elsewhere, so both names point at one directory and the case is real on every platform.
+        # uv reads the user file from %APPDATA% on Windows and $XDG_CONFIG_HOME elsewhere, so both
+        # names point at one directory and the case is real on every platform.
         (tmp_path / "user").mkdir()
         monkeypatch.setenv("APPDATA", str(tmp_path / "user"))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user"))
