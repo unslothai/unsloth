@@ -20,6 +20,7 @@ export interface ResearchInferenceRequest {
   topP?: number;
   maxTokens?: number;
   maxOutputTokens?: number;
+  maxOutputTokensFromSavedCap?: boolean;
   enableThinking?: boolean;
   reasoningEffort?: string;
 }
@@ -32,6 +33,8 @@ export function buildResearchInferenceRequest(input: {
     modelId: string;
     /** The connection's resolved output ceiling, or null when nothing grounds one. */
     maxOutputTokens: number | null;
+    /** True when the connection's saved cap is the only thing grounding that ceiling. */
+    maxOutputTokensFromSavedCap: boolean;
   };
   temperature: number;
   topP: number;
@@ -56,7 +59,12 @@ export function buildResearchInferenceRequest(input: {
           ...(input.external.maxOutputTokens != null &&
           Number.isFinite(input.external.maxOutputTokens) &&
           input.external.maxOutputTokens > 0
-            ? { maxOutputTokens: Math.floor(input.external.maxOutputTokens) }
+            ? {
+                maxOutputTokens: Math.floor(input.external.maxOutputTokens),
+                // The run outlives the connection edit that grounded it, so the backend is
+                // told whether clearing the saved cap leaves this number standing on nothing.
+                maxOutputTokensFromSavedCap: input.external.maxOutputTokensFromSavedCap,
+              }
             : {}),
         }
       : {}),

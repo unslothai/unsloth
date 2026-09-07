@@ -180,15 +180,38 @@ export function getGroundedExternalMaxOutputTokens(
   connectionMaxOutputTokens?: number | null,
 ): number | null {
   const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
-  // An OpenRouter id resolves through the direct provider's table, and a router endpoint is
-  // not that provider: `deepseek/deepseek-r1` reads as the direct API's 384000 while the
-  // router serves it at a fraction of that. Good enough for a slider maximum, not for a
-  // budget sent unattended, so a router connection is grounded only by the user's own
-  // override.
-  const documented =
-    providerType === "openrouter" ? null : _documentedMaxOutputTokens(providerType, modelId);
-  if (override == null && documented == null) return null;
+  if (override == null && _publishedMaxOutputTokens(providerType, modelId) == null) return null;
   return getExternalMaxOutputTokens(providerType, modelId, connectionMaxOutputTokens);
+}
+
+/**
+ * True when the connection's own override is the ONLY thing that can ground this model's
+ * ceiling, so clearing that override leaves nothing behind it.
+ *
+ * A durable research run carries the ceiling it was created with. The backend can tell that
+ * the saved cap is gone, but not whether anything else was holding the number up, so it is
+ * told here.
+ */
+export function externalMaxOutputTokensNeedsConnectionCap(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return _publishedMaxOutputTokens(providerType, modelId) == null;
+}
+
+/**
+ * `_documentedMaxOutputTokens`, minus the entries that do not survive being sent unattended.
+ *
+ * An OpenRouter id resolves through the direct provider's table, and a router endpoint is not
+ * that provider: `deepseek/deepseek-r1` reads as the direct API's 384000 while the router
+ * serves it at a fraction of that. Good enough for a slider maximum, not for a request budget.
+ */
+function _publishedMaxOutputTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): number | null {
+  if (providerType === "openrouter") return null;
+  return _documentedMaxOutputTokens(providerType, modelId);
 }
 
 /**

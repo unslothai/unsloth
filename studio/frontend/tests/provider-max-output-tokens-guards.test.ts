@@ -26,6 +26,7 @@ const {
   EXTERNAL_MAX_OUTPUT_TOKENS,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
+  externalMaxOutputTokensNeedsConnectionCap,
   getGroundedExternalMaxOutputTokens,
   resolveExternalMaxTokensClamp,
 } = await import("../src/features/chat/provider-capabilities.ts");
@@ -303,4 +304,21 @@ test("an openrouter model is not grounded by the direct provider's published cap
     getGroundedExternalMaxOutputTokens("openrouter", "deepseek/deepseek-r1-0528", 32000),
     32000,
   );
+});
+
+test("the grounding of a ceiling is reported alongside it", () => {
+  // Nothing documents a self-hosted id, so only the connection's own cap can ground it, and
+  // a durable run has to be told that: clearing the cap leaves the number standing on nothing.
+  assert.equal(
+    externalMaxOutputTokensNeedsConnectionCap("custom", "some-self-hosted-model"),
+    true,
+  );
+  // A router id resolves through the direct provider's table, which does not describe the
+  // endpoint, so it counts as undocumented here too.
+  assert.equal(
+    externalMaxOutputTokensNeedsConnectionCap("openrouter", "deepseek/deepseek-r1-0528"),
+    true,
+  );
+  // A published cap keeps standing on its own after the override goes.
+  assert.equal(externalMaxOutputTokensNeedsConnectionCap("gemini", "gemini-3.6-flash"), false);
 });

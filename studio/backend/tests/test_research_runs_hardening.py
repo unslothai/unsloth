@@ -413,6 +413,53 @@ def test_a_saved_cap_below_the_previous_default_does_not_shorten_the_report(monk
     assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
 
 
+def test_clearing_the_saved_cap_invalidates_a_ceiling_only_it_grounded(monkeypatch):
+    """Blanking the Max Tokens limit is what that field is FOR on an undocumented model.
+
+    Nothing documents a self-hosted id, so the connection's own cap is the only thing holding
+    the run's ceiling up. Once it is cleared a run created now would not ask for that number,
+    and neither may this one.
+    """
+    inference = {
+        "providerType": "custom",
+        "providerId": "p1",
+        "externalModel": "some-self-hosted-model",
+        "maxOutputTokens": 30_000,
+        "maxOutputTokensFromSavedCap": True,
+    }
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 30_000}
+    )
+    assert _synthesis_max_tokens(inference, 900) == 30_000
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    assert _synthesis_max_tokens(inference, 900) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_clearing_the_saved_cap_leaves_a_published_ceiling_standing(monkeypatch):
+    """The table still documents this model, so the override was never what grounded it."""
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {
+        "providerType": "gemini",
+        "providerId": "p1",
+        "externalModel": "gemini-3.6-flash",
+        "maxOutputTokens": 32_768,
+        "maxOutputTokensFromSavedCap": False,
+    }
+    assert _synthesis_max_tokens(inference, 900) == 32_768
+
+
+def test_a_run_created_before_the_grounding_flag_is_unchanged(monkeypatch):
+    """A durable run from the release before this field keeps the ceiling it was given."""
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {
+        "providerType": "custom",
+        "providerId": "p1",
+        "externalModel": "some-self-hosted-model",
+        "maxOutputTokens": 30_000,
+    }
+    assert _synthesis_max_tokens(inference, 900) == 30_000
+
+
 def test_a_client_ceiling_below_the_default_still_lowers_the_budget(monkeypatch):
     """That one is the model's documented limit, not a preference: asking past it is refused."""
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
@@ -871,6 +918,28 @@ def test_sanitize_config_keeps_a_strict_integer_report_ceiling():
         {"modelId": "m"},
     )
     assert config["inferenceRequest"]["maxOutputTokens"] == 32_768
+
+
+def test_sanitize_config_keeps_the_grounding_flag_and_refuses_a_non_boolean():
+    config = _sanitize_config(
+        _make_payload(
+            inferenceRequest = {
+                "model": "m",
+                "maxOutputTokens": 32_768,
+                "maxOutputTokensFromSavedCap": True,
+            }
+        ),
+        {"modelId": "m"},
+    )
+    assert config["inferenceRequest"]["maxOutputTokensFromSavedCap"] is True
+    for bad in (1, 0, "true", None, []):
+        with pytest.raises(HTTPException):
+            _sanitize_config(
+                _make_payload(
+                    inferenceRequest = {"model": "m", "maxOutputTokensFromSavedCap": bad}
+                ),
+                {"modelId": "m"},
+            )
 
 
 def test_sanitize_config_rejects_nested_inference_credential():

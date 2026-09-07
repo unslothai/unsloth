@@ -139,6 +139,7 @@ import {
 import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
+  externalMaxOutputTokensNeedsConnectionCap,
   getExternalMaxOutputTokens,
   getGroundedExternalMaxOutputTokens,
   getExternalMinOutputTokens,
@@ -4161,6 +4162,10 @@ export function createOpenAIStreamAdapter(
                     researchExternalProvider.providerType,
                     researchExternalSelection.modelId,
                     researchExternalProvider.maxOutputTokens,
+                  ),
+                  maxOutputTokensFromSavedCap: externalMaxOutputTokensNeedsConnectionCap(
+                    researchExternalProvider.providerType,
+                    researchExternalSelection.modelId,
                   ),
                 }
               : undefined,

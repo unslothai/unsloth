@@ -469,6 +469,12 @@ def _synthesis_max_tokens(inference: dict[str, Any], model_timeout_seconds: Any 
         unconfirmed = _positive_int_or_none(inference.get("maxOutputTokens"))
         return max(min(unconfirmed or _SYNTHESIS_MAX_TOKENS, _SYNTHESIS_MAX_TOKENS), floor)
     resolved = _positive_int_or_none(inference.get("maxOutputTokens"))
+    if resolved and not saved and inference.get("maxOutputTokensFromSavedCap") is True:
+        # Nothing documents this model, so the connection's own cap was the only thing holding
+        # that number up, and the user has since cleared it. Blanking the field is an ordinary
+        # edit -- for an undocumented model it is what the Max Tokens limit is FOR -- and a run
+        # created now would not ask for the removed ceiling either, so this one stops too.
+        resolved = None
     if resolved:
         # The client resolved this against the run's own model, but the run is durable: the
         # connection's cap can have been lowered since it was created, and the saved row is
