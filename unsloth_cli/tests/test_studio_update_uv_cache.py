@@ -303,6 +303,38 @@ def test_a_default_cache_uv_cannot_name_does_not_block_the_redirect(monkeypatch,
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
 
 
+@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+def test_no_cache_mode_neither_seeds_nor_records(monkeypatch, tmp_path, caches, value):
+    """uv --no-cache puts the cache in a temporary directory and discards it at exit, so
+    `uv cache dir` names that throwaway, --no-cache outranks --cache-dir, and setup keeps
+    nothing. Seeding a cache would be ignored and recording one would be a lie."""
+    studio = _studio()
+    studio_cache, default_cache = caches
+    _fill(default_cache)
+    monkeypatch.setenv("UV_NO_CACHE", value)
+    monkeypatch.setattr(
+        studio,
+        "_uv_default_cache_dir",
+        lambda cwd = None: pytest.fail("the probe ran under --no-cache"),
+    )
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert "UV_CACHE_DIR" not in (seen["env"] or {}), seen["env"]
+    assert not _marker(tmp_path).exists()
+
+
+@pytest.mark.parametrize("value", ["0", "false", "", "maybe"])
+def test_a_non_true_no_cache_value_changes_nothing(monkeypatch, tmp_path, caches, value):
+    """0 and false mean caching is on. An unparseable value is one uv refuses to run at
+    all, which is not the same as running without a cache."""
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    monkeypatch.setenv("UV_NO_CACHE", value)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
+
+
 # --- The warmth test itself ----------------------------------------------------------
 
 

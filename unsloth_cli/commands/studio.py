@@ -3690,6 +3690,21 @@ def _uv_platform_cache_dir() -> Optional[Path]:
     return Path(home) / ".cache" / "uv" if home else None
 
 
+# clap's boolish spelling, which is what uv parses these as. A value outside this set is
+# an error uv refuses to run on, so it is not "no cache" either.
+_UV_TRUE = ("1", "true", "yes", "on")
+
+
+def _uv_no_cache_requested() -> bool:
+    """uv --no-cache puts the cache in a temporary directory and discards it on exit.
+
+    Nothing this module decides applies then: the probe would report that throwaway
+    directory, --no-cache outranks --cache-dir anyway, and recording what setup did not
+    keep would aim later updates at a cache that never existed.
+    """
+    return (os.environ.get("UV_NO_CACHE") or "").strip().lower() in _UV_TRUE
+
+
 def _uv_default_cache_dir(cwd: Optional[Path] = None) -> Optional[Path]:
     """Asked of uv, not reconstructed, so uv.toml and UV_CONFIG_FILE count.
 
@@ -3773,6 +3788,9 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
     if (os.environ.get("UV_CACHE_DIR") or "").strip():
         # One run's value. Only an installer's own choice becomes a marker.
         return
+    if _uv_no_cache_requested():
+        # Setup cached nothing that outlived it, so there is no choice to record.
+        return
     chosen = (env or {}).get("UV_CACHE_DIR")
     if not chosen:
         return
@@ -3803,6 +3821,10 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
     """An update reached neither installer nor _setup_cache_env, so uv re-downloaded
     what the install had just fetched."""
     if (os.environ.get("UV_CACHE_DIR") or "").strip():
+        return env
+    if _uv_no_cache_requested():
+        # --no-cache outranks --cache-dir, so naming one would change nothing except what
+        # this reads back afterwards.
         return env
     studio_cache = STUDIO_HOME / "cache" / "uv"
     recorded = _recorded_install_uv_cache()
