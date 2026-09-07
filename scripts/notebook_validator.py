@@ -178,17 +178,97 @@ def _requirement_applies(raw: str, environment: dict[str, str] | None) -> bool:
     marker_text = raw.split(";", 1)[1].strip()
     if not marker_text:
         return True
-    # Outside the string literals: `sys_platform == 'platform_release'` references one
-    # variable, not two.
-    bare = re.sub(r"\"[^\"]*\"|'[^']*'", " ", marker_text)
-    named = set(re.findall(r"[A-Za-z_]\w*", bare)) & _MARKER_VARIABLES
-    if not named or named - environment.keys():
-        return True  # nothing to judge on, or a field the oracle cannot answer for
     try:
-        from packaging.markers import Marker
-        return bool(Marker(marker_text).evaluate(environment))
+        return _marker_truth(marker_text, environment) is not False
     except Exception:
         return True
+
+
+def _marker_variables(text: str) -> set[str]:
+    """The marker fields a term references, string literals excluded.
+
+    Outside them: `sys_platform == 'platform_release'` references one variable, not two.
+    """
+    bare = re.sub(r"\"[^\"]*\"|'[^']*'", " ", text)
+    return set(re.findall(r"[A-Za-z_]\w*", bare)) & _MARKER_VARIABLES
+
+
+def _split_marker(text: str) -> tuple[list[str], list[str]]:
+    """A marker's top-level terms and the `and`/`or` between them, quotes and parens intact."""
+    terms: list[str] = []
+    operators: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    quote = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        joiner = re.match(r"(and|or)\b", text[i:], re.IGNORECASE) if not depth else None
+        if joiner is not None and (i == 0 or text[i - 1].isspace()):
+            terms.append("".join(buf))
+            buf = []
+            operators.append(joiner.group(1).lower())
+            i += joiner.end()
+            continue
+        buf.append(ch)
+        i += 1
+    terms.append("".join(buf))
+    return terms, operators
+
+
+def _marker_truth(text: str, environment: dict[str, str]) -> bool | None:
+    """Three-valued marker evaluation: True, False, or unknown.
+
+    A field the oracle cannot answer for makes its own TERM unknown, not the whole marker.
+    `python_version < '3.0' and implementation_name == 'cpython'` is false on a 3.13 image
+    whatever the second term says, and bailing out on the unknown field replayed a pin pip
+    certainly skips.
+    """
+    text = text.strip()
+    if not text:
+        return None
+    terms, operators = _split_marker(text)
+    if len(terms) > 1:
+        values = [_marker_truth(term, environment) for term in terms]
+        # `and` binds tighter than `or`, so the conjunctions fold first.
+        groups: list[list[bool | None]] = [[values[0]]]
+        for operator, value in zip(operators, values[1:]):
+            if operator == "and":
+                groups[-1].append(value)
+            else:
+                groups.append([value])
+        folded = [
+            False if any(v is False for v in group)
+            else (True if all(v is True for v in group) else None)
+            for group in groups
+        ]
+        if any(v is True for v in folded):
+            return True
+        return False if all(v is False for v in folded) else None
+    term = terms[0].strip()
+    if term.startswith("(") and term.endswith(")"):
+        return _marker_truth(term[1:-1], environment)
+    named = _marker_variables(term)
+    if not named or named - environment.keys():
+        return None  # nothing to judge on, or a field the oracle cannot answer for
+    from packaging.markers import Marker
+
+    return bool(Marker(term).evaluate(environment))
 
 
 COLAB_ORACLE_FILES: dict[str, str] = {
@@ -1034,6 +1114,14 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
         # A keyword can sit in front of a group: `if (pip install ...); then` exposes the `(`
         # only once `if` comes off, and leaving it there hid the install from PIP_LINE_RE.
         stripped = _open_groups(parts[1].strip()) if len(parts) > 1 else ""
+        # And in front of a DEFINITION: `then f(){ pip install ...; }` matched no header while
+        # `then` was still there, so the body never reached PIP_LINE_RE either. The body of a
+        # definition is conditional however it was reached.
+        behind = _FUNCTION_DEF_RE.match(stripped)
+        if behind is not None:
+            definition = behind
+            conditional = True
+            stripped = _open_groups(stripped[behind.end() :].lstrip())
     # A `case` arm label, quoted or bare. Only the matching arm runs, so the command is
     # conditional. The label ends at the first unquoted `)` with nothing open before it.
     close = _unquoted_arm_close(stripped)
@@ -1507,7 +1595,34 @@ def _for_list_is_nonempty(text: str) -> bool:
     words = text[match.end() :].split()
     if not words or not any(words):
         return False
-    return not any(ch in word for word in words for ch in ("$", "`", "*", "?", "["))
+    # Quoting decides what a metacharacter means: `for x in '*'` iterates over one literal
+    # star and its body certainly runs, while a bare `*` is a glob that may match nothing.
+    # Reading the raw word marked a guaranteed body conditional.
+    return not any(_word_may_vanish(word) for word in words)
+
+
+def _word_may_vanish(word: str) -> bool:
+    """Could this loop word expand to something other than itself, nothing included?
+
+    Single quotes make every character literal; double quotes still expand `$` and a backquote
+    but never a glob. Only what is left unquoted can be a glob.
+    """
+    i = 0
+    while i < len(word):
+        ch = word[i]
+        if ch in "\"'":
+            close = word.find(ch, i + 1)
+            if close == -1:
+                close = len(word)
+            segment = word[i + 1 : close]
+            if ch == '"' and any(c in segment for c in ("$", "`")):
+                return True
+            i = close + 1
+            continue
+        if ch in "$`*?[":
+            return True
+        i += 1
+    return False
 
 
 def _invoked_name(piece: str) -> str:
@@ -1537,6 +1652,20 @@ def _invoked_name(piece: str) -> str:
             text = rest.lstrip()
             continue
         return word
+
+
+def _behind_keywords(text: str) -> str:
+    """`then f(` -> `f(`. The words a compound statement opens with are not the command.
+
+    A definition can sit behind them, and reading the raw text left `then f` matching no
+    header, so the body was never tracked as one and its commands read as a plain group.
+    """
+    text = text.lstrip("!").strip().lstrip("({").lstrip()
+    while True:
+        parts = text.split(maxsplit = 1)
+        if not parts or parts[0].lower() not in _SHELL_KEYWORDS:
+            return text
+        text = parts[1].strip() if len(parts) > 1 else ""
 
 
 def _leading_shell_keywords(piece: str) -> list[str]:
@@ -1835,7 +1964,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # was lost. Its brackets are ordinary characters.
             if (
                 ch == "("
-                and _FUNCTION_NAME_RE.fullmatch("".join(buf).lstrip("!").strip())
+                and _FUNCTION_NAME_RE.fullmatch(_behind_keywords("".join(buf)))
                 and line[i + 1 :].lstrip().startswith(")")
             ):
                 func_parens = True
@@ -1856,7 +1985,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 # left every LATER command in the body reading as unconditional.
                 tails.append(False)
                 assumed_tail.append(False)
-                header = _FUNCTION_DEF_RE.fullmatch("".join(buf).lstrip("!").strip())
+                header = _FUNCTION_DEF_RE.fullmatch(_behind_keywords("".join(buf)))
                 def_levels.append(ch == "{" and header is not None)
                 if ch == "{" and header:
                     # One key per DEFINITION, not per name: `f(){ a; }; f; f(){ b; }` calls
@@ -3014,8 +3143,14 @@ def _effective_version(
             # `~=0.12.0rc1` admits the stable 0.12 releases as well, and pip takes the newest
             # candidate, so the window names the MINOR but never the prerelease itself.
             # Returning the rc as the landing put it below the ABI-stable floor, which PEP 440
-            # sorts it under, and rejected a valid upgrade.
-            landing = _split_prerelease(landing)[0]
+            # sorts it under, and rejected a valid upgrade. Only where the window really
+            # admits it, though: `>=0.12.0a1,<0.12.0rc1` stops below every stable 0.12, and
+            # promoting the landing there cleared an ABI floor the installed codec is under.
+            core = _split_prerelease(landing)[0]
+            if (cap is None or cmp_versions(core, cap) <= 0) and (
+                ceiling is None or cmp_versions(core, ceiling) < 0
+            ):
+                landing = core
         if landing is None and ceiling is not None:
             # A wider window still names the MINOR pip moves to, which is what the callers
             # compare; without it `<0.10.5` and `>=0.8,<0.11` came back unknown.
@@ -3104,6 +3239,14 @@ def _effective_version(
                 and (ceiling is None or cmp_versions(landing, ceiling) < 0)
                 and (floor is None or cmp_versions(landing, floor) >= 0)
                 and not any(_exclusion_covers_minor(landing, ver) for ver in exclusions)
+                # An inclusive cap pins the landing to that exact release, so excluding it
+                # leaves nothing in the minor: `<0.12,<=0.11,!=0.11.0` cannot resolve to any
+                # 0.11, and handing back the ceiling-derived 0.11 fabricated the pairing.
+                and not (
+                    cap is not None
+                    and cmp_versions(landing, cap) == 0
+                    and any(_version_is_excluded(cap, ver) for ver in exclusions)
+                )
             ):
                 current, exact_known = landing, True
             else:
