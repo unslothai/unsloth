@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 import typer
 
@@ -404,6 +406,23 @@ def test_omitted_default_flags_are_not_forwarded(monkeypatch):
     assert sent(server) == {"model_path": "unsloth/Qwen3-14B"}
 
 
+def _agent_commands() -> list:
+    """Every `unsloth start` command that takes the load knobs, read off the app itself.
+
+    Hardcoding the list is how `dsh` shipped without flag tracking: the roster below is
+    whatever is registered today, so a new agent command is covered the day it lands.
+    """
+    knobs = set(start_cli._LOAD_OPTION_PARAMS)
+    return sorted(
+        command.name
+        for command in start_cli.start_app.registered_commands
+        if command.name and knobs <= set(inspect.signature(command.callback).parameters)
+    )
+
+
+AGENT_COMMANDS = _agent_commands()
+
+
 class TestExplicitFlagsThroughTheRealCli:
     """`supplied` tracking through the real Typer and Click stack."""
 
@@ -446,13 +465,17 @@ class TestExplicitFlagsThroughTheRealCli:
         assert load.supplied == frozenset()
         assert load.overrides() == frozenset()
 
-    @pytest.mark.parametrize(
-        "command", ["codex", "claude", "opencode", "hermes", "pi", "openclaw", "dsh"]
-    )
+    def test_the_agent_command_roster_is_not_empty(self):
+        """An empty parametrization collects no tests, so the check below would vanish."""
+        assert AGENT_COMMANDS
+
+    @pytest.mark.parametrize("command", AGENT_COMMANDS)
     def test_every_agent_command_tracks_flags_identically(self, command):
         load = self._load_for([command, "--no-launch", "--context-length", "0"])
         assert load is not None, f"{command} never reached _connect"
         assert "max_seq_length" in load.supplied
+        # overrides() is what _resolve_model reads; supplied alone never reaches the load.
+        assert "max_seq_length" in load.overrides()
 
 
 def test_inferred_reload_carries_the_resident_runtime_settings(monkeypatch):
