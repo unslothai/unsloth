@@ -3330,12 +3330,7 @@ html[data-chat-font] .aui-root {
 		width: calc(var(--ui-icon-size) * 1.2);
 		height: calc(var(--ui-icon-size) * 1.2);
 	}
-	/* No sub-pixel nudge on the composer action glyphs. A translate is a CSS
-	   length, so its device-pixel value follows the DPR and only lands on a
-	   raster symmetry point at some ratios: the arrow's old -0.25px was clean
-	   at DPR 2 but put ~2.9x the ink on the arrowhead's left tip at DPR 1, and
-	   the stop square's -0.5px broke at 1.25/1.5. Centering the glyph in the
-	   action instead is symmetric at every ratio. */
+	/* Flex centers both symmetric glyphs; pixel offsets vary by display scale. */
 	& svg.unsloth-send-icon {
 		width: calc(var(--ui-icon-size) * 1.15);
 		height: calc(var(--ui-icon-size) * 1.15);
