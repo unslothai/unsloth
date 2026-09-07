@@ -547,10 +547,20 @@ def test_the_powershell_probe_fails_closed_on_the_log_and_finishes_the_policy_re
     assert "is still disabled after wevtutil sl" in ps1
     # revert refreshes the policy set in every branch, absent file included, and
     # clears AuditPolicyApplied only after the refresh succeeded.
-    block = ps1[ps1.index("Write-Section 'Remove audit policy'") : ps1.index("Write-Section 'Restore CodeIntegrity log'")]
+    block = ps1[
+        ps1.index("Write-Section 'Remove audit policy'") : ps1.index(
+            "Write-Section 'Restore CodeIntegrity log'"
+        )
+    ]
     assert block.count("Invoke-Native 'CiTool.exe' @('-r')") == 1
-    assert block.index("audit policy file already absent") < block.index("Invoke-Native 'CiTool.exe' @('-r')")
-    assert block.index("Invoke-Native 'CiTool.exe' @('-r')") < block.index("$baseline.AuditPolicyApplied = $false")
-    assert block.index("Dismount-Efi $mounted") < block.index("$baseline.AuditPolicyApplied = $false")
+    assert block.index("audit policy file already absent") < block.index(
+        "Invoke-Native 'CiTool.exe' @('-r')"
+    )
+    assert block.index("Invoke-Native 'CiTool.exe' @('-r')") < block.index(
+        "$baseline.AuditPolicyApplied = $false"
+    )
+    assert block.index("Dismount-Efi $mounted") < block.index(
+        "$baseline.AuditPolicyApplied = $false"
+    )
     # Defender detections are the probe window's only.
     assert "Where-Object { $_.InitialDetectionTime -ge $start }" in ps1
