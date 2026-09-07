@@ -3724,6 +3724,56 @@ def _uv_default_cache_dir() -> Optional[Path]:
     return Path(os.path.abspath(os.path.expanduser(lines[-1])))
 
 
+def _recorded_install_uv_cache() -> Optional[Path]:
+    """The cache the installer actually used, as it recorded it.
+
+    Guessing from content cannot tell a Studio cache the installer filled from one that
+    holds a single wheel some runtime install dropped there (wheel_utils.py:405), because
+    install.sh:705 points the running backend at it even in shared mode. The installers
+    know which they chose, so they write it down; absent, for installs that predate the
+    marker, the caller falls back to inspecting both caches.
+    """
+    try:
+        # utf-8-sig, not utf-8: Windows PowerShell 5.1 writes `-Encoding utf8` WITH a BOM,
+        # which utf-8 would decode into the first character of the path.
+        recorded = (STUDIO_HOME / "cache" / "uv-cache-dir").read_text(
+            encoding = "utf-8-sig", errors = "replace"
+        )
+    except OSError:
+        return None
+    lines = [line.strip() for line in recorded.splitlines() if line.strip()]
+    if not lines:
+        return None
+    return Path(os.path.abspath(os.path.expanduser(lines[-1])))
+
+
+def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
+    """Record the cache this update used, for installs whose installer never did.
+
+    Everyone installed before the marker existed reaches the content fallback, and that
+    fallback goes stale the moment the backend drops one wheel into the Studio cache:
+    both caches then look warm and the next update stops preferring the one the install
+    filled. Writing the choice down once the setup it drove has succeeded closes that,
+    and does the same for a marker whose cache has since been emptied.
+    """
+    if (os.environ.get("UV_CACHE_DIR") or "").strip():
+        # The caller's, for this run. The installers record their own choice; an update
+        # must not promote a one-shot value into one.
+        return
+    chosen = (env or {}).get("UV_CACHE_DIR")
+    if not chosen:
+        return
+    live = _recorded_install_uv_cache()
+    if live is not None and _uv_cache_has_packages(live):
+        return
+    marker = STUDIO_HOME / "cache" / "uv-cache-dir"
+    try:
+        marker.parent.mkdir(parents = True, exist_ok = True)
+        marker.write_text(f"{chosen}\n", encoding = "utf-8")
+    except OSError:
+        pass
+
+
 def _with_studio_uv_cache(env: Optional[dict]) -> Optional[dict]:
     """Point the setup script's uv at the cache the install used.
 
@@ -3734,6 +3784,11 @@ def _with_studio_uv_cache(env: Optional[dict]) -> Optional[dict]:
     if (os.environ.get("UV_CACHE_DIR") or "").strip():
         return env
     studio_cache = STUDIO_HOME / "cache" / "uv"
+    recorded = _recorded_install_uv_cache()
+    if recorded is not None and _uv_cache_has_packages(recorded):
+        # Only while it still holds something: `uv cache clean` is the user's to run, and
+        # a marker pointing at an emptied cache should not outrank a warm one.
+        return {**(env or os.environ), "UV_CACHE_DIR": str(recorded)}
     if not _uv_cache_has_packages(studio_cache):
         # A shared-mode install left the wheels in uv's own cache and _setup_cache_env
         # mkdirs this one empty on every server start, so redirecting here would send the
@@ -3820,6 +3875,8 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
 
     if returncode != 0:
         raise typer.Exit(returncode)
+    # Only now: a cache that did not get through setup is not one to point later updates at.
+    _backfill_uv_cache_marker(env)
 
 
 # The refresh re-runs the installer with --shortcuts-only, fetched rather than shipped

@@ -14,6 +14,20 @@ ok()  { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 ROLLBACK_BLOCK=$(sed -n '/^_VENV_ROLLBACK_DIR=""/,/^trap '\''_on_install_signal 143'\'' TERM$/p' "$INSTALL_SH")
+# _restore_studio_venv_replacement calls this, and it is defined above the block, with the
+# rest of the uv cache selector. Splicing the block without it makes every signal case exit
+# 127 on a command that is present in the real installer.
+# printf, not $'\n': the workflow runs this file with `sh`, whatever the shebang says.
+MARKER_HELPER=$(awk '
+    /^_restore_uv_cache_marker\(\) \{/ { grab = 1 }
+    grab { print }
+    grab && /^}/ { grab = 0 }
+' "$INSTALL_SH")
+if ! printf '%s\n' "$MARKER_HELPER" | grep -q '^_restore_uv_cache_marker() {'; then
+    echo "  FAIL: could not extract _restore_uv_cache_marker from install.sh"
+    exit 1
+fi
+ROLLBACK_BLOCK=$(printf '%s\n%s\n' "$MARKER_HELPER" "$ROLLBACK_BLOCK")
 if ! printf '%s\n' "$ROLLBACK_BLOCK" | grep -q '^_on_install_signal() {'; then
     echo "  FAIL: could not extract rollback lifecycle block from install.sh"
     exit 1
