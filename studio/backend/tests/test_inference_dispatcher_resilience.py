@@ -188,8 +188,14 @@ def _direct_reader_calls(o, request_id):
     return o._direct_reader(request_id)
 
 
-@pytest.mark.parametrize("response_type", ["token", "gen_done", "gen_error", "audio_done"])
+@pytest.mark.parametrize(
+    "response_type", ["token", "gen_done", "gen_error", "audio_done", "audio_error"]
+)
 def test_direct_reader_discards_responses_from_released_requests(response_type):
+    # Cancellation may release the old mailbox before the worker finishes. Its late
+    # tokens/errors/terminal frame must not satisfy a new request: _consume_token_stream
+    # and the blocking TTS loop dispatch on type alone, so a stale token becomes this
+    # chat's text and a stale audio_done becomes this request's wav.
     o = _direct_reader_host()
     current = {"request_id": "current", "type": "token", "text": "current answer"}
     o._scripted = [
@@ -198,15 +204,53 @@ def test_direct_reader_discards_responses_from_released_requests(response_type):
     ]
     read_one, _drain, release = _direct_reader_calls(o, "current")
     try:
-        # Cancellation may release the old mailbox before the worker finishes.
-        # Its late tokens/errors/terminal frame must not satisfy a new request.
         assert read_one(timeout = 0.1) is None
         assert read_one(timeout = 0.1) == current
     finally:
         release()
 
 
+def test_direct_reader_discards_only_what_is_addressed_to_someone_else():
+    # The truthiness half of `if rid and rid != request_id` is load-bearing: the worker
+    # stamps no request_id on a subprocess-level failure (the command loop's catch-all),
+    # and _consume_token_stream turns that bare error into the user's crash message.
+    # Dropping it too would hang the chat until the read timeout instead of reporting.
+    o = _direct_reader_host()
+    worker_error = {"type": "error", "error": "Command 'generate' failed: out of memory"}
+    o._scripted = [worker_error, {"request_id": "", "type": "gen_done"}]
+    read_one, _drain, release = _direct_reader_calls(o, "current")
+    try:
+        assert read_one(timeout = 0.1) == worker_error
+        assert read_one(timeout = 0.1) == {"request_id": "", "type": "gen_done"}
+    finally:
+        release()
+
+
+def test_discarding_a_released_response_leaves_worker_ownership_alone():
+    # A released request can outlive its mailbox in _request_cancel_events. Promoting or
+    # retiring it from here would make the dead request the executor, so the live chat's
+    # Stop would go to the wrong generation -- the hazard the two tests above guard for
+    # the forwarding path, which the discard path must not reintroduce.
+    o = _direct_reader_host()
+    mine, theirs = threading.Event(), threading.Event()
+    o._request_cancel_events = {"current": mine, "cancelled": theirs}
+    o._claim_worker(mine)
+    o._mark_worker_started(mine)
+    o._scripted = [{"request_id": "cancelled", "type": "token", "text": "late"}]
+
+    read_one, _drain, release = _direct_reader_calls(o, "current")
+    try:
+        assert read_one(timeout = 0.1) is None
+        assert o._owns_worker(mine), "a discarded frame must not move the executor"
+        assert not o._owns_worker(theirs)
+    finally:
+        release()
+
+
 def test_direct_reader_drain_waits_for_its_own_terminal_response():
+    # Cancel drains until the worker's terminal frame so stale events don't leak into the
+    # next request. A released request's terminal frame would end it while this one is
+    # still generating, handing the next request a worker that never stopped.
     o = _direct_reader_host()
     o._scripted = [
         {"request_id": "cancelled", "type": "gen_done"},
