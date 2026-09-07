@@ -318,6 +318,12 @@ function Install-UnslothStudio {
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
         }
+        # Not inside that rollback: an install can fail before a replacement is even in
+        # flight, and the failed attempt must not leave a marker naming a cache no
+        # environment here was built from. Defined later, so probed like the line above.
+        if (Get-Command Restore-StudioUvCacheMarker -CommandType Function -ErrorAction SilentlyContinue) {
+            Restore-StudioUvCacheMarker -StudioRoot $StudioHome
+        }
         # Most failures return before the lock try/finally, and under `irm | iex`
         # these variables are the caller's own. Defined later, so probed like above.
         if (Get-Command Restore-StudioTempEnvironment -CommandType Function -ErrorAction SilentlyContinue) {
@@ -1250,13 +1256,18 @@ public static class UnslothStudioFinalPathV2
         # previous environment, and a marker naming the cache of an install that never
         # happened would outlive it.
         if (-not $script:StudioUvMarkerSaved) {
-            $script:StudioUvMarkerExisted = Test-Path -LiteralPath $markerFile -PathType Leaf
+            # SilentlyContinue on the probe too, not just the write: the script runs under
+            # $ErrorActionPreference = "Stop", and Test-Path on a path inside a directory
+            # the ACL denies throws UnauthorizedAccessException rather than returning
+            # $false, which would abort the install over an optional marker.
+            $script:StudioUvMarkerExisted = Test-Path -LiteralPath $markerFile -PathType Leaf `
+                -ErrorAction SilentlyContinue
             $script:StudioUvMarkerPrevious = if ($script:StudioUvMarkerExisted) {
                 Get-Content -LiteralPath $markerFile -Raw -ErrorAction SilentlyContinue
             } else { $null }
             $script:StudioUvMarkerSaved = $true
         }
-        if (-not (Test-Path -LiteralPath $markerDir -PathType Container)) {
+        if (-not (Test-Path -LiteralPath $markerDir -PathType Container -ErrorAction SilentlyContinue)) {
             New-Item -ItemType Directory -Path $markerDir -Force `
                 -ErrorAction SilentlyContinue | Out-Null
         }
@@ -4005,6 +4016,14 @@ exit 0
         return (Exit-InstallFailure "uv could not be installed")
     }
 
+    # Before the selector, which is what writes the marker: resetting afterwards would
+    # discard the snapshot it had just taken and make every Restore-StudioUvCacheMarker a
+    # no-op. Reset per run because under `irm | iex` the script scope is the caller's
+    # session, so a second install would otherwise restore the first one's marker.
+    $script:StudioUvMarkerSaved = $false
+    $script:StudioUvMarkerExisted = $false
+    $script:StudioUvMarkerPrevious = $null
+
     Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
 
     # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
@@ -4032,13 +4051,6 @@ exit 0
     $script:StudioVenvRollbackTarget = $VenvDir
     $script:StudioVenvRollbackActive = $false
     $script:StudioVenvRollbackPartial = $false
-    # The uv cache marker snapshot travels with the environment, so it resets with the
-    # rollback state. Same reason as the line below: under `irm | iex` the script scope is
-    # the caller's session, so a second install in one session would otherwise roll back
-    # to the marker it snapshotted before the first.
-    $script:StudioUvMarkerSaved = $false
-    $script:StudioUvMarkerExisted = $false
-    $script:StudioUvMarkerPrevious = $null
     # Reset per run: under `irm | iex` the script scope IS the caller's session.
     $script:PrevTorchVer = ""
     $script:PrevTorchPin = $null
@@ -4314,8 +4326,6 @@ exit 0
             }
             if ($merged) {
                 substep "restored previous environment"
-                # The marker describes the environment, so it goes back with it.
-                Restore-StudioUvCacheMarker -StudioRoot $StudioHome
                 $script:StudioVenvRollbackActive = $false
                 $script:StudioVenvRollbackDir = $null
                 $script:StudioVenvRollbackPartial = $false
@@ -4335,8 +4345,6 @@ exit 0
             }
             Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction Stop
             substep "restored previous environment"
-            # The marker describes the environment, so it goes back with it.
-            Restore-StudioUvCacheMarker -StudioRoot $StudioHome
             $script:StudioVenvRollbackActive = $false
             $script:StudioVenvRollbackDir = $null
         } catch {
@@ -6655,6 +6663,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     } finally {
         if (-not $studioVenvReplacementCommitted) {
             Restore-StudioVenvRollback
+            Restore-StudioUvCacheMarker -StudioRoot $StudioHome
         }
     }
 

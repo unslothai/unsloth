@@ -1174,28 +1174,34 @@ class TestInstallUvCacheRootParity:
         assert 'case "$UV_CACHE_DIR" in' in sh
         assert "IsPathRooted" in ps1
 
-        # Under `irm | iex` the script scope is the caller's session, so the snapshot has
-        # to be reset per run beside the rollback state it belongs to. A second install in
-        # one session would otherwise roll back to the marker it saw before the first.
-        reset_block = ps1[
-            ps1.index("$script:StudioVenvRollbackPartial = $false") : ps1.index(
-                "# Reset per run: under `irm | iex`"
-            )
-        ]
+        # The reset must precede the call that writes the marker. Resetting after it
+        # discards the snapshot Write-StudioUvCacheMarker had just taken, which makes
+        # every Restore-StudioUvCacheMarker a no-op and leaves a failed reinstall's
+        # marker in place. Per run because under `irm | iex` the script scope is the
+        # caller's session.
+        selector_call = ps1.index("Set-StudioUvCacheEnvironment -StudioRoot $StudioHome")
+        # The whole triple, in the run of lines directly above the call. Searching the
+        # file instead would match the copy inside Restore-StudioUvCacheMarker and pass
+        # even with the reset moved back below the call.
+        preamble = ps1[:selector_call]
         for variable in (
             "$script:StudioUvMarkerSaved = $false",
             "$script:StudioUvMarkerExisted = $false",
             "$script:StudioUvMarkerPrevious = $null",
         ):
-            assert variable in reset_block, variable
+            assert variable in preamble[-600:], variable
+
+        # A failed install restores the marker whether or not a venv replacement was ever
+        # in flight: a first install has no previous venv, and the ownership guard can
+        # refuse the directory before one starts.
+        assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_exit() {"):]
+        assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_signal() {"):]
+        assert ps1.count("Restore-StudioUvCacheMarker -StudioRoot") == 2
 
         # And the marker travels with the environment: a rolled-back install puts it back.
         assert "_restore_uv_cache_marker" in sh
         assert sh.count("_restore_uv_cache_marker") >= 2, "defined but never called"
         assert "function Restore-StudioUvCacheMarker" in ps1
-        assert (
-            ps1.count("Restore-StudioUvCacheMarker -StudioRoot") == 2
-        ), "install.ps1 restores the previous environment at two points; both carry the marker"
 
         assert "${XDG_CACHE_HOME}/uv" in sh
         assert "${HOME}/.cache/uv" in sh

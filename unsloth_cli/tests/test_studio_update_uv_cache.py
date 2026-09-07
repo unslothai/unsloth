@@ -379,6 +379,20 @@ def test_a_reinstall_into_a_custom_cache_is_not_shadowed_by_the_old_marker(
     assert seen["env"]["UV_CACHE_DIR"] == str(custom), seen["env"].get("UV_CACHE_DIR")
 
 
+@pytest.mark.parametrize("spelling", ["trailing ", " leading", "  both  "])
+def test_a_recorded_path_keeps_its_whitespace(monkeypatch, tmp_path, caches, spelling):
+    """The installers write UV_CACHE_DIR through verbatim and a directory name may
+    legitimately start or end with a space, so stripping the line would probe a different
+    path and read a warm cache as cold."""
+    _studio_cache, _default = caches
+    odd = tmp_path / spelling
+    _fill(odd)
+    _record(tmp_path / "StudioHome", odd)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(odd), seen["env"].get("UV_CACHE_DIR")
+
+
 def test_a_marker_written_by_windows_powershell_is_read_back(monkeypatch, tmp_path, caches):
     """Windows PowerShell 5.1 writes `-Encoding utf8` with a BOM, and utf-8 would decode
     it into the first character of the path."""

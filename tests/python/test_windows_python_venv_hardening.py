@@ -886,3 +886,40 @@ Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache "relcache"
     assert os.path.normcase(os.path.normpath(recorded)) == os.path.normcase(
         os.path.normpath(str(tmp_path / "relcache"))
     ), recorded
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_an_unreadable_cache_directory_does_not_abort_the_install(tmp_path: Path, shell: str):
+    """The marker is optional; probing for it must not be able to fail the install.
+
+    install.ps1 runs under $ErrorActionPreference = "Stop", and Test-Path on a path inside
+    a directory the ACL denies throws UnauthorizedAccessException rather than returning
+    $false, so an unsuppressed probe took the whole install down.
+    """
+    if os.name == "nt" or os.geteuid() == 0:
+        pytest.skip("POSIX mode bits do not deny this caller")
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    functions = _extract(r"    function Write-StudioUvCacheMarker \{.*?\n    \}\n", source)
+    studio_root = tmp_path / "studio root"
+    (studio_root / "cache").mkdir(parents = True)
+    (studio_root / "cache").chmod(0o000)
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{functions}
+$script:StudioUvMarkerSaved = $false
+try {{
+    Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache $env:TEST_CACHE
+    "survived"
+}} catch {{
+    "THREW: " + $_.Exception.GetType().Name
+}}
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(studio_root)
+    env["TEST_CACHE"] = str(tmp_path / "chosen")
+    try:
+        assert _run_powershell(shell, script, env).splitlines()[-1] == "survived"
+    finally:
+        (studio_root / "cache").chmod(0o755)

@@ -3741,7 +3741,10 @@ def _recorded_install_uv_cache() -> Optional[Path]:
         )
     except OSError:
         return None
-    lines = [line.strip() for line in recorded.splitlines() if line.strip()]
+    # splitlines already drops the terminator; the line itself is NOT stripped, because
+    # the installers write UV_CACHE_DIR through verbatim and a path may legitimately end
+    # or begin with a space. Blank lines are still skipped, since blank means unset.
+    lines = [line for line in recorded.splitlines() if line.strip()]
     if not lines:
         return None
     return Path(os.path.abspath(os.path.expanduser(lines[-1])))

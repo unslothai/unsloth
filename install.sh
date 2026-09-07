@@ -853,8 +853,6 @@ _restore_studio_venv_replacement() {
     rm -rf "$_VENV_ROLLBACK_TARGET"
     if mv "$_VENV_ROLLBACK_DIR" "$_VENV_ROLLBACK_TARGET"; then
         rollback_substep "restored previous environment"
-        # The marker describes the environment, so it goes back with it.
-        _restore_uv_cache_marker
         _VENV_ROLLBACK_ACTIVE=false
         _VENV_ROLLBACK_DIR=""
     else
@@ -940,6 +938,11 @@ _on_install_exit() {
     _status=$?
     if [ "$_status" -ne 0 ]; then
         _restore_studio_venv_replacement
+        # Not inside the venv restore: an install can fail before a replacement is even
+        # in flight (a first install has no previous venv, the ownership guard can refuse
+        # the directory, the backup mv can fail), and that failed attempt must not leave
+        # a marker naming a cache no environment here was built from.
+        _restore_uv_cache_marker
     fi
     _cleanup_install_temporaries
     exit "$_status"
@@ -952,6 +955,7 @@ _on_install_signal() {
     trap - EXIT
     trap '' HUP INT TERM
     _restore_studio_venv_replacement
+    _restore_uv_cache_marker
     _cleanup_install_temporaries
     exit "$_signal_status"
 }
