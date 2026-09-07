@@ -130,8 +130,12 @@ def test_scope_off_is_refused_by_the_security_dependency_not_only_the_predicate(
     assert caught.value.status_code in (401, 403)
     # ...and neither the dummy bearers nor an empty one may resurrect it.
     for header in (
-        "Bearer not-needed", "Bearer lm-studio", "Bearer ollama",
-        "Bearer no-key-required", "Bearer", "Bearer ",
+        "Bearer not-needed",
+        "Bearer lm-studio",
+        "Bearer ollama",
+        "Bearer no-key-required",
+        "Bearer",
+        "Bearer ",
     ):
         with pytest.raises(HTTPException):
             asyncio.run(
