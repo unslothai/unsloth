@@ -3900,9 +3900,7 @@ def _folded_studio_tool_messages(messages) -> list:
     return [
         ChatMessage.model_validate(message)
         for message in _coalesce_consecutive_user_turns(
-            fold_tool_results_into_user(
-                [m.model_dump(exclude_none = True) for m in messages]
-            )
+            fold_tool_results_into_user([m.model_dump(exclude_none = True) for m in messages])
         )
     ]
 

@@ -2506,9 +2506,7 @@ class TestChatCompletionRequestToolFields:
 
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
-        monkeypatch.setattr(
-            inference_route, "_openai_passthrough_non_streaming", fake_passthrough
-        )
+        monkeypatch.setattr(inference_route, "_openai_passthrough_non_streaming", fake_passthrough)
         client = self._v1_client(monkeypatch, _GGUFBackend())
         resp = client.post(
             "/v1/chat/completions",
@@ -2528,9 +2526,7 @@ class TestChatCompletionRequestToolFields:
         assert resp.status_code == 200
         roles = [m.get("role") for m in captured["body"]["messages"]]
         assert "tool" not in roles
-        assert not any(
-            a == "user" and b == "user" for a, b in zip(roles, roles[1:])
-        ), roles
+        assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
         assert monitor.active_count() == 0
 
     def test_tool_call_history_rejected_when_gguf_template_has_no_tool_support(self, monkeypatch):
