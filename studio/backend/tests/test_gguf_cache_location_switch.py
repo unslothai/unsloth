@@ -49,9 +49,7 @@ def test_cached_gguf_keeps_quants_in_previous_download_folders(
     assert custom_home / "hub" in hf_cache_settings.known_hf_hub_caches()
     scans = inventory_scan.all_hf_cache_scans()
     assert sum(repo.repo_id == repo_id for scan in scans for repo in scan.repos) == 2
-    rows = [
-        row for row in cache_inventory._scan_cached_gguf() if row["repo_id"] == repo_id
-    ]
+    rows = [row for row in cache_inventory._scan_cached_gguf() if row["repo_id"] == repo_id]
     repeated = cache_inventory._scan_cached_gguf(cache_scans = scans + scans)
     assert [row for row in repeated if row["repo_id"] == repo_id] == rows
     found = {}
@@ -75,8 +73,6 @@ def test_cached_gguf_keeps_quants_in_previous_download_folders(
         )
     # Use the exact management path returned by the inventory, even when that
     # folder is inactive. Deleting Q8 must leave the other cache's Q6 intact.
-    deletion._delete_cached_model_blocking(
-        repo_id, "Q8_0", None, found["Q8_0"]["cache_path"]
-    )
+    deletion._delete_cached_model_blocking(repo_id, "Q8_0", None, found["Q8_0"]["cache_path"])
     assert not expected["Q8_0"][1].exists()
     assert expected["Q6_K"][1].is_file()
