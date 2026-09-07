@@ -358,9 +358,15 @@ def scaled_reserve(reserve_hours: float, total_hours: float, basis_hours: float)
     return round(reserve_hours * (total_hours / basis_hours), 3)
 
 
-def in_flight_for_commit(own_busy: list[str], head_sha: str, kind: str) -> str | None:
+def in_flight_for_commit(
+    own_busy: list[str], head_sha: str, kind: str, slot: str = "1"
+) -> str | None:
     """The ref of a busy kernel of ours already running THIS commit for THIS
-    workflow, or None.
+    workflow in THIS slot, or None.
+
+    The slot is part of the identity: slot 2 is a deliberate second session
+    beside slot 1 on the same commit, so a slot-1 kernel must not stand a
+    slot-2 dispatch down, while a retry of the slot-2 run itself must be.
 
     Asked of every account the gate surveys, not only the one it picks: the
     draw is keyed on the commit, but a handover (the preferred account full,
@@ -368,6 +374,7 @@ def in_flight_for_commit(own_busy: list[str], head_sha: str, kind: str) -> str |
     with only its own token and would see nothing in flight.
     """
     sha = (head_sha or "").strip().lower()
+    slot = str(slot or "1").strip()
     if not sha or not kind:
         return None
     import launch  # noqa: PLC0415  (sibling script; loaded lazily to keep the gate importable alone)
@@ -376,6 +383,8 @@ def in_flight_for_commit(own_busy: list[str], head_sha: str, kind: str) -> str |
         ref = entry.split(" (", 1)[0]
         parsed = launch.parse_slug(ref)
         if not parsed or parsed.get("kind") != kind or not parsed.get("sha"):
+            continue
+        if parsed.get("slot", "1") != slot:
             continue
         if sha.startswith(parsed["sha"]) or parsed["sha"].startswith(sha):
             return ref
@@ -710,7 +719,8 @@ def main() -> int:
         "--slot",
         default = "1",
         help = "the workflow's session slot input. Slot 2 is an opt-in SECOND session on "
-        "the same commit beside slot 1, so it is not stood down as a duplicate",
+        "the same commit beside slot 1: only a kernel already running this commit in "
+        "the SAME slot stands the run down",
     )
     ap.add_argument("--force", default = "false", help = "workflow_dispatch force input")
     ap.add_argument("--labels", default = "", help = "comma or newline separated PR labels")
@@ -953,14 +963,8 @@ def main() -> int:
     # it and never look at the account whose kernel is still running. Whether
     # the account could take a NEW launch is beside the point here: the one
     # that just dispatched is exactly the one likely to be short of quota now.
-    second_slot = str(args.slot or "1").strip() != "1"
-    if args.head_sha and args.kind and second_slot:
-        print(
-            f"[gate] slot {args.slot}: a second session on this commit was asked for, "
-            "so a kernel already running it does not stand this run down",
-            flush = True,
-        )
-    if args.head_sha and args.kind and not second_slot:
+    slot = str(args.slot or "1").strip()
+    if args.head_sha and args.kind:
         for account_id in order:
             if not account_id or clients.get(account_id) is None:
                 continue
@@ -968,13 +972,13 @@ def main() -> int:
                 survey = _survey(account_id)
             except Exception:  # noqa: BLE001
                 continue  # reported below, where the account is considered
-            already = in_flight_for_commit(survey["own"], args.head_sha, args.kind)
+            already = in_flight_for_commit(survey["own"], args.head_sha, args.kind, slot)
             if already:
                 return _decide(
                     False,
-                    f"a {args.kind} kernel for this commit is already running on account "
-                    f"{account_id} ({already}); its result arrives as the commit status, so "
-                    "nothing is dispatched",
+                    f"a {args.kind} kernel for this commit (slot {slot}) is already running "
+                    f"on account {account_id} ({already}); its result arrives as the commit "
+                    "status, so nothing is dispatched",
                 )
 
     for account_id in order:

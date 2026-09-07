@@ -69,12 +69,22 @@ from gate import GONE_MARKERS, _as_naive_utc  # noqa: E402
 # finished costs a whole run and reports a failure nobody can act on.
 DEFAULT_MAX_AGE_HOURS = 3.0
 
-# Paging for the account walk. Bounded by PAGES, not by age: a kernel far past
-# the reap ceiling is exactly the one the reaper exists for, and an old terminal
-# kernel still owes its commit a status. Everything pushed is collected or
-# reaped once and then gone, so the walk does not grow.
+# Paging for the account walk. Not bounded by the reap ceiling: a kernel far
+# past it is exactly the one the reaper exists for, and an old terminal kernel
+# still owes its commit a status. Not bounded by a small page count either,
+# because the account is SHARED and human kernels are never deleted: once
+# enough newer records sit above an uncollected kernel of ours, a fixed cap
+# starting from page 1 every pass would never reach it again. The walk stops
+# at a page whose every entry last ran before LISTING_HORIZON_HOURS with none
+# of ours on it, at the pass deadline, or at MAX_PAGES as a backstop far above
+# anything an account here has held.
 PAGE_SIZE = 100
-MAX_PAGES = 5
+MAX_PAGES = 50
+# Kaggle kills a session at 12h whatever else fails, so a kernel of ours that
+# last ran before this horizon is neither running nor owed a status this pass
+# would still be timely for; a page entirely older than it, with none of ours
+# on it, is the end of the walk.
+LISTING_HORIZON_HOURS = 24.0 * 7
 
 # The driver's own record of how many payload reports the kernel was BUILT to
 # produce, and the only one that survives dispatch: judging a five-payload
@@ -135,38 +145,55 @@ def find_ours(
     max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
     page_size: int = PAGE_SIZE,
     max_pages: int = MAX_PAGES,
+    horizon_hours: float = LISTING_HORIZON_HOURS,
+    deadline: float | None = None,
 ) -> list[dict]:
     """Every kernel on this account that WE pushed, newest first.
 
     The filter is ``launch.parse_slug`` and nothing else: an unrecognised kernel
     is not ours to read, let alone delete. ``max_age_hours`` is the reap ceiling
     the caller applies later, not a listing cutoff, because the kernel that most
-    needs collecting is the one a delayed pass finds hours past it.
+    needs collecting is the one a delayed pass finds hours past it. The walk
+    ends at the first page that is entirely older than ``horizon_hours`` and
+    carries none of ours (see LISTING_HORIZON_HOURS), at ``deadline``, or at
+    ``max_pages``.
     """
     now = now or datetime.now(timezone.utc).replace(tzinfo = None)
     found: list[dict] = []
     for page in range(1, max_pages + 1):
+        if deadline is not None and time.time() >= deadline:
+            _log(f"listing stopped at page {page}: out of budget")
+            break
         kernels = (
             api.kernels_list(mine = True, page = page, page_size = page_size, sort_by = "dateRun") or []
         )
         if not kernels:
             break
+        ours_on_page = 0
+        beyond_horizon = 0
         for kernel in kernels:
+            age = kernel_age_hours(kernel, now)
+            if age is not None and age > horizon_hours:
+                beyond_horizon += 1
             ref = getattr(kernel, "ref", None)
             if not ref:
                 continue
             parsed = launch.parse_slug(ref)
             if parsed is None:
                 continue
+            ours_on_page += 1
             found.append(
                 {
                     "slug": ref,
                     "sha": parsed["sha"],
                     "kind": parsed["kind"],
+                    "slot": parsed.get("slot", "1"),
                     "legacy": parsed["legacy"],
-                    "age_hours": kernel_age_hours(kernel, now),
+                    "age_hours": age,
                 }
             )
+        if ours_on_page == 0 and beyond_horizon == len(kernels):
+            break
     return found
 
 
@@ -330,13 +357,20 @@ def collect_one(
             # dropped: it has been billing throughout and will never produce a
             # result, and silence leaves the commit reading "not run" forever.
             record["verdict"] = "reaped"
+            # "released", not "deleted": the workflows collect with --no-delete
+            # and delete in a later step that can be refused or time out, and
+            # this reason is posted as a durable status before that step runs.
             record["reason"] = (
                 f"the kernel was still {state} after {age:.1f}h, past the {max_age_hours}h "
-                "ceiling, so it was deleted. It was billing accelerator quota and would "
-                "not have produced a result"
+                "ceiling, so it is released for deletion. It was billing accelerator "
+                "quota and would not have produced a result"
             )
             if delete:
                 record["deleted"] = launch.delete_kernel(slug, deadline = deadline)
+                if record["deleted"]:
+                    record["reason"] = record["reason"].replace(
+                        "is released for deletion", "was deleted"
+                    )
             _log(f"reaped {slug} ({state}, {age:.1f}h)")
             return record
         record["verdict"] = "pending"
@@ -586,6 +620,12 @@ def main() -> int:
         choices = ("", *launch.KIND_CODES),
         help = "narrow --sha to one workflow's kernels",
     )
+    ap.add_argument(
+        "--slot",
+        default = "1",
+        help = "narrow --sha to one session slot's kernels: slot 2 runs beside slot 1 on "
+        "the same commit by design, and only its own retry is a duplicate",
+    )
     ap.add_argument("--target-url", default = "", help = "run URL to attach to each status")
     ap.add_argument(
         "--no-delete",
@@ -672,7 +712,7 @@ def main() -> int:
     # timeout are minutes, and a deadline started after them is that much
     # later than the job timeout was sized for.
     deadline = time.time() + BUDGET_SEC
-    ours = find_ours(api, max_age_hours = args.max_age_hours)
+    ours = find_ours(api, max_age_hours = args.max_age_hours, deadline = deadline)
     _log(f"{len(ours)} kernel(s) of ours on this account")
 
     for entry in ours:
@@ -705,6 +745,7 @@ def main() -> int:
             and (want.startswith(k["sha"]) or k["sha"].startswith(want))
             and k.get("verdict") == "pending"
             and (not args.kind or k.get("kind") == args.kind)
+            and k.get("slot", "1") == str(args.slot or "1").strip()
             for k in result["kernels"]
         )
         _log(f"in flight for {want}: {result['in_flight_for_sha']}")

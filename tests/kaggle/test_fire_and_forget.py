@@ -39,6 +39,7 @@ COLLECT_WF = WORKFLOWS / "kaggle-collect.yml"
 sys.path.insert(0, str(CI_DIR))
 
 import collect  # noqa: E402
+import gate  # noqa: E402
 import launch  # noqa: E402
 import post_statuses  # noqa: E402
 
@@ -102,6 +103,47 @@ def test_in_flight_matches_the_old_and_the_new_slug_forms(tmp_path, monkeypatch)
         assert collect.main() == 0
         result = json.loads((tmp_path / slug_sha / "collect_result.json").read_text())
         assert result["in_flight_for_sha"] is True, (slug_sha, result)
+
+
+def test_the_slug_carries_the_slot_and_reads_slot_one_when_absent():
+    """Slot 2 is a deliberate second session on one commit beside slot 1. A
+    duplicate check keyed on commit and kind alone either refuses it or, once
+    it is exempted, lets a retry of the slot-2 run dispatch a third; the slot
+    in the slug is what makes "this commit, this workflow, THIS slot" sayable.
+    Absent means slot 1, so every earlier slug still reads."""
+    two = launch.slug_name("notebook", "1a2b3c4d5e6f7890", slot = "2")
+    parsed = launch.parse_slug(two)
+    assert parsed and parsed["slot"] == "2" and parsed["sha"] == "1a2b3c4d5e6f", (two, parsed)
+    one = launch.slug_name("notebook", "1a2b3c4d5e6f7890", slot = "1")
+    assert launch.parse_slug(one)["slot"] == "1"
+    assert launch.parse_slug("me/unsloth-t4-ci-n1a2b3c4d5e6f-abcd")["slot"] == "1"
+    assert launch.parse_slug("me/unsloth-t4-ci-nabcdef01-1111")["slot"] == "1"
+    assert launch.parse_slug("me/unsloth-t4-ci-nabcdef01-21111")["slot"] == "2"
+    # Anything that is not a single digit 2-9 is slot 1 in the slug.
+    assert launch.parse_slug(launch.slug_name("notebook", "1a2b3c4d5e6f", slot = "23"))["slot"] == "1"
+    assert launch._slugify(two.replace("-", " ")) == two
+    # The collector narrows its in-flight answer by slot too.
+    assert "slot" in launch.parse_slug(two)
+    assert gate.in_flight_for_commit([f"me/{two} (RUNNING)"], "1a2b3c4d5e6f7890", "notebook", "2") == f"me/{two}"
+    assert gate.in_flight_for_commit([f"me/{two} (RUNNING)"], "1a2b3c4d5e6f7890", "notebook", "1") is None
+    assert gate.in_flight_for_commit([f"me/{one} (RUNNING)"], "1a2b3c4d5e6f7890", "notebook", "2") is None
+
+
+def test_the_collector_in_flight_answer_is_per_slot(tmp_path, monkeypatch):
+    full = "abcdef0123456789" + "0" * 24
+    slug = "danielhanchen/unsloth-t4-ci-nabcdef012345-21111"
+    for slot, expected in (("2", True), ("1", False)):
+        api = _StubApi([_StubKernel(slug)], {slug: "RUNNING"})
+        monkeypatch.setattr(launch, "_api", lambda api = api: api)
+        out = tmp_path / f"slot{slot}"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["collect", "--outdir", str(out), "--sha", full, "--kind", "notebook", "--slot", slot],
+        )
+        assert collect.main() == 0
+        result = json.loads((out / "collect_result.json").read_text())
+        assert result["in_flight_for_sha"] is expected, (slot, result)
 
 
 def test_two_dispatches_of_one_commit_do_not_collide():
@@ -1022,6 +1064,109 @@ def test_a_kernel_far_past_the_ceiling_is_still_seen(monkeypatch):
     found = collect.find_ours(api, now = now, max_age_hours = 3.0)
     assert [f["slug"] for f in found] == ["me/unsloth-t4-ci-nabcdef01-1111"]
     assert found[0]["age_hours"] == pytest.approx(30.0)
+
+
+class _PagedApi(_StubApi):
+    """kernels_list answering from a list of pages."""
+
+    def __init__(self, pages, statuses):
+        super().__init__([], statuses)
+        self._pages = pages
+        self.pages_asked: list[int] = []
+
+    def kernels_list(self, mine = True, page = 1, page_size = 100, sort_by = "dateRun"):
+        self.pages_asked.append(page)
+        return self._pages[page - 1] if page <= len(self._pages) else []
+
+
+def test_a_kernel_of_ours_below_five_hundred_newer_records_is_still_reached():
+    """The account is shared and human kernels are never deleted, so a fixed
+    page cap starting from page 1 every pass would leave an uncollected kernel
+    of ours below it unreachable forever: its result pending, or a wedged
+    session unreaped. The walk continues while pages still carry recent
+    entries, and stops only at a page entirely past the horizon with none of
+    ours on it."""
+    from datetime import datetime, timedelta
+
+    now = datetime(2026, 9, 6, 12, 0, 0)
+    recent = now - timedelta(hours = 1)
+    human = [
+        [_StubKernel(f"me/human-notebook-{p}-{i}", last_run_time = recent) for i in range(100)]
+        for p in range(6)
+    ]
+    ours = _StubKernel("me/unsloth-t4-ci-nabcdef012345-1111", last_run_time = now - timedelta(hours = 5))
+    pages = human + [[ours] + [_StubKernel(f"me/old-{i}", last_run_time = recent) for i in range(99)]]
+    api = _PagedApi(pages, {})
+    found = collect.find_ours(api, now = now)
+    assert [f["slug"] for f in found] == [ours.ref]
+    assert 7 in api.pages_asked
+
+
+def test_the_listing_walk_ends_at_a_page_past_the_horizon_with_none_of_ours():
+    from datetime import datetime, timedelta
+
+    now = datetime(2026, 9, 6, 12, 0, 0)
+    ancient = now - timedelta(hours = collect.LISTING_HORIZON_HOURS + 1)
+    pages = [
+        [_StubKernel(f"me/human-{i}", last_run_time = now - timedelta(hours = 1)) for i in range(100)],
+        [_StubKernel(f"me/ancient-{i}", last_run_time = ancient) for i in range(100)],
+        [_StubKernel("me/unsloth-t4-ci-nabcdef012345-2222", last_run_time = ancient)],
+    ]
+    api = _PagedApi(pages, {})
+    assert collect.find_ours(api, now = now) == []
+    assert api.pages_asked == [1, 2], "the walk did not stop at the first page past the horizon"
+    # A page past the horizon that still carries one of ours keeps the walk going.
+    pages[1][50] = _StubKernel("me/unsloth-t4-ci-nabcdef012345-3333", last_run_time = ancient)
+    api = _PagedApi(pages, {})
+    found = collect.find_ours(api, now = now)
+    assert {f["slug"] for f in found} == {
+        "me/unsloth-t4-ci-nabcdef012345-3333",
+        "me/unsloth-t4-ci-nabcdef012345-2222",
+    }
+
+
+def test_the_listing_walk_stops_at_the_pass_deadline(monkeypatch):
+    from datetime import datetime, timedelta
+
+    now = datetime(2026, 9, 6, 12, 0, 0)
+    pages = [
+        [_StubKernel(f"me/human-{p}-{i}", last_run_time = now - timedelta(hours = 1)) for i in range(100)]
+        for p in range(5)
+    ]
+    api = _PagedApi(pages, {})
+    clock = [1000.0]
+    monkeypatch.setattr(collect.time, "time", lambda: clock[0])
+    orig = api.kernels_list
+
+    def slow(*a, **k):
+        clock[0] += 400.0
+        return orig(*a, **k)
+
+    api.kernels_list = slow
+    collect.find_ours(api, now = now, deadline = 1500.0)
+    assert api.pages_asked == [1, 2], api.pages_asked
+    source = (CI_DIR / "collect.py").read_text(encoding = "utf-8")
+    assert "find_ours(api, max_age_hours = args.max_age_hours, deadline = deadline)" in source
+
+
+def test_a_reaped_kernel_is_not_reported_deleted_before_it_is(tmp_path, monkeypatch):
+    """The workflows collect with --no-delete and delete in a later step that
+    can be refused or time out; this reason is posted as a durable status
+    before that step runs, so it must not claim the deletion."""
+    from datetime import datetime, timedelta
+
+    slug = "me/unsloth-t4-ci-nabcdef012345-1111"
+    api = _StubApi([], {slug: "RUNNING"})
+    entry = {"slug": slug, "sha": "abcdef012345", "kind": "notebook", "legacy": False, "age_hours": 5.0}
+    record = collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0, delete = False)
+    assert record["verdict"] == "reaped"
+    assert "released for deletion" in record["reason"] and "was deleted" not in record["reason"]
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: True)
+    record = collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0, delete = True)
+    assert "was deleted" in record["reason"]
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: False)
+    record = collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0, delete = True)
+    assert "was deleted" not in record["reason"] and record["deleted"] is False
 
 
 # ------------------------------------------------------- who is allowed to be quiet

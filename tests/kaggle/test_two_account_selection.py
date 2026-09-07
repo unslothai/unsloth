@@ -505,9 +505,9 @@ def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down
     sweep, selection = main.split("for account_id in order:", 2)[1:]
     assert "in_flight_for_commit(survey" in sweep and "concurrency_verdict(" not in sweep
     assert "concurrency_verdict(" in selection and "in_flight_for_commit(" not in selection
-    assert (
-        "_survey(account_id)" in sweep and "_survey(account_id)" in selection
-    ), "surveys are not shared between the sweep and the selection"
+    assert "_survey(account_id)" in sweep and "_survey(account_id)" in selection, (
+        "surveys are not shared between the sweep and the selection"
+    )
     for path, kind in ((NOTEBOOK_WF, "notebook"), (STUDIO_WF, "studio")):
         gate_steps = [
             s
@@ -520,13 +520,7 @@ def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down
 
 
 def _drive_gate(
-    monkeypatch,
-    tmp_path,
-    *,
-    holder,
-    outcomes = None,
-    extra = (),
-    clock = None,
+    monkeypatch, tmp_path, *, holder, outcomes = None, extra = (), clock = None, holder_slot = "1"
 ):
     """Run gate.main() with two stub accounts. `holder` is the account whose
     survey shows a notebook kernel of the commit under test; `outcomes` maps an
@@ -557,8 +551,9 @@ def _drive_gate(
         surveys_asked.append((account_id, k.get("budget_sec")))
         if clock is not None:
             clock[0] += 170.0  # a slow survey
+        mark = "" if holder_slot == "1" else holder_slot
         own = (
-            [f"user{holder}/unsloth-t4-ci-n{sha[:12]}-1111 (RUNNING)"]
+            [f"user{holder}/unsloth-t4-ci-n{sha[:12]}-{mark}1111 (RUNNING)"]
             if account_id == holder
             else []
         )
@@ -604,9 +599,7 @@ def _drive_gate(
     )
     code = gate.main()
     outputs = dict(
-        line.split("=", 1)
-        for line in (tmp_path / "out.txt").read_text().splitlines()
-        if "=" in line
+        line.split("=", 1) for line in (tmp_path / "out.txt").read_text().splitlines() if "=" in line
     )
     return code, outputs, surveys_asked, sha
 
@@ -650,33 +643,40 @@ def test_an_account_that_cannot_launch_is_still_asked_whether_it_runs_this_commi
         assert other in {a for a, _b in asked}, (outcome, asked)
 
 
-def test_the_second_slot_is_not_a_duplicate(monkeypatch, tmp_path):
+def test_the_second_slot_is_not_a_duplicate_but_its_own_retry_is(monkeypatch, tmp_path):
     """`slot: 2` is the documented way to run a second session on the same ref
-    beside slot 1. A kernel of this commit already running is then the point,
-    not a duplicate, and the gate must let the dispatch through."""
-    sampled, other = _other("abcdef0123456789" + "0" * 24)
-    code, outputs, asked, _sha = _drive_gate(
-        monkeypatch, tmp_path, holder = sampled, extra = ("--slot", "2")
+    beside slot 1, so a slot-1 kernel already running this commit must not
+    stand it down. A retry of the slot-2 run itself, after its dispatcher has
+    exited with the kernel still up, is a duplicate and must be. The slot in
+    the slug is what tells the two apart."""
+    sampled, _unused = _other("abcdef0123456789" + "0" * 24)
+    # Slot 1 kernel up, slot 2 asked for: runs.
+    _c, outputs, _a, _s = _drive_gate(
+        monkeypatch, tmp_path, holder = sampled, extra = ("--slot", "2"), holder_slot = "1"
     )
     assert outputs["should_run"] == "true", outputs["reason"]
-    # And slot 1, same situation, still stands down.
-    code, outputs, asked, _sha = _drive_gate(
-        monkeypatch, tmp_path, holder = sampled, extra = ("--slot", "1")
+    # Slot 2 kernel up, slot 2 asked for again: stands down.
+    _c, outputs, _a, _s = _drive_gate(
+        monkeypatch, tmp_path, holder = sampled, extra = ("--slot", "2"), holder_slot = "2"
     )
     assert outputs["should_run"] == "false", outputs["reason"]
-    # The workflow passes its slot input through; the collector's in-flight
-    # check on the GPU job is likewise switched off on slot 2.
-    source = NOTEBOOK_WF.read_text(encoding = "utf-8")
-    assert "--slot '${{ inputs.slot || '1' }}'" in source
-    collect = [
-        s
-        for _j, _n, s in _steps(_wf(NOTEBOOK_WF))
-        if s.get("id") == "collect" and "--sha" in s["run"]
-    ]
-    assert len(collect) == 1
-    assert (
-        "(inputs.slot || '1') == '1' && steps.ref.outputs.ref" in collect[0]["run"]
-    ), "the GPU job's in-flight check would stand a slot 2 dispatch down"
+    assert "slot 2" in outputs["reason"]
+    # Slot 2 kernel up, slot 1 asked for: runs, it is the other seat.
+    _c, outputs, _a, _s = _drive_gate(
+        monkeypatch, tmp_path, holder = sampled, extra = ("--slot", "1"), holder_slot = "2"
+    )
+    assert outputs["should_run"] == "true", outputs["reason"]
+    # And slot 1 against slot 1 still stands down.
+    _c, outputs, _a, _s = _drive_gate(monkeypatch, tmp_path, holder = sampled, holder_slot = "1")
+    assert outputs["should_run"] == "false", outputs["reason"]
+    # The workflow threads its slot input through the gate, the collector's
+    # in-flight check and the launcher (which writes it into the slug).
+    steps = {s.get("id"): s for _j, _n, s in _steps(_wf(NOTEBOOK_WF)) if s.get("id")}
+    for step_id, script in (("decide", "gate.py"), ("collect", "collect.py"), ("launch", "launch.py")):
+        run = steps[step_id]["run"]
+        assert script in run
+        assert "--slot '${{ inputs.slot || '1' }}'" in run, f"{step_id} is not told the slot"
+    assert "--sha '${{ steps.ref.outputs.ref }}'" in steps["collect"]["run"]
 
 
 def test_the_surveys_share_one_budget(monkeypatch, tmp_path):
@@ -705,7 +705,7 @@ def test_the_gate_is_keyed_on_the_commit_the_gpu_job_will_test():
         assert ref["env"]["UNSLOTH_REF"] == "${{ inputs.unsloth_ref }}"
         assert "head_sha=" in ref["run"] and "git ls-remote" in ref["run"]
         decide = steps["decide"]
-        assert (
-            "--head-sha '${{ steps.ref.outputs.head_sha }}'" in decide["run"]
-        ), f"{path.name}: the gate is keyed on a commit the GPU job may not test"
+        assert "--head-sha '${{ steps.ref.outputs.head_sha }}'" in decide["run"], (
+            f"{path.name}: the gate is keyed on a commit the GPU job may not test"
+        )
         assert "github.sha" not in decide["run"]

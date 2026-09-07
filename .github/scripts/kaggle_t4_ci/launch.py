@@ -123,10 +123,17 @@ CODE_KINDS = {v: k for k, v in KIND_CODES.items()}
 # 8 to 40 on the read side: kernels pushed with the earlier eight-character
 # form can outlive the change and must still be collected and attributed.
 SLUG_SHA_LEN = 12
+# The notebook workflow's `slot` input, when it is not 1, sits between the
+# dash and the uid: `-2<uid4>`. Slot 2 is a deliberate SECOND session on the
+# same commit beside slot 1, so a duplicate check keyed on commit and kind
+# alone would either refuse it or, once it is exempted, let a retry of the
+# slot-2 run itself dispatch a third. The slot in the slug is what lets the
+# check say "this commit, this workflow, THIS slot". Absent means slot 1, so
+# every slug pushed before the slot existed still reads.
 CI_SLUG_RE = re.compile(
     r"^(?:(?P<owner>[^/]+)/)?"
     + re.escape(SLUG_PREFIX)
-    + r"(?:(?P<kind>[a-z])(?P<sha>[0-9a-f]{8,40})-(?P<uid>[0-9a-f]{4})"
+    + r"(?:(?P<kind>[a-z])(?P<sha>[0-9a-f]{8,40})-(?P<slot>[2-9])?(?P<uid>[0-9a-f]{4})"
     r"|(?P<legacy>[0-9a-f]{8}))$"
 )
 
@@ -145,11 +152,12 @@ def parse_slug(slug: str) -> dict | None:
         "owner": match.group("owner"),
         "kind": CODE_KINDS.get(match.group("kind") or "", None),
         "sha": match.group("sha"),
+        "slot": match.group("slot") or "1",
         "legacy": match.group("legacy") is not None,
     }
 
 
-def slug_name(kind: str = "", commit_sha: str = "") -> str:
+def slug_name(kind: str = "", commit_sha: str = "", slot: str = "1") -> str:
     """The name for a kernel about to be pushed.
 
     Falls back to the legacy random form when no commit is named, as a local
@@ -157,8 +165,10 @@ def slug_name(kind: str = "", commit_sha: str = "") -> str:
     """
     code = KIND_CODES.get(kind, "")
     sha = (commit_sha or "").strip().lower()[:SLUG_SHA_LEN]
+    slot = str(slot or "1").strip()
+    mark = slot if len(slot) == 1 and slot in "23456789" else ""
     if code and len(sha) == SLUG_SHA_LEN and all(c in "0123456789abcdef" for c in sha):
-        return f"{SLUG_PREFIX}{code}{sha}-{uuid.uuid4().hex[:4]}"
+        return f"{SLUG_PREFIX}{code}{sha}-{mark}{uuid.uuid4().hex[:4]}"
     return f"{SLUG_PREFIX}{uuid.uuid4().hex[:8]}"
 
 
@@ -587,6 +597,7 @@ def push(
     attempted: list[str] | None = None,
     kind: str = "",
     commit_sha: str = "",
+    slot: str = "1",
 ) -> dict:
     """Push as a fresh private kernel. Every attempt gets its own slug.
 
@@ -632,7 +643,7 @@ def push(
         for attempt in range(PUSH_ATTEMPTS):
             if attempted:
                 _discard(attempted[-1])
-            name = slug_name(kind, commit_sha)
+            name = slug_name(kind, commit_sha, slot)
             # The slug derives from the TITLE, not the metadata id: a mismatch
             # files the kernel at an unexpected address and every later
             # status/output call 403s, so assert the round trip.
@@ -1285,6 +1296,14 @@ def main() -> int:
         "commit status context to report the result under",
     )
     ap.add_argument(
+        "--slot",
+        default = "1",
+        choices = tuple("123456789"),
+        help = "the workflow's session slot. Written into the slug when it is not 1, "
+        "so a retry of a slot-2 run is recognised as the same session and a slot-2 "
+        "dispatch beside slot 1 is not",
+    )
+    ap.add_argument(
         "--deadline-epoch",
         type = int,
         default = 0,
@@ -1558,6 +1577,7 @@ def main() -> int:
                 attempted = entry["attempted"],
                 kind = args.kind,
                 commit_sha = args.commit_sha,
+                slot = args.slot,
             )
             entry["slug"] = pushed.get("slug")
             entry["push_error"] = (

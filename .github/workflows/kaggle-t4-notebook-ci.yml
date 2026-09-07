@@ -1086,8 +1086,9 @@ jobs:
           python .github/scripts/kaggle_t4_ci/collect.py \
             --outdir kaggle_collected \
             --expect '${{ steps.build.outputs.payloads }}' \
-            --sha '${{ (inputs.slot || '1') == '1' && steps.ref.outputs.ref || '' }}' \
+            --sha '${{ steps.ref.outputs.ref }}' \
             --kind notebook \
+            --slot '${{ inputs.slot || '1' }}' \
             --no-delete \
             --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
@@ -1128,9 +1129,10 @@ jobs:
       # 12GB gpt-oss checkpoint before it trains anything.
       #
       # `--sha` is what stands a run down when a kernel of this commit is
-      # already up. Slot 2 is the opt-in for a SECOND session on the same ref
-      # beside slot 1 (an A/B, one input varied), so on slot 2 the collector
-      # is not handed the sha and the in-flight check cannot fire.
+      # already up, and `--slot` is part of that identity: slot 2 is the opt-in
+      # for a SECOND session on the same ref beside slot 1 (an A/B, one input
+      # varied), so a slot-1 kernel does not count against it, while a retry
+      # of the slot-2 run itself still does.
       #
       # THE GATE'S ANSWER CAN BE STALE BY THE TIME WE GET HERE, and this is the
       # first point at which it cannot be. The `gate` job surveys quota and
@@ -1231,6 +1233,7 @@ jobs:
             --poll-every 60 \
             --dispatch \
             --kind notebook \
+            --slot '${{ inputs.slot || '1' }}' \
             --commit-sha '${{ steps.ref.outputs.ref }}' \
             --deadline-epoch "$(( JOB_START_EPOCH + JOB_TIMEOUT_MINUTES * 60 ))"
 
