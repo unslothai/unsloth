@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+
 import asyncio
 import json
 import re
@@ -57,7 +59,8 @@ _EXTERNAL_ROUTING_FIELDS = {
     "encrypted_api_key",
     "provider_base_url",
 }
-# Attachments the composer sends inline. Durable replay has no representation for them.
+# Attachments the composer sends inline. They persist verbatim in request_json (a second copy beside the
+# thread's own copy of the message); the toggle below decides whether such turns are durable at all.
 _MEDIA_FIELDS = {
     "image_base64",
     "audio_base64",
@@ -171,9 +174,16 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Durable chat runs are available only for local inference",
         )
-    # A media turn has no replayable transcript and its payload persists verbatim, so a base64 blob would live in
-    # request_json for the life of the thread.
-    if any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS):
+    # Media turns are durable now that replay is faithful: persisted frames replay re-tagged exactly as the live
+    # stream yields them, and once generation starts the client contributes nothing. The residual cost is only the
+    # blob itself - the attachment persists verbatim in request_json beside the thread's own copy of the message.
+    # UNSLOTH_STUDIO_DURABLE_MEDIA_TURNS=0 restores the original refusal; the frontend degrades that 400 silently.
+    _durable_media = os.environ.get("UNSLOTH_STUDIO_DURABLE_MEDIA_TURNS", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if not _durable_media and any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS):
         raise HTTPException(
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",
@@ -185,7 +195,18 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
 
     request = request.model_copy(update = {"thread_id": payload.threadId})
 
-    if (
+    # Shipped ON (default ON so a restart alone activates it - env scoping proved unreliable across launchers):
+    # tool-enabled turns are durable because replay now re-tags persisted frames exactly as the live stream yields
+    # them; set UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 to restore the original refusal.
+    _durable_tools = os.environ.get("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    # NOTE: the guard wraps the WHOLE or-chain. `A and B or C or D` parses as `(A and B) or C or D`, so a bare
+    # prefix only guarded raw["tools"]; the Studio UI sends `enable_tools: true` (term 2), which still raised with
+    # the flag ON - the flip was inert for exactly the turns it was added to unblock.
+    if not _durable_tools and (
         raw.get("tools")
         or request.enable_tools is True
         or bool(request.mcp_enabled)

@@ -307,6 +307,7 @@ import {
   followChatGenerationRun,
   supportsChatGenerationRuns,
 } from "./chat-generation-api";
+import { turnRequiresLegacyStream } from "./durable-gate";
 
 // Small models (<=9B) answer from memory, so "auto" forces retrieval for them.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
@@ -4939,13 +4940,18 @@ export function createOpenAIStreamAdapter(
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
+
+      // Payload attachment fields are THIS turn's only - the scans above walk post-prune history so an old turn's
+      // media cannot mis-ride a later one. Media turns are durable candidates too: replay is faithful now, and once
+      // generation starts the client contributes nothing; a backend toggle-off degrades to legacy silently via
+      // isLegacyFallbackChatGenerationAdmissionError, exactly like a policy-refused tool turn.
+      const currentTurnMessages = [generationUserMessage] as unknown as Parameters<
+        typeof findLatestUserImageBase64
+      >[0];
       const generationCandidate = Boolean(
         !isExternalRequest &&
           !activeModel?.isAudio &&
           !runtime.loadedIsDiffusion &&
-          !imageBase64 &&
-          !audioBase64 &&
-          !videoBase64 &&
           // Continue yields the seeded partial before the request starts so the autosave lands before
           // admission, which 409s a substantive placeholder. Continuations keep the legacy stream.
           !continuation &&
@@ -5140,7 +5146,15 @@ export function createOpenAIStreamAdapter(
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
         contextTruncation,
-        incomplete: { reason: "cancelled" as const },
+        // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
+        // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
+        // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
+        // their reconnect path marks state via recovery, and an explicit Stop still reads as cancelled below.
+        incomplete: {
+          reason: (generationDecision === "durable"
+            ? "cancelled"
+            : "interrupted") as IncompleteReason,
+        },
         ...generationCustom(),
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -5552,6 +5566,9 @@ export function createOpenAIStreamAdapter(
           return;
         }
         generationStopRequested = true;
+        // An explicit Stop is a cancel, not a walk-away interruption: override the provisional reason so a
+        // deliberate Stop still reads as "cancelled" even though streamed yields carried the legacy default.
+        incompleteReason = "cancelled";
         const stopPlan = chatGenerationStopPlan(
           generationDecision,
           generationRunId,
@@ -6041,9 +6058,16 @@ export function createOpenAIStreamAdapter(
             ...(params.seed == null || !modelReadsSamplingSeed(activeModel)
               ? {}
               : { seed: params.seed }),
-            image_base64: imageBase64,
-            audio_base64: audioBase64,
-            video_base64: videoBase64,
+            // Turn-scoped, not thread-scoped. These are the CURRENT turn's attachment channel; history media rides
+            // along inside messages[].content. Sending a stale screenshot from an earlier turn made the backend see a
+            // non-empty media field on every later text-only turn and refuse the durable run with 400 "Media chat
+            // runs use the legacy streaming path" - which is what kept these turns on the cancel-on-disconnect stream.
+            image_base64: findLatestUserImageBase64(currentTurnMessages),
+            audio_base64: findLatestUserAudioBase64(
+              currentTurnMessages,
+              !queuedRunSettings && !continuation,
+            ),
+            video_base64: findLatestUserVideoBase64(currentTurnMessages),
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
@@ -6169,14 +6193,14 @@ export function createOpenAIStreamAdapter(
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             if (generationDecision === "pending") {
-              const clientTools = (
-                requestPayload as unknown as { tools?: unknown }
-              ).tools;
-              if (
-                requestPayload.enable_tools === true ||
-                (Array.isArray(clientTools) && clientTools.length > 0)
-              ) {
-                // Confirmation and browser-executed tool chains still use the subscriber-owned stream.
+              // Keyed on `enabled_tools`, never on `requestPayload.tools`: see durable-gate.ts. Keying this on
+              // `tools` read as "no tools" on the local path and as "browser tools" for every passthrough turn that
+              // carried a schema catalog, silently forcing those turns back onto the cancel-on-disconnect path.
+              if (turnRequiresLegacyStream(requestPayload)) {
+                // Only a tool chain the BROWSER must execute still needs the live tab: there is no server-side
+                // executor to run it while you're away. Everything else is durable like plain text - an auto/bypass
+                // loop runs to completion while you're away, and a confirm ("ask") call parks on its approval_id
+                // (see tool_approvals.wait_tool_decision) and is resolved by id on return.
                 generationDecision = "legacy";
               } else {
                 const admission = explicitStopSignal(runSignal);
