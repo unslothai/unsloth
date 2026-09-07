@@ -353,3 +353,61 @@ def test_a_cancelled_run_is_not_retried_at_the_old_budget(research_home, monkeyp
         asyncio.run(supervisor._research(claimed))
 
     assert calls["n"] == 1
+
+
+def test_a_failed_recovery_keeps_the_draft_it_was_called_to_rescue(research_home, monkeypatch):
+    """Recovery improves on a draft already in hand, so failing it must not discard that.
+
+    Its prompt carries instructions the first one did not, so an endpoint that counts prompt
+    plus requested output against a single window can refuse the second request at a budget
+    the first fit inside. Losing the run there would throw away a readable report.
+    """
+    from core import research_runs as worker
+
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    monkeypatch.setattr(
+        worker.providers_db, "get_provider", lambda _id: {"max_output_tokens": 32_768}
+    )
+    claimed = _claimed_run(supervisor, external = True)
+    phases: list[str] = []
+
+    async def refuse_only_the_recovery(run, messages, **kwargs):
+        phase = kwargs.get("phase")
+        phases.append(phase)
+        if phase == "synthesis":
+            return FIRST_DRAFT, "", "length", {"completion_tokens": 32_768}
+        if phase == "synthesis_recovery":
+            raise ValueError("max_tokens plus prompt exceeds the model's context window")
+        return "not json", "", "stop", None
+
+    monkeypatch.setattr(supervisor, "_stream_completion", refuse_only_the_recovery)
+    asyncio.run(supervisor._research(claimed))
+
+    assert "synthesis_recovery" in phases
+    finished = research_db.get_run("run-1")
+    assert finished["status"] == "completed"
+    assert FIRST_DRAFT in finished["report"]
+    assert "Incomplete report." in finished["report"]
+
+
+def test_a_cancel_during_recovery_still_stops_the_run(research_home, monkeypatch):
+    """The rescue covers a refused request, not a run the user stopped."""
+    from core import research_runs as worker
+
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    monkeypatch.setattr(
+        worker.providers_db, "get_provider", lambda _id: {"max_output_tokens": 32_768}
+    )
+    claimed = _claimed_run(supervisor, external = True)
+
+    async def cancel_during_recovery(run, messages, **kwargs):
+        phase = kwargs.get("phase")
+        if phase == "synthesis":
+            return FIRST_DRAFT, "", "length", {"completion_tokens": 32_768}
+        if phase == "synthesis_recovery":
+            raise worker.RunCancelled()
+        return "not json", "", "stop", None
+
+    monkeypatch.setattr(supervisor, "_stream_completion", cancel_during_recovery)
+    with pytest.raises(worker.RunCancelled):
+        asyncio.run(supervisor._research(claimed))

@@ -97,7 +97,11 @@ _CAP_LOOKUP_ATTEMPTS = 3
 _CAP_LOOKUP_RETRY_SECONDS = 0.2
 _PROGRESS_FLUSH_CHARS = 512
 _PROGRESS_FLUSH_SECONDS = 0.25
-_PROGRESS_FLUSH_CHARS_PER_SECOND = 1_048_576
+# _PROGRESS_FLUSH_CHARS / _PROGRESS_FLUSH_SECONDS * 64, so both triggers start scaling from the
+# same written length. A larger divisor puts the time arm's knee at 262_144 chars, which is
+# where a 65_536-token report ENDS, so across the whole range this change unlocks the character
+# scaling never binds and the row is still rewritten four times a second.
+_PROGRESS_FLUSH_CHARS_PER_SECOND = 131_072
 # Providers whose thinking answers truncate below a floor; mirrors
 # EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER in the same client module.
 _EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER = {"kimi": 16_000}
@@ -2827,18 +2831,38 @@ class ResearchSupervisor:
                 _run_inference_request(run),
                 recovery_messages,
             )
-            (
-                recovered_report,
-                recovery_reasoning,
-                recovery_finish_reason,
-                recovery_usage,
-            ) = await self._stream_completion(
-                run,
-                recovery_messages,
-                phase = "synthesis_recovery",
-                max_tokens = synthesis_max_tokens,
-                enable_thinking = False,
-            )
+            try:
+                (
+                    recovered_report,
+                    recovery_reasoning,
+                    recovery_finish_reason,
+                    recovery_usage,
+                ) = await self._stream_completion(
+                    run,
+                    recovery_messages,
+                    phase = "synthesis_recovery",
+                    max_tokens = synthesis_max_tokens,
+                    enable_thinking = False,
+                )
+            except (RunCancelled, LeaseLost):
+                raise
+            except Exception:
+                # Recovery exists to improve on a draft that is already in hand, so failing
+                # the run here would discard the very thing it was called to rescue -- and
+                # its prompt carries instructions the first one did not, so an endpoint that
+                # counts prompt plus requested output against one window can refuse the
+                # second request at a budget the first fit inside. The first draft goes out
+                # under its incomplete-report notice, which is what it would have done had
+                # recovery merely come back empty.
+                logger.warning(
+                    "research.synthesis_recovery_failed run_id=%s budget=%s",
+                    run["id"],
+                    synthesis_max_tokens,
+                    exc_info = True,
+                )
+                await self._check_active(run["id"])
+                recovered_report, recovery_reasoning = "", ""
+                recovery_finish_reason, recovery_usage = None, None
             synthesis_reasoning += recovery_reasoning
             recovered = _select_synthesis_report(recovered_report, recovery_reasoning)
             # A second attempt at the SAME report under the same budget, not a correction of

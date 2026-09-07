@@ -753,6 +753,24 @@ def test_a_cap_lowered_mid_run_bounds_the_request_that_actually_goes_out(monkeyp
     assert _synthesis_max_tokens(inference, 0) == 32_768
 
 
+def test_the_flush_triggers_scale_from_the_same_written_length():
+    """Both arms must start scaling together, or the character one never binds.
+
+    Every flush rewrites the whole report row through the shared SQLite writer, and the same
+    wake-ups drive a full-report read per follower, so a time arm whose knee sits at the END
+    of the range this change unlocks leaves the row being rewritten four times a second for
+    an entire 65_536-token report.
+    """
+    knee = int(research_runs._PROGRESS_FLUSH_SECONDS * research_runs._PROGRESS_FLUSH_CHARS_PER_SECOND)
+    assert knee == research_runs._PROGRESS_FLUSH_CHARS * 64
+    # A 65_536-token report is roughly 262_144 chars, and the time arm has to have started
+    # scaling well before it, not at it.
+    assert knee < 262_144 // 2
+    # Short reports are untouched: both arms sit at the previous constants.
+    assert max(research_runs._PROGRESS_FLUSH_CHARS, 1_000 // 64) == 512
+    assert max(research_runs._PROGRESS_FLUSH_SECONDS, 1_000 / research_runs._PROGRESS_FLUSH_CHARS_PER_SECOND) == 0.25
+
+
 def test_an_explicit_zero_budget_is_never_put_on_the_wire(monkeypatch):
     """main's `max_tokens or ...` made 0 impossible; the route rejects a request for one."""
     monkeypatch.setattr(research_runs, "_loaded_context_length", lambda *a, **k: None)
