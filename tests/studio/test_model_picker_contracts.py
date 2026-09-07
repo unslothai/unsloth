@@ -1406,9 +1406,9 @@ def test_save_settings_reflects_the_context_it_pinned():
     ), "handleSave no longer compares the persisted context against the displayed one"
     # Only the remember branch stored anything. A forget deleted the entry, so reflecting the
     # pin there would turn "Forget settings" into a silent context pin the next reload uses.
-    assert "if ( remember && effectiveRuntimeConfig.customContextLength" in handler, (
-        "handleSave reflects the pinned context even when forgetting, which stored nothing"
-    )
+    assert (
+        "if ( remember && effectiveRuntimeConfig.customContextLength" in handler
+    ), "handleSave reflects the pinned context even when forgetting, which stored nothing"
     assert (
         "update({ customContextLength: effectiveRuntimeConfig.customContextLength, })" in handler
     ), "handleSave no longer pushes the persisted context back into the panel"
