@@ -793,7 +793,6 @@ class TestPublishedReleaseResolution:
         resolved = resolve_published_release(commit, "unslothai/llama.cpp")
         assert resolved.bundle.release_tag == "release-commit"
 
-
     def test_walk_back_reads_checksums_from_the_listing(self, monkeypatch):
         tags = ["b3", "b2", "b1"]
         cdn = "https://github.com/unslothai/llama.cpp/releases/download"
@@ -835,9 +834,7 @@ class TestPublishedReleaseResolution:
         monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
 
         resolved = list(
-            INSTALL_LLAMA_PREBUILT.iter_resolved_published_releases(
-                "latest", "unslothai/llama.cpp"
-            )
+            INSTALL_LLAMA_PREBUILT.iter_resolved_published_releases("latest", "unslothai/llama.cpp")
         )
 
         assert [entry.bundle.release_tag for entry in resolved] == tags
@@ -1080,11 +1077,9 @@ class TestValidatedChecksumsForBundle:
         assert plan.source_ref_kind == "commit"
         assert plan.source_ref == "a" * 40
 
-
-# ===========================================================================
-# K. linux_cuda_choice_from_release -- core selection
-# ===========================================================================
-
+    # ===========================================================================
+    # K. linux_cuda_choice_from_release -- core selection
+    # ===========================================================================
 
     def test_reads_the_checksum_asset_from_the_listing(self, monkeypatch):
         bundle = make_release([], release_tag = "r1", upstream_tag = "b8508")

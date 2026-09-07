@@ -947,7 +947,11 @@ def test_github_api_403_without_a_reachable_reset_makes_one_request():
     requests = []
 
     class Opener:
-        def open(self, request, timeout = None):
+        def open(
+            self,
+            request,
+            timeout = None,
+        ):
             requests.append(request.full_url)
             raise _github_api_403({})
 
