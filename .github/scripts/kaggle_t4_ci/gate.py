@@ -364,23 +364,21 @@ def in_flight_for_commit(
     kind: str,
     slot: str = "1",
 ) -> str | None:
-    """The ref of a busy kernel of ours already running THIS commit for THIS
-    workflow in THIS slot, or None.
+    """The ref of a busy kernel of ours already running THIS commit, kind and
+    slot, or None.
 
-    The slot is part of the identity: slot 2 is a deliberate second session
-    beside slot 1 on the same commit, so a slot-1 kernel must not stand a
-    slot-2 dispatch down, while a retry of the slot-2 run itself must be.
+    The slot is part of the identity: a slot-1 kernel must not stand a slot-2
+    dispatch down, while a retry of the slot-2 run itself must be.
 
-    Asked of every account the gate surveys, not only the one it picks: the
-    draw is keyed on the commit, but a handover (the preferred account full,
-    or unreadable) lands a retry on the other account, whose GPU job collects
-    with only its own token and would see nothing in flight.
+    Asked of every account surveyed, not only the one picked: a handover lands
+    a retry on the other account, whose GPU job collects with only its own
+    token and would see nothing in flight.
     """
     sha = (head_sha or "").strip().lower()
     slot = str(slot or "1").strip()
     if not sha or not kind:
         return None
-    import launch  # noqa: PLC0415  (sibling script; loaded lazily to keep the gate importable alone)
+    import launch  # noqa: PLC0415  (sibling script, loaded lazily so the gate imports alone)
 
     for entry in own_busy:
         ref = entry.split(" (", 1)[0]
@@ -398,20 +396,14 @@ def weighted_pick(key: str, weights: dict[str, float]) -> tuple[str, float]:
     """Deterministic weighted choice of account, keyed on the COMMIT under test
     (the run id when no commit is known).
 
-    The commit rather than the run: a second Actions run on one commit (a
-    label added while a sampled run is still out, a forced dispatch) must land
-    on the account already holding that commit's kernel, or the collector on
-    the other account sees nothing in flight and dispatches a duplicate.
-
-    Not the attempt, for the same reason `sampled_in` excludes it and a sharper
-    one: a re-run of a run whose kernels are still in flight must return to the
-    SAME account, or the second attempt pushes to an account the first one is
-    not watching and the first one's kernels are reaped by nobody.
+    The commit rather than the run or the attempt: every run of one commit
+    must land on the account already holding that commit's kernel, or the
+    collector on the other account sees nothing in flight, dispatches a
+    duplicate, and reaps nothing.
 
     Salted differently from `sampled_in` so the two draws off one run id are
-    independent -- without the salt, whether a run is sampled in would correlate
-    with which account it lands on, and one account would quietly get a
-    different SHARE of the forced runs than of the sampled ones.
+    independent; without the salt one account would get a different SHARE of
+    the forced runs than of the sampled ones.
     """
     ids = sorted(weights)
     total = sum(max(0.0, weights[i]) for i in ids)
@@ -918,10 +910,8 @@ def main() -> int:
     print("[gate] accounts " + json.dumps(list(probes.values())), flush = True)
     _out("accounts", json.dumps(list(probes.values())))
 
-    # An account whose quota could not be read has no weight, because a weight
-    # is what its plan says and we did not get to hear it. It stays a CANDIDATE
-    # -- the order below still reaches it -- so an unreadable answer costs the
-    # account its share of the traffic and not its place in the queue.
+    # An unreadable quota means no weight but still a CANDIDATE: it costs the
+    # account its share of the traffic, not its place in the queue.
     weights = {i: p["total_hours"] for i, p in probes.items() if p.get("total_hours")}
     account_key = (args.head_sha or "").strip().lower() or str(args.run_id)
     sampled_account, account_draw = weighted_pick(account_key, weights)
@@ -940,16 +930,14 @@ def main() -> int:
             flush = True,
         )
 
-    # The sampled account first, then the rest in declaration order. Only the
-    # account actually being considered pays for a survey, which is the
-    # expensive call here.
+    # Sampled account first, then declaration order. Only an account actually
+    # considered pays for a survey, the expensive call here.
     order = [sampled_account] + [i for i in probes if i != sampled_account]
     handovers: list[str] = []
     surveys: dict[str, dict] = {}
-    # ONE survey budget for the whole gate, however many accounts it asks. Each
-    # survey is bounded on its own, but two of them back to back would outlive
-    # the job's timeout, and a runner killed mid-question is a red rather than
-    # the soft stand-down an incomplete survey turns into.
+    # ONE survey budget for the whole gate: two bounded surveys back to back
+    # outlive the job timeout, and a runner killed mid-question is a red rather
+    # than the soft stand-down an incomplete survey gives.
     survey_deadline = time.monotonic() + SURVEY_BUDGET_SEC
 
     def _survey(account_id: str) -> dict:
@@ -960,12 +948,10 @@ def main() -> int:
             )
         return surveys[account_id]
 
-    # EVERY account with a usable client first, for THIS commit, before any is
-    # chosen. An earlier run can have handed this commit to the other account;
-    # a retry that finds the preferred account free again would otherwise pick
-    # it and never look at the account whose kernel is still running. Whether
-    # the account could take a NEW launch is beside the point here: the one
-    # that just dispatched is exactly the one likely to be short of quota now.
+    # Ask EVERY usable account about this commit before choosing one: an
+    # earlier run may have handed the commit to the other account, and a retry
+    # finding the preferred one free again would never look at the kernel still
+    # running. Capacity for a NEW launch is beside the point here.
     slot = str(args.slot or "1").strip()
     if args.head_sha and args.kind:
         for account_id in order:

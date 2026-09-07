@@ -276,10 +276,9 @@ jobs:
       && (github.event.action != 'labeled'
       || github.event.label.name == 'kaggle-studio-gpu-ci')
     runs-on: ubuntu-latest
-    # 15, for the honest worst case with two accounts: each one's
-    # authentication, username and quota read at the socket ceiling, one shared
-    # survey budget, and the one call still in flight when it expires. The
-    # harness suite asserts the arithmetic.
+    # 15, the worst case with two accounts: each one's authentication, username
+    # and quota read at the socket ceiling, one shared survey budget, and the
+    # call still in flight when it expires. The suite asserts the arithmetic.
     timeout-minutes: 15
     outputs:
       should_run: ${{ steps.decide.outputs.should_run }}
@@ -290,8 +289,8 @@ jobs:
       account: ${{ steps.decide.outputs.account }}
       account_user: ${{ steps.decide.outputs.account_user }}
       matrix: ${{ steps.decide.outputs.matrix }}
-      # The commit under test, resolved once. The GPU job tests THIS and
-      # never re-resolves a moving ref.
+      # The commit under test, resolved once: the GPU job tests THIS and never
+      # re-resolves a moving ref.
       head_sha: ${{ steps.ref.outputs.head_sha }}
     steps:
       - name: Harden runner (audit)
@@ -318,12 +317,11 @@ jobs:
       # demanding two free concurrency slots would stand the job down on an
       # account that has room for it.
       #
-      # budget-hours is the worst case ONE invocation can cost. That used to be
-      # the 70-minute kernel ceiling, rounded up to 2, while this job waited and
-      # deleted the kernel itself. It dispatches now, and a kernel that ignores
-      # its own timeout (seen: two hours past it, still RUNNING) is left to the
-      # collector's age ceiling plus its schedule and job timeout, so the worst
-      # case is that whole reaper window. The harness suite derives it.
+      # budget-hours is the worst case ONE invocation can cost. Nothing waits
+      # on the kernel now, and one that ignores its own timeout (seen: two hours
+      # past it, still RUNNING) is left to the collector's age ceiling plus its
+      # schedule and job timeout, so the worst case is that whole reaper window.
+      # The harness suite derives it.
       #
       # reserve-hours is 10 rather than the notebook leg's 20, and that is the
       # single knob that implements "CI may use up to 50 of the 60 hours".
@@ -331,14 +329,12 @@ jobs:
       # quota. Do not raise it above roughly 45 or CI never runs at all on a
       # week with any other usage.
       # THE COMMIT THE GPU JOB WILL TEST, which is not always this workflow's
-      # own. A dispatch naming `unsloth_ref` tests that ref; keyed on
-      # github.sha the in-flight check would look for the wrong kernel (and
-      # could stand a request for an unrelated ref down behind a kernel of the
-      # workflow commit), and once the default branch moved, two runs of the
-      # same requested ref could be drawn onto different accounts and never see
-      # each other. Resolved the way the GPU job resolves it. A ref that does
-      # not resolve leaves the key EMPTY: the draw then falls back to the run
-      # id, and the GPU job stands down on the same ref moments later.
+      # own: a dispatch naming `unsloth_ref` tests that ref. Keyed on github.sha
+      # instead, the in-flight check would look for the wrong kernel, and once
+      # the default branch moved two runs of one requested ref could be drawn
+      # onto different accounts and never see each other. A ref that does not
+      # resolve leaves the key EMPTY, so the draw falls back to the run id and
+      # the GPU job stands down on the same ref moments later.
       - name: Name the commit under test
         id: ref
         env:
@@ -392,9 +388,9 @@ jobs:
     name: Unsloth GPU smoke
     needs: gate
     # Load-bearing: this job dispatches rather than waits, so it cannot BE the
-    # check that says the Studio smoke passed. It posts that verdict as a commit
-    # status for whichever commit the collected kernel belongs to, which is not
-    # necessarily this run's.
+    # check that says the Studio smoke passed. It posts that verdict as a status
+    # on whichever commit the collected kernel belongs to, not necessarily this
+    # run's.
     permissions:
       contents: read
       statuses: write
@@ -454,8 +450,8 @@ jobs:
       # base. Pinned to a SHA rather than a branch so a push landing mid-run
       # cannot change what was tested.
       # To a COMMIT, never a ref: the commit goes into the kernel's slug, the
-      # only record a later collector has of what the result is about. A branch
-      # or tag cannot be encoded and launch.py refuses it.
+      # only record a later collector has. A branch or tag cannot be encoded,
+      # and launch.py refuses it.
       - name: Resolve the ref under test
         id: ref
         env:
@@ -468,19 +464,16 @@ jobs:
             echo "testing unslothai/unsloth@$HEAD_SHA"
             exit 0
           fi
-          # RESOLVED ONCE, by the gate job, and reused here rather than asked
-          # again. A branch or tag can move while this job queues; resolving it
-          # a second time could name a commit the gate never keyed the account
-          # draw or the in-flight check on, and that commit's own run may
-          # already be out on the other account, which is a duplicate session.
-          # The reachability fetch below still applies to what the gate said.
+          # RESOLVED ONCE, by the gate job, and reused rather than asked again:
+          # a branch or tag can move while this job queues, and a second answer
+          # could name a commit the gate never keyed the draw or the in-flight
+          # check on, whose own run may already be out on the other account.
           RESOLVED="$GATE_SHA"
-          # A full SHA is accepted on shape alone above, and `git ls-remote`
-          # matches refs, so neither says unslothai/unsloth HAS the commit. A
-          # mistyped or force-pushed-away SHA would spend a session, fail the
-          # pending status, and be released by the collector as missing with
-          # no verdict ever posted. Fetching the object is the reachability
-          # pip needs anyway; GitHub refuses an unreachable one with exit 128.
+          # A full SHA is accepted on shape alone above and `git ls-remote`
+          # matches refs, so neither says the repo HAS the commit. A mistyped or
+          # force-pushed-away SHA would spend a session and never get a verdict.
+          # Fetching the object is the reachability pip needs anyway; GitHub
+          # refuses an unreachable one with exit 128.
           if ! printf '%s' "$RESOLVED" | grep -Eq '^[0-9a-f]{40}$'; then
             RESOLVED=''
           fi
@@ -532,12 +525,10 @@ jobs:
 
       # Finish what an earlier run started, BEFORE the recheck: this can spend
       # fifteen minutes downloading and the notebook workflow can take the
-      # account's last session in that window; the recheck is the last thing
-      # before the push, or it is not a recheck.
-      #
-      # Same reasons as the notebook leg: the token is already in hand, so
-      # collecting costs seconds and frees the session slot this job wants, and
-      # it answers whether a kernel for THIS commit is already in flight.
+      # account's last session in that window; the recheck must be the last
+      # thing before the push. As on the notebook leg, the token is already in
+      # hand, collecting frees the slot this job wants, and it answers whether a
+      # kernel for THIS commit is already in flight.
       - name: Collect finished Kaggle runs
         id: collect
         env:
@@ -551,12 +542,11 @@ jobs:
             --no-delete \
             --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
-      # Post FIRST, delete SECOND. The collector ran with --no-delete, so a
-      # verdict that fails to reach GitHub leaves its kernel up for the next
-      # pass; deleting first would make that failure permanent. The poster is a
-      # script shared by all three workflows: it expands the slug's 8-character
-      # sha (the statuses API 422s an abbreviation) and hands every field to
-      # `gh` as its own argument, never through a shell.
+      # Post FIRST, delete SECOND: a verdict that fails to reach GitHub leaves
+      # its kernel up for the next pass, and deleting first would make that
+      # failure permanent. The poster is shared by all three workflows; it
+      # expands the slug's abbreviated sha (the statuses API 422s one) and hands
+      # every field to `gh` as its own argument, never through a shell.
       - name: Post the collected verdicts as commit statuses
         id: post
         if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
@@ -652,8 +642,8 @@ jobs:
             --commit-sha '${{ steps.ref.outputs.ref }}'
 
       # Gated on the launcher's verdict, not its exit code: launch.py exits 0
-      # for every infrastructure stand-down, and a pending status for a kernel
-      # that does not exist is one no collector can ever replace.
+      # for every stand-down, and a pending status for a kernel that does not
+      # exist is one no collector can ever replace.
       - name: Mark the dispatch pending on this commit
         if: steps.launch.outputs.verdict == 'dispatched'
         env:
@@ -672,15 +662,14 @@ jobs:
       # screenshots and logs into its own cell output; this puts them back.
       - name: Unpack the Playwright evidence
         if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb', 'kaggle_collected/**/*_output.ipynb') != ''
-        # Best effort, like the notebook and scheduled unpacks: the verdict was
-        # decided and posted above, and evidence Kaggle mangled must not turn
-        # the job red after the fact.
+        # Best effort: the verdict was posted above, and evidence Kaggle
+        # mangled must not turn the job red after the fact.
         continue-on-error: true
         run: |
           # One kernel per call: the bundle is reassembled from numbered chunks
-          # and one walk over two would splice them together. Both trees: a
-          # waited-on kernel lands in kaggle_evidence, a collected one in
-          # kaggle_collected, and the screenshots matter most for the second.
+          # and one walk over two would splice them together. Both trees, since
+          # a waited-on kernel lands in kaggle_evidence and a collected one in
+          # kaggle_collected.
           for dir in kaggle_evidence/*/ kaggle_collected/*/; do
             [ -d "$dir" ] || continue
             python .github/scripts/kaggle_studio_ci/collect_evidence.py \

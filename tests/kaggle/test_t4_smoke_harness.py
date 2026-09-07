@@ -591,10 +591,9 @@ def test_the_gate_job_deadline_exceeds_the_gates_own_bound():
     """
     import gate
 
-    # Per account: authentication, the username read and the quota read, each
-    # at the socket ceiling. Then ONE survey budget shared across every account
-    # the gate asks (two surveys back to back would be the bug), and the call
-    # still in flight when it expires.
+    # Per account: authentication, username and quota, each at the socket
+    # ceiling. Then ONE survey budget shared across every account (two back to
+    # back would be the bug), and the call still in flight when it expires.
     accounts = len(gate.DEFAULT_ACCOUNT_ENVS)
     worst = (
         accounts * 3 * gate.SOCKET_TIMEOUT_SEC + gate.SURVEY_BUDGET_SEC + gate.SOCKET_TIMEOUT_SEC
@@ -2748,8 +2747,8 @@ def test_a_dispatched_ref_is_resolved_to_one_commit():
     names = [s.get("name") for s in steps]
     ref = steps[names.index("Resolve the ref under test")]
     assert ref["env"]["UNSLOTH_REF"] == "${{ inputs.unsloth_ref }}"
-    # Resolved once, by the GATE, and retried there before it gives up; this
-    # job takes the gate's answer rather than asking a moving ref again.
+    # Resolved once, by the GATE, and retried there; this job takes that answer
+    # rather than asking a moving ref again.
     gate_ref = next(s for s in workflow["jobs"]["gate"]["steps"] if s.get("id") == "ref")
     assert "git ls-remote https://github.com/unslothai/unsloth" in gate_ref["run"]
     assert "for attempt in 1 2 3" in gate_ref["run"]
@@ -3099,10 +3098,9 @@ def test_the_account_is_rechecked_after_the_concurrency_slot_is_held():
     # --force skips the sampling draw only; the dice were rolled by the gate.
     assert "--force true" in recheck["run"]
     assert "--reserve-hours" in recheck["run"] and "--kernels" in recheck["run"]
-    # and nothing that spends a session runs unless it approved. Asserted on the
-    # dispatch step's condition, not on step order: collection now sits between
-    # the recheck and the dispatch, so a positional rule would assert the shape
-    # of the file rather than the property.
+    # and nothing that spends a session runs unless it approved. On the
+    # dispatch step's condition, not step order: collection now sits between the
+    # two, so a positional rule would assert the file's shape, not the property.
     dispatch = steps[names.index("Dispatch to Kaggle")]
     assert "steps.recheck.outputs.should_run == 'true'" in dispatch["if"]
 
@@ -3467,10 +3465,10 @@ def test_an_evidence_upload_outage_cannot_colour_the_check_red():
     assert "::warning" in warn["run"]
     # The verdict still runs, and still on its own condition.
     report = steps[names.index("Report")]
-    # always(), so a failed upload still reaches the verdict. The condition moved
-    # from "the recheck approved" to "there is evidence to read": a dispatching
-    # run approves but produces no evidence, and a reporter over an empty
-    # directory prints "0 of 5 payloads", which reads as failure, not as pending.
+    # always(), so a failed upload still reaches the verdict, and gated on "there
+    # is evidence to read" rather than "the recheck approved": a dispatching run
+    # approves but produces none, and a reporter over an empty directory prints
+    # "0 of 5 payloads", which reads as failure rather than pending.
     assert report["if"].startswith("always()")
     assert "hashFiles('kaggle_evidence/**/*_output.ipynb')" in report["if"]
     assert "steps.evidence" not in report["if"]

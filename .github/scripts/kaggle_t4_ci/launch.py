@@ -88,10 +88,10 @@ _STATUS_RE = re.compile(r"KernelWorkerStatus\.(?P<status>[A-Z_]+)")
 
 # The slug is the ONLY record that survives the runner.
 #
-# A waiting launcher holds every fact in memory. Dispatch mode exits minutes
-# after the push and a DIFFERENT job collects, possibly days later, with no
-# artifact or database between them. Kaggle's kernel listing is that database,
-# and a kernel carries exactly one field we control: its name.
+# Dispatch mode exits minutes after the push and a DIFFERENT job collects,
+# possibly days later, with no artifact or database between them. Kaggle's
+# kernel listing is that database, and a kernel carries exactly one field we
+# control: its name.
 #
 #   unsloth-t4-ci-n1a2b3c4d5e6f-9f8e
 #                 ^^^^^^^^^^^^^^^^^^
@@ -99,16 +99,14 @@ _STATUS_RE = re.compile(r"KernelWorkerStatus\.(?P<status>[A-Z_]+)")
 #                 ||||||||||||   collide (a re-run, or notebook slot 1 and 2)
 #                 |kind          which workflow to report against
 #                  sha12         which commit the result belongs to. Twelve,
-#                                not eight: two reachable commits sharing eight
-#                                hex characters would make their kernels
-#                                indistinguishable, and the commits API then
-#                                answers the prefix with a 422 on every pass,
-#                                so the status stays pending forever.
+#                                not eight: two commits sharing eight hex
+#                                characters give indistinguishable kernels, and
+#                                the commits API then 422s the prefix on every
+#                                pass, so the status stays pending forever.
 #
 # `OWN_KERNEL_PREFIX` in gate.py is the first 14 characters and MUST keep
-# matching: it is how the gate's session survey tells our kernels from a
-# human's, and one it cannot recognise is not counted against Kaggle's
-# 2-session cap.
+# matching: it is how the survey tells our kernels from a human's, and one it
+# cannot recognise is not counted against Kaggle's 2-session cap.
 SLUG_PREFIX = "unsloth-t4-ci-"
 
 # One character each, so the slug survives `_slugify` and stays under Kaggle's
@@ -117,19 +115,13 @@ KIND_CODES = {"notebook": "n", "studio": "s"}
 CODE_KINDS = {v: k for k, v in KIND_CODES.items()}
 
 # Legacy slugs (`unsloth-t4-ci-<8 hex>`) are still OURS and must still be
-# reaped, since kernels pushed before this change can outlive it, but they
-# carry no commit to report against. The alternation reads both rather than
-# making the collector guess from length.
-# 8 to 40 on the read side: kernels pushed with the earlier eight-character
-# form can outlive the change and must still be collected and attributed.
+# reaped, but carry no commit to report against. The alternation reads 8 to 40
+# hex rather than making the collector guess from length.
 SLUG_SHA_LEN = 12
-# The notebook workflow's `slot` input, when it is not 1, sits between the
-# dash and the uid: `-2<uid4>`. Slot 2 is a deliberate SECOND session on the
-# same commit beside slot 1, so a duplicate check keyed on commit and kind
-# alone would either refuse it or, once it is exempted, let a retry of the
-# slot-2 run itself dispatch a third. The slot in the slug is what lets the
-# check say "this commit, this workflow, THIS slot". Absent means slot 1, so
-# every slug pushed before the slot existed still reads.
+# The `slot` input, when it is not 1, sits between the dash and the uid:
+# `-2<uid4>`. Slot 2 is a deliberate SECOND session on the same commit, so the
+# duplicate check has to say "this commit, this kind, THIS slot". Absent means
+# slot 1, so every slug pushed before the slot existed still reads.
 CI_SLUG_RE = re.compile(
     r"^(?:(?P<owner>[^/]+)/)?"
     + re.escape(SLUG_PREFIX)
@@ -141,7 +133,7 @@ CI_SLUG_RE = re.compile(
 def parse_slug(slug: str) -> dict | None:
     """What a kernel name says about itself, or None if it is not ours.
 
-    None for anything unrecognised is the collector's whole safety property: it
+    None for anything unrecognised is the collector's safety property: it
     enumerates a shared ACCOUNT and deletes what it collects, so a collector
     that guessed would eventually delete someone's work.
     """
@@ -304,10 +296,9 @@ def worst_case_seconds(
         + (PUSH_ATTEMPTS - 1) * one_delete
     )
     if dispatch:
-        # Dispatch stops after the pushes: no polling, no evidence, no delete,
-        # so the phases below are unreachable. Counting them would make the
-        # pre-push guard demand ~2h of deadline for a job that exits in five
-        # minutes. The retry _discard()s stay in; those DO run, inside push().
+        # Dispatch stops after the pushes, so the phases below are unreachable
+        # and counting them would make the pre-push guard demand ~2h for a job
+        # that exits in five. The retry _discard()s stay in: those run in push().
         return kernels * per_push
     return (
         max(kernels * per_push, max_wait)
@@ -649,10 +640,9 @@ def push(
                 _discard(attempted[-1])
             name = slug_name(kind, commit_sha, slot)
             # The slug derives from the TITLE, not the metadata id: a mismatch
-            # files the kernel at an unexpected address and every later
-            # status/output call 403s, so assert the round trip.
-            # More so now the name carries the commit: a slug that does not
-            # round-trip files the result where no collector can attribute it.
+            # files the kernel at an unexpected address, every later
+            # status/output call 403s and no collector can attribute it. So
+            # assert the round trip.
             title = name.replace("-", " ")
             assert _slugify(title) == name, f"title {title!r} slugifies to {_slugify(title)!r}"
             attempted.append(f"{user}/{name}")
@@ -757,10 +747,9 @@ def _already_gone(text: str) -> bool:
 def delete_kernel(slug: str, deadline: float | None = None) -> bool:
     """Delete one kernel, and answer whether Kaggle actually deleted it.
 
-    ``deadline`` (absolute ``time.time()``) bounds the whole call: each attempt
-    is clamped to what is left of it and no attempt starts past it, so a
-    release phase that hands every delete the same deadline ends when it says
-    it will rather than three attempts after.
+    ``deadline`` (absolute ``time.time()``) bounds the whole call: attempts are
+    clamped to what is left and none starts past it, so a release phase sharing
+    one deadline ends when it says it will rather than three attempts after.
 
     ``subprocess.run`` does not raise on a nonzero exit, so the caller used to
     record every slug as released whatever came back: a refused delete, an
@@ -1059,9 +1048,8 @@ def fetch_evidence(
             continue
         url = entry.get("url") or entry.get("urlNullable")
         if not url:
-            # Listed but not downloadable is missing evidence, the same as a
-            # transfer that failed: judged without it, a lost failing payload
-            # reads as whatever the surviving notebooks say.
+            # Listed but not downloadable is missing evidence: judged without
+            # it, a lost failing payload reads as whatever survived.
             _log(f"{name} was listed without a download URL; evidence incomplete")
             truncated = True
             continue
@@ -1142,9 +1130,8 @@ def extract_reports(outdir: Path) -> list[dict]:
                 parsed = json.loads(blob)
             except json.JSONDecodeError:
                 continue
-            # A report is an object. `.get` on anything else that parses (`[]`,
-            # a bare string) raises out of the collector before it writes a
-            # result, wedging every later pass on the same evidence.
+            # A report is an object; `.get` on anything else that parses raises
+            # out of the collector and wedges every later pass on this evidence.
             if not isinstance(parsed, dict):
                 continue
             key = f"{parsed.get('label')}|{parsed.get('model')}"
@@ -1161,10 +1148,9 @@ def extract_reports(outdir: Path) -> list[dict]:
         except Exception:  # noqa: BLE001
             continue
         # Valid JSON is not necessarily a notebook, and one malformed file must
-        # not take the reports already read from its neighbours with it: an
-        # exception here used to reach the collector, which replaced every
-        # parsed report with none, judged the kernel infra, posted success and
-        # released it, hiding a real failure behind a mangled sibling.
+        # not take its neighbours' reports with it: an exception here used to
+        # reach the collector, which then judged the kernel infra, posted
+        # success and released it, hiding a real failure behind a mangled file.
         if not isinstance(nb, dict):
             continue
         for cell in nb.get("cells") or []:
@@ -1329,12 +1315,10 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    # A dispatched kernel is deliberately left running, which is what
-    # --keep-kernel already means down to the registry bookkeeping: the slug is
-    # marked kept so the next launcher's orphan sweep does not read this exited
-    # process as a killed one. Reusing the flag rather than giving release() a
-    # second way not to delete; two conditions guarding one deletion is how one
-    # ends up wrong, and this one bills GPU quota when it is.
+    # A dispatched kernel is left running, which is exactly what --keep-kernel
+    # already means down to the registry bookkeeping. Reusing the flag rather
+    # than giving release() a second way not to delete: two conditions guarding
+    # one deletion is how one ends up wrong, and this one bills GPU quota.
     if args.dispatch:
         args.keep_kernel = True
         # Refused rather than defaulted: a slug with no commit runs, costs quota
@@ -1344,10 +1328,9 @@ def main() -> int:
                 "--dispatch requires --commit-sha and --kind: without both, the "
                 "kernel runs and no collector can attribute its result"
             )
-        # A commit, not a ref. `slug_name` carries only hex and falls back to
-        # the legacy unattributable form otherwise, so a branch or tag here
-        # bills and reports to nobody. The workflows resolve refs first; this
-        # checks that they did.
+        # A commit, not a ref: `slug_name` carries only hex and falls back to
+        # the legacy unattributable form, so a branch or tag here bills and
+        # reports to nobody. The workflows resolve refs; this checks they did.
         if not re.fullmatch(r"[0-9a-fA-F]{12,40}", args.commit_sha.strip()):
             ap.error(
                 f"--commit-sha must be a hex commit id (12 to 40 characters), got "
@@ -1613,11 +1596,9 @@ def main() -> int:
         # single-kernel shape.
         result["slug"] = live[0]["slug"]
 
-        # DISPATCH MODE ENDS HERE. `dispatched` is deliberately NOT `pass`:
-        # nothing has run or been asserted, and all this job proved is that
-        # Kaggle accepted a push. The real verdict arrives later from collect.py
-        # as a COMMIT STATUS on the sha in the slug; this job's green says
-        # nothing about the code.
+        # DISPATCH MODE ENDS HERE. `dispatched` is deliberately NOT `pass`: all
+        # this job proved is that Kaggle accepted a push. The real verdict comes
+        # later from collect.py as a commit status on the sha in the slug.
         if args.dispatch:
             result["verdict"] = "dispatched"
             result["dispatched"] = [{"slug": k["slug"], "notebook": k["notebook"]} for k in live]

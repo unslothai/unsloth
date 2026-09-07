@@ -373,10 +373,9 @@ jobs:
     # and exits 0); this simply does not start.
     if: github.event.pull_request.head.repo.fork != true
     runs-on: ubuntu-latest
-    # 15, for the honest worst case with two accounts: each one's
-    # authentication, username and quota read at the socket ceiling, one shared
-    # survey budget, and the one call still in flight when it expires. The
-    # harness suite asserts the arithmetic.
+    # 15, the worst case with two accounts: each one's authentication, username
+    # and quota read at the socket ceiling, one shared survey budget, and the
+    # call still in flight when it expires. The suite asserts the arithmetic.
     timeout-minutes: 15
     outputs:
       should_run: ${{ steps.decide.outputs.should_run }}
@@ -387,8 +386,8 @@ jobs:
       # NAME, and the GPU job indexes the secrets context with it.
       account: ${{ steps.decide.outputs.account }}
       account_user: ${{ steps.decide.outputs.account_user }}
-      # The commit under test, resolved once. The GPU job tests THIS and
-      # never re-resolves a moving ref.
+      # The commit under test, resolved once: the GPU job tests THIS and never
+      # re-resolves a moving ref.
       head_sha: ${{ steps.ref.outputs.head_sha }}
       matrix: ${{ steps.decide.outputs.matrix }}
     steps:
@@ -472,14 +471,12 @@ jobs:
       # stale-approval warning below does: they are free text set by anyone with
       # write access.
       # THE COMMIT THE GPU JOB WILL TEST, which is not always this workflow's
-      # own. A dispatch naming `unsloth_ref` tests that ref; keyed on
-      # github.sha the in-flight check would look for the wrong kernel (and
-      # could stand a request for an unrelated ref down behind a kernel of the
-      # workflow commit), and once the default branch moved, two runs of the
-      # same requested ref could be drawn onto different accounts and never see
-      # each other. Resolved the way the GPU job resolves it. A ref that does
-      # not resolve leaves the key EMPTY: the draw then falls back to the run
-      # id, and the GPU job stands down on the same ref moments later.
+      # own: a dispatch naming `unsloth_ref` tests that ref. Keyed on github.sha
+      # instead, the in-flight check would look for the wrong kernel, and once
+      # the default branch moved two runs of one requested ref could be drawn
+      # onto different accounts and never see each other. A ref that does not
+      # resolve leaves the key EMPTY, so the draw falls back to the run id and
+      # the GPU job stands down on the same ref moments later.
       - name: Name the commit under test
         id: ref
         env:
@@ -542,11 +539,10 @@ jobs:
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    # `statuses: write` is what makes the dispatch honest. This job no longer
-    # waits for the kernel, so it cannot BE the check that says the GPU tests
-    # passed; it posts that verdict as a commit status against the sha the
-    # result belongs to, which need not be this run's: the collection step below
-    # finishes kernels an earlier commit dispatched.
+    # `statuses: write` is what makes the dispatch honest: this job no longer
+    # waits, so it cannot BE the check that says the GPU tests passed. It posts
+    # that verdict against the sha the result belongs to, which need not be this
+    # run's; the collection step below finishes earlier commits' kernels.
     permissions:
       contents: read
       statuses: write
@@ -802,12 +798,10 @@ jobs:
             echo "testing unslothai/unsloth@$HEAD_SHA"
             exit 0
           fi
-          # RESOLVED ONCE, by the gate job, and reused here rather than asked
-          # again. A branch or tag can move while this job queues; resolving it
-          # a second time could name a commit the gate never keyed the account
-          # draw or the in-flight check on, and that commit's own run may
-          # already be out on the other account, which is a duplicate session.
-          # The reachability fetch below still applies to what the gate said.
+          # RESOLVED ONCE, by the gate job, and reused rather than asked again:
+          # a branch or tag can move while this job queues, and a second answer
+          # could name a commit the gate never keyed the draw or the in-flight
+          # check on, whose own run may already be out on the other account.
           RESOLVED="$GATE_SHA"
           # Every branch above ends here, including the 40-character one. That
           # branch used to be its own exit: a SHA is immutable, so it was
@@ -1053,22 +1047,19 @@ jobs:
 
       # BEFORE THE RECHECK, finish what an earlier run started.
       #
-      # Before and not after, because this can take fifteen minutes of
-      # downloads and a recheck on the other side of that gap is the stale
-      # answer it exists to replace: the Studio workflow, on its own concurrency
-      # group, can take the account's last session meanwhile. Collecting first
-      # also frees whatever slot a finished kernel held.
+      # Before and not after: this can take fifteen minutes of downloads, and a
+      # recheck on the far side of that gap is the stale answer it exists to
+      # replace, since the Studio workflow can take the account's last session
+      # meanwhile. Collecting first also frees whatever slot a finished kernel
+      # held.
       #
-      # The cheap half of collection, and the half that makes fire-and-forget
-      # pay: this job already has a runner and this account's token, so reading
-      # a previous commit's finished kernel costs seconds and publishes its
-      # verdict against ITS OWN sha. `kaggle-collect.yml` does the same on a
-      # schedule; this one is immediate but needs a push, that one always runs
-      # but only every ten minutes.
+      # The cheap half of collection: this job already has a runner and this
+      # account's token, so a previous commit's finished kernel costs seconds
+      # and publishes against ITS OWN sha. `kaggle-collect.yml` does the same on
+      # a schedule, always but only every ten minutes.
       #
       # It also answers whether a kernel for THIS commit is already in flight,
-      # so a re-run or a second push does not buy a second session for a result
-      # already coming.
+      # so a re-run does not buy a second session for a result already coming.
       - name: Collect finished Kaggle runs
         id: collect
         if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
@@ -1084,12 +1075,11 @@ jobs:
             --no-delete \
             --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
-      # Post FIRST, delete SECOND. The collector ran with --no-delete, so a
-      # verdict that fails to reach GitHub leaves its kernel up for the next
-      # pass; deleting first would make that failure permanent. The poster is a
-      # script shared by all three workflows: it expands the slug's 8-character
-      # sha (the statuses API 422s an abbreviation) and hands every field to
-      # `gh` as its own argument, never through a shell.
+      # Post FIRST, delete SECOND: a verdict that fails to reach GitHub leaves
+      # its kernel up for the next pass, and deleting first would make that
+      # failure permanent. The poster is shared by all three workflows; it
+      # expands the slug's abbreviated sha (the statuses API 422s one) and hands
+      # every field to `gh` as its own argument, never through a shell.
       - name: Post the collected verdicts as commit statuses
         id: post
         if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
@@ -1120,11 +1110,10 @@ jobs:
       # takes it per push and the larger requirement wins: kernel 2 downloads a
       # 12GB gpt-oss checkpoint before it trains anything.
       #
-      # `--sha` is what stands a run down when a kernel of this commit is
-      # already up, and `--slot` is part of that identity: slot 2 is the opt-in
-      # for a SECOND session on the same ref beside slot 1 (an A/B, one input
-      # varied), so a slot-1 kernel does not count against it, while a retry
-      # of the slot-2 run itself still does.
+      # `--sha` stands a run down when a kernel of this commit is already up,
+      # and `--slot` is part of that identity: slot 2 is the opt-in for a SECOND
+      # session on the same ref, so a slot-1 kernel does not count against it
+      # while a retry of the slot-2 run itself does.
       #
       # THE GATE'S ANSWER CAN BE STALE BY THE TIME WE GET HERE, and this is the
       # first point at which it cannot be. The `gate` job surveys quota and
@@ -1197,15 +1186,13 @@ jobs:
       # cannot read its own; the harness suite asserts the two agree, so moving
       # one without the other is a red test rather than a silent gap.
       #
-      # PUSH AND EXIT. The kernel is left running and this job is done with it.
-      # Waiting here cost 41.5 minutes of runner per commit (measured, run
-      # 33479481067) against a queue 400-670 deep.
+      # PUSH AND EXIT. Waiting here cost 41.5 minutes of runner per commit
+      # (measured, run 33479481067) against a queue 400-670 deep.
       #
-      # This job now succeeds by DISPATCHING and can no longer say whether the
-      # GPU tests passed. The verdict arrives later as the `kaggle-t4-notebook`
-      # commit status; this job proves only that Kaggle accepted a push. That
-      # context cannot be a REQUIRED check while the gate samples and the
-      # workflow path-filters: a skipped commit never gets one.
+      # This job now succeeds by DISPATCHING and proves only that Kaggle
+      # accepted a push. The verdict arrives later as the `kaggle-t4-notebook`
+      # commit status, which cannot be a REQUIRED check while the gate samples
+      # and the workflow path-filters: a skipped commit never gets one.
       # --commit-sha puts the sha into the slug, the only record outliving this
       # runner.
       - name: Dispatch to Kaggle
@@ -1230,16 +1217,15 @@ jobs:
             --deadline-epoch "$(( JOB_START_EPOCH + JOB_TIMEOUT_MINUTES * 60 ))"
 
       # Gated on the launcher's verdict, not its exit code: launch.py exits 0
-      # for every infrastructure stand-down, and a pending status for a kernel
-      # that does not exist is one no collector can ever replace.
+      # for every stand-down, and a pending status for a kernel that does not
+      # exist is one no collector can ever replace.
       - name: Mark the dispatch pending on this commit
         if: steps.launch.outputs.verdict == 'dispatched'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # A PENDING status as soon as the kernel is queued: a required context
-          # that has never been posted blocks a pull request forever with no
-          # explanation on the page.
+          # A required context that has never been posted blocks a pull request
+          # forever with no explanation on the page.
           gh api "repos/$GITHUB_REPOSITORY/statuses/${{ steps.ref.outputs.ref }}" \
             -f state=pending -f context=kaggle-t4-notebook \
             -f description="dispatched to Kaggle; the result is collected when the kernel finishes" \
@@ -1258,9 +1244,9 @@ jobs:
         continue-on-error: true
         run: |
           # One kernel per call: the bundle is reassembled from numbered chunks
-          # and one walk over two would splice them together. Both trees: a
-          # waited-on kernel lands in kaggle_evidence, a collected one in
-          # kaggle_collected, and the screenshots matter most for the second.
+          # and one walk over two would splice them together. Both trees, since
+          # a waited-on kernel lands in kaggle_evidence and a collected one in
+          # kaggle_collected.
           for dir in kaggle_evidence/*/ kaggle_collected/*/; do
             [ -d "$dir" ] || continue
             python .github/scripts/kaggle_studio_ci/collect_evidence.py \

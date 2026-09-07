@@ -3,14 +3,14 @@
 
 """Post the commit statuses collect.py decided on, and say which ones landed.
 
-The only step in the Kaggle CI holding a GitHub credential, and it holds no
-Kaggle one: collect.py judges, this posts, neither can leak the other's token.
-A script rather than a shell loop in three workflows so the record stays JSON
-end to end and each value reaches `gh` as an argument, never through a shell.
+The only step holding a GitHub credential, and it holds no Kaggle one:
+collect.py judges, this posts, neither can leak the other's token. A script
+rather than a shell loop in three workflows so the record stays JSON end to end
+and each value reaches `gh` as an argument, never through a shell.
 
-THE SHA HAS TO BE EXPANDED FIRST. The slug carries only 8 hex characters (a
-full sha plus the prefix does not fit Kaggle's slug limit) and the statuses
-API refuses an abbreviation, measured against a real repository:
+THE SHA HAS TO BE EXPANDED FIRST. The slug carries an abbreviation (a full sha
+does not fit Kaggle's slug limit) and the statuses API refuses one, measured
+against a real repository:
 
     POST /statuses/2ecb19df
     422 "Sha must be a valid hex object ID"
@@ -18,9 +18,9 @@ API refuses an abbreviation, measured against a real repository:
 A sha that cannot be resolved (force-pushed away) is recorded as `unresolved`
 so the kernel is released rather than retried forever.
 
-The outcome is written as ``posted.json`` for collect.py --delete-collected: a
-kernel whose status did not post is KEPT on Kaggle for the next pass. That
-ordering (post, then delete) is why this is a separate step.
+``posted.json`` feeds collect.py --delete-collected: a kernel whose status did
+not post is KEPT on Kaggle for the next pass. That ordering (post, then delete)
+is why this is a separate step.
 """
 
 from __future__ import annotations
@@ -52,9 +52,8 @@ def _gh(args: list[str]) -> tuple[int, str, str]:
 #     {"message":"No commit found for SHA: deadbeef00", ..., "status":"422"}
 #
 # Only that message releases the kernel. Status codes do not say it: 404 is
-# also an unreadable repository and 422 an ambiguous abbreviation, and 5xx /
-# rate limiting / network say nothing at all. Reading any of them as "gone"
-# would delete the only copy of the result.
+# also an unreadable repository, 422 an ambiguous abbreviation, and reading
+# either as "gone" would delete the only copy of the result.
 MISSING_MARKERS = ("no commit found",)
 
 
@@ -94,7 +93,7 @@ def valid(status: dict) -> str | None:
     """Why this record must not be posted, or None if it is well formed.
 
     Checked here because this is the process holding the token: a state outside
-    the API's four, or a context that is not ours, is a record we must not sign.
+    the API's four, or a context not ours, is a record we must not sign.
     """
     if status.get("state") not in STATES:
         return f"state {status.get('state')!r} is not one of {STATES}"
@@ -109,9 +108,8 @@ def merge_by_commit(resolved: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
     """One status per (full sha, context), failure winning, every slug named.
 
     Merged HERE and not in the collector, because only a resolved sha says
-    whether two slugs name one commit: an eight-character slug and a
-    twelve-character one for the same commit resolve to one full sha, and two
-    commits that merely share eight characters resolve to two.
+    whether two slugs name one commit: an 8 and a 12 character slug for one
+    commit resolve alike, two commits sharing 8 characters do not.
     """
     out: dict[tuple[str, str], dict] = {}
     for full, status in resolved:
@@ -184,8 +182,8 @@ def main() -> int:
     Path(args.out).write_text(json.dumps(outcome, indent = 2), encoding = "utf-8")
     if not statuses:
         print("no statuses to post this pass")
-    # Red when a verdict could not be delivered. The kernel is kept for the next
-    # pass, but a delivery failure must not look like a quiet account.
+    # Red when a verdict could not be delivered: the kernel is kept for the
+    # next pass, but a delivery failure must not look like a quiet account.
     return 1 if outcome["failed"] else 0
 
 

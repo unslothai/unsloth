@@ -288,10 +288,9 @@ def test_the_account_draw_is_salted_apart_from_the_sampling_draw():
 
 
 def test_every_run_of_one_commit_lands_on_the_same_account():
-    """A label added while a sampled run is still out, or a forced dispatch,
-    starts a second run of the SAME commit with a new run id. Keyed on the run
-    id the draw could pick the other account, whose collector cannot see the
-    first account's kernel, and a duplicate session would be dispatched."""
+    """A label or a forced dispatch starts a second run of the SAME commit with
+    a new run id. Keyed on the run id the draw could pick the other account,
+    which cannot see the first's kernel, and dispatch a duplicate."""
     weights = {"1": 60.0, "2": 30.0}
     sha = "0123456789abcdef0123456789abcdef01234567"
     assert len({gate.weighted_pick(sha, weights)[0] for _ in range(5)}) == 1
@@ -478,10 +477,9 @@ def test_neither_token_name_can_reach_the_kernel():
 
 
 def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down():
-    """The draw is keyed on the commit, but a handover (the preferred account
-    full or unreadable) lands a retry on the other account, whose GPU job
-    collects with only its own token and sees nothing in flight. So the gate,
-    which surveys every account it considers, asks each one first."""
+    """A handover lands a retry on the other account, whose GPU job collects
+    with only its own token and sees nothing in flight. So the gate asks every
+    account it surveys before it picks one."""
     sha = "abcdef0123456789" + "0" * 24
     own = [
         "danielhanchen/unsloth-t4-ci-sabcdef012345-1111 (RUNNING)",  # studio, this commit
@@ -499,9 +497,8 @@ def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down
     assert gate.in_flight_for_commit(["someone/unsloth-probe-x (RUNNING)"], sha, "notebook") is None
     source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
     main = source[source.index("def main(") :]
-    # Every candidate account is asked BEFORE any is chosen: the first loop over
-    # `order` is the in-flight sweep and the selection loop comes after it, or
-    # a preferred account free again is picked without the other being looked at.
+    # Every candidate is asked BEFORE any is chosen: the first loop over `order`
+    # is the in-flight sweep, the selection loop comes after it.
     sweep, selection = main.split("for account_id in order:", 2)[1:]
     assert "in_flight_for_commit(survey" in sweep and "concurrency_verdict(" not in sweep
     assert "concurrency_verdict(" in selection and "in_flight_for_commit(" not in selection
@@ -531,8 +528,7 @@ def _drive_gate(
 ):
     """Run gate.main() with two stub accounts. `holder` is the account whose
     survey shows a notebook kernel of the commit under test; `outcomes` maps an
-    account to a probe outcome other than ok (the client is still handed back,
-    as probe_account does for insufficient_quota and quota_unreadable)."""
+    account to a probe outcome other than ok, the client still handed back."""
     sha = "abcdef0123456789" + "0" * 24
     outcomes = outcomes or {}
     apis = {"1": object(), "2": object()}
@@ -621,10 +617,9 @@ def _other(sha: str) -> tuple[str, str]:
 def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
     monkeypatch, tmp_path
 ):
-    """The sampled account is FREE and the other one holds a kernel for this
-    commit, which is what a retry looks like after the first run handed the
-    commit over. A gate that only asks the account it is about to pick finds
-    it clear and dispatches a duplicate session."""
+    """The sampled account is FREE and the other holds a kernel for this commit,
+    which is what a retry after a handover looks like. A gate that only asks the
+    account it is about to pick finds it clear and dispatches a duplicate."""
     _sampled, other = _other("abcdef0123456789" + "0" * 24)
     code, outputs, asked, _sha = _drive_gate(monkeypatch, tmp_path, holder = other)
     assert code == 0
@@ -638,10 +633,9 @@ def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
 def test_an_account_that_cannot_launch_is_still_asked_whether_it_runs_this_commit(
     monkeypatch, tmp_path
 ):
-    """The account that dispatched this commit is exactly the one likely to be
-    short of quota now. Skipping it in the sweep because it cannot take a NEW
-    launch hands the retry to the other account, which dispatches the same
-    commit again."""
+    """The account that dispatched this commit is the one likely to be short of
+    quota now. Skipping it in the sweep hands the retry to the other account,
+    which dispatches the same commit again."""
     _sampled, other = _other("abcdef0123456789" + "0" * 24)
     for outcome in ("insufficient_quota", "quota_unreadable"):
         code, outputs, asked, _sha = _drive_gate(
@@ -653,11 +647,9 @@ def test_an_account_that_cannot_launch_is_still_asked_whether_it_runs_this_commi
 
 
 def test_the_second_slot_is_not_a_duplicate_but_its_own_retry_is(monkeypatch, tmp_path):
-    """`slot: 2` is the documented way to run a second session on the same ref
-    beside slot 1, so a slot-1 kernel already running this commit must not
-    stand it down. A retry of the slot-2 run itself, after its dispatcher has
-    exited with the kernel still up, is a duplicate and must be. The slot in
-    the slug is what tells the two apart."""
+    """`slot: 2` is a second session on the same ref beside slot 1, so a slot-1
+    kernel must not stand it down, while a retry of the slot-2 run itself must.
+    The slot in the slug tells the two apart."""
     sampled, _unused = _other("abcdef0123456789" + "0" * 24)
     # Slot 1 kernel up, slot 2 asked for: runs.
     _c, outputs, _a, _s = _drive_gate(
@@ -693,9 +685,8 @@ def test_the_second_slot_is_not_a_duplicate_but_its_own_retry_is(monkeypatch, tm
 
 
 def test_the_surveys_share_one_budget(monkeypatch, tmp_path):
-    """Two accounts, two surveys, each bounded on its own by SURVEY_BUDGET_SEC:
-    back to back they outlive the gate job. The second survey gets whatever the
-    first left of ONE budget."""
+    """Two surveys each bounded by SURVEY_BUDGET_SEC outlive the gate job back
+    to back. The second gets whatever the first left of ONE budget."""
     clock = [1000.0]
     _sampled, other = _other("abcdef0123456789" + "0" * 24)
     _code, _outputs, asked, _sha = _drive_gate(monkeypatch, tmp_path, holder = other, clock = clock)
@@ -708,8 +699,7 @@ def test_the_surveys_share_one_budget(monkeypatch, tmp_path):
 def test_the_gate_is_keyed_on_the_commit_the_gpu_job_will_test():
     """A dispatch naming `unsloth_ref` tests that ref, not github.sha. Keyed on
     github.sha the gate looks for the wrong kernel, and once the default branch
-    has moved two runs of the same requested ref can land on different
-    accounts and never see each other."""
+    moves two runs of one ref can land on different accounts."""
     for path in (NOTEBOOK_WF, STUDIO_WF):
         gate_job = _wf(path)["jobs"]["gate"]
         steps = {s.get("id"): s for s in gate_job["steps"] if s.get("id")}
@@ -722,8 +712,8 @@ def test_the_gate_is_keyed_on_the_commit_the_gpu_job_will_test():
             "--head-sha '${{ steps.ref.outputs.head_sha }}'" in decide["run"]
         ), f"{path.name}: the gate is keyed on a commit the GPU job may not test"
         assert "github.sha" not in decide["run"]
-        # And the GPU job tests exactly that commit: it takes the gate's answer
-        # rather than resolving a moving ref a second time.
+        # And the GPU job takes the gate's answer rather than resolving a
+        # moving ref a second time.
         assert gate_job["outputs"]["head_sha"] == "${{ steps.ref.outputs.head_sha }}"
         gpu = next(
             s

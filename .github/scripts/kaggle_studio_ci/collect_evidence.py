@@ -58,9 +58,8 @@ def iter_text(path: Path):
             nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
         except Exception:  # noqa: BLE001
             continue
-        # Valid JSON is not necessarily a notebook: `[]` and a cell or output
-        # that is not an object have both come back from a kernel, and a reader
-        # that raises here fails the job after the verdict was already posted.
+        # Kernels have returned valid JSON that is not a notebook (`[]`, or a
+        # non-object cell); raising here fails the job after the verdict posted.
         if not isinstance(nb, dict):
             continue
         for cell in nb.get("cells") or []:

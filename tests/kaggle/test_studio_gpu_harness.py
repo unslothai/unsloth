@@ -955,11 +955,9 @@ def test_the_reserve_leaves_ci_the_fifty_hours_it_is_allowed():
 
 
 def test_the_budget_hours_flag_covers_the_reaper_window():
-    """budget-hours is the worst case one invocation can cost. The kernel
-    ceiling used to be that worst case while this job waited and deleted the
-    kernel itself; it dispatches now, and a kernel that ignores its own timeout
-    is left to the collector's age ceiling plus the collector's schedule and
-    job timeout. See test_every_gate_budget_covers_the_reaper_window."""
+    """budget-hours is the worst case one invocation can cost. Nothing waits on
+    the kernel now, so a kernel that ignores its own timeout is left to the
+    collector's reaper window rather than to the kernel ceiling."""
     source = WORKFLOW.read_text(encoding = "utf-8")
     assert "--kernel-timeout-sec 4200" in source
     ceiling_hours = 4200 / 3600
@@ -1678,10 +1676,9 @@ def test_a_nested_executed_notebook_is_read_too(tmp_path):
 
 
 def test_evidence_that_is_json_but_not_a_notebook_does_not_raise(tmp_path):
-    """`[]`, a cell that is a string, an output that is a number: all valid
-    JSON, all seen back from a kernel. The reader used to raise on the first
-    `.get`, and on the GPU workflow that fails the job after the verdict was
-    already posted."""
+    """`[]`, a string cell, a numeric output: all valid JSON, all seen back from
+    a kernel. The reader used to raise on the first `.get`, failing the job
+    after its verdict was already posted."""
     evidence = tmp_path / "evidence" / "unsloth-t4-ci-1234"
     evidence.mkdir(parents = True)
     (evidence / "a_output.ipynb").write_text("[]", encoding = "utf-8")

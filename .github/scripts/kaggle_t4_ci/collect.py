@@ -4,8 +4,8 @@
 """Collect the kernels an earlier job dispatched and left running.
 
 ``launch.py --dispatch`` pushes a kernel and exits within minutes instead of
-holding a GitHub runner for the forty it takes Kaggle to finish. That trade is
-only sound if something else finishes the job, and this is that something.
+holding a runner for the forty Kaggle takes. That trade is only sound if
+something else finishes the job, and this is that something.
 
 THE ACCOUNT IS THE QUEUE. No database, artifact or branch sits between the
 dispatching job and this one, because each is a second place for the truth to
@@ -28,18 +28,15 @@ Three outcomes per kernel, and they are not symmetric:
 This script never talks to GitHub. It emits the statuses it wants posted into
 ``collect_result.json`` and the workflow posts them (``post_statuses.py``): a
 process holding both a Kaggle and a GitHub credential is one bug away from
-sending one to the other, and a verdict needing GitHub access cannot be tested
-on CPU.
+sending one to the other.
 
-DELETION COMES LAST, after the status is delivered. The workflows run
-``--no-delete``, post, then ``--delete-collected``. A kernel whose status did
-not reach GitHub is left up for the next pass; deleting first would turn a
-transient API failure into the permanent loss of a verdict.
+DELETION COMES LAST, after the status is delivered: ``--no-delete``, post, then
+``--delete-collected``. Deleting first would turn a transient API failure into
+the permanent loss of a verdict.
 
-SAFETY above all. This script enumerates a whole ACCOUNT shared with a human
-and DELETES what it collects, so nothing is touched unless
-``launch.parse_slug`` recognises its name. An unrecognised kernel is not
-skipped-with-a-warning, it is invisible.
+SAFETY above all. This enumerates a whole ACCOUNT shared with a human and
+DELETES what it collects, so nothing is touched unless ``launch.parse_slug``
+recognises its name. An unrecognised kernel is invisible, not warned about.
 """
 
 from __future__ import annotations
@@ -59,31 +56,25 @@ import launch  # noqa: E402
 from gate import GONE_MARKERS, _as_naive_utc  # noqa: E402
 
 # How long a dispatched kernel may stay in flight before the reaper takes it.
-# Kaggle's own 12h kill has been caught failing here: a kernel pushed with
-# `-t 5400` whose nbconvert crashed sat RUNNING two hours past it until deleted
-# by hand. So the ceiling is ours, and well under Kaggle's.
+# The ceiling is ours because Kaggle's has been caught failing: a kernel pushed
+# with `-t 5400` whose nbconvert crashed sat RUNNING two hours past it.
 #
-# Generous rather than tight: the wired notebook kernel measured 2101.8s (35
-# min), the two-account run took 41.5 min of job wall clock, and queueing behind
-# another of our own adds most of that again. Reaping a kernel that would have
-# finished costs a whole run and reports a failure nobody can act on.
+# Generous rather than tight: the wired notebook kernel measured 2101.8s, the
+# two-account run 41.5 min of job wall clock, and queueing behind another of
+# ours adds most of that again. Reaping a kernel that would have finished costs
+# a whole run and reports a failure nobody can act on.
 DEFAULT_MAX_AGE_HOURS = 3.0
 
-# Paging for the account walk. Not bounded by the reap ceiling: a kernel far
-# past it is exactly the one the reaper exists for, and an old terminal kernel
-# still owes its commit a status. Not bounded by a small page count either,
-# because the account is SHARED and human kernels are never deleted: once
-# enough newer records sit above an uncollected kernel of ours, a fixed cap
-# starting from page 1 every pass would never reach it again. The walk stops
-# at a page whose every entry last ran before LISTING_HORIZON_HOURS with none
-# of ours on it, at the pass deadline, or at MAX_PAGES as a backstop far above
-# anything an account here has held.
+# Paging for the account walk. Not bounded by the reap ceiling (a kernel far
+# past it is what the reaper exists for), nor by a small page count: the
+# account is SHARED and human kernels are never deleted, so once enough newer
+# records sit above an uncollected kernel of ours a fixed cap would never reach
+# it again. The walk stops at a page entirely older than LISTING_HORIZON_HOURS
+# with none of ours on it, at the pass deadline, or at MAX_PAGES.
 PAGE_SIZE = 100
 MAX_PAGES = 50
 # Kaggle kills a session at 12h whatever else fails, so a kernel of ours that
-# last ran before this horizon is neither running nor owed a status this pass
-# would still be timely for; a page entirely older than it, with none of ours
-# on it, is the end of the walk.
+# last ran before this horizon is neither running nor owed a timely status.
 LISTING_HORIZON_HOURS = 24.0 * 7
 
 # The driver's own record of how many payload reports the kernel was BUILT to
@@ -91,9 +82,8 @@ LISTING_HORIZON_HOURS = 24.0 * 7
 # kernel against `--expect 1` turns a run that lost four of them into a pass.
 EXPECT_SENTINEL = "KAGGLE_T4_CI_DRIVER_EXPECT "
 
-# Wall clock for the whole collection (evidence downloads dominate). This runs
-# on a schedule beside a 600-deep queue, so it must not become the job that
-# never ends: a kernel missed this pass is reached five minutes later.
+# Wall clock for the whole collection (evidence downloads dominate). It runs on
+# a schedule, so a kernel missed this pass is reached five minutes later.
 BUDGET_SEC = 900
 
 # Per-kernel evidence budget, well under the total, so one slow download cannot
@@ -130,8 +120,8 @@ def kernel_age_hours(kernel, now: datetime) -> float | None:
     """How long ago this kernel last started, or None if Kaggle did not say.
 
     For an UNFINISHED kernel ``last_run_time`` is when the run started, which is
-    what the reap ceiling measures against. None rather than a default, and the
-    caller treats it as too young to reap: guessing old deletes a live session.
+    what the reap ceiling measures against. None rather than a default, treated
+    as too young to reap: guessing old deletes a live session.
     """
     last_run = _as_naive_utc(getattr(kernel, "last_run_time", None))
     if last_run is None:
@@ -154,9 +144,8 @@ def find_ours(
     is not ours to read, let alone delete. ``max_age_hours`` is the reap ceiling
     the caller applies later, not a listing cutoff, because the kernel that most
     needs collecting is the one a delayed pass finds hours past it. The walk
-    ends at the first page that is entirely older than ``horizon_hours`` and
-    carries none of ours (see LISTING_HORIZON_HOURS), at ``deadline``, or at
-    ``max_pages``.
+    ends at the first page entirely older than ``horizon_hours`` carrying none
+    of ours, at ``deadline``, or at ``max_pages``.
     """
     now = now or datetime.now(timezone.utc).replace(tzinfo = None)
     found: list[dict] = []
@@ -200,9 +189,9 @@ def find_ours(
 def _status_of(api, slug: str) -> str:
     """The kernel's state, with a deleted kernel distinguished from an unknown one.
 
-    A kernel deleted moments ago still lists but answers its status call with a
-    404 -- definitively not running, not unreadable. Conflating the two makes
-    the reaper attack gone kernels and read a genuine outage as idle.
+    A kernel deleted moments ago still lists but 404s its status call:
+    definitively not running, not unreadable. Conflating the two makes the
+    reaper attack gone kernels and read a genuine outage as idle.
     """
     try:
         raw = str(getattr(api.kernels_status(slug), "status", ""))
@@ -245,10 +234,9 @@ def verdict_of(reports: list[dict], expect: int) -> tuple[str, str]:
 def _gone(exc: BaseException) -> bool:
     """Did this failure say the kernel is no longer there?
 
-    The notebook job, the Studio job and the scheduled pass all collect and
-    nothing serialises them, so another can delete a kernel between this pass
-    seeing it terminal and downloading it. Not an infra failure: a result
-    somebody else already posted.
+    Three unserialised collectors run, so another can delete a kernel between
+    this pass seeing it terminal and downloading it. Not an infra failure: a
+    result somebody else already posted.
     """
     text = f"{exc}".lower()
     return any(m in text for m in GONE_MARKERS)
@@ -261,9 +249,9 @@ def _evidence_lines(dest: Path):
             nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
         except Exception:  # noqa: BLE001
             continue
-        # Valid JSON that is not a notebook (`[]`, a bare string) is skipped,
-        # not raised on: this runs outside the report guard, and an exception
-        # here writes no result file and wedges every later pass on this kernel.
+        # Valid JSON that is not a notebook is skipped, not raised on: this
+        # runs outside the report guard, and an exception here writes no result
+        # file and wedges every later pass on this kernel.
         if not isinstance(nb, dict):
             continue
         for cell in nb.get("cells") or []:
@@ -303,10 +291,9 @@ def expected_reports(
         reports = parsed.get("reports") if isinstance(parsed, dict) else None
         if isinstance(reports, int) and reports > 0:
             return reports
-    # A notebook kernel carries several payloads and only its own record says
-    # how many. Without it the plan is UNKNOWN, not the caller's default: a
-    # scheduled pass that assumed one would read a kernel that lost four legs
-    # and reported one as a pass. Studio kernels always carry exactly one.
+    # Only a notebook kernel's own record says how many payloads it carries.
+    # Without it the plan is UNKNOWN, not the caller's default, or a kernel that
+    # lost four legs reads as a pass. Studio kernels always carry exactly one.
     if kind == "notebook":
         return None
     return default
@@ -314,8 +301,7 @@ def expected_reports(
 
 # How a verdict is reported to GitHub. `infra` and `partial` are deliberately
 # NOT failures: nothing was learned about the code, and a red the author cannot
-# act on is how a required check gets dropped from branch protection. They post
-# `success` with a description saying so.
+# act on is how a required check gets dropped from branch protection.
 VERDICT_STATE = {
     "pass": "success",
     "fail": "failure",
@@ -353,13 +339,12 @@ def collect_one(
     if state in ("QUEUED", "RUNNING"):
         age = entry.get("age_hours")
         if age is not None and age > max_age_hours:
-            # Reaped, and reported as a FAILURE of collection rather than
-            # dropped: it has been billing throughout and will never produce a
-            # result, and silence leaves the commit reading "not run" forever.
+            # Reported as a FAILURE of collection rather than dropped: it has
+            # been billing and will never produce a result, and silence leaves
+            # the commit reading "not run" forever.
             record["verdict"] = "reaped"
-            # "released", not "deleted": the workflows collect with --no-delete
-            # and delete in a later step that can be refused or time out, and
-            # this reason is posted as a durable status before that step runs.
+            # "released", not "deleted": the delete happens in a later step
+            # that can be refused, and this reason is posted before it runs.
             record["reason"] = (
                 f"the kernel was still {state} after {age:.1f}h, past the {max_age_hours}h "
                 "ceiling, so it is released for deletion. It was billing accelerator "
@@ -380,8 +365,7 @@ def collect_one(
 
     if state == "UNKNOWN":
         # Left alone: an unreadable status says nothing, and both actions here
-        # are destructive (delete may kill a live session, report may fail a
-        # run that was fine). The next pass asks again.
+        # are destructive. The next pass asks again.
         record["verdict"] = "pending"
         record["reason"] = "status unreadable this pass"
         return record
@@ -393,9 +377,8 @@ def collect_one(
 
     if state not in launch.TERMINAL_OK | launch.TERMINAL_BAD:
         # Only a KNOWN terminal state may download, judge, post and delete.
-        # Kaggle's enum has states this file never sees (NEW_SCRIPT) and can
-        # grow more; judging one would post a green `infra` for a run still to
-        # come and then delete it.
+        # Kaggle's enum can grow, and judging an unknown state posts a green
+        # `infra` for a run still to come and then deletes it.
         record["verdict"] = "pending"
         record["reason"] = f"state {state} is not one this collector judges; asked again next pass"
         _log(f"unrecognised state {state} for {slug}; kept")
@@ -413,14 +396,13 @@ def collect_one(
         record["evidence"] = None
         if _gone(exc):
             # Deleted by another pass between our status call and this
-            # download. Their verdict stands; ours would be an `infra` on top.
+            # download: their verdict stands, ours would be an `infra` on top.
             record["verdict"] = "gone"
             record["reason"] = "another collector finished this kernel first"
             _log(f"{slug} was collected by another pass")
             return record
-        # Kept and NOT judged; the next pass tries again. `pending` rather than
-        # `infra` because `infra` posts green and releases the kernel, turning
-        # one transient listing failure into the loss of a real result.
+        # `pending` rather than `infra`: `infra` posts green and releases the
+        # kernel, losing a real result to one transient failure.
         record["verdict"] = "pending"
         record["reason"] = (
             f"the kernel finished but its evidence would not download this pass "
@@ -431,10 +413,9 @@ def collect_one(
 
     record["evidence"] = evidence
     if evidence.get("truncated"):
-        # fetch_evidence flags a spent budget or failed download instead of
-        # raising, so same answer as the except above: nothing judged, nothing
-        # deleted. Judging a short set reads a run that lost half its notebooks
-        # as whatever the surviving half says.
+        # fetch_evidence flags a spent budget instead of raising, so same
+        # answer as above: judging a short set reads a run that lost half its
+        # notebooks as whatever the surviving half says.
         record["verdict"] = "pending"
         record["reason"] = (
             "the evidence download was incomplete this pass; the kernel is kept for the next one"
@@ -446,8 +427,8 @@ def collect_one(
         reports = launch.extract_reports(dest)
     except Exception as exc:  # noqa: BLE001
         # Evidence that downloaded but cannot be read will not read better next
-        # pass, and raising here writes no result and wedges every later pass.
-        # Nothing was learned, so `infra`, and the kernel is released.
+        # pass, and raising here wedges every later one. Nothing was learned, so
+        # `infra`, and the kernel is released.
         reports = []
         record["report_error"] = f"{type(exc).__name__}: {exc}"[:200]
         _log(f"unreadable report in {slug}: {type(exc).__name__}")
@@ -455,8 +436,8 @@ def collect_one(
     expect = expected_reports(dest, expect, record.get("kind") or "")
     record["expected"] = expect
     if expect is None:
-        # Plan unknown: a failure is still a failure, but nothing here can say
-        # the set is complete, so no pass is claimed.
+        # Plan unknown: a failure is still a failure, but completeness cannot
+        # be shown, so no pass is claimed.
         verdict, reason = verdict_of(reports, len(reports))
         if verdict == "pass":
             verdict, reason = (
@@ -492,8 +473,8 @@ def statuses_from(records: list[dict], target_url: str = "") -> list[dict]:
 
     THIS is the check that means "the GPU tests passed": the dispatching job
     succeeds by dispatching, so branch protection pointing at it would require
-    only that Kaggle accepted a push. A legacy slug with no sha yields nothing;
-    there is no commit to attribute it to.
+    only that Kaggle accepted a push. A legacy slug carries no sha to attribute
+    to and yields nothing.
     """
     out: dict[tuple[str, str], dict] = {}
     for record in records:
@@ -516,14 +497,12 @@ def statuses_from(records: list[dict], target_url: str = "") -> list[dict]:
             "slug": record["slug"],
             "slugs": [record["slug"]],
         }
-        # Two kernels for one commit under one context (notebook slots 1 and 2
-        # of the same sha) must not race to post last: a failure wins whichever
-        # kernel found it, and both are named as owners so the delete step
-        # releases both.
-        # Keyed on the sha exactly as the slug carries it. Whether an old
-        # eight-character slug and a twelve-character one name the same commit
-        # is a question only the commits API can answer, so the poster resolves
-        # every sha to its full form and merges there (post_statuses.merge_by_commit).
+        # Two kernels for one commit under one context (slots 1 and 2) must not
+        # race to post last: a failure wins whichever kernel found it, and both
+        # are named so the delete step releases both. Keyed on the sha as the
+        # slug carries it; only the commits API can say whether an 8 and a 12
+        # character slug name one commit, so post_statuses merges after
+        # resolving.
         key = (sha, context)
         prior = out.get(key)
         if prior is None:
@@ -540,10 +519,9 @@ def statuses_from(records: list[dict], target_url: str = "") -> list[dict]:
 # and `gone` own nothing to delete; `None` never got as far as a verdict.
 DELETABLE = {"pass", "fail", "partial", "infra", "reaped"}
 
-# Ceiling on the release phase of one pass. delete_kernel allows three
-# 180-second attempts per kernel, so an unbounded release after a full
-# BUDGET_SEC collection could outlive the job; the kernels left over are
-# released by the next pass, which sees their statuses already posted.
+# Ceiling on the release phase. delete_kernel allows three 180-second attempts
+# per kernel, so an unbounded release after a full BUDGET_SEC collection could
+# outlive the job. Leftovers are released by the next pass.
 RELEASE_BUDGET_SEC = 600
 
 
@@ -552,8 +530,8 @@ def delete_collected(result_path: Path, posted_path: Path | None) -> int:
     statuses are posted.
 
     ``posted.json`` names the slugs delivered, refused, and whose commit is
-    gone. A refused post KEEPS its kernel, which is the only retry there is once
-    the runner is gone. A gone commit releases it; holding it only bills.
+    gone. A refused post KEEPS its kernel, the only retry there is. A gone
+    commit releases it; holding it only bills.
     """
     data = json.loads(result_path.read_text(encoding = "utf-8"))
     posted = (
@@ -561,12 +539,11 @@ def delete_collected(result_path: Path, posted_path: Path | None) -> int:
         if posted_path and posted_path.exists()
         else {}
     )
-    # Refused (the API said no) and rejected (the poster would not send a
-    # malformed record) alike: nothing reached GitHub, so the kernel stays.
+    # Refused and rejected alike: nothing reached GitHub, so the kernel stays.
     failed = set(posted.get("failed") or []) | set(posted.get("invalid") or [])
     if posted_path and not posted_path.exists():
-        # No record of delivery: the poster never ran. Keep every kernel that
-        # had something to post, or their verdicts are lost.
+        # The poster never ran. Keep every kernel that had something to post,
+        # or their verdicts are lost.
         failed = {s["slug"] for s in data.get("statuses", [])} | {
             slug for s in data.get("statuses", []) for slug in s.get("slugs", [])
         }
@@ -683,11 +660,9 @@ def main() -> int:
         return code
 
     if args.require_auth and not os.environ.get("KAGGLE_API_TOKEN"):
-        # Not configured is not broken. The scheduled collector's matrix is
-        # static and a repository with one Kaggle account leaves the second
-        # secret unset, so an empty token here is an absent account, not an
-        # expired credential: a warning so the absence is visible on the run,
-        # and a green pass. A token that is present and refused is still red.
+        # Not configured is not broken: the collector's matrix is static, so a
+        # repository with one Kaggle account leaves the second secret empty.
+        # Warn and pass. A token that is present and refused is still red.
         print(
             "::warning title=Kaggle account not configured::KAGGLE_API_TOKEN is empty in "
             "this job, so nothing was collected for this account. A repository with one "
@@ -703,9 +678,9 @@ def main() -> int:
         if isinstance(exc, KeyboardInterrupt):
             raise
         if args.require_auth:
-            # The scheduled reaper runs on the repository's own token, so this
-            # is an expired credential. A green empty pass would hide it while
-            # kernels bill to their ceiling and commits stay pending.
+            # The reaper runs on the repository's own token, so this is an
+            # expired credential. A green empty pass would hide it while kernels
+            # bill to their ceiling and commits stay pending.
             _log(f"kaggle auth failed ({type(exc).__name__}) and this pass requires it")
             print(
                 "::error title=Kaggle authentication failed::the collector could not "
@@ -724,8 +699,8 @@ def main() -> int:
     _log(f"authenticated as {owner}")
 
     # The budget starts BEFORE the listing: five slow pages under the socket
-    # timeout are minutes, and a deadline started after them is that much
-    # later than the job timeout was sized for.
+    # timeout are minutes, and a deadline started after them is that much later
+    # than the job timeout was sized for.
     deadline = time.time() + BUDGET_SEC
     ours = find_ours(api, max_age_hours = args.max_age_hours, deadline = deadline)
     _log(f"{len(ours)} kernel(s) of ours on this account")
@@ -733,8 +708,7 @@ def main() -> int:
     for entry in ours:
         if time.time() >= deadline:
             # Safe by construction: nothing was deleted that was not first
-            # collected, and the next pass sees the same account. Logged so a
-            # partial pass is not read as an empty one.
+            # collected. Logged so a partial pass is not read as an empty one.
             _log("collection budget spent; the rest is left for the next pass")
             break
         result["kernels"].append(
@@ -753,8 +727,8 @@ def main() -> int:
 
     if args.sha:
         want = args.sha.strip().lower()
-        # Prefix match either way: slugs carry SLUG_SHA_LEN characters now and
-        # carried eight before, and both can be on the account at once.
+        # Prefix match either way: SLUG_SHA_LEN characters now, eight before,
+        # and both can be on the account at once.
         result["in_flight_for_sha"] = any(
             k.get("sha")
             and (want.startswith(k["sha"]) or k["sha"].startswith(want))
