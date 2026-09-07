@@ -33,6 +33,7 @@ class _LocalGgufEntry:
     variants: tuple[str, ...]  # local quant labels; () for a standalone .gguf
     is_gguf: bool = True  # False routes the load to the inference orchestrator
     repo_level_companions: bool = False
+    aliases: tuple[tuple[str, str], ...] = ()  # see _legacy_variant_aliases
 
 
 _CACHE_TTL_S = 5.0
@@ -189,6 +190,43 @@ def local_gguf_companion_state(roots: tuple[str, ...]) -> tuple:
     return tuple(state)
 
 
+def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
+    """``(legacy label, current label)`` for each id this module used to publish and no longer does.
+
+    /v1/models published the loader's label before the swap to the shared lister, and a client
+    pins what it was shown. ``DeepSeek-R1-BF16-Q4_K_M.gguf`` was ``BF16``, is ``Q4_K_M``: quant
+    shaped, so _resolve_from_index refuses it and the pin 404s. ``Meta-Llama-3-8B.gguf`` was
+    ``8B``, is the whole stem: not quant shaped, so it falls through to the Ollama-tag branch and
+    quietly serves the preferred quant instead. The quiet one is why quantless labels alias too.
+
+    Accept-only, so nothing new can pin a legacy spelling and a bare id never reaches here.
+    Dropped rather than guessed: a legacy label equal to a current one, and one naming two files.
+    Grouped rows give one file per quant, so ``alpha-Q4_K_M.gguf`` beside
+    ``zeta-BF16-Q4_K_M.gguf`` keeps the 404. Never raises: _local_gguf_entry answers None on an
+    escape, which would drop the whole repo.
+    """
+    try:
+        from utils.models.model_config import _extract_quant_label, _qualified_variant_name
+
+        # .lower() matches how _resolve_from_index folds the request
+        current = {str(v.quant).lower() for v in variants if getattr(v, "quant", None)}
+        seen: dict[str, Optional[str]] = {}
+        for variant in variants:
+            quant = getattr(variant, "quant", None)
+            filename = getattr(variant, "filename", None)
+            if not quant or not filename:
+                continue
+            legacy = _qualified_variant_name(filename, _extract_quant_label(filename))
+            key = str(legacy).lower()
+            if not key or key in current:
+                continue
+            # None = ambiguous: a second file claimed it, so it names neither.
+            seen[key] = None if key in seen else str(quant)
+        return tuple((legacy, quant) for legacy, quant in seen.items() if quant is not None)
+    except Exception:
+        return ()
+
+
 def _local_gguf_entry(
     loader_id: str,
     info,
@@ -199,7 +237,10 @@ def _local_gguf_entry(
     safetensors), listing only on-disk quants. ``load_path`` is a concrete local
     path so /load resolves the variant locally and never fetches a remote one."""
     from pathlib import Path
-    from utils.models.model_config import detect_gguf_model, list_local_gguf_variants
+
+    # The lister every stored per-model setting is keyed by, so one file has one identity.
+    from hub.utils.gguf import list_local_gguf_variants
+    from utils.models.model_config import detect_gguf_model
 
     path = getattr(info, "path", None)
     if not isinstance(path, str):
@@ -233,10 +274,10 @@ def _local_gguf_entry(
             selected = _resolve_gguf_load_snapshot(cache_repo_dir)
             if selected is None:
                 load_dir = p
-                variants, _ = list_local_gguf_variants(str(load_dir))
+                variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files = True)
             else:
                 selected_variants, _has_vision, complete, load_dir = selected
-                variants, _ = list_local_gguf_variants(str(load_dir))
+                variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files = True)
                 if complete:
                     complete_keys = {str(quant).casefold() for quant in complete}
                     complete_files = {
@@ -253,8 +294,8 @@ def _local_gguf_entry(
                         and str(variant.filename).casefold() in complete_files
                     ]
         else:
-            load_dir = p
-            variants, _ = list_local_gguf_variants(str(load_dir))
+            load_dir = _resolve_load_dir(p) if p.name.startswith("models--") else p
+            variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files = True)
         if exact_snapshot:
             from hub.utils.gguf import list_local_gguf_variants as inventory_variants
             from hub.utils.inventory_scan import complete_snapshot_variants
@@ -286,6 +327,7 @@ def _local_gguf_entry(
             str(load_dir),
             quants,
             repo_level_companions = cache_repo_dir is not None,
+            aliases = _legacy_variant_aliases(variants),
         )
     except Exception:
         return None
@@ -929,6 +971,11 @@ def _resolve_from_index(
         for v in entry.variants:
             if v.lower() == wanted:
                 return _result(entry, v)
+        # ahead of both branches below: one refuses a retired spelling, the other answers it
+        # with a different quant
+        for legacy, current in entry.aliases:
+            if legacy == wanted:
+                return _result(entry, current)
         from core.inference.openai_auto_download import looks_like_quant
 
         if looks_like_quant(variant):

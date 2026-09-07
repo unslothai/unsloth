@@ -8358,6 +8358,7 @@ async def _maybe_auto_switch_model(
                         # "<path>:LABEL" is read too, after the bare path used today.
                         from utils.openai_auto_switch_settings import (
                             resolve_override_for_load,
+                            stored_gpu_index_kind,
                         )
 
                         # The candidate order above, kept in one place so the panel
@@ -8371,10 +8372,10 @@ async def _maybe_auto_switch_model(
                         )
                         saved_gpu_ids = load_kwargs.get("gpu_ids")
                         if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
-                            saved_gpu_ids
+                            saved_gpu_ids, stored_gpu_index_kind(override)
                         ):
-                            # Stale pin (GPU removed, another host): drop the one dead
-                            # field rather than 400 the whole load.
+                            # Stale pin (GPU removed, another host, or a backend change
+                            # renumbering these ids): drop it rather than 400 the load.
                             load_kwargs.pop("gpu_ids", None)
                             logger.warning(
                                 "Dropping saved gpu_ids %s for %s: not available here.",
@@ -11453,12 +11454,23 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     return True if name_says_diffusion else None
 
 
-async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
+async def _override_gpu_ids_still_resolve(
+    gpu_ids: List[int], stored_index_kind: str = "physical"
+) -> bool:
     """Whether a per-model GPU pin is usable on this machine right now.
 
     normalize_model_override cannot know the device list, so it stores whatever
     was valid where the config was written. This is the load-time reconciliation
     for the device-availability rules, which are the ones that go stale.
+
+    ``stored_index_kind`` is the namespace those ids were written in, and it is checked
+    before availability because the two failures look nothing alike: an id that no longer
+    exists is caught below, while an id that still exists in the OTHER index space pins a
+    different device and every availability check passes. A Vulkan build numbers devices by
+    compact ggml ordinal and a CUDA/ROCm build by physical id, and a host moves between them
+    -- an AMD integrated GPU is routed to the Vulkan prebuilt by preference. Mirrors
+    reconcileGpuSelection in the UI (hooks/gpu-selection.ts), which drops the pin on the
+    same mismatch.
 
     Deliberately not exhaustive: model-dependent rules (a Vulkan diffusion GGUF
     refuses gpu_ids outright) need a ModelConfig this has no reason to build.
@@ -11480,6 +11492,8 @@ async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
             )
 
         device, is_vulkan, resolved = await asyncio.to_thread(_device_and_resolution)
+        if stored_index_kind != ("vulkan" if is_vulkan else "physical"):
+            return False
         if device == DeviceType.XPU and not is_vulkan:
             # Rejected outright on XPU.
             return False
@@ -15892,7 +15906,8 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                     model = _lifecycle_model_label(_unloaded, _unloaded_variant),
                     reason = "manual",
                 )
-                logger.info(f"Unloaded GGUF model: {request.model_path}")
+                # No log line here: unload_model emits one for every unload, and two
+                # under different names made the reload count ungreppable.
                 return UnloadResponse(status = "unloaded", model = request.model_path)
 
             # Unload from Unsloth backend off the event loop: unload takes _gen_lock, which
@@ -18822,6 +18837,26 @@ def _user_ordinal_supplying_the_image(messages: list) -> Optional[int]:
                     break
         seen += 1
     return ordinal
+
+
+def _mark_image_owner_turn(messages: list, ordinal: int) -> list:
+    """Give the *ordinal*-th user turn a structured image part ahead of its text: the
+    renderers attach it to the newest turn unless one already carries it."""
+    marked = list(messages)
+    seen = 0
+    for index, message in enumerate(marked):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        if seen == ordinal:
+            body = message.get("content")
+            if isinstance(body, str):
+                marked[index] = {
+                    **message,
+                    "content": [{"type": "image"}, {"type": "text", "text": body}],
+                }
+            break
+        seen += 1
+    return marked
 
 
 def _images_in_last_user_message(messages: list) -> int:
@@ -23841,22 +23876,9 @@ async def produce_openai_chat_completions(
         if _sf_renders_image:
             _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
             if _sf_image_ordinal is not None:
-                _sf_seen_users = 0
-                for _sf_idx, _sf_msg in enumerate(gen_kwargs["messages"]):
-                    if not isinstance(_sf_msg, dict) or _sf_msg.get("role") != "user":
-                        continue
-                    if _sf_seen_users == _sf_image_ordinal:
-                        _sf_body = _sf_msg.get("content")
-                        if isinstance(_sf_body, str):
-                            gen_kwargs["messages"][_sf_idx] = {
-                                **_sf_msg,
-                                "content": [
-                                    {"type": "image"},
-                                    {"type": "text", "text": _sf_body},
-                                ],
-                            }
-                        break
-                    _sf_seen_users += 1
+                gen_kwargs["messages"] = _mark_image_owner_turn(
+                    gen_kwargs["messages"], _sf_image_ordinal
+                )
         gen_kwargs["system_prompt"] = ""
         # tool_choice="none": keep history templating but advertise no tools
         # (heal_gate is off, markup would relay as prose). A forced function
@@ -23878,6 +23900,13 @@ async def produce_openai_chat_completions(
             ] or None
         else:
             gen_kwargs["tools"] = payload.tools
+    elif _sf_renders_image:
+        # The plain route too: later turns then share the prefix that holds the image.
+        _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
+        if _sf_image_ordinal is not None:
+            gen_kwargs["messages"] = _mark_image_owner_turn(
+                gen_kwargs["messages"], _sf_image_ordinal
+            )
 
     # The potential tool context above is needed before server/client routing is
     # known. This standard path now has the exact schemas that will be rendered,
