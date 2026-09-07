@@ -26,7 +26,8 @@ from core.inference.offload_layout import (
     spill_pattern_for,
 )
 from core.inference.offload_cost_model import HostProfile
-from core.inference.offload_planner import (
+from core.inference.offload_planner import (  # noqa: F401
+    _device_reserve,
     _device_slots,
     _per_device_shortfall,
     ContextPolicy,
@@ -782,7 +783,9 @@ def test_prefer_resident_still_spills_when_even_min_ctx_will_not_fit():
         [10 * GIB],
         64 * GIB,
         65536,
-        opts = PlanOptions(context_policy = ContextPolicy.PREFER_RESIDENT),
+        opts = PlanOptions(
+            context_policy = ContextPolicy.PREFER_RESIDENT, overhead_bytes_per_token = 0
+        ),
     )
     assert plan.spilled_blocks, "shrinking cannot save this one, so spill"
 
@@ -807,7 +810,12 @@ def test_kv_quantisation_rescues_a_load_f16_cannot_fit():
     at 9.73 GiB against 8 GiB usable, so no rung of the ladder fits. Halving the
     cache brings the floor to 7.73 and it does."""
     layout = q4_layout()
-    without = plan_placement(layout, [9 * GIB], 64 * GIB, 65536)
+    # The reserve model is pinned out of this pair: it is about the CACHE rescuing a load, and
+    # with the shipped context term a 9 GiB card at 64K reserves ~1 GiB more, so q8_0 no longer
+    # covers the gap. That is the reserve doing its job, and it is asserted on its own in
+    # test_the_context_reserve_declines_a_load_the_flat_one_accepted rather than smuggled in here.
+    pinned = PlanOptions(overhead_bytes_per_token = 0)
+    without = plan_placement(layout, [9 * GIB], 64 * GIB, 65536, opts = pinned)
     assert without.insufficient is True
 
     with_quant = plan_placement(
@@ -815,7 +823,7 @@ def test_kv_quantisation_rescues_a_load_f16_cannot_fit():
         [9 * GIB],
         64 * GIB,
         65536,
-        opts = PlanOptions(allow_kv_quant = True),
+        opts = PlanOptions(allow_kv_quant = True, overhead_bytes_per_token = 0),
     )
     assert with_quant.insufficient is False
     assert with_quant.cache_type_k == "q8_0"
@@ -857,7 +865,11 @@ def test_q4_ffn_spilled_context_ladder(budget_gib, expected_k):
 # the prefill compute buffer that was OOMing at depth) does not silently
 # invalidate them. The constant itself is pinned by
 # test_the_overhead_reserve_covers_the_measured_prefill_buffer.
-FIXED_OVERHEAD_OPTS = PlanOptions(overhead_bytes_per_device = GIB)
+FIXED_OVERHEAD_OPTS = PlanOptions(overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0)
+# The context-linear part of the reserve is pinned to zero here for the same reason the flat
+# part is pinned to 1 GiB: these ladders are arithmetic about the CACHE, and a reserve that
+# moves with the context would make every expected number a function of the reserve model
+# instead. The term itself is pinned by test_the_reserve_grows_with_context_and_max_context_agrees.
 
 
 @pytest.mark.parametrize("budget_gib,expected_k", [(6, 25), (8, 57), (12, 121), (20, 249)])
@@ -1050,14 +1062,22 @@ def test_a_small_host_is_predicted_to_suffer_more_for_the_same_spill():
         vram,
         ram,
         ctx,
-        opts = PlanOptions(overhead_bytes_per_device = GIB, host = HostProfile(threads = 192)),
+        opts = PlanOptions(
+            overhead_bytes_per_device = GIB,
+            overhead_bytes_per_token = 0,
+            host = HostProfile(threads = 192),
+        ),
     )
     small = plan_placement(
         layout,
         vram,
         ram,
         ctx,
-        opts = PlanOptions(overhead_bytes_per_device = GIB, host = HostProfile(threads = 8)),
+        opts = PlanOptions(
+            overhead_bytes_per_device = GIB,
+            overhead_bytes_per_token = 0,
+            host = HostProfile(threads = 8),
+        ),
     )
     assert big.spilled_blocks == small.spilled_blocks, "same placement, different host"
     assert small.predicted_gen_penalty_ms > big.predicted_gen_penalty_ms * 2
@@ -1077,7 +1097,9 @@ def test_routed_experts_are_charged_less_than_a_dense_ffn_of_equal_size():
         is_moe = True,
     )
     moe = ModelLayout(**{**moe.__dict__, "n_expert": 256, "n_expert_used": 8})
-    opts = PlanOptions(overhead_bytes_per_device = GIB, host = HostProfile(threads = 192))
+    opts = PlanOptions(
+        overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0, host = HostProfile(threads = 192)
+    )
     d = plan_placement(dense, [8 * GIB], 64 * GIB, 32768, opts = opts)
     m = plan_placement(moe, [8 * GIB], 64 * GIB, 32768, opts = opts)
     assert d.spilled_blocks == m.spilled_blocks, "same bytes spilled either way"
@@ -1126,12 +1148,105 @@ def test_the_overhead_reserve_covers_the_measured_prefill_buffer():
     assert reserve <= 2 * GIB
 
 
+def test_the_context_reserve_matches_what_was_measured_on_hardware():
+    """The flat term was right and incomplete: the reserve also grows with context.
+
+    MEASURED by sweeping device headroom directly with -ot at fixed context and budget until
+    the load flips from failing to serving. gemma-4-26B-A4B Q4 on an A100-40:
+
+        n_ctx  33792   required ~= 1184 MiB      (a cell that served on 1196 and failed on 1184)
+        n_ctx ~66600   required in (1786.3, 1932.5]   three runs, 4x apart in prompt length,
+                                                      intersected at matched total context
+        n_ctx 132096   required  > 1958.1 MiB    (the planner spilled NOTHING and still failed)
+
+    so the slope is in [18.8, 23.4] KiB per token. The flat 1536 MiB covers the first of those
+    and not the last two, which is the defect: llama-server does not run slower when the reserve
+    is short, it refuses to start.
+    """
+    opts = PlanOptions()
+    mib = 1024 * 1024
+
+    # Unchanged where the flat term was calibrated and is known to work.
+    assert _device_reserve(opts, 8192) == opts.overhead_bytes_per_device
+    assert _device_reserve(opts, opts.overhead_free_ctx) == opts.overhead_bytes_per_device
+
+    # Above every measured requirement, at every measured context.
+    assert _device_reserve(opts, 33792) / mib > 1184
+    assert _device_reserve(opts, 66560) / mib > 1932.5
+    assert _device_reserve(opts, 132096) / mib > 1958.1
+
+    # And not unboundedly above it. Over-reserving is not free: it spills more, measured at
+    # 7 to 12% of generation per surplus GiB on three models and two cards.
+    assert _device_reserve(opts, 66560) / mib < 1932.5 + 1024
+    assert _device_reserve(opts, 132096) / mib < 1958.1 + 3 * 1024
+
+    # The slope itself sits inside the measured bracket, and independently agrees with the one
+    # llama.cpp's own fitter leaves (21.41 KiB/token, R^2 = 0.9995 over four contexts).
+    kib = 1024
+    assert 18.8 * kib <= opts.overhead_bytes_per_token <= 23.4 * kib
+
+
+def test_the_context_reserve_declines_a_load_the_flat_one_accepted():
+    """The behaviour change, stated once and directly.
+
+    A 9 GiB card at 64K context: the flat reserve leaves room for a q8_0 cache and the load is
+    planned, while the context-aware one charges ~1 GiB more and correctly finds it does not
+    fit. This is the pair test_kv_quantisation_rescues_a_load_f16_cannot_fit pins the reserve
+    out of, so the two do not have to disagree.
+    """
+    layout = q4_layout()
+    flat = plan_placement(
+        layout,
+        [9 * GIB],
+        64 * GIB,
+        65536,
+        opts = PlanOptions(allow_kv_quant = True, overhead_bytes_per_token = 0),
+    )
+    aware = plan_placement(
+        layout, [9 * GIB], 64 * GIB, 65536, opts = PlanOptions(allow_kv_quant = True)
+    )
+    assert flat.insufficient is False, "the flat reserve accepted this cell"
+    assert aware.insufficient is True, "the context reserve must not"
+
+    # Same card, short context: identical answers, so nothing below the free context moves.
+    a = plan_placement(layout, [9 * GIB], 64 * GIB, 8192, opts = PlanOptions(overhead_bytes_per_token = 0))
+    b = plan_placement(layout, [9 * GIB], 64 * GIB, 8192)
+    assert a.ot_patterns == b.ot_patterns and a.n_ctx == b.n_ctx
+
+
+def test_max_context_for_is_consistent_with_the_reserve_it_charges():
+    """The reserve depends on the context and the context is what is being solved for.
+
+    A single pass answers with the reserve for some OTHER context, which over-reports: it hands
+    back a context whose own reserve no longer leaves room for its own cache. The fixed point
+    is the only self-consistent answer, and this asserts the property rather than the loop --
+    feed the answer back in and it must still fit.
+    """
+    layout = q4_layout()
+    for budget_gib in (12, 16, 24, 48):
+        vram = [budget_gib * GIB]
+        ctx = max_context_for(layout, vram, spill_all_ffn = True)
+        if ctx <= 0:
+            continue
+        # Its own reserve, at its own answer, still leaves room for its own cache.
+        assert max_context_for(layout, vram, spill_all_ffn = True) == ctx
+
+        flat_only = max_context_for(
+            layout, vram, spill_all_ffn = True, opts = PlanOptions(overhead_bytes_per_token = 0)
+        )
+        assert ctx <= flat_only, "the context term can only reduce the answer, never raise it"
+        # Only where the answer is set by memory. On a big enough card both are pinned to
+        # n_ctx_train and are equal for a reason that has nothing to do with the reserve.
+        if ctx > PlanOptions().overhead_free_ctx and flat_only < layout.n_ctx_train:
+            assert ctx < flat_only, "and above the free context it must actually bite"
+
+
 # ------------------------------------------- excluded blocks and the pool budget
 
 
 # Just too little VRAM for the 64-block stub at 4096 ctx, so every block spills
 # and the planner reaches the all-of-them branch that emits the compact pattern.
-_NO_OVERHEAD = PlanOptions(overhead_bytes_per_device = 0)
+_NO_OVERHEAD = PlanOptions(overhead_bytes_per_device = 0, overhead_bytes_per_token = 0)
 _ALL_SPILL_VRAM = 3 * GIB + 64 * MIB
 
 

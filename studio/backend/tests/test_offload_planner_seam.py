@@ -1759,9 +1759,19 @@ def test_a_single_card_pays_no_split_reserve():
     from core.inference.offload_planner import _usable_vram
 
     card = 8 * GIB
-    assert _usable_vram([card], opts) == card
-    assert _usable_vram([card, card], opts) == 2 * card - 1 * GIB
-    assert _usable_vram([card, card, card], opts) == 3 * card - 2 * GIB
+    short = opts.overhead_free_ctx
+    assert _usable_vram([card], opts, short) == card
+    assert _usable_vram([card, card], opts, short) == 2 * card - 1 * GIB
+    assert _usable_vram([card, card, card], opts, short) == 3 * card - 2 * GIB
+
+    # And the context-linear term is charged on every card, at or below the free context not at
+    # all. Pinned here beside the split arithmetic because the two are easy to confuse: one is
+    # charged (n - 1) times and the other n times, and swapping them is invisible at n = 1.
+    over = 4096
+    step = over * opts.overhead_bytes_per_token
+    assert _usable_vram([card], opts, short + over) == card - step
+    assert _usable_vram([card, card], opts, short + over) == 2 * card - 1 * GIB - 2 * step
+    assert _usable_vram([card], opts, short // 2) == card
 
 
 def test_the_cost_model_is_told_physical_cores_not_hyperthreads(monkeypatch):

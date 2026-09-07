@@ -168,9 +168,15 @@ def test_the_margin_is_what_decides_a_near_tie():
     wrong reason. Do not re-anchor this to a budget where the spill is outright
     more expensive: a zero margin would decline there too and the test would go
     green while asserting nothing.
+    ---
+    RE-ANCHORED again, +343 MiB, when the per-device reserve gained its context-linear term:
+    at n_ctx 32768 that term is (32768 - 16384) * 21924 B = 342.6 MiB, so every budget in this
+    file now means 343 MiB less to the planner than it did. Shifting the card by exactly that
+    keeps the cell at the same distance from the band's edge, which is what the test is about;
+    leaving it would have tested the reserve instead of the gate.
     """
     layout = dense_layout()
-    card = [17584 * 1024 * 1024]
+    card = [17927 * 1024 * 1024]
     strict = plan_placement(layout, card, 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6)))
     lenient = plan_placement(
         layout,
@@ -459,10 +465,16 @@ def test_a_spill_the_real_fitter_beats_is_declined_at_the_margin():
     the fallback a host lm_head made it look 1.6x more expensive than it is and
     the gate took the spill; without that charge the fallback wins and the
     planner correctly stands down.
+    ---
+    RE-ANCHORED again, +343 MiB, when the per-device reserve gained its context-linear term:
+    at n_ctx 32768 that term is (32768 - 16384) * 21924 B = 342.6 MiB, so every budget in this
+    file now means 343 MiB less to the planner than it did. Shifting the card by exactly that
+    keeps the cell at the same distance from the band's edge, which is what the test is about;
+    leaving it would have tested the reserve instead of the gate.
     """
     layout = dense_layout()
     plan = plan_placement(
-        layout, [18800 * 1024 * 1024], 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6))
+        layout, [19143 * 1024 * 1024], 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6))
     )
     assert not plan.spills_anything
     assert "not worth it" in plan.reason
