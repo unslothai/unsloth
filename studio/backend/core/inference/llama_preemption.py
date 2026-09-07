@@ -131,7 +131,6 @@ class PreemptSignal:
         self._pending = False
         self._reason: Optional[str] = None
 
-
     def request(self, reason: str = "kv_pressure") -> None:
         with self._lock:
             self._pending = True
@@ -163,13 +162,11 @@ class PreemptSignal:
         with self._lock:
             return self._depth > 0
 
-
     def is_set(self) -> bool:
         return self._event.is_set()
 
     def wait(self, timeout: Optional[float] = None) -> bool:
         return self._event.wait(timeout = timeout)
-
 
     class _Window:
         __slots__ = ("_signal",)
@@ -294,7 +291,6 @@ class DeferredPreemptionPolicy:
 
 
 class NullPreemptionPolicy:
-
     def should_preempt(self) -> bool:
         return False
 
@@ -398,7 +394,6 @@ def preemption_buffer_tokens(
 
 @dataclass(**_SLOTS)
 class Participant:
-
     gen_id: str
     seq: int
     lease: Optional[LlamaAdmissionLease] = None

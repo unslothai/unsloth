@@ -2330,8 +2330,8 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                     max(0, int(occupancy.get("resident") or 0) - freed),
                     max(0, int(occupancy.get("idle_tokens") or 0) - freed),
                 )
-                 # Every idle slot went, including those of holders parked on a tool prompt or
-                 # running their tools; their charges must go with them.
+                # Every idle slot went, including those of holders parked on a tool prompt or
+                # running their tools; their charges must go with them.
                 controller.note_cells_reclaimed()
                 _gguf_slots_seen["occupancy"] = None
 

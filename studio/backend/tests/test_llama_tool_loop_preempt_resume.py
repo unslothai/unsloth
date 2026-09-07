@@ -22,14 +22,19 @@ from .preempt_fakes import (
 _TOOL = web_search_tool(required = True)
 
 
-def _Recorder(monkeypatch, streams, *, signal, pause_after_attempt = 0, pause_attempts = None):
+def _Recorder(
+    monkeypatch,
+    streams,
+    *,
+    signal,
+    pause_after_attempt = 0,
+    pause_attempts = None,
+):
     return PreemptRecorder(
         monkeypatch,
         streams,
         signal = signal,
-        pause_attempts = (
-            {pause_after_attempt} if pause_attempts is None else set(pause_attempts)
-        ),
+        pause_attempts = ({pause_after_attempt} if pause_attempts is None else set(pause_attempts)),
         port = 48847,
     )
 

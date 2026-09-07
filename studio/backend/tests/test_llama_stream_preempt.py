@@ -113,7 +113,6 @@ class TestThePauseIsSeenBetweenChunks:
 class TestTheCombinedWaitable:
     def test_it_is_the_existing_helper_not_a_new_one(self):
         from core.inference.llama_cpp import _CombinedCancelEvent
-
         combined = _interrupt_event(threading.Event(), preemption.PreemptSignal())
         assert isinstance(combined, _CombinedCancelEvent)
 

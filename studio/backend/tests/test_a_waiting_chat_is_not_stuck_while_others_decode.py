@@ -63,7 +63,6 @@ def _shutdown(loop):
 
 class TestTheSignatureSeesADecodingBackend:
     def test_a_generated_token_moves_the_signature_though_committed_does_not(self):
-
         controller = _pinned_controller("pinned")
         before = controller.progress_signature()
         controller.observe("holder", 512)
@@ -81,7 +80,6 @@ class TestTheSignatureSeesADecodingBackend:
         assert after[2] > before[2], "the token total is the term that moves"
 
     def test_a_resumed_attempt_restarting_its_count_is_not_read_as_lost_tokens(self):
-
         controller = _pinned_controller("restarts")
         controller.observe("holder", 512)
         mid = controller.progress_signature()[2]
@@ -90,7 +88,6 @@ class TestTheSignatureSeesADecodingBackend:
         assert after > mid, "the fresh attempt's own tokens still count as progress"
 
     def test_a_tool_call_starting_moves_the_signature(self):
-
         controller = _pinned_controller("tools")
         before = controller.progress_signature()
         assert controller.note_state("holder", ParticipantState.TOOLS_RUNNING) is True
@@ -107,7 +104,6 @@ class TestTheSignatureSeesADecodingBackend:
 
 class TestTheWaiterHoldsOnWhileAnythingMoves:
     def test_it_is_still_waiting_after_the_timeout_and_resumes_when_room_appears(self):
-
         timeout = 0.4
         controller = _pinned_controller("still-decoding")
         policy, loop = _waiting_policy(controller, "waiter", _WANT)
@@ -150,7 +146,6 @@ class TestTheWaiterHoldsOnWhileAnythingMoves:
         assert resumed is True, "and it takes the room once the room is real"
 
     def test_a_backend_where_nothing_moves_at_all_still_gives_up(self):
-
         timeout = 0.5
         controller = _pinned_controller("frozen")
         policy, loop = _waiting_policy(controller, "waiter", _WANT)
@@ -169,7 +164,6 @@ class TestTheWaiterHoldsOnWhileAnythingMoves:
 
 class TestTheBackstopOutlastsARealAnswer:
     def test_the_hard_bound_is_longer_than_the_slowest_answer_measured(self):
-
         bound = DEFAULT_RESUME_WAIT_TIMEOUT_S * MAX_RESUME_WAIT_MULTIPLE
         assert bound >= 2 * (
             8192 / 2.3

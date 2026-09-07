@@ -21,7 +21,13 @@ from .preempt_fakes import (
 )
 
 
-def _Recorder(monkeypatch, streams, *, signal, pause_attempts = (0,)):
+def _Recorder(
+    monkeypatch,
+    streams,
+    *,
+    signal,
+    pause_attempts = (0,),
+):
     return PreemptRecorder(
         monkeypatch,
         streams,

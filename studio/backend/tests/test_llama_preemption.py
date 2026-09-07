@@ -458,7 +458,6 @@ class TestTheSwitchesThatTurnItOff:
         import inspect
 
         import core.inference.llama_preemption as module
-
         for name, member in vars(module).items():
             if callable(member) and getattr(member, "__module__", None) == module.__name__:
                 try:

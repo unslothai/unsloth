@@ -16,8 +16,12 @@ from core.inference import llama_preemption as preemption
 from core.inference.llama_cpp import LlamaCppBackend
 
 
-
-def delta(content: str, *, terminator: str = "\n", **extra) -> str:
+def delta(
+    content: str,
+    *,
+    terminator: str = "\n",
+    **extra,
+) -> str:
     chunk = {"choices": [{"index": 0, "delta": {"content": content}}], **extra}
     return "data: " + json.dumps(chunk) + terminator
 
@@ -92,7 +96,6 @@ def web_search_tool(*, required: bool = False) -> dict:
     }
 
 
-
 class FakeResponse:
     """Enough of httpx.Response for _iter_text_cancellable."""
 
@@ -115,7 +118,6 @@ class FakeResponse:
         self.closed = True
         if self._on_close is not None:
             self._on_close()
-
 
 
 class RecordingPolicy:
@@ -156,7 +158,6 @@ class ServerHookPolicy(RecordingPolicy):
 
     def on_server_resumed(self) -> None:
         self.events.append("server-resumed")
-
 
 
 def bare_backend(
@@ -266,8 +267,14 @@ class PreemptRecorder:
             )
 
 
-
-def run_plain(backend, *, signal, policy, prompt: str = "write me a poem", **kwargs):
+def run_plain(
+    backend,
+    *,
+    signal,
+    policy,
+    prompt: str = "write me a poem",
+    **kwargs,
+):
     return list(
         backend.generate_chat_completion(
             messages = [{"role": "user", "content": prompt}],
@@ -298,7 +305,6 @@ def run_tool_loop(
             **kwargs,
         )
     )
-
 
 
 def _patch_tool_loop(monkeypatch, execute, *, high_risk) -> None:
@@ -341,7 +347,6 @@ def rendezvous(monkeypatch):
 
     _patch_tool_loop(monkeypatch, _execute, high_risk = lambda name, args: name == "python")
     return order
-
 
 
 @pytest.fixture(autouse = True)

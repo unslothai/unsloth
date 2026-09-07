@@ -64,7 +64,6 @@ def test_the_in_loop_decline_tells_the_client_the_retry_would_not_fit(monkeypatc
 
 
 def test_the_declined_turn_still_ends_with_length_and_the_whole_partial(monkeypatch):
-
     payloads: list[dict] = []
     events = _run(_declining_backend(monkeypatch, payloads))
 
@@ -75,7 +74,6 @@ def test_the_declined_turn_still_ends_with_length_and_the_whole_partial(monkeypa
 
 
 def test_the_final_pass_decline_says_the_same_thing(monkeypatch):
-
     payloads: list[dict] = []
     events = _run_no_tools(_declining_backend(monkeypatch, payloads))
 
@@ -88,7 +86,6 @@ def test_the_final_pass_decline_says_the_same_thing(monkeypatch):
 
 
 def test_a_spent_output_cap_is_not_reported_as_a_context_refusal(monkeypatch):
-
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -105,7 +102,6 @@ def test_a_spent_output_cap_is_not_reported_as_a_context_refusal(monkeypatch):
 
 
 def test_a_continuation_that_is_sent_announces_no_refusal(monkeypatch):
-
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,

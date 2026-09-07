@@ -24,7 +24,13 @@ from .preempt_fakes import (
 _TOOL = web_search_tool()
 
 
-def _Recorder(monkeypatch, streams, *, signal, pause_attempts = (1,)):
+def _Recorder(
+    monkeypatch,
+    streams,
+    *,
+    signal,
+    pause_attempts = (1,),
+):
     return PreemptRecorder(
         monkeypatch,
         streams,
@@ -49,6 +55,7 @@ def _run(recorder, *, signal, policy):
 
 
 LLAMA_CPP = pathlib.Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+
 
 def _paused_final_run(monkeypatch, *, resume = True):
     signal = preemption.PreemptSignal()

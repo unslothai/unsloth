@@ -66,7 +66,6 @@ class TestTheArmingSweepPrefersTheNewcomer:
 
 class TestNothingIsPrefilledBeforeThePause:
     def test_an_armed_signal_stops_the_request_before_it_is_sent(self):
-
         class _ExplodingClient:
             def stream(self, *args, **kwargs):
                 raise AssertionError(
@@ -89,7 +88,6 @@ class TestNothingIsPrefilledBeforeThePause:
                 raise AssertionError("the stream opened despite a pending preemption")
 
     def test_a_clear_signal_does_open_the_request(self):
-
         opened = []
 
         class _RecordingClient:

@@ -21,7 +21,13 @@ from .preempt_fakes import (
 _TOOL = web_search_tool(required = True)
 
 
-def _Recorder(monkeypatch, streams, *, signal, pause_after = 1):
+def _Recorder(
+    monkeypatch,
+    streams,
+    *,
+    signal,
+    pause_after = 1,
+):
     return PreemptRecorder(
         monkeypatch,
         streams,

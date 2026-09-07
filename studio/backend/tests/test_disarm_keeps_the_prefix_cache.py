@@ -124,7 +124,6 @@ class TestTheContendedCaseStillReclaims:
         assert erasures == [0]
 
     def test_a_request_waiting_at_admission_counts_too(self, controller, erasures, monkeypatch):
-
         class _Queue:
             def snapshot(self):
                 return type("Snap", (), {"queued": 1})()

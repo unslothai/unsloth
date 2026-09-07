@@ -32206,22 +32206,22 @@ class LlamaCppBackend:
                                         _iteration_max_tokens,
                                         _spent + _pending_args,
                                     ) // (
-                                         # Sequentially, call k divides by the calls still to
-                                         # run. Run together they all price against the same
-                                         # `_spent`, so each dividing by its own remainder hands
-                                         # out more than the batch has.
+                                        # Sequentially, call k divides by the calls still to
+                                        # run. Run together they all price against the same
+                                        # `_spent`, so each dividing by its own remainder hands
+                                        # out more than the batch has.
                                         len(tool_calls or [])
                                         if _parallel_round
                                         else (len(_pending) + 1)
                                     )
-                                     # A budget at or near zero means the call cannot deliver
-                                     # anything: the result is cut to a notice saying it was cut,
-                                     # which reads to the model as a fresh failure rather than a
-                                     # wall, so it tries again. Six of the last eight calls of an
-                                     # 18-call turn priced at zero and returned the same notice.
-                                     # Room is exactly what compaction reclaims, so spend it
-                                     # here. NOT in a parallel round: replacing `conversation[:]`
-                                     # from a worker races the generator thread.
+                                    # A budget at or near zero means the call cannot deliver
+                                    # anything: the result is cut to a notice saying it was cut,
+                                    # which reads to the model as a fresh failure rather than a
+                                    # wall, so it tries again. Six of the last eight calls of an
+                                    # 18-call turn priced at zero and returned the same notice.
+                                    # Room is exactly what compaction reclaims, so spend it
+                                    # here. NOT in a parallel round: replacing `conversation[:]`
+                                    # from a worker races the generator thread.
                                     if (
                                         _result_budget < _MIN_USEFUL_RESULT_TOKENS
                                         and self._effective_context_length
@@ -32626,10 +32626,10 @@ class LlamaCppBackend:
                 yield {"type": "preempt", "state": "paused"}
                 try:
                     _resumed = preempt_policy.await_resume()
-                     # Cleared BEFORE `on_resumed`. The clear stays because the policy protocol
-                     # does not promise one and a signal still set aborts the resumed attempt on
-                     # its first read. Afterwards it races the sweep, which could have chosen
-                     # this participant again, and would erase a pause already counted as room.
+                    # Cleared BEFORE `on_resumed`. The clear stays because the policy protocol
+                    # does not promise one and a signal still set aborts the resumed attempt on
+                    # its first read. Afterwards it races the sweep, which could have chosen
+                    # this participant again, and would erase a pause already counted as room.
                     if preempt_event is not None:
                         preempt_event.clear()
                     preempt_policy.on_resumed()
@@ -32639,13 +32639,13 @@ class LlamaCppBackend:
                     if preempt_event is not None:
                         preempt_event.clear()
                 if not _resumed:
-                     # The policy stopped waiting for room. Ending the turn leaves the partial
-                     # in the conversation rather than hanging the chat.
+                    # The policy stopped waiting for room. Ending the turn leaves the partial
+                    # in the conversation rather than hanging the chat.
                     logger.info("Paused generation was not resumed; ending the turn")
-                     # And says so, then ends the turn as the final pass does when its own
-                     # resume is refused. This used to break into the final answering pass
-                     # instead, but the lease went back with on_preempted and the participant is
-                     # PAUSED, so that pass decoded on cells the planner had handed out.
+                    # And says so, then ends the turn as the final pass does when its own
+                    # resume is refused. This used to break into the final answering pass
+                    # instead, but the lease went back with on_preempted and the participant is
+                    # PAUSED, so that pass decoded on cells the planner had handed out.
                     yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
                     _gave_up_meta = _build_metadata_event(_iter_usage, _iter_timings, "length")
                     if _gave_up_meta is not None:
@@ -32653,13 +32653,13 @@ class LlamaCppBackend:
                     return
                 # Paired with the pause above, so a client that shows one shows the other.
                 yield {"type": "preempt", "state": "resumed"}
-                 # `max_tokens` bounds NEW tokens and the next iteration rebuilds the payload
-                 # from the caller's figure, so without this a request capped at 100 could emit
-                 # 80, pause, and be handed another 100.
+                # `max_tokens` bounds NEW tokens and the next iteration rebuilds the payload
+                # from the caller's figure, so without this a request capped at 100 could emit
+                # 80, pause, and be handed another 100.
                 _preempt_cap_left = _loop_budget_left(0)
                 if _preempt_cap_left is not None:
-                     # Floored at 1: a request for zero tokens returns nothing at all, which
-                     # would turn a pause into a silently empty turn.
+                    # Floored at 1: a request for zero tokens returns nothing at all, which
+                    # would turn a pause into a silently empty turn.
                     _continuation_max_tokens = max(1, _preempt_cap_left)
                 _preempt_display_seed = (cumulative_display, _last_emitted, in_thinking)
                 continue
@@ -32714,9 +32714,9 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
-         # The same clamp the per-round payload applies, on the pass that produces most of what
-         # a tool run says. Without it a run that spent its tool budget sent the whole window as
-         # its output cap while admission had reserved a share.
+        # The same clamp the per-round payload applies, on the pass that produces most of what
+        # a tool run says. Without it a run that spent its tool budget sent the whole window as
+        # its output cap while admission had reserved a share.
         if admission_output_allowance is not None:
             _final_max_tokens = min(_final_max_tokens, admission_output_allowance)
         _final_preflight_context_length = None
@@ -33013,13 +33013,13 @@ class LlamaCppBackend:
         _final_length_continuations = 0
         _continue_final = False
         _final_replayed_chars = 0
-         # The same mark for the thought, because a pause inside one carries it back as
-         # `reasoning_content`. Cumulative like `reasoning_text` itself, so without it a turn
-         # paused twice mid-thought sends the first half of the thought a second time.
+        # The same mark for the thought, because a pause inside one carries it back as
+        # `reasoning_content`. Cumulative like `reasoning_text` itself, so without it a turn
+        # paused twice mid-thought sends the first half of the thought a second time.
         _final_replayed_reasoning_chars = 0
-         # Per ATTEMPT of the final pass, reported exactly as the in-loop stream reports its
-         # own. `observe()` is the only thing that plans an eviction and `on_tokens` the only
-         # thing that calls it, so a long forced final answer grew invisibly.
+        # Per ATTEMPT of the final pass, reported exactly as the in-loop stream reports its
+        # own. `observe()` is the only thing that plans an eviction and `on_tokens` the only
+        # thing that calls it, so a long forced final answer grew invisibly.
         _final_tokens_this_stream = 0
 
         def _remaining_output_budget(spent_this_attempt = None) -> "Optional[int]":

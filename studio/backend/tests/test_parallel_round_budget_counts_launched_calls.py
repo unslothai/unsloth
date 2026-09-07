@@ -14,7 +14,6 @@ if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
 
-
 from .preempt_fakes import executed  # noqa: E402, F401
 from test_studio_tool_loop import (  # noqa: E402
     WEB,

@@ -73,8 +73,6 @@ _UNRELATED_CRASH = (
 )
 
 
-
-
 class TestSetting:
     def test_the_default_is_off_because_the_mode_costs_throughput(self):
         assert exact.resolve_exact_setting(None, stored = None, environ = {}) == exact.EXACT_OFF
@@ -153,8 +151,6 @@ class TestSetting:
         )
 
 
-
-
 class TestChildEnvironment:
     def test_the_variable_is_set_exactly_when_the_answer_is_yes(self):
         for setting in ("auto", "on"):
@@ -177,8 +173,6 @@ class TestChildEnvironment:
         assert exact.apply_child_env(env, on = True) is False
         assert exact.apply_child_env(env, on = False) is True
         assert exact.apply_child_env(env, on = False) is False
-
-
 
 
 class TestLaunchArgs:
@@ -262,8 +256,6 @@ class TestLaunchArgs:
         )
 
 
-
-
 class TestRefusalDetection:
     @pytest.mark.parametrize("output", [_REFUSAL_THROWN, _REFUSAL_LAYER, _REFUSAL_BOUND])
     def test_every_way_the_server_names_the_mode_is_recognised(self, output):
@@ -344,8 +336,6 @@ class TestAutoFallback:
             _UNRELATED_CRASH, "/models/x.gguf", "unsloth/x", returncode = 1
         )
         assert "exact concurrency is set to" not in message.lower()
-
-
 
 
 class TestReportedState:
@@ -465,8 +455,6 @@ class TestDuplicateLoad:
         assert backend.requested_exact_concurrency != exact.resolve_exact_setting("on")
 
 
-
-
 class TestPreemptionSnapshot:
     def test_the_snapshot_carries_the_mode_and_defaults_to_off(self):
         controller = PreemptionController("exact")
@@ -535,8 +523,6 @@ class TestArmedLine:
     @pytest.mark.parametrize("state", ["on", "off", "unavailable"])
     def test_every_state_reaches_the_line(self, monkeypatch, state):
         assert f"exact={state}" in self._armed(monkeypatch, gen_id = "g", exact = state)
-
-
 
 
 class TestStoredSetting:

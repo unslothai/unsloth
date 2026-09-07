@@ -401,7 +401,6 @@ class TestTheBufferCanHoldOnePrefillChunk:
 
     def test_a_small_cache_is_not_given_a_ceiling_of_zero(self):
         from core.inference.llama_preemption import preemption_buffer_tokens
-
         buffer = preemption_buffer_tokens(2048, slots = 4, batch_tokens = 2048)
         assert 0 < buffer <= 1024, buffer
 
