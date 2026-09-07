@@ -32918,6 +32918,34 @@ class LlamaCppBackend:
                     resumes = _preempt_resumes + 1,
                     reason = getattr(preempt_event, "reason", None),
                 )
+
+                def _decline_the_pause(_where: str) -> None:
+                    """Take back a pause this stream has been asked for and will not take.
+
+                    The sweep that chose this generation moved it to PREEMPTING and set
+                    its signal; PREEMPTING is outside `_PREEMPTABLE` and nothing in the
+                    ordinary path moves it back, so a stream that clears the signal and
+                    goes on decoding decodes while permanently unselectable, holding
+                    cells the planner has already counted as reclaimed. Whoever was
+                    waiting on those cells waits for room that is never coming.
+
+                    `getattr`, because the policy is caller supplied and doubles written
+                    against the older protocol are still handed in; a missing method
+                    leaves exactly the behaviour that predates this. Nothing here may end
+                    the turn, so every failure is swallowed.
+                    """
+                    _declined = getattr(preempt_policy, "on_declined", None)
+                    if not callable(_declined):
+                        return
+                    try:
+                        _declined()
+                    except Exception:
+                        logger.debug(
+                            "preemption policy raised on a declined pause (%s); continuing anyway",
+                            _where,
+                            exc_info = True,
+                        )
+
                 if _preempt_resumes >= _MAX_PREEMPT_RESUMES:
                     # Churning rather than progressing. Refusing to pause again is
                     # better than pausing forever, and the admitted output clamp
@@ -32926,6 +32954,10 @@ class LlamaCppBackend:
                         "Not pausing again after %d resumes; finishing the turn instead",
                         _preempt_resumes,
                     )
+                    # The break below decodes a whole final answering pass, so the
+                    # decision has to be handed back before it: clearing the signal alone
+                    # leaves the participant PREEMPTING for the rest of the turn.
+                    _decline_the_pause("tool round")
                     if preempt_event is not None:
                         preempt_event.clear()
                     break
@@ -33007,17 +33039,18 @@ class LlamaCppBackend:
                     # The policy stopped waiting for room. Ending the turn leaves the
                     # partial in the conversation rather than hanging the chat.
                     logger.info("Paused generation was not resumed; ending the turn")
-                    # And says so. This loop breaks into the final answering pass, so
-                    # unlike the plain path it usually still produces text, but the pause
-                    # the client was shown ("Paused while another chat finishes") has to
-                    # be resolved either way: a chat that waited minutes and then answered
-                    # something shorter has told the user nothing about the minutes, and a
-                    # final pass that produces nothing leaves the same blank turn the plain
-                    # path did. Yielded here rather than appended to `_carried_truncations`
-                    # because those are drained at the TOP of this loop, which the break
-                    # below never reaches again; emitted once, because the break follows.
+                    # And says so, then ends the turn the way the final pass does when its
+                    # own resume is refused: the notice, then a terminal metadata carrying
+                    # `length`, which is the shape the client already resumes from. This
+                    # used to break into the final answering pass instead, but the lease
+                    # went back with on_preempted and the participant is PAUSED, so that
+                    # pass decoded on cells the planner had already handed out, uncounted
+                    # and unselectable; whatever the rounds streamed stays on screen.
                     yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
-                    break
+                    _gave_up_meta = _build_metadata_event(_iter_usage, _iter_timings, "length")
+                    if _gave_up_meta is not None:
+                        yield _gave_up_meta
+                    return
                 # Paired with the pause above, so a client that shows one shows the other.
                 yield {"type": "preempt", "state": "resumed"}
                 # `max_tokens` bounds NEW tokens and the next iteration rebuilds the
@@ -34011,9 +34044,19 @@ class LlamaCppBackend:
                 _pre_usage_f = (
                     _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
                 )
-                _pre_charged_f = int(
-                    _pre_usage_f.get("completion_tokens") or 0
-                ) or self._preempt_charged(_paused_visible, _paused_reasoning)
+                # The OBSERVED chunk count when this attempt produced one, and the
+                # four-characters-per-token approximation only as a floor under it. This
+                # read the estimate alone whenever the server sent no usage, which is the
+                # normal case for an aborted attempt, and that estimate undercharges
+                # token-dense text -- CJK and emoji run nearer one character per token.
+                # The same figure spends down `max_tokens` and re-baselines the controller
+                # through `note_replayed`, so an undercharge is both an output cap the
+                # caller never agreed to and cells the watermark cannot see. Written the
+                # way the plain chat path writes it, over the same two readings.
+                _pre_charged_f = max(
+                    int(_pre_usage_f.get("completion_tokens") or 0) or _final_tokens_this_stream,
+                    self._preempt_charged(_paused_visible, _paused_reasoning),
+                )
                 _checkpoint_f = _preemption.StreamCheckpoint(
                     visible_text = _paused_visible,
                     reasoning_text = _paused_reasoning,
@@ -34021,6 +34064,31 @@ class LlamaCppBackend:
                     resumes = _preempt_resumes + 1,
                     reason = getattr(preempt_event, "reason", None),
                 )
+
+                def _decline_the_final_pause() -> None:
+                    """Take back a pause this pass has been asked for and will not take.
+
+                    The sweep that chose this generation moved it to PREEMPTING and set
+                    its signal. Clearing the signal on its own leaves that state behind,
+                    and PREEMPTING is outside `_PREEMPTABLE`: no later sweep can ask
+                    again, and until teardown the ledger holds a victim that is never
+                    going to pause.
+
+                    `getattr`, because the policy is caller supplied and doubles written
+                    against the older protocol are still handed in. Nothing here may end
+                    the turn, so every failure is swallowed.
+                    """
+                    _declined_f = getattr(preempt_policy, "on_declined", None)
+                    if not callable(_declined_f):
+                        return
+                    try:
+                        _declined_f()
+                    except Exception:
+                        logger.debug(
+                            "preemption policy raised on a declined pause (final pass); "
+                            "continuing anyway",
+                            exc_info = True,
+                        )
 
                 def _final_pause_gave_up():
                     """End the turn the way a client can read, not by falling silent.
@@ -34047,6 +34115,12 @@ class LlamaCppBackend:
                         "the turn instead",
                         _preempt_resumes,
                     )
+                    # Nothing decodes after this, but the participant must not be left
+                    # PREEMPTING either: teardown unregisters it and hands the lease
+                    # back, and a sweep that runs in between would count a chosen victim
+                    # whose pause is never coming. Same handback as the round loop, which
+                    # is the one place this turn can still reach.
+                    _decline_the_final_pause()
                     if preempt_event is not None:
                         preempt_event.clear()
                     yield from _final_pause_gave_up()
@@ -34142,6 +34216,18 @@ class LlamaCppBackend:
                 # The resumed attempt starts from what is on screen now, so a resume that
                 # shows nothing new is judged on its own.
                 _attempt_started_at = _last_emitted
+                # Per attempt as well, and for a sharper reason than tidiness.
+                # `on_preempted` has just moved this attempt's tokens into the
+                # participant's `base_tokens` through `note_replayed` -- they are prompt
+                # now, not output -- and `observe` computes occupancy as
+                # `base_tokens + reported`. Carried across the resume, the next
+                # `on_tokens` reports the SUM of both attempts against a baseline that
+                # already contains the first, so the sweep sees this chat as roughly
+                # twice its size and evicts somebody to make room that was never taken.
+                # The length continuation above deliberately does NOT reset: nothing
+                # re-baselines `base_tokens` there, so its count has to stay cumulative
+                # or the same sweep would undercount by the whole earlier attempt.
+                _final_tokens_this_stream = 0
                 # No blank status and no cleared display, for the reason the length
                 # continuation gives: this pass keeps `cumulative` across attempts, and a
                 # client whose cursor was reset is sent the partial twice.

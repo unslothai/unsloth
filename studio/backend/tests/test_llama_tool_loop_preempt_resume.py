@@ -267,14 +267,17 @@ class TestWhatAPauseMustNotCost:
 
 
 class TestWhenItCannotOrMustNotResume:
-    def test_a_policy_that_gives_up_stops_pausing(self, monkeypatch):
-        """It must not wait forever, and it must not pause a second time.
+    def test_a_policy_that_gives_up_ends_the_turn_and_says_so(self, monkeypatch):
+        """It must not wait forever, it must not pause a second time, and it must
+        not decode on.
 
-        Giving up leaves the round loop, which hands the turn to the existing
-        final-answer pass. That pass continues the partial rather than repeating
-        it, so a chat whose pause could not be honoured still gets a whole reply
-        instead of a sentence that stops mid-word. What must NOT happen is another
-        pause, or a hang.
+        Giving up used to hand the turn to the final-answer pass, but the lease went
+        back with on_preempted and the participant is paused, so that pass decoded
+        on cells the planner had already handed out, uncounted and unselectable.
+        The turn now ends the way the final pass ends its own refused resume: the
+        notice saying why, then a terminal metadata carrying `length`, which the
+        client already resumes from. What must NOT happen is another pause, a
+        hang, or a second request.
         """
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy(resume = False)
@@ -286,11 +289,18 @@ class TestWhenItCannotOrMustNotResume:
             ],
             signal = signal,
         )
-        _run(recorder.backend, signal = signal, policy = policy)
+        events = _run(recorder.backend, signal = signal, policy = policy)
         assert policy.events.count("preempted") == 1, "it paused more than once"
-        assert not signal.is_set(), "the signal must be cleared before falling through"
-        # The turn was handed on rather than abandoned mid-sentence.
-        assert len(recorder.payloads) == 2
+        assert not signal.is_set(), "the signal must be cleared before the turn ends"
+        # No second request: the turn ended rather than decoding without a lease.
+        assert len(recorder.payloads) == 1
+        assert any(
+            e.get("type") == "context_truncated" and e.get("reason") == "preempt_gave_up"
+            for e in events
+        ), "the client was not told why the answer stopped"
+        assert any(
+            e.get("type") == "metadata" and e.get("finish_reason") == "length" for e in events
+        ), "no terminal metadata with a length finish"
 
     def test_a_pause_before_the_first_token_re_issues_the_request_whole(self, monkeypatch):
         """`continue_final_message` refuses an empty assistant turn, so there is
