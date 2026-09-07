@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from urllib.parse import parse_qs, urlparse
-
 import pytest
 import typer
 
@@ -15,7 +13,6 @@ import unsloth_cli.commands.start as start_cli
 
 BASE = "http://127.0.0.1:8888"
 MODEL = "unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF"
-BASE_MODEL = "unsloth/Qwen3-Coder-30B-A3B-Instruct"
 KEY_LINE = f"{start_cli._START_API_KEY_PREFIX}sk-unsloth-test\n"
 EXPECTED_BYTES = 500 * 1024**3
 STEP_S = 120.0
@@ -85,8 +82,8 @@ class Harness:
         chunk_bytes = 0,
         chatter = None,
         fail_every = 0,
+        fail_first = 0,
         unmeasured_every = 0,
-        base_chunk_bytes = 0,
         ready_at = None,
         tail = KEY_LINE,
     ):
@@ -94,11 +91,10 @@ class Harness:
         self.log_path = None
         self.chatter = chatter
         self.fail_every = fail_every
+        self.fail_first = fail_first
         self.failures = 0
         self.unmeasured_every = unmeasured_every
         self.unmeasured = 0
-        self.base_chunk_bytes = base_chunk_bytes
-        self.base_bytes = 0
         self.downloaded_bytes = downloaded_bytes
         self.chunk_bytes = chunk_bytes
         self.ready_at = ready_at
@@ -130,26 +126,11 @@ class Harness:
                 "default_variant": "Q4_K_M",
                 "variants": [{"quant": "Q4_K_M", "download_size_bytes": EXPECTED_BYTES}],
             }
-        if "active-downloads" in url:
-            # The load's other repos, as `hub/routes/inventory.py` reports them.
-            return {
-                "downloads": [
-                    {"repo_id": BASE_MODEL, "state": "downloading"},
-                ]
-                if self.base_chunk_bytes
-                else []
-            }
         if "download-progress" in url:
-            repo = parse_qs(urlparse(url).query).get("repo_id", [""])[0]
-            if repo == BASE_MODEL:
-                self.base_bytes += self.base_chunk_bytes
-                return {
-                    "downloaded_bytes": self.base_bytes,
-                    "expected_bytes": EXPECTED_BYTES,
-                    "cache_measured": True,
-                }
             self.polls += 1
-            if self.fail_every and self.polls % self.fail_every == 0:
+            if self.polls <= self.fail_first or (
+                self.fail_every and self.polls % self.fail_every == 0
+            ):
                 self.failures += 1
                 raise TimeoutError("the server took too long to answer")
             if self.unmeasured_every and self.polls % self.unmeasured_every == 0:
@@ -289,26 +270,6 @@ def test_a_transient_progress_error_does_not_blind_the_loop(monkeypatch):
     assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
 
 
-def test_a_base_model_download_counts_as_progress(monkeypatch):
-    # `unsloth start --model <LoRA adapter>` fetches the adapter and then its base, which
-    # `core/inference/worker.py` watches as the real bottleneck. The adapter going quiet
-    # while the base is still arriving is not a stalled transfer.
-    harness = Harness(
-        monkeypatch,
-        downloaded_bytes = 4 * 1024**3,
-        chunk_bytes = 0,
-        base_chunk_bytes = 1024**3,
-        ready_at = 40,
-    )
-
-    server = harness.start()
-
-    assert server is harness.server
-    assert harness.shutdowns == []
-    assert harness.base_bytes > 0
-    assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
-
-
 def test_an_unmeasured_reading_is_not_progress(monkeypatch, capsys):
     # `snapshot_progress_response` answers 200 with zero bytes when it cannot finish the
     # cache scan. Believing it would drop the count to zero, so the next real reading of
@@ -327,3 +288,24 @@ def test_an_unmeasured_reading_is_not_progress(monkeypatch, capsys):
     assert harness.shutdowns == [harness.server]
     assert f"made no progress for {start_cli._SERVER_START_TIMEOUT_S}s" in capsys.readouterr().err
     assert harness.clock.elapsed < 2 * start_cli._SERVER_START_TIMEOUT_S
+
+
+def test_polling_keeps_probing_after_a_long_burst_of_errors(monkeypatch):
+    # Bytes are the only thing separating a live transfer from a wedged server, so a run
+    # of failures may back the reader off but must never retire it: the download it would
+    # abandon is the one this whole path exists to keep alive. Six in a row is past the
+    # point where the reader used to disable itself for the rest of the startup.
+    harness = Harness(
+        monkeypatch,
+        chunk_bytes = 1024**3,
+        fail_first = 6,
+        ready_at = 40,
+    )
+
+    server = harness.start()
+
+    assert server is harness.server
+    assert harness.shutdowns == []
+    assert harness.failures >= 6
+    assert harness.downloaded_bytes > 0  # it recovered and saw the transfer again
+    assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S

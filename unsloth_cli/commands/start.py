@@ -873,8 +873,8 @@ _auto_served_server: Optional[subprocess.Popen] = None
 # advanced, not total elapsed time (see `_start_studio_server`).
 _SERVER_START_TIMEOUT_S = 900
 _DOWNLOAD_POLL_INTERVAL_S = 1.0
-# Consecutive polling errors before the progress reader gives up for good.
-_DOWNLOAD_POLL_MAX_FAILURES = 5
+# Ceiling on the doubling back-off the progress reader uses after a polling error.
+_DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 
@@ -1009,8 +1009,7 @@ class _ModelDownloadProgress:
         self._expected_bytes = 0
         self._downloaded_bytes = 0
         self._failures = 0
-        self._companions_disabled = False
-        self._companion_total = 0
+        self._retry_at = 0.0
         self._display = _DownloadProgressDisplay()
         self._configured = False
         self._disabled = not _is_hub_model_id(model)
@@ -1061,6 +1060,8 @@ class _ModelDownloadProgress:
             self._configure()
         if self._disabled:
             return
+        if time.monotonic() < self._retry_at:
+            return
         try:
             if self._variant or "gguf" in self._model.lower():
                 params = urlencode(
@@ -1089,62 +1090,19 @@ class _ModelDownloadProgress:
                 # that as the truth would drop the count to zero and make the next real
                 # reading of the same cached bytes look like fresh growth.
                 raise _UnmeasuredReading
-            self._downloaded_bytes = (
-                max(0, int(reading.get("downloaded_bytes") or 0)) + self._companion_bytes()
-            )
+            self._downloaded_bytes = max(0, int(reading.get("downloaded_bytes") or 0))
             self._failures = 0
+            self._retry_at = 0.0
             self._display.update(reading)
         except Exception:
             # Progress is best-effort and never fails the load, but `_start_studio_server`
-            # reads `downloaded_bytes` to tell a live transfer from a wedged one, so a
-            # single slow response must not blind it for the rest of the startup.
+            # reads `downloaded_bytes` to tell a live transfer from a wedged one. Backing
+            # off keeps a broken endpoint cheap; giving up for good would kill the very
+            # download this exists to protect, so it never stops probing.
             self._failures += 1
-            if self._failures >= _DOWNLOAD_POLL_MAX_FAILURES:
-                self._disabled = True
-
-    def _companion_bytes(self) -> int:
-        """Bytes of every other repo the server is fetching for this load.
-
-        A LoRA start downloads the adapter and then its base model -- `core/inference/
-        worker.py` watches both, calling the base the bottleneck -- so the adapter
-        finishing is not the transfer finishing. Best effort: a server without the
-        endpoint just leaves this at zero.
-        """
-        if self._companions_disabled:
-            return 0
-        try:
-            listing = _http_json(
-                "GET",
-                f"{self._base}{self._progress_prefix}/active-downloads",
-                self._key,
-                timeout = 10,
+            self._retry_at = time.monotonic() + min(
+                2.0**self._failures, _DOWNLOAD_POLL_MAX_BACKOFF_S
             )
-            repos = {
-                str(item.get("repo_id") or "")
-                for item in listing.get("downloads") or []
-                if str(item.get("repo_id") or "") not in ("", self._model)
-            }
-            total = 0
-            for repo in sorted(repos):
-                reading = _http_json(
-                    "GET",
-                    f"{self._base}{self._progress_prefix}/download-progress?"
-                    f"{urlencode({'repo_id': repo})}",
-                    self._key,
-                    timeout = 10,
-                )
-                if reading.get("cache_measured") is not False:
-                    total += max(0, int(reading.get("downloaded_bytes") or 0))
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:  # endpoint absent, and that will not change
-                self._companions_disabled = True
-            return self._companion_total
-        except Exception:
-            # Never let a companion lookup cost us the reading we already have; the last
-            # known total is a constant, and a constant cannot renew the deadline.
-            return self._companion_total
-        self._companion_total = total
-        return total
 
     @property
     def downloaded_bytes(self) -> int:
