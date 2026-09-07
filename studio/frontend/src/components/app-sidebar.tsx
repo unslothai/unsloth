@@ -144,7 +144,6 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
   moveChatItemToProject,
-  NewProjectDialog,
   allRecordedSandboxSessionIds,
   notifyChatHistoryUpdated,
   renameChatItem,
@@ -188,6 +187,7 @@ import {
   revealSandbox,
   sandboxHasFiles,
 } from "@/components/assistant-ui/sandbox-reveal";
+import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
@@ -1980,10 +1980,6 @@ export function AppSidebar() {
   // whether the unrelated recent-chat list currently has a scrollbar.
   const unrailedRowPadding = usesDesktopTitlebar ? "px-[5px]" : "px-1.5";
 
-  const [creatingProject, setCreatingProject] = useState(false);
-  const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
-    useState<SidebarItem | null>(null);
-
   // Header actions end where a hovered row's "…" does: unrailedRowPadding + the
   // action's own pr-1.5. 12px normally (the pr-3 class default), 11px here.
   const headerRightPadding = usesDesktopTitlebar
@@ -2290,6 +2286,9 @@ export function AppSidebar() {
       );
     });
   }, [allChatItems, pendingRename]);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
+    useState<SidebarItem | null>(null);
   const renameTrimmed = renameDraft.trim();
   const nextRunDisplayName = renameTrimmed.length > 0 ? renameTrimmed : null;
   const renameDirty =

@@ -4,7 +4,6 @@
 import {
   ChatMessageProtectedError,
   ChatThreadDeletedError,
-  type ChatThreadWritePatch,
   batchListChatMessages,
   buildBackendChatExport,
   clearBackendChats,
@@ -24,6 +23,7 @@ import {
   saveChatThread,
   syncChatMessages,
   updateChatProject,
+  type ChatThreadWritePatch,
   updateChatThread,
 } from "../api/chat-api";
 import { DEXIE_DB_NAME, db } from "../db";
@@ -1171,9 +1171,9 @@ export function clearStoredChats(
   return tracked;
 }
 
-async function clearStoredChatsWithAdmissionClosed(options: {
-  deleteFiles?: boolean;
-}): Promise<ClearStoredChatsResult> {
+async function clearStoredChatsWithAdmissionClosed(
+  options: { deleteFiles?: boolean },
+): Promise<ClearStoredChatsResult> {
   // Admission is closed before this one-shot fence snapshot.
   const pendingThreadIds = threadRecordWrites.idsRequiringFence();
   const operationId = crypto.randomUUID();

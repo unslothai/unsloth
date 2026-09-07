@@ -112,10 +112,7 @@ export function useChatProjects(): {
     window.addEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
     return () => {
       cancelled = true;
-      window.removeEventListener(
-        CHAT_PROJECTS_UPDATED_EVENT,
-        onProjectsUpdated,
-      );
+      window.removeEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
     };
   }, []);
 
@@ -142,9 +139,7 @@ export async function updateChatProjectInstructions(
   projectId: string,
   instructions: string,
 ): Promise<void> {
-  await updateStoredChatProject(projectId, {
-    instructions: instructions.trim(),
-  });
+  await updateStoredChatProject(projectId, { instructions: instructions.trim() });
 }
 
 export async function setChatProjectWorkspace(
