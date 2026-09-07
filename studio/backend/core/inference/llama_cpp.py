@@ -479,6 +479,9 @@ class _LlamaStreamCancelled(Exception):
 
 # What a started-but-not-yet-read call reports before it has finished.
 _TOOL_PRIME_PENDING = object()
+# An entry of a parallel round whose driver has not been started yet: the round prepares
+# every call first and starts them together below the loop, see the launch site.
+_TOOL_START_DEFERRED = object()
 
 
 def _drive_tool_stream(stream, out_queue) -> None:
@@ -2023,6 +2026,12 @@ _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
 _MAX_TOOL_CALLS_PER_TURN = 8
+# The most structured calls one round overlaps. Each overlapped call is a driver thread
+# and a worker underneath it, and every one of them starts its side effects at once, so a
+# response carrying dozens of calls (prompt-induced, or malformed) would multiply threads
+# and side effects with nothing bounding it; the textual fallback already caps its calls
+# per turn at the figure above. A round past this runs single file, as every round did.
+_MAX_PARALLEL_TOOL_CALLS_PER_ROUND = _MAX_TOOL_CALLS_PER_TURN
 # How many times a turn may be resumed after ending inside its own reasoning. Two, because
 # the first retry already runs with thinking off: if that still produces nothing visible,
 # the window is too small for this model and another attempt only spends more of the user's
@@ -31465,6 +31474,7 @@ class LlamaCppBackend:
                 _parallel_round = (
                     _parallel_tool_calls_enabled()
                     and len(tool_calls or []) > 1
+                    and len(tool_calls or []) <= _MAX_PARALLEL_TOOL_CALLS_PER_ROUND
                     and not _approval_gate
                     and len(set(_round_keys)) == len(_round_keys)
                     and len(set(_round_one_shot)) == len(_round_one_shot)
@@ -32114,9 +32124,16 @@ class LlamaCppBackend:
                                     #
                                     # Room is exactly what compaction reclaims, so spend it
                                     # here before the call rather than after the turn is lost.
+                                    # NOT in a parallel round: this runs on the call's own
+                                    # thread there, and replacing `conversation[:]` from a
+                                    # worker races the generator thread, which appends the
+                                    # settled results, and the other workers, which are
+                                    # sizing from the same list. The round compacts once,
+                                    # on the generator thread, before its drivers start.
                                     if (
                                         _result_budget < _MIN_USEFUL_RESULT_TOKENS
                                         and self._effective_context_length
+                                        and not _parallel_round
                                     ):
                                         _roomier, _n_roomier = compact_completed_tool_arguments(
                                             conversation, protect_last = 1
@@ -32223,15 +32240,24 @@ class LlamaCppBackend:
                             cancel_event = cancel_event,
                         )
                         if _parallel_round:
-                            # Started here, read back below in the order the model asked
-                            # for. This is what makes the round overlap: the tools run
-                            # while the loop moves on to the next call.
+                            # Prepared here, started below the loop once every call of the
+                            # round is attached to the assistant message, and read back in
+                            # the order the model asked for. Starting the driver here let
+                            # the first tool run while the loop was still appending the
+                            # later calls to `assistant_msg`; a compaction from inside that
+                            # tool then rebuilt `conversation[:]` and detached the message,
+                            # so the later calls went onto a dictionary the transcript no
+                            # longer held and their results landed as orphans that strict
+                            # templates reject, after the tools had already run.
                             _pending_calls.append(
-                                _start_tool_call(
+                                (
+                                    _TOOL_START_DEFERRED,
                                     decision,
                                     _tool_stream,
                                     _last_result_budget,
                                     _starved_call,
+                                    None,
+                                    None,
                                 )
                             )
                             # Counted HERE, not when it settles. The cap above is read once
@@ -32272,6 +32298,48 @@ class LlamaCppBackend:
                     )
 
                 # The round's overlapped calls, read back in the order the model asked for.
+                if _parallel_round and any(
+                    _entry[0] is _TOOL_START_DEFERRED for _entry in _pending_calls
+                ):
+                    # The room every call of the round shares, sized once here: the same
+                    # figure each call's own sizing arrives at, with the whole round as
+                    # the divisor, and reclaimed here on the generator thread with every
+                    # call attached, which is the one place it is safe to do so.
+                    if self._effective_context_length:
+                        try:
+                            _round_spent = self.count_chat_tokens(
+                                neutralize_control_markup_in_messages(
+                                    messages_without_unpriced_media(conversation),
+                                    _markup_cache,
+                                    self.markup_profile,
+                                ),
+                                None,
+                                safe_tools,
+                                strict = True,
+                                chat_template_kwargs = _reasoning_kw,
+                            )
+                        except Exception:
+                            logger.debug("round budget: prompt count failed", exc_info = True)
+                            _round_spent = estimate_messages_tokens_dense(
+                                messages_without_unpriced_media(conversation)
+                            )
+                        _round_budget = tool_result_budget(
+                            self._effective_context_length,
+                            _iteration_max_tokens,
+                            _round_spent,
+                        ) // max(1, len(tool_calls or []))
+                        if _round_budget < _MIN_USEFUL_RESULT_TOKENS:
+                            _roomier, _n_roomier = compact_completed_tool_arguments(
+                                conversation, protect_last = 1
+                            )
+                            if _n_roomier:
+                                conversation[:] = _roomier
+                    for _entry_index, _entry in enumerate(_pending_calls):
+                        if _entry[0] is _TOOL_START_DEFERRED:
+                            _pending_calls[_entry_index] = _start_tool_call(
+                                _entry[1], _entry[2], _entry[3], _entry[4]
+                            )
+
                 # Empty unless `_parallel_round`, so the sequential path never reaches here.
                 for (
                     _p_decision,
