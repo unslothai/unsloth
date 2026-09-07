@@ -6002,6 +6002,22 @@ def _usage_with_earlier_attempts(usage, earlier_completion_tokens: int):
 PREEMPT_GAVE_UP_REASON = "preempt_gave_up"
 
 
+def _drop_exact_for_no_flash(env, exact_setting) -> None:
+    """Take exact concurrency off the child env before a ``--flash-attn off`` respawn.
+
+    Exact concurrency needs a non-transposed V cache, which is what flash attention buys,
+    so the mode cannot survive this respawn. Under `on` the child still refuses and the
+    load fails, which is the point of `on`; under `auto` this is the fallback arriving one
+    retry early. Both no-flash retries take it, so they cannot drift apart.
+    """
+    if exact_setting == _exact.EXACT_AUTO and _exact.apply_child_env(env, on = False):
+        logger.info(
+            "Dropped %s for the --flash-attn off retry; exact "
+            "concurrency requires flash attention.",
+            _exact.CHILD_ENV,
+        )
+
+
 def _decline_the_pause(preempt_policy, where: str) -> None:
     """Take back a pause this stream has been asked for and will not take.
 
@@ -24600,19 +24616,7 @@ class LlamaCppBackend:
                                 "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
                                 "--flash-attn off retry."
                             )
-                        # Exact concurrency needs a non-transposed V cache, which is
-                        # what flash attention buys, so the mode cannot survive this
-                        # respawn. Under `on` the child still refuses and the load
-                        # fails, which is the point of `on`; under `auto` this is the
-                        # fallback arriving one retry early.
-                        if _exact_setting == _exact.EXACT_AUTO and _exact.apply_child_env(
-                            env, on = False
-                        ):
-                            logger.info(
-                                "Dropped %s for the --flash-attn off retry; exact "
-                                "concurrency requires flash attention.",
-                                _exact.CHILD_ENV,
-                            )
+                        _drop_exact_for_no_flash(env, _exact_setting)
                         _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
                         _flash_attn_known_off = True
                         cmd = _fa_cmd
@@ -24686,19 +24690,7 @@ class LlamaCppBackend:
                                 "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
                                 "--flash-attn off retry."
                             )
-                        # Exact concurrency needs a non-transposed V cache, which is
-                        # what flash attention buys, so the mode cannot survive this
-                        # respawn. Under `on` the child still refuses and the load
-                        # fails, which is the point of `on`; under `auto` this is the
-                        # fallback arriving one retry early.
-                        if _exact_setting == _exact.EXACT_AUTO and _exact.apply_child_env(
-                            env, on = False
-                        ):
-                            logger.info(
-                                "Dropped %s for the --flash-attn off retry; exact "
-                                "concurrency requires flash attention.",
-                                _exact.CHILD_ENV,
-                            )
+                        _drop_exact_for_no_flash(env, _exact_setting)
                         _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
                         _flash_attn_known_off = True
                         cmd = _fa_cmd
