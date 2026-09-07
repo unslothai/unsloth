@@ -181,9 +181,7 @@ def test_the_darwin_override_admits_only_the_pinned_transformers():
     pinned = {
         str(req.marker): version
         for req in _named(_requirements(CONSTRAINTS), "transformers")
-        for version in (
-            [spec.version for spec in req.specifier if spec.operator == "=="] or [None]
-        )
+        for version in ([spec.version for spec in req.specifier if spec.operator == "=="] or [None])
     }
     assert pinned, "constraints.txt no longer pins transformers"
     for req in _named(_requirements(DARWIN_OVERRIDES), "transformers"):
@@ -283,8 +281,10 @@ def test_a_fresh_macos_arm64_install_ends_with_a_consistent_pair():
     tokenizers 0.23.2; step 3b -> transformers 5.5.0, tokenizers untouched).
     """
     platform_args = [
-        "--python-platform", "aarch64-apple-darwin",
-        "--python-version", "3.13",
+        "--python-platform",
+        "aarch64-apple-darwin",
+        "--python-version",
+        "3.13",
     ]
     core = _compile(
         ["-", *platform_args, "--override", str(DARWIN_OVERRIDES)],
