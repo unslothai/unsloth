@@ -31,11 +31,13 @@ def test_live_job_enforces_single_process_before_payload_entry(
 ):
     import _winapi
 
+    # A venv redirector would consume an extra Job process before this control runs.
+    python = str(Path(sys.base_prefix) / "python.exe")
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000")
     sentinel = tmp_path / "child-ran"
     diagnostic = tmp_path / "parent-diagnostic"
     child_code = f"from pathlib import Path; Path({str(sentinel)!r}).write_text('executed', encoding='utf-8')"
-    child_args = [sys.executable, "-I", "-S", "-c", child_code]
+    child_args = [python, "-I", "-S", "-c", child_code]
     source = (
         "import subprocess, sys\n"
         "try:\n"
@@ -61,8 +63,8 @@ def test_live_job_enforces_single_process_before_payload_entry(
     )
     startup = subprocess.STARTUPINFO()
     process, thread, _, _ = _winapi.CreateProcess(
-        sys.executable,
-        subprocess.list2cmdline([sys.executable, "-I", "-S", "-c", source]),
+        python,
+        subprocess.list2cmdline([python, "-I", "-S", "-c", source]),
         None,
         None,
         False,

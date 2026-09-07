@@ -37,6 +37,30 @@ class AbiAdapter:
 # an adapter must be built/tested, not that a runtime is available or qualified.
 ABI_ADAPTERS = tuple(AbiAdapter(3, minor, "x64") for minor in (11, 12, 13))
 
+# Semantic CPython stdlib features, not package DLL names or a load ordering.
+# Static discovery resolves each feature's transitive native graph. This list
+# cannot authorize package-supplied replacements; content admission is separate.
+CPYTHON_NATIVE_FEATURES = (
+    "_asyncio",
+    "_bz2",
+    "_ctypes",
+    "_decimal",
+    "_elementtree",
+    "_hashlib",
+    "_lzma",
+    "_multiprocessing",
+    "_overlapped",
+    "_queue",
+    "_socket",
+    "_sqlite3",
+    "_ssl",
+    "_uuid",
+    "_zoneinfo",
+    "pyexpat",
+    "select",
+    "unicodedata",
+)
+
 
 @dataclass(frozen = True)
 class BootstrapProfile:
@@ -47,6 +71,7 @@ class BootstrapProfile:
     runtime_families: tuple[str, ...]
     startup_capabilities: tuple[str, ...]
     startup_actions: tuple[str, ...]
+    native_features: tuple[str, ...]
     payload_capabilities: tuple[str, ...]
     active_process_limit: int
     limitations: tuple[str, ...]
@@ -68,12 +93,18 @@ PYTHON_PROFILE = BootstrapProfile(
     startup_capabilities = ("registryRead",),
     startup_actions = (
         "initialize_isolated_cpython",
+        "load_cpython_native_images",
         "initialize_winsock_providers",
         "initialize_overlapped",
     ),
+    native_features = CPYTHON_NATIVE_FEATURES,
     payload_capabilities = (),
     active_process_limit = 1,
-    limitations = ("python_single_process", "gpu_execution_unqualified"),
+    limitations = (
+        "python_single_process",
+        "gpu_execution_unqualified",
+        "console_signal_wakeup_unavailable",
+    ),
 )
 
 

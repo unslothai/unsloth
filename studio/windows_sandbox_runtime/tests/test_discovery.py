@@ -4,6 +4,7 @@
 """Static discovery tests, distinct from native execution/qualification evidence."""
 
 from dataclasses import replace
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import subprocess
@@ -162,6 +163,59 @@ def test_file_read_enforces_size_bound(tmp_path):
     path.write_bytes(b"x" * 11)
     with pytest.raises(WindowsRuntimeError, match = "too large"):
         dependencies.read_regular_file(path, limit = 10)
+
+
+@pytest.mark.parametrize("data", [b"", b"small runtime file"])
+def test_file_read_allocates_observed_size_not_policy_ceiling(tmp_path, monkeypatch, data):
+    path = tmp_path / "runtime.bin"
+    path.write_bytes(data)
+    original_open = Path.open
+    requests = []
+
+    @contextmanager
+    def observed_open(current, *args, **kwargs):
+        with original_open(current, *args, **kwargs) as stream:
+
+            class Reader:
+                def fileno(self):
+                    return stream.fileno()
+
+                def read(self, size):
+                    requests.append(size)
+                    return stream.read(size)
+
+            yield Reader()
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    identity, actual = dependencies.read_regular_file(path, limit = dependencies.MAX_IMAGE_BYTES)
+    assert actual == data and identity.size == len(data)
+    assert requests == [len(data) + 1]
+
+
+@pytest.mark.parametrize("replacement", [b"", b"grew beyond the originally observed size"])
+def test_sized_file_read_still_rejects_change_after_open(tmp_path, monkeypatch, replacement):
+    path = tmp_path / "changing.bin"
+    path.write_bytes(b"initial")
+    original_open = Path.open
+
+    @contextmanager
+    def changing_open(current, *args, **kwargs):
+        with original_open(current, *args, **kwargs) as stream:
+
+            class Reader:
+                def fileno(self):
+                    return stream.fileno()
+
+                def read(self, size):
+                    with original_open(current, "wb") as writer:
+                        writer.write(replacement)
+                    return stream.read(size)
+
+            yield Reader()
+
+    monkeypatch.setattr(Path, "open", changing_open)
+    with pytest.raises(WindowsRuntimeError, match = "changed while reading"):
+        dependencies.read_regular_file(path, limit = dependencies.MAX_IMAGE_BYTES)
 
 
 @pytest.mark.parametrize(

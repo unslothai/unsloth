@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - 'studio/backend/core/inference/**'
+      - 'studio/windows_sandbox_runtime/**'
       - 'studio/backend/models/inference.py'
       - 'studio/backend/routes/inference.py'
       - 'studio/backend/tests/test_os_sandbox.py'
@@ -135,6 +136,32 @@ jobs:
             tests/test_studio_tool_loop.py \
             tests/test_safetensors_tool_loop.py \
             tests/test_tool_loop_controller.py
+
+  windows-bootstrap-components:
+    name: CPython ${{ matrix.python }} experimental bootstrap components
+    runs-on: windows-2022
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install component test dependencies
+        run: python -m pip install pytest pefile==2024.8.26 Pillow==12.3.0 structlog==25.5.0
+      - name: Static admission and ordinary process controls (not LPAC qualification)
+        working-directory: studio/windows_sandbox_runtime/tests
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: >-
+          python -m pytest -q
+          test_contract.py test_discovery.py test_activation_manifest.py
+          test_job_policy.py test_protocol.py test_host_config.py
 
   windows-lpac:
     name: ${{ matrix.runner }} LPAC Preview qualification

@@ -11,16 +11,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import stat
+import xml.etree.ElementTree as ET
 
 from .profiles import WindowsRuntimeError
 
 PEFILE_VERSION = "2024.8.26"
 MAX_IMAGE_BYTES = 512 * 1024 * 1024
 MAX_IMPORTS = 512
+MAX_MANIFEST_BYTES = 64 * 1024
 _MACHINES = {0x8664: "x64", 0xAA64: "arm64", 0x14C: "x86"}
 _DLL_NAME = re.compile(r"[a-zA-Z0-9_.+\-]{1,200}\.(?:dll|pyd)", re.IGNORECASE)
 
@@ -35,6 +38,13 @@ class FileIdentity:
 
 
 @dataclass(frozen = True)
+class ImageManifest:
+    sha256: str
+    loader_directives: tuple[str, ...]
+    system_assemblies: tuple[str, ...] = ()
+
+
+@dataclass(frozen = True)
 class NativeImage:
     file: FileIdentity
     architecture: str
@@ -43,6 +53,112 @@ class NativeImage:
     file_version: tuple[int, int, int, int] | None
     product_version: str | None
     warnings: tuple[str, ...]
+    manifests: tuple[ImageManifest, ...] = ()
+
+
+def inspect_manifest(data: bytes) -> ImageManifest:
+    """Inventory bounded XML without resolving entities or assembly references."""
+    if not data or len(data) > MAX_MANIFEST_BYTES:
+        raise WindowsRuntimeError("WINDOWS_SANDBOX_PE_INVALID", "Manifest size limit exceeded.")
+    try:
+        # Decode before checking declarations so UTF-16 cannot hide a DTD.
+        encoding = "utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+        text = data.decode(encoding)
+        if "\0" in text or re.search(r"<!\s*(?:DOCTYPE|ENTITY)", text, re.IGNORECASE):
+            raise ValueError("Manifest declarations are not permitted")
+        root = ET.fromstring(text)
+        if root.tag != "{urn:schemas-microsoft-com:asm.v1}assembly":
+            raise ValueError("Expected an assembly manifest")
+        if root.attrib.get("manifestVersion") != "1.0":
+            raise ValueError("Unsupported manifest version")
+        directives = set()
+        system_assemblies = set()
+        assembly_ns = "{urn:schemas-microsoft-com:asm.v1}"
+        # CPython embeds this OS-owned SxS reference. Preserve its complete
+        # identity for qualification; do not search package folders for it.
+        common_controls = {
+            "type": "win32",
+            "name": "Microsoft.Windows.Common-Controls",
+            "version": "6.0.0.0",
+            "processorArchitecture": "*",
+            "publicKeyToken": "6595b64144ccf1df",
+            "language": "*",
+        }
+        os_dependencies = set()
+        for dependency in root.findall(assembly_ns + "dependency"):
+            children = list(dependency)
+            if dependency.attrib or len(children) != 1:
+                continue
+            child = children[0]
+            identities = list(child)
+            if (
+                child.tag == assembly_ns + "dependentAssembly"
+                and not child.attrib
+                and len(identities) == 1
+                and identities[0].tag == assembly_ns + "assemblyIdentity"
+                and identities[0].attrib == common_controls
+                and not list(identities[0])
+            ):
+                os_dependencies.update((dependency, child))
+                system_assemblies.add(
+                    json.dumps(common_controls, sort_keys = True, separators = (",", ":"))
+                )
+        for index, element in enumerate(root.iter()):
+            if index >= 512:
+                raise ValueError("Manifest node limit exceeded")
+            tag = element.tag.rsplit("}", 1)[-1]
+            if tag in {
+                "dependency",
+                "dependentAssembly",
+                "file",
+                "probing",
+                "assemblyBinding",
+                "codeBase",
+                "bindingRedirect",
+                "comClass",
+                "typelib",
+                "clrClass",
+                "clrSurrogate",
+                "comInterfaceExternalProxyStub",
+                "windowClass",
+                "activatableClass",
+            }:
+                if element not in os_dependencies:
+                    directives.add(tag)
+            if tag == "requestedExecutionLevel" and (
+                element.attrib.get("level") != "asInvoker"
+                or element.attrib.get("uiAccess", "false").lower() != "false"
+            ):
+                directives.add("privileged_execution_level")
+        return ImageManifest(
+            hashlib.sha256(data).hexdigest(),
+            tuple(sorted(directives)),
+            tuple(sorted(system_assemblies)),
+        )
+    except (UnicodeError, ET.ParseError, ValueError) as exc:
+        raise WindowsRuntimeError("WINDOWS_SANDBOX_PE_INVALID", "Invalid native manifest.") from exc
+
+
+def _image_manifests(image) -> tuple[ImageManifest, ...]:
+    manifests = []
+    resources = getattr(image, "DIRECTORY_ENTRY_RESOURCE", None)
+    if image.OPTIONAL_HEADER.DATA_DIRECTORY[2].VirtualAddress and resources is None:
+        raise WindowsRuntimeError("WINDOWS_SANDBOX_PE_INVALID", "Unparsed resource directory.")
+    for resource in getattr(resources, "entries", ()):
+        if resource.id != 24:  # RT_MANIFEST, never load the image to extract resources.
+            continue
+        for name in resource.directory.entries:
+            for language in name.directory.entries:
+                if len(manifests) >= 8:
+                    raise WindowsRuntimeError("WINDOWS_SANDBOX_PE_INVALID", "Too many manifests.")
+                item = language.data.struct
+                if not 0 < item.Size <= MAX_MANIFEST_BYTES:
+                    raise WindowsRuntimeError("WINDOWS_SANDBOX_PE_INVALID", "Manifest too large.")
+                data = image.get_data(item.OffsetToData, item.Size)
+                if len(data) != item.Size:
+                    raise WindowsRuntimeError("WINDOWS_SANDBOX_PE_INVALID", "Truncated manifest.")
+                manifests.append(inspect_manifest(data))
+    return tuple(manifests)
 
 
 def checked_path(path: str | Path) -> Path:
@@ -77,7 +193,9 @@ def read_regular_file(path: str | Path, *, limit: int) -> tuple[FileIdentity, by
             raise WindowsRuntimeError(
                 "WINDOWS_SANDBOX_RUNTIME_CHANGED", f"Runtime file was replaced: {path}"
             )
-        data = stream.read(limit + 1)
+        # A policy ceiling is not an allocation size. One byte past the observed
+        # size detects growth without allocating the maximum for every small file.
+        data = stream.read(before.st_size + 1)
         after = os.fstat(stream.fileno())
     current = checked_path(path).stat()
     # Windows stat/fstat in some CPython releases expose different ctime meanings.
@@ -189,6 +307,7 @@ def inspect_native_image(path: str | Path) -> NativeImage:
                 raise WindowsRuntimeError(
                     "WINDOWS_SANDBOX_PE_INVALID", "Conflicting product versions."
                 )
+            manifests = _image_manifests(image)
             warnings = tuple(image.get_warnings())
             if warnings:
                 raise WindowsRuntimeError(
@@ -202,6 +321,7 @@ def inspect_native_image(path: str | Path) -> NativeImage:
                 next(iter(versions), None),
                 next(iter(product_versions), None),
                 warnings,
+                manifests,
             )
     except (pefile.PEFormatError, IndexError, AttributeError, ValueError, TypeError) as exc:
         raise WindowsRuntimeError("WINDOWS_SANDBOX_PE_INVALID", "Malformed native image.") from exc
