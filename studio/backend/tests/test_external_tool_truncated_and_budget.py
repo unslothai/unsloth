@@ -441,3 +441,23 @@ def test_budget_exhausted_mcp_card_carries_server_display_name(tmp_path, monkeyp
     ]
     assert len(mcp_starts) == 1
     assert mcp_starts[0]["provenance"].get("mcp_server") == "GitHub"
+
+
+def test_an_unrun_card_shows_the_id_the_call_named():
+    """This loop builds its own tool_start instead of going through the controller, so the
+    exact-text guarantee has to be covered here too."""
+    import json as _json
+
+    from core.inference.studio_tool_loop import _unrun_call_card
+
+    lines = _unrun_call_card(
+        tool_name = "del_rec",
+        tool_call_id = "c1",
+        arguments = {"id": 9007199254740993},
+        result = "not run",
+        provenance = {"source": "local"},
+    )
+    start = _json.loads(lines[0].removeprefix("data: ").strip())
+
+    assert start["type"] == "tool_start"
+    assert start["arguments_text"] == '{"id":9007199254740993}'

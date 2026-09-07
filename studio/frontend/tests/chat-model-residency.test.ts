@@ -175,7 +175,10 @@ test("another runtime loading re-reads the chat status", () => {
     /if \(loading \|\| runtime === "chat"\) return;/,
     "the settle-only guard is what left the picker naming an evicted model",
   );
-  assert.match(hook, /void refresh\(\{ includeLoras: false \}\)/);
+  assert.match(
+    hook,
+    /void refresh\(\{\s*includeLoras: false,\s*externalChatSlotLoad: runtime === "tts",\s*\}\)/,
+  );
   // And the branch it feeds still clears residency.
   assert.match(hook, /residentCheckpoint: null,/);
 });
@@ -193,7 +196,10 @@ test("an eviction drops the pick, not just the loaded marks", () => {
   );
   // Anchored on the branch, not on the file: other catches sit above it now.
   // chatActiveModel, not status.active_model: this branch owns the resident-TTS case too.
-  const branchStart = hook.indexOf("} else if (!chatActiveModel");
+  // Matched loosely: the guard has been reflowed across lines, and a literal that
+  // stopped matching would slice nothing and fail on an empty string instead.
+  const branchStart = hook.search(/\} else if \(\s*!chatActiveModel/);
+  assert.notEqual(branchStart, -1, "the eviction branch anchor no longer matches");
   const branch = hook.slice(
     branchStart,
     hook.indexOf("} catch (error) {", branchStart),

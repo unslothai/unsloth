@@ -10,8 +10,8 @@ import {
   residentModelIdMatches,
 } from "@/features/hub/lib/model-identity";
 
-/** The two names one pick answers to: its picker row's catalog id, and the `model_path`
- * its load sends. They differ whenever a cached row pins a snapshot dir. */
+/** The two names one pick answers to: its picker row's catalog id, and the `model_path` its load
+ *  sends. They differ whenever a cached row pins a snapshot dir. */
 export type ModelPickNames = {
   id: string;
   loadPath?: string | null;
@@ -25,14 +25,10 @@ export type ResidentModelStatus = {
   gguf_variant?: string | null;
 };
 
-/**
- * Whether the resident model is the one this pick names.
- *
- * Each side holds two strings for one model and they need not be equal: a pinned cached row
- * loads by snapshot path while its row keeps the repo id, and the status publishes the public
- * id beside the raw one. Recognising that here skips a reload `/load` would have answered
- * `already_loaded`, and the confirmation that goes with it.
- */
+/** Whether the resident model is the one this pick names. Each side holds two strings for one
+ *  model and they need not be equal: a pinned cached row loads by snapshot path while its row
+ *  keeps the repo id, and the status publishes the public id beside the raw one. Recognising
+ *  that skips a reload `/load` would have answered `already_loaded`. */
 export function residentModelMatchesPick(
   status: ResidentModelStatus,
   pick: ModelPickNames,
@@ -52,13 +48,13 @@ export function residentModelMatchesPick(
   ) {
     return false;
   }
-  // Only the raw identifier says WHICH weights are resident, as matches_load_source does:
-  // every snapshot of a repo publishes the same public id.
+  // Only the raw identifier says WHICH weights are resident, as matches_load_source does: every
+  // snapshot of a repo publishes the same public id.
   if (status.model_identifier) {
     return modelIdsMatch(status.model_identifier, pick.loadPath ?? pick.id);
   }
-  // No raw identifier. The name this pick loads by still names one revision, so try it
-  // literally first: an older backend put the raw path in active_model.
+  // No raw identifier. The name this pick loads by still names one revision, so try it literally
+  // first: an older backend put the raw path in active_model.
   const loadName = pick.loadPath ?? pick.id;
   if (modelIdsMatch(status.active_model, loadName)) {
     return true;

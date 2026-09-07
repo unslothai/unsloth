@@ -865,6 +865,8 @@ class TestLoadHubDownloadExclusion:
             "mlx_kv_quant_reason",
             "mlx_kv_quant_note",
             "chat_template_override_reason",
+            # Constant True: llama.cpp allocates the window it reports.
+            "context_length_enforced",
             # Read from requested_extra_args, which is what the load was invoked
             # with rather than the rewritten launch list.
             "requested_llama_extra_args",

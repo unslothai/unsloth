@@ -21,13 +21,14 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useExportRuntimeLifecycle } from "@/features/export";
+import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
-  SettingsDialog,
+  SettingsDialogMount,
   useSettingsDialogStore,
   useShortcut,
 } from "@/features/settings";
@@ -161,12 +162,23 @@ function ChatSettingsHydrationMount() {
 }
 
 
-function CredentialBootstrapGate({ children }: { children: ReactNode }) {
+function CredentialBootstrapGate({
+  active,
+  children,
+}: {
+  active: boolean;
+  children: ReactNode;
+}) {
   const [ready, setReady] = useState(false);
   const runRevision = useRef(0);
 
   useEffect(() => {
-    let active = true;
+    if (!active) {
+      runRevision.current += 1;
+      setReady(false);
+      return;
+    }
+    let mounted = true;
     const reconcile = () => {
       const revision = ++runRevision.current;
       if (!hasAuthToken()) {
@@ -176,7 +188,7 @@ function CredentialBootstrapGate({ children }: { children: ReactNode }) {
       setReady(false);
       void bootstrapPersistedCredentials().finally(() => {
         if (
-          active &&
+          mounted &&
           revision === runRevision.current &&
           hasAuthToken()
         ) {
@@ -189,13 +201,18 @@ function CredentialBootstrapGate({ children }: { children: ReactNode }) {
     window.addEventListener(AUTH_SESSION_STORED_EVENT, reconcile);
     reconcile();
     return () => {
-      active = false;
+      mounted = false;
       runRevision.current += 1;
       window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, reconcile);
       window.removeEventListener(AUTH_SESSION_STORED_EVENT, reconcile);
     };
-  }, []);
-  return ready ? children : <RouteFallback />;
+  }, [active]);
+  return (
+    <>
+      <SettingsDialogMount active={active && ready} />
+      {active && !ready ? <RouteFallback /> : children}
+    </>
+  );
 }
 
 const CHAT_ONLY_ALLOWED = new Set([
@@ -447,14 +464,17 @@ function RootLayout() {
 
   // Gated like the workspace chords below: /login has no shell, and /chat
   // bounces straight back off requireAuth.
-  useShortcut("newChat", () => startNewChat(), { enabled: !isAuthFlowRoute });
+  const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;
+  useShortcut("newChat", () => startNewChat(), {
+    enabled: routeShortcutEnabled,
+  });
   useShortcut(
     "newTemporaryChat",
     () => startNewChat({ incognito: true, standalone: true }),
-    { enabled: !isAuthFlowRoute },
+    { enabled: routeShortcutEnabled },
   );
   useShortcut("newStandaloneChat", () => startNewChat({ standalone: true }), {
-    enabled: !isAuthFlowRoute,
+    enabled: routeShortcutEnabled,
   });
 
   // Workspaces. The shell is mounted on every route, so the chords live here.
@@ -464,32 +484,40 @@ function RootLayout() {
   useShortcut(
     "switchToChat",
     () => void navigate({ to: "/chat", search: chatSearch }),
-    { enabled: !isAuthFlowRoute },
+    { enabled: routeShortcutEnabled },
   );
   useShortcut("switchToProjects", goTo("/projects"), {
-    enabled: !isAuthFlowRoute,
+    enabled: routeShortcutEnabled,
   });
-  useShortcut("switchToHub", goTo("/hub"), { enabled: !isAuthFlowRoute });
+  useShortcut("switchToHub", goTo("/hub"), {
+    enabled: routeShortcutEnabled,
+  });
   // Train is the one workspace the chat-only guard turns away, so its chord is
   // the one that has to ask first: firing it on a host without the hardware
   // would bounce off /studio and land the user on /chat, away from whatever
   // they had open. The sidebar disables the row on the same measured check,
   // and only once measured, since the guess is what the row waits out too.
   useShortcut("switchToTrain", goTo("/studio"), {
-    enabled: !isAuthFlowRoute && !chatOnlyMeasured,
+    enabled: routeShortcutEnabled && !chatOnlyMeasured,
   });
   useShortcut("switchToRecipes", goTo("/data-recipes"), {
-    enabled: !isAuthFlowRoute,
+    enabled: routeShortcutEnabled,
   });
-  useShortcut("switchToImages", goTo("/images"), { enabled: !isAuthFlowRoute });
+  useShortcut("switchToImages", goTo("/images"), {
+    enabled: routeShortcutEnabled,
+  });
   // /video checks auth and nothing else, so an ungated chord would put the
   // unsupported-hardware gate where the user's workspace was. Train's chord
   // waits on the same measurement; this one has its own predicate to wait on.
   useShortcut("switchToVideo", goTo("/video"), {
-    enabled: !isAuthFlowRoute && !videoDisabled,
+    enabled: routeShortcutEnabled && !videoDisabled,
   });
-  useShortcut("switchToAudio", goTo("/audio"), { enabled: !isAuthFlowRoute });
-  useShortcut("switchToExport", goTo("/export"), { enabled: !isAuthFlowRoute });
+  useShortcut("switchToAudio", goTo("/audio"), {
+    enabled: routeShortcutEnabled,
+  });
+  useShortcut("switchToExport", goTo("/export"), {
+    enabled: routeShortcutEnabled,
+  });
 
   useEffect(() => {
     if (isChatRoute) return;
@@ -510,7 +538,6 @@ function RootLayout() {
       <PersonalizationSyncMount />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
-      {!isAuthFlowRoute && <SettingsDialog />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
       {!isAuthFlowRoute && <ApiMonitorOverlay />}
       <HfTokenWarningDialog />
@@ -537,8 +564,13 @@ function RootLayout() {
           >
             <Navbar />
             <div
+              {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
               className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
             >
+              {/* The find bar floats over this region and searches it: the workspace on screen,
+                  without the sidebar, the navbar, or the off-route workspaces parked here under
+                  `inert`. Gated off behind a modal, which owns Escape while it is up. */}
+              <FindInPage enabled={routeShortcutEnabled} />
               {/* Stays mounted across navigation so an in-flight generation is
                   not cancelled when leaving /chat; hidden (not unmounted) off-route.
                   `active` lets ChatPage close its body-portaled surfaces (model
@@ -639,11 +671,9 @@ function RootLayout() {
 
   return (
     <AppProvider>
-      {!isAuthFlowRoute ? (
-        <CredentialBootstrapGate>{content}</CredentialBootstrapGate>
-      ) : (
-        content
-      )}
+      <CredentialBootstrapGate active={!isAuthFlowRoute}>
+        {content}
+      </CredentialBootstrapGate>
     </AppProvider>
   );
 }

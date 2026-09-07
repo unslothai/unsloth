@@ -19,8 +19,8 @@ STORE = (SRC / "features/settings/stores/appearance-custom-store.ts").read_text(
 SELECT = (SRC / "components/ui/select.tsx").read_text(encoding = "utf-8")
 UTILS = (SRC / "lib/utils.ts").read_text(encoding = "utf-8")
 
-# Raw numeric fontSize props are only allowed where a scaled stylesheet rule
-# (.recharts-text) overrides the presentation attribute at render time.
+# Raw numeric fontSize props are only allowed where a scaled stylesheet rule (.recharts-text) overrides the presentation
+# attribute at render time.
 FONTSIZE_PROP_ALLOWED_DIRS = (
     "features/studio/sections/charts",
     "features/studio/sections/training-section.tsx",
@@ -141,8 +141,7 @@ def test_icons_follow_the_ui_font_size_itself():
     assert "& svg.size-4 { width: var(--ui-icon-size); height: var(--ui-icon-size); }" in INDEX_CSS
     assert "font-size: calc(13px * var(--ui-font-scale, 1)) !important;" in INDEX_CSS
     assert "font-size: calc(12px * var(--ui-font-scale, 1)) !important;" in INDEX_CSS
-    # Menu rules that outrank the scoped block must carry the token too,
-    # without flattening the smaller thinking ticks.
+    # Menu rules that outrank the scoped block must carry the token too, without flattening the smaller thinking ticks.
     assert "width: var(--ui-icon-size) !important;" in INDEX_CSS
     assert "svg:not(.unsloth-tick) {" in INDEX_CSS
     # Oversized art glyphs stay proportional instead of uniform.

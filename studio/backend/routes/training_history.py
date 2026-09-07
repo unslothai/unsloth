@@ -425,8 +425,7 @@ async def delete_training_run(
     try:
         delete_run(run_id)
     except Exception as delete_error:
-        # The artifacts are only staged, so the whole operation rolls back. Destroying them first would
-        # leave a row whose artifacts are silently gone, looking like a deliberate "kept history".
+        # The artifacts are only staged, so the whole operation rolls back.
         if staged_original is not None and staged_path is not None:
             restored = await asyncio.to_thread(
                 _restore_staged_output_dir, staged_original, staged_path

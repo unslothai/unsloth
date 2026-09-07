@@ -135,10 +135,9 @@ def differing_actions(
     report's -- excused by the null control, then corroborated at the verdict's own `--min-reps`.
     """
     unstable, derived, _checks = unstable_set(null_paths or None)
-    # THE SAME EFFECTIVE SET THE VERDICT SCORED WITH. The verdict confines the imported
-    # exemptions to what the scored runner reproduces, so reading the raw imported set here would
-    # put the artifact back out of step with the job it illustrates -- an action the verdict
-    # failed on would have no picture, which is the same defect as publishing none at all.
+    # THE SAME EFFECTIVE SET THE VERDICT SCORED WITH. The verdict confines the imported exemptions to
+    # what the scored runner reproduces, so reading the raw imported set here would put the artifact
+    # out of step with the job it illustrates: an action the verdict failed on would have no picture.
     if derived:
         unstable, _dropped = confine_to_runner(unstable, *in_arm_repeatability(result_paths))
     out = []
@@ -150,9 +149,8 @@ def differing_actions(
         if r["verdict"] == P.DIFFER and not is_unstable(unstable, action, cell)
     ]
     # Carrying the DIRECTION as the fifth element, exactly as `report` does, so the artifact
-    # illustrates the same set the verdict counted. Without it a direction-reversing pair would
-    # be firm here and uncorroborated there, and the evidence would show a regression the job
-    # did not fail on.
+    # illustrates the same set the verdict counted. Without it a direction-reversing pair would be
+    # firm here and uncorroborated there.
     one_sided = [
         (action, shard, cell, [r.get("reason", "")], r.get("one_sided") or None)
         for action, shard, cell, r in results
@@ -160,9 +158,9 @@ def differing_actions(
         and r.get("one_sided")
         and not P.racy_execution(action, r.get("idle_reason") or "")
     ]
-    # The third way `report` returns 1: the action ran on both arms and its own assertion failed
-    # on one. Not filtered by the unstable set, for the same reason the verdict does not filter
-    # it -- that set measures digest stability, and this is not a digest.
+    # The third way `report` returns 1: the action ran on both arms and its own assertion failed on
+    # one. Not filtered by the unstable set, for the same reason the verdict does not filter it: that
+    # set measures digest stability, and this is not a digest.
     expect_bad = [
         (action, shard, cell, [r.get("expect_reason", "")], r["expect_regressed"])
         for action, shard, cell, r in results
@@ -263,9 +261,9 @@ def build(
             missing += 1
             print(f"  {d['action']:<26} {d['cell']}: shot file absent on disk; not a pair")
             continue
-        # The shard is in the FILENAME as well as the key. Two shards produce the same
-        # `<action>__<rung>_<rep>` stem, so without it the second composite silently overwrites
-        # the first and the artifact shows one picture for two findings.
+        # The shard is in the FILENAME as well as the key: two shards produce the same
+        # `<action>__<rung>_<rep>` stem, so without it the second composite silently overwrites the
+        # first.
         stem = f"{d['shard']}__{d['action']}__{rung}_{rep}"
         ok = composite(
             bp,
@@ -319,8 +317,8 @@ def prune(payload_dir: Path, shots_dir: Path) -> int:
     for action, _shard, cell, r in results:
         if r["verdict"] == P.MATCH:
             continue
-        # The prune reads one arm's own output dir, but key by the shard it came from anyway so
-        # the index has one shape everywhere.
+        # The prune reads one arm's own output dir, but key by the shard it came from anyway so the index
+        # has one shape everywhere.
         rung, rep = cell.split(" ", 1)
         for arm in ("base", "treatment"):
             got = index.get((_shard, f"{rung}.{arm}.{rep}", action, arm))
@@ -372,9 +370,9 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.null) if args.null else None,
         Path(args.shots),
         Path(args.out),
-        # FORWARDED, and the omission here was the whole bug: the workflow passes --min-reps 2 to
-        # match the verdict, `build` defaulted it back to 1, and the artifact then carried
-        # composites of one-repetition flakes beside the change that actually failed the job.
+        # FORWARDED, and the omission here was the whole bug: the workflow passes --min-reps 2 to match the
+        # verdict, `build` defaulted it back to 1, and the artifact carried composites of one-repetition
+        # flakes beside the change that failed the job.
         min_reps = args.min_reps,
     )
 

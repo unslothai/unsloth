@@ -122,9 +122,11 @@ if sys.platform != "win32":
     except ImportError:
         pass
 
-# Raster-image allowlist for sandbox file serving.
+# Raster-image allowlist for sandbox file serving; what a tool call reports inline (`__IMAGES__`)
+# and what the route serves inline (_SANDBOX_MEDIA_TYPES in routes/inference.py) are one set, pinned
+# equal by test_sandbox_files_and_storage_roots -- drift means a model's photo previews on one path only.
 # No .svg (XSS via embedded scripts), no .html, no .pdf.
-_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"})
 
 
 def _env_int(name: str, default: int) -> int:
@@ -1834,6 +1836,7 @@ _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sa
 # decides prompting, and fails closed: anything not provably read-only asks.
 
 # Read-only commands allowed to run without confirmation in auto mode.
+# ── "Approve for me" (permission_mode="auto") safety detection ──────────────
 _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
     {
         "ls",
@@ -10500,16 +10503,22 @@ def execute_tool(
             mcp_scope = None
         headers = parse_server_headers(server)
         url = server["url"]
+        use_oauth = bool(server.get("use_oauth"))
 
         def _config_current() -> bool:
-            # Re-read before a stdio session is cached: this call may have read
+            # Re-read before an MCP session is cached: this call may have read
             # the row just before an update/delete closed its sessions.
+            # use_oauth belongs here with the rest: a row switched to OAuth after
+            # we read it must not be reached through the unauthenticated client
+            # this call is about to open, and a close cannot stop that on its own
+            # (nothing is cached yet, so it has no generation to bump).
             row = mcp_servers_db.get_server(server_id)
             return (
                 row is not None
                 and bool(row.get("is_enabled"))
                 and row.get("url") == url
                 and parse_server_headers(row) == headers
+                and bool(row.get("use_oauth")) == use_oauth
             )
 
         return _fit_result_to_room(
@@ -10519,7 +10528,7 @@ def execute_tool(
                 name = tool_name,
                 args = arguments,
                 timeout = effective_timeout,
-                use_oauth = bool(server.get("use_oauth")),
+                use_oauth = use_oauth,
                 cancel_event = cancel_event,
                 scope = mcp_scope,
                 config_check = _config_current,
@@ -11157,6 +11166,45 @@ def build_conversation_recall(
     return built
 
 
+def rag_autoinject_reaches_retrieval(
+    conversation: list[dict], rag_scope: dict | None
+) -> tuple[bool, bool]:
+    """Everything checked before pre-retrieval searches: switched on, something to search
+    for, somewhere to search, and a store to search it in. Whether a hit then clears the
+    score floor is the one part not knowable without running the search.
+
+    Shared with token counting, which cannot run it and so must not decline a turn that
+    stops short of the search here.
+    """
+    if not rag_scope:
+        return False, False
+    enabled = rag_scope.get("autoinject")
+    if enabled is None:
+        enabled = _autoinject_enabled()
+    thread_id = rag_scope.get("thread_id")
+    whole_doc_requested = (
+        bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
+    )
+    if not enabled and not whole_doc_requested:
+        return False, False
+    # What _resolve_scope resolves to nothing: an unpersisted New Chat carries a scope with
+    # none of the three ids, and the search stops there.
+    if not (rag_scope.get("kb_id") or rag_scope.get("project_id") or thread_id):
+        return False, False
+    if not _last_user_text(conversation):
+        return False, False
+    try:
+        from storage import rag_db
+
+        # rag_available(), not the import flag: the vec0 native library is a separate file a
+        # venv can be missing, and nothing finds out until a connection tries.
+        if not rag_db.rag_available():
+            return False, False
+    except Exception:  # noqa: BLE001
+        return False, False
+    return bool(enabled), whole_doc_requested
+
+
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return
     ``{"events": [...], "messages": [...]}`` to splice into the loop, else ``None``.
@@ -11166,24 +11214,12 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     Also the small-model fallback: models below ~4B often answer from memory
     instead of calling ``search_knowledge_base``, so forcing retrieval here keeps
     attachments consulted regardless of model size."""
-    if not rag_scope:
-        return None
-    enabled = rag_scope.get("autoinject")
-    if enabled is None:
-        enabled = _autoinject_enabled()
-    thread_id = rag_scope.get("thread_id")
-    whole_doc_requested = (
-        bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
-    )
+    enabled, whole_doc_requested = rag_autoinject_reaches_retrieval(conversation, rag_scope)
     if not enabled and not whole_doc_requested:
         return None
+    thread_id = rag_scope.get("thread_id")
     query = _last_user_text(conversation)
-    if not query:
-        return None
     try:
-        from storage import rag_db
-        if not rag_db.RAG_AVAILABLE:
-            return None
         from core.rag.tool import render_sources, search_for_autoinject, whole_document_context
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG auto-inject unavailable: %s", exc)
@@ -11204,6 +11240,37 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     ctx_tokens = (
         _opt_int(rag_scope.get("context_length") or rag_scope.get("max_context_tokens")) or 0
     )
+
+    def _fits(candidate_text, max_tokens) -> bool:
+        # None means the estimate itself failed; zero is a measured "no room left".
+        if max_tokens is None:
+            return True
+        if max_tokens <= 0:
+            return False
+        # Priced by the serving GGUF when it can, doubled when it cannot, so dense
+        # ASCII is not charged the English four characters per token.
+        return _text_token_cost(candidate_text, ctx_tokens) <= max_tokens
+
+    def _trim(
+        hit_text,
+        hit_sources,
+        max_tokens,
+        keep_first = 1,
+    ):
+        """Drop passages from the tail until the rendered block fits, else None.
+
+        Re-renders only when something is dropped. None when not even the first
+        ``keep_first`` passages fit: the block joins the current turn, which the
+        window may not evict, so it fails the request rather than degrading it.
+        ``keep_first`` is the floor of the tail: one for ranked retrieval, but a
+        whole document must never be eaten into.
+        """
+        floor = max(1, keep_first)
+        kept, rendered = list(hit_sources), hit_text
+        while len(kept) > floor and not _fits(rendered, max_tokens):
+            kept = kept[:-1]
+            rendered = render_sources(kept)
+        return (rendered, kept) if _fits(rendered, max_tokens) else None
 
     # Whole-document mode: a thread-attached file under budget is injected in
     # full. A KB selection is exclusive so whole-doc never preempts it; project
@@ -11232,42 +11299,14 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     logger.warning("RAG project retrieval (whole-doc companion) failed: %s", exc)
                     proj = None
                 if proj is not None:
+                    # Trim into the project tail only: the document was admitted whole
+                    # and stays whole, so a combination that will not fit falls back
+                    # to the document alone.
                     merged = sources + proj[1]
-                    merged_text = render_sources(merged)
-                    if max(1, len(merged_text) // 4) <= budget:
-                        sources = merged
-                        text = merged_text
+                    trimmed = _trim(render_sources(merged), merged, budget, keep_first = len(sources))
+                    if trimmed is not None:
+                        text, sources = trimmed
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
-
-    def _fits(candidate_text, max_tokens) -> bool:
-        # None means the estimate itself failed, so there is nothing to enforce.
-        # Zero is the opposite: a measured "no room left".
-        if max_tokens is None:
-            return True
-        if max_tokens <= 0:
-            return False
-        # Priced by the serving GGUF when it can, doubled when it cannot. The
-        # doubling is what stops dense ASCII (source, minified JSON, hashes, all
-        # nearer two characters per token) being charged the English four.
-        return _text_token_cost(candidate_text, ctx_tokens) <= max_tokens
-
-    def _trim(hit_text, hit_sources, max_tokens):
-        """Drop passages from the tail until the rendered block fits, else None.
-
-        Re-renders only when something is dropped, so an untrimmed result comes
-        back exactly as retrieval built it.
-
-        None when not even the top passage fits: the block joins the current
-        turn, which the window may not evict, so an overflowing injection fails
-        the request rather than degrading the answer. Losing the attachment is
-        what this branch exists to prevent, but main already loses it here, and
-        that beats an error instead of an answer.
-        """
-        kept, rendered = list(hit_sources), hit_text
-        while len(kept) > 1 and not _fits(rendered, max_tokens):
-            kept = kept[:-1]
-            rendered = render_sources(kept)
-        return (rendered, kept) if _fits(rendered, max_tokens) else None
 
     def retrieve(*, max_tokens = None, **scope):
         found = search_for_autoinject(query = query, top_k = top_k, **scope)
@@ -12070,12 +12109,25 @@ def _fetch_url_raw(
             )
 
         declared = resp.headers.get_content_charset()
-        declared_codec = codecs.lookup(declared).name if declared else None
+        declared_codec = None
+        try:
+            if declared:
+                declared_codec = codecs.lookup(declared).name
+        except (LookupError, ValueError):
+            # ValueError, not only LookupError: a NUL inside the label.
+            declared = None
         bom_codec = next(
             (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
             None,
         )
-        raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+        try:
+            raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+        except (LookupError, ValueError):
+            # Survives lookup, fails the decode: base64/hex/zlib are not text codecs,
+            # "undefined" always raises, idna rejects replace. The fallback cannot raise.
+            declared = None
+            declared_codec = None
+            raw_html = raw_bytes.decode(bom_codec or "utf-8", errors = "replace")
 
         # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
         if _looks_binary(raw_html):

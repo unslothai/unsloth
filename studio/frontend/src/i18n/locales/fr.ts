@@ -55,6 +55,13 @@ export const fr = {
     shutdown: "Arrêter",
   },
   shell: {
+    find: {
+      label: "Rechercher dans la page",
+      previous: "Résultat précédent",
+      next: "Résultat suivant",
+      close: "Fermer la recherche",
+      truncated: "Cette page est trop longue pour être parcourue en entier.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -226,6 +233,10 @@ export const fr = {
       browserReserved:
         "Votre navigateur peut réserver cette combinaison. Elle fonctionne dans l’application de bureau.",
       actions: {
+        findInPage: {
+          label: "Rechercher dans la page",
+          description: "Rechercher le texte de cette page",
+        },
         openSettings: {
           label: "Ouvrir les paramètres",
           description: "Ouvrir la fenêtre des paramètres",
@@ -486,6 +497,13 @@ export const fr = {
         sttModelLabel: "Modèle de reconnaissance vocale",
         sttModelDescription:
           "Choisissez ou recherchez un modèle STT à exécuter en local.",
+        sttDeviceLabel: "Charger dans",
+        sttDeviceAuto: "GPU si disponible",
+        sttDeviceCpu: "RAM du CPU",
+        sttDeviceAutoDescription:
+          "Utiliser le GPU quand il y en a un, sinon le CPU.",
+        sttDeviceCpuDescription:
+          "Garder le modèle dans la RAM système. La transcription est plus lente, mais n'utilise pas de mémoire GPU.",
         sttModelSearchPlaceholder: "Rechercher un modèle",
         sttModelSearching: "Recherche sur Hugging Face…",
         sttModelValidating: "Vérification de la compatibilité Whisper…",
@@ -700,7 +718,7 @@ export const fr = {
         sectionTitle: "Changement automatique de modèle (API OpenAI)",
         enable: "Changer de modèle par requête",
         enableDescription:
-          "Charger, avant de répondre, un GGUF téléchargé indiqué dans une requête API. Désactivé par défaut.",
+          "Charger, avant de répondre, un modèle téléchargé indiqué dans une requête API. Désactivé par défaut.",
         idleUnload: "Déchargement automatique en cas d'inactivité",
         idleUnloadDescription:
           "Libérer la VRAM après ce nombre de secondes d’inactivité. 0 maintient le modèle chargé ; le minimum est 60.",
@@ -852,6 +870,16 @@ export const fr = {
         copied: "Chemin copié",
         openError: "Impossible d'ouvrir le dossier",
         copyError: "Impossible de copier le chemin",
+      },
+      repairInstall: {
+        label: "Réparer l'installation",
+        description:
+          "Relance le programme d'installation sur l'environnement géré. Utile si le GPU n'est pas détecté ou si l'application ne démarre pas.",
+        action: "Réparer l'installation",
+        confirmTitle: "Réparer cette installation ?",
+        confirmDescription:
+          "Arrête le serveur et relance le programme d'installation, qui réinstalle PyTorch pour le GPU de cette machine. Les discussions et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
+        confirmAction: "Réparer maintenant",
       },
       resetPreferences: {
         sectionTitle: "Zone de danger",
@@ -1111,6 +1139,8 @@ export const fr = {
         currentLoad: "Charge actuelle",
         free: "Disponible : {value}",
         noGpu: "Aucun GPU visible",
+        gpuUnusable: "GPU inutilisable",
+        gpuUnusableDetail: "Détecté, mais PyTorch ne peut pas l'utiliser",
       },
       gpu: {
         title: "Périphériques GPU",
@@ -1120,6 +1150,12 @@ export const fr = {
         unreadable: "Impossible de lire le matériel de ce serveur.",
         noGpu:
           "Aucun GPU visible n'a été détecté. Seules les ressources du CPU sont affichées ci-dessus.",
+        noUsableGpu: "Aucun GPU de cette machine n'est utilisable par PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch est une version CPU uniquement ({version}), les GPU ci-dessous ne peuvent donc pas être utilisés. Réparez l'installation pour rétablir la prise en charge du GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) ne parvient pas à initialiser les GPU ci-dessous, ils ne peuvent donc pas être utilisés. Vérifiez le pilote graphique ou réparez l'installation.",
+        unusableDevice: "inutilisable",
         unknownDevice: "GPU inconnu",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1241,7 +1277,7 @@ export const fr = {
       description:
         "Connectez des agents de codage comme Claude Code et Codex à un modèle local avec unsloth start.",
       intro:
-        "connecte Claude Code, Codex, Hermes, OpenClaw, OpenCode et d'autres agents à un modèle servi localement par Unsloth, entièrement hors ligne. Il lance un serveur compatible OpenAI et ne touche jamais aux fichiers de configuration de votre agent.",
+        "connecte Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode et d'autres agents à un modèle servi localement par Unsloth, entièrement hors ligne. Il lance un serveur compatible OpenAI et ne touche jamais aux fichiers de configuration de votre agent.",
       readDocs: "Lire la documentation",
       copy: "Copier",
       copied: "Copié",
@@ -1416,6 +1452,13 @@ export const fr = {
         collapseByDefaultDescription:
           "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
       },
+      currentDate: {
+        label: "Indiquer la date du jour au modèle",
+        description:
+          "Ajoute la date actuelle au prompt pour que la recherche web et Deep Research cherchent des sources récentes au lieu de se fier à la date de fin d’entraînement du modèle.",
+        loadError: "Impossible de charger les paramètres de date actuelle",
+        saveError: "Impossible de mettre à jour les paramètres de date actuelle",
+      },
       tools: {
         collapseByDefault: "Replier l’activité des outils par défaut",
         collapseByDefaultDescription:
@@ -1438,6 +1481,11 @@ export const fr = {
         blockedBanner: "{count} ressource externe bloquée depuis {hosts}.",
         blockedBannerPlural: "{count} ressources externes bloquées depuis {hosts}.",
         blockedBannerAction: "Autoriser pour ce Canvas",
+        blockedTitle: "L'accès réseau du Canvas est désactivé",
+        blockedHint:
+          "Activez « {setting} » dans Paramètres → Chat pour que les Canvas chargent des ressources externes, ou autorisez-le uniquement pour ce Canvas.",
+        blockedSettingsAction: "Ouvrir les paramètres",
+        blockedDismiss: "Ignorer",
       },
       data: "Données",
       exportHistory: "Exporter l'historique des discussions",
@@ -1515,6 +1563,8 @@ export const fr = {
       archivedImagesDescription: "Consultez et gérez les images que vous avez archivées.",
       archivedVideos: "Vidéos archivées",
       archivedVideosDescription: "Consultez et gérez les vidéos que vous avez archivées.",
+      archivedAudio: "Audio archivé",
+      archivedAudioDescription: "Consultez et gérez les clips audio que vous avez archivés.",
       manageAction: "Gérer",
       manageChats: "Gérer les discussions",
       manageChatsDescription:
@@ -1704,7 +1754,7 @@ export const fr = {
         desktopAvailable:
           "La version {version} de l’application de bureau est disponible",
         desktopAvailableDescription:
-          "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
+          "Mettez à jour maintenant pour la préparer en arrière-plan. Vous continuez à travailler et redémarrez lorsqu’elle est prête.",
         desktopExternalServer:
           "Exécutez `unsloth studio update` dans le terminal depuis lequel vous avez lancé le serveur.",
         desktopManualInstall:
@@ -1715,11 +1765,20 @@ export const fr = {
         desktopCurrent: "L’application de bureau est à jour",
         desktopCurrentDescription:
           "Unsloth continuera à rechercher automatiquement les mises à jour.",
+        desktopPreparingDescription:
+          "La mise à jour est préparée en arrière-plan. Vous pouvez continuer à travailler.",
+        desktopReadyToRestartDescription:
+          "Tout est prêt. Redémarrez pour terminer l’installation de la mise à jour.",
+        desktopReadyToInstallDescription:
+          "La mise à jour de l’application a été téléchargée. Terminez la mise à jour du backend pour l’installer.",
         checkForUpdates: "Rechercher les mises à jour",
         checkAgain: "Rechercher à nouveau",
         retryCheck: "Réessayer",
         checking: "Vérification...",
+        preparing: "Préparation...",
         updateNow: "Mettre à jour maintenant",
+        restartToUpdate: "Redémarrer pour mettre à jour",
+        finishUpdate: "Terminer la mise à jour",
         openReleasePage: "Ouvrir la page des versions",
         unknownInstall:
           "Impossible de détecter le mode d'installation d'Unsloth. Pour les installations via installateur ou PyPI, utilisez les commandes ci-dessus.",

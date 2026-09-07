@@ -140,11 +140,11 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
             top_k = 20,
             max_tokens = max_tokens,
             repetition_penalty = 1.0,
-            enable_thinking = False,  # Always disable thinking for AI Assist
+            enable_thinking = False,
         ):
             if isinstance(chunk, dict):
-                continue  # skip metadata events
-            cumulative = chunk  # last value is full text
+                continue
+            cumulative = chunk
 
         result = cumulative.strip()
         result = _strip_think_tags(result)
@@ -379,10 +379,10 @@ def _generate_with_backend(
         top_k = 20,
         max_tokens = max_tokens,
         repetition_penalty = 1.0,
-        enable_thinking = False,  # disable thinking for AI Assist
+        enable_thinking = False,
     ):
         if isinstance(chunk, dict):
-            continue  # skip metadata events
+            continue
         cumulative = chunk
     result = cumulative.strip()
     result = _strip_think_tags(result)
@@ -675,13 +675,13 @@ def _run_multi_pass_advisor(
 
         # ── Extract and validate column roles from Pass 2 ──
         column_roles = pass2.get("column_roles", {})
-        label_map = pass2.get("label_mapping") or {}  # may be null
+        label_map = pass2.get("label_mapping") or {}
 
         # Must have at least one user AND one assistant
         roles_present = set(column_roles.values())
         if "user" not in roles_present or "assistant" not in roles_present:
             logger.warning(f"Pass 2 sanity fail: missing user or assistant role: {column_roles}")
-            return None  # falls back to simple classification
+            return None
 
         # ── Pass 3: System prompt (non-conversational datasets only) ──
         sys_prompt = ""

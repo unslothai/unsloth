@@ -341,7 +341,9 @@ class TestTheWholeRenderedPromptIsCounted:
 
     An uncapped request reserved no output allowance even though
     `_build_passthrough_payload` then sends `max_tokens = backend_ctx`, so short
-    prompts held tiny commitments while each generation could fill the cache. And
+    prompts held tiny commitments while each generation could fill the cache. That is
+    now a bounded allowance rather than the whole window, which fixed the undercount by
+    making Studio's default chat un-runnable concurrently. And
     the estimate covered only `messages`, while OpenAI tool definitions are
     rendered into the prompt and Anthropic keeps `system` and `tools` separate
     until they are translated.
@@ -360,18 +362,28 @@ class TestTheWholeRenderedPromptIsCounted:
             capacity = capacity,
         )
 
-    def test_an_uncapped_request_reserves_the_rest_of_the_window(self):
+    def test_an_uncapped_request_reserves_a_bounded_allowance(self):
+        """It reserved the whole window because generation MAY run that long, which cost
+        the default chat the entire cache before it wrote a token."""
         from types import SimpleNamespace
+
+        from routes.inference import _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = None,
             max_completion_tokens = None,
         )
-        # Generation may run until the window is full, so the reservation says so.
-        assert self._cost(payload, budget = 2048) == 2048
+        cost = self._cost(payload, budget = 2048)
+        assert cost < 2048, "an uncapped request still reserves the whole window"
+        assert cost <= _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS + 64
 
-    def test_two_uncapped_short_prompts_do_not_both_run(self):
-        """The collision this closes: tiny commitments, cache-filling generations."""
+    def test_uncapped_short_prompts_fill_the_slots_and_no_more(self):
+        """The collision this closes: tiny commitments, cache-filling generations.
+
+        Four fit and a fifth does not, on a cache small enough that the flat allowance would
+        not have left room for four. A prompt-only charge would admit any number.
+        """
         from types import SimpleNamespace
 
         async def scenario():
@@ -382,10 +394,11 @@ class TestTheWholeRenderedPromptIsCounted:
                 max_completion_tokens = None,
             )
             cost = self._cost(payload, budget = 2048)
-            first = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
-            assert first.lease_nowait() is not None
-            second = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
-            return second.lease_nowait()
+            for _ in range(4):
+                admitted = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
+                assert admitted.lease_nowait() is not None
+            fifth = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
+            return fifth.lease_nowait()
 
         assert _run(scenario()) is None
 
@@ -445,13 +458,21 @@ class TestTheWholeRenderedPromptIsCounted:
         assert self._cost(payload) is not None
 
 
-class TestToolLoopsReserveTheirUpperBound:
+class TestToolLoopsOpenAtAShareAndGrow:
     """One lease covers up to 25 rounds, each larger than the last.
 
     `generate_chat_completion_with_tools` appends every tool result and re-sends the
     conversation, so a request that starts small can approach the full window while its
     commitment stays at the opening estimate. Another request is then admitted against a
     cache the active rounds have already grown into.
+
+    #9392 closed that by reserving the WHOLE cache for any tool loop, which made every
+    tool chat run alone: any lit pill sets ``enable_tools``. Measured on a 262144 cache,
+    four tool chats reached first token at 0.1s, 2.8s, 4.6s and 8.8s, one after another.
+
+    A tool loop now opens at an equal share and re-costs as it grows
+    (``on_conversation_grew`` -> ``lease.recost_waiting``), the alternative #9392 named:
+    the growth is charged when it happens instead of assumed up front.
     """
 
     @staticmethod
@@ -469,10 +490,14 @@ class TestToolLoopsReserveTheirUpperBound:
             tool_loop = tool_loop,
         )
 
-    def test_a_tool_request_reserves_the_whole_cache(self):
+    def test_a_tool_request_opens_at_an_equal_share(self):
         """Keyed on the resolved path, not on ``tools``: the loop also opens on
         ``enable_tools``, ``mcp_enabled``, the CLI policy and a checkpoint repair,
-        none of which carry a client catalogue."""
+        none of which carry a client catalogue.
+
+        The share is a FLOOR, not a cap: a larger estimate is charged in full, and the
+        floor only spares a small opening request a re-cost on its first round.
+        """
         from types import SimpleNamespace
 
         payload = SimpleNamespace(
@@ -481,10 +506,12 @@ class TestToolLoopsReserveTheirUpperBound:
             enable_tools = True,
             tools = None,
         )
-        assert self._cost(payload, tool_loop = True) == 2048
+        assert self._cost(payload, tool_loop = True) == 2048 // 4
 
-    def test_two_tool_requests_do_not_run_together(self):
+    def test_four_tool_requests_run_together(self):
+        """The behaviour this change exists for. Under #9392 the second one waited."""
         from types import SimpleNamespace
+
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             payload = SimpleNamespace(
@@ -494,12 +521,39 @@ class TestToolLoopsReserveTheirUpperBound:
                 tools = None,
             )
             cost = self._cost(payload, tool_loop = True)
-            first = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
-            assert first.lease_nowait() is not None
-            second = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
-            return second.lease_nowait()
+            leases = []
+            for _ in range(4):
+                reservation = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
+                leases.append(reservation.lease_nowait())
+            return leases
 
-        assert _run(scenario()) is None
+        assert all(lease is not None for lease in _run(scenario()))
+
+    def test_growth_past_the_share_is_still_accounted(self):
+        """The overcommit #9392 fixed stays fixed: loops holding a share each cannot all
+        grow into the same cache, and a refused growth leaves the pool as it was."""
+        from types import SimpleNamespace
+
+        async def scenario():
+            queue = LlamaAdmissionQueue("test")
+            payload = SimpleNamespace(
+                messages = [{"role": "user", "content": "hi"}],
+                max_tokens = 16,
+                enable_tools = True,
+                tools = None,
+            )
+            cost = self._cost(payload, tool_loop = True)
+            leases = []
+            for _ in range(4):
+                reservation = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
+                leases.append(reservation.lease_nowait())
+            # The cache is exactly full at four shares, so nobody may grow.
+            return leases, queue
+
+        leases, queue = _run(scenario())
+        assert queue.snapshot().committed == 2048
+        assert leases[0].recost(2048) is False
+        assert queue.snapshot().committed == 2048
 
     def test_a_request_without_tools_is_unaffected(self):
         """The serialisation is the price of a tool loop, not of every request."""

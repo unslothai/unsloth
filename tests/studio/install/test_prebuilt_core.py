@@ -57,8 +57,8 @@ LLAMA_DESCRIPTOR = core.ComponentDescriptor(
     sha256_asset_name = "llama-prebuilt-sha256.json",
     metadata_filename = "UNSLOTH_LLAMA_PREBUILT_INFO.json",
     user_agent = "unsloth-studio-llama-prebuilt",
-    # A GPU-selection miss reports "no prebuilt" so the caller can fall back to
-    # a source build instead of silently degrading to CPU.
+    # A GPU-selection miss reports "no prebuilt" so the caller can fall back to a source build instead of silently
+    # degrading to CPU.
     fallback_backend = None,
     server_binary_name = lambda host: "llama-server",
     runtime_bin_dir = lambda install_dir, host: install_dir / "build" / "bin",
@@ -114,8 +114,8 @@ def make_host(
             rocm_gfx = rocm_gfx,
             macos_version = macos_version,
         )
-    # Descriptor-only component: the core default host_platform_tokens hook
-    # reads .os_token/.arch_token off a plain host object.
+    # Descriptor-only component: the core default host_platform_tokens hook reads .os_token/.arch_token off a plain host
+    # object.
     return SimpleNamespace(
         os_token = os_token,
         arch_token = arch_token,
@@ -291,7 +291,6 @@ def _arm_mac_host(component, macos_version):
 
 
 def test_macos_min_os_filters_to_compatible_bundle(component):
-    # host 14.0 can't load the 15.0 bundle; the 13.0 bundle is picked instead.
     manifest = component.ops.parse_manifest(
         manifest_for(
             component,
@@ -340,7 +339,7 @@ def test_resolve_backend_auto_and_validation(component):
     gpu_host = make_host(component, has_usable_nvidia = True)
     assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback = False) == "cuda"
     assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback = True) == "cpu"
-    # --cpu-fallback wins over an explicit backend too.
+    # cpu-fallback wins over an explicit backend too.
     assert component.ops.resolve_backend(gpu_host, "cuda", cpu_fallback = True) == "cpu"
     # An explicit supported backend passes through untouched.
     assert component.ops.resolve_backend(gpu_host, "vulkan", cpu_fallback = False) == "vulkan"
@@ -662,12 +661,11 @@ def test_write_and_match_marker(component, tmp_path):
         backend = "cpu",
         asset_sha256 = "0" * 64,
     )
-    # No marker on disk yet -> not a match.
     assert not component.ops.existing_install_matches(install_dir, host, selection)
     bin_dir = component.ops.runtime_bin_dir(install_dir, host)
     bin_dir.mkdir(parents = True)
     component.ops.write_prebuilt_metadata(install_dir, selection)
-    # Marker alone is not enough: the server binary must exist too.
+    # Marker alone is not enough:
     assert not component.ops.existing_install_matches(install_dir, host, selection)
     (bin_dir / component.ops.server_binary_name(host)).write_bytes(b"bin")
     marker = json.loads((install_dir / component.descriptor.metadata_filename).read_text())
@@ -730,8 +728,8 @@ def test_slim_selection_fields_are_additive(component, tmp_path):
 
 
 def test_core_slim_hooks_default_inert(component, tmp_path):
-    # A component without its own hooks stages nothing extra and adds no
-    # resolver fields (llama's probe output must stay byte-identical).
+    # A component without its own hooks stages nothing extra and adds no resolver fields (llama's probe output must stay
+    # byte-identical).
     assert component.ops.resolver_payload_extra({"install_kind": "slim"}) == {}
     host = make_host(component)
     selection = object()
@@ -762,8 +760,8 @@ def test_busy_activation_restores_previous_install(monkeypatch, tmp_path):
 
 
 # ── Host/GPU token helpers (component-independent core functions) ──
-# Value tables moved verbatim from the llama characterization suite; these are
-# pure functions with no descriptor sensitivity, so they run unparameterized.
+# Value tables moved verbatim from the llama characterization suite; these are pure functions with no
+# descriptor sensitivity, so they run unparameterized.
 @pytest.mark.parametrize(
     "value,expected",
     [
@@ -900,6 +898,7 @@ def test_blackwell_min_toolkit_is_sm_aware():
     assert f(_caps_host(["10.0", "10.3"])) == (12, 9)  # max across SMs wins
 
 
+# The ops seam ──
 # ── The ops seam ──
 def test_module_ops_prefers_module_globals_over_core_defaults(component):
     ns = dict(component.namespace)

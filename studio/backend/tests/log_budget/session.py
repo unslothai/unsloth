@@ -86,6 +86,12 @@ BUSY_POLLS: dict[str, tuple[float, str]] = {
     # to the log being watched.
     "/api/settings/debug/logs": (3.0, "declared"),
     "/api/settings/debug/logs/sources": (3.0, "declared"),
+    # Chat detail reads, driven by the streaming persistence loop rather than a timer, so
+    # busy-only. Measured over four tabs on Qwen3.8-27B UD-Q4_K_XL: thread reads 0.57s
+    # apart, fork reads 0.40s apart, aggregated per template because a template shares one
+    # bucket. Rounded to the replay's 0.5s tick, the nearest value it can poll on.
+    "/api/chat/threads/{id}": (0.5, "measured"),
+    "/api/chat/threads/{id}/forks": (0.5, "measured"),
     # Training panels, live only while a run is going.
     "/api/train/status": (2.0, "declared"),
     "/api/train/metrics": (2.0, "declared"),
@@ -133,8 +139,13 @@ KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset()
 #
 # Re-measure and ratchet again whenever a suppression rule changes. An envelope carrying
 # the old number after a fix has stopped guarding anything.
+#
+# Busy rose from 260 to 325 for an ACCOUNTING change, not a volume regression.
+# /api/chat/threads/{id} and its /forks sibling sat in the `normal` class, in no scenario,
+# so the envelope never saw them: modelled over the busy window, 675 lines. A heartbeat
+# class brings them in at 59. The number goes up because they are finally being counted.
 STEADY_IDLE_LINE_ENVELOPE = 1170
-BUSY_LINE_ENVELOPE = 260
+BUSY_LINE_ENVELOPE = 325
 
 # One-shot requests the app makes once on startup. Present so the boot window is not
 # mistaken for steady state, and so a mutation record and a failure record exist to assert

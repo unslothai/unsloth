@@ -3,9 +3,7 @@
 
 import sys
 
-# unsloth_cli only runs its console-script setup (stream encoding, `-np<N>`,
-# the Windows folder guard) for argv[0] == "unsloth", and it must precede the
-# command imports: commands.studio resolves STUDIO_HOME at import time.
+# Match the console-script setup before importing commands.
 if __name__ == "__main__":
     sys.argv[0] = "unsloth"
 

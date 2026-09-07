@@ -107,7 +107,7 @@ EOF
 chmod +x "$VENV_DIR/bin/python"
 
 # Mock install_manifest to return ok: True so manifest check passes
-printf 'def verify_install():\n    return {"ok": True}\n' > "$WORK/install_manifest.py"
+printf 'def verify_install(**kwargs):\n    return {"ok": True}\n' > "$WORK/install_manifest.py"
 
 eval_fastpath() {
     local installed_ver="$1"

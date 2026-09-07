@@ -33,7 +33,7 @@ _INDEX_TTL_S = 5.0
 _index_lock = threading.Lock()
 _index: dict[str, tuple[float, dict[str, "MediaModelPick"]]] = {}
 
-# the video family whose partitions are a load-time choice rather than a property of the files
+# the video family whose partitions are a load-time choice, not a property of the files
 _H3_FAMILY = "minimax-h3"
 
 
@@ -144,8 +144,8 @@ def _loader_can_open(load_path: str, filename: str) -> bool:
 
     root = Path(load_path)
     if not root.is_dir():
-        # a repo id loads from the cache, where the containment rule does not apply but the
-        # split set still has to be whole; an uncached child is the download guard's business
+        # a repo id loads from the cache, where the containment rule does not apply but the split set still has to be
+        # whole; an uncached child is the download guard's business
         cached = _cached_repo_file(load_path, filename)
         return True if cached is None else bool(colocated_split_shards(cached)[1])
     from core.inference.diffusion_families import resolve_local_gguf_child
@@ -249,8 +249,8 @@ def _loadable_directory(load_dir: Path) -> bool:
             return True
     except OSError:
         return False
-    # a sole checkpoint is reinterpreted as a single_file load, which resolves the name through
-    # the same containment check a gguf goes through, so a cache snapshot's symlink is refused
+    # a sole checkpoint is reinterpreted as a single_file load, which resolves the name through the same containment
+    # check a gguf goes through, so a cache snapshot's symlink is refused
     sole = resolve_local_single_file(str(load_dir))
     return sole is not None and _loader_can_open(str(load_dir), sole)
 

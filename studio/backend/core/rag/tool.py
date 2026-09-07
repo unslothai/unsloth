@@ -147,9 +147,8 @@ def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
                 "page": None,
                 "text": text,
                 "turn": int(ordinal) + 1 if ordinal is not None else None,
-                # Carried so a merge of two searches can reorder one long turn's pieces;
-                # nothing renders them. `createdAt` is the tie-breaker `_conversation_order`
-                # needs, since pre-ordinal rows have `turn` None and ordinals are not UNIQUE.
+                # createdAt is the tie-breaker _conversation_order needs: pre-ordinal rows have turn None and
+                # ordinals are not UNIQUE.
                 "chunkIndex": _row_value(r, "chunk_index"),
                 "createdAt": _row_value(r, "created_at"),
                 "score": round(float(h.score), 4) if h.score is not None else None,
@@ -326,15 +325,15 @@ def whole_document_context(
     chunks, or the total exceeds ``max_tokens``."""
     if not scope_thread_id:
         return None
-    # A non-positive budget means "never inject" (disable whole-doc via
-    # RAG_THREAD_WHOLE_DOC=0), not "inject the whole corpus unbounded".
+    # A non-positive budget means "never inject" (disable whole-doc via RAG_THREAD_WHOLE_DOC=0), not
+    # "inject the whole corpus unbounded".
     if max_tokens <= 0:
         return None
     scope = thread_scope(scope_thread_id)
     conn = rag_db.get_connection()
     try:
-        # Cheap budget pre-check (SUM, no text hydration): reject an oversized attachment
-        # before loading the whole corpus; all_chunks_for_scope runs only once it fits.
+        # Cheap SUM pre-check so an oversized attachment is rejected before the whole corpus is hydrated;
+        # all_chunks_for_scope runs only once it fits.
         if scope_token_estimate(conn, scope) > max_tokens:
             return None
         rows = all_chunks_for_scope(conn, scope)

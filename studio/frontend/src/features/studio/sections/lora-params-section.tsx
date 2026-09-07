@@ -8,7 +8,12 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { usePlatformStore } from "@/config/env";
-import { CPT_TARGET_MODULES, TARGET_MODULES } from "@/config/training";
+import {
+  TARGET_MODULES,
+  getCptUiTargetModules,
+  isCptTargetModuleActive,
+  toggleCptTargetModule,
+} from "@/config/training";
 import {
   isTrainingLoraVariantSupportedOnDevice,
   useTrainingConfigStore,
@@ -188,30 +193,39 @@ export function LoraParamsSection(): ReactElement | null {
                 {t("studio.params.targetModules")}
               </span>
               <div className="flex flex-wrap gap-1.5">
-                {(isCpt ? CPT_TARGET_MODULES : TARGET_MODULES).map((module) => {
-                  const active = store.targetModules.includes(module);
-                  return (
-                    <button
-                      key={module}
-                      type="button"
-                      aria-pressed={active}
-                      onClick={() =>
-                        store.setTargetModules(
-                          active
-                            ? store.targetModules.filter(
-                                (candidate) => candidate !== module,
-                              )
-                            : [...store.targetModules, module],
-                        )
-                      }
-                      className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-ui-11 font-mono transition-colors ${selectableOptionStateClassName(active)} ${
-                        active ? "text-foreground" : "text-muted-foreground"
-                      }`}
-                    >
-                      {module}
-                    </button>
-                  );
-                })}
+                {(isCpt ? getCptUiTargetModules() : TARGET_MODULES).map(
+                  (module) => {
+                    const active = isCpt
+                      ? isCptTargetModuleActive(store.targetModules, module)
+                      : store.targetModules.includes(module);
+                    return (
+                      <button
+                        key={module}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() =>
+                          store.setTargetModules(
+                            isCpt
+                              ? toggleCptTargetModule(
+                                  store.targetModules,
+                                  module,
+                                )
+                              : active
+                                ? store.targetModules.filter(
+                                    (candidate) => candidate !== module,
+                                  )
+                                : [...store.targetModules, module],
+                          )
+                        }
+                        className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-ui-11 font-mono transition-colors ${selectableOptionStateClassName(active)} ${
+                          active ? "text-foreground" : "text-muted-foreground"
+                        }`}
+                      >
+                        {module}
+                      </button>
+                    );
+                  },
+                )}
               </div>
             </div>
           )}

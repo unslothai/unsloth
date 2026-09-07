@@ -452,7 +452,7 @@ const FLAG_NEXT_TO_APPEND =
   /streamedChars \+= reasoning\.length \+ delta\.length;\s*producedReplyText = true;/;
 
 /** The adapter between two anchors, without its comments. */
-function regionOf(from: string, to: string, maxChars = 60_000): string {
+function regionOf(from: string, to: string, maxChars = 75_000): string {
   const start = ADAPTER.indexOf(from);
   assert.notEqual(start, -1, `"${from}" is gone; this test needs rewriting`);
   const end = ADAPTER.indexOf(to, start);

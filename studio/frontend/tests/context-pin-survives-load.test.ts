@@ -117,10 +117,11 @@ function sentNCtx(
       ggufVariant: VARIANT,
       isGguf: true,
       customContextLength,
-      ggufContextLength: residentCtx,
+      loadedContextLength: residentCtx,
       currentCheckpoint,
       activeGgufVariant: VARIANT,
-      maxSeqLength: 4096,
+      pinnedMaxSeqLength: null,
+      defaultMaxSeqLength: 4096,
       presetSource,
     }),
   );
@@ -240,9 +241,11 @@ test("a model change does not carry the old pin across", () => {
   assert.match(RUNTIME, /customContextLength: null,\s*\n\s*\}\);/);
   // The applier reads the saved value through the same resolver the batch sizes
   // use, so "remembered" is this model's record and not the store's leftovers.
+  // savedContextPin, not the raw field: a record written before the MLX pin moved
+  // still carries it in maxSeqLength.
   assert.match(
     APPLIER,
-    /remembered: remembered\?\.remembered\s*\n\s*\? \(remembered\.config\.customContextLength \?\? null\)\s*\n\s*: null,/,
+    /remembered: remembered\?\.remembered \? savedContextPin\(remembered\.config\) : null,/,
   );
 });
 
@@ -336,8 +339,8 @@ test("the clamp that stops a manual reload resizing is not a user pin", () => {
   // on the same model, or the reload would send 0 and llama.cpp's --fit-off
   // branch would take that as the NATIVE context. That is the app protecting the
   // load, not the user choosing a length, so the pin is captured BEFORE it.
-  const capture = RUNTIME.indexOf("const explicitCtxPin = loadCustomContextLength;");
-  const clamp = RUNTIME.indexOf("loadCustomContextLength = loadGgufContextLength;");
+  const capture = RUNTIME.indexOf("const explicitCtxPin = loadRequestContextPin(");
+  const clamp = RUNTIME.indexOf("loadCustomContextLength = loadContextLength;");
   assert.notEqual(capture, -1, "the load no longer captures the user's setting");
   assert.notEqual(clamp, -1);
   assert.ok(
@@ -352,7 +355,12 @@ test("the three in-app writers pin what the user asked for, not what they sent",
   // only when there is one, and the current context otherwise.
   assert.match(
     RUNTIME,
-    /const keepCustomCtx = resolveExplicitCtxPin\(\s*\n\s*loadResponse\.is_gguf \? explicitCtxPin : null,\s*\n\s*\);/,
+    /const keepCustomCtx = resolveExplicitCtxPin\(\s*\n\s*loadResponse\.is_gguf \|\| targetIsMlx \? explicitCtxPin : null,\s*\n\s*\);/,
+  );
+  // And the captured pin is the one the request was built from, pre-move field included.
+  assert.match(
+    RUNTIME,
+    /const explicitCtxPin = loadRequestContextPin\(\s*\n\s*loadCustomContextLength,\s*\n\s*targetIsMlx,\s*\n\s*pinnedMaxSeqLength,\s*\n\s*\);/,
   );
   assert.match(
     RUNTIME,
@@ -366,7 +374,7 @@ test("the three in-app writers pin what the user asked for, not what they sent",
   assert.match(ADAPTER, /loadedCustomContextLength: keepCustomCtx,/);
   assert.match(
     COMPOSER,
-    /const keepCustomCtx = targetIsGguf\s*\n\s*\? resolveExplicitCtxPin\(effectiveCustomContextLength\)\s*\n\s*: null;/,
+    /const keepCustomCtx = targetIsGguf\s*\n\s*\? resolveExplicitCtxPin\(effectiveCustomContextLength\)\s*\n\s*: retainedContextPin\(\{/,
   );
   assert.match(COMPOSER, /customContextLength: keepCustomCtx,/);
   assert.match(COMPOSER, /loadedCustomContextLength: keepCustomCtx,/);
@@ -375,7 +383,7 @@ test("the three in-app writers pin what the user asked for, not what they sent",
   assert.match(COMPOSER, /const effectiveCustomContextLength = ownConfig\.customContextLength;/);
   assert.match(
     ADAPTER,
-    /customContextLength: config\.customContextLength,\s*\n\s*ggufContextLength: null,/,
+    /customContextLength: config\.customContextLength,\s*\n\s*loadedContextLength: null,/,
   );
 });
 
@@ -485,5 +493,60 @@ test("a positive echo under manual memory with auto layers is an explicit pin", 
   assert.match(
     APPLIER,
     /loadedPin: prevState\.loadedCustomContextLength \?\? null,/,
+  );
+});
+
+test("a resident MLX pin from another tab is adopted, not read as Auto", () => {
+  // An unpinned MLX load sends 0, so a positive echo can only be an explicit pin.
+  // Model changed underneath this tab and there is no saved config to corroborate it.
+  const seeded = resolveCtxPinSeed({
+    incoming: 32768,
+    isGguf: true,
+    isMlx: true,
+    seedLoadParams: true,
+    modelChanged: true,
+    remembered: null,
+    gpuMemoryMode: null,
+    gpuLayers: null,
+    loadedPin: null,
+  });
+  assert.equal(seeded.customContextLength, 32768);
+  assert.equal(seeded.loadedCustomContextLength, 32768);
+
+  // Auto still clears: 0 is the wire form and proves its own meaning.
+  const auto = resolveCtxPinSeed({
+    incoming: 0,
+    isGguf: true,
+    isMlx: true,
+    seedLoadParams: true,
+    modelChanged: true,
+    remembered: null,
+    gpuMemoryMode: null,
+    gpuLayers: null,
+    loadedPin: null,
+  });
+  assert.equal(auto.customContextLength, null);
+
+  // GGUF keeps the old rule: its positive echo is the ambiguous resolved n_ctx.
+  const gguf = resolveCtxPinSeed({
+    incoming: 32768,
+    isGguf: true,
+    isMlx: false,
+    seedLoadParams: true,
+    modelChanged: true,
+    remembered: null,
+    gpuMemoryMode: null,
+    gpuLayers: null,
+    loadedPin: null,
+  });
+  assert.equal(gguf.customContextLength, null);
+});
+
+test("a failed switch rolls back on the backend that served the outgoing model", () => {
+  // The platform alone would call a native-audio checkpoint MLX on a Mac and roll it
+  // back at the auto-size sentinel, losing the context it was actually serving.
+  assert.match(
+    RUNTIME,
+    /const previousIsMlx = residentIsServedByMlx\(\s*\n\s*previousIsGguf,\s*\n\s*platform\.deviceType,\s*\n\s*platform\.chatOnlyReason,\s*\n\s*stateBeforeUnload\.loadedIsMlx,\s*\n\s*\);/,
   );
 });
