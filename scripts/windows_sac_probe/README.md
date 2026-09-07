@@ -214,7 +214,24 @@ would make the load a no-op that loads no PE inside the window.
 | `prepare` | records a baseline; updates packages and Defender signatures; turns Defender real-time, MAPS advanced, cloud block level high and PUA on; raises the CodeIntegrity log to 64 MB; applies the audit policy if given (a pre-existing policy with the same GUID is saved first); installs Unsloth Studio if it is missing, then starts it | `revert` (Studio is left installed) |
 | `run` | nothing on the machine beyond restarting Studio if it stopped; inventories signatures and drives Studio (rotates a never-used bootstrap password to yours, see above) | n/a |
 | `collect` | nothing; exports events and zips the evidence | n/a |
-| `revert` | removes the audit policy (or restores the pre-existing one), restores the CodeIntegrity log settings and the Defender settings from the baseline; the EFI partition is never left mounted | n/a |
+| `revert` | removes the audit policy (or restores the pre-existing one), restores the CodeIntegrity log settings and the Defender settings from the baseline, and regrants the invoking user access to the Studio trees (below); the EFI partition is never left mounted | n/a |
+
+Because every stage is elevated, a Studio that `prepare` installs is installed
+**as administrator**, and the trees its installer creates (`llama.cpp`,
+`whisper.cpp`, `node`, `.cache`) come out owned by `BUILTIN\Administrators`.
+The user's own non-elevated Studio can then fail to read its own runtime; on a
+machine where `prepare` did the install, `llama.cpp`, `whisper.cpp` and `node`
+all refused `Get-Acl` to the owning user afterwards. This is a side effect of
+running elevated at all, not something `prepare` sets, so there is no baseline
+value for it. `revert` regrants access. If you never run `revert`:
+
+```powershell
+icacls $env:USERPROFILE\.unsloth /grant "${env:USERNAME}:(OI)(CI)F" /T
+```
+
+The braces are load bearing: `"$env:USERNAME:(OI)(CI)F"` parses the trailing
+colon as part of the variable name, so icacls receives `(OI)(CI)F` as a
+separate argument and fails with `Invalid parameter "(OI)(CI)F"`.
 
 `revert` reads `baseline.json` from the same `-Label` directory, so use the label
 you prepared with.

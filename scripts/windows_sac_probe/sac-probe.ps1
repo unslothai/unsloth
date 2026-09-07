@@ -308,6 +308,24 @@ function Test-StudioResponding([int] $port) {
     }
 }
 
+# Every named field of an event's EventData, as an ordered hashtable. Events
+# with an unnamed payload fall back to Data1, Data2, ... so nothing is dropped.
+function Get-EventDataMap($record) {
+    $map = [ordered]@{}
+    try {
+        $xml = [xml] $record.ToXml()
+        $i = 0
+        foreach ($node in $xml.Event.EventData.Data) {
+            $i++
+            $name = if ($node.Name) { $node.Name } else { "Data$i" }
+            $map[$name] = $node.'#text'
+        }
+    } catch {
+        # A record that will not render as XML still has a usable Message.
+    }
+    return $map
+}
+
 function Install-Studio {
     Write-Section 'Install Unsloth Studio'
     # The documented install command, run exactly as a user would. Piping keeps
@@ -319,7 +337,12 @@ function Install-Studio {
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        Invoke-Expression (Invoke-RestMethod -Uri 'https://unsloth.ai/install.ps1' -TimeoutSec 120)
+        # Out-Host, not a bare call. The installer writes to the output stream,
+        # and whatever is left there becomes part of this function's return
+        # value, so the caller gets the whole transcript with the interpreter
+        # path glued on the end instead of a path, and Start-Process is handed
+        # a 5 KB string it cannot resolve.
+        Invoke-Expression (Invoke-RestMethod -Uri 'https://unsloth.ai/install.ps1' -TimeoutSec 120) | Out-Host
     } catch {
         Write-Warning "installer failed: $_"
     } finally {
@@ -805,6 +828,14 @@ function Invoke-Collect {
             Scope       = $scope
             ActivityID  = $_.ActivityId
             Message     = $msg
+            # 3089's rendered Message is the fixed string "Signature
+            # information for another event. Match using the Correlation Id."
+            # Everything worth correlating - PublisherName, IssuerName,
+            # VerificationError, TotalSignatureCount, SignatureType - exists
+            # only in EventData, so keeping Message alone makes the ActivityID
+            # correlation this script exists to support impossible from the
+            # JSON, and sends the reader back to the raw evtx.
+            EventData   = (Get-EventDataMap $_)
         }
     })
     # -InputObject: zero events is a normal and important result for an
@@ -1055,6 +1086,31 @@ function Invoke-Revert {
     }
     if ($failed -eq 0) { Write-Host 'Defender preferences restored' }
     else { Write-Warning "$failed Defender preference(s) were not restored; see above" }
+
+    Write-Section 'Restore Studio tree access'
+    # Every stage is elevated, so a Studio that prepare installs is installed as
+    # administrator, and the trees the installer creates (llama.cpp,
+    # whisper.cpp, node, .cache) come out owned by BUILTIN\Administrators. The
+    # user's own non-elevated Studio then cannot read its own runtime, and
+    # nothing else here covers it: prepare never set those ACLs deliberately,
+    # they are a side effect of running elevated at all, so there is no baseline
+    # value to restore. Measured on a machine where prepare installed Studio:
+    # llama.cpp, whisper.cpp and node all denied Get-Acl to the owning user.
+    $user = "$env:USERDOMAIN\$env:USERNAME"
+    $trees = @((Join-Path $env:USERPROFILE '.unsloth'), (Get-StudioHome), (Get-LlamaDir)) |
+        Where-Object { $_ -and (Test-Path -LiteralPath $_) } |
+        Select-Object -Unique
+    foreach ($tree in $trees) {
+        try {
+            # Grants the invoking user only, on trees inside their own profile.
+            # Nothing here widens access for anyone else or touches ownership.
+            & icacls.exe $tree /grant "${user}:(OI)(CI)F" /T /C /Q | Out-Null
+            if ($LASTEXITCODE -eq 0) { Write-Host "restored $user access to $tree" }
+            else { Write-Warning "icacls exited $LASTEXITCODE for $tree" }
+        } catch {
+            Write-Warning "could not restore access to ${tree}: $_"
+        }
+    }
 
     if ($null -ne $policyError) {
         throw "revert restored the log and Defender settings but the audit policy is still applied: $policyError"
