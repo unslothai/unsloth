@@ -1815,11 +1815,15 @@ def test_the_local_batch_shares_one_decode_attempt_budget():
     original = mcp_images._png_data_url
     mcp_images._png_data_url = lambda data: (attempts.append(data), None)[1]
     try:
-        results = [[{"data": f"j{r}-{i}", "mimeType": "image/png"} for i in range(8)] for r in range(25)]
+        results = [
+            [{"data": f"j{r}-{i}", "mimeType": "image/png"} for i in range(8)] for r in range(25)
+        ]
         assert mcp_images.png_payloads_per_result(results) == []
     finally:
         mcp_images._png_data_url = original
-    assert len(attempts) <= mcp_images.LOCAL_MAX_IMAGES_PER_TURN + mcp_images.DECODE_FAILURE_ALLOWANCE, len(attempts)
+    assert (
+        len(attempts) <= mcp_images.LOCAL_MAX_IMAGES_PER_TURN + mcp_images.DECODE_FAILURE_ALLOWANCE
+    ), len(attempts)
 
 
 def test_the_dispatch_check_never_parses_the_envelope():

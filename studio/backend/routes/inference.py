@@ -7923,7 +7923,9 @@ def _messages_mention_mcp_images(messages) -> bool:
         if role != "tool":
             continue
         content = (
-            message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
         )
         if isinstance(content, str) and mcp_images_mentioned_in(content):
             return True
