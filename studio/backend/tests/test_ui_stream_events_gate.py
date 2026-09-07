@@ -602,7 +602,7 @@ def test_tool_choice_none_withdraws_the_catalogue_but_not_the_capability():
     src = inspect.getsource(produce_openai_chat_completions)
     detect = src[src.index("_sf_template_tools = ") :][:400]
     assert 'payload.tool_choice != "none"' not in detect
-    assert "m.role == \"tool\" or m.tool_calls" in detect
+    assert 'm.role == "tool" or m.tool_calls' in detect
     # The catalogue itself is still withdrawn for "none".
     assert 'if payload.tool_choice == "none":\n        _sf_tools_on = False' in src
 
