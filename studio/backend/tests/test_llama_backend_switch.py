@@ -956,6 +956,47 @@ def test_a_marker_with_no_recorded_arch_passes_no_replay(monkeypatch, tmp_path):
     assert seen == [None]
 
 
+def test_the_picker_describes_the_same_host_the_update_check_does(monkeypatch, tmp_path):
+    """Settings and the update banner must not disagree about what this box is.
+
+    Without the recovery the picker's resolve sees no arch, reads an AMD host whose
+    probes name none as CPU-only, and offers an Automatic that installs a backend the
+    banner never advertised."""
+    _install(
+        monkeypatch,
+        tmp_path,
+        backend = "rocm",
+        backend_request = "auto",
+        install_kind = "windows-rocm",
+        asset = "app-b9596-mix-abc-windows-x64-rocm-gfx1151.zip",
+    )
+    assert upd.read_install_marker(upd._find_binary()).get("rocm_gfx") is None
+
+    def _resolver(**kwargs):
+        gfx = (kwargs.get("extra_env") or {}).get("UNSLOTH_ROCM_GFX_REMEMBERED")
+        return {
+            "backends": [
+                {
+                    "backend": backend,
+                    "available": bool(gfx) or backend in ("auto", "cpu", "vulkan"),
+                    "resolved_backend": (("vulkan" if gfx else "cpu")
+                                         if backend == "auto" else backend),
+                }
+                for backend in ("auto", "cpu", "rocm", "vulkan")
+            ]
+        }
+
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", _resolve_backends_for_host)
+    monkeypatch.setattr(upd._flow, "resolve_prebuilt_for_host", _resolver)
+    monkeypatch.setattr(upd, "latest_release_assets", lambda repo, force_refresh = False: {})
+    upd._backends_memo.clear()
+
+    status = upd.get_backend_status()
+    by_backend = {option["backend"]: option for option in status["options"]}
+    assert by_backend["auto"]["resolved_backend"] == "vulkan"
+    assert by_backend["rocm"]["available"] is True
+
+
 def test_the_arch_is_recovered_from_the_installed_bundle_when_none_was_recorded(
     monkeypatch, tmp_path
 ):

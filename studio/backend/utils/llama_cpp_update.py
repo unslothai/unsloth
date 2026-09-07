@@ -726,7 +726,10 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
         _install_dir_for(binary),
         force_refresh = force_refresh,
         published_repo = repo,
-        rocm_gfx = (marker or {}).get("rocm_gfx"),
+        # The same recovery the update-status path uses, or the picker describes a
+        # different host: no arch here reads an AMD box with no probes as CPU-only,
+        # so Settings offers an Automatic that installs something else.
+        rocm_gfx = _remembered_rocm_gfx(marker),
     )
     if not resolved:
         # Keep showing the installed backend without guessing alternatives.
