@@ -1,16 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""engine_stats must not attribute a whole generation to the tick it was counted on.
+"""engine_stats must not attribute work to the tick its counter moved on.
 
-llama-server updates tokens_predicted_total once per generation, from the
-callback_on_reset installed beside slot.reset(). Dividing that count by the poll
-interval reports the rate of a window the generation did not run in. prompt_tokens_total
-is different and is deliberately left alone: metrics_post_decode() flushes it on every
-decode step, so its delta already covers the tick it is read in.
+Neither token counter moves while the work happens: tokens_predicted_total is flushed
+once per generation, and prompt_tokens_total only on a decode that produced output or
+when every slot goes idle. So a whole generation, or a prefill spanning several polls,
+lands in one scrape, and dividing it by the poll interval reports the rate of a window
+the work did not run in.
 Measured in the field: 48,216 engine_stats records, gen_tok_s == 0.0 in 47,629 of
 them (98.77%), and two records at 150.6 and 183.7 tok/s on a 103.7 GB Q4 MoE whose
 measured ceiling is 24.6 tok/s.
+
+llama-server already measures the time itself and flushes it with the count, in the
+same add_prompt() and metrics_on_prediction() calls, so the counters are read as a
+pair and the poll cadence drops out of the arithmetic entirely.
 
 The clock is faked here because the rate is the thing under test: the shared
 _drive helper in test_llama_stats.py runs at a 1 ms interval on the real clock,
@@ -69,122 +73,120 @@ def _drive(
 
 def _busy(
     predicted = 0.0,
+    predicted_s = 0.0,
     prompt = 0.0,
+    prompt_s = 0.0,
     decode = 0.0,
     running = 1.0,
+    waiting = 0.0,
 ):
     """One scrape with no throughput gauges, so the counter path is exercised."""
     return {
         "tokens_predicted_total": predicted,
+        "tokens_predicted_seconds_total": predicted_s,
         "prompt_tokens_total": prompt,
+        "prompt_seconds_total": prompt_s,
         "n_decode_total": decode,
         "requests_processing": running,
+        "requests_deferred": waiting,
     }
 
 
-def test_a_generation_is_not_attributed_to_the_tick_it_was_counted_on(monkeypatch):
-    """The 183.7 tok/s record. 1837 tokens appear in one scrape after 70 seconds of
-    a held slot, so the honest rate is 1837/80, not 1837/10."""
-    snaps = [_busy(decode = float(i)) for i in range(8)] + [_busy(predicted = 1837.0, decode = 8.0)]
+def test_a_generation_is_priced_by_the_seconds_it_reports_with_it(monkeypatch):
+    """The 183.7 tok/s record. 1837 tokens appear in one scrape after 80 seconds of
+    generation, and the engine says so: the honest rate is 1837/80."""
+    snaps = [_busy(decode = float(i)) for i in range(8)] + [
+        _busy(predicted = 1837.0, predicted_s = 80.0, decode = 8.0)
+    ]
     stats = _drive(snaps, monkeypatch)
 
-    reported = max(s["gen_tok_s"] for s in stats)
-    assert reported == 23.0, reported
+    assert max(s["gen_tok_s"] for s in stats) == 23.0
     # What the old arithmetic (count / poll interval) would have said.
     assert 1837.0 / _TICK_S == 183.7
 
 
 def test_an_idle_gap_is_not_charged_to_the_generation_after_it(monkeypatch):
-    """Busy seconds, not wall seconds: a server that sat idle for a minute and then
-    generated 100 tokens in 20 seconds did 5 tok/s, not 1.4."""
+    """A server that sat idle for a minute and then generated 100 tokens in 20
+    seconds did 5 tok/s, not 1.4: idle seconds are in no counter."""
     idle = [_busy(running = 0.0) for _ in range(6)]
-    working = [_busy(decode = 1.0), _busy(predicted = 100.0, decode = 2.0)]
+    working = [_busy(decode = 1.0), _busy(predicted = 100.0, predicted_s = 20.0, decode = 2.0)]
     stats = _drive(idle + working, monkeypatch)
 
     assert max(s["gen_tok_s"] for s in stats) == 5.0
 
 
-def test_a_window_the_engine_never_left_reports_what_it_produced(monkeypatch):
-    """The window closes when the engine goes idle, not when a counter moves.
+def test_deferred_requests_do_not_stretch_the_denominator(monkeypatch):
+    """A deferred request is queued, not generating. Treating the seconds it waits as
+    engine time is the mirror of the bug above and understates the rate instead.
 
-    /metrics carries no per-slot token counter, so a release says how many tokens
-    the ENGINE has produced and not which generation produced them. Under
-    continuous load the honest statement is therefore the engine's throughput over
-    the busy window it never left: 200 tokens in 30 busy seconds. Closing the
-    window on each release instead is what lets a second, still-running generation
-    be divided by the gap between two releases -- see the overlapping test below.
-    """
+    Trace: one tick of generation, six ticks holding a queued request with no slot
+    processing, then the release. The 100 tokens took the 20 seconds the engine
+    reports, whatever the queue did in between."""
     snaps = [
-        _busy(decode = 0.0),
-        _busy(predicted = 100.0, decode = 1.0),
-        _busy(predicted = 100.0, decode = 2.0),
-        _busy(predicted = 200.0, decode = 3.0),
+        _busy(decode = 1.0),
+        *[_busy(running = 0.0, waiting = 1.0, decode = 1.0) for _ in range(6)],
+        _busy(predicted = 100.0, predicted_s = 20.0, decode = 2.0),
     ]
     stats = _drive(snaps, monkeypatch)
 
-    rates = [s["gen_tok_s"] for s in stats]
-    # 100 tokens over one busy tick, then 200 over the three the engine stayed up.
-    assert rates == [0.0, 10.0, 0.0, 6.7], rates
+    assert max(s["gen_tok_s"] for s in stats) == 5.0
+    # What charging the queued ticks would have said.
+    assert round(100.0 / 80.0, 1) == 1.2
 
 
-def test_an_idle_tick_between_two_generations_closes_the_window(monkeypatch):
-    """The control for the test above: the window does still close, and the second
-    generation is then measured on its own seconds alone."""
+def test_a_generation_already_running_at_the_first_poll_is_priced_whole(monkeypatch):
+    """The logger can start mid-generation, and it has no reading from before its
+    first scrape. Measuring against elapsed poll time would then omit up to a whole
+    interval from the denominator and put the rate back above the ceiling; the
+    engine's own seconds cover the part that happened before the poller existed."""
     snaps = [
-        _busy(decode = 0.0),
-        _busy(predicted = 100.0, decode = 1.0),
-        _busy(predicted = 100.0, decode = 1.0, running = 0.0),
-        _busy(predicted = 100.0, decode = 2.0),
-        _busy(predicted = 200.0, decode = 3.0),
+        _busy(predicted = 200.0, predicted_s = 40.0, decode = 4.0),
+        _busy(predicted = 1837.0, predicted_s = 80.0, decode = 8.0),
     ]
     stats = _drive(snaps, monkeypatch)
 
-    assert [s["gen_tok_s"] for s in stats][-1] == 5.0
+    # 1637 tokens in the 40 seconds between the two readings.
+    assert max(s["gen_tok_s"] for s in stats) == 40.9
+    assert 1637.0 / _TICK_S == 163.7
 
 
-def test_the_second_of_two_concurrent_generations_is_not_divided_by_the_gap(monkeypatch):
-    """The 183.7 tok/s record again, reached the other way.
-
-    Two 1837-token generations run together for 80 seconds and release one poll
-    apart. Discarding the busy window on the first release leaves the second with
-    the 10 seconds between them, which reports the second generation at exactly the
-    impossible rate this whole change exists to remove. The window is the engine's,
-    so the second release is priced against the 90 seconds the engine was up and the
-    3674 tokens it produced in them.
-    """
+def test_two_concurrent_generations_are_not_divided_by_the_gap_between_them(monkeypatch):
+    """Two 1837-token generations run together and release one poll apart. /metrics
+    carries no per-slot counter, so the second release says only that the engine has
+    now produced 3674 tokens across 160 generation-seconds."""
     snaps = (
-        [_busy(predicted = 0.0, decode = float(i), running = 2.0) for i in range(8)]
-        + [_busy(predicted = 1837.0, decode = 8.0, running = 1.0)]
-        + [_busy(predicted = 3674.0, decode = 9.0, running = 0.0)]
+        [_busy(decode = float(i), running = 2.0) for i in range(8)]
+        + [_busy(predicted = 1837.0, predicted_s = 80.0, decode = 8.0, running = 1.0)]
+        + [_busy(predicted = 3674.0, predicted_s = 160.0, decode = 9.0, running = 0.0)]
     )
     stats = _drive(snaps, monkeypatch)
 
-    rates = [s["gen_tok_s"] for s in stats]
-    assert [r for r in rates if r] == [23.0, 40.8], rates
-    # What discarding the window on the first release would have said.
+    assert [r for r in (s["gen_tok_s"] for s in stats) if r] == [23.0, 23.0]
+    # What dividing the second release by the gap would have said.
     assert 1837.0 / _TICK_S == 183.7
 
 
-def test_the_interval_a_single_slot_finished_in_is_still_counted(monkeypatch):
-    """A generation that completes between scrapes is reported by a scrape that
-    shows no slot at all: llama-server has already released it. That interval is
-    still the engine working -- the tokens arrived in it -- so leaving it out
-    shortens the denominator and puts the rate back above the hardware ceiling.
-    1837 tokens over 80 seconds is 23.0 tok/s; over 70 it is 26.2."""
-    snaps = [_busy(decode = float(i)) for i in range(8)] + [
-        _busy(predicted = 1837.0, decode = 8.0, running = 0.0)
+def test_a_long_prefill_is_not_attributed_to_the_tick_it_flushed_on(monkeypatch):
+    """The prompt counter needs the same treatment as the generation counter.
+
+    llama-server flushes it only on a decode that produced output, so a prefill
+    spanning many polls stays flat and then arrives whole: 130k tokens on one tick
+    reads as 13,000 tok/s against a real 200. The seconds counter is flushed by the
+    same call, so the pair is the prefill's own rate."""
+    snaps = [_busy(prompt = 0.0)] + [_busy() for _ in range(64)] + [
+        _busy(prompt = 130000.0, prompt_s = 650.0)
     ]
     stats = _drive(snaps, monkeypatch)
 
-    assert max(s["gen_tok_s"] for s in stats) == 23.0
-    assert round(1837.0 / 70.0, 1) == 26.2
+    assert max(s["prompt_tok_s"] for s in stats) == 200.0
+    assert 130000.0 / _TICK_S == 13000.0
 
 
 def test_the_decode_counter_reports_while_the_token_counters_are_still(monkeypatch):
     """The reason the line read 0 for 98.8% of the time: both token counters sit
     still through a healthy generation. n_decode_total moves on every
     llama_decode(), so it is the live signal, and it is reported as calls rather
-    than as tokens."""
+    than as tokens, over the tick it moved in."""
     snaps = [_busy(decode = float(i * 20)) for i in range(4)]
     stats = _drive(snaps, monkeypatch)
 
@@ -192,39 +194,16 @@ def test_the_decode_counter_reports_while_the_token_counters_are_still(monkeypat
     assert [s["decode_calls_s"] for s in stats] == [0.0, 2.0, 2.0, 2.0]
 
 
-def test_a_build_without_the_decode_counter_still_reports(monkeypatch):
-    """n_decode_total is not on every llama-server. Its absence must not stop the
-    line or fabricate a rate."""
+def test_a_build_without_the_seconds_counters_reports_no_rate_rather_than_one(monkeypatch):
+    """Nothing in /metrics then says how long the tokens took, and the poll interval
+    is not an answer. The line still goes out, carrying what is measurable."""
     snaps = [
         {"tokens_predicted_total": 0.0, "prompt_tokens_total": 0.0, "requests_processing": 1.0},
-        {"tokens_predicted_total": 50.0, "prompt_tokens_total": 0.0, "requests_processing": 1.0},
+        {"tokens_predicted_total": 1837.0, "prompt_tokens_total": 0.0, "requests_processing": 1.0},
     ]
     stats = _drive(snaps, monkeypatch)
 
-    assert stats
-    assert all(s["decode_calls_s"] == 0.0 for s in stats)
-    assert max(s["gen_tok_s"] for s in stats) == 5.0
-
-
-def test_the_prompt_counter_is_not_charged_the_decode_that_preceded_it(monkeypatch):
-    """The prompt counter must NOT get the generation counter's treatment.
-
-    The two are updated differently, which is the whole reason only one of them needs
-    correcting. tokens_predicted_total is flushed once per generation, from the
-    callback installed beside slot.reset(); prompt_tokens_total is flushed from
-    metrics_post_decode() on every decode step. So a prompt delta already covers the
-    tick it is read in, and charging it the accumulated busy time would divide a
-    prefill by the decode that ran before it: measured at 33.3 tok/s for a prefill
-    whose real rate is 200.
-
-    Trace: one 2000-token prefill, five ticks of decode with the slot held and the
-    prompt counter flat, then a second identical prefill."""
-    snaps = [_busy(prompt = 0.0)] + [_busy(prompt = 2000.0)] * 6 + [_busy(prompt = 4000.0)]
-    stats = _drive(snaps, monkeypatch)
-
-    rates = [s["prompt_tok_s"] for s in stats]
-    # 2000 tokens in one 10 s tick, both times, whatever happened in between.
-    assert [r for r in rates if r] == [200.0, 200.0], rates
+    assert stats and all(s["gen_tok_s"] == 0.0 for s in stats)
 
 
 def test_the_llama_cpp_gauge_still_wins_when_it_reports(monkeypatch):
@@ -239,6 +218,7 @@ def test_the_llama_cpp_gauge_still_wins_when_it_reports(monkeypatch):
         },
         {
             "tokens_predicted_total": 1837.0,
+            "tokens_predicted_seconds_total": 80.0,
             "prompt_tokens_total": 0.0,
             "predicted_tokens_seconds": 24.6,
             "requests_processing": 1.0,
