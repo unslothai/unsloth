@@ -586,7 +586,11 @@ def reclaim_replaced_gguf_variant(
     }
 
 
-def _loaded_id_matches_repo(loaded_id: str, repo_id: str, cache_path: Optional[str] = None) -> bool:
+def _loaded_id_matches_repo(
+    loaded_id: str,
+    repo_id: str,
+    cache_path: Optional[str] = None,
+) -> bool:
     """Match a resident path in the targeted copy; an unresolved repo ID blocks all copies."""
     rid = repo_id.lower()
     lid = loaded_id.lower()
@@ -640,7 +644,9 @@ _LOAD_STATE_UNVERIFIABLE_DETAIL = (
 
 
 def _llama_cpp_blocks_delete(
-    repo_id: str, variant: Optional[str], cache_path: Optional[str] = None
+    repo_id: str,
+    variant: Optional[str],
+    cache_path: Optional[str] = None,
 ) -> bool:
     """Whether the llama.cpp backend holds *repo_id* (/variant). Acquiring fails open (import error means nothing loaded); reading load state is unguarded so a raise propagates and the caller fails closed rather than delete a live model."""
     try:
