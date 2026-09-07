@@ -3664,9 +3664,8 @@ def _uv_cache_has_packages(cache_dir: Path) -> bool:
             if entry.name.startswith(_UV_CACHE_BUCKETS) and entry.is_dir()
         ]
     except (OSError, ValueError):
-        # ValueError, not just OSError: a marker someone edited to hold an embedded NUL
-        # builds a Path fine and then raises out of scandir, which would abort an update
-        # over a file this code is meant to treat as advisory.
+        # ValueError too: an embedded NUL builds a Path fine and then raises out of
+        # scandir, aborting an update over a file that is only advisory.
         return False
     for bucket in buckets:
         for _root, _dirs, files in os.walk(bucket):
@@ -3723,15 +3722,13 @@ def _uv_default_cache_dir(cwd: Optional[Path] = None) -> Optional[Path]:
     if result.returncode != 0:
         # A malformed uv.toml beside the CALLER fails this, though setup.sh runs uv elsewhere.
         return _uv_platform_cache_dir()
-    # Blank lines are dropped, the path itself is not stripped: a directory name may
-    # legitimately begin or end with a space, and uv reports it verbatim.
+    # Not stripped: a name may end in a space, and uv reports it verbatim.
     lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
     if not lines:
         return _uv_platform_cache_dir()
-    # uv answers a relative cache-dir with the relative spelling, resolved against its own
-    # working directory. UV_WORKING_DIR may itself be relative, and uv resolves that after
-    # starting where this probe started, not where the update was launched from.
-    # No expanduser: uv makes a literal "~" directory, not one in $HOME.
+    # uv answers a relative cache-dir with the relative spelling, against its own working
+    # directory, and resolves a relative UV_WORKING_DIR after starting where this probe
+    # did. No expanduser: uv makes a literal "~" directory, not one in $HOME.
     probe_cwd = str(cwd) if cwd is not None else os.getcwd()
     working = os.environ.get("UV_WORKING_DIR")
     base = os.path.join(probe_cwd, working) if working else probe_cwd
@@ -3753,10 +3750,9 @@ def _recorded_install_uv_cache() -> Optional[Path]:
         )
     except OSError:
         return None
-    # One record, one trailing delimiter, and everything before it is the path: splitting
-    # on lines would take a POSIX path containing a newline for several records and keep
-    # the last fragment. Not otherwise stripped, since a path may end or begin with a
-    # space; blank still means unset.
+    # One record, one trailing delimiter, everything before it the path: splitting on
+    # lines would take a POSIX path containing a newline for several. Not otherwise
+    # stripped, since a path may end or begin with a space; blank means unset.
     if recorded.endswith("\n"):
         recorded = recorded[:-1]
     if recorded.endswith("\r"):
@@ -3785,11 +3781,9 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
         return
     stage_root = (os.environ.get(_studio_stage.STAGE_ROOT_ENV) or "").strip()
     if stage_root:
-        # STUDIO_HOME names the LIVE install here and the stage can still be rejected, so
-        # the choice is parked in the stage and _studio_stage.stage promotes it once the
-        # stage is accepted. Writing the live marker now would record an update that may
-        # never activate; not writing at all left desktop-only installs, which never take
-        # the direct path, permanently on the content fallback this exists to replace.
+        # STUDIO_HOME names the LIVE install here and the stage can still be rejected,
+        # so the choice is parked and _studio_stage.stage promotes it on acceptance.
+        # Dropping it instead left desktop-only installs on the content fallback.
         marker = Path(stage_root) / _studio_stage.UV_CACHE_MARKER
     else:
         marker = STUDIO_HOME / "cache" / "uv-cache-dir"
@@ -3797,8 +3791,8 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
         marker.parent.mkdir(parents = True, exist_ok = True)
         # Unlinked first: a write follows a symlink and truncates its target.
         marker.unlink(missing_ok = True)
-        # fsencode: an undecodable path arrives as surrogates, and encoding those raises
-        # UnicodeEncodeError, which is not an OSError.
+        # fsencode: an undecodable path arrives as surrogates, and encoding those
+        # raises UnicodeEncodeError, which is not an OSError.
         marker.write_bytes(os.fsencode(f"{chosen}\n"))
     except (OSError, ValueError):
         # ValueError covers UnicodeError, for a path fsencode still cannot render.
@@ -3815,13 +3809,10 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
     if recorded is not None and _uv_cache_has_packages(recorded):
         # Only while it holds something: a marker for an emptied cache loses to a warm one.
         return {**(env or os.environ), "UV_CACHE_DIR": str(recorded)}
-    # No marker, so this install predates it and content is all there is. _setup_cache_env
-    # mkdirs the Studio cache empty on every server start, so an empty one says nothing;
-    # and a warm one says less than it looks, because install.sh:705 points the running
-    # backend there even in shared mode, so a single on-demand wheel warms it. Where both
-    # are warm the two are indistinguishable, and uv's default is what such an install has
-    # been updating from all along: preferring the Studio cache there would be a new way
-    # for an offline update to fail, on an install that cannot record its way out.
+    # No marker, so this install predates it and content is all there is, and content
+    # cannot settle it: install.sh:705 points the running backend at the Studio cache even
+    # in shared mode, so one on-demand wheel warms it. uv's default is what such an install
+    # has been updating from all along, and it cannot record its way out of a wrong guess.
     default_cache = _uv_default_cache_dir(cwd)
     if default_cache is not None and _uv_cache_has_packages(default_cache):
         # Named, not re-resolved: a blank inherited value reaches uv as
@@ -3844,10 +3835,9 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(1)
 
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
-    # Where setup will run uv from, which is not the same answer on both platforms.
-    # setup.sh changes into its own directory first (studio/setup.sh:1788); setup.ps1
-    # never changes directory, it addresses everything through $PSScriptRoot and hands
-    # install_python_stack.py the cwd it inherited from here (studio/setup.ps1:5191).
+    # Where setup will run uv from, which differs by platform: setup.sh changes into its
+    # own directory (setup.sh:1788), setup.ps1 never does and hands install_python_stack.py
+    # the cwd it inherited from here (setup.ps1:5191).
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
 

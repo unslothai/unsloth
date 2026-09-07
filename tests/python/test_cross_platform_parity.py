@@ -1181,10 +1181,9 @@ class TestInstallUvCacheRootParity:
         assert 'case "$UV_CACHE_DIR" in' in sh
         assert "IsPathRooted" in ps1
 
-        # The reset must precede both consumers of the snapshot, the selector that writes
-        # the marker and every Exit-InstallFailure that restores it. Under `irm | iex` the
-        # script scope is the caller's session, so a second install failing early would
-        # otherwise revert the first one's marker. Only the entry point is ahead of both.
+        # The reset must precede both consumers, the selector that writes the marker and
+        # every Exit-InstallFailure that restores it. Under `irm | iex` the script scope is
+        # the caller's session, so only the entry point is ahead of both.
         entry = ps1.index("function Install-UnslothStudio {")
         # The call form, not the bare name, which also appears in prose above.
         first_consumer = min(
@@ -1242,14 +1241,12 @@ class TestInstallUvCacheRootParity:
                 "function Set-StudioUvCacheEnvironment"
             )
         ]
-        # The custom branch resolves through the same helper as the marker writer, or the
-        # two disagree the moment UV_WORKING_DIR is set: it anchored to $PWD alone.
+        # One helper for both, or they disagree the moment UV_WORKING_DIR is set.
         assert ps1.count("Resolve-StudioUvCachePath -Cache") == 2, ps1.count(
             "Resolve-StudioUvCachePath -Cache"
         )
         assert "$env:UV_CACHE_DIR = Resolve-StudioUvCachePath -Cache $env:UV_CACHE_DIR" in ps1
-        # Both sides read UV_WORKING_DIR to resolve a relative cache, and both anchor a
-        # relative one to the directory the installer was run from.
+        # And both sides consult UV_WORKING_DIR, itself resolvable against the run dir.
         assert "UV_WORKING_DIR" in sh[sh.index("_absolutize_uv_cache_dir() {") :][:600]
         assert "UV_WORKING_DIR" in ps1[ps1.index("function Resolve-StudioUvCachePath") :][:800]
         for start in _all_indexes(ps1_marker, "Remove-Item -LiteralPath $markerFile"):
@@ -1259,10 +1256,8 @@ class TestInstallUvCacheRootParity:
             ]
             assert "Get-Item -LiteralPath $markerFile -Force" in window, window
 
-        # Read as UTF-8, not the active ANSI code page: the update writes this file
-        # BOM-less UTF-8, and Windows PowerShell 5.1 would decode a non-ASCII path into
-        # mojibake and restore that. Asserted on the source, since pwsh 7 here already
-        # defaults to UTF-8 and would pass the round trip either way.
+        # UTF-8, not the ANSI code page: the update writes this file BOM-less UTF-8 and
+        # 5.1 would restore mojibake. Asserted on source, since pwsh 7 passes either way.
         read_back = ps1_marker.index("Get-Content -LiteralPath $markerFile")
         assert "-Encoding UTF8" in ps1_marker[read_back : read_back + 220], ps1_marker[read_back:]
 

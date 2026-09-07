@@ -250,10 +250,8 @@ def test_a_studio_mode_install_wins_over_a_cold_default(monkeypatch, tmp_path, c
 
 def test_two_warm_caches_and_no_marker_keep_uv_s_default(monkeypatch, tmp_path, caches):
     """An install that predates the marker cannot say which cache it used, and content
-    cannot tell either: install.sh:705 points the running backend at the Studio cache even
-    in shared mode, so one on-demand wheel warms it. uv's default is what such an install
-    has been updating from all along, and preferring the Studio cache here would be a new
-    way for an offline update to fail on an install that cannot record its way out."""
+    cannot tell either: one on-demand wheel warms the Studio cache (install.sh:705). uv's
+    default is what it has been updating from, and it cannot record its way out."""
     studio_cache, default_cache = caches
     _fill(studio_cache)
     _fill(default_cache)
@@ -443,9 +441,8 @@ def test_a_relative_marker_is_resolved_before_it_is_handed_over(monkeypatch, tmp
 def test_a_recorded_path_containing_a_newline_survives_the_round_trip(
     monkeypatch, tmp_path, caches
 ):
-    """A newline is legal in a POSIX path and uv reports one verbatim. Read line by line,
-    the record looked like several and only the last fragment survived, so the update
-    treated a warm cache as absent and redirected uv somewhere else."""
+    """A newline is legal in a POSIX path. Read line by line the record looked like
+    several, only the last fragment survived, and a warm cache read as absent."""
     studio = _studio()
     studio_cache, _default = caches
     _fill(studio_cache)
@@ -523,9 +520,9 @@ def test_a_caller_supplied_cache_is_never_promoted_to_the_marker(monkeypatch, tm
 
 
 def test_a_staged_update_parks_its_choice_in_the_stage(monkeypatch, tmp_path, caches):
-    """STUDIO_HOME names the LIVE install even in a staged child, and the stage can still
-    be rejected, so the choice waits in the stage for _studio_stage.stage to promote it.
-    Dropping it instead left desktop-only installs on the content fallback forever."""
+    """STUDIO_HOME names the LIVE install even in a staged child and the stage can still
+    be rejected, so the choice waits there for stage() to promote it. Dropping it left
+    desktop-only installs on the content fallback forever."""
     studio = _studio()
     _studio_cache, default_cache = caches
     _fill(default_cache)
@@ -570,9 +567,9 @@ def test_the_backfill_replaces_a_symlink_rather_than_its_target(monkeypatch, tmp
 
 @pytest.mark.skipif(os.name != "posix", reason = "POSIX filesystem byte semantics")
 def test_a_cache_path_that_is_not_utf_8_is_recorded_and_read_back(monkeypatch, tmp_path):
-    """An undecodable POSIX path reaches Python as surrogates, and encoding those raises
-    UnicodeEncodeError, which is not an OSError and escaped the best-effort handler: an
-    update whose setup had succeeded failed at the end, with its marker already gone."""
+    """An undecodable POSIX path arrives as surrogates, and encoding those raises
+    UnicodeEncodeError, not an OSError, so it escaped the best-effort handler and failed
+    an update whose setup had succeeded, with its marker already gone."""
     studio = _studio()
     weird = (tmp_path / os.fsdecode(b"caf\xe9-cache")).resolve()
     _fill(weird)
@@ -629,10 +626,9 @@ def test_the_probe_asks_from_the_directory_setup_will_ask_from(monkeypatch, tmp_
 
 
 def test_the_windows_handoff_probes_from_the_directory_it_hands_the_child(monkeypatch, tmp_path):
-    """setup.ps1 never changes directory: it addresses everything through $PSScriptRoot and
-    hands install_python_stack.py the cwd it inherited (studio/setup.ps1:5191). Probing in
-    the script's directory there would answer for a configuration the child never sees, and
-    that answer is then forced on it through UV_CACHE_DIR."""
+    """setup.ps1 never changes directory: it hands install_python_stack.py the cwd it
+    inherited (setup.ps1:5191), so probing the script's directory would answer for a
+    configuration the child never sees, and that answer is forced on it."""
     studio = _studio()
     repo_root = tmp_path / "repo"
     (repo_root / "studio").mkdir(parents = True)

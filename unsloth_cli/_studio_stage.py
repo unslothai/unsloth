@@ -14,9 +14,9 @@ from typing import Callable, Optional
 
 STAGE_DIR_NAME = ".update-stage"
 STAGE_ROOT_ENV = "UNSLOTH_STUDIO_STAGE_ROOT"
-# Where a staged update parks the uv cache it used. The live marker is only written once
-# the stage has been accepted, so an update that never activates cannot redirect the
-# environment it did not replace.
+# Where a staged update parks the uv cache it used. The live marker is written only once
+# the stage is accepted, so an update that never activates cannot redirect the environment
+# it did not replace.
 UV_CACHE_MARKER = "uv-cache-dir"
 SHELL_VERSION_ENV = "UNSLOTH_TAURI_SHELL_VERSION"
 READY_MARKER = "READY.json"
@@ -301,8 +301,7 @@ def stage(
         version = installed_version(root / VENV_NAME, env)
         shell_version = (os.environ.get(SHELL_VERSION_ENV) or "").strip() or None
         write_ready_marker(root, version, shell_version)
-        # After verification, not before: until the probes pass there is no accepted
-        # stage whose cache is worth pointing the live install at.
+        # After verification: until the probes pass there is no accepted stage.
         promote_uv_cache_marker(root, studio_home)
     except BaseException:
         discard(root)

@@ -787,8 +787,8 @@ _VENV_ROLLBACK_ACTIVE=false
 _UV_MARKER_SAVED=false
 _UV_MARKER_EXISTED=false
 _UV_MARKER_PREVIOUS=""
-# One flag for both rollbacks. Clearing them separately leaves a window either way round:
-# a signal between the two restores one half of a committed install and reverts the other.
+# One flag for both rollbacks: two leave a window either way round, where a signal
+# restores half a committed install.
 _STUDIO_INSTALL_COMMITTED=false
 
 _start_studio_venv_replacement() {
@@ -861,8 +861,7 @@ _discard_venv_for_recreate() {  # venv dir
 }
 
 _restore_studio_venv_replacement() {
-    # The same flag the marker restore consults, so a signal landing mid-commit cannot
-    # put one half of a committed install back and keep the other.
+    # The flag the marker restore consults too, so a signal mid-commit cannot split them.
     [ "${_STUDIO_INSTALL_COMMITTED:-false}" = true ] && return 0
     [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
     # -e/-L, not -d: a rollback holds whatever _dir_has_entries called occupied,
@@ -925,9 +924,8 @@ _prune_stale_studio_venv_rollbacks() {
 }
 
 _commit_studio_venv_replacement() {
-    # First and alone, because a signal can land between any two statements: this one
-    # assignment is what both restores consult, so they cannot disagree about whether
-    # this install committed. A first install rolls nothing back and still commits.
+    # First and alone, because a signal can land between any two statements. A first
+    # install rolls nothing back and still commits.
     _STUDIO_INSTALL_COMMITTED=true
     _UV_MARKER_SAVED=false
     if [ "$_VENV_ROLLBACK_ACTIVE" = true ]; then
