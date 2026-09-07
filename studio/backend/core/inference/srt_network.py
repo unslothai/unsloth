@@ -26,7 +26,12 @@ MAX_TRUST_SNAPSHOT_BYTES = 16 * 1024 * 1024
 class TlsTrustSnapshot:
     """Expose selected OpenSSL trust without exposing symlink target directories."""
 
-    def __init__(self, base_environment=None, *, parent_dir=None):
+    def __init__(
+        self,
+        base_environment = None,
+        *,
+        parent_dir = None,
+    ):
         self._base = dict(os.environ if base_environment is None else base_environment)
         self._parent_dir = parent_dir
         self._directory = None
@@ -60,7 +65,7 @@ class TlsTrustSnapshot:
                 if requests_bundle not in roots:
                     roots.append(requests_bundle)
             if capath and os.path.isdir(capath):
-                self._directory = Path(tempfile.mkdtemp(prefix="srt-trust-", dir=self._parent_dir))
+                self._directory = Path(tempfile.mkdtemp(prefix = "srt-trust-", dir = self._parent_dir))
                 os.chmod(self._directory, 0o700)
                 count = total = 0
                 with os.scandir(capath) as entries:
@@ -68,7 +73,7 @@ class TlsTrustSnapshot:
                         if not _HASHED_CERT_RE.fullmatch(entry.name):
                             continue
                         # Follow only leaf trust entries; never copy a directory tree.
-                        if not entry.is_file(follow_symlinks=True):
+                        if not entry.is_file(follow_symlinks = True):
                             continue
                         count += 1
                         if count > MAX_CAPATH_ENTRIES:
@@ -176,7 +181,7 @@ class SrtNetworkTransport:
                 raise RuntimeError("network transport cannot be reused")
             self._started = True
             try:
-                self._directory = Path(tempfile.mkdtemp(prefix="srt-net-", dir=self._parent_dir))
+                self._directory = Path(tempfile.mkdtemp(prefix = "srt-net-", dir = self._parent_dir))
                 os.chmod(self._directory, 0o700)
                 # The private listener API validates ownership before enabling
                 # socket authority and takes ownership even when it raises.
@@ -184,16 +189,16 @@ class SrtNetworkTransport:
                 self._socks = self._listener(self.socks_socket_path)
                 self._socks.settimeout(0.1)
                 self._refuser = threading.Thread(
-                    target=self._refuse_socks,
-                    name="srt-socks-refusal",
-                    daemon=True,
+                    target = self._refuse_socks,
+                    name = "srt-socks-refusal",
+                    daemon = True,
                 )
                 self._refuser.start()
                 if self._lifetime is not None:
                     self._watchdog = threading.Thread(
-                        target=self._expire,
-                        name="srt-network-lifetime",
-                        daemon=True,
+                        target = self._expire,
+                        name = "srt-network-lifetime",
+                        daemon = True,
                     )
                     self._watchdog.start()
                 return self
@@ -267,12 +272,12 @@ class SrtNetworkTransport:
         current = threading.current_thread()
         for worker in (self._refuser, self._watchdog):
             if worker is not None and worker is not current and worker.ident is not None:
-                worker.join(timeout=1)
+                worker.join(timeout = 1)
                 if worker.is_alive():
                     raise RuntimeError("SRT network transport worker did not stop")
         if self._directory is not None:
             for name in ("http.sock", "socks.sock"):
-                (self._directory / name).unlink(missing_ok=True)
+                (self._directory / name).unlink(missing_ok = True)
             self._directory.rmdir()
         if proxy_error is not None:
             raise RuntimeError("SRT proxy cleanup failed") from proxy_error
