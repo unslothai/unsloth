@@ -619,12 +619,57 @@ _resolve_studio_destinations() {
     _STUDIO_HOME_REDIRECT=default
 }
 
+# Write down which cache this install used, so a later `unsloth studio update` reuses it
+# instead of guessing from content. Guessing cannot work: in shared mode the launch below
+# repoints the running backend at the Studio cache, so any on-demand install the server
+# does leaves package bytes there and makes an empty Studio cache look like a full one.
+# Best effort, since a read-only or unwritable STUDIO_HOME must not fail the install.
+_record_uv_cache_choice() {
+    _uv_marker_dir="$STUDIO_HOME/cache"
+    _uv_marker_file="$_uv_marker_dir/uv-cache-dir"
+    # Absolute, because the update resolves this against ITS working directory, not the
+    # installer's: `uv cache dir` answers a relative cache-dir with the relative spelling,
+    # and UV_CACHE_DIR itself may be relative.
+    case "$UV_CACHE_DIR" in
+        /*) _uv_marker_value="$UV_CACHE_DIR" ;;
+        *) _uv_marker_value="$PWD/$UV_CACHE_DIR" ;;
+    esac
+    # Remembered so a failed install can put it back: the trap below restores the previous
+    # environment, and a marker naming the cache of an install that never happened would
+    # outlive it and send the next update somewhere that environment never used.
+    if [ "$_UV_MARKER_SAVED" != true ]; then
+        _UV_MARKER_PREVIOUS=$(cat "$_uv_marker_file" 2>/dev/null) || _UV_MARKER_PREVIOUS=""
+        [ -f "$_uv_marker_file" ] && _UV_MARKER_EXISTED=true || _UV_MARKER_EXISTED=false
+        _UV_MARKER_SAVED=true
+    fi
+    (
+        mkdir -p "$_uv_marker_dir" 2>/dev/null &&
+            printf '%s\n' "$_uv_marker_value" > "$_uv_marker_file" 2>/dev/null
+    ) || true
+}
+
+_restore_uv_cache_marker() {
+    [ "$_UV_MARKER_SAVED" = true ] || return 0
+    _uv_marker_file="$STUDIO_HOME/cache/uv-cache-dir"
+    if [ "$_UV_MARKER_EXISTED" = true ]; then
+        printf '%s\n' "$_UV_MARKER_PREVIOUS" > "$_uv_marker_file" 2>/dev/null || true
+    else
+        rm -f "$_uv_marker_file" 2>/dev/null || true
+    fi
+    _UV_MARKER_SAVED=false
+}
+
 _configure_uv_cache() {
     _uv_studio_cache="$STUDIO_HOME/cache/uv"
     case "${UV_CACHE_DIR-}" in
         *[![:space:]]*)
             _UV_CACHE_MODE=custom
             export UV_CACHE_DIR
+            # Recorded like any other choice. Leaving the previous install's marker in
+            # place would point later updates at a cache this install never filled, and
+            # a caller who wants the variable to stay one-shot still wins on every run:
+            # a nonblank UV_CACHE_DIR outranks the marker in _with_studio_uv_cache too.
+            _record_uv_cache_choice
             step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
             return 0
             ;;
@@ -634,6 +679,7 @@ _configure_uv_cache() {
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=isolated
         export UV_CACHE_DIR
+        _record_uv_cache_choice
         step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
         return 0
     fi
@@ -687,6 +733,7 @@ _configure_uv_cache() {
         _UV_CACHE_MODE=studio
     fi
     export UV_CACHE_DIR
+    _record_uv_cache_choice
 
     case "$_UV_CACHE_MODE" in
         shared)
@@ -718,6 +765,11 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
+# The uv cache marker travels with the environment: saved before the first write, put
+# back if the environment is rolled back. See _record_uv_cache_choice.
+_UV_MARKER_SAVED=false
+_UV_MARKER_EXISTED=false
+_UV_MARKER_PREVIOUS=""
 
 _start_studio_venv_replacement() {
     _existing_dir="$1"
@@ -886,6 +938,11 @@ _on_install_exit() {
     _status=$?
     if [ "$_status" -ne 0 ]; then
         _restore_studio_venv_replacement
+        # Not inside the venv restore: an install can fail before a replacement is even
+        # in flight (a first install has no previous venv, the ownership guard can refuse
+        # the directory, the backup mv can fail), and that failed attempt must not leave
+        # a marker naming a cache no environment here was built from.
+        _restore_uv_cache_marker
     fi
     _cleanup_install_temporaries
     exit "$_status"
@@ -898,6 +955,7 @@ _on_install_signal() {
     trap - EXIT
     trap '' HUP INT TERM
     _restore_studio_venv_replacement
+    _restore_uv_cache_marker
     _cleanup_install_temporaries
     exit "$_signal_status"
 }

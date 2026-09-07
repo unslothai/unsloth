@@ -1129,6 +1129,80 @@ class TestInstallUvCacheRootParity:
             for metadata_suffix in (".msgpack", ".http", ".rev", ".lock"):
                 assert metadata_suffix in source, metadata_suffix
 
+    def test_both_installers_record_the_cache_they_chose(self):
+        """`unsloth studio update` reads this to reuse the install's cache. Content alone
+        cannot decide it: install.sh:705 points the running backend at the Studio cache
+        even in shared mode, so a runtime install leaves bytes in the losing cache."""
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
+        cli = (REPO_ROOT / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
+
+        for source in (sh, ps1, cli):
+            assert "uv-cache-dir" in source
+
+        # Written after the choice is made, and never for a caller's own UV_CACHE_DIR:
+        # that is one run's business, not a property of the install.
+        assert "_record_uv_cache_choice() {" in sh
+        # Every mode records, custom included: a marker left over from a previous install
+        # would aim later updates at a cache this one never filled.
+        call_sites = [
+            match.start()
+            for match in re.finditer(r"^[ \t]+_record_uv_cache_choice[ \t]*$", sh, re.MULTILINE)
+        ]
+        assert len(call_sites) == 3, f"one call site per mode branch, found {len(call_sites)}"
+        assert (
+            sh.index("_UV_CACHE_MODE=custom")
+            < min(call_sites)
+            < sh.index("_UV_CACHE_MODE=isolated")
+        ), "the custom branch records before it returns"
+        assert ps1.count("Write-StudioUvCacheMarker -StudioRoot") == 2
+        # A marker is a preference, not a requirement, so neither installer may fail on it.
+        marker_write = ps1[
+            ps1.index("function Write-StudioUvCacheMarker") : ps1.index(
+                "function Set-StudioUvCacheEnvironment"
+            )
+        ]
+        # Covers both marker functions, which sit together above the selector.
+        assert "-ErrorAction Stop" not in marker_write
+        assert marker_write.count("-ErrorAction SilentlyContinue") >= 2
+        assert "|| true" in sh[sh.index("_record_uv_cache_choice() {") :]
+        # Windows PowerShell 5.1 writes -Encoding utf8 WITH a BOM, so the reader allows one.
+        assert "utf-8-sig" in cli
+
+        # Absolute on both sides: the update resolves the marker against its own working
+        # directory, and uv answers a relative cache-dir with the relative spelling.
+        assert 'case "$UV_CACHE_DIR" in' in sh
+        assert "IsPathRooted" in ps1
+
+        # The reset must precede the call that writes the marker. Resetting after it
+        # discards the snapshot Write-StudioUvCacheMarker had just taken, which makes
+        # every Restore-StudioUvCacheMarker a no-op and leaves a failed reinstall's
+        # marker in place. Per run because under `irm | iex` the script scope is the
+        # caller's session.
+        selector_call = ps1.index("Set-StudioUvCacheEnvironment -StudioRoot $StudioHome")
+        # The whole triple, in the run of lines directly above the call. Searching the
+        # file instead would match the copy inside Restore-StudioUvCacheMarker and pass
+        # even with the reset moved back below the call.
+        preamble = ps1[:selector_call]
+        for variable in (
+            "$script:StudioUvMarkerSaved = $false",
+            "$script:StudioUvMarkerExisted = $false",
+            "$script:StudioUvMarkerPrevious = $null",
+        ):
+            assert variable in preamble[-600:], variable
+
+        # A failed install restores the marker whether or not a venv replacement was ever
+        # in flight: a first install has no previous venv, and the ownership guard can
+        # refuse the directory before one starts.
+        assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_exit() {") :]
+        assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_signal() {") :]
+        assert ps1.count("Restore-StudioUvCacheMarker -StudioRoot") == 2
+
+        # And the marker travels with the environment: a rolled-back install puts it back.
+        assert "_restore_uv_cache_marker" in sh
+        assert sh.count("_restore_uv_cache_marker") >= 2, "defined but never called"
+        assert "function Restore-StudioUvCacheMarker" in ps1
+
         assert "${XDG_CACHE_HOME}/uv" in sh
         assert "${HOME}/.cache/uv" in sh
         assert 'Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"' in ps1

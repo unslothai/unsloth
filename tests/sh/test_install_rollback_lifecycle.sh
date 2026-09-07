@@ -14,6 +14,20 @@ ok()  { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 ROLLBACK_BLOCK=$(sed -n '/^_VENV_ROLLBACK_DIR=""/,/^trap '\''_on_install_signal 143'\'' TERM$/p' "$INSTALL_SH")
+# _restore_studio_venv_replacement calls this, and it is defined above the block, with the
+# rest of the uv cache selector. Splicing the block without it makes every signal case exit
+# 127 on a command that is present in the real installer.
+# printf, not $'\n': the workflow runs this file with `sh`, whatever the shebang says.
+MARKER_HELPER=$(awk '
+    /^_restore_uv_cache_marker\(\) \{/ { grab = 1 }
+    grab { print }
+    grab && /^}/ { grab = 0 }
+' "$INSTALL_SH")
+if ! printf '%s\n' "$MARKER_HELPER" | grep -q '^_restore_uv_cache_marker() {'; then
+    echo "  FAIL: could not extract _restore_uv_cache_marker from install.sh"
+    exit 1
+fi
+ROLLBACK_BLOCK=$(printf '%s\n%s\n' "$MARKER_HELPER" "$ROLLBACK_BLOCK")
 if ! printf '%s\n' "$ROLLBACK_BLOCK" | grep -q '^_on_install_signal() {'; then
     echo "  FAIL: could not extract rollback lifecycle block from install.sh"
     exit 1
@@ -392,6 +406,41 @@ if grep -A18 '^    function Remove-StudioVenvTreeWithRetry {' "$INSTALL_PS1" \
 else
     bad "Windows rollback deletion still hides failures"
 fi
+
+# A failed install restores the marker even when no venv replacement was ever in flight:
+# a first install has no previous venv, and the ownership guard can refuse the directory
+# before one starts. The marker must not outlive the attempt that wrote it.
+marker_case() {  # label, pre-existing marker value or empty, expect
+    _label="$1"; _pre="$2"; _expect="$3"
+    _dir="$WORK/marker-$_label"
+    mkdir -p "$_dir/cache"
+    [ -n "$_pre" ] && printf '%s\n' "$_pre" > "$_dir/cache/uv-cache-dir"
+    _h="$_dir/harness.sh"
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'rollback_substep() { substep "$@"; }'
+        printf '%s\n' 'C_WARN=""'
+        printf "STUDIO_HOME='%s'\n" "$_dir"
+        printf "VENV_DIR='%s/unsloth_studio'\n" "$_dir"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        printf '%s\n' 'UV_CACHE_DIR="/tmp/this-attempt-cache"'
+        printf '%s\n' '_record_uv_cache_choice'
+        printf '%s\n' 'exit 1'
+    } > "$_h"
+    ( cd "$_dir" && sh "$_h" >/dev/null 2>&1 ) || true
+    if [ -f "$_dir/cache/uv-cache-dir" ]; then _got=$(cat "$_dir/cache/uv-cache-dir"); else _got="<gone>"; fi
+    if [ "$_got" = "$_expect" ]; then
+        ok "$_label"
+    else
+        bad "$_label (expected [$_expect], got [$_got])"
+    fi
+}
+
+echo "=== uv cache marker survives only a successful install ==="
+marker_case "a failed install with no venv replacement restores the previous marker" \
+    "/previous/install/cache" "/previous/install/cache"
+marker_case "a failed first install leaves no marker behind" "" "<gone>"
 
 echo ""
 echo "  PASS: $PASS"

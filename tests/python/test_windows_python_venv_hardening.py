@@ -67,6 +67,7 @@ def _uv_cache_functions(source: str) -> str:
     return "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Write-StudioUvCacheMarker",
             "Set-StudioUvCacheEnvironment",
             "Set-StudioUvCacheForLaunch",
             "Restore-StudioUvCacheEnvironment",
@@ -238,6 +239,7 @@ def test_restoring_a_split_move_never_deletes_the_half_left_behind(tmp_path: Pat
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
+            "Restore-StudioUvCacheMarker",
         )
     )
     target = tmp_path / "unsloth_studio"
@@ -293,6 +295,7 @@ def test_merging_a_split_move_keeps_every_sibling_at_its_own_path(tmp_path: Path
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
+            "Restore-StudioUvCacheMarker",
         )
     )
     target = tmp_path / "unsloth_studio"
@@ -360,6 +363,7 @@ def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: 
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
+            "Restore-StudioUvCacheMarker",
         )
     )
     target = tmp_path / "unsloth_studio"
@@ -685,6 +689,15 @@ try {{
         ) == "keep"
         assert (shared / ".gitignore").read_text(encoding = "utf-8") == "*\n"
 
+    # The marker `unsloth studio update` reads back, so it reuses the cache this install
+    # used instead of re-deriving it from content that a runtime install can change.
+    # utf-8-sig because Windows PowerShell 5.1 writes -Encoding utf8 with a BOM.
+    # Every mode records, custom included: a marker left by a previous install would aim
+    # later updates at a cache this one never filled.
+    marker = studio_root / "cache" / "uv-cache-dir"
+    recorded = marker.read_text(encoding = "utf-8-sig").strip()
+    assert norm(recorded) == norm(str(expected_selected)), case
+
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
@@ -793,3 +806,120 @@ foreach ($root in @($env:TEST_STUDIO_HOME_ONE, $env:TEST_STUDIO_HOME_TWO)) {{
     assert result["Modes"] == ["studio", "studio"]
     assert result["PresentAfter"] is False
     assert result["ProviderPresentAfter"] is False
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("preexisting", [True, False])
+def test_a_rolled_back_install_restores_the_previous_uv_cache_marker(
+    tmp_path: Path, shell: str, preexisting: bool
+):
+    """The marker describes the environment, so it goes back when the environment does.
+
+    install.ps1 restores the previous venv on failure; a marker naming the cache of an
+    install that never happened would outlive the environment it was chosen for.
+    """
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    functions = "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in ("Write-StudioUvCacheMarker", "Restore-StudioUvCacheMarker")
+    )
+    studio_root = tmp_path / "studio root"
+    marker = studio_root / "cache" / "uv-cache-dir"
+    previous = tmp_path / "previous cache"
+    chosen = tmp_path / "chosen cache"
+    if preexisting:
+        marker.parent.mkdir(parents = True)
+        marker.write_text(f"{previous}\n", encoding = "utf-8")
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{functions}
+$script:StudioUvMarkerSaved = $false
+$script:StudioUvMarkerExisted = $false
+$script:StudioUvMarkerPrevious = $null
+Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache $env:TEST_CHOSEN
+$during = Get-Content -LiteralPath $env:TEST_MARKER -Raw
+Restore-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME
+$after = if (Test-Path -LiteralPath $env:TEST_MARKER) {{
+    (Get-Content -LiteralPath $env:TEST_MARKER -Raw).Trim()
+}} else {{ "<gone>" }}
+[pscustomobject]@{{ During = $during.Trim(); After = $after }} | ConvertTo-Json -Compress
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(studio_root)
+    env["TEST_CHOSEN"] = str(chosen)
+    env["TEST_MARKER"] = str(marker)
+    result = json.loads(_run_powershell(shell, script, env).splitlines()[-1])
+
+    norm = lambda value: os.path.normcase(os.path.normpath(value))
+    assert norm(result["During"]) == norm(str(chosen))
+    assert result["After"] == ("<gone>" if not preexisting else result["After"])
+    if preexisting:
+        assert norm(result["After"]) == norm(str(previous))
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_relative_cache_is_recorded_absolute(tmp_path: Path, shell: str):
+    """`uv cache dir` answers a relative cache-dir with the relative spelling, and the
+    update resolves the marker against ITS working directory, not the installer's."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    functions = _extract(r"    function Write-StudioUvCacheMarker \{.*?\n    \}\n", source)
+    studio_root = tmp_path / "studio root"
+    marker = studio_root / "cache" / "uv-cache-dir"
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{functions}
+$script:StudioUvMarkerSaved = $false
+Set-Location -LiteralPath $env:TEST_CWD
+Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache "relcache"
+(Get-Content -LiteralPath $env:TEST_MARKER -Raw).Trim()
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(studio_root)
+    env["TEST_MARKER"] = str(marker)
+    env["TEST_CWD"] = str(tmp_path)
+    recorded = _run_powershell(shell, script, env).splitlines()[-1]
+
+    assert os.path.normcase(os.path.normpath(recorded)) == os.path.normcase(
+        os.path.normpath(str(tmp_path / "relcache"))
+    ), recorded
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_an_unreadable_cache_directory_does_not_abort_the_install(tmp_path: Path, shell: str):
+    """The marker is optional; probing for it must not be able to fail the install.
+
+    install.ps1 runs under $ErrorActionPreference = "Stop", and Test-Path on a path inside
+    a directory the ACL denies throws UnauthorizedAccessException rather than returning
+    $false, so an unsuppressed probe took the whole install down.
+    """
+    if os.name == "nt" or os.geteuid() == 0:
+        pytest.skip("POSIX mode bits do not deny this caller")
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    functions = _extract(r"    function Write-StudioUvCacheMarker \{.*?\n    \}\n", source)
+    studio_root = tmp_path / "studio root"
+    (studio_root / "cache").mkdir(parents = True)
+    (studio_root / "cache").chmod(0o000)
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{functions}
+$script:StudioUvMarkerSaved = $false
+try {{
+    Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache $env:TEST_CACHE
+    "survived"
+}} catch {{
+    "THREW: " + $_.Exception.GetType().Name
+}}
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(studio_root)
+    env["TEST_CACHE"] = str(tmp_path / "chosen")
+    try:
+        assert _run_powershell(shell, script, env).splitlines()[-1] == "survived"
+    finally:
+        (studio_root / "cache").chmod(0o755)

@@ -318,6 +318,12 @@ function Install-UnslothStudio {
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
         }
+        # Not inside that rollback: an install can fail before a replacement is even in
+        # flight, and the failed attempt must not leave a marker naming a cache no
+        # environment here was built from. Defined later, so probed like the line above.
+        if (Get-Command Restore-StudioUvCacheMarker -CommandType Function -ErrorAction SilentlyContinue) {
+            Restore-StudioUvCacheMarker -StudioRoot $StudioHome
+        }
         # Most failures return before the lock try/finally, and under `irm | iex`
         # these variables are the caller's own. Defined later, so probed like above.
         if (Get-Command Restore-StudioTempEnvironment -CommandType Function -ErrorAction SilentlyContinue) {
@@ -1221,6 +1227,71 @@ public static class UnslothStudioFinalPathV2
     }
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
+    # Write down which cache this install used, so a later `unsloth studio update` reuses
+    # it instead of guessing from content. Guessing cannot work: in shared mode
+    # Set-StudioUvCacheForLaunch repoints the running backend at the Studio cache, so any
+    # on-demand install the server does leaves package bytes there and makes an empty
+    # Studio cache look like a full one.
+    # SilentlyContinue rather than Stop: an unwritable Studio root costs the next update a
+    # preference, never the install.
+    function Write-StudioUvCacheMarker {
+        param(
+            [Parameter(Mandatory = $true)][string]$StudioRoot,
+            [Parameter(Mandatory = $true)][string]$Cache
+        )
+        $markerDir = Join-Path $StudioRoot "cache"
+        $markerFile = Join-Path $markerDir "uv-cache-dir"
+        # Absolute, because the update resolves this against ITS working directory, not the
+        # installer's, and both UV_CACHE_DIR and a uv.toml cache-dir may be relative.
+        # $PWD explicitly: GetFullPath alone resolves against the .NET process directory,
+        # which Set-Location does not move, so it would anchor to wherever the process
+        # started rather than to where the installer is running.
+        try {
+            if (-not [System.IO.Path]::IsPathRooted($Cache)) {
+                $Cache = Join-Path $PWD.Path $Cache
+            }
+            $Cache = [System.IO.Path]::GetFullPath($Cache)
+        } catch { }
+        # Remembered so a failed install can put it back: the rollback below restores the
+        # previous environment, and a marker naming the cache of an install that never
+        # happened would outlive it.
+        if (-not $script:StudioUvMarkerSaved) {
+            # SilentlyContinue on the probe too, not just the write: the script runs under
+            # $ErrorActionPreference = "Stop", and Test-Path on a path inside a directory
+            # the ACL denies throws UnauthorizedAccessException rather than returning
+            # $false, which would abort the install over an optional marker.
+            $script:StudioUvMarkerExisted = Test-Path -LiteralPath $markerFile -PathType Leaf `
+                -ErrorAction SilentlyContinue
+            $script:StudioUvMarkerPrevious = if ($script:StudioUvMarkerExisted) {
+                Get-Content -LiteralPath $markerFile -Raw -ErrorAction SilentlyContinue
+            } else { $null }
+            $script:StudioUvMarkerSaved = $true
+        }
+        if (-not (Test-Path -LiteralPath $markerDir -PathType Container -ErrorAction SilentlyContinue)) {
+            New-Item -ItemType Directory -Path $markerDir -Force `
+                -ErrorAction SilentlyContinue | Out-Null
+        }
+        Set-Content -LiteralPath $markerFile -Value $Cache `
+            -Encoding utf8 -ErrorAction SilentlyContinue
+    }
+
+    function Restore-StudioUvCacheMarker {
+        # AllowEmptyString and the guard below: this runs from the rollback, where the
+        # partial branch is outside any try and the other branch's catch reports "could
+        # not restore" for a move that already succeeded. A marker is never worth either.
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$StudioRoot)
+        if (-not $script:StudioUvMarkerSaved) { return }
+        if ([string]::IsNullOrWhiteSpace($StudioRoot)) { return }
+        $markerFile = Join-Path (Join-Path $StudioRoot "cache") "uv-cache-dir"
+        if ($script:StudioUvMarkerExisted) {
+            Set-Content -LiteralPath $markerFile -Value ($script:StudioUvMarkerPrevious).TrimEnd("`r", "`n") `
+                -Encoding utf8 -ErrorAction SilentlyContinue
+        } else {
+            Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
+        }
+        $script:StudioUvMarkerSaved = $false
+    }
+
     function Set-StudioUvCacheEnvironment {
         param(
             [Parameter(Mandatory = $true)][string]$StudioRoot,
@@ -1230,6 +1301,10 @@ public static class UnslothStudioFinalPathV2
         $studioCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
         if (-not [string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
             $script:StudioUvCacheMode = "custom"
+            # Recorded like any other choice, so the previous install's marker cannot send
+            # later updates to a cache this install never filled. A caller keeps control
+            # regardless: a nonblank UV_CACHE_DIR outranks the marker at update time too.
+            Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $env:UV_CACHE_DIR
             step "uv cache" "preserving custom UV_CACHE_DIR ($env:UV_CACHE_DIR)"
             return
         }
@@ -1299,6 +1374,13 @@ public static class UnslothStudioFinalPathV2
             }
         }
         Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $selectedCache
+        # Write down which cache this install used, so a later `unsloth studio update`
+        # reuses it instead of guessing from content. Guessing cannot work: in shared mode
+        # Set-StudioUvCacheForLaunch repoints the running backend at the Studio cache, so
+        # any on-demand install the server does leaves package bytes there and makes an
+        # empty Studio cache look like a full one. Best effort: an unwritable StudioRoot
+        # must not fail the install.
+        Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $selectedCache
 
         switch ($script:StudioUvCacheMode) {
             "shared" {
@@ -3933,6 +4015,14 @@ exit 0
         substep "Install it from https://docs.astral.sh/uv/" "Yellow"
         return (Exit-InstallFailure "uv could not be installed")
     }
+
+    # Before the selector, which is what writes the marker: resetting afterwards would
+    # discard the snapshot it had just taken and make every Restore-StudioUvCacheMarker a
+    # no-op. Reset per run because under `irm | iex` the script scope is the caller's
+    # session, so a second install would otherwise restore the first one's marker.
+    $script:StudioUvMarkerSaved = $false
+    $script:StudioUvMarkerExisted = $false
+    $script:StudioUvMarkerPrevious = $null
 
     Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
 
@@ -6573,6 +6663,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     } finally {
         if (-not $studioVenvReplacementCommitted) {
             Restore-StudioVenvRollback
+            Restore-StudioUvCacheMarker -StudioRoot $StudioHome
         }
     }
 
