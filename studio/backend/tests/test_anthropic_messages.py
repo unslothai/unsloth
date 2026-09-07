@@ -5173,14 +5173,14 @@ def test_the_anthropic_count_refuses_a_promoted_image_rather_than_undercount():
     from routes import inference
 
     count = inspect.getsource(inference.anthropic_count_tokens)
-    refusal = count.index("_messages_have_mcp_image_envelope(openai_messages)")
+    refusal = count.index("_messages_have_promotable_mcp_images(openai_messages)")
     promotion = count.index("_promote_mcp_history_images_async(")
     assert refusal < promotion, (
         "the refusal has to come BEFORE promotion, or the envelope is already "
         "image parts by the time it is checked"
     )
     assert "Cannot count tokens for messages containing images." in count
-    assert "llama_backend.is_vision and _messages_have_mcp_image_envelope" in count, (
+    assert "llama_backend.is_vision and _messages_have_promotable_mcp_images" in count, (
         "a text-only model has the envelope stripped and sends no pixels, so it "
         "must still be counted rather than refused"
     )
@@ -5343,3 +5343,40 @@ def test_promoted_parts_take_the_anthropic_normalizer_off_the_loop():
 
     src = inspect.getsource(inference.anthropic_messages)
     assert "if _anthropic_has_image or _anthropic_replayed_image_parts:" in src
+
+
+def test_the_anthropic_count_refusal_is_name_aware():
+    """The names are stamped from the calls right before the check, so a client tool
+    whose output merely ends in a valid envelope -- never promoted, suffix stripped --
+    must not turn a countable prompt into a 400."""
+    import inspect
+    import json
+
+    from core.inference import mcp_images
+    from routes import inference
+    from routes.inference import _messages_have_promotable_mcp_images, _named_anthropic_tool_results
+
+    src = inspect.getsource(inference.anthropic_count_tokens)
+    assert "_messages_have_promotable_mcp_images(openai_messages)" in src
+    assert "_messages_have_mcp_image_envelope(openai_messages)" not in src
+
+    envelope = json.dumps([{"data": "QUJD", "mimeType": "image/png"}])
+
+    def _translated(tool):
+        return _named_anthropic_tool_results(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "toolu_0", "type": "function", "function": {"name": tool, "arguments": "{}"}}],
+                },
+                {"role": "tool", "tool_call_id": "toolu_0", "content": "out\n" + mcp_images.SENTINEL + envelope},
+            ]
+        )
+
+    assert not _messages_have_promotable_mcp_images(_translated("read_file"))
+    assert _messages_have_promotable_mcp_images(_translated("mcp__shot__capture"))
+    # Unnamed and uncorrelated is still legacy history, and still refused.
+    assert _messages_have_promotable_mcp_images(
+        [{"role": "tool", "tool_call_id": "x", "content": "out\n" + mcp_images.SENTINEL + envelope}]
+    )

@@ -7932,6 +7932,26 @@ def _messages_mention_mcp_images(messages) -> bool:
     return False
 
 
+def _messages_have_promotable_mcp_images(messages) -> bool:
+    """The exact envelope check, minus results generation would never promote.
+
+    For the refusals: a named non-MCP result has its suffix stripped and sends no
+    pixel, so refusing a count on it turned away a countable prompt. Callers stamp
+    names from the calls first (_named_anthropic_tool_results), so an unnamed result
+    here really is one nothing can attribute, and legacy history keeps its trust.
+    """
+    for message in messages or ():
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str) or not mcp_images_sentinel_in(content):
+            continue
+        if _names_a_non_mcp_tool(message):
+            continue
+        return True
+    return False
+
+
 def _request_has_replayed_mcp_images(payload) -> bool:
     return _messages_mention_mcp_images(payload.messages)
 
@@ -31065,7 +31085,10 @@ async def anthropic_count_tokens(
     # undercount here is worse than no answer -- it is what a client sizes its
     # context against. Checked on the translated list because an Anthropic envelope
     # arrives nested in a tool_result block, not as a role="tool" string.
-    if llama_backend.is_vision and _messages_have_mcp_image_envelope(openai_messages):
+    # Name-aware, since the names were just stamped: a client tool whose output
+    # merely ends in a valid envelope is never promoted, and refusing on it turned
+    # away a countable prompt with a 400.
+    if llama_backend.is_vision and _messages_have_promotable_mcp_images(openai_messages):
         raise HTTPException(
             status_code = 400,
             detail = "Cannot count tokens for messages containing images.",
