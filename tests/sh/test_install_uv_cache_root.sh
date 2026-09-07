@@ -347,6 +347,30 @@ WORKDIR
         bad "$shell: recorded [$_wd], wanted [$CASE/uvdir/relcache]"
     fi
 
+    # A relative UV_WORKING_DIR is itself resolved against the directory the installer ran
+    # from, so recording "work/cache" would name somewhere else at update time.
+    rm -rf "$ROOT/cache"
+    REL_PROBE="$WORK/$shell relworkdir.sh"
+    {
+        printf '%s\n' "$HELPERS"
+        cat <<RELWD
+step() { :; }
+STUDIO_HOME='$ROOT'
+_UV_MARKER_SAVED=false
+cd '$CASE'
+UV_WORKING_DIR='uvdir'; export UV_WORKING_DIR
+UV_CACHE_DIR='relcache'
+_record_uv_cache_choice
+cat '$MARKER'
+RELWD
+    } > "$REL_PROBE"
+    _rw=$($shell "$REL_PROBE")
+    if [ "$_rw" = "$CASE/uvdir/relcache" ]; then
+        ok "$shell: a relative UV_WORKING_DIR is anchored before the cache is appended"
+    else
+        bad "$shell: recorded [$_rw], wanted [$CASE/uvdir/relcache]"
+    fi
+
 
     # The marker describes the environment, so a rolled-back install puts it back. The
     # installer restores the previous venv on failure; a marker naming the cache of an

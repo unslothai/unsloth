@@ -1257,7 +1257,12 @@ public static class UnslothStudioFinalPathV2
         try {
             if (-not [System.IO.Path]::IsPathRooted($Cache)) {
                 $base = if (-not [string]::IsNullOrWhiteSpace($env:UV_WORKING_DIR)) {
-                    $env:UV_WORKING_DIR
+                    # May itself be relative, and uv resolves it against the directory the
+                    # installer was run from. GetFullPath below would use the .NET process
+                    # directory instead, which Set-Location does not move.
+                    if ([System.IO.Path]::IsPathRooted($env:UV_WORKING_DIR)) {
+                        $env:UV_WORKING_DIR
+                    } else { Join-Path $PWD.Path $env:UV_WORKING_DIR }
                 } else { $PWD.Path }
                 $Cache = Join-Path $base $Cache
             }

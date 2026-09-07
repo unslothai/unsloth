@@ -633,7 +633,16 @@ _record_uv_cache_choice() {
     # $PWD would name a directory uv never used.
     case "$UV_CACHE_DIR" in
         /*) _uv_marker_value="$UV_CACHE_DIR" ;;
-        *) _uv_marker_value="${UV_WORKING_DIR:-$PWD}/$UV_CACHE_DIR" ;;
+        *)
+            # UV_WORKING_DIR may itself be relative, and uv resolves it against the
+            # directory the installer was run from before it resolves the cache.
+            _uv_marker_base="${UV_WORKING_DIR:-$PWD}"
+            case "$_uv_marker_base" in
+                /*) ;;
+                *) _uv_marker_base="$PWD/$_uv_marker_base" ;;
+            esac
+            _uv_marker_value="$_uv_marker_base/$UV_CACHE_DIR"
+            ;;
     esac
     # Remembered so a failed install can put it back: the traps restore the previous
     # environment, and a marker naming the cache of an install that never happened would
@@ -918,6 +927,9 @@ _commit_studio_venv_replacement() {
         _rollback_to_remove="$_VENV_ROLLBACK_DIR"
         # The new environment is already committed. Clear the restore state
         # before deletion so an interrupt cannot replace it with a half-deleted backup.
+        # The marker goes with it, and in the same breath: a signal landing between the
+        # two would keep the committed environment and revert the marker it came with.
+        _UV_MARKER_SAVED=false
         _VENV_ROLLBACK_ACTIVE=false
         _VENV_ROLLBACK_DIR=""
         # Same shapes as the restore, or such a backup is never cleaned up.
@@ -931,10 +943,6 @@ _commit_studio_venv_replacement() {
     # Only prune older orphaned copies after the replacement has succeeded, so
     # an interrupted install never discards the last known-good environment.
     _prune_stale_studio_venv_rollbacks
-    # The marker came with this environment, so it is committed too: a later failure
-    # rolls nothing back, and reverting the marker would leave the installed environment
-    # pointing at the cache of the one before it.
-    _UV_MARKER_SAVED=false
 }
 
 _cleanup_install_temporaries() {

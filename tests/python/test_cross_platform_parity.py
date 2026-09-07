@@ -1201,7 +1201,15 @@ class TestInstallUvCacheRootParity:
         ]
         commit_start = sh.index("_commit_studio_venv_replacement() {")
         commit_body = sh[commit_start : sh.index("\n}", commit_start)]
-        assert "_UV_MARKER_SAVED=false" in commit_body
+        # Before the venv flag, not merely inside the function: a signal landing between
+        # the two would keep the committed environment and revert the marker it came with.
+        assert commit_body.index("_UV_MARKER_SAVED=false") < commit_body.index(
+            "_VENV_ROLLBACK_ACTIVE=false"
+        )
+        ps1_commit = ps1[ps1.index("function Complete-StudioVenvRollback") :][:900]
+        assert ps1_commit.index("$script:StudioUvMarkerSaved = $false") < ps1_commit.index(
+            "$script:StudioVenvRollbackActive = $false"
+        )
 
         # A failed install restores the marker whether or not a venv replacement was ever
         # in flight: a first install has no previous venv, and the ownership guard can
