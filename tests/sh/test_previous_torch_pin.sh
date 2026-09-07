@@ -93,10 +93,15 @@ echo "=== the preservation probe reads off disk, not through the interpreter ===
 # `import torch` can block forever on a wedged Intel driver, and this probe runs before
 # setup.sh's bounded ones. Executed, not grepped: the stub interpreter records being called.
 _PREVBLK=$(mktemp)
-awk '/^    _PREV_TORCH_VER=""$/{on=1} on{print} on && /tail -n 1 \|\| true\)$/{exit}' \
-    "$INSTALL_SH" > "$_PREVBLK"
+# The interpreter fallback is wrapped in _run_bounded, so the helper has to come along too.
+{
+    sed -n '/^_run_bounded()/,/^}/p' "$INSTALL_SH"
+    awk '/^    _PREV_TORCH_VER=""$/{on=1} on{print} on && /tail -n 1 \|\| true\)$/{exit}' \
+        "$INSTALL_SH"
+} > "$_PREVBLK"
 grep -q 'version.py' "$_PREVBLK" || { echo "FATAL: probe block not extracted"; exit 1; }
 grep -q 'import torch' "$_PREVBLK" || { echo "FATAL: extraction lost the fallback"; exit 1; }
+grep -q '^_run_bounded()' "$_PREVBLK" || { echo "FATAL: could not extract _run_bounded"; exit 1; }
 
 _prev_probe() {  # $1 = torch label to put on disk ("" for no version.py)
     _d=$(mktemp -d)

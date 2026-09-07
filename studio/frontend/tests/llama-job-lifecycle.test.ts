@@ -2,10 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  llamaReleaseChanged,
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
+  llamaUpdateToastMessage,
   ownedLlamaSwitchOutcome,
 } from "../src/lib/llama-job-lifecycle.ts";
 
@@ -101,5 +104,96 @@ test("an apply adopts an already-running update but never a switch", () => {
       operation: "update",
     }),
     false,
+  );
+});
+
+test("a backend migration at the installed release reports no version change", () => {
+  // What a fork install at the current release sends: the display tag is normalized and
+  // the latest tag is the full identity, so they differ while naming one release.
+  assert.equal(
+    llamaReleaseChanged(false, "b9596", "b9596-mix-4b653db"),
+    false,
+  );
+  assert.equal(
+    llamaReleaseChanged(true, "b9596", "b10715-mix-86bd2d3"),
+    true,
+  );
+});
+
+test("a release change still needs both tags to name it", () => {
+  assert.equal(llamaReleaseChanged(true, null, "b10715-mix-86bd2d3"), false);
+  assert.equal(llamaReleaseChanged(true, "b9596", null), false);
+  assert.equal(llamaReleaseChanged(true, "b9596", "b9596"), false);
+});
+
+test("the banner asks the helper rather than comparing the two tags itself", () => {
+  const banner = readFileSync(
+    new URL("../src/components/llama-update-banner.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(banner, /const versionChanged = llamaReleaseChanged\(/);
+  assert.doesNotMatch(banner, /installedTag !== latestTag/);
+});
+
+test("a backend migration is reported by what the job did, not by the version fields", () => {
+  // The migration runs at the release already installed, so composing the toast from the
+  // tags announces an update that did not happen.
+  assert.equal(
+    llamaUpdateToastMessage({
+      component: "whisper.cpp",
+      migrating: true,
+      jobMessage: "llama.cpp is now running on vulkan.",
+      updatedTag: "b9596-mix-abc",
+      reloadRequired: false,
+    }),
+    "llama.cpp is now running on vulkan.",
+  );
+
+  assert.equal(
+    llamaUpdateToastMessage({
+      component: "llama.cpp",
+      migrating: true,
+      jobMessage:
+        "llama.cpp could not be moved to vulkan right now, so the existing rocm build was kept. Try again later.",
+      updatedTag: "b9596-mix-abc",
+      reloadRequired: false,
+    }),
+    "llama.cpp could not be moved to vulkan right now, so the existing rocm build was kept. Try again later.",
+  );
+
+  assert.equal(
+    llamaUpdateToastMessage({
+      component: "llama.cpp",
+      migrating: true,
+      jobMessage: "llama.cpp is now running on vulkan.",
+      updatedTag: "b9596-mix-abc",
+      reloadRequired: true,
+    }),
+    "llama.cpp is now running on vulkan. Reload your model to use it.",
+  );
+});
+
+test("an ordinary update still reports the release it moved to", () => {
+  // Control: always deferring to the job would drop the tag from every real update, and
+  // a migration with nothing to say would print blank.
+  assert.equal(
+    llamaUpdateToastMessage({
+      component: "llama.cpp",
+      migrating: false,
+      jobMessage: "llama.cpp is now running on vulkan.",
+      updatedTag: "b9600-mix-def",
+      reloadRequired: true,
+    }),
+    "llama.cpp updated to b9600-mix-def. Reload your model to use it.",
+  );
+  assert.equal(
+    llamaUpdateToastMessage({
+      component: "llama.cpp",
+      migrating: true,
+      jobMessage: "  ",
+      updatedTag: "b9600-mix-def",
+      reloadRequired: false,
+    }),
+    "llama.cpp updated to b9600-mix-def.",
   );
 });

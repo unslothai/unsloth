@@ -281,6 +281,21 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
     return normalized
 
 
+def _argument_fragment(value: Any) -> Any:
+    """A decoded-object ``arguments`` delta as the text it would have streamed as.
+
+    llama-server has shipped a decoded object where a string fragment belongs
+    (ggml-org/llama.cpp#20198). Everything else passes through untouched, so ``None`` still means
+    "announced, no arguments field". Mirrors ``streamedToolCallArguments`` in ``tool-call-arguments.ts``.
+    """
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii = False, separators = (",", ":"))
+        except (TypeError, ValueError, RecursionError):
+            return ""
+    return value
+
+
 def _delta_text(content: Any) -> str:
     """Text of a content delta, whether it is a plain string or content parts.
 
@@ -642,7 +657,7 @@ class _Turn:
             # id would claim the finished call and append to it (issue #9807).
             held = self.by_index.get(key)
             new_function = raw_call.get("function")
-            new_arguments = (
+            new_arguments = _argument_fragment(
                 new_function.get("arguments") if isinstance(new_function, dict) else None
             )
             new_name = new_function.get("name") if isinstance(new_function, dict) else None
@@ -797,8 +812,8 @@ class _Turn:
                         current["function"]["name"] = fragment
                     else:
                         current["function"]["name"] = name_before + fragment
-                if isinstance(function.get("arguments"), str) and not resends_this_call:
-                    current["function"]["arguments"] += function["arguments"]
+                if isinstance(new_arguments, str) and not resends_this_call:
+                    current["function"]["arguments"] += new_arguments
                     if not (isinstance(call_id, str) and call_id):
                         # The id fork cannot see this: an id-less stream has no ids to differ on, so appending glued two
                         # calls into one blob (issue #9807).
@@ -932,7 +947,7 @@ class _Turn:
         # calls. A lone announcement the provider opened is kept (a zero-parameter tool looks like that). Its metadata
         # goes to the call it was mistaken for: Gemini stows a thought signature there and rejects a replay without one.
         for key, waiting in self.pending_extra.items():
-            # No object ever came, so the repeated name was that call's after all and so is the metadata that rode it
+            # No object ever came, so the repeated name was that call's after all and so is the metadata that rode it.
             held = self.by_index.get(key)
             if held is not None and waiting:
                 held["extra_content"] = {**held.get("extra_content", {}), **waiting}
@@ -1705,7 +1720,7 @@ async def stream_with_studio_tools(
                         asyncio.to_thread(_advance_tool_stream, tool_stream, outcome)
                     )
                     # wait, not await: cancelling this coroutine must leave the worker pending so the drain below can
-                    # still join it
+                    # still join it.
                     await asyncio.wait({step_task})
                     event = step_task.result()
                     step_task = None
