@@ -264,6 +264,10 @@ def mlx_repair_in_flight() -> bool:
         return False
     if not is_apple_silicon():
         return False
+    # A --no-torch install declines the self-heal like the kill switch, so no repair is
+    # coming and the verdict settles now instead of after the pre-start grace.
+    if _installed_without_torch():
+        return False
     with _attempted_lock:
         attempted, thread, started_at = _attempted, _repair_thread, _repair_started_at
     if not attempted:
