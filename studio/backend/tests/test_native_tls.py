@@ -212,6 +212,59 @@ def test_activate_overwrites_an_unrecognized_inherited_flag(monkeypatch, inherit
     assert os.environ["UNSLOTH_STUDIO_NATIVE_TLS"] == "1"
 
 
+def test_desktop_default_leaves_uv_on_its_bundled_roots(monkeypatch):
+    import os
+
+    # uv's system certs replace its webpki roots rather than adding to them, so an
+    # unusable SSL_CERT_FILE it ignores today would become a hard failure, and
+    # core/training/worker.py runs uv with no pip fallback.
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "tauri")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    assert os.environ["UV_SYSTEM_CERTS"] == "0"
+    assert os.environ["UV_NATIVE_TLS"] == "0"
+
+
+def test_linux_explicit_opt_in_still_moves_uv(monkeypatch):
+    import os
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", "1")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    assert os.environ["UV_SYSTEM_CERTS"] == "1"
+
+
+def test_a_worker_inherits_the_uv_answer_it_cannot_re_derive(monkeypatch):
+    import os
+
+    # The worker's env is the parent's: the flag normalized to "1" and the marker
+    # popped, so re-deriving would read as an explicit opt-in and flip uv anyway.
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", "1")
+    monkeypatch.setenv("UV_SYSTEM_CERTS", "0")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    assert os.environ["UV_SYSTEM_CERTS"] == "0"
+    assert os.environ["UV_NATIVE_TLS"] == "0"
+
+
+def test_desktop_default_keeps_an_explicit_uv_opt_in(monkeypatch):
+    import os
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "tauri")
+    monkeypatch.setenv("UV_NATIVE_TLS", "1")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    assert os.environ["UV_SYSTEM_CERTS"] == "1"
+
+
 def test_disabled_activation_leaves_the_flag_env_absent(monkeypatch):
     import os
 
