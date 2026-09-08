@@ -4218,6 +4218,7 @@ def test_base_model_candidates_follow_the_loaders_second_rewrite():
 
 
 def test_bad_mappings_are_read_without_importing_the_loader():
+    torch_before = "torch" in sys.modules
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(start, "_BAD_MAPPINGS", None)
     try:
@@ -4228,7 +4229,7 @@ def test_bad_mappings_are_read_without_importing_the_loader():
     assert table and all(isinstance(k, str) and isinstance(v, str) for k, v in table.items())
     # The source spells these as "...".lower(), which only evaluating the literal resolves.
     assert all(key == key.lower() for key in table)
-    assert "torch" not in sys.modules
+    assert ("torch" in sys.modules) == torch_before
 
 
 def test_base_model_candidates_leave_out_repos_the_load_path_cannot_pick():
@@ -4240,6 +4241,9 @@ def test_base_model_candidates_leave_out_repos_the_load_path_cannot_pick():
 
 
 def test_quant_mappers_load_without_importing_unsloth():
+    # Only whether THIS call pulls torch in: another test in the session may have already
+    # imported it, and that is not this function's doing.
+    torch_before = "torch" in sys.modules
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(start, "_QUANT_MAPPERS", None)
     try:
@@ -4248,7 +4252,7 @@ def test_quant_mappers_load_without_importing_unsloth():
         monkeypatch.undo()
 
     assert tables and all(isinstance(table, dict) for table in tables)
-    assert "torch" not in sys.modules
+    assert ("torch" in sys.modules) == torch_before
 
 
 def test_model_download_progress_watches_a_gguf_named_adapters_base(monkeypatch):
