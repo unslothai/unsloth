@@ -981,8 +981,21 @@ def _process_shutdown_latch_is_clear():
     """
     from utils import process_lifetime
 
-    process_lifetime.begin_process_lifecycle()
+    def _reopen():
+        process_lifetime.begin_process_lifecycle()
+        # The ROUTE latch too. Any test that exercises _graceful_shutdown reaches
+        # cancel_pending_loads, which sets it, and only run_server clears it -- so one
+        # such test cancels every load admitted by every test that follows it. That is
+        # how four tunnel-safe tests came to fail in a full run and pass alone.
+        # Guarded: some modules stub httpx/structlog, so this import can fail.
+        try:
+            import importlib
+            importlib.import_module("routes.inference").begin_load_lifecycle()
+        except Exception:
+            pass
+
+    _reopen()
     try:
         yield
     finally:
-        process_lifetime.begin_process_lifecycle()
+        _reopen()
