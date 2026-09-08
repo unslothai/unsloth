@@ -30228,15 +30228,19 @@ class LlamaCppBackend:
         )
 
         if checkpoint.has_resume_point():
-            # Unstripped: the replayed prefix has to match the text already streamed. A
-            # half-parsed tool call is dropped simply by not being appended, which is intended.
+            # Unstripped, as the length continuation is: the replayed prefix has to match
+            # the text already streamed. A half-parsed tool call is dropped by not being
+            # appended, which is intended: nothing executed, so nothing is lost by asking
+            # again.
             partial = {"role": "assistant", "content": content_accum}
             # The thought that preceded the prose is the same turn's work: replayed as prose
-            # alone, the continuation is prompted without it and the model reasons again or
-            # drifts from what it had decided. The merge below joins it to a thought an
-            # earlier pause left trailing, the accumulators resetting each round.
-            if reasoning_accum:
-                partial["reasoning_content"] = reasoning_accum
+            # alone, the continuation is conditioned on a different prefix from the one that
+            # produced the visible answer, and the model reasons again or drifts from what it
+            # had decided. Merged with a thought an earlier pause left trailing, since the
+            # accumulators reset each round and hold only the LATEST attempt's.
+            prior = trailing_assistant_reasoning(conversation)
+            if reasoning_accum or prior:
+                partial["reasoning_content"] = prior + reasoning_accum
             append_assistant_turn(conversation, partial, continue_final_message = True)
             return True
 
@@ -33152,6 +33156,9 @@ class LlamaCppBackend:
                             _call_position = _call_index,
                             _compact_flag = _compact_after_execution,
                             _compacted_tokens = _compacted_turn_tokens,
+                            # Bound for the same reason: an overlapped round's drivers run
+                            # after the loop, and this decides how the room is divided.
+                            _round_parallel = _parallel_round,
                         ):
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
@@ -33304,8 +33311,15 @@ class LlamaCppBackend:
                                     # carry base64, minified JSON or a block of code, which
                                     # run nearer one or two. Under-priced, the first result
                                     # is handed room the later ARGUMENTS already occupy.
+                                    # Sequential rounds only. An overlapped round attaches
+                                    # EVERY call to the assistant message before any driver
+                                    # starts, so the exact count above already renders the
+                                    # whole round's arguments; adding them again charges the
+                                    # later calls twice and hands a valid result a budget
+                                    # short by their size, cut to a window notice the model
+                                    # then retries against.
                                     _pending_args = 0
-                                    if _pending_msgs:
+                                    if _pending_msgs and not _round_parallel:
                                         try:
                                             _pending_args = self.count_chat_tokens(
                                                 _pending_msgs, None, None, strict = True
@@ -33333,7 +33347,7 @@ class LlamaCppBackend:
                                         # `_spent`, so each dividing by its own remainder hands
                                         # out more than the batch has.
                                         len(tool_calls or [])
-                                        if _parallel_round
+                                        if _round_parallel
                                         else (len(_pending) + 1)
                                     )
                                     # A budget at or near zero means the call cannot deliver
@@ -33347,7 +33361,7 @@ class LlamaCppBackend:
                                     if (
                                         _result_budget < _MIN_USEFUL_RESULT_TOKENS
                                         and self._effective_context_length
-                                        and not _parallel_round
+                                        and not _round_parallel
                                     ):
                                         _roomier, _n_roomier = compact_completed_tool_arguments(
                                             conversation, protect_last = 1

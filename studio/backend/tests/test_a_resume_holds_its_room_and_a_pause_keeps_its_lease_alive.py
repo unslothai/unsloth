@@ -296,7 +296,7 @@ class TestAPartialEraseReclaimsNothingGlobal:
         early = source.index('"reclaimed-idle-early"')
         window = source[early : early + 1600]
         assert 'if freed >= int(occupancy.get("idle_tokens") or 0):' in window
-        assert window.index("if freed >= int") < window.index("controller.note_cells_reclaimed()")
+        assert window.index("if freed >= int") < window.index("controller.note_cells_reclaimed(")
 
     def _wired(self, monkeypatch, *, freed, readings):
         controller = PreemptionController(BASE)
