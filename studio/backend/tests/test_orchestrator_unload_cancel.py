@@ -2226,9 +2226,9 @@ def test_start_dispatcher_resumes_after_unload_clears():
     o._unload_pending = False
 
     try:
-        assert (
-            o._start_dispatcher() is True
-        ), "a fresh dispatcher must start once no unload is pending"
+        assert o._start_dispatcher() is True, (
+            "a fresh dispatcher must start once no unload is pending"
+        )
         assert o._dispatcher_thread is not None and o._dispatcher_thread.is_alive()
     finally:
         o._stop_dispatcher()
@@ -2788,9 +2788,9 @@ def test_the_latch_is_scoped_to_a_lifecycle_not_the_process():
 
         inf.begin_load_lifecycle()
         with inf._scoped_load_attempts_lock:
-            assert (
-                inf._loads_shutting_down is False
-            ), "the second session would cancel every load it admitted"
+            assert inf._loads_shutting_down is False, (
+                "the second session would cancel every load it admitted"
+            )
     finally:
         inf.begin_load_lifecycle()
 
@@ -2847,9 +2847,9 @@ def _load_impl_ast():
     import ast
     from pathlib import Path
 
-    src = (
-        Path(__file__).resolve().parent.parent / "routes" / "inference.py"
-    ).read_text(encoding = "utf-8")
+    src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
     fn = next(
         n
         for n in ast.parse(src).body
@@ -2888,9 +2888,7 @@ def test_the_shutdown_latch_is_enforced_in_the_load_impl_not_only_at_the_route()
     )
 
     reads = [
-        n.id
-        for n in ast.walk(impl)
-        if isinstance(n, ast.Name) and n.id == "_loads_shutting_down"
+        n.id for n in ast.walk(impl) if isinstance(n, ast.Name) and n.id == "_loads_shutting_down"
     ]
     assert reads, (
         "_load_model_impl never consults the shutdown latch, so these direct "
@@ -3028,8 +3026,7 @@ def test_shutdown_latches_the_process_before_any_subsystem_is_torn_down():
     fn = next(
         n
         for n in ast.walk(tree)
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and n.name == "_graceful_shutdown"
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "_graceful_shutdown"
     )
     src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
 
@@ -3072,8 +3069,9 @@ def test_a_shutdown_that_begins_during_the_spawn_reaps_the_new_worker():
             return started
 
     try:
-        with mock.patch.object(orch_mod, "_CTX", _Ctx), mock.patch.object(
-            orch_mod, "adopt_pid", lambda pid: None, create = True
+        with (
+            mock.patch.object(orch_mod, "_CTX", _Ctx),
+            mock.patch.object(orch_mod, "adopt_pid", lambda pid: None, create = True),
         ):
             with pytest.raises(RuntimeError, match = "shutting down"):
                 orch._spawn_subprocess({})
@@ -3091,7 +3089,6 @@ def test_a_load_from_the_previous_session_cannot_spawn_into_the_new_one():
     generation cannot answer this.
     """
     from utils import process_lifetime
-
     try:
         admitted = process_lifetime.process_lifecycle_generation()
         assert process_lifetime.is_process_shutting_down(admitted) is False

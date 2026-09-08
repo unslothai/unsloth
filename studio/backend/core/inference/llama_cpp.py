@@ -18461,6 +18461,7 @@ class LlamaCppBackend:
         # advances the per-instance one, and a helper load owns a backend that never
         # gets it, so an embedded second session would otherwise release this load.
         from utils.process_lifetime import process_lifecycle_generation
+
         _process_generation = process_lifecycle_generation()
         self._load_process_generation = _process_generation
         # Serialise the whole load so concurrent /load calls never leave two
@@ -26445,6 +26446,7 @@ class LlamaCppBackend:
         # still spawn a server after the sweep. Read second: the attribute is cheaper
         # and answers for the instance that actually gets torn down.
         from utils.process_lifetime import is_process_shutting_down
+
         if is_process_shutting_down(getattr(self, "_load_process_generation", None)):
             return True
         if load_generation is None:
@@ -26475,6 +26477,7 @@ class LlamaCppBackend:
             # without going through run.py, and the backends a helper load builds for
             # itself are only ever covered by the shared latch.
             from utils.process_lifetime import mark_process_shutting_down
+
             mark_process_shutting_down()
             with self._teardown_lock:
                 with self._spawn_lock:

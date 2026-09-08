@@ -442,6 +442,7 @@ class InferenceOrchestrator:
         # already stopped this subprocess. Checked at the spawn itself so the answer
         # cannot go stale between the check and the child.
         from utils.process_lifetime import is_process_shutting_down
+
         if is_process_shutting_down(getattr(self, "_load_process_generation", None)):
             raise RuntimeError("Studio is shutting down; not starting an inference subprocess")
         from utils.native_path_leases import (
