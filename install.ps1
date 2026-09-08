@@ -1261,6 +1261,18 @@ public static class UnslothStudioFinalPathV2
     # to leave a directory the uninstaller could only identify by guessing from leftovers, and
     # every guess is a chance to delete somebody else's files. Never fatal: an unwritable root
     # fails the install on its own.
+    # A sentinel this list may trust: a regular file, never a link. Test-Path follows a link,
+    # and one planted in somebody's workspace would otherwise short-circuit the emptiness test
+    # and earn that workspace a marker the uninstaller deletes on.
+    function Test-StudioPlainFile {
+        param([string]$Path)
+        try {
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            return (-not $item.PSIsContainer -and
+                (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0))
+        } catch { return $false }
+    }
+
     # Claim only what this run is allowed to take over: in env mode $StudioHome is a user-chosen
     # workspace, so an empty one, or one already carrying an unambiguous Unsloth marker, and
     # nothing else. Claiming ahead of the guard at the venv step and aborting there would leave
@@ -1277,6 +1289,11 @@ public static class UnslothStudioFinalPathV2
     function Write-StudioRootOwnerMarker {
         param([Parameter(Mandatory = $true)][string]$Root)
         try {
+            $marker = Join-Path $Root ".unsloth-studio-owned"
+            # Already ours and already the right shape: leave it. This runs twice per install,
+            # and a run killed between the delete and the write would lose the only proof this
+            # root is ours, which is exactly the interrupted install it exists for.
+            if (Test-StudioPlainFile -Path $marker) { return }
             if (Test-Path -LiteralPath $Root) {
                 $occupied = $true
                 try {
@@ -1285,9 +1302,8 @@ public static class UnslothStudioFinalPathV2
                 } catch { $occupied = $true }
                 $claimable = (
                     $StudioRedirectMode -ne 'env' -or
-                    (Test-Path -LiteralPath (Join-Path $Root ".unsloth-studio-owned") -PathType Leaf) -or
-                    (Test-Path -LiteralPath (Join-Path $Root "unsloth_studio\.unsloth-studio-owned") -PathType Leaf) -or
-                    (Test-Path -LiteralPath (Join-Path $Root "share\studio.conf") -PathType Leaf) -or
+                    (Test-StudioPlainFile -Path (Join-Path $Root "unsloth_studio\.unsloth-studio-owned")) -or
+                    (Test-StudioPlainFile -Path (Join-Path $Root "share\studio.conf")) -or
                     -not $occupied
                 )
                 if (-not $claimable) { return }
@@ -1299,7 +1315,6 @@ public static class UnslothStudioFinalPathV2
             # TARGET, which on a user-chosen root is somebody's file, and the delete can fail on
             # a root we cannot write while that target stays perfectly writable. No marker is
             # fine; the venv writes its own later.
-            $marker = Join-Path $Root ".unsloth-studio-owned"
             Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
             if (Test-Path -LiteralPath $marker) { return }
             [System.IO.File]::WriteAllText($marker, "")

@@ -192,7 +192,9 @@ try {
     $ifns = $iast.FindAll({
             param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]
         }, $true)
-    foreach ($name in @("Test-DirectoryHasEntries", "Write-StudioRootOwnerMarker")) {
+    # Write-StudioRootOwnerMarker calls Test-StudioPlainFile, so both come across or every claim
+    # silently takes the catch on a command-not-found and the block below asserts nothing.
+    foreach ($name in @("Test-StudioPlainFile", "Write-StudioRootOwnerMarker")) {
         $fn = $ifns | Where-Object { $_.Name -eq $name } | Select-Object -First 1
         if (-not $fn) {
             Write-Host "  FAIL  $name not found in install.ps1" -ForegroundColor Red
@@ -222,6 +224,34 @@ try {
     ClaimCheck "somebody's workspace with a venv of their own" $false "env" @("unsloth_studio\pyvenv.cfg")
     # A file called bin\unsloth.exe is any file of that name, and this list authorizes a delete.
     ClaimCheck "a workspace holding a plain bin\unsloth.exe" $false "env" @("bin\unsloth.exe", "notes.txt")
+    # A link named like our marker: Test-Path follows it, which would skip the emptiness test.
+    $lm = Join-Path $tmp "claim-linked-marker"
+    New-Item -ItemType Directory -Path $lm -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $lm "notes.txt") -Value "mine"
+    $lmTarget = Join-Path $tmp "claim-linked-marker-target.txt"
+    Set-Content -LiteralPath $lmTarget -Value "x"
+    $lmLink = $null
+    try {
+        $lmLink = New-Item -ItemType SymbolicLink -Path (Join-Path $lm ".unsloth-studio-owned") -Target $lmTarget -ErrorAction Stop
+    } catch { $lmLink = $null }
+    if ($lmLink) {
+        $StudioRedirectMode = "env"
+        Write-StudioRootOwnerMarker -Root $lm
+        $still = Get-Item -LiteralPath (Join-Path $lm ".unsloth-studio-owned") -Force
+        Check "a linked marker is not read as proof, and is left as it was" `
+            ((($still.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0))
+    } else {
+        Write-Host "  SKIP  no symlink could be created here"
+    }
+    # Called twice per install: the second call must not delete what the first one wrote.
+    $twice = Join-Path $tmp "claim-twice"
+    New-Item -ItemType Directory -Path $twice -Force | Out-Null
+    $StudioRedirectMode = "default"
+    Write-StudioRootOwnerMarker -Root $twice
+    Set-Content -LiteralPath (Join-Path $twice ".unsloth-studio-owned") -Value "first" -NoNewline
+    Write-StudioRootOwnerMarker -Root $twice
+    Check "a second claim leaves a valid marker alone" `
+        ((Get-Content -LiteralPath (Join-Path $twice ".unsloth-studio-owned") -Raw) -eq "first")
     # Test-DirectoryHasEntries is defined further down install.ps1 than the first call site, so
     # the emptiness test has to be inline or the claim silently never happens.
     Check "the claim does not depend on Test-DirectoryHasEntries" `

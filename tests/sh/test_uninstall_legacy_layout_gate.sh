@@ -173,9 +173,19 @@ fi
 # about to refuse would hand somebody's project to the uninstaller.
 echo
 echo "Who the installer is allowed to claim:"
-_fn=$(sed -n '/^_claim_studio_root() {/,/^}/p' "$INSTALL_SH")
+# _claim_studio_root calls _claim_sentinel, so both come across or every claim silently takes
+# the wrong branch on a command-not-found and the block below asserts nothing.
+_fn=""
+for _cname in _claim_sentinel _claim_studio_root; do
+    _cfn=$(sed -n "/^$_cname() {/,/^}/p" "$INSTALL_SH")
+    if [ -z "$_cfn" ]; then
+        echo "  FAIL: could not extract $_cname from $INSTALL_SH"; FAIL=$((FAIL+1)); _fn=""; break
+    fi
+    _fn="$_fn
+$_cfn"
+done
 if [ -z "$_fn" ]; then
-    echo "  FAIL: could not extract _claim_studio_root from $INSTALL_SH"; FAIL=$((FAIL+1))
+    :
 else
     eval "$_fn"
     # name, expected (claimed|left), redirect mode, then paths.
@@ -207,12 +217,62 @@ else
     # a symlink into the venv, and this list authorizes a delete, so it is not on it.
     claim_check "a workspace holding a plain bin/unsloth" left env "bin/unsloth" "notes.txt"
 
+    # A link named like our marker: -f follows it, which would skip the emptiness test and get
+    # the link replaced by a real marker on somebody's workspace.
+    STUDIO_HOME="$_TMP_ROOT/claim_linked_marker"
+    # shellcheck disable=SC2034  # read by the extracted _claim_studio_root
+    VENV_DIR="$STUDIO_HOME/unsloth_studio"
+    _STUDIO_HOME_REDIRECT="env"
+    mkdir -p "$STUDIO_HOME"
+    : > "$_TMP_ROOT/claim_linked_marker_target"
+    : > "$STUDIO_HOME/notes.txt"
+    ln -s "$_TMP_ROOT/claim_linked_marker_target" "$STUDIO_HOME/.unsloth-studio-owned"
+    _claim_studio_root
+    if [ -L "$STUDIO_HOME/.unsloth-studio-owned" ]; then
+        echo "  PASS: a linked marker is not read as proof, and is left as it was"; PASS=$((PASS+1))
+    else
+        echo "  FAIL: a linked marker was replaced with a real one"; FAIL=$((FAIL+1))
+    fi
+
+    # sh -f: the globs are the whole emptiness test, so without expansion every workspace would
+    # read as empty. Driven with globbing off, which is what `sh -f install.sh` gives.
+    STUDIO_HOME="$_TMP_ROOT/claim_noglob"
+    VENV_DIR="$STUDIO_HOME/unsloth_studio"
+    _STUDIO_HOME_REDIRECT="env"
+    mkdir -p "$STUDIO_HOME"
+    : > "$STUDIO_HOME/notes.txt"
+    set -f
+    _claim_studio_root
+    set +f
+    if [ -f "$STUDIO_HOME/.unsloth-studio-owned" ]; then
+        echo "  FAIL: with globbing off, a workspace read as empty and was claimed"; FAIL=$((FAIL+1))
+    else
+        echo "  PASS: globbing off does not make a workspace look empty"; PASS=$((PASS+1))
+    fi
+    case $- in *f*) echo "  FAIL: the scan left globbing disabled"; FAIL=$((FAIL+1)) ;;
+                *) echo "  PASS: and the caller's globbing setting is restored"; PASS=$((PASS+1)) ;;
+    esac
+
+    # Called twice per install: the second call must not unlink a marker the first one wrote.
+    STUDIO_HOME="$_TMP_ROOT/claim_twice"
+    VENV_DIR="$STUDIO_HOME/unsloth_studio"
+    _STUDIO_HOME_REDIRECT="default"
+    mkdir -p "$STUDIO_HOME"
+    _claim_studio_root
+    printf 'first' > "$STUDIO_HOME/.unsloth-studio-owned"
+    _claim_studio_root
+    if [ "$(cat "$STUDIO_HOME/.unsloth-studio-owned")" = "first" ]; then
+        echo "  PASS: a second claim leaves a valid marker alone"; PASS=$((PASS+1))
+    else
+        echo "  FAIL: a second claim rewrote a valid marker"; FAIL=$((FAIL+1))
+    fi
+
     # A root we cannot write, holding a link to a target we can: rm fails, and writing anyway
     # would truncate the target. No marker is the correct outcome, not a truncated file.
     STUDIO_HOME="$_TMP_ROOT/claim_ro_root"
     # shellcheck disable=SC2034  # read by the extracted _claim_studio_root
     VENV_DIR="$STUDIO_HOME/unsloth_studio"
-    _STUDIO_HOME_REDIRECT=default
+    _STUDIO_HOME_REDIRECT="default"
     mkdir -p "$STUDIO_HOME"
     printf 'precious' > "$_TMP_ROOT/claim_ro_target"
     ln -s "$_TMP_ROOT/claim_ro_target" "$STUDIO_HOME/.unsloth-studio-owned"
@@ -229,7 +289,7 @@ else
     STUDIO_HOME="$_TMP_ROOT/claim_symlink"
     # shellcheck disable=SC2034  # read by the extracted _claim_studio_root
     VENV_DIR="$STUDIO_HOME/unsloth_studio"
-    _STUDIO_HOME_REDIRECT=default
+    _STUDIO_HOME_REDIRECT="default"
     mkdir -p "$STUDIO_HOME"
     printf 'precious' > "$_TMP_ROOT/claim_symlink_target"
     ln -s "$_TMP_ROOT/claim_symlink_target" "$STUDIO_HOME/.unsloth-studio-owned"

@@ -795,21 +795,36 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 # Shorter than that guard's list on purpose. It refuses to overwrite and can afford a weak
 # signal; this one authorizes a delete, so bin/unsloth, which is any file of that name, is not
 # on it. A root that has one needs no marker anyway: the uninstaller already accepts it.
+# A sentinel this list may trust: a regular file, never a link. -f follows a link, and one
+# planted in somebody's workspace would otherwise short-circuit the emptiness test below and
+# earn that workspace a marker the uninstaller deletes on.
+_claim_sentinel() { [ -f "$1" ] && [ ! -L "$1" ]; }
+
 _claim_studio_root() {
+    _claim_marker="$STUDIO_HOME/.unsloth-studio-owned"
+    # Already ours and already the right shape: leave it. A rewrite gains nothing and a run
+    # killed between the unlink and the write would lose the only proof this root is ours.
+    _claim_sentinel "$_claim_marker" && return 0
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
-       && [ ! -f "$STUDIO_HOME/.unsloth-studio-owned" ] \
-       && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
-       && [ ! -f "$STUDIO_HOME/share/studio.conf" ]; then
+       && ! _claim_sentinel "$VENV_DIR/.unsloth-studio-owned" \
+       && ! _claim_sentinel "$STUDIO_HOME/share/studio.conf"; then
+        # The globs are the whole emptiness check, so a caller's `sh -f` would make every
+        # workspace look empty and get it claimed. Saved and restored like _dir_has_entries.
+        _claim_glob=on
+        case $- in *f*) _claim_glob=off ;; esac
+        set +f
+        _claim_empty=true
         for _claim_entry in "$STUDIO_HOME"/* "$STUDIO_HOME"/.[!.]* "$STUDIO_HOME"/..?*; do
-            if [ -e "$_claim_entry" ] || [ -L "$_claim_entry" ]; then return 0; fi
+            if [ -e "$_claim_entry" ] || [ -L "$_claim_entry" ]; then _claim_empty=false; break; fi
         done
+        [ "$_claim_glob" = off ] && set -f
+        [ "$_claim_empty" = true ] || return 0
     fi
     mkdir -p "$STUDIO_HOME" 2>/dev/null || true
     # Unlink first, then confirm it. The redirection follows a symlink at that path and
     # truncates its TARGET, which on a user-chosen root is somebody's file, and rm can fail on
     # a root we cannot write while that target stays perfectly writable. No marker is fine; the
     # venv writes its own later, and the install fails on its own if the root is unusable.
-    _claim_marker="$STUDIO_HOME/.unsloth-studio-owned"
     rm -f "$_claim_marker" 2>/dev/null || true
     if [ -e "$_claim_marker" ] || [ -L "$_claim_marker" ]; then return 0; fi
     printf '' > "$_claim_marker" 2>/dev/null || true
