@@ -2083,6 +2083,11 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  *  first, then cached safetensors. */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
+// A refused preflight costs no load attempt, so without its own cap a device holding many blocked
+// repos (trust-remote-code, security review) POSTs /validate once per cached repo and never stops.
+// Wider than the load cap on purpose: every load spends one validate first, so a smaller budget
+// would cut the happy path short.
+const MAX_AUTO_VALIDATE_ATTEMPTS = 8;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
   /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
@@ -2950,6 +2955,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
+  // Per cascade, like loadAttempts: a module-level counter would leave the second auto-load of the
+  // session with a spent budget.
+  let validateAttempts = 0;
   const skippedAutoLoadCandidates = new Set<string>();
   // Why the last load attempt failed. Boxed: a `let` set only in a nested fn narrows to `null`.
   const loadFailure: {
@@ -3003,6 +3011,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     spec_draft_n_max?: number | null;
   }): Promise<boolean> {
     options?.abortSignal?.throwIfAborted();
+    // Counted here rather than at the call sites: this is the only place that POSTs /validate, so a
+    // rejected preflight spends its budget too.
+    validateAttempts += 1;
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
@@ -3056,7 +3067,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   async function loadAutoLoadCandidate(
     candidate: AutoLoadCandidate,
   ): Promise<boolean> {
-    if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+    if (
+      autoLoadCancelled ||
+      loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS ||
+      validateAttempts >= MAX_AUTO_VALIDATE_ATTEMPTS
+    ) {
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
@@ -3525,7 +3540,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // row resolved nothing at all.
     const candidateResolvedFor = new Set<string>();
     for (const source of sources) {
-      if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
+      if (
+        autoLoadCancelled ||
+        loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS ||
+        validateAttempts >= MAX_AUTO_VALIDATE_ATTEMPTS
+      ) {
+        break;
+      }
       const sourceKey = autoLoadSourceKey(source);
       if (candidateResolvedFor.has(sourceKey)) continue;
       const isRemembered = lastLoaded
@@ -3542,7 +3563,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       try {
         // A repo can hold several downloaded quants: each failure marks that quant tried, so one
         // corrupt file does not cost the whole repo.
-        while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
+        while (
+          !autoLoadCancelled &&
+          loadAttempts < MAX_AUTO_LOAD_ATTEMPTS &&
+          validateAttempts < MAX_AUTO_VALIDATE_ATTEMPTS
+        ) {
           const candidate = await resolveAutoLoadCandidate(
             source,
             isRemembered ? (lastLoaded?.ggufVariant ?? null) : null,
