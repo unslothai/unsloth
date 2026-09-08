@@ -2,7 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Interactive terminal prompt that forces a bootstrap password change before
-Unsloth is exposed on a public Cloudflare URL (``--secure`` / ``--cloudflare``).
+Unsloth becomes reachable: a public Cloudflare URL (``--secure`` / ``--cloudflare``)
+or a raw non-loopback bind such as ``-H 0.0.0.0``.
 
 Masked input echoes one ``*`` per keystroke (unlike ``getpass``). Works on
 Windows (``msvcrt``) and Linux/macOS (``termios``). All output goes to stderr so
@@ -144,11 +145,57 @@ def _getch_posix() -> str:  # pragma: no cover - needs a real tty
 _getch: Callable[[], str] = _getch_windows if os.name == "nt" else _getch_posix
 
 
-def _read_password(prompt: str, *, out: "TextIO | None" = None) -> str:
+class PromptUnattended(Exception):
+    """A terminal is attached but nobody answered before the deadline.
+
+    A pty is not a person: ``tmux new -d`` / ``docker run -dt`` allocate a real
+    foreground pty nobody reads, so isatty() is True on both streams and the read
+    never returns. Callers that must not block a launch treat this as a refusal.
+    """
+
+
+def _wait_for_first_key(timeout: float) -> bool:
+    """Whether a keystroke arrived within ``timeout`` seconds.
+
+    Requires cbreak mode already set: canonical mode holds input until a newline,
+    so the fd would not become readable on the first character. True on any doubt
+    (the blocking behaviour).
+    """
+    if os.name == "nt":
+        import time
+
+        try:
+            import msvcrt
+        except ImportError:
+            return True
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if msvcrt.kbhit():
+                return True
+            time.sleep(0.05)
+        return False
+    import select
+
+    try:
+        fd = sys.stdin.fileno()
+        ready, _, _ = select.select([fd], [], [], timeout)
+    except (AttributeError, OSError, ValueError):
+        return True
+    return bool(ready)
+
+
+def _read_password(
+    prompt: str,
+    *,
+    out: "TextIO | None" = None,
+    first_key_timeout: "float | None" = None,
+) -> str:
     """Read one masked line: echo ``*`` per char, support backspace editing.
 
     Raises KeyboardInterrupt on Ctrl-C and EOFError on Ctrl-D/Ctrl-Z with an
-    empty buffer; the terminal is restored on every exit path.
+    empty buffer; the terminal is restored on every exit path. With
+    ``first_key_timeout``, raises PromptUnattended when the FIRST keystroke never
+    arrives; once someone starts typing there is no deadline.
     """
     if out is None:
         out = sys.stderr
@@ -156,6 +203,10 @@ def _read_password(prompt: str, *, out: "TextIO | None" = None) -> str:
     out.flush()
     chars: list[str] = []
     with _prompt_raw_mode():
+        if first_key_timeout is not None and not _wait_for_first_key(first_key_timeout):
+            out.write("\n")
+            out.flush()
+            raise PromptUnattended
         while True:
             key = _getch()
             if key == "":
@@ -191,15 +242,28 @@ def _read_password(prompt: str, *, out: "TextIO | None" = None) -> str:
 
 
 def should_prompt_password_change(
-    *, tunnel_will_start: bool, requires_change: bool, stdin_isatty: bool, stderr_isatty: bool
+    *,
+    tunnel_will_start: bool,
+    requires_change: bool,
+    stdin_isatty: bool,
+    stderr_isatty: bool,
+    bind_is_exposed: bool = False,
 ) -> bool:
     """Whether to block startup on an interactive terminal password change.
 
-    True only when the tunnel is actually about to start, the admin still has
-    the seeded password, and both stdin and stderr are real terminals (headless
-    launches keep the bootstrap-timeout protection instead of hanging).
+    True when the launch puts the web UI where others can reach it, the admin
+    still has the seeded password, and both stdin and stderr are real terminals
+    (headless launches keep the bootstrap-timeout protection instead of hanging).
+
+    Two ways to be reachable: ``tunnel_will_start`` (public Cloudflare URL) and
+    ``bind_is_exposed`` (a raw non-loopback bind like ``-H 0.0.0.0``, reachable by
+    the whole network yet starting no tunnel). The second used to get no prompt at
+    all, so the seeded password stayed live and was served to anyone who loaded
+    the page.
     """
-    return tunnel_will_start and requires_change and stdin_isatty and stderr_isatty
+    if not (tunnel_will_start or bind_is_exposed):
+        return False
+    return requires_change and stdin_isatty and stderr_isatty
 
 
 def prompt_for_password_change(
@@ -209,23 +273,49 @@ def prompt_for_password_change(
     apply_change: Callable[[str], None],
     username: str = "unsloth",
     out: "TextIO | None" = None,
+    exposure: str = "on the public internet",
+    first_key_timeout: "float | None" = None,
+    refusal_aborts: bool = True,
 ) -> bool:
-    """Force a new admin password before public exposure; True on success.
+    """Force a new admin password before exposure; True on success.
 
     Loops until a valid, confirmed password is committed via ``apply_change``.
-    Ctrl-C / EOF returns False; the caller must then abort the launch.
+    Ctrl-C / EOF returns False; ``refusal_aborts`` tells the banner what the
+    caller does with that, so it never promises an abort that will not happen:
+    True for a tunnel (caller aborts), False for a raw bind (launch proceeds,
+    because it worked before this prompt existed).
+
+    ``exposure`` names where this launch is reachable: a tunnel really is the
+    public internet, a raw bind is every interface (LAN behind NAT, or the
+    internet on a cloud box). Claiming the wrong one trains people to ignore it.
+
+    ``first_key_timeout`` bounds the wait for the FIRST keystroke, returning
+    False if it never comes. Only a caller that must not block a launch passes
+    it: a detached pty (``tmux new -d``, ``docker run -dt``) looks exactly like
+    an attended terminal, so undeadlined it waits forever and never binds its
+    socket. Unset (the tunnel) blocks indefinitely.
     """
     if out is None:
         out = sys.stderr
+    refusal = (
+        "Ctrl+C to abort."
+        if refusal_aborts
+        else "Ctrl+C to skip, and Unsloth starts with the auto-generated password."
+    )
     out.write(
         "\n"
-        "Unsloth Studio will be exposed on the public internet, so set a\n"
-        "password now. Ctrl+C to abort.\n\n"
+        f"Unsloth Studio will be reachable {exposure}, so set a\n"
+        f"password now. {refusal}\n\n"
     )
     out.flush()
+    # Only the first read is deadlined; a key arriving proves someone is there.
+    pending_timeout = first_key_timeout
     try:
         while True:
-            new_password = _read_password("New password: ", out = out)
+            new_password = _read_password(
+                "New password: ", out = out, first_key_timeout = pending_timeout
+            )
+            pending_timeout = None
             if len(new_password) < min_length:
                 out.write(f"Password must be at least {min_length} characters; try again.\n")
                 out.flush()
@@ -249,8 +339,18 @@ def prompt_for_password_change(
             out.write(f"Password updated for '{username}'.\n")
             out.flush()
             return True
+    except PromptUnattended:
+        out.write(
+            "No response at the terminal; leaving the auto-generated admin password in place.\n"
+        )
+        out.flush()
+        return False
     except (KeyboardInterrupt, EOFError):
-        out.write("Password change aborted; not exposing Unsloth.\n")
+        out.write(
+            "Password change aborted; not exposing Unsloth.\n"
+            if refusal_aborts
+            else "Password change skipped; leaving the auto-generated admin password in place.\n"
+        )
         out.flush()
         return False
 

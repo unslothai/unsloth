@@ -13,10 +13,12 @@ export {
   isNativeFileLabel,
   isOllamaLinkPath,
   isStandaloneGgufPath,
+  ggufVariantsMatch,
   modelDisplayName,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
   publicModelId,
+  residentModelIdMatches,
 } from "@/features/hub/lib/model-identity";
 
 const MODEL_STORAGE_KEY_PREFIX = "v2:";
