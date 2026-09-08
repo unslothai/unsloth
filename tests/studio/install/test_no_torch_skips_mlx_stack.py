@@ -46,9 +46,7 @@ def _guard_chains_of_calls_mentioning(source: str, needle: str) -> list[list[str
             if isinstance(child, ast.If):
                 inner = enclosing + [ast.get_source_segment(source, child.test) or ""]
             if isinstance(child, ast.Call) and any(
-                isinstance(arg, ast.Constant)
-                and isinstance(arg.value, str)
-                and needle in arg.value
+                isinstance(arg, ast.Constant) and isinstance(arg.value, str) and needle in arg.value
                 for arg in child.args
             ):
                 chains.append(enclosing)

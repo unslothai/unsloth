@@ -183,10 +183,10 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
 @pytest.mark.parametrize(
     "python_version, macos_major, installable",
     [
-        ((3, 9, 6), 15, False),    # macOS ships 3.9; no release in the pinned set has a cp39 wheel
+        ((3, 9, 6), 15, False),  # macOS ships 3.9; no release in the pinned set has a cp39 wheel
         ((3, 10, 0), 15, True),
-        ((3, 12, 0), 13, False),   # Apple Silicon on Ventura: the pins are macosx_14_0 only
-        ((3, 12, 0), 14, True),    # the first macOS the pinned wheels are built for
+        ((3, 12, 0), 13, False),  # Apple Silicon on Ventura: the pins are macosx_14_0 only
+        ((3, 12, 0), 14, True),  # the first macOS the pinned wheels are built for
         ((3, 12, 0), 26, True),
         # Unreadable version: skipping costs a launch, attempting costs the install.
         ((3, 12, 0), None, False),
@@ -253,12 +253,18 @@ def test_unsupported_apple_silicon_skips_mlx_without_failing_the_install(
 def test_supported_and_unsupported_hosts_share_one_progress_budget(monkeypatch):
     """Same total either way, so the bar cannot end at 13/14 on an old Mac."""
     _run_to_extras(
-        monkeypatch, platform = "macos_arm", skip_base = True, no_torch = False,
+        monkeypatch,
+        platform = "macos_arm",
+        skip_base = True,
+        no_torch = False,
         mlx_installable = True,
     )
     supported = stack._TOTAL
     _run_to_extras(
-        monkeypatch, platform = "macos_arm", skip_base = True, no_torch = False,
+        monkeypatch,
+        platform = "macos_arm",
+        skip_base = True,
+        no_torch = False,
         mlx_installable = False,
     )
     assert stack._TOTAL == supported
