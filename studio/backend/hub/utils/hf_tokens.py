@@ -15,6 +15,8 @@ HfTokenArg = Optional[Union[str, Literal[False]]]
 # Anonymous-sentinel cache identity, kept apart from ``None``'s: a slot filled under the
 # ambient token must not be served to an API key denied it. Not hex, so no digest collides.
 ANONYMOUS_CACHE_IDENTITY = "anon"
+# Prefixes a UI session's cache identity. Kept short because it lands in dict keys.
+UI_CACHE_IDENTITY_PREFIX = "ui:"
 
 
 class AmbientAuthorizedToken(str):
@@ -85,6 +87,20 @@ def normalize_token(hf_token: HfTokenArg) -> HfTokenArg:
 def is_anonymous(hf_token: HfTokenArg) -> bool:
     """Named because a bare ``is False`` invites a ``not hf_token`` "simplification"."""
     return hf_token is False
+
+
+def qualify_cache_identity(hf_token: HfTokenArg, digest: str) -> str:
+    """Tag a token digest with the caller class that produced it.
+
+    Two callers can hold the SAME token value and still have different cache
+    authorization: a UI session is entitled to ambient, an sk-unsloth API key is not.
+    The digest alone collides, so any cache keyed on it can hand one caller the other's
+    verdict, and any in-flight coalescer keyed on it merges their scans into one whose
+    authorization was decided by whichever arrived first.
+
+    This is the same reason the forced-anonymous sentinel already takes its own identity.
+    """
+    return f"{UI_CACHE_IDENTITY_PREFIX}{digest}" if isinstance(hf_token, AmbientAuthorizedToken) else digest
 
 
 # Both signs: a revoked token must not keep reading, a flapping Hub must not be re-dialled.

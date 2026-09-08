@@ -36,7 +36,12 @@ from hub.utils.gguf import (
     is_mmproj_filename,
     is_mtp_drafter_path,
 )
-from hub.utils.hf_tokens import ANONYMOUS_CACHE_IDENTITY, HfTokenArg, is_anonymous
+from hub.utils.hf_tokens import (
+    ANONYMOUS_CACHE_IDENTITY,
+    HfTokenArg,
+    is_anonymous,
+    qualify_cache_identity,
+)
 from hub.utils.state_dir import RepoType
 
 from hub.utils.hf_cache_state import (
@@ -453,7 +458,9 @@ def token_fingerprint(hf_token: HfTokenArg) -> str:
         return ANONYMOUS_CACHE_IDENTITY
     if not hf_token:
         return ""
-    return hashlib.sha256(hf_token.encode()).hexdigest()[:16]
+    # A UI session and an API key can carry the same token value and still differ on cache
+    # authorization, so the digest alone would let either read back the other's verdict.
+    return qualify_cache_identity(hf_token, hashlib.sha256(hf_token.encode()).hexdigest()[:16])
 
 
 def resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:

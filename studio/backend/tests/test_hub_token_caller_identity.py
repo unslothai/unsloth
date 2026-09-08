@@ -118,19 +118,27 @@ def test_a_ui_session_that_saved_a_token_still_reads_its_own_cache(monkeypatch):
     assert probes["n"] == 0, "the UI session must not pay a round trip for its own token"
 
 
-def test_the_ambient_marker_is_a_string_everywhere_else(monkeypatch):
-    """It rides along the existing Optional[str | False] type, so nothing else may notice."""
+def test_the_ambient_marker_is_a_string_everywhere_it_is_used_as_a_value(monkeypatch):
+    """It rides along the existing Optional[str | False] type, so every consumer that wants
+    the token VALUE sees a plain token: comparisons, hashing, encoding, the child env.
+
+    Cache IDENTITY is the deliberate exception, and this test used to assert the opposite.
+    A UI session and an API key holding the same value have different cache authorization,
+    so a fingerprint that collapsed them let either read back the other's verdict. Value
+    transparent, entitlement not: see the caller-class identity test below.
+    """
     ui = hf_token_arg("hf_saved", allow_ambient_token = True)
 
     assert isinstance(ui, str)
     assert ui == "hf_saved"
-    assert hash(ui) == hash("hf_saved"), "a cache key must not split on the marker"
+    assert hash(ui) == hash("hf_saved")
     assert ui.encode() == b"hf_saved"
-    assert capability_fingerprint(ui) == capability_fingerprint("hf_saved")
     env: dict = {}
     apply_token_to_child_env(env, ui)
     assert env["HF_TOKEN"] == "hf_saved"
     assert type(env["HF_TOKEN"]) is str or isinstance(env["HF_TOKEN"], str)
+    # The Hub still receives the real credential, marker or not.
+    assert capability_fingerprint(ui).endswith(capability_fingerprint("hf_saved"))
 
 
 def test_trimming_does_not_demote_a_ui_session_to_an_api_key():
@@ -1879,3 +1887,72 @@ def test_a_failed_cache_check_does_not_open_the_path_it_guards(monkeypatch):
 
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _boom)
     assert mc._config_json_already_cached("acme/private-vlm") is True
+
+
+def test_the_legacy_body_token_keeps_its_caller_class():
+    """The deprecated /api/datasets/check-format still accepts the token in the BODY. That
+    value arrived as a plain str and skipped the marker get_request_hf_token attaches, so the
+    same UI session, sending the same token, lost its own cached dataset offline purely for
+    using the legacy route. The header and the body are one credential, classified alike."""
+    from routes import datasets as datasets_routes
+
+    app = FastAPI()
+    app.include_router(datasets_routes.router, prefix = "/api/datasets")
+    app.dependency_overrides[get_current_subject] = lambda: "tester"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False  # a UI session
+
+    seen = {}
+
+    def _capture(request, hf_token = None, **_k):
+        seen["token"] = hf_token
+        raise HTTPException(status_code = 418, detail = "captured")
+
+    original = datasets_routes.formatting.check_format_response
+    datasets_routes.formatting.check_format_response = _capture
+    try:
+        with TestClient(app) as client:
+            client.post(
+                "/api/datasets/check-format",
+                json = {"dataset_name": "acme/private-secrets", "hf_token": "hf_saved"},
+            )
+    finally:
+        datasets_routes.formatting.check_format_response = original
+
+    assert isinstance(seen.get("token"), hf_tokens.AmbientAuthorizedToken), (
+        "a UI session's body token was demoted to an API key"
+    )
+
+
+def test_the_same_token_from_two_caller_classes_takes_two_cache_identities():
+    """The marker is a str subclass with the same encoded value, so every fingerprint that
+    hashes the token alone collided. Any cache keyed on one could hand a caller the other's
+    verdict, and the GGUF in-flight coalescer merged their scans into a single computation
+    whose authorization was settled by whichever request arrived first."""
+    from hub.utils import inventory_scan
+    from utils.models import model_config as mc
+    from core.inference import diffusion_compat as dc
+
+    ui = hf_token_arg("hf_saved", allow_ambient_token = True)
+    api = hf_token_arg("hf_saved", allow_ambient_token = False)
+
+    for fingerprint in (inventory_scan.token_fingerprint, mc._token_fingerprint, dc._token_fingerprint):
+        ui_id, api_id = fingerprint(ui), fingerprint(api)
+        assert ui_id != api_id, f"{fingerprint.__module__} still collides across caller classes"
+        # The qualifier must not smuggle the credential into a dict key.
+        assert "hf_saved" not in str(ui_id) and "hf_saved" not in str(api_id)
+
+    # The sentinel and the ambient caller keep the identities they already had.
+    assert inventory_scan.token_fingerprint(False) == ANONYMOUS_CACHE_IDENTITY
+    assert inventory_scan.token_fingerprint(None) == ""
+
+
+def test_the_gguf_inflight_key_does_not_coalesce_two_caller_classes():
+    """The concrete consequence: same repo, same token value, different entitlement."""
+    from hub.utils import inventory_scan
+
+    def _key(token):
+        return ("acme/private", False, True, "", inventory_scan.token_fingerprint(token), "cache-a")
+
+    ui = hf_token_arg("hf_saved", allow_ambient_token = True)
+    api = hf_token_arg("hf_saved", allow_ambient_token = False)
+    assert _key(ui) != _key(api), "one scan would serve both entitlements"

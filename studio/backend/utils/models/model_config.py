@@ -18,6 +18,7 @@ from utils.paths import (
 )
 from hub.utils.hf_tokens import (
     ANONYMOUS_CACHE_IDENTITY,
+    qualify_cache_identity,
     HfTokenArg,
     apply_token_to_child_env,
     cache_reads_authorized,
@@ -726,25 +727,6 @@ def _is_vlm(config) -> bool:
     )
 
 
-def _config_json_already_cached(model_name: str, revision: Optional[str] = None) -> bool:
-    """True if this repo's config.json is on disk, so an unauthorized read could be served it."""
-    try:
-        from huggingface_hub import try_to_load_from_cache
-
-        hit = try_to_load_from_cache(
-            repo_id = model_name,
-            filename = "config.json",
-            revision = revision,
-            cache_dir = active_hf_hub_cache(),
-        )
-        # Also returns a sentinel object recording a known-absent file; only a str is a real hit.
-        return isinstance(hit, str)
-    except Exception as exc:
-        # Never let the guard's own failure open the path it guards.
-        logger.debug("Could not check cached config.json for '%s': %s", model_name, exc)
-        return True
-
-
 def _raw_config_has_vision_config(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -812,6 +794,25 @@ def _raw_config_has_vision_config(
 
 # why: inline _is_vlm and constants are prepended so the subprocess stays self-contained
 # and doesn't import the parent module graph. Built on demand to defer the registry read.
+def _config_json_already_cached(model_name: str, revision: Optional[str] = None) -> bool:
+    """True if this repo's config.json is on disk, so an unauthorized read could be served it."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        hit = try_to_load_from_cache(
+            repo_id = model_name,
+            filename = "config.json",
+            revision = revision,
+            cache_dir = active_hf_hub_cache(),
+        )
+        # Also returns a sentinel object recording a known-absent file; only a str is a real hit.
+        return isinstance(hit, str)
+    except Exception as exc:
+        # Never let the guard's own failure open the path it guards.
+        logger.debug("Could not check cached config.json for '%s': %s", model_name, exc)
+        return True
+
+
 def _build_vision_check_inline_helpers() -> str:
     vlm_types, vlm_classes, audio_types = _detection_sets()
     return (
@@ -1039,7 +1040,7 @@ def _token_fingerprint(token: HfTokenArg) -> Optional[str]:
         return ANONYMOUS_CACHE_IDENTITY
     if token is None:
         return None
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return qualify_cache_identity(token, hashlib.sha256(token.encode("utf-8")).hexdigest())
 
 
 # Revision-less entries keep the historical 3-part key; pinned entries append revision.
