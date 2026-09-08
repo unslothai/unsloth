@@ -3372,6 +3372,36 @@ _amd_gpu_present_via_pci() {
     return 1
 }
 
+# Prints the AMD device nodes that exist but this user cannot open, one per line.
+# On a stock distribution /dev/kfd and /dev/dri/renderD* are root:render mode 0660,
+# so an account outside that group passes every -e test above and then cannot open
+# the device: HIP counts no devices, the Vulkan loader enumerates none, and the
+# install looks like a host with no GPU (#10466). -r and -w, matching what the
+# runtimes need; root sees everything and prints nothing.
+#
+# AMD-owned nodes only. Render nodes are root:render for EVERY vendor, so an
+# NVIDIA-only box has the same closed list and none of the problem (CUDA opens
+# /dev/nvidia* instead), and the group advice would be wrong there. sysfs is
+# world-readable, so ownership is answered without the access being tested for.
+_amd_nodes_closed_to_this_user() {
+    for _node in /dev/kfd /dev/dri/renderD*; do
+        [ -e "$_node" ] || continue
+        { [ -r "$_node" ] && [ -w "$_node" ]; } && continue
+        if [ "$_node" = /dev/kfd ]; then
+            # vendor_id 4098 = 0x1002, the same AMD guard _has_amd_rocm_gpu uses:
+            # NVIDIA's open kernel module registers KFD nodes of its own.
+            awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
+                /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null || continue
+        else
+            _vendor_file="/sys/class/drm/${_node##*/}/device/vendor"
+            [ -r "$_vendor_file" ] || continue
+            read -r _node_vendor < "$_vendor_file" 2>/dev/null || continue
+            [ "$_node_vendor" = "0x1002" ] || continue
+        fi
+        printf '%s\n' "$_node"
+    done
+}
+
 # rocminfo names each agent twice, so "gfx1201\ngfx1201" is one device, not two.
 _amd_probe_arches() {
     printf '%s\n' "$1" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' | awk 'NF' | sort -u
@@ -5400,9 +5430,22 @@ case "$TORCH_INDEX_URL" in
                 substep "  driver is current; or run unsloth/scripts/install_rocm_wsl_strixhalo.sh yourself."
             else
                 substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
+                _closed_nodes="$(_amd_nodes_closed_to_this_user)"
+                # Before the kernel-stack hint, and instead of it: the driver is loaded
+                # and /dev/kfd exists on this host, so "install the ROCm kernel stack"
+                # is advice that cannot help. Nothing else in this installer looks at
+                # whether the account can OPEN a node it just found (#10466).
+                if [ -n "$_closed_nodes" ]; then
+                    substep "An AMD GPU is present but this account cannot open its device nodes:" "$C_WARN"
+                    printf '%s\n' "$_closed_nodes" | while IFS= read -r _n; do
+                        substep "  $_n"
+                    done
+                    substep "  Every backend needs them, ROCm and Vulkan alike. Add yourself to the"
+                    substep "  render and video groups, then log out and back in:"
+                    substep "  sudo usermod -a -G render,video ${USER:-\$USER}"
                 # Only when ROCm truly can't see the GPU: a detected-but-too-old
                 # ROCm (rocminfo works, wheels need 6.0+) has its own guidance.
-                if ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
+                elif ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
                     substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
                     substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
                     substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."

@@ -7,6 +7,7 @@ Mirrors nvidia.py so hardware.py can swap backends based on IS_ROCM.
 All functions return the same dict shapes as their nvidia.py counterparts.
 """
 
+import glob
 import json
 import math
 import os
@@ -601,3 +602,103 @@ def get_visible_gpu_utilization(
         "devices": devices,
         "index_kind": "physical",
     }
+
+
+# /dev/kfd is what HIP opens; /dev/dri/renderD* is what BOTH HIP and the Vulkan loader
+# open, so switching backend is no way around a closed render node.
+_KFD_NODE = "/dev/kfd"
+_DRI_RENDER_GLOB = "/dev/dri/renderD*"
+
+
+def _render_node_is_amd(path: str) -> bool:
+    """Whether a ``/dev/dri/renderD*`` node belongs to an AMD GPU.
+
+    Render nodes are ``root:render`` for EVERY vendor, so an NVIDIA-only host has
+    exactly the same closed nodes and none of the problem -- CUDA opens
+    ``/dev/nvidia*`` instead. Without this, the render-group advice below would be
+    given to every CUDA user whose probe came back empty for an unrelated reason.
+    Read from sysfs, which is world-readable, so the answer does not need the access
+    this is testing for.
+    """
+    vendor_file = f"/sys/class/drm/{os.path.basename(path)}/device/vendor"
+    try:
+        with open(vendor_file, encoding = "utf-8") as fh:
+            return fh.read().strip().lower() == "0x1002"
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _kfd_topology_has_an_amd_gpu() -> bool:
+    """Whether KFD enumerates an AMD GPU node, so ``/dev/kfd`` is one worth opening.
+
+    Mirrors ``hardware._linux_kfd_reports_an_amd_gpu``: gpu_id 0 is the CPU node, and
+    NVIDIA's open kernel module registers KFD nodes of its own under vendor_id 4318,
+    so AMD ownership is confirmed rather than assumed.
+    """
+    nodes = "/sys/class/kfd/kfd/topology/nodes"
+    try:
+        entries = os.listdir(nodes)
+    except OSError:
+        return False
+    for entry in entries:
+        try:
+            with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
+                properties = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if re.search(r"\bvendor_id\s+4098\b", properties):
+            return True
+    return False
+
+
+def amd_nodes_closed_to_this_user() -> list[str]:
+    """AMD device nodes that exist on this host and this user cannot open.
+
+    Every AMD probe in this tree tests that the node EXISTS. On a stock Linux
+    distribution these are ``root:render`` mode 0660, so a user outside that group
+    passes all of them and then cannot open the device: HIP counts zero devices, the
+    Vulkan loader enumerates none, and both look exactly like owning no GPU. That is
+    the whole of #10466, where a fresh Strix Halo install ran on CPU until the account
+    was added to the render and video groups.
+
+    Only AMD-owned nodes count. Every vendor's render node has these permissions, so
+    an NVIDIA box reports the identical closed list and has no such problem.
+
+    ``os.access`` rather than a trial ``open()``: opening ``/dev/kfd`` initialises KFD
+    state for the process, and this is called from probes that exist to avoid exactly
+    that. Empty off Linux, on a host with no AMD nodes, and for root.
+    """
+    if platform.system() != "Linux":
+        return []
+    closed = []
+    for path in [_KFD_NODE, *sorted(glob.glob(_DRI_RENDER_GLOB))]:
+        try:
+            if not os.path.exists(path) or os.access(path, os.R_OK | os.W_OK):
+                continue
+        except OSError:
+            continue
+        if path == _KFD_NODE:
+            if _kfd_topology_has_an_amd_gpu():
+                closed.append(path)
+        elif _render_node_is_amd(path):
+            closed.append(path)
+    return closed
+
+
+def amd_node_permission_hint() -> Optional[str]:
+    """One sentence naming the closed nodes and the command that opens them, or None.
+
+    Kept beside the probe so the capability message, the llama.cpp log and the
+    installer all say the same thing, and so a caller that only needs the yes/no does
+    not build a string.
+    """
+    closed = amd_nodes_closed_to_this_user()
+    if not closed:
+        return None
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
+    return (
+        f"This account cannot open {', '.join(closed)}, so no GPU backend can use the "
+        f"AMD card even though the driver is loaded. Add the account to the render and "
+        f"video groups and then log out and back in: "
+        f"sudo usermod -a -G render,video {user}"
+    )

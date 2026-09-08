@@ -9844,6 +9844,18 @@ class LlamaCppBackend:
             if _metal_capable_host():
                 # Same check as the load site: an Intel Mac wants its real reason.
                 return "this probe reads CUDA and HIP only; Apple Silicon offloads through Metal"
+            # Before the backend branches, because it is the reason underneath BOTH of
+            # them: a render node this user cannot open leaves HIP with no device and
+            # the Vulkan loader with nothing to enumerate, and "the Vulkan probe
+            # reported no device" then sends the user after a driver that is fine
+            # (#10466).
+            try:
+                from utils.hardware.amd import amd_node_permission_hint
+                node_hint = amd_node_permission_hint()
+            except Exception:  # noqa: BLE001
+                node_hint = None
+            if node_hint:
+                return node_hint
             if LlamaCppBackend._is_vulkan_backend(binary):
                 return "the Vulkan probe reported no device"
 

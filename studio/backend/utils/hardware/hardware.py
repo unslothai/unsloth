@@ -2076,6 +2076,18 @@ def _gpu_present_but_unusable_message(
     if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
         return None
     installed = f" (installed {detail})" if detail else ""
+    # A closed device node is not a mismatch, and the reinstall below is the wrong
+    # repair for it: the wheel is correct and no reinstall changes group membership
+    # (#10466). Checked before both branches because either verdict can describe that
+    # host -- an AMD probe that reads sysfs still finds the card, so the installer may
+    # have chosen either a ROCm wheel that cannot open a device or a CPU one.
+    try:
+        from utils.hardware.amd import amd_node_permission_hint
+        node_hint = amd_node_permission_hint()
+    except Exception:
+        node_hint = None
+    if node_hint:
+        return f"This host has a GPU, but {feature} cannot use it. {node_hint}"
     # Both routes, always. The repair row exists only in the desktop app and only for a
     # backend it manages, so a browser-hosted Studio, or a desktop attached to a server
     # someone started from a terminal, was being sent to a control that is not on the page.
