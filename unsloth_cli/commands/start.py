@@ -3,6 +3,7 @@
 
 """`unsloth start` — launch a coding agent against a running Unsloth server."""
 
+import ast
 import atexit
 import base64
 import contextlib
@@ -10,8 +11,6 @@ import errno
 import functools
 import hashlib
 import http.client
-import ast
-import ast
 import importlib.util
 import json
 import os

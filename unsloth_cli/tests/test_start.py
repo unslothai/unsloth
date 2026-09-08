@@ -4197,6 +4197,18 @@ def test_base_model_candidates_cover_the_case_the_loader_returns():
     assert "unsloth/qwen2.5-0.5b-instruct-unsloth-bnb-4bit" in candidates
 
 
+def test_base_model_candidates_survive_unsloth_not_being_installed(monkeypatch):
+    # The CLI can drive a remote server on a machine with no unsloth package; without the
+    # tables the recorded base is still the best guess, and nothing may raise.
+    monkeypatch.setattr(start, "_QUANT_MAPPERS", None)
+    monkeypatch.setattr(start, "_BAD_MAPPINGS", None)
+    monkeypatch.setattr(
+        start.importlib.util, "find_spec", lambda name: None if name == "unsloth" else None
+    )
+
+    assert start._base_model_candidates("owner/base") == ["owner/base"]
+
+
 def test_base_model_candidates_follow_the_loaders_second_rewrite():
     # get_model_name maps Qwen/Qwen3-32B to unsloth/Qwen3-32B-unsloth-bnb-4bit and then
     # rewrites that through BAD_MAPPINGS, so the repo that downloads is two steps out.
