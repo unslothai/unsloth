@@ -81,3 +81,27 @@ def test_a_failing_storage_probe_withholds_saved_credentials(monkeypatch):
 
     monkeypatch.setattr(route_mod.auth_storage, "is_internal_api_key", _boom)
     assert _request_is_internal_workflow(_Request(f"Bearer {API_KEY_PREFIX}x")) is False
+
+
+def test_the_date_user_turn_fallback_is_wired_to_ollama_only():
+    """#10436: Ollama answers a request-level system message as a full replacement of the
+    Modelfile SYSTEM, so the date must not invent a system turn for that provider; every
+    other provider (and the local path) keeps the system turn."""
+    tree = ast.parse(_ROUTE_SOURCE.read_text(encoding = "utf-8"))
+    fallbacks = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.keyword) and node.arg == "user_turn_fallback"
+    ]
+    assert fallbacks, "user_turn_fallback is not wired into the external provider proxy"
+    for node in fallbacks:
+        value = node.value
+        assert (
+            isinstance(value, ast.Compare)
+            and len(value.ops) == 1
+            and isinstance(value.ops[0], ast.Eq)
+            and isinstance(value.left, ast.Name)
+            and value.left.id == "provider_type"
+            and isinstance(value.comparators[0], ast.Constant)
+            and value.comparators[0].value == "ollama"
+        ), 'user_turn_fallback must be `provider_type == "ollama"`'
