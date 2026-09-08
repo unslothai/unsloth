@@ -511,6 +511,14 @@ def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
     return match.group(1)[:2] if match else ""
 
 
+# Any sign of the CUDA runtime, versioned or not. nvcudart_hybrid64.dll is the Windows
+# cu130 spelling, which carries no major; nvcuda.dll and torch_cuda are the driver and
+# torch's own CUDA library, present in a CUDA build and absent from a cpu one.
+_CUDA_RUNTIME_MARKER_RE = re.compile(
+    rb"nvcuda\.dll|torch_cuda|nvcudart|libcudart|cudart64|libcuda\.so"
+)
+
+
 def _torchcodec_distribution_for_probe():
     """The installed torchcodec distribution, or None when it cannot be read."""
     try:
@@ -523,32 +531,44 @@ def _torchcodec_distribution_for_probe():
 def _installed_torchcodec_cuda_major() -> "str | None":
     """The CUDA major the INSTALLED torchcodec links, or "" when it links none.
 
-    None when it cannot be read, which means "keep whatever the caller already decided".
-    Only the unpinned fallback needs this: a pinned index guarantees the major, but the
-    default index carries whichever major PyTorch currently defaults to, which is not
-    necessarily the resident torch's. Read from the wheel's own shared objects rather than
-    inferred, since that default moves (torchcodec 0.16.0 on PyPI links libcudart.so.13
-    while a +cu129 host's tag says 12).
+    None means "cannot tell -- keep whatever the caller already decided". Only the unpinned
+    fallback needs this: a pinned index guarantees the major, but the default index carries
+    whichever major PyTorch currently defaults to, which is not necessarily the resident
+    torch's. Read from the wheel's own native files rather than inferred, since that default
+    moves (torchcodec 0.16.0 on PyPI links libcudart.so.13 while a +cu129 host's tag says 12).
+
+    The three answers are deliberately distinct, because "" SKIPS the NPP install and getting
+    that wrong leaves audio broken on a host with no system toolkit. Windows is why: its
+    natives are .dll/.pyd, and the majors are spelled cudart64_12.dll rather than
+    libcudart.so.12. Worse, the win_amd64 cu130 wheel names no major at all -- it references
+    nvcudart_hybrid64.dll -- so a CUDA build there is recognisable without being readable.
+    That case has to be None, not "". Verified across the 0.16.0 wheels: cpu on both
+    platforms carries no CUDA reference whatsoever, cu126 spells its major on both, and only
+    win_amd64 cu130 is CUDA-with-no-major.
     """
     dist = _torchcodec_distribution_for_probe()
-    files = list(getattr(dist, "files", None) or []) if dist is not None else []
     if dist is None:
         return None
-    majors = set()
+    files = list(getattr(dist, "files", None) or [])
+    majors, saw_cuda, inspected = set(), False, False
     for entry in files:
-        name = str(entry)
-        if not (name.endswith(".so") or ".so." in name):
+        name = str(entry).lower()
+        if not (name.endswith((".so", ".dll", ".pyd")) or ".so." in name):
             continue
         try:
             blob = Path(entry.locate()).read_bytes()
         except OSError:
             continue
+        inspected = True
         majors |= {m.decode()[-2:] for m in re.findall(rb"libcudart\.so\.\d+", blob)}
-    if not majors:
-        # Distinguish "a cpu build, needs no NPP" from "could not look": a torchcodec whose
-        # files we did read and which links no CUDA runtime is genuinely NPP-free.
-        return "" if files else None
-    return sorted(majors)[-1]
+        majors |= {m.decode()[9:11] for m in re.findall(rb"cudart64_\d+\.dll", blob)}
+        saw_cuda = saw_cuda or bool(_CUDA_RUNTIME_MARKER_RE.search(blob))
+    if not inspected:
+        return None  # nothing readable: say so rather than claim there is no CUDA
+    if majors:
+        return sorted(majors)[-1]
+    # CUDA is clearly there but unversioned in the names, so the tag-derived answer stands.
+    return None if saw_cuda else ""
 
 
 # The local tags download.pytorch.org serves a companion wheel under. cpu and cuNNN have

@@ -1332,10 +1332,22 @@ def test_the_installed_codec_reports_the_cuda_major_it_actually_links(monkeypatc
 
     assert _probe({"libtorchcodec_cuda.so": b"\x00pad\x00libcudart.so.13\x00more"}) == "13"
     assert _probe({"libtorchcodec_cuda.so": b"\x00libcudart.so.12\x00"}) == "12"
+    # Windows spells both the file and the major differently. Its natives are .dll/.pyd, so
+    # an .so-only filter inspected nothing, found no major, and returned "" -- which SKIPS
+    # the NPP install and leaves audio broken on a host with no system toolkit.
+    assert _probe({"libtorchcodec_core7.dll": b"\x00cudart64_12.dll\x00"}) == "12"
+    assert _probe({"libtorchcodec_pybind_ops.pyd": b"cudart64_13.dll"}) == "13"
+    # The win_amd64 cu130 wheel names no major at all: it references nvcudart_hybrid64.dll.
+    # CUDA is plainly there, so "" would be a lie; None keeps the tag-derived answer.
+    assert _probe({"libtorchcodec_core7.dll": b"\x00nvcudart_hybrid64.dll\x00nvcuda.dll"}) is None
     # A cpu build links no CUDA runtime at all: "" means "needs no NPP", not "unknown".
+    # Checked against the real 0.16.0 cpu wheels, x86_64 and win_amd64: neither carries any
+    # CUDA reference.
     assert _probe({"libtorchcodec_core.so": b"nothing interesting here"}) == ""
-    # Non-.so payloads are never read, so a stray text file cannot fake a major.
-    assert _probe({"version.txt": b"libcudart.so.12"}) == ""
+    assert _probe({"libtorchcodec_core7.dll": b"nothing interesting here"}) == ""
+    # Nothing native to read is "cannot tell", not "no CUDA": a stray text file mentioning a
+    # major must neither be believed nor counted as an inspection.
+    assert _probe({"version.txt": b"libcudart.so.12"}) is None
     # Absent entirely: None, which the caller reads as "keep the tag-derived answer".
     monkeypatch.setattr(mod, "_torchcodec_distribution_for_probe", lambda: None)
     assert mod._installed_torchcodec_cuda_major() is None
