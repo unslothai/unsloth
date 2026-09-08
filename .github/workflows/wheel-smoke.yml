@@ -146,7 +146,11 @@ jobs:
           # which publishes the sdist. Flags that consume a value are skipped by
           # name rather than by position, so `-r pypi dist/*.whl` stays a PASS.
           VALUED_FLAGS = {
-              "-r", "--repository", "--repository-url", "-s", "--sign-with",
+              # -s/--sign is store_true and consumes nothing; only --sign-with
+              # takes a value. Listing -s here made the parser swallow the next
+              # argument, so `twine upload -s dist/*.tar.gz dist/*.whl` hid the
+              # tarball and passed.
+              "-r", "--repository", "--repository-url", "--sign-with",
               "-i", "--identity", "-u", "--username", "-p", "--password",
               "-c", "--comment", "--config-file", "--cert", "--client-cert",
           }
