@@ -17,8 +17,8 @@ _MLX_SKIP_REASON = "MLX public trainer API is only active on the MLX backend"
 
 def _import_mlx_unsloth():
     """Import unsloth and skip when the current platform is not using MLX."""
-    # Skip before importing unsloth so non-MLX hosts missing optional GPU deps
-    # (e.g. bitsandbytes) skip cleanly instead of erroring at collection.
+    # Skip before importing unsloth so non-MLX hosts missing optional GPU deps (e.g. bitsandbytes) skip cleanly
+    # instead of erroring at collection.
     if not (
         platform.system() == "Darwin"
         and platform.machine() == "arm64"
@@ -73,10 +73,9 @@ def test_non_mlx_exports_public_trainer_api_when_available():
     try:
         unsloth = importlib.import_module("unsloth")
     except ImportError as exc:
-        # Non-MLX import pulls the optional GPU stack (numpy/torch/unsloth-zoo,
-        # bitsandbytes/triton, and _gpu_init can re-raise missing deps as
-        # ImportError). Skip when any of it is unavailable rather than failing
-        # collection on CPU/ROCm/XPU review hosts.
+        # Non-MLX import pulls the optional GPU stack (numpy/torch/unsloth-zoo, bitsandbytes/triton, and _gpu_init can
+        # re-raise missing deps as ImportError). Skip when any of it is unavailable rather than failing collection on
+        # CPU/ROCm/XPU review hosts.
         pytest.skip(f"non-MLX import dependency unavailable: {exc}")
     if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
         pytest.skip("non-MLX export smoke test only runs on GPU/ROCm backends")
@@ -1091,8 +1090,8 @@ def test_mlx_compatibility_shims_are_installed():
     assert issubclass(trl.SFTConfig, unsloth.UnslothTrainingArguments)
     assert trainer_module.UnslothTrainer is unsloth.UnslothTrainer
     assert trainer_module.UnslothVisionDataCollator is unsloth.UnslothVisionDataCollator
-    # chat_templates now wraps the zoo function (issue #2693), so the re-export
-    # is no longer the same object; functools.wraps records the original.
+    # chat_templates now wraps the zoo function (issue #2693), so the re-export is no longer the same object;
+    # functools.wraps records the original.
     assert (
         getattr(
             chat_templates.train_on_responses_only,
@@ -1188,7 +1187,6 @@ def test_mlx_rl_trainers_stub_with_clear_error(monkeypatch):
         assert "MLX" in str(exc.value) and name in str(exc.value)
     # trainers trl never exposed must not be invented
     assert not hasattr(trl, "PPOTrainer")
-    # idempotent: a second install keeps the same stub
     stub = trl.GRPOTrainer
     unsloth._install_mlx_trl_sft_shim()
     assert trl.GRPOTrainer is stub
@@ -1235,7 +1233,6 @@ def test_mlx_stubs_trl_trainers_outside_fixed_set(monkeypatch):
     with pytest.raises(NotImplementedError) as exc:
         trl.RLOOTrainer(model = None)
     assert "MLX" in str(exc.value) and "RLOOTrainer" in str(exc.value)
-    # SFT stays usable; only non-SFT trainers are stubbed
     assert trl.SFTTrainer is unsloth.UnslothTrainer
 
 

@@ -27,13 +27,10 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 
-# Kaggle spends an external GPU quota rather than runner minutes. There a superseded run
-# genuinely should be dropped instead of replayed per commit, so these keep one shared group
-# and are the only workflows allowed to lose a main run.
+# Kaggle spends an external GPU quota rather than runner minutes.
 QUOTA_BOUND = frozenset({"kaggle-t4-notebook-ci.yml", "kaggle-t4-studio-gpu-ci.yml"})
 
-# Phrasings that assert main runs are not cancelled. A workflow may only say this if its
-# group makes it true.
+# Phrasings that assert main runs are not cancelled.
 CLAIMS_PROTECTION = re.compile(
     r"never on main|never cancelled on main|not cancelled on main|never cancels on main",
     re.IGNORECASE,
@@ -45,7 +42,7 @@ def _documents() -> dict[str, dict]:
     for path in sorted(WORKFLOWS.glob("*.y*ml")):
         try:
             document = yaml.safe_load(path.read_text(encoding = "utf-8"))
-        except yaml.YAMLError:  # not this guard's job to report
+        except yaml.YAMLError:
             continue
         if isinstance(document, dict):
             out[path.name] = document

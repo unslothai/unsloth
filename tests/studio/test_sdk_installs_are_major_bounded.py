@@ -32,36 +32,32 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 
-# Packages our probe code calls directly by keyword, each with the first major it must
-# NOT reach. Asserting the boundary rather than "some upper bound exists" is what makes
-# this mean anything: `openai>=1.50,<999` contains a `<` and admits every major it is
-# meant to keep out. Anything stricter than the boundary is fine.
-#
-# Bump a number here in the same commit that widens the pin, and only once CI has run
-# against that major.
+# Packages our probe code calls directly by keyword, each with the first major it must NOT reach.
+# Asserting the boundary rather than "some upper bound exists" is what makes this mean anything: `openai>=1.50,<999`
+# contains a `<` and admits every major it is meant to keep out.
 GUARDED = {
     # v1 removed temperature, top_p and top_k from messages.create().
     "anthropic": (1,),
     # 3.3.1 resolves today and the probes pass, so the bound sits above it, not at <2.
     "openai": (4,),
-    # Still 1.x upstream.
     "playwright": (2,),
 }
 
-# One `pip install` argument: name, optional [extras], optional specifier. Optional on
-# purpose: a bare `pip install openai` resolves whatever major is current, and a pattern
-# that required a specifier could not see it at all.
+# One `pip install` argument: name, optional [extras], optional specifier. Optional on purpose: a bare
+# `pip install openai` resolves whatever major is current, and a pattern that required a specifier could not see it
+# at all.
 _REQUIREMENT = re.compile(r"""^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?(?P<spec>.*)$""")
 
-# pip, pip3, pip3.12, pip.exe, and any of those behind a path with either separator,
-# quoted or not. mlx-ci.yml:439 uses "$STUDIO_VENV/bin/pip", and the Windows workflows
-# can use pip.exe; matching the literal text `pip install` saw neither.
+# pip, pip3, pip3.12, pip.exe, and any of those behind a path with either separator, quoted or not. mlx-ci.yml:439 uses
+# "$STUDIO_VENV/bin/pip", and the Windows workflows can use pip.exe; matching the literal text `pip install` saw
+# neither.
 _PIP_INSTALL = re.compile(
     r"""(?:^|[\s"'/\\])pip[0-9]*(?:\.[0-9]+)*(?:\.exe)?["']?\s+install(?:\s|$)"""
 )
 
-# The whole version token, suffix included. Capturing only the numeric prefix turned
-# `<4.post1` into `<4`, and such a bound is LOOSER than its digits: `<4.post1` admits 4.0.
+# The whole version token, suffix included.
+# Capturing only the numeric prefix turned `<4.post1` into `<4`, and such a bound is LOOSER than its digits: `<4.post1`
+# admits 4.0.
 _UPPER = re.compile(r"(?P<op><=|<)(?P<version>[^,\s'\"]+)")
 _NUMERIC = re.compile(r"^[0-9][0-9.]*$")
 _EXACT = re.compile(r"===?(?P<version>[0-9][0-9.]*)")
@@ -109,9 +105,7 @@ def _install_commands_in(text: str) -> list[tuple[int, str]]:
         if not pending:
             start = number
         stripped = line.rstrip()
-        # Backslash for sh, backtick for PowerShell. 92 pwsh steps live here, 9 of them
-        # around a pip install, so the backtick form is one long install list away even
-        # though nothing uses it yet.
+        # Backslash for sh, backtick for PowerShell.
         if stripped.endswith("\\") or stripped.endswith("`"):
             pending.append(stripped[:-1])
             continue
@@ -224,8 +218,7 @@ def _excludes(spec: str, major: tuple[int, ...]) -> bool:
             return True
     for match in _UPPER.finditer(spec):
         raw = match.group("version")
-        # Fail closed on anything that is not a plain release. A suffix can make the
-        # bound looser than its digits suggest, and guessing is how `<4.post1` passed.
+        # Fail closed on anything that is not a plain release.
         if not _NUMERIC.match(raw):
             continue
         bound = _version(raw)

@@ -298,8 +298,8 @@ def test_real_xformers_packed_mask_validates_on_each_device():
             assert output.device == torch.device(f"cuda:{index}")
             assert bool(torch.isfinite(output).all())
 
-        # Start backward only after the second shard has consumed the shared
-        # source mask, matching model-parallel layer execution.
+        # Start backward only after the second shard has consumed the shared source mask, matching model-parallel layer
+        # execution.
         for query, output in zip(queries, outputs):
             output.sum().backward()
             assert query.grad is not None
@@ -629,8 +629,7 @@ def test_a_zero_configured_window_is_full_causal_not_a_blank_mask():
 
 
 def test_run_attention_sdpa_ignores_a_zero_window(monkeypatch):
-    # Belt and braces at the dispatcher: even handed a zero, it must not build a mask that
-    # hides everything.
+    # Belt and braces at the dispatcher: even handed a zero, it must not build a mask that hides everything.
     captured = {}
     monkeypatch.setattr(
         attention_dispatch,

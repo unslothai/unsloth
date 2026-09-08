@@ -36,6 +36,7 @@ from utils.native_path_leases import (
     run_without_native_path_secret,
 )
 from utils.paths import is_local_path, outputs_root
+from utils.training_runs import drop_non_finite
 from utils.utils import canonical_model_repo_id
 
 logger = get_logger(__name__)
@@ -304,7 +305,7 @@ def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
             "prefix": s3_config.get("prefix"),
             "use_iam_role": bool(s3_config.get("use_iam_role")),
         }
-    return db_config
+    return drop_non_finite(db_config)
 
 
 _MODEL_SNAPSHOT_METADATA = ("config.json", "adapter_config.json")
@@ -795,11 +796,12 @@ class _MLXTrainerAdapter:
         dataset_local_path: Optional[str] = None,
         dataset_revision: Optional[str] = None,
         require_exact_resume_resources: bool = False,
+        hf_token: Optional[str] = None,
         max_train_rows: Optional[int] = None,
         max_train_rows_seed: int = 3407,
     ) -> Optional[tuple]:
-        # Signature must match UnslothTrainer: the MLX worker loads its own data and derives the row bound
-        # from its config, so the two bound arguments are accepted and deliberately not forwarded.
+        # Signature must match UnslothTrainer. The MLX worker gets the token from _model_config, loads its
+        # own data, and derives the row bound, so these arguments are accepted and not forwarded here.
         self._dataset_config = {
             "hf_dataset": dataset_source or "",
             "local_datasets": local_datasets,
@@ -1597,7 +1599,7 @@ class TrainingBackend:
                 logger.warning("Training subprocess already running")
                 return False
 
-        # Wait for pump thread to finish DB finalization (8s covers SQLite's 5s lock timeout).
+        # Join prior pump thread, refuse to start if it won't die
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 5.0)
             if self._pump_thread.is_alive():
