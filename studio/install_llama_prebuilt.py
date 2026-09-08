@@ -7124,6 +7124,54 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     return _runtime_payload_has(install_dir, host, [list(group) for group in sorted(shared)])
 
 
+def platform_only_host() -> HostInfo:
+    """A HostInfo carrying platform facts and nothing probed.
+
+    detect_host() costs over a second because it shells out to nvidia-smi and
+    friends. The payload health checks read only the platform booleans, so a
+    caller that just wants to know whether the installed tree still has its
+    files should not pay for a GPU probe.
+    """
+    system = platform.system()
+    machine = platform.machine().lower()
+    return HostInfo(
+        system = system,
+        machine = machine,
+        is_windows = system == "Windows",
+        is_linux = system == "Linux",
+        is_macos = system == "Darwin",
+        is_x86_64 = machine in {"x86_64", "amd64"},
+        is_arm64 = machine in {"arm64", "aarch64"},
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+
+
+def installed_runtime_health(install_dir: Path | None = None) -> tuple[bool, str] | None:
+    """(ok, reason) for the managed llama.cpp runtime, or None when none is installed.
+
+    Smart App Control and antivirus quarantine individual files out of a tree
+    that is otherwise present, so "the marker says installed" is not the same as
+    "the binaries are still there". The desktop's launch preflight asks this so a
+    runtime that lost files after a clean install is offered for repair instead
+    of failing later at model load, which is where it surfaced before as an
+    unrelated-looking error.
+    """
+    root = install_dir if install_dir is not None else default_managed_llama_dir()
+    if load_prebuilt_metadata(root) is None:
+        return None
+    host = platform_only_host()
+    if not install_runtime_dir(root, host).is_dir():
+        return False, "llama_runtime_dir_missing"
+    if not _kept_install_payload_is_healthy(root, host):
+        return False, "llama_runtime_payload_incomplete"
+    return True, ""
+
+
 # SIGKILL is absent: that is an OOM, not a broken image.
 _BROKEN_IMAGE_SIGNALS = frozenset(
     {signal.SIGSEGV, signal.SIGILL, signal.SIGFPE}

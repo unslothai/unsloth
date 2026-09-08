@@ -11,7 +11,9 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 
 // 3: the cached capability gained studio_install_ok / studio_install_reason.
-const MANAGED_CAPABILITY_CACHE_SCHEMA: u16 = 3;
+// 4: the fingerprint gained the llama.cpp runtime, so a quarantined file
+//    invalidates the entry instead of being served a stale Ready.
+const MANAGED_CAPABILITY_CACHE_SCHEMA: u16 = 4;
 
 /// The install is fine; the directory its children must run from is not reachable.
 pub(super) const WORKING_DIRECTORY_UNAVAILABLE: &str = "working_directory_unavailable";
@@ -81,6 +83,13 @@ struct DesktopCapability {
     // on `import structlog`, so a running CLI does not mean ready.
     studio_install_ok: Option<bool>,
     studio_install_reason: Option<String>,
+    // Smart App Control and antivirus quarantine files out of an otherwise
+    // present llama.cpp tree, and nothing repaired that: staleness was decided
+    // on the managed Python alone, so the desktop launched happily and the
+    // model load failed later looking like a bad GGUF. None when the CLI is too
+    // old to answer or nothing is installed yet.
+    llama_runtime_ok: Option<bool>,
+    llama_runtime_reason: Option<String>,
     version: Option<String>,
 }
 
@@ -94,6 +103,7 @@ struct ManagedCapabilityCache {
     marker_path: Option<String>,
     marker_size: Option<u64>,
     marker_mtime_ms: Option<u64>,
+    llama_runtime: Option<String>,
     desktop_protocol_version: u16,
     desktop_manageability_version: u16,
     capability: DesktopCapability,
@@ -116,6 +126,7 @@ struct ManagedBinFingerprint {
     marker_path: Option<String>,
     marker_size: Option<u64>,
     marker_mtime_ms: Option<u64>,
+    llama_runtime: Option<String>,
 }
 
 fn modified_ms(metadata: &fs::Metadata) -> Option<u64> {
@@ -289,7 +300,68 @@ fn managed_bin_fingerprint(bin: &Path) -> Option<ManagedBinFingerprint> {
         marker_path,
         marker_size,
         marker_mtime_ms,
+        llama_runtime: llama_runtime_fingerprint(),
     })
+}
+
+/// `UNSLOTH_LLAMA_CPP_PATH` resolved the way default_managed_llama_dir resolves
+/// it: trimmed, and with a leading `~` expanded, because that reader calls
+/// expanduser and a value written as `~/llama.cpp` would otherwise name a folder
+/// literally called "~". `~name` is left alone; nothing here can resolve another
+/// user's home, and the caller degrades to no runtime coverage rather than
+/// fingerprinting the wrong tree.
+///
+/// UNSLOTH_STUDIO_HOME is deliberately not consulted even though the Python
+/// resolver honours it: managed spawns scrub it (MANAGED_CHILD_SCRUBBED_ENV), so
+/// the CLI answering the capability probe falls through to the legacy root too.
+fn llama_runtime_override() -> Option<PathBuf> {
+    let value = std::env::var("UNSLOTH_LLAMA_CPP_PATH").ok()?;
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if value == "~" {
+        return dirs::home_dir();
+    }
+    if let Some(rest) = value.strip_prefix("~/").or_else(|| {
+        cfg!(windows)
+            .then(|| value.strip_prefix("~\\"))
+            .flatten()
+    }) {
+        return Some(dirs::home_dir()?.join(rest));
+    }
+    Some(PathBuf::from(value))
+}
+
+/// A cheap stand-in for "the llama.cpp runtime tree is unchanged": how many
+/// files sit in its binary directory and how many bytes they total.
+///
+/// The rest of this fingerprint covers the managed venv only, so a file
+/// quarantined out of the runtime left it identical, the cache hit, and
+/// preflight answered Ready without ever asking the CLI. Losing a file changes
+/// both halves of this. None when no runtime is installed, which is a
+/// NotInstalled case rather than a broken one.
+fn llama_runtime_fingerprint() -> Option<String> {
+    let root = match llama_runtime_override() {
+        Some(root) => root,
+        None => dirs::home_dir()?.join(".unsloth").join("llama.cpp"),
+    };
+    let mut bin = root.join("build").join("bin");
+    if cfg!(windows) {
+        bin = bin.join("Release");
+    }
+    let entries = fs::read_dir(&bin).ok()?;
+    let mut count: u64 = 0;
+    let mut bytes: u64 = 0;
+    for entry in entries.flatten() {
+        if let Ok(meta) = entry.metadata() {
+            if meta.is_file() {
+                count += 1;
+                bytes += meta.len();
+            }
+        }
+    }
+    Some(format!("{count}:{bytes}"))
 }
 
 fn capability_cache_path() -> Option<PathBuf> {
@@ -321,6 +393,7 @@ fn cache_matches(cache: &ManagedCapabilityCache, fingerprint: &ManagedBinFingerp
         && cache.marker_path == fingerprint.marker_path
         && cache.marker_size == fingerprint.marker_size
         && cache.marker_mtime_ms == fingerprint.marker_mtime_ms
+        && cache.llama_runtime == fingerprint.llama_runtime
         && desktop_capability_ready(&cache.capability)
 }
 
@@ -348,6 +421,7 @@ fn write_cached_capability(fingerprint: &ManagedBinFingerprint, capability: &Des
         marker_path: fingerprint.marker_path.clone(),
         marker_size: fingerprint.marker_size,
         marker_mtime_ms: fingerprint.marker_mtime_ms,
+        llama_runtime: fingerprint.llama_runtime.clone(),
         desktop_protocol_version: DESKTOP_PROTOCOL_VERSION,
         desktop_manageability_version: DESKTOP_MANAGEABILITY_VERSION,
         capability: capability.clone(),
@@ -546,6 +620,19 @@ fn desktop_capability_stale_reason(capability: &DesktopCapability) -> Option<Str
                 .unwrap_or_else(|| "studio_install_incomplete".to_string()),
         );
     }
+    // Only an explicit false. None means the CLI predates the field or nothing
+    // is installed yet, and neither is a broken runtime: treating them as stale
+    // would put every older install into repair on the first launch after an
+    // upgrade.
+    if capability.llama_runtime_ok == Some(false) {
+        return Some(
+            capability
+                .llama_runtime_reason
+                .clone()
+                .filter(|reason| !reason.is_empty())
+                .unwrap_or_else(|| "llama_runtime_incomplete".to_string()),
+        );
+    }
     managed_backend_version_stale_reason(capability.version.as_deref())
 }
 
@@ -719,6 +806,8 @@ mod tests {
             desktop_auth_stale_reason: None,
             studio_install_ok: Some(true),
             studio_install_reason: None,
+            llama_runtime_ok: Some(true),
+            llama_runtime_reason: None,
             version: Some(MIN_DESKTOP_BACKEND_VERSION.to_string()),
         }
     }
@@ -779,6 +868,44 @@ mod tests {
     }
 
     #[test]
+    fn a_quarantined_llama_runtime_is_stale() {
+        // The venv is fine and the marker still says installed; Smart App Control
+        // took a DLL out of the tree underneath it. Repairing here is what stops
+        // this surfacing later as a model load failure.
+        let mut capability = healthy_capability();
+        capability.llama_runtime_ok = Some(false);
+        capability.llama_runtime_reason = Some("llama_runtime_payload_incomplete".to_string());
+        assert_eq!(
+            desktop_capability_stale_reason(&capability).as_deref(),
+            Some("llama_runtime_payload_incomplete")
+        );
+        assert!(!desktop_capability_ready(&capability));
+    }
+
+    #[test]
+    fn a_broken_runtime_without_a_reason_falls_back_to_a_generic_one() {
+        let mut capability = healthy_capability();
+        capability.llama_runtime_ok = Some(false);
+        capability.llama_runtime_reason = Some(String::new());
+        assert_eq!(
+            desktop_capability_stale_reason(&capability).as_deref(),
+            Some("llama_runtime_incomplete")
+        );
+    }
+
+    #[test]
+    fn an_unknown_llama_runtime_is_not_stale() {
+        // None is both "no runtime installed yet" and "this CLI predates the
+        // field". Neither is a broken runtime, and calling either one stale would
+        // send every existing install through repair on its next launch.
+        let mut capability = healthy_capability();
+        capability.llama_runtime_ok = None;
+        capability.llama_runtime_reason = None;
+        assert_eq!(desktop_capability_stale_reason(&capability), None);
+        assert!(desktop_capability_ready(&capability));
+    }
+
+    #[test]
     fn older_cli_is_rejected_on_manageability_before_the_install_check() {
         // A CLI predating this feature cannot answer studio_install_ok, so the
         // more specific manageability reason must win in the diagnostics.
@@ -806,6 +933,7 @@ mod tests {
             marker_path: None,
             marker_size: None,
             marker_mtime_ms: None,
+            llama_runtime: None,
             desktop_protocol_version: DESKTOP_PROTOCOL_VERSION,
             desktop_manageability_version: DESKTOP_MANAGEABILITY_VERSION,
             capability,
@@ -818,6 +946,7 @@ mod tests {
             marker_path: None,
             marker_size: None,
             marker_mtime_ms: None,
+            llama_runtime: None,
         };
         assert!(!cache_matches(&cache, &fingerprint));
     }
@@ -892,6 +1021,7 @@ mod tests {
             marker_path: fingerprint.marker_path.clone(),
             marker_size: fingerprint.marker_size,
             marker_mtime_ms: fingerprint.marker_mtime_ms,
+            llama_runtime: fingerprint.llama_runtime.clone(),
             desktop_protocol_version: DESKTOP_PROTOCOL_VERSION,
             desktop_manageability_version: DESKTOP_MANAGEABILITY_VERSION,
             capability: healthy_capability(),

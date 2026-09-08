@@ -4985,8 +4985,22 @@ def desktop_capabilities(
         # Did the install finish and are the backend's boot deps still there.
         "studio_install_ok": bool(state["ok"]),
         "studio_install_reason": state["reason"],
+        # And is the llama.cpp runtime the backend loads still intact. Absent
+        # when nothing is installed yet, which is NotInstalled rather than a
+        # broken install. Older desktops ignore both keys.
+        "llama_runtime_ok": None,
+        "llama_runtime_reason": "",
         "version": "unknown",
     }
+    # Best effort: a probe that cannot answer must not turn a working install
+    # into a stale one, so a failure here leaves llama_runtime_ok null.
+    try:
+        from studio.install_llama_prebuilt import installed_runtime_health
+        health = installed_runtime_health()
+        if health is not None:
+            payload["llama_runtime_ok"], payload["llama_runtime_reason"] = health
+    except Exception:
+        pass
     try:
         from importlib.metadata import version as package_version
         payload["version"] = package_version("unsloth")
