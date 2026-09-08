@@ -20,6 +20,7 @@ logs "already matches" and returns 0 without downloading (the scripts grep it).
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -52,6 +53,10 @@ EXIT_SUCCESS = 0
 EXIT_ERROR = 1
 EXIT_FALLBACK = 2
 EXIT_BUSY = 3
+# The install directory cannot be written. Separate from EXIT_ERROR because the
+# caller's advice for that one is "install Node yourself or check your network",
+# which is wrong here and sends people to look at the wrong thing.
+EXIT_DENIED = 4
 
 # Node 24 LTS bundles npm 11, clearing Vite 8's floor (Node ^20.19 || >=22.12, npm >= 11).
 NODE_MIN_LTS_MAJOR = 24
@@ -937,9 +942,42 @@ def main(argv: list[str] | None = None) -> int:
     except PrebuiltFallback as exc:
         log(f"prebuilt unavailable: {exc}")
         return EXIT_FALLBACK
+    except PermissionError as exc:
+        log(_access_denied_message(exc))
+        return EXIT_DENIED
+    except OSError as exc:
+        # Windows reports the ACL and filter-driver denials that matter here as
+        # winerror 5, which does not always arrive as PermissionError.
+        if getattr(exc, "winerror", None) == 5 or exc.errno == errno.EACCES:
+            log(_access_denied_message(exc))
+            return EXIT_DENIED
+        log(f"unexpected error: {exc}")
+        return EXIT_ERROR
     except Exception as exc:  # noqa: BLE001
         log(f"unexpected error: {exc}")
         return EXIT_ERROR
+
+
+def _access_denied_message(exc: OSError) -> str:
+    """Say that this is a permission problem, and that elevation may not fix it.
+
+    Reported as "unexpected error" before, which the caller then followed with
+    "install Node yourself, or check your network". Neither is the fix, and a
+    user whose antivirus is holding the folder can spend a long time on the
+    second one. Antivirus ransomware protection and Controlled folder access
+    both deny regardless of privilege, so running elevated is not the answer
+    either.
+    """
+    path = getattr(exc, "filename", None) or ""
+    where = f" writing {path}" if path else ""
+    return (
+        f"access denied{where}. This is a permissions or security-software block, "
+        "not a download problem. Antivirus ransomware protection (Bitdefender Safe Files, "
+        "Defender Controlled folder access and the like) denies this whatever your "
+        "privileges are, so running elevated may not clear it. Allow or exclude the "
+        "Unsloth folder in your antivirus, or delete or rename it (it is a managed cache "
+        "and setup reinstalls it), then re-run setup."
+    )
 
 
 if __name__ == "__main__":

@@ -1849,6 +1849,53 @@ public static class UnslothStudioFinalPathV2
         return ""
     }
 
+    # Whether security software, rather than an ACL, is denying this path.
+    #
+    # It has to be named apart from an ACL because takeown and icacls cannot
+    # clear it and elevation does not either: the block is enforced by a filter
+    # driver, not by permissions. A user whose antivirus is holding the folder is
+    # otherwise sent round the takeown loop for as long as they are willing.
+    #
+    # Defender's Controlled folder access modes are 0 Disabled, 1 Enabled,
+    # 2 AuditMode, 3 BlockDiskModificationOnly, 4 AuditDiskModificationOnly. Only
+    # 1 blocks file access; 3 and 4 are direct disk-sector writes rather than
+    # files, so neither explains a denied folder.
+    #
+    # When Defender is not the cause, name whichever antivirus is registered
+    # instead: third-party suites ship the same feature under their own names
+    # (Bitdefender Safe Files and Ransomware Remediation, for instance), and the
+    # user cannot act on advice that does not say which product to open.
+    #
+    # Answers "" whenever it cannot tell, so a machine with no Defender module
+    # and no SecurityCenter registration reads the same as one that says no.
+    function Get-SecuritySoftwareNote {
+        $mode = $null
+        try {
+            if (Get-Command Get-MpPreference -ErrorAction SilentlyContinue) {
+                $mode = [int](Get-MpPreference -ErrorAction Stop).EnableControlledFolderAccess
+            }
+        } catch { $mode = $null }
+        if ($mode -eq 1) {
+            return "Controlled folder access is ON, and it denies this path whatever your privileges are, so takeown and icacls will not help: allow Unsloth under Virus & threat protection > Ransomware protection > Allow an app, or exclude this folder"
+        }
+        # SecurityCenter2 is the registration every consumer antivirus makes, and
+        # it is absent on Server SKUs, so this stays best-effort.
+        $others = @()
+        try {
+            $others = @(Get-CimInstance -Namespace "root/SecurityCenter2" -ClassName AntiVirusProduct -ErrorAction Stop |
+                ForEach-Object { [string]$_.displayName } |
+                Where-Object { $_ -and $_ -notmatch "Windows Defender" -and $_ -notmatch "Microsoft Defender" })
+        } catch { $others = @() }
+        if ($others.Count -gt 0) {
+            $names = ($others | Select-Object -Unique) -join ", "
+            return "$names is the active antivirus here: its ransomware or protected-folder feature denies paths whatever your privileges are, so takeown and icacls will not help. Add an exclusion for this folder, and for Unsloth itself, in $names"
+        }
+        if ($mode -eq 2) {
+            return "Controlled folder access is in audit mode, so it is logging rather than blocking and is not the cause here; Windows Defender Operational events 1123 and 1124 name whatever it did stop"
+        }
+        return ""
+    }
+
     # Print guidance; returns the failure reason as its only pipeline output.
     function Write-PathAccessDenied {
         param(
@@ -1875,6 +1922,10 @@ public static class UnslothStudioFinalPathV2
         substep "takeown /F `"$Path`" /R /D Y" "Yellow"
         substep "icacls `"$Path`" /reset /T" "Yellow"
         substep "Antivirus or Controlled folder access can deny this path too; allow or exclude it, then retry" "Yellow"
+        # After the generic line, since this one either confirms it or rules it
+        # out, and an empty answer must leave the generic advice standing.
+        $securitySoftware = Get-SecuritySoftwareNote
+        if ($securitySoftware) { substep $securitySoftware "Yellow" }
         if ($UserSupplied) {
             return "Access denied reading $Label at $Path. Restore access with takeown/icacls, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build, then re-run setup."
         }
@@ -1952,7 +2003,20 @@ public static class UnslothStudioFinalPathV2
         # Renaming needs DELETE on the folder plus write on its parent, neither of
         # which is read access, so this recovers denials that takeown and icacls
         # do not: the folder is a managed cache that setup reinstalls anyway.
-        if (-not $userSupplied -and -not $homeIsCustom) {
+        # Setup never makes this a link, so a link here is something the user
+        # arranged, pointing at a build we were not told about. Moving it would
+        # silently change which tree they run without touching the one they were
+        # protecting, so it is left alone and named in the guidance instead.
+        $isLink = $false
+        try {
+            $linkAttrs = [System.IO.File]::GetAttributes($dir)
+            $isLink = ([int]$linkAttrs -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0
+        } catch {
+            # Unreadable attributes prove nothing, and "proves nothing" must not
+            # mean "movable": fall through to the guidance rather than guess.
+            $isLink = $true
+        }
+        if (-not $userSupplied -and -not $homeIsCustom -and -not $isLink) {
             $asideDir = "$dir.denied-$(Get-Date -Format 'yyyyMMddHHmmss')"
             $moved = $false
             try {
