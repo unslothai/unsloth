@@ -444,6 +444,7 @@ from state.tool_approvals import (
     wait_tool_decision,
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
+from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
 
 # The leaf module, not utils.models: importing anything from that package runs its __init__,
 # which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
@@ -7770,8 +7771,10 @@ class LlamaCppBackend:
     # Nanoseconds and size, not int(st_mtime): an update landing in the same second as
     # the probe kept the key identical and got the old build's capabilities.
     _CAPABILITY_PROBE_RETRY_SECONDS = 30.0
+    _CAPABILITY_PROBE_RETRY_MAX_SECONDS = 600.0
     _capability_cache: dict[tuple[str, int, int], dict[str, object]] = {}
     _capability_retry_after: dict[tuple[str, int, int], float] = {}
+    _capability_retry_backoff: dict[tuple[str, int, int], float] = {}
     _capability_cache_lock = threading.Lock()
 
     # The value form of the flash-attention flag. Newer llama.cpp declares it
@@ -7933,6 +7936,7 @@ class LlamaCppBackend:
                 # compile exceeds this probe's timeout; no device is needed to
                 # enumerate the command-line flags.
                 probe_env["GGML_METAL_DEVICES"] = "0"
+            code_integrity_blocked: Optional[str] = None
             result = subprocess.run(
                 [bin_path, "--help"],
                 capture_output = True,
@@ -7942,9 +7946,22 @@ class LlamaCppBackend:
                 timeout = 10,
                 check = False,
                 env = probe_env,
+                # Else the probe flashes a console window on every status poll.
+                **_windows_hidden_subprocess_kwargs(),
             )
             probe_ok = result.returncode == 0
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
+            if not probe_ok:
+                # The LOADER kills the created process: the NTSTATUS arrives as
+                # a return code, or in the output when a DLL was refused.
+                code_integrity_blocked = code_integrity_block_reason(
+                    result.returncode
+                ) or code_integrity_block_reason(help_text)
+                if code_integrity_blocked is not None:
+                    logger.warning(
+                        "llama-server is blocked by Windows code integrity policy: "
+                        f"{code_integrity_blocked}. Binary: {bin_path}"
+                    )
             # Split into per-flag blocks (each --flag line + its indented
             # continuation), so the "argument has been removed" description
             # sits with its flag.
@@ -8130,7 +8147,16 @@ class LlamaCppBackend:
                     spec_draft_cache_v_flag = _alias
                     break
         except (OSError, subprocess.SubprocessError) as exc:
-            logger.debug(f"llama-server --help probe failed: {exc}")
+            blocked = code_integrity_block_reason(exc)
+            code_integrity_blocked = blocked
+            if blocked is not None:
+                # Warning, not debug: the only other symptom is a silent probe.
+                logger.warning(
+                    f"llama-server is blocked by Windows code integrity policy: {blocked}. "
+                    f"Binary: {bin_path}"
+                )
+            else:
+                logger.debug(f"llama-server --help probe failed: {exc}")
             saw_spec_type = False
             probe_ok = False
             help_text = ""
@@ -8226,11 +8252,22 @@ class LlamaCppBackend:
                 # Bound both failure modes: do not pin a transient failure for
                 # the process lifetime, and do not make every caller repeat a
                 # 10-second timeout while a persistent failure remains (#8317).
-                cls._capability_retry_after[cache_key] = (
-                    time.monotonic() + cls._CAPABILITY_PROBE_RETRY_SECONDS
-                )
+                # Only a CONFIRMED block doubles, being permanent; escalating on
+                # an inconclusive probe would strand a busy machine on stale caps.
+                if code_integrity_blocked is not None:
+                    delay = cls._capability_retry_backoff.get(
+                        cache_key, cls._CAPABILITY_PROBE_RETRY_SECONDS
+                    )
+                    cls._capability_retry_backoff[cache_key] = min(
+                        delay * 2.0, cls._CAPABILITY_PROBE_RETRY_MAX_SECONDS
+                    )
+                else:
+                    delay = cls._CAPABILITY_PROBE_RETRY_SECONDS
+                    cls._capability_retry_backoff.pop(cache_key, None)
+                cls._capability_retry_after[cache_key] = time.monotonic() + delay
             else:
                 cls._capability_retry_after.pop(cache_key, None)
+                cls._capability_retry_backoff.pop(cache_key, None)
             return info
 
     @staticmethod
@@ -16175,6 +16212,12 @@ class LlamaCppBackend:
         scrubbed for the same bytes without the heading).
         """
         lowered = (output or "").lower()
+
+        # First: every branch below advises reinstall, memory or administrator,
+        # none of which lift a refusal to load a file that is present.
+        blocked = code_integrity_block_reason(returncode) or code_integrity_block_reason(output)
+        if blocked is not None:
+            return code_integrity_user_message(binary or "the llama.cpp runtime", blocked)
 
         # The dynamic loader kills llama-server before main(), so nothing below
         # matches and the fallback blames the file or memory instead. The Linux
