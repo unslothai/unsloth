@@ -5489,7 +5489,17 @@ def _strip_tool_xml_for_display(
             return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
-    return strip_outside_think(text, _strip_segment)
+    # Same masking the parser-side strip uses: these passes would otherwise edit the body of
+    # a blocked call, which is prose, so the displayed text and stored history stopped
+    # matching what the model actually said.
+    from core.inference.tool_call_parser import _mask_blocked_bodies, _unmask_blocked_bodies
+
+    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names)
+    result = strip_outside_think(masked, _strip_segment)
+    if not bodies:
+        return result
+    restored = _unmask_blocked_bodies(result, bodies)
+    return restored if restored is not None else strip_outside_think(text, _strip_segment)
 
 
 class _ReasoningSpanGuard:

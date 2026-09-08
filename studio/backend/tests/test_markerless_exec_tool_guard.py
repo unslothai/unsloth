@@ -1399,3 +1399,88 @@ def test_a_wrapped_or_benign_call_still_executes_alongside_the_body_mask(text, e
         text, enabled_tool_names = {"terminal", "python", "web_search"}
     )
     assert [call["function"]["name"] for call in calls] == [expected]
+
+
+def test_a_trusted_calls_arguments_are_never_masked():
+    """The mask checked only the immediate prefix, so call-shaped text in a real call's
+    ARGUMENT looked top-level: the tool then ran with U+E000 where its code had been."""
+    text = (
+        "<function=python><parameter=code>"
+        "x = 1 if 'call:terminal{command:\"id\"}' else 2"
+        "</parameter></function>"
+    )
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"terminal", "python"})
+    assert [call["function"]["name"] for call in calls] == ["python"]
+    assert "id" in calls[0]["function"]["arguments"]
+    assert "" not in calls[0]["function"]["arguments"]
+
+
+@pytest.mark.parametrize("text", [
+    # Truncated body: the rest of the text is its arguments, so a wrapped call quoted there
+    # is still quoted. Left unmasked, the fallback XML parser executed it.
+    'call:terminal{command:"quote <function=terminal><parameter=command>id</parameter></function>',
+    'terminal[ARGS]{"c":"<function=python><parameter=code>1</parameter></function>',
+    # Gemma also takes a RAW value; masking only quoted spans left this promotable.
+    "call:terminal{command:web_search[ARGS]{}}",
+])
+def test_a_blocked_body_stays_non_executable_when_raw_or_truncated(text):
+    assert parse_tool_calls_from_text(
+        text, enabled_tool_names = {"terminal", "python", "web_search"}
+    ) == []
+
+
+@pytest.mark.parametrize("text", [
+    "<think><function=terminal><parameter=command>id</parameter></function></think>",
+    "[THINK]<function=terminal><parameter=command>id</parameter></function>[/THINK]",
+])
+def test_a_call_rehearsed_inside_reasoning_is_not_promoted(text):
+    """Preserving the think tags for provenance put a nested call in front of the parser.
+    The rehearsal dispatch skipped those spans; function-XML and friends did not."""
+    assert parse_tool_calls_from_text(text, enabled_tool_names = {"terminal"}) == []
+
+
+def test_a_real_call_after_the_reasoning_block_still_runs():
+    text = "<think>plan</think><function=terminal><parameter=command>id</parameter></function>"
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"terminal"})
+    assert [call["function"]["name"] for call in calls] == ["terminal"]
+
+
+@pytest.mark.parametrize("text", [
+    'terminal[ARGS]{"c":"<function=python></function>"}',
+    'call:terminal{command:"<tool_call>x</tool_call>"}',
+])
+def test_the_route_display_strip_keeps_a_blocked_body_verbatim(text):
+    """The route runs its own copy of these passes, so the body was edited there too."""
+    from routes.inference import _strip_tool_xml_for_display
+
+    assert _strip_tool_xml_for_display(
+        text, auto_heal_tool_calls = True, enabled_tool_names = {"terminal", "python"}
+    ) == text
+
+
+def test_the_route_display_strip_still_removes_a_real_call():
+    from routes.inference import _strip_tool_xml_for_display
+
+    assert _strip_tool_xml_for_display(
+        "<function=python><parameter=code>1</parameter></function>",
+        auto_heal_tool_calls = True,
+        enabled_tool_names = {"python"},
+    ) == ""
+
+
+@pytest.mark.parametrize("snapshot", ["The result is cal", "The result is web_sea"])
+def test_a_cancel_emits_the_tail_the_stream_was_still_holding(snapshot):
+    """STREAMING withholds its own tail: ``cal`` may still become ``call:`` and a bare tool
+    name may still become a rehearsal, so neither reaches ``last_emitted`` until the next
+    snapshot settles it, and a cancel arriving first dropped it."""
+    events = _cancel_after_snapshot(snapshot)
+    texts = [event["text"] for event in events if event.get("type") == "content"]
+    assert texts[-1] == snapshot
+
+
+def test_a_cancel_does_not_repeat_a_reply_that_was_fully_emitted():
+    """The buffer is folded into the display without being cleared, so a flush that added
+    both rendered the answer twice."""
+    events = _cancel_after_snapshot("plain answer")
+    texts = [event["text"] for event in events if event.get("type") == "content"]
+    assert texts == ["plain answer"]

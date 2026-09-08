@@ -1,7 +1,7 @@
 {
   "core.inference.tool_call_parser": {
     "_balanced_bracket_end": "19de8fb63babb0861475879bfbc13edd8efde741a2354b8bee9028d598a0c92d",
-    "_blocked_markerless_body_spans": "41a6886372e6824a3cf33f89e650cd1f64b35113b63f1cf84a947f404d4c02a1",
+    "_blocked_markerless_body_spans": "82faae85270bdaec98ecd13dd94615d41967e98ca671b711aedd8a51f427808f",
     "_consume_mistral_call": "813544e2d389e368c2d6c77f333ae1d07409d9cf0d3bdad8735c116577bcd380",
     "_disabled_gemma_call_end_containing_signal": "c08417f20bd3f6c67d09c63f750894aa02104faef091f31dba29c57e585ac69a",
     "_find_outside_json_strings": "cf83e50f5e7308aae25758d71b706f91c87e690bc6fdddb24605671fb67e3788",
@@ -22,7 +22,7 @@
     "_leading_json_value_end": "65730eca2c69dcccfabe521051483c853939c27c91d2ff02e0e10654ab0a65d0",
     "_llama3_kv_value": "9a358426c0018864e7fa5c041eb4b721006aae470456f95be7f8cea2c8314490",
     "_marker_inside_leading_envelope": "9221375eecada36956b1d2ccc43dca17b34ded6de72c19e424a9902fc3bbe91a",
-    "_mask_blocked_bodies": "5e64ebabd81ba7508f43666eb4d24155ec7975c2afb425caf15dbe5e3c8098df",
+    "_mask_blocked_bodies": "7781f805feb19b92520df056d5ee478bc4bc2d2ad6607aa2238d1ed4d158e518",
     "_mistral_region_end": "4319a6b9f647d1623d8cedcfaa1fcdef1e661fde04d42a01ea3bb98f3726f9e1",
     "_normalize_for_repeat": "2548cc8fc8483a98540456d2d6fb138a2a168a84cdc780c38f4a71c34ec95f3a",
     "_parse_bare_rehearsals": "c809e331067827ef1f773b2613bbcb9c9c1138f55e12bd37cbfe35919cceba54",
@@ -65,7 +65,7 @@
     "is_reprompt_restatement": "5a3fe224ba657bf9ea1706ef997b81e5c97535b0e03d6699962f386ecbaf15a0",
     "is_short_intent_without_action": "1ed247c04b2b2bae560ef52224328500d36644b68274015b8efd2c2b9072ac4b",
     "leading_bare_gemma_call_is_promotable": "f97184954908b5ae23160649f0aadf26a8f3f1b65534d9cc350d91504f478a94",
-    "parse_tool_calls_from_text": "0aed8cf7d958750bd976fcf81f1e17e0d21f3e56b701146b26cc478dfdc86e81",
+    "parse_tool_calls_from_text": "504e5ea7ae128e882236ce50ac5f24a3d1a793d6a47c0664534e4cc6a1b8db40",
     "promotable_gemma_call_pos": "70c768036fb37edebc476d8136d5e47e1fb5e6b6691b0cd47becc687552f3071",
     "repeated_result_message": "d6e89e731201e216a32e40ccaadc19eaf0f796cee28f4af73675b731666f7e27",
     "reprompt_to_act_message": "27b5a6e3694684acde1db0e63b2415462f24ab5a5825e37a30f00912ebcac01f",

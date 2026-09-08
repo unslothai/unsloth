@@ -1662,7 +1662,12 @@
       "_mask_blocked_bodies": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, enabled_tool_names"
+        "signature": "text: str, enabled_tool_names, *, think: bool=False"
+      },
+      "_merge_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "spans: list"
       },
       "_mistral_region_end": {
         "decorators": [],
@@ -1763,6 +1768,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, pos: int"
+      },
+      "_strictly_inside": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "spans: list, pos: int"
       },
       "_string_content_spans": {
         "decorators": [],

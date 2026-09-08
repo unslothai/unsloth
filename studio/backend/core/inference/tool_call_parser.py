@@ -26,6 +26,7 @@ Missing closing tags / brackets are tolerated: models often truncate mid-stream.
 from __future__ import annotations
 
 import json
+import bisect
 import re
 from typing import Any, Optional
 
@@ -701,39 +702,71 @@ _MARKERLESS_TRUSTED_PREFIXES = (
 )
 
 
+def _merge_spans(spans: list) -> list:
+    """``spans`` sorted and merged into a disjoint, ordered list."""
+    merged: list = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            continue
+        merged.append((start, end))
+    return merged
+
+
+def _strictly_inside(spans: list, pos: int) -> bool:
+    """Whether ``pos`` sits INSIDE one of ``spans`` rather than opening it: a blocked
+    rehearsal is itself tool markup, so its own span starts where it does."""
+    i = bisect.bisect_right(spans, (pos, pos)) - 1
+    return i >= 0 and spans[i][0] < pos < spans[i][1]
+
+
 def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
-    """``(start, end)`` of the argument body of every blocked markerless call, ordered."""
+    """``(start, end)`` of the argument body of every blocked markerless call, ordered.
+
+    The WHOLE balanced body, not just the strings in it: Gemma also takes a raw value, and
+    ``call:terminal{command:web_search[ARGS]{}}`` promoted the rehearsal out of it. A body
+    that never closes runs to the end of the text, which is what the parser already treats
+    it as; leaving that tail visible let a wrapped call inside a truncated blocked call
+    execute. Both are why this walks candidates in order instead of per pattern."""
     spans: list = []
-    # No body can close past the last ``}``. Without this the balanced scan restarts at every
-    # opener and runs to EOF, which a stream of unclosed ``NAME[ARGS]{`` makes quadratic (the
-    # shape ``test_blocked_span_collection_is_one_forward_pass`` exists to keep out).
-    last_close = text.rfind("}")
-    if last_close < 0:
-        return []
+    candidates: list = []
     if _GEMMA_BARE_SENTINEL in text:
-        for m in _GEMMA_BARE_TC_RE.finditer(text):
-            head = text[: m.start()].rstrip()
-            if (
-                m.end() > last_close
-                or any(head.endswith(p) for p in _MARKERLESS_TRUSTED_PREFIXES)
-                or not _markerless_blocked_execution(m.group(1), enabled_tool_names)
-            ):
-                continue
-            end = _gemma_body_brace_end(text, m.end() - 1)
-            if end is not None:
-                spans.extend(_string_content_spans(text, m.end(), end))
+        candidates += [("gemma", m) for m in _GEMMA_BARE_TC_RE.finditer(text)]
     if "[ARGS]" in text:
-        for m in _tool_healing._REHEARSAL_RE.finditer(text):
+        candidates += [("rehearsal", m) for m in _tool_healing._REHEARSAL_RE.finditer(text)]
+    if candidates:
+        candidates.sort(key = lambda c: c[1].start())
+        # A candidate inside a trusted call's markup is that call's ARGUMENT text. Masking it
+        # rewrote the arguments the tool then ran with, so the code executed came back
+        # corrupted; only the immediate prefix was checked before.
+        # Merged and bisected, not scanned: the spans and the candidates both grow with the
+        # input, and testing every span per candidate is quadratic on a turn full of blocked
+        # rehearsals (``test_blocked_span_lookup_is_linear_in_the_gemma_scan``).
+        trusted = _merge_spans(_tool_healing._tool_call_markup_spans(text))
+        covered = 0
+        for kind, m in candidates:
             head = text[: m.start()].rstrip()
             if (
-                m.end() > last_close
-                or any(head.endswith(p) for p in _MARKERLESS_TRUSTED_PREFIXES)
+                m.start() < covered
+                # Strictly inside: a blocked rehearsal IS tool markup, so its own span starts
+                # where it does and an ``<=`` here excluded every one of them.
+                or _strictly_inside(trusted, m.start())
+                or any(head.endswith(prefix) for prefix in _MARKERLESS_TRUSTED_PREFIXES)
                 or not _markerless_blocked_execution(m.group(1), enabled_tool_names)
             ):
                 continue
-            end = _tool_healing._balanced_json_span(text, m.end())
-            if end is not None:
-                spans.extend(_string_content_spans(text, m.end() + 1, end))
+            if kind == "gemma":
+                body_start, end = m.end(), _gemma_body_brace_end(text, m.end() - 1)
+            else:
+                body_start, end = m.end() + 1, _tool_healing._balanced_json_span(text, m.end())
+            if end is None:
+                # Truncated: the rest of the text is this call's arguments, so nothing behind
+                # it is a sibling. Stopping here also keeps the walk linear, which is what
+                # ``test_blocked_span_collection_is_one_forward_pass`` pins.
+                spans.append((body_start, len(text)))
+                break
+            spans.append((body_start, end))
+            covered = end
     lead = _leading_json_value_end(text)
     if lead and _markerless_blocked_execution(
         _top_level_bare_json_name(text[:lead]), enabled_tool_names
@@ -758,9 +791,17 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
     return merged
 
 
-def _mask_blocked_bodies(text: str, enabled_tool_names) -> tuple:
-    """``(masked_text, bodies)``; ``bodies`` restores them in order."""
+def _mask_blocked_bodies(text: str, enabled_tool_names, *, think: bool = False) -> tuple:
+    """``(masked_text, bodies)``; ``bodies`` restores them in order.
+
+    ``think`` also hides reasoning blocks, for the PARSE path only. A call rehearsed inside
+    one must not execute, which the rehearsal dispatch honoured and the function-XML,
+    python-tag, DeepSeek and Kimi dispatches did not; preserving the tags for provenance is
+    what put a nested call in front of them. Display keeps the block verbatim, so the strip
+    path passes ``think=False`` and ``strip_outside_think`` handles it there."""
     spans = _blocked_markerless_body_spans(text, enabled_tool_names)
+    if think:
+        spans = sorted(spans + _tool_healing._think_spans_outside_tool_markup(text))
     if not spans:
         return text, []
     out: list = []
@@ -1859,7 +1900,7 @@ def parse_tool_calls_from_text(
 
     # Equal-length mask, so the spans this returns still index the caller's text: a blocked
     # call's arguments are quoted prose, and a wrapped call nested there was promoted.
-    content, _blocked_bodies = _mask_blocked_bodies(content, enabled_tool_names)
+    content, _blocked_bodies = _mask_blocked_bodies(content, enabled_tool_names, think = True)
 
     # A leading bare-JSON value is decided FIRST: a string argument quoting tool markup (XML or a Mistral trigger) must
     # stay data, so the bare-JSON parser takes the outer call before any other pass. Precedes the Mistral guard, whose

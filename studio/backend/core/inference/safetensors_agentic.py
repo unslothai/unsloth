@@ -728,16 +728,26 @@ def run_safetensors_tool_loop(
             return _streaming_stripper.strip(_strip_mistral_reasoning(text))
 
         def _cancelled_buffer_text() -> str:
-            """Display text still held in BUFFERING, which a cancel would otherwise drop:
-            a blocked call is prose the parser never executes, so returning before the
-            resolution below loses text the stream never sent. The strip removes promotable
-            markup, so an aborted real call contributes only its surrounding prose."""
-            if detect_state != _state_buffering or not content_buffer:
+            """Display text a cancel would otherwise drop, in any state.
+
+            BUFFERING holds a blocked call, which is prose the parser never executes, so
+            returning before the resolution below loses text the stream never sent. STREAMING
+            withholds its own tail: ``cal`` may still become ``call:`` and a bare tool name
+            may still become a rehearsal, so both are kept out of ``last_emitted`` until the
+            next snapshot settles them, and a cancel arriving first lost them too. The strip
+            is the final one, which removes promotable markup, so an aborted real call
+            contributes only its surrounding prose."""
+            # Only BUFFERING still holds its text separately; the transition to STREAMING
+            # folds the buffer in without clearing it, so adding both there doubles the reply.
+            held = (
+                cumulative_display + content_buffer
+                if detect_state == _state_buffering
+                else cumulative_display
+            )
+            if not held:
                 return ""
             cleaned = strip_tool_markup(
-                cumulative_display + content_buffer,
-                final = True,
-                enabled_tool_names = _enabled_tool_names,
+                held, final = True, enabled_tool_names = _enabled_tool_names
             )
             return cleaned if len(cleaned) > len(last_emitted) else ""
 
