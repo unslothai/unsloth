@@ -88,6 +88,22 @@ def _gemini_sse(events: list[dict]) -> bytes:
     return ("\n".join(chunks) + "\n").encode("utf-8")
 
 
+def _tool(*, name = "f", **fields):
+    """One function tool; ``fields`` fill out the body beside its name."""
+    return {"type": "function", "function": {"name": name, **fields}}
+
+
+def _tools(*, name = "f", **fields):
+    """A one-tool catalog in the OpenAI wire shape."""
+    return [_tool(name = name, **fields)]
+
+
+def _function_declarations(captured):
+    """The functionDeclarations Gemini was sent, or None when the request carried no tools."""
+    tools = captured["body"].get("tools") or []
+    return next((t["functionDeclarations"] for t in tools if "functionDeclarations" in t), None)
+
+
 def _event(parts, *, finish_reason = "STOP", usage = None, **candidate):
     """One Gemini SSE event: a model turn carrying ``parts``, plus optional usage metadata."""
     event = {
@@ -1728,22 +1744,11 @@ def test_openai_tools_translated_into_function_declarations(monkeypatch):
     tools[].functionDeclarations envelope."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_weather",
-                    "description": "Look up the weather for a city.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "city": {"type": "string"},
-                        },
-                        "required": ["city"],
-                    },
-                },
-            }
-        ],
+        tools = _tools(
+            name = "get_weather",
+            description = "Look up the weather for a city.",
+            parameters = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
+        ),
         tool_choice = {"type": "function", "function": {"name": "get_weather"}},
     )
     tools_arr = captured["body"].get("tools") or []
@@ -1763,12 +1768,7 @@ def test_tool_choice_auto_maps_to_function_calling_mode_auto(monkeypatch):
     """tool_choice="auto" maps to toolConfig.functionCallingConfig.mode."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
-            {
-                "type": "function",
-                "function": {"name": "noop", "parameters": {"type": "object"}},
-            }
-        ],
+        tools = _tools(name = "noop", parameters = {"type": "object"}),
         tool_choice = "auto",
     )
     fcc = captured["body"]["toolConfig"]["functionCallingConfig"]
@@ -1995,11 +1995,7 @@ def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):
             }
         ],
     )
-    tools_arr = captured["body"].get("tools") or []
-    decls = next(
-        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
-        None,
-    )
+    decls = _function_declarations(captured)
     assert decls is not None, captured["body"]
     params = decls[0]["parameters"]
     assert "additionalProperties" not in params
@@ -2048,11 +2044,7 @@ def test_function_declarations_inline_local_refs_into_gemini_schema(monkeypatch)
             }
         ],
     )
-    tools_arr = captured["body"].get("tools") or []
-    decls = next(
-        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
-        None,
-    )
+    decls = _function_declarations(captured)
     assert decls is not None, captured["body"]
     params = decls[0]["parameters"]
     assert "$defs" not in params
@@ -2099,11 +2091,7 @@ def test_function_declarations_inline_local_refs_in_anyof_and_items(monkeypatch)
             }
         ],
     )
-    tools_arr = captured["body"].get("tools") or []
-    decls = next(
-        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
-        None,
-    )
+    decls = _function_declarations(captured)
     assert decls is not None
     params = decls[0]["parameters"]
     primary = params["properties"]["primary"]
@@ -2152,11 +2140,7 @@ def test_function_declarations_self_referential_schema_terminates(monkeypatch):
             }
         ],
     )
-    tools_arr = captured["body"].get("tools") or []
-    decls = next(
-        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
-        None,
-    )
+    decls = _function_declarations(captured)
     assert decls is not None
     root = decls[0]["parameters"]["properties"]["root"]
     assert root.get("type") == "object"
@@ -2516,27 +2500,15 @@ def test_function_schema_nullable_type_array_flattens(monkeypatch):
     translate the union form."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "lookup",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "city": {"type": ["string", "null"]},
-                            "score": {"type": ["number", "null"]},
-                        },
-                    },
-                },
-            }
-        ],
+        tools = _tools(
+            name = "lookup",
+            parameters = {
+                "type": "object",
+                "properties": {"city": {"type": ["string", "null"]}, "score": {"type": ["number", "null"]}},
+            },
+        ),
     )
-    decls = next(
-        t["functionDeclarations"]
-        for t in captured["body"].get("tools") or []
-        if "functionDeclarations" in t
-    )
+    decls = _function_declarations(captured)
     params = decls[0]["parameters"]["properties"]
     assert params["city"]["type"] == "string"
     assert params["city"]["nullable"] is True
@@ -2568,12 +2540,7 @@ def test_image_models_drop_function_declarations(monkeypatch):
         monkeypatch,
         model = "gemini-2.5-flash-image",
         enabled_tools = ["image_generation"],
-        tools = [
-            {
-                "type": "function",
-                "function": {"name": "noop", "parameters": {"type": "object"}},
-            }
-        ],
+        tools = _tools(name = "noop", parameters = {"type": "object"}),
     )
     assert captured["body"].get("tools") is None
     assert captured["body"]["generationConfig"]["responseModalities"] == ["TEXT", "IMAGE"]
@@ -2789,37 +2756,18 @@ def test_function_schema_anyof_null_variant_flattens_to_nullable(monkeypatch):
     non-null branch with `nullable: true`."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "lookup",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "label": {
-                                "anyOf": [
-                                    {"type": "string"},
-                                    {"type": "null"},
-                                ]
-                            },
-                            "count": {
-                                "anyOf": [
-                                    {"type": "integer"},
-                                    {"type": "null"},
-                                ]
-                            },
-                        },
-                    },
+        tools = _tools(
+            name = "lookup",
+            parameters = {
+                "type": "object",
+                "properties": {
+                    "label": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                    "count": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
                 },
-            }
-        ],
+            },
+        ),
     )
-    decls = next(
-        t["functionDeclarations"]
-        for t in captured["body"].get("tools") or []
-        if "functionDeclarations" in t
-    )
+    decls = _function_declarations(captured)
     params = decls[0]["parameters"]["properties"]
     assert params["label"]["type"] == "string"
     assert params["label"]["nullable"] is True
@@ -3052,12 +3000,7 @@ def test_gemini_tool_choice_none_disables_function_declarations(monkeypatch):
     captured = _capture_body(
         monkeypatch,
         tool_choice = "none",
-        tools = [
-            {
-                "type": "function",
-                "function": {"name": "lookup", "parameters": {"type": "object"}},
-            }
-        ],
+        tools = _tools(name = "lookup", parameters = {"type": "object"}),
     )
     assert captured["body"].get("tools") is None, captured["body"]
 
@@ -3068,32 +3011,15 @@ def test_schema_anyof_multitype_with_null_keeps_anyof_and_nullable(monkeypatch):
     Gemini rejects `{"type":"null"}` inside anyOf."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "lookup",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "either": {
-                                "anyOf": [
-                                    {"type": "string"},
-                                    {"type": "integer"},
-                                    {"type": "null"},
-                                ]
-                            },
-                        },
-                    },
-                },
-            }
-        ],
+        tools = _tools(
+            name = "lookup",
+            parameters = {
+                "type": "object",
+                "properties": {"either": {"anyOf": [{"type": "string"}, {"type": "integer"}, {"type": "null"}]}},
+            },
+        ),
     )
-    decls = next(
-        t["functionDeclarations"]
-        for t in captured["body"].get("tools") or []
-        if "functionDeclarations" in t
-    )
+    decls = _function_declarations(captured)
     either = decls[0]["parameters"]["properties"]["either"]
     assert either.get("nullable") is True
     inner = either.get("anyOf")
@@ -3782,26 +3708,12 @@ def test_schema_multitype_union_with_null_preserves_anyof(monkeypatch):
     function contract."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "lookup",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "either": {"type": ["string", "integer", "null"]},
-                        },
-                    },
-                },
-            }
-        ],
+        tools = _tools(
+            name = "lookup",
+            parameters = {"type": "object", "properties": {"either": {"type": ["string", "integer", "null"]}}},
+        ),
     )
-    decls = next(
-        t["functionDeclarations"]
-        for t in captured["body"].get("tools") or []
-        if "functionDeclarations" in t
-    )
+    decls = _function_declarations(captured)
     either = decls[0]["parameters"]["properties"]["either"]
     assert either.get("nullable") is True
     inner = either.get("anyOf")
@@ -4230,12 +4142,7 @@ def test_gemini_forced_function_tool_choice_drops_hosted_builtins(monkeypatch):
     captured = _capture_body(
         monkeypatch,
         enabled_tools = ["web_search", "code_execution"],
-        tools = [
-            {
-                "type": "function",
-                "function": {"name": "lookup", "parameters": {"type": "object"}},
-            }
-        ],
+        tools = _tools(name = "lookup", parameters = {"type": "object"}),
         tool_choice = {
             "type": "function",
             "function": {"name": "lookup"},
@@ -4260,12 +4167,7 @@ def test_gemini_forced_function_tool_choice_drops_image_generation(monkeypatch):
             "type": "function",
             "function": {"name": "lookup"},
         },
-        tools = [
-            {
-                "type": "function",
-                "function": {"name": "lookup", "parameters": {"type": "object"}},
-            }
-        ],
+        tools = _tools(name = "lookup", parameters = {"type": "object"}),
     )
     body = captured["body"]
     assert body["generationConfig"].get("responseModalities") == ["TEXT"], body
@@ -4691,15 +4593,7 @@ def test_openai_responses_forced_function_tool_choice_drops_hosted_tools(monkeyp
             top_p = 0.95,
             max_tokens = 16,
             enabled_tools = ["web_search", "code_execution", "image_generation"],
-            tools = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "lookup_record",
-                        "parameters": {"type": "object", "properties": {}},
-                    },
-                },
-            ],
+            tools = _tools(name = "lookup_record", parameters = {"type": "object", "properties": {}}),
             tool_choice = {
                 "type": "function",
                 "function": {"name": "lookup_record"},
