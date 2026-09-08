@@ -559,10 +559,10 @@ def _torchcodec_spec_is_installable(spec: str) -> bool:
     return True
 
 
-def _select_torchcodec_spec(torch_version: "str | None") -> str:
+def _select_torchcodec_spec(torch_version: "str | None") -> "str | None":
     """Map an installed torch version (e.g. '2.11.0+cu128') to the torchcodec spec built
-    against it. Falls back to _TORCHCODEC_DEFAULT_SPEC for torch <=2.4, a non-2.x major, or
-    an unparseable/missing version. Pure function."""
+    against it, or None below the oldest known torch minor. Falls back to
+    _TORCHCODEC_DEFAULT_SPEC for a non-2.x major or an unparseable/missing version."""
     if not torch_version:
         return _TORCHCODEC_DEFAULT_SPEC
     release = str(torch_version).split("+", 1)[0]  # drop +cu128/+rocm7.2/+cpu
@@ -575,6 +575,8 @@ def _select_torchcodec_spec(torch_version: "str | None") -> str:
         return _TORCHCODEC_DEFAULT_SPEC
     if major != 2:
         return _TORCHCODEC_DEFAULT_SPEC
+    if minor < min(_TORCHCODEC_TORCH_SPECS):
+        return None
     # Clamp to the ABI-stable floor, never the 0.11 row: 0.11 is locked to torch 2.11 exactly.
     minor = min(minor, _TORCHCODEC_MAX_KNOWN_MINOR)
     return _TORCHCODEC_TORCH_SPECS.get(minor, _TORCHCODEC_DEFAULT_SPEC)
@@ -7796,6 +7798,8 @@ def install_python_stack() -> int:
     elif not _codec_torch_ver:
         _progress("torchcodec (skipped, torch version unknown)")
         _note("could not read the installed torch version -- leaving torchcodec alone")
+    elif _select_torchcodec_spec(_codec_torch_ver) is None:
+        _progress("torchcodec (skipped, unsupported torch version)")
     elif not _torchcodec_spec_is_installable(_select_torchcodec_spec(_codec_torch_ver)):
         # This platform published no wheel in the window this torch selects. Skipping is what
         # such a host got before this step existed; attempting it would end the install.

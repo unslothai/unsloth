@@ -262,6 +262,37 @@ def test_select_torchcodec_spec_falls_back_on_unknown_torch():
         assert ips._select_torchcodec_spec(value) == ips._TORCHCODEC_DEFAULT_SPEC
 
 
+def test_select_torchcodec_spec_skips_older_torch():
+    ips = _load_install_python_stack()
+    for minor in range(min(ips._TORCHCODEC_TORCH_SPECS)):
+        for suffix in (".0", ".1+cu121", ".0+cpu", ".0rc1"):
+            assert ips._select_torchcodec_spec(f"2.{minor}{suffix}") is None
+
+
+@pytest.mark.parametrize("version", ["2.3.0", "2.4.0+cu121"])
+def test_torchcodec_step_skips_older_torch(version):
+    from textwrap import dedent
+    from unittest.mock import Mock
+
+    ips = _load_install_python_stack()
+    namespace = vars(ips).copy()
+    namespace.update(
+        NO_TORCH = False,
+        PLATFORM_LACKS_TORCHCODEC_WHEEL = False,
+        _probe_installed_torch_version = lambda: version,
+        _progress = Mock(),
+        _note = Mock(),
+        _torchcodec_spec_is_installable = Mock(side_effect = AssertionError("must skip")),
+        pip_install_try = Mock(side_effect = AssertionError("must not install")),
+    )
+    source = Path(ips.__file__).read_text(encoding = "utf-8")
+    step = source.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
+    exec(dedent(step[step.index("    _codec_torch_ver = None") :]), namespace)
+    namespace["_progress"].assert_called_once_with(
+        "torchcodec (skipped, unsupported torch version)"
+    )
+
+
 def test_select_torchcodec_spec_matches_pyproject_audio_extras():
     """The installer's specs and the pip extras must not drift apart."""
     ips = _load_install_python_stack()
@@ -551,7 +582,7 @@ def test_the_installer_never_installs_what_the_guard_rejects(monkeypatch):
     ips = _load_install_python_stack()
     probes = [f"0.{n}.0" for n in range(0, 20)]
 
-    for minor in range(5, 15):  # torch 2.5 .. 2.14, i.e. past the last lockstep row
+    for minor in range(min(ips._TORCHCODEC_TORCH_SPECS), 15):
         torch_v = f"2.{minor}.0"
         specifier = SpecifierSet(ips._select_torchcodec_spec(torch_v).split("torchcodec", 1)[1])
         admitted = [p for p in probes if specifier.contains(p)]
@@ -678,7 +709,7 @@ def test_the_installer_never_selects_a_spec_with_no_wheel_here(monkeypatch):
     ips = _load_install_python_stack()
     for label in _SIM_HOSTS:
         for python in ((3, 9), (3, 10), (3, 12), (3, 13), (3, 14)):
-            for minor in range(4, 15):
+            for minor in range(min(ips._TORCHCODEC_TORCH_SPECS), 15):
                 _patch_host(ips, monkeypatch, label)
                 monkeypatch.setattr(ips.sys, "version_info", python + (0, "final", 0))
                 spec = ips._select_torchcodec_spec(f"2.{minor}.0")
