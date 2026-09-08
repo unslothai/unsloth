@@ -678,7 +678,7 @@ fn llama_runtime_fingerprint_at(root: &Path) -> Option<String> {
 }
 
 /// How many files a directory holds, how many bytes they total, how many links
-/// sit beside them and how many of the files can be executed. A subdirectory is
+/// sit beside them and what their permission bits add up to. A subdirectory is
 /// not a file, so it cannot read as a binary.
 ///
 /// The last two counters are here because the first two answered the same for
@@ -694,7 +694,7 @@ fn counted(entries: fs::ReadDir) -> String {
     let mut count: u64 = 0;
     let mut bytes: u64 = 0;
     let mut links: u64 = 0;
-    let mut executable: u64 = 0;
+    let mut modes: u64 = 0;
     for entry in entries.flatten() {
         let Ok(meta) = entry.metadata() else {
             continue;
@@ -709,16 +709,19 @@ fn counted(entries: fs::ReadDir) -> String {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                // Any execute bit, the same question os.access(X_OK) asks for the
-                // owner that will run it. Windows has no bit to read, so the
-                // counter stays zero there and the other three carry the tree.
-                if meta.permissions().mode() & 0o111 != 0 {
-                    executable += 1;
-                }
+                // The permission bits themselves, not a count of "has some execute
+                // bit". os.access(X_OK) asks whether THIS user may run the file,
+                // and the owner's bits decide that on their own: 0755 -> 0655
+                // leaves group and other executable while the owner can no longer
+                // run it, so a counter of any-bit-set never moved for the state
+                // health rejects. Summed rather than folded, since read_dir order
+                // is unspecified. Windows has no bits to read and stays at zero,
+                // where the other three carry the tree.
+                modes += u64::from(meta.permissions().mode() & 0o7777);
             }
         }
     }
-    format!("{count}:{bytes}:{links}:{executable}")
+    format!("{count}:{bytes}:{links}:{modes}")
 }
 
 fn capability_cache_path() -> Option<PathBuf> {
@@ -1823,7 +1826,18 @@ mod tests {
             mode.set_mode(0o755);
             fs::set_permissions(&server, mode).unwrap();
         }
-        fs::write(bin.join("libggml-base.so"), vec![0u8; 2048]).unwrap();
+        let library = bin.join("libggml-base.so");
+        fs::write(&library, vec![0u8; 2048]).unwrap();
+        // Explicit, not umask-dependent: the permission bits are part of the
+        // fingerprint now, so a runner with a different umask would otherwise
+        // read a different string for the same tree.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut mode = fs::metadata(&library).unwrap().permissions();
+            mode.set_mode(0o644);
+            fs::set_permissions(&library, mode).unwrap();
+        }
         bin
     }
 
@@ -2260,7 +2274,7 @@ mod tests {
         install_fake_runtime(&root);
         assert_eq!(
             llama_runtime_fingerprint_at(&root).as_deref(),
-            Some(if cfg!(unix) { "bin:2:6144:0:1" } else { "bin:2:6144:0:0" })
+            Some(if cfg!(unix) { "bin:2:6144:0:913" } else { "bin:2:6144:0:0" })
         );
         let _ = fs::remove_dir_all(&parent);
     }
@@ -2304,13 +2318,26 @@ mod tests {
         let bin = runtime_bin_dir(&root);
         fs::create_dir_all(&bin).unwrap();
         for index in 0..5000 {
-            fs::write(bin.join(format!("artifact-{index:05}.o")), [0u8; 1]).unwrap();
+            let artifact = bin.join(format!("artifact-{index:05}.o"));
+            fs::write(&artifact, [0u8; 1]).unwrap();
+            // Same reason as install_fake_runtime: the mode is fingerprinted, so
+            // it is set here rather than left to the runner's umask.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut mode = fs::metadata(&artifact).unwrap().permissions();
+                mode.set_mode(0o644);
+                fs::set_permissions(&artifact, mode).unwrap();
+            }
         }
 
         let started = Instant::now();
         let fingerprint = llama_runtime_fingerprint_at(&root);
         let elapsed = started.elapsed();
-        assert_eq!(fingerprint.as_deref(), Some("bin:5000:5000:0:0"));
+        assert_eq!(
+            fingerprint.as_deref(),
+            Some(if cfg!(unix) { "bin:5000:5000:0:2100000" } else { "bin:5000:5000:0:0" })
+        );
         assert!(
             elapsed < Duration::from_secs(2),
             "5000 files took {elapsed:?}, which is too much to spend before the window opens"
@@ -2340,7 +2367,7 @@ mod tests {
         fs::remove_file(bin.join("libggml-base.so")).unwrap();
         assert_eq!(
             llama_runtime_fingerprint_at(&linked).as_deref(),
-            Some("bin:1:4096:0:1")
+            Some(if cfg!(unix) { "bin:1:4096:0:493" } else { "bin:1:4096:0:0" })
         );
 
         let _ = fs::remove_dir_all(&parent);
@@ -2544,6 +2571,40 @@ mod tests {
         restored.set_mode(0o755);
         fs::set_permissions(&server, restored).unwrap();
         assert_eq!(before, llama_runtime_fingerprint_at(&root).unwrap());
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn losing_only_the_owners_execute_bit_moves_the_fingerprint() {
+        // Codex 3960401504, P2. os.access(X_OK) asks whether THIS user may run the
+        // file, and the owner's bits answer that on their own: 0755 -> 0655 leaves
+        // group and other executable, so a counter of "has some execute bit" never
+        // moved while installed_runtime_health flipped to
+        // llama_runtime_binaries_missing. The permission bits themselves are in the
+        // fingerprint now, so the cached Ready cannot outlive the change.
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = scratch_dir("runtime-owner-bit");
+        let root = parent.join("llama.cpp");
+        let bin = install_fake_runtime(&root);
+        let server = bin.join("llama-server");
+        let mut executable = fs::metadata(&server).unwrap().permissions();
+        executable.set_mode(0o755);
+        fs::set_permissions(&server, executable).unwrap();
+        let before = llama_runtime_fingerprint_at(&root).unwrap();
+
+        let mut owner_only = fs::metadata(&server).unwrap().permissions();
+        owner_only.set_mode(0o655);
+        fs::set_permissions(&server, owner_only).unwrap();
+        // Still executable to somebody, which is what the old counter measured.
+        assert_eq!(fs::metadata(&server).unwrap().permissions().mode() & 0o111, 0o011);
+        assert_ne!(
+            before,
+            llama_runtime_fingerprint_at(&root).unwrap(),
+            "a binary this user can no longer run is a different tree"
+        );
 
         let _ = fs::remove_dir_all(&parent);
     }

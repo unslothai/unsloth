@@ -7256,13 +7256,31 @@ def installed_runtime_health(
     # a Windows bundle unpacked on a POSIX filesystem is not a broken install. The
     # reason stays llama_runtime_binaries_missing: the repair is the same
     # reinstall, and the frontend renders that reason already.
+    # A regular file first: a directory of that name is searchable, so os.access
+    # X_OK answers true for it and exists() does too, while _file_status in the
+    # finder asks is_file() and rejects the tree. Failed extraction leaves exactly
+    # that.
     ext = ".exe" if host.is_windows else ""
     for name in ("server", "quantize"):
         binary = runtime_dir / f"llama-{name}{ext}"
-        runnable = binary.exists() if host.is_windows else os.access(binary, os.X_OK)
-        if not runnable:
+        if not _entrypoint_is_runnable(binary, host):
             return False, "llama_runtime_binaries_missing"
     return True, ""
+
+
+def _entrypoint_is_runnable(binary: Path, host: HostInfo) -> bool:
+    """Whether a runtime entrypoint is a file the loader would start.
+
+    Shared with ``_existing_install_runs`` so the keep-or-reinstall decision and
+    the launch-time verdict cannot disagree: a tree this rejects but that one
+    keeps would be repaired, left unchanged and rejected again next launch.
+    """
+    try:
+        if not binary.is_file():
+            return False
+    except OSError:
+        return False
+    return True if host.is_windows else os.access(binary, os.X_OK)
 
 
 # SIGKILL is absent: that is an OOM, not a broken image.
@@ -7326,7 +7344,7 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
     runtime_dir = install_runtime_dir(install_dir, host)
     ext = ".exe" if host.is_windows else ""
     binaries = [runtime_dir / f"llama-{name}{ext}" for name in ("server", "quantize")]
-    if not all(os.access(binary, os.X_OK) for binary in binaries):
+    if not all(_entrypoint_is_runnable(binary, host) for binary in binaries):
         return False
     try:
         # Each preflight is a no-op outside its platform.

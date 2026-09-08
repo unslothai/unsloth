@@ -669,3 +669,35 @@ def test_the_stored_settings_lookup_can_reach_its_own_database_module(monkeypatc
         "the helper must put the backend on the path itself, or the settings lookup "
         "silently answers None and the skip never happens"
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX ~ expansion")
+def test_the_finder_expands_the_override_the_way_every_other_reader_does(tmp_path, monkeypatch):
+    """Codex 3960401528, P1. ``default_managed_llama_dir``, ``get_stored_custom_llama_cpp_path``
+    and the desktop's own pinning all expand UNSLOTH_LLAMA_CPP_PATH; the finder's
+    ``Path(custom_llama_cpp)`` was the one literal read. A "~/llama.cpp" written into a
+    service unit, a .env or the Windows environment dialog reaches the process unexpanded, so
+    the finder searched a folder named ~ beside the working directory, walked past it and
+    loaded a different runtime than the probe graded and the desktop fingerprinted.
+
+    Driven against the real finder rather than read off the source: importing it costs about
+    a third of a second."""
+    backend_dir = PACKAGE_ROOT / "studio" / "backend"
+    if str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    home = tmp_path / "home"
+    build = home / "llama.cpp" / "build" / "bin"
+    build.mkdir(parents = True)
+    server = build / "llama-server"
+    server.write_text("", encoding = "utf-8")
+    os.chmod(server, 0o755)
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", "~/llama.cpp")
+    monkeypatch.chdir(tmp_path)
+    assert LlamaCppBackend._find_llama_server_binary() == str(server)

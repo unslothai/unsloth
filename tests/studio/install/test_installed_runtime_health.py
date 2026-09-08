@@ -393,3 +393,26 @@ def test_a_runtime_binary_stripped_of_its_execute_bit_is_broken(tmp_path, name):
         False,
         "llama_runtime_binaries_missing",
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+@pytest.mark.parametrize("name", ["server", "quantize"])
+def test_a_directory_where_a_runtime_entrypoint_belongs_is_broken(tmp_path, name):
+    """Codex 3960401513, P2. A directory is searchable, so os.access(X_OK) answers true for
+    one and exists() does too, while ``_file_status`` in the finder asks ``is_file()`` and
+    rejects the tree. Failed extraction and filesystem corruption both leave exactly that,
+    and it read as a healthy install.
+
+    ``_existing_install_runs`` asks the same way now, through the same helper: a tree this
+    rejects but that one keeps would be repaired, left unchanged and rejected again next
+    launch."""
+    root = _macos_tree(tmp_path)
+    binary = root / "build" / "bin" / f"llama-{name}"
+    binary.unlink()
+    binary.mkdir()
+    assert os.access(binary, os.X_OK) and binary.exists()
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (
+        False,
+        "llama_runtime_binaries_missing",
+    )
+    assert not ILP._entrypoint_is_runnable(binary, _macos_host())

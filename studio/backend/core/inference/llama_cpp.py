@@ -7687,7 +7687,17 @@ class LlamaCppBackend:
         custom_llama_cpp = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
         managed_path_marker = os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
         if custom_llama_cpp and not managed_path_marker:
-            hit, locked = _scan_pinned(_layout_candidates(Path(custom_llama_cpp)))
+            # expanduser, like every other reader of this variable:
+            # default_managed_llama_dir, get_stored_custom_llama_cpp_path and the
+            # desktop's own pinning all expand it, and the literal lookup here was
+            # the only one that did not. A "~/llama.cpp" written into a service
+            # unit, a .env or the Windows environment dialog reaches the process
+            # unexpanded, and the literal form made this search a folder named ~
+            # beside the working directory, walk past it, and load a different
+            # runtime than every other component was reporting on.
+            hit, locked = _scan_pinned(
+                _layout_candidates(Path(custom_llama_cpp).expanduser())
+            )
             if locked is not None:
                 return _unavailable(locked)
             if hit:
@@ -26694,7 +26704,10 @@ class LlamaCppBackend:
             # UNSLOTH_LLAMA_CPP_PATH env var (custom install dir)
             custom_dir = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
             if custom_dir:
-                install_roots.append(Path(custom_dir))
+                # expanduser to match _find_llama_server_binary: the allowlist has
+                # to name the tree discovery actually spawns from, or a server
+                # started out of an expanded ~ is one this refuses to clean up.
+                install_roots.append(Path(custom_dir).expanduser())
 
             # LLAMA_SERVER_PATH env var (exact binary path)
             exact_binaries: list[Path] = []
