@@ -207,3 +207,87 @@ def test_orphaned_duplicate_is_reindexed_instead_of_reported_complete(
         assert store.get_document(conn, replacement)["status"] == "completed"
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("status", ["pending", "running"])
+def test_failed_orphan_retry_retires_the_document_it_replaced(
+    rag_home, stub_embeddings, monkeypatch, tmp_path, status
+):
+    """A retry that fails must not leave the orphan indexing.
+
+    Startup repair scans jobs, and the orphan has none in flight (that is why it was
+    retried), so nothing else would ever move it off ``pending``: the chat would hold
+    queued sends behind a document that can no longer make progress.
+    """
+    path = tmp_path / "orphan.txt"
+    path.write_text("Revenue doubled this quarter.")
+    scope = store.thread_scope("orphan-failure")
+    conn = rag_db.get_connection()
+    try:
+        original = store.create_document(
+            conn,
+            scope = scope,
+            filename = path.name,
+            sha256 = ingestion._sha256_file(str(path)),
+            status = status,
+            stored_path = str(path),
+        )
+    finally:
+        conn.close()
+
+    def unreadable(*_args, **_kwargs):
+        raise ValueError("Cannot read document")
+
+    monkeypatch.setattr(parsers, "parse", unreadable)
+    replacement, job = ingestion.start_ingestion(
+        scope,
+        None,
+        "orphan-failure",
+        path.name,
+        str(path),
+        background = False,
+    )
+    assert replacement != original
+    assert ingestion.get_job_status(job)["status"] == "failed"
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, original) is None
+        assert store.get_document(conn, replacement)["status"] == "failed"
+    finally:
+        conn.close()
+
+
+def test_failed_reindex_keeps_the_completed_document_it_replaced(
+    rag_home, stub_embeddings, monkeypatch, tmp_path
+):
+    """The stale-embedder retry replaces a searchable document, so a failure keeps it."""
+    path = tmp_path / "stale.txt"
+    path.write_text("Revenue doubled this quarter.")
+    scope = store.thread_scope("stale-embedder")
+    original, _ = ingestion.start_ingestion(
+        scope, None, "stale-embedder", path.name, str(path), background = False
+    )
+    conn = rag_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE documents SET embedding_model='other-embedder' WHERE id=?", (original,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    def unreadable(*_args, **_kwargs):
+        raise ValueError("Cannot read document")
+
+    monkeypatch.setattr(parsers, "parse", unreadable)
+    replacement, job = ingestion.start_ingestion(
+        scope, None, "stale-embedder", path.name, str(path), background = False
+    )
+    assert replacement != original
+    assert ingestion.get_job_status(job)["status"] == "failed"
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, original)["status"] == "completed"
+    finally:
+        conn.close()
+    assert path.exists()

@@ -238,6 +238,30 @@ def _replace_old_document(
         logger.warning("failed to remove replaced document %s", old_id, exc_info = True)
 
 
+def _retire_orphan_after_failure(
+    conn, replaces: tuple[str, str | None] | None, keep_path: str
+) -> None:
+    """Drop a never-indexed document whose replacement did not complete.
+
+    Only the orphan retry qualifies. An ``empty_completed`` / stale-embedder original is
+    still ``completed`` and searchable, so a failed re-index has to leave it alone; a
+    ``pending``/``running`` original has no live job (that is why it was retried) and no
+    reconciliation reaches it, since startup repair scans jobs rather than documents. Left
+    behind it keeps the scope indexing forever and holds queued chat sends.
+    """
+    if replaces is None:
+        return
+    old_id, old_path = replaces
+    try:
+        doc = store.get_document(conn, old_id)
+        if doc is None or doc.get("status") not in {"pending", "running"}:
+            return
+        store.delete_document(conn, old_id)
+        _remove_upload(old_path, keep_path = keep_path)
+    except Exception:  # noqa: BLE001 - cleanup must not mask the original failure
+        logger.warning("failed to retire orphaned document %s", old_id, exc_info = True)
+
+
 def _run(
     job_id: str,
     document_id: str,
@@ -249,6 +273,7 @@ def _run(
     replaces: tuple[str, str | None] | None = None,
 ) -> None:
     conn = None
+    reclaimed = False
     try:
         conn = rag_db.get_connection()
         _progress(conn, job_id, "parsing", 0.1)
@@ -358,6 +383,9 @@ def _run(
         _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
     except job_leases.JobLeaseLost:
+        # The owner that reclaimed the lease re-runs this job with the same ``replaces``, so the
+        # orphan is still someone's to retire.
+        reclaimed = True
         logger.info("ingestion job %s stopped after its lease was reclaimed", job_id)
     except Exception as exc:  # noqa: BLE001 - report any failure to the client
         logger.exception("ingestion job %s failed", job_id)
@@ -371,6 +399,10 @@ def _run(
         _emit(job_id, {"type": "error", "stage": "error", "error": str(exc)})
     finally:
         if conn is not None:
+            # Covers every exit that is not a completed ingestion: a failure, and the cancellation
+            # a deleted document returns through. A completed one already retired its orphan.
+            if not reclaimed:
+                _retire_orphan_after_failure(conn, replaces, stored_path)
             conn.close()
         job_leases.release(job_leases.INGESTION, job_id)
         with _jobs_lock:
