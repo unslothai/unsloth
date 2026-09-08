@@ -26,7 +26,7 @@ Check "uninstall.ps1 parses" ($null -eq $errors -or $errors.Count -eq 0)
 $allFns = $ast.FindAll({
         param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]
     }, $true)
-foreach ($name in @("_IsUnslothCmdShim", "_IsVenvDir", "_IsInstallerLeftoverName", "_IsStudioRoot")) {
+foreach ($name in @("_IsUnslothCmdShim", "_IsOwnerMarker", "_IsVenvDir", "_IsInstallerLeftoverName", "_IsStudioRoot")) {
     $fn = $allFns | Where-Object { $_.Name -eq $name } | Select-Object -First 1
     if (-not $fn) {
         Write-Host "  FAIL  $name not found in uninstall.ps1" -ForegroundColor Red
@@ -75,6 +75,28 @@ try {
     if ($mk) {
         Check "a linked root marker is refused" (-not (_IsStudioRoot $markLink -ManagedDefaultRoot))
         Check "and at a custom root too" (-not (_IsStudioRoot $markLink))
+        # Every marker the installers write is a plain file, so the rule holds for all of them
+        # and for the directory each one sits in.
+        foreach ($rel in @("unsloth_studio\.unsloth-studio-owned", ".venv\.unsloth-studio-owned", "share\studio.conf")) {
+            $r = Make ("lm-" + ($rel -replace '[^A-Za-z0-9]', '_')) @("keepme.txt")
+            New-Item -ItemType Directory -Path (Join-Path $r ([System.IO.Path]::GetDirectoryName($rel))) -Force | Out-Null
+            $ok = $null
+            try { $ok = New-Item -ItemType SymbolicLink -Path (Join-Path $r $rel) -Target $markTarget -ErrorAction Stop } catch { $ok = $null }
+            if ($ok) { Check "a symlinked $rel is refused" (-not (_IsStudioRoot $r -ManagedDefaultRoot)) }
+        }
+        # ... and a real marker inside a LINKED venv directory, the same trick one level up.
+        $realVenvDir = Make "lm-real-venv" @(".unsloth-studio-owned")
+        $linkedDir = Make "lm-linked-dir" @("keepme.txt")
+        $dl = $null
+        foreach ($kind in @("Junction", "SymbolicLink")) {
+            try {
+                $dl = New-Item -ItemType $kind -Path (Join-Path $linkedDir "unsloth_studio") -Target $realVenvDir -ErrorAction Stop
+                if ($dl -and -not [string]::IsNullOrWhiteSpace(@($dl.Target)[0])) { break }
+            } catch { $dl = $null }
+        }
+        if ($dl -and -not [string]::IsNullOrWhiteSpace(@($dl.Target)[0])) {
+            Check "a marker inside a linked venv dir is refused" (-not (_IsStudioRoot $linkedDir -ManagedDefaultRoot))
+        }
     } else {
         Write-Host "  SKIP  no symlink could be created here"
     }

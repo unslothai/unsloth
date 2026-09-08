@@ -29,6 +29,7 @@ assert_dir()   { _l="$1"; [ -d "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1));
 HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
 {
     sed -n '/^_remove_path() {/,/^}/p'      "$UNINSTALL_SH"
+    sed -n '/^_is_owner_marker() {/,/^}/p'  "$UNINSTALL_SH"
     sed -n '/^_is_venv_dir() {/,/^}/p'      "$UNINSTALL_SH"
     sed -n '/^_is_studio_root() {/,/^}/p'   "$UNINSTALL_SH"
     sed -n '/^_is_unsafe_root() {/,/^}/p'   "$UNINSTALL_SH"
@@ -42,6 +43,10 @@ HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
     sed -n '/^_sd_cpp_sibling_bases() {/,/^}/p'    "$UNINSTALL_SH"
 } > "$HELPERS_FILE"
 grep -q '_owned_sd_cpp_roots' "$HELPERS_FILE" || { echo "FAIL: helpers missing _owned_sd_cpp_roots"; exit 1; }
+# _is_studio_root's own helpers, or every root reads as foreign and nothing below is removed.
+for _needed in _is_owner_marker _is_venv_dir; do
+    grep -q "^$_needed() {" "$HELPERS_FILE" || { echo "FAIL: helpers missing $_needed"; exit 1; }
+done
 grep -q '_sd_cpp_sibling_bases() {' "$HELPERS_FILE" || { echo "FAIL: helpers missing _sd_cpp_sibling_bases"; exit 1; }
 # Both blocks sit inside the main removal function, so they are indented: anchor on optional
 # leading whitespace, never on column 0, or the range matches nothing and every assertion below

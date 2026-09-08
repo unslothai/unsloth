@@ -432,6 +432,25 @@ Environment:
     # install whose .exe was removed by that policy's quarantine still owns its root.
     # Plus the legacy venv shapes install.ps1 still migrates: share\studio.conf is never written
     # on Windows, so every sentinel above postdates the bin\ shim dir.
+    # A sentinel this gate may trust: a regular file, never a reparse point, and never inside a
+    # linked directory. Test-Path follows a link, and the installers write every one of these as
+    # an ordinary file, so a link at that path was planted by something else and this gate
+    # authorizes a recursive delete. bin\unsloth.cmd is deliberately not on this list: that one
+    # is content-checked instead, and bin\unsloth.exe is a hardlink by design.
+    function _IsOwnerMarker {
+        param([string]$Path, [string]$Container)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        try {
+            if (-not [string]::IsNullOrWhiteSpace($Container)) {
+                $dir = Get-Item -LiteralPath $Container -Force -ErrorAction SilentlyContinue
+                if ($dir -and (($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) { return $false }
+            }
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            return (-not $item.PSIsContainer -and
+                (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0))
+        } catch { return $false }
+    }
+
     # Is $Path a Python venv? Every signal the gate reads out of a venv directory -- pip's
     # console script, the package behind it, the moved-aside copies -- is evidence only if the
     # directory really is one. A bare name at that path is somebody else's, and the managed root
@@ -439,7 +458,9 @@ Environment:
     function _IsVenvDir {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
+        $dir = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        if (-not $dir -or -not $dir.PSIsContainer) { return $false }
+        if (($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
         if (Test-Path -LiteralPath (Join-Path $Path "pyvenv.cfg") -PathType Leaf) { return $true }
         return (Test-Path -LiteralPath (Join-Path $Path "Scripts\python.exe") -PathType Leaf)
     }
@@ -460,16 +481,13 @@ Environment:
     function _IsStudioRoot {
         param([string]$Path, [switch]$ManagedDefaultRoot)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-        # install.ps1 writes this the moment it creates the root, before the uv cache and long
-        # before the venv, so a partial install identifies itself rather than being guessed at.
-        # Never through a link: install.ps1 guarantees a regular file here, so one planted in a
-        # foreign workspace is not ours. The older sentinels below keep Test-Path on purpose.
-        $rootMarker = Get-Item -LiteralPath (Join-Path $Path ".unsloth-studio-owned") -Force -ErrorAction SilentlyContinue
-        if ($rootMarker -and -not $rootMarker.PSIsContainer -and
-            (($rootMarker.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)) { return $true }
-        if (Test-Path -LiteralPath (Join-Path $Path "share\studio.conf") -PathType Leaf) { return $true }
-        if (Test-Path -LiteralPath (Join-Path $Path "unsloth_studio\.unsloth-studio-owned") -PathType Leaf) { return $true }
-        if (Test-Path -LiteralPath (Join-Path $Path ".venv\.unsloth-studio-owned") -PathType Leaf) { return $true }
+        # install.ps1 writes the first the moment it creates the root, before the uv cache and
+        # long before the venv, so a partial install identifies itself rather than being guessed
+        # at. The last is the legacy venv name, which only the installers write.
+        if (_IsOwnerMarker (Join-Path $Path ".unsloth-studio-owned")) { return $true }
+        if (_IsOwnerMarker (Join-Path $Path "share\studio.conf")) { return $true }
+        if (_IsOwnerMarker (Join-Path $Path "unsloth_studio\.unsloth-studio-owned") (Join-Path $Path "unsloth_studio")) { return $true }
+        if (_IsOwnerMarker (Join-Path $Path ".venv\.unsloth-studio-owned") (Join-Path $Path ".venv")) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "bin\unsloth.exe") -PathType Leaf) { return $true }
         if (_IsUnslothCmdShim (Join-Path $Path "bin\unsloth.cmd")) { return $true }
         # Below here is INSIDE a venv, where pip puts it for any install of the wheel: it names

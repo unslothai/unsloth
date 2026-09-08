@@ -18,8 +18,8 @@ trap 'rm -rf "$_TMP_ROOT"' EXIT
 HOME="$_TMP_ROOT/home"
 mkdir -p "$HOME"
 
-# _is_studio_root calls both helpers, so all three come across or the suite is vacuous.
-for _name in _is_venv_dir _is_installer_leftover_name _is_studio_root; do
+# _is_studio_root calls all three helpers, so each comes across or the suite is vacuous.
+for _name in _is_owner_marker _is_venv_dir _is_installer_leftover_name _is_studio_root; do
     _fn=$(sed -n "/^$_name() {/,/^}/p" "$UNINSTALL_SH")
     if [ -z "$_fn" ]; then
         echo "  FAIL: could not extract $_name from $UNINSTALL_SH"
@@ -69,6 +69,32 @@ if _is_studio_root "$_linkmark"; then
     echo "  FAIL: ... and at a custom root too"; FAIL=$((FAIL+1))
 else
     echo "  PASS: and at a custom root too"; PASS=$((PASS+1))
+fi
+# Every marker the installers write is a plain file, so the same rule holds for all of them and
+# for the directory each one sits in. bin/unsloth is the exception, and it IS a symlink: that one
+# is validated by where it points instead.
+: > "$_TMP_ROOT/linked_marker_target"
+for _lm in "unsloth_studio/.unsloth-studio-owned" ".venv/.unsloth-studio-owned" "share/studio.conf"; do
+    _lmroot="$_TMP_ROOT/lm_$(printf '%s' "$_lm" | tr -c 'a-zA-Z0-9' '_')"
+    mkdir -p "$_lmroot/$(dirname "$_lm")"
+    : > "$_lmroot/keepme.txt"
+    ln -s "$_TMP_ROOT/linked_marker_target" "$_lmroot/$_lm"
+    if _is_studio_root "$_lmroot"; then
+        echo "  FAIL: a symlinked $_lm was claimed"; FAIL=$((FAIL+1))
+    else
+        echo "  PASS: a symlinked $_lm is refused"; PASS=$((PASS+1))
+    fi
+done
+# ... and a real marker inside a LINKED venv directory, which is the same trick one level up.
+_lmdir="$_TMP_ROOT/lm_linked_dir"
+mkdir -p "$_lmdir" "$_TMP_ROOT/lm_real_venv"
+: > "$_TMP_ROOT/lm_real_venv/.unsloth-studio-owned"
+: > "$_lmdir/keepme.txt"
+ln -s "$_TMP_ROOT/lm_real_venv" "$_lmdir/unsloth_studio"
+if _is_studio_root "$_lmdir"; then
+    echo "  FAIL: a marker inside a linked venv dir was claimed"; FAIL=$((FAIL+1))
+else
+    echo "  PASS: a marker inside a linked venv dir is refused"; PASS=$((PASS+1))
 fi
 check "current: share/studio.conf" own managed "share/studio.conf"
 check "current: unsloth_studio owner marker" own managed "unsloth_studio/.unsloth-studio-owned"

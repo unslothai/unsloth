@@ -362,7 +362,20 @@ _xdg_dir() {
 # Is $1 a Python venv? Every signal the gate reads out of a venv directory -- pip's console
 # script, the moved-aside copies -- is evidence only if the directory really is one. A bare file
 # at that path is somebody else's, and the managed root is deleted recursively.
+# A sentinel this gate may trust: a regular file, never a link, and never inside a linked
+# directory. -f follows a link, and the installers write every one of these as a plain file, so
+# a link at that path was planted by something else and this gate authorizes a recursive delete.
+# bin/unsloth is deliberately not on this list: that one IS a symlink, and it is validated by
+# where it points instead.
+_is_owner_marker() {  # marker path, optional containing dir
+    [ -f "$1" ] || return 1
+    [ -L "$1" ] && return 1
+    [ -n "${2:-}" ] && [ -L "$2" ] && return 1
+    return 0
+}
+
 _is_venv_dir() {
+    [ -L "$1" ] && return 1
     [ -d "$1" ] || return 1
     [ -f "$1/pyvenv.cfg" ] && return 0
     [ -f "$1/bin/python" ] && return 0
@@ -407,16 +420,14 @@ _is_studio_root() {
     # $2 = "managed": $_r is the default root install.sh manages, $HOME/.unsloth/studio.
     _managed="${2:-}"
     [ -n "$_r" ] || return 1
-    # install.sh writes this the moment it creates the root, before the uv cache and long before
-    # the venv, so a partial install identifies itself rather than being guessed at from leftovers.
-    # Never through a link: install.sh guarantees a regular file here, so one planted in a foreign
-    # workspace is not ours. The older sentinels below keep -f on purpose, since bin/unsloth is
-    # legitimately a symlink into the venv.
-    if [ -f "$_r/.unsloth-studio-owned" ] && [ ! -L "$_r/.unsloth-studio-owned" ]; then return 0; fi
-    [ -f "$_r/share/studio.conf" ] && return 0
-    [ -f "$_r/unsloth_studio/.unsloth-studio-owned" ] && return 0
-    # Legacy venv name. Only install.sh writes this marker, so it is proof at any root.
-    [ -f "$_r/.venv/.unsloth-studio-owned" ] && return 0
+    # install.sh writes the first the moment it creates the root, before the uv cache and long
+    # before the venv, so a partial install identifies itself rather than being guessed at from
+    # leftovers. The last is the legacy venv name; only install.sh writes that marker, so it is
+    # proof at any root.
+    _is_owner_marker "$_r/.unsloth-studio-owned" && return 0
+    _is_owner_marker "$_r/share/studio.conf" && return 0
+    _is_owner_marker "$_r/unsloth_studio/.unsloth-studio-owned" "$_r/unsloth_studio" && return 0
+    _is_owner_marker "$_r/.venv/.unsloth-studio-owned" "$_r/.venv" && return 0
     if [ -L "$_r/bin/unsloth" ]; then
         _t=$(readlink "$_r/bin/unsloth" 2>/dev/null || true)
         case "$_t" in *unsloth_studio/bin/unsloth) return 0 ;; esac
