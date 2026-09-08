@@ -2591,39 +2591,57 @@ def test_a_camera_jpeg_is_shown_the_way_up_its_exif_says():
     assert decoded.size == (4, 8), decoded.size
 
 
-def test_the_content_part_extractor_never_parses_the_envelope(monkeypatch):
-    """The awaited audio and count paths strip tool envelopes on the event loop; the
-    cut at the marker gives the same text as the parsed strip without the json-load."""
+def test_the_content_part_extractor_keeps_marker_text_and_hops_the_split(monkeypatch):
+    """An MCP tool's own text can contain the marker line with no envelope behind it, so
+    the strip is the exact split for every result -- and the awaited callers take the
+    async form, which runs that split in a worker whenever the marker is present."""
+    import asyncio
+    import inspect
+
     import routes.inference as inference_route
     from models.inference import ChatMessage
 
-    content = _envelope("what the tool said", _image())
+    docs = "the sentinel is\n" + mcp_images.SENTINEL + " followed by a JSON array"
+    for name in ("mcp__fs__shot", "read_file"):
+        _system, chat_messages, _image_b64 = inference_route._extract_content_parts(
+            [
+                ChatMessage(role = "user", content = "look"),
+                ChatMessage(role = "tool", tool_call_id = "c1", name = name, content = docs),
+            ]
+        )
+        tool = next(m for m in chat_messages if m.get("role") == "tool")
+        assert tool["content"] == docs, name
 
-    def boom(_content):
-        raise AssertionError("parsed on the loop")
+    envelope = _envelope("what the tool said", _image())
+    hops: list = []
+    original = inference_route.asyncio.to_thread
 
-    monkeypatch.setattr(inference_route, "split_mcp_images", boom)
-    _system, chat_messages, _image_b64 = inference_route._extract_content_parts(
-        [
-            ChatMessage(role = "user", content = "look"),
-            ChatMessage(role = "tool", tool_call_id = "c0", name = "mcp__fs__shot", content = content),
-        ]
+    async def counting(fn, *args, **kwargs):
+        hops.append(fn.__name__)
+        return await original(fn, *args, **kwargs)
+
+    monkeypatch.setattr(inference_route.asyncio, "to_thread", counting)
+    _system, chat_messages, _image_b64 = asyncio.run(
+        inference_route._extract_content_parts_async(
+            [
+                ChatMessage(role = "user", content = "look"),
+                ChatMessage(role = "tool", tool_call_id = "c0", name = "mcp__fs__shot", content = envelope),
+            ]
+        )
     )
+    assert hops == ["_extract_content_parts"], hops
     tool = next(m for m in chat_messages if m.get("role") == "tool")
     assert tool["content"] == "what the tool said"
-    monkeypatch.undo()
 
-    # Any other tool keeps the exact split: text that merely contains the marker line
-    # is not an envelope and loses nothing.
-    docs = "the sentinel is\n" + mcp_images.SENTINEL + " followed by a JSON array"
-    _system, chat_messages, _image_b64 = inference_route._extract_content_parts(
-        [
-            ChatMessage(role = "user", content = "look"),
-            ChatMessage(role = "tool", tool_call_id = "c1", name = "read_file", content = docs),
-        ]
-    )
-    tool = next(m for m in chat_messages if m.get("role") == "tool")
-    assert tool["content"] == docs
+    src = inspect.getsource(inference_route)
+    for fn in ("generate_audio", "_mlx_count_chat_tokens", "chat_count_tokens"):
+        body = inspect.getsource(getattr(inference_route, fn))
+        assert "await _extract_content_parts_async(" in body, fn
+        assert "= _extract_content_parts(" not in body, fn
+    chat = inspect.getsource(inference_route.produce_openai_chat_completions)
+    # One stripping call in the chat path; the other two keep the tool images and never split.
+    assert chat.count("await _extract_content_parts_async(") == 1
+    assert chat.count("keep_tool_images = True") == 2
 
 
 def test_the_note_counts_only_the_tools_pictures_in_a_mixed_turn():

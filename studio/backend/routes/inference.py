@@ -17928,7 +17928,7 @@ async def generate_audio(
         )
 
     # Extract text from the last user message
-    _, chat_messages, _ = _extract_content_parts(payload.messages)
+    _, chat_messages, _ = await _extract_content_parts_async(payload.messages)
     if not chat_messages:
         raise HTTPException(status_code = 400, detail = "No messages provided.")
     last_user_msg = next((m for m in reversed(chat_messages) if m["role"] == "user"), None)
@@ -19905,8 +19905,6 @@ def _extract_content_parts(
     latest_user_image_b64: Optional[str] = None
 
     _resolved_tool_names = _mcp_resolve_tool_names(messages)
-    # Same provenance correlation generation applies, for results the caller left unnamed.
-    _extract_tool_names = _mcp_resolve_tool_names(messages)
     for _msg_index, msg in enumerate(messages):
         # ── System / developer messages → extract as system_prompt ────────
         if msg.role in ("system", "developer"):
@@ -19960,17 +19958,12 @@ def _extract_content_parts(
         if combined_text is None:
             continue
         if msg.role == "tool" and not keep_tool_images:
-            # The awaited audio and count paths call this on the event loop, and the
-            # exact split json-loads a permitted 12 MB envelope. A result the backend
-            # stamped as an MCP tool's is cut at the marker unparsed: its suffix IS the
-            # backend's envelope. Any other result keeps the exact split, so a tool
-            # whose text merely contains the marker line loses nothing -- those are
-            # rare and small; the multi-megabyte envelopes are the MCP ones.
-            _tool_name = getattr(msg, "name", None) or _extract_tool_names.get(_msg_index)
-            if isinstance(_tool_name, str) and _tool_name.startswith("mcp__"):
-                combined_text = mcp_text_before_envelope(combined_text)
-            else:
-                combined_text = split_mcp_images(combined_text)[0]
+            # The exact split, always: an MCP tool's own text can contain the marker
+            # line without an envelope behind it (the envelope is appended only when
+            # there were images), and a cut at the marker truncated such a result.
+            # The json-load this costs on a permitted 12 MB envelope is why the
+            # awaited callers go through _extract_content_parts_async.
+            combined_text = split_mcp_images(combined_text)[0]
         chat_message = {"role": msg.role, "content": combined_text}
         # Carried through: promote_history reads it to decide whether an envelope
         # came from an MCP server, and dropping it here made an unnamed tool
@@ -19993,6 +19986,15 @@ def _extract_content_parts(
         chat_messages,
         latest_user_image_b64 or latest_image_b64,
     )
+
+
+async def _extract_content_parts_async(messages: list, **kwargs):
+    """The same, off the shared loop when a tool result carries the envelope marker:
+    stripping it is the exact split, a json-load of a permitted 12 MB array, and the
+    awaited audio, count and safetensors callers must not do that on the loop."""
+    if _messages_mention_mcp_images(messages):
+        return await asyncio.to_thread(_extract_content_parts, messages, **kwargs)
+    return _extract_content_parts(messages, **kwargs)
 
 
 def _user_ordinal_supplying_the_image(messages: list) -> Optional[int]:
@@ -22405,7 +22407,9 @@ async def produce_openai_chat_completions(
                     if _predecoded_audio is not None
                     else _decode_audio_base64(payload.audio_base64)
                 )
-                system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
+                system_prompt, chat_messages, _ = await _extract_content_parts_async(
+                    payload.messages
+                )
                 system_prompt = _apply_current_date_prompt(system_prompt, request)
             except _DecodedAudioTooLongError as e:
                 # A limit the caller can act on, not a server fault.
@@ -30610,7 +30614,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
 
     # The completion's own helper: rebuilding it here is how a count prices a prompt
     # nobody sends.
-    system_prompt, messages, _image = _extract_content_parts(payload.messages)
+    system_prompt, messages, _image = await _extract_content_parts_async(payload.messages)
     # The completion applies this once for both non-GGUF backends before it branches.
     # Only with a request: the helper's requestless mode injects the date unconditionally.
     if request is not None:
@@ -30963,7 +30967,7 @@ async def chat_count_tokens(
     )
     if not _takes_passthrough:
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)
-    _system_prompt, _, _ = _extract_content_parts(payload.messages)
+    _system_prompt, _, _ = await _extract_content_parts_async(payload.messages)
     # the verbatim passthrough carries no date line, so counting one here would overcount it.
     if not _takes_passthrough:
         _system_prompt = _apply_current_date_prompt(_system_prompt, request)
