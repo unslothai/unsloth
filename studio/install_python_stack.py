@@ -3059,6 +3059,14 @@ def _ensure_cuda_torch() -> None:
     # Never undo a deliberate ROCm install (setup.ps1 sets this marker).
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
         return
+    # Nor one this run was asked for. install.sh resolves a ROCm index under the
+    # request, so _TORCH_BACKEND already stops this; a standalone `studio update`
+    # leaves it empty, and there this repair sees an NVIDIA GPU beside a HIP build,
+    # reads the requested wheel as poisoning, and reinstalls the CUDA trio just for
+    # _ensure_rocm_torch to force ROCm back (#10450). An explicit CUDA pin still wins
+    # below, since naming an index is the more specific instruction.
+    if _rocm_torch_explicitly_requested() and _explicit_cuda_torch_index_url() is None:
+        return
     # An explicit CUDA pin commits to CUDA wheels and skips ALL GPU gates below.
     _cuda_pinned = _explicit_cuda_torch_index_url() is not None
     # CUDA_VISIBLE_DEVICES="" / "-1" hides the GPU; honour it unless a CUDA index is pinned.
@@ -4423,11 +4431,14 @@ def _ensure_rocm_torch() -> None:
     if IS_WINDOWS:
         # An explicit ROCm pin overrides the per-arch index: retry the PINNED one, not repo.amd.com.
         _win_rocm_pin = _explicit_rocm_torch_index_url()
-        if (
-            _win_rocm_pin is None
-            and _has_usable_nvidia_gpu()
-            and not _rocm_torch_explicitly_requested()
-        ):
+        # UNSLOTH_FORCE_ROCM_TORCH is deliberately NOT read here. On Windows the wheel is
+        # chosen by install.ps1's Get-TorchIndexUrl, which selects CUDA from the NVIDIA
+        # probe alone, and setup.ps1 publishes a matching UNSLOTH_EXPECTED_TORCH_TAG that
+        # _ensure_expected_torch_flavor() restores at the end of the run. Honouring the
+        # request only here would install ROCm and then have it reverted, which is a
+        # multi-gigabyte round trip rather than a swap. Windows needs the same change in
+        # both PowerShell installers; a mixed Windows host keeps the index pin until then.
+        if _win_rocm_pin is None and _has_usable_nvidia_gpu():
             return
         gfx_arch = _detect_windows_gfx_arch()
         if not gfx_arch and _win_rocm_pin is None:

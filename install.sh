@@ -3970,6 +3970,21 @@ get_torch_index_url() {
             _smi="/usr/bin/nvidia-smi"
         fi
     fi
+    # An explicit request hands the AMD branch below the same host it would judge on a
+    # machine with no NVIDIA card. It still has to find a card and a supported arch, so
+    # a request on a pure NVIDIA box selects nothing and falls through to CUDA.
+    #
+    # Here rather than only in _has_amd_rocm_gpu, because THIS is the decision that
+    # matters: the index chosen here is what install.sh exports as
+    # UNSLOTH_TORCH_BACKEND, and _ensure_rocm_torch returns on its first line for a
+    # "cuda" backend. Relaxing the AMD probe alone left the request unable to swap
+    # anything at all (#10450).
+    if [ "$_nvidia_detected" -eq 1 ] && _rocm_torch_explicitly_requested && \
+       _has_amd_rocm_gpu; then
+        echo "[INFO] UNSLOTH_FORCE_ROCM_TORCH is set and an AMD GPU is present -- selecting ROCm PyTorch over CUDA." >&2
+        echo "[INFO] One torch install serves one vendor: the NVIDIA card will not be available to training until this is unset and the installer re-run." >&2
+        _nvidia_detected=0
+    fi
     if [ "$_nvidia_detected" -eq 0 ]; then
         case "$(uname -m)" in
             x86_64|amd64) : ;;
