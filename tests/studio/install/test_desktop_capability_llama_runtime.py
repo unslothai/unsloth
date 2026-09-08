@@ -183,9 +183,9 @@ def _assert_pre_pr_payload_intact(payload: dict) -> None:
         assert key in payload, f"{key} disappeared from the capability payload"
         # bool subclasses int, so an int field must not accept a bool.
         if expected is int:
-            assert isinstance(payload[key], int) and not isinstance(payload[key], bool), (
-                f"{key} is {payload[key]!r}, not an int"
-            )
+            assert isinstance(payload[key], int) and not isinstance(
+                payload[key], bool
+            ), f"{key} is {payload[key]!r}, not an int"
         else:
             assert isinstance(payload[key], expected), f"{key} is {payload[key]!r}"
     assert payload["desktop_protocol_version"] == EXPECTED_PROTOCOL_VERSION
@@ -218,9 +218,9 @@ def test_studio_is_importable_from_an_installed_wheel():
     assert result.returncode == 0, result.stderr
     module_file, callable_flag = result.stdout.strip().splitlines()
     assert callable_flag == "True"
-    assert "site-packages" in module_file, (
-        f"resolved to {module_file}, not the installed package; the checkout shadowed it"
-    )
+    assert (
+        "site-packages" in module_file
+    ), f"resolved to {module_file}, not the installed package; the checkout shadowed it"
 
 
 @NEEDS_VENV
@@ -421,9 +421,9 @@ def test_the_desktop_reads_every_emitted_key_as_optional():
     fields = dict(re.findall(r"^\s+([a-z_]+):\s*(.+),$", struct_body, flags = re.MULTILINE))
     for key in (*PRE_PR_KEYS, *NEW_KEYS):
         assert key in fields, f"the desktop struct has no field for {key}"
-        assert fields[key].startswith("Option<"), (
-            f"{key} is {fields[key]}, so a CLI that omits it fails the whole parse"
-        )
+        assert fields[key].startswith(
+            "Option<"
+        ), f"{key} is {fields[key]}, so a CLI that omits it fails the whole parse"
 
 
 def test_unknown_keys_do_not_break_the_desktop_parse():
@@ -589,7 +589,11 @@ def test_a_skipped_runtime_verdict_says_so_in_its_reason(monkeypatch):
     assert 'payload["llama_runtime_reason"] = "llama_runtime_not_managed"' in body
     assert "llama_runtime_not_managed" in (
         pathlib.Path(__file__).resolve().parents[3]
-        / "studio" / "src-tauri" / "src" / "preflight" / "managed.rs"
+        / "studio"
+        / "src-tauri"
+        / "src"
+        / "preflight"
+        / "managed.rs"
     ).read_text(encoding = "utf-8"), "the desktop must know the reason the CLI emits"
 
 

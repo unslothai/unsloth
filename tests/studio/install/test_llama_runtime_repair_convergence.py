@@ -519,9 +519,10 @@ def test_the_offline_repair_terminates_once_the_source_build_actually_runs(
             host,
             lambda tree: offline_repair(tree, host, offline, shell_stage = False),
         )
-        assert outcome in {"converged", "aborted"}, (
-            f"{cell}/{label}: {outcome} after {cycles} repairs ({trail})"
-        )
+        assert outcome in {
+            "converged",
+            "aborted",
+        }, f"{cell}/{label}: {outcome} after {cycles} repairs ({trail})"
         assert cycles <= 1, f"{cell}/{label}: took {cycles} repairs ({trail})"
 
 
@@ -694,9 +695,10 @@ def test_grading_an_unparseable_marker_still_terminates_on_every_cell(
                 corrupt = True,
             )
             outcome, cycles, trail = run_cycle(root, host, repair)
-            assert outcome in {"converged", "aborted"}, (
-                f"{cell}/{model}/{label}: {outcome} after {cycles} repairs ({trail})"
-            )
+            assert outcome in {
+                "converged",
+                "aborted",
+            }, f"{cell}/{model}/{label}: {outcome} after {cycles} repairs ({trail})"
             assert cycles <= 1, f"{cell}/{model}/{label}: {cycles} repairs ({trail})"
 
 

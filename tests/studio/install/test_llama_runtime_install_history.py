@@ -413,9 +413,9 @@ def test_quarantining_a_soname_is_reported_broken(tmp_path):
     shutil.move(str(soname), str(tmp_path / "vault" / soname.name))
     assert twin.is_file(), "the twin is what keeps the glob satisfied"
     verdict = ILP.installed_runtime_health(root, host = host)
-    assert verdict is not None and verdict[0] is False, (
-        f"a runtime missing its SONAME cannot load, but the probe said {verdict}"
-    )
+    assert (
+        verdict is not None and verdict[0] is False
+    ), f"a runtime missing its SONAME cannot load, but the probe said {verdict}"
 
 
 def test_the_soname_quarantine_really_breaks_the_runtime(tmp_path):
@@ -485,9 +485,9 @@ def test_the_capability_cache_on_this_machine_is_the_shape_the_new_reader_expect
     if schema is None or schema >= 4:
         pytest.skip(f"this cache was written by the new desktop already (schema {schema})")
     assert "llama_runtime" not in entry, "a pre-bump entry cannot carry the runtime fingerprint"
-    assert "llama_runtime_ok" not in entry.get("capability", {}), (
-        "a pre-bump entry cannot carry a runtime verdict"
-    )
+    assert "llama_runtime_ok" not in entry.get(
+        "capability", {}
+    ), "a pre-bump entry cannot carry a runtime verdict"
     # Named individually, not compared as a set: a dropped key is a silent loss, an extra
     # key is harmless.
     for required in (
