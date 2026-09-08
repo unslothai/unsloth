@@ -663,14 +663,19 @@ def test_the_group_derivation_reads_the_node(monkeypatch):
 
     gids = {"/dev/kfd": 44, "/dev/dri/renderD128": 44, "/dev/dri/renderD129": 39}
     monkeypatch.setattr(
-        amd.os, "stat", lambda p: type("st", (), {"st_gid": gids[p]})(),
+        amd.os,
+        "stat",
+        lambda p: type("st", (), {"st_gid": gids[p]})(),
     )
     monkeypatch.setattr(
-        _grp, "getgrgid", lambda gid: type("gr", (), {"gr_name": {44: "video", 39: "render"}[gid]})(),
+        _grp,
+        "getgrgid",
+        lambda gid: type("gr", (), {"gr_name": {44: "video", 39: "render"}[gid]})(),
     )
-    assert amd._groups_that_own(
-        ["/dev/dri/renderD129", "/dev/kfd", "/dev/dri/renderD128"]
-    ) == ["render", "video"]
+    assert amd._groups_that_own(["/dev/dri/renderD129", "/dev/kfd", "/dev/dri/renderD128"]) == [
+        "render",
+        "video",
+    ]
 
 
 def test_a_gid_with_no_group_entry_is_named_by_number(monkeypatch):
@@ -681,7 +686,9 @@ def test_a_gid_with_no_group_entry_is_named_by_number(monkeypatch):
 
     monkeypatch.setattr(amd.os, "stat", lambda p: type("st", (), {"st_gid": 993})())
     monkeypatch.setattr(
-        _grp, "getgrgid", lambda gid: (_ for _ in ()).throw(KeyError(gid)),
+        _grp,
+        "getgrgid",
+        lambda gid: (_ for _ in ()).throw(KeyError(gid)),
     )
     assert amd._groups_that_own(["/dev/kfd"]) == ["993"]
 
@@ -690,6 +697,7 @@ def test_a_node_that_cannot_be_stat_contributes_nothing(monkeypatch):
     """And the failure mode that must not raise: diagnostics run on the path where things
     are already wrong, so a node that vanished between the probe and the message drops
     out rather than taking the whole hint down."""
+
     def _stat(path):
         if path == "/dev/kfd":
             raise OSError("gone")
@@ -699,7 +707,9 @@ def test_a_node_that_cannot_be_stat_contributes_nothing(monkeypatch):
 
     monkeypatch.setattr(amd.os, "stat", _stat)
     monkeypatch.setattr(
-        _grp, "getgrgid", lambda gid: type("gr", (), {"gr_name": "video"})(),
+        _grp,
+        "getgrgid",
+        lambda gid: type("gr", (), {"gr_name": "video"})(),
     )
     assert amd._groups_that_own(["/dev/kfd", "/dev/dri/renderD128"]) == ["video"]
 
@@ -719,8 +729,7 @@ def _install_sh_hint(closed_nodes: str) -> str:
     text = install_sh.read_text(encoding = "utf-8")
     lines = text.splitlines()
     start = next(
-        i for i, line in enumerate(lines)
-        if line == 'if [ -n "$_closed_amd_nodes" ]; then'
+        i for i, line in enumerate(lines) if line == 'if [ -n "$_closed_amd_nodes" ]; then'
     )
     end = next(i for i in range(start, len(lines)) if lines[i] == "fi")
     block = "\n".join(lines[start : end + 1])
@@ -733,14 +742,18 @@ def _install_sh_hint(closed_nodes: str) -> str:
             break
     helper = "\n".join(lines[fn_start : fn_end + 1])
 
-    script = "\n".join([
-        "substep() { echo \"$1\"; }",
-        'C_WARN=""',
-        helper,
-        block,
-    ])
+    script = "\n".join(
+        [
+            'substep() { echo "$1"; }',
+            'C_WARN=""',
+            helper,
+            block,
+        ]
+    )
     out = subprocess.run(
-        ["bash", "-c", script], capture_output = True, text = True,
+        ["bash", "-c", script],
+        capture_output = True,
+        text = True,
         env = {**os.environ, "_closed_amd_nodes": closed_nodes, "USER": "ada"},
     )
     assert out.returncode == 0, out.stderr
@@ -760,7 +773,9 @@ def test_the_installer_names_the_group_the_node_actually_has(tmp_path):
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
     owner = subprocess.run(
-        ["stat", "-c", "%G", str(node)], capture_output = True, text = True,
+        ["stat", "-c", "%G", str(node)],
+        capture_output = True,
+        text = True,
     ).stdout.strip()
     out = _install_sh_hint(str(node))
     assert f"usermod -a -G {owner} ada" in out
