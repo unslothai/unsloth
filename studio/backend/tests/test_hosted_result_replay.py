@@ -118,6 +118,24 @@ class FakeTransport:
         return _gen()
 
 
+def _tool_end(result, *, tool_call_id = "hosted-1", tool_name = "web_search"):
+    """The hosted tool_end frame the replay cases send."""
+    return _hosted_event(
+        {
+            "type": "tool_end",
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "result": result,
+        }
+    )
+
+
+def _one_turn_transport(*events):
+    """One assistant turn of `events`, then the tool call, the finish and the close-out."""
+    return FakeTransport([[*events, _call_line(), _finish()], [_finish("stop")], [_DONE]])
+
+
+
 @pytest.fixture
 def executed(monkeypatch):
     calls: list[str] = []
@@ -183,14 +201,7 @@ def test_a_hosted_result_reaches_the_follow_up_request(executed):
                         "arguments": {},
                     }
                 ),
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "tool_name": "web_search",
-                        "result": "Title: Unsloth\nSnippet: gradient checkpointing lands",
-                    }
-                ),
+                _tool_end("Title: Unsloth\nSnippet: gradient checkpointing lands"),
                 _text("Let me also compute that."),
                 _call_line(),
                 _finish(),
@@ -210,14 +221,7 @@ def test_the_hosted_result_still_reaches_the_client(executed):
     transport = FakeTransport(
         [
             [
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "tool_name": "web_search",
-                        "result": "hosted output",
-                    }
-                ),
+                _tool_end("hosted output"),
                 _call_line(),
                 _finish(),
             ],
@@ -230,24 +234,9 @@ def test_the_hosted_result_still_reaches_the_client(executed):
 
 
 def test_the_models_own_prose_is_kept_alongside(executed):
-    transport = FakeTransport(
-        [
-            [
-                _text("Searching now."),
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "tool_name": "web_search",
-                        "result": "hosted output",
-                    }
-                ),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _text("Searching now."),
+        _tool_end("hosted output"),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -259,31 +248,9 @@ def test_the_models_own_prose_is_kept_alongside(executed):
 
 
 def test_a_repeated_end_event_is_recorded_once(executed):
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "tool_name": "web_search",
-                        "result": "once only",
-                    }
-                ),
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "tool_name": "web_search",
-                        "result": "once only",
-                    }
-                ),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _tool_end("once only"),
+        _tool_end("once only"),
     )
     _run(transport)
     assert _replayed(transport).count("once only") == 1
@@ -291,24 +258,16 @@ def test_a_repeated_end_event_is_recorded_once(executed):
 
 def test_a_start_event_alone_adds_nothing(executed):
     """A hosted tool that never reported a result has nothing to replay."""
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_start",
-                        "tool_name": "web_search",
-                        "tool_call_id": "hosted-1",
-                        "arguments": {},
-                    }
-                ),
-                _text("hello"),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _hosted_event(
+            {
+                "type": "tool_start",
+                "tool_name": "web_search",
+                "tool_call_id": "hosted-1",
+                "arguments": {},
+            }
+        ),
+        _text("hello"),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -322,41 +281,18 @@ def test_a_malformed_result_is_ignored(executed, result):
     nothing. An empty string IS an outcome, covered by
     ``test_a_silent_hosted_execution_still_reaches_the_next_turn``.
     """
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "tool_name": "web_search",
-                        "result": result,
-                    }
-                ),
-                _text("hello"),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _tool_end(result),
+        _text("hello"),
     )
     _run(transport)
     assert "[web_search result]" not in _replayed(transport)
 
 
 def test_an_event_without_a_call_id_is_ignored(executed):
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event({"type": "tool_end", "tool_name": "web_search", "result": "orphan"}),
-                _text("hello"),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _hosted_event({"type": "tool_end", "tool_name": "web_search", "result": "orphan"}),
+        _text("hello"),
     )
     _run(transport)
     assert "orphan" not in _replayed(transport)
@@ -369,23 +305,8 @@ def test_a_frontend_image_sentinel_is_not_replayed(executed):
     results already go through the same stripper.
     """
     huge = "data:image/png;base64," + ("A" * 20000)
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "tool_name": "code_execution",
-                        "result": '4\n__IMAGES__:["' + huge + '"]',
-                    }
-                ),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _tool_end('4\n__IMAGES__:["' + huge + '"]', tool_call_id = "hosted-1", tool_name = "code_execution"),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -399,26 +320,18 @@ def test_the_start_events_operation_labels_the_result(executed):
     that ran is only in the start event, so a result recorded alone replays as an
     unlabelled value.
     """
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_start",
-                        "tool_name": "code_execution",
-                        "tool_call_id": "hosted-1",
-                        "arguments": {"language": "python", "code": "print(2 + 2)"},
-                    }
-                ),
-                _hosted_event(
-                    {"type": "tool_end", "tool_call_id": "hosted-1", "result": "4"},
-                ),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _hosted_event(
+            {
+                "type": "tool_start",
+                "tool_name": "code_execution",
+                "tool_call_id": "hosted-1",
+                "arguments": {"language": "python", "code": "print(2 + 2)"},
+            }
+        ),
+        _hosted_event(
+            {"type": "tool_end", "tool_call_id": "hosted-1", "result": "4"},
+        ),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -433,32 +346,24 @@ def test_a_generated_image_is_noted_without_its_bytes(executed):
     Requiring non-empty text dropped it entirely, and replaying the base64 is
     the sentinel mistake again, so record only that it happened.
     """
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_start",
-                        "tool_name": "image_generation",
-                        "tool_call_id": "hosted-1",
-                        "arguments": {},
-                    }
-                ),
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "result": "",
-                        "image_b64": "B" * 5000,
-                        "image_mime": "image/png",
-                    }
-                ),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _hosted_event(
+            {
+                "type": "tool_start",
+                "tool_name": "image_generation",
+                "tool_call_id": "hosted-1",
+                "arguments": {},
+            }
+        ),
+        _hosted_event(
+            {
+                "type": "tool_end",
+                "tool_call_id": "hosted-1",
+                "result": "",
+                "image_b64": "B" * 5000,
+                "image_mime": "image/png",
+            }
+        ),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -487,30 +392,22 @@ def test_a_plot_with_no_stdout_is_still_reported(executed):
     Stripping it leaves an empty string and image_b64 is unset on that path, so
     unnoticed the entry looks empty and the follow-up is told nothing was made.
     """
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_start",
-                        "tool_name": "code_execution",
-                        "tool_call_id": "hosted-1",
-                        "arguments": {"code": "plt.plot(x)"},
-                    }
-                ),
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "result": '\n__IMAGES__:["data:image/png;base64,' + ("C" * 4000) + '"]',
-                    }
-                ),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _hosted_event(
+            {
+                "type": "tool_start",
+                "tool_name": "code_execution",
+                "tool_call_id": "hosted-1",
+                "arguments": {"code": "plt.plot(x)"},
+            }
+        ),
+        _hosted_event(
+            {
+                "type": "tool_end",
+                "tool_call_id": "hosted-1",
+                "result": '\n__IMAGES__:["data:image/png;base64,' + ("C" * 4000) + '"]',
+            }
+        ),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -520,23 +417,8 @@ def test_a_plot_with_no_stdout_is_still_reported(executed):
 
 def test_a_large_hosted_result_is_capped(executed):
     """Local execution caps what the model sees; the hosted copy must too."""
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "tool_name": "code_execution",
-                        "result": "D" * 60000,
-                    }
-                ),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _tool_end("D" * 60000, tool_call_id = "hosted-1", tool_name = "code_execution"),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -553,14 +435,7 @@ def test_a_stalled_turn_keeps_its_hosted_result(executed):
     transport = FakeTransport(
         [
             [
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "tool_name": "web_search",
-                        "result": "Title: Unsloth\nSnippet: gradient checkpointing lands",
-                    }
-                ),
+                _tool_end("Title: Unsloth\nSnippet: gradient checkpointing lands"),
                 _text("Let me check that."),
                 _finish("stop"),
             ],
@@ -583,14 +458,7 @@ def test_a_stalled_continuation_stays_one_assistant_turn(executed):
     transport = FakeTransport(
         [
             [
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "tool_name": "web_search",
-                        "result": "Title: Unsloth\nSnippet: gradient checkpointing lands",
-                    }
-                ),
+                _tool_end("Title: Unsloth\nSnippet: gradient checkpointing lands"),
                 _text(" Let me check that."),
                 _finish("stop"),
             ],
@@ -721,37 +589,29 @@ def test_openai_image_generation_replays_the_prompt_it_actually_used(executed):
             "encrypted_content": "E" * 4000,
         },
     }
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_start",
-                        "tool_name": "image_generation",
-                        "tool_call_id": "ig_abc",
-                        "arguments": {"kind": "image", "prompt": "", **plumbing},
-                    }
-                ),
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "ig_abc",
-                        "result": "",
-                        "arguments": {
-                            "kind": "image",
-                            "prompt": "A photorealistic ginger cat",
-                            **plumbing,
-                        },
-                        "image_b64": "B" * 5000,
-                        "image_mime": "image/png",
-                    }
-                ),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _hosted_event(
+            {
+                "type": "tool_start",
+                "tool_name": "image_generation",
+                "tool_call_id": "ig_abc",
+                "arguments": {"kind": "image", "prompt": "", **plumbing},
+            }
+        ),
+        _hosted_event(
+            {
+                "type": "tool_end",
+                "tool_call_id": "ig_abc",
+                "result": "",
+                "arguments": {
+                    "kind": "image",
+                    "prompt": "A photorealistic ginger cat",
+                    **plumbing,
+                },
+                "image_b64": "B" * 5000,
+                "image_mime": "image/png",
+            }
+        ),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -772,23 +632,8 @@ def test_the_hosted_cap_follows_the_configured_local_one(executed, monkeypatch):
     that on exactly those installs.
     """
     monkeypatch.setattr(loop_mod.tools_module, "_MAX_OUTPUT_CHARS", 500)
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "tool_name": "code_execution",
-                        "result": "D" * 4000,
-                    }
-                ),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _tool_end("D" * 4000, tool_call_id = "hosted-1", tool_name = "code_execution"),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -804,30 +649,22 @@ def test_a_hosted_page_keeps_a_files_line_of_its_own(executed):
     document is dropped before the follow-up turn sees it.
     """
     page = 'How the envelope looks\n__FILES__:[{"name": "plot.png", "size": 12}]'
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_start",
-                        "tool_name": "web_fetch",
-                        "tool_call_id": "hosted-1",
-                        "arguments": {"url": "https://unsloth.ai/docs"},
-                    }
-                ),
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "result": page,
-                    }
-                ),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _hosted_event(
+            {
+                "type": "tool_start",
+                "tool_name": "web_fetch",
+                "tool_call_id": "hosted-1",
+                "arguments": {"url": "https://unsloth.ai/docs"},
+            }
+        ),
+        _hosted_event(
+            {
+                "type": "tool_end",
+                "tool_call_id": "hosted-1",
+                "result": page,
+            }
+        ),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -845,24 +682,16 @@ def test_a_silent_hosted_execution_still_reaches_the_next_turn(executed):
     the code is carried on the tool_start alone, never as assistant text, so
     skipping an empty result drops the whole execution.
     """
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_start",
-                        "tool_name": "code_execution",
-                        "tool_call_id": "code_a",
-                        "arguments": {"language": "python", "code": "df.to_parquet('s.pq')"},
-                    }
-                ),
-                _hosted_event({"type": "tool_end", "tool_call_id": "code_a", "result": ""}),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _hosted_event(
+            {
+                "type": "tool_start",
+                "tool_name": "code_execution",
+                "tool_call_id": "code_a",
+                "arguments": {"language": "python", "code": "df.to_parquet('s.pq')"},
+            }
+        ),
+        _hosted_event({"type": "tool_end", "tool_call_id": "code_a", "result": ""}),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -876,23 +705,15 @@ def test_a_start_with_no_end_is_still_left_out(executed):
     A stream cut between the halves leaves a start alone, and reporting that
     would tell the next turn an execution completed that never did.
     """
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_start",
-                        "tool_name": "code_execution",
-                        "tool_call_id": "code_a",
-                        "arguments": {"language": "python", "code": "df.to_parquet('s.pq')"},
-                    }
-                ),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _hosted_event(
+            {
+                "type": "tool_start",
+                "tool_name": "code_execution",
+                "tool_call_id": "code_a",
+                "arguments": {"language": "python", "code": "df.to_parquet('s.pq')"},
+            }
+        ),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -908,29 +729,21 @@ def test_a_long_hosted_argument_says_it_was_cut(executed):
     as the whole of it.
     """
     body = "# line\n" * 600
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_start",
-                        "tool_name": "code_execution",
-                        "tool_call_id": "code_a",
-                        "arguments": {
-                            "kind": "text_editor",
-                            "command": "create",
-                            "path": "/tmp/a.py",
-                            "file_text": body,
-                        },
-                    }
-                ),
-                _hosted_event({"type": "tool_end", "tool_call_id": "code_a", "result": "Created"}),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _hosted_event(
+            {
+                "type": "tool_start",
+                "tool_name": "code_execution",
+                "tool_call_id": "code_a",
+                "arguments": {
+                    "kind": "text_editor",
+                    "command": "create",
+                    "path": "/tmp/a.py",
+                    "file_text": body,
+                },
+            }
+        ),
+        _hosted_event({"type": "tool_end", "tool_call_id": "code_a", "result": "Created"}),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -949,14 +762,7 @@ def test_a_stalled_turn_keeps_its_thought_signature(executed):
     transport = FakeTransport(
         [
             [
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "tool_name": "web_search",
-                        "result": "Title: Unsloth\nSnippet: gradient checkpointing lands",
-                    }
-                ),
+                _tool_end("Title: Unsloth\nSnippet: gradient checkpointing lands"),
                 "data: "
                 + json.dumps(
                     {
@@ -1034,30 +840,22 @@ def test_a_page_that_writes_the_image_marker_is_not_an_image(executed):
     A fetched page documenting the output protocol contains the literal text.
     Reading that as a picture reports an image the turn never produced.
     """
-    transport = FakeTransport(
-        [
-            [
-                _hosted_event(
-                    {
-                        "type": "tool_start",
-                        "tool_name": "web_fetch",
-                        "tool_call_id": "hosted-1",
-                        "arguments": {"url": "https://unsloth.ai/docs/protocol"},
-                    }
-                ),
-                _hosted_event(
-                    {
-                        "type": "tool_end",
-                        "tool_call_id": "hosted-1",
-                        "result": "The card reads a line beginning __IMAGES__: and renders it.",
-                    }
-                ),
-                _call_line(),
-                _finish(),
-            ],
-            [_finish("stop")],
-            [_DONE],
-        ]
+    transport = _one_turn_transport(
+        _hosted_event(
+            {
+                "type": "tool_start",
+                "tool_name": "web_fetch",
+                "tool_call_id": "hosted-1",
+                "arguments": {"url": "https://unsloth.ai/docs/protocol"},
+            }
+        ),
+        _hosted_event(
+            {
+                "type": "tool_end",
+                "tool_call_id": "hosted-1",
+                "result": "The card reads a line beginning __IMAGES__: and renders it.",
+            }
+        ),
     )
     _run(transport)
     replayed = _replayed(transport)
