@@ -407,25 +407,14 @@ def test_omitted_default_flags_are_not_forwarded(monkeypatch):
 
 
 def _registered_command_name(command) -> str:
-    """The name the CLI answers to, including one Typer inferred from the function.
-
-    `@start_app.command()` with no name leaves `command.name` None, and dropping those
-    would silently shrink the roster -- the failure mode this whole derivation exists to
-    avoid. Ask Typer itself rather than copying the rule, so a roster name can never
-    drift from the name the CLI actually dispatches on.
-    """
+    """Name the CLI dispatches on. Ask Typer, so an unnamed command cannot drop out."""
     from typer.main import get_command_name
     return command.name or get_command_name(command.callback.__name__)
 
 
 def _scan_start_commands() -> tuple:
-    """(commands taking every load knob, commands taking only some), off the app itself.
-
-    Hardcoding the list is how `dsh` shipped without flag tracking: the roster below is
-    whatever is registered today, so a new agent command is covered the day it lands.
-    A command holding only SOME of the knobs is reported rather than skipped -- excluding
-    it would hide exactly the per-command inconsistency this roster is here to catch.
-    """
+    """(all-knob commands, partial-knob commands) read off the app itself.
+    Hardcoding the roster is how `dsh` shipped without flag tracking."""
     knobs = set(start_cli._LOAD_OPTION_PARAMS)
     full, partial = [], []
     for command in start_cli.start_app.registered_commands:
@@ -461,8 +450,7 @@ class TestExplicitFlagsThroughTheRealCli:
         finally:
             start_cli._connect = real_connect
         if "load" not in captured:
-            # Without the runner's own verdict a parser incompatibility and a dropped
-            # flag both surface as a bare None, and only one of them is this file's bug.
+            # Without the exit code, a parser incompatibility reads as a dropped flag.
             pytest.fail(
                 f"{argv} never reached _connect (exit {result.exit_code}): "
                 f"{result.exception!r}\n{result.output}"
@@ -493,7 +481,6 @@ class TestExplicitFlagsThroughTheRealCli:
         assert AGENT_COMMANDS
 
     def test_no_start_command_takes_only_part_of_the_load_knobs(self):
-        """A partial set would drop out of the roster below and go untested in silence."""
         assert PARTIAL_KNOB_COMMANDS == [], (
             f"{PARTIAL_KNOB_COMMANDS} take some load knobs but not all of "
             f"{sorted(start_cli._LOAD_OPTION_PARAMS)}; give them the full set (and "
