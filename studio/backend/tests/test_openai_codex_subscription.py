@@ -70,6 +70,7 @@ def test_protocol_constants_and_curated_provider_contract():
         "gpt-5.6-luna",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
+        "gpt-6-astra",
     ]
     assert OPENAI_CODEX_DEVICE_REDIRECT_URI == ("https://auth.openai.com/deviceauth/callback")
     row = next(
