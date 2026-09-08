@@ -141,7 +141,6 @@ type AgentDetails = {
   logo?: string;
   icon?: string;
   darkIcon?: string;
-  invertIconInDark?: boolean;
   color?: string;
   mark?: string;
 };
@@ -169,8 +168,8 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     id: "hermes",
     name: "Hermes Agent",
     docsUrl: "https://unsloth.ai/docs/integrations/hermes-agent",
-    icon: "hermes.svg",
-    invertIconInDark: true,
+    // hermes.png is the desktop app icon from NousResearch/hermes-agent (apps/desktop/assets/icon.png)
+    icon: "hermes.png",
   },
   {
     id: "openclaw",
@@ -189,8 +188,7 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     id: "dsh",
     name: "DeepSeek Harness",
     docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
-    color: "#4D6BFE",
-    mark: "ds",
+    logo: "deepseek",
   },
 ];
 
@@ -415,14 +413,12 @@ function AgentIcon({
   logo,
   icon,
   darkIcon,
-  invertIconInDark,
   color,
   mark,
 }: {
   logo?: string;
   icon?: string;
   darkIcon?: string;
-  invertIconInDark?: boolean;
   color?: string;
   mark?: string;
 }) {
@@ -444,11 +440,7 @@ function AgentIcon({
           src={iconSrc}
           alt=""
           aria-hidden={true}
-          className={cn(
-            "size-5 object-contain",
-            darkIconSrc && "dark:hidden",
-            invertIconInDark && "dark:invert",
-          )}
+          className={cn("size-5 object-contain", darkIconSrc && "dark:hidden")}
         />
         {darkIconSrc ? (
           <img
@@ -1375,7 +1367,6 @@ export function AgentsTab() {
                         logo={selectedAgentDetails.logo}
                         icon={selectedAgentDetails.icon}
                         darkIcon={selectedAgentDetails.darkIcon}
-                        invertIconInDark={selectedAgentDetails.invertIconInDark}
                         color={selectedAgentDetails.color}
                         mark={selectedAgentDetails.mark}
                       />
@@ -1395,7 +1386,6 @@ export function AgentsTab() {
                             logo={agent.logo}
                             icon={agent.icon}
                             darkIcon={agent.darkIcon}
-                            invertIconInDark={agent.invertIconInDark}
                             color={agent.color}
                             mark={agent.mark}
                           />

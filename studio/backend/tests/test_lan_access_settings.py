@@ -455,8 +455,8 @@ def test_a_specific_host_launch_reports_the_address_it_was_given():
 def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public_address(
     monkeypatch,
 ):
-    """server_url resolves the public IP for sharing, which behind NAT reaches
-    nothing on the LAN and would trip the public-address warning as well."""
+    """The status refreshes every LAN address instead of relying on server_url's
+    single direct base, and never leaks an obsolete public-address value."""
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"])
     state = _app(
         lan_access_launch_managed = True,

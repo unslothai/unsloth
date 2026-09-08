@@ -76,6 +76,107 @@ class TestWaitForHealthResilience:
         assert b._wait_for_health(timeout = 0.02, interval = 0.01) is False
         assert any("health check timed out" in ln for ln in b._stdout_lines)
 
+    def test_a_teardown_during_the_wait_is_a_failed_load_not_a_crash(self, monkeypatch):
+        """Shutdown clears the reference mid-wait; reading it once and treating
+        its absence as "gone" is what stops the AttributeError the user saw as
+        "Error loading model: 'NoneType' object has no attribute 'poll'" (#10353)."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+        probes = []
+
+        def probe(*a, **kw):
+            probes.append(1)
+            if len(probes) == 2:
+                b._process = None  # what _kill_process does on shutdown
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert len(probes) == 2
+        assert not any("health check timed out" in ln for ln in b._stdout_lines)
+        assert b._health_wait_cancelled is True
+
+    def test_a_teardown_before_the_first_probe_is_still_not_a_crash(self, monkeypatch):
+        b = _make_backend()
+        b._process = None
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 200))
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert b._health_wait_cancelled is True
+
+    def test_a_teardown_is_terminal_so_the_caller_reads_no_exit_code(self, monkeypatch):
+        """False alone is not enough: _spawn_and_wait stops only on this flag, else
+        it reads the cleared reference and raises one frame up, and respawns."""
+        b = _make_backend()
+        b._process = None
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert b._health_wait_cancelled is True
+        # Exactly what the caller does at the `if not healthy` branch.
+        assert (
+            b._process is not None and b._process.poll() is not None and b._process.returncode != 0
+        ) is False
+
+    def test_a_crash_leaves_the_wait_unmarked_so_the_retries_still_run(self, monkeypatch):
+        """The other side: a real crash must NOT look terminal, or the --fit off
+        and CPU fallbacks stop recovering loads that used to recover."""
+        b = _make_backend()
+        b._process.poll.return_value = 1
+        b._process.returncode = 1
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
+        assert b._health_wait_cancelled is False
+
+    def test_a_teardown_marker_does_not_leak_into_the_next_load(self, monkeypatch):
+        b = _make_backend()
+        b._process = None
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 200))
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert b._health_wait_cancelled is True
+        b._process = mock.Mock()
+        b._process.poll.return_value = None
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is True
+        assert b._health_wait_cancelled is False
+
+    def test_a_teardown_from_a_real_thread_is_not_a_crash(self, monkeypatch):
+        """Two real threads, not a probe callback: the once-per-iteration read is
+        what makes it safe, so drive it that way."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+        in_probe = threading.Event()
+        cleared = threading.Event()
+
+        def probe(*a, **kw):
+            in_probe.set()
+            cleared.wait(2.0)
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+
+        def shutdown():
+            in_probe.wait(2.0)
+            b._process = None  # _kill_process, from run.py's shutdown path
+            cleared.set()
+
+        t = threading.Thread(target = shutdown)
+        t.start()
+        try:
+            assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        finally:
+            t.join(5.0)
+        assert b._health_wait_cancelled is True
+
+    def test_a_crash_still_reports_the_exit_code(self, monkeypatch):
+        """The teardown guard must not swallow the crash branch: an exited
+        process still has to name its exit code and its output."""
+        b = _make_backend()
+        b._process.poll.return_value = 1
+        b._process.returncode = 1
+        b._stdout_lines = ["ROCm error: out of memory"]
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        with mock.patch("core.inference.llama_cpp.logger") as log:
+            assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
+        assert any("exited with code 1" in str(c) for c in log.error.call_args_list)
+
     def test_cancel_stops_the_wait_without_a_timeout_marker(self, monkeypatch):
         b = _make_backend()
         b._process.poll.return_value = None
@@ -423,6 +524,63 @@ class TestCancelledWaitEndsTheLoad:
             )
             is False
         )
+
+    def test_a_teardown_mid_load_ends_the_load_instead_of_raising(self, tmp_path, monkeypatch):
+        """The whole race through the real caller (#10353): the waiter tests above
+        never reach _spawn_and_wait, which is where the traceback resurfaced."""
+        import subprocess
+
+        from core.inference.llama_cpp import GgufLoadIntent
+
+        gguf = tmp_path / "model.gguf"
+        gguf.write_bytes(b"GGUF" + b"\0" * 4096)
+
+        b = LlamaCppBackend()
+        b._find_llama_server_binary = lambda *a, **kw: "/usr/bin/true"
+        b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
+        b._non_chat_gguf_refusal = lambda *a, **kw: None
+        # The drain thread would iterate a Mock's stdout forever.
+        b._drain_stdout = lambda *a, **kw: None
+
+        def _kill():
+            b._process = None  # the one line of _kill_process this race turns on
+
+        b._kill_process = _kill
+
+        spawns = []
+        _real_popen = subprocess.Popen
+
+        def _popen(*a, **kw):
+            argv = [str(x) for x in (a[0] if a else kw.get("args") or [])]
+            # `--help` and nvidia-smi are not launches; run() needs a real Popen.
+            if str(gguf) not in argv:
+                return _real_popen(*a, **kw)
+            spawns.append(argv)
+            proc = mock.Mock()
+            proc.poll.return_value = None  # alive: shutdown kills it, it does not crash
+            proc.pid = 424242
+            return proc
+
+        monkeypatch.setattr(subprocess, "Popen", _popen)
+
+        def probe(*a, **kw):
+            _kill()  # run.py's shutdown, arriving while the load waits
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+
+        assert (
+            b.load_model(
+                GgufLoadIntent(
+                    model_identifier = "owner/model",
+                    gguf_path = str(gguf),
+                    n_ctx = 4096,
+                ),
+            )
+            is False
+        )
+        # A second server would outlive the app whose shutdown killed the first.
+        assert len(spawns) == 1, f"respawned after shutdown (spawns={len(spawns)})"
 
 
 def test_a_cancelled_diffusion_start_reaps_the_runner():

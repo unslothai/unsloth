@@ -1537,12 +1537,14 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_fails(
 
     original_replace = INSTALL_LLAMA_PREBUILT.os.replace
 
-    def cross_device_replace(src, dst):
+    # EIO, not EXDEV: a cross-device link is the one rename failure the aside-move
+    # now completes by copy, so it is no longer an example of a move that fails
+    def failing_replace(src, dst):
         if Path(src) == install_dir:
-            raise OSError(errno.EXDEV, "Invalid cross-device link")
+            raise OSError(errno.EIO, "Input/output error")
         return original_replace(src, dst)
 
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", failing_replace)
 
     with pytest.raises(
         PrebuiltFallback,
@@ -1557,6 +1559,93 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_fails(
     captured = capsys.readouterr()
     output = captured.out + captured.err
     assert "existing install could not be moved aside; leaving it in place" in output
+
+
+def test_activate_install_tree_copies_the_existing_install_aside_across_devices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", lambda *_args: None)
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def cross_device_replace(src, dst):
+        if Path(src) == install_dir:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+
+    # a Docker studio build moves the base image's llama.cpp onto a different overlay
+    # layer, where rename cannot reach and the copy fallback has to carry it
+    activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert (install_dir / "new.txt").read_text() == "new install\n"
+    assert not staging_dir.exists()
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "copy+publish" in output
+
+
+def test_move_install_dir_aside_leaves_no_partial_tree_when_the_copy_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    src = tmp_path / "llama.cpp"
+    src.mkdir()
+    (src / "old.txt").write_text("old install\n")
+    dst = tmp_path / "llama.cpp.rollback-20250101000000-1"
+
+    def cross_device_replace(from_path, to_path):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    def failing_copytree(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.shutil, "copytree", failing_copytree)
+
+    with pytest.raises(OSError, match = "No space left on device"):
+        INSTALL_LLAMA_PREBUILT.move_install_dir_aside(src, dst)
+
+    # callers read dst.exists() as proof of a COMPLETE tree
+    assert not dst.exists()
+    assert not dst.with_name(dst.name + ".copying").exists()
+    assert (src / "old.txt").read_text() == "old install\n"
+
+
+def test_move_install_dir_aside_refuses_to_copy_a_linked_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target = tmp_path / "real-install-elsewhere"
+    target.mkdir()
+    (target / "old.txt").write_text("old install\n")
+
+    src = tmp_path / "llama.cpp"
+    try:
+        src.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    dst = tmp_path / "llama.cpp.rollback-20250101000000-1"
+
+    def cross_device_replace(from_path, to_path):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+
+    # copytree always follows the root, so this would duplicate a checkout the
+    # installer does not own
+    with pytest.raises(OSError, match = "cross-device"):
+        INSTALL_LLAMA_PREBUILT.move_install_dir_aside(src, dst)
+
+    assert not dst.exists()
+    assert src.is_symlink()
+    assert (target / "old.txt").read_text() == "old install\n"
 
 
 def test_activate_install_tree_keeps_existing_install_when_aside_move_hits_busy_lock(
@@ -1731,6 +1820,49 @@ def test_activate_staged_dir_copies_when_replace_hits_busy_lock(
 
     captured = capsys.readouterr()
     assert "falling back to file-by-file copy" in captured.out + captured.err
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "soname links are a Unix bundle layout")
+@pytest.mark.parametrize("dst_exists", [False, True])
+def test_activate_staged_dir_copy_keeps_soname_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dst_exists: bool
+):
+    """The EXDEV copy must not turn a bundle's soname chain into duplicate libraries.
+
+    A Linux llama.cpp release ships libllama.so -> libllama.so.0 -> libllama.so.0.3.0
+    (10 such links in b10715), and copytree's default symlinks = False dereferences
+    every one of them into a full copy of the shared library.
+    """
+    staging_dir = tmp_path / "llama.cpp.staging-test"
+    staging_dir.mkdir()
+    real = staging_dir / "libllama.so.0.3.0"
+    real.write_bytes(b"\0" * 4096)
+    (staging_dir / "libllama.so.0").symlink_to("libllama.so.0.3.0")
+    (staging_dir / "libllama.so").symlink_to("libllama.so.0")
+    dst = tmp_path / "llama.cpp"
+    if dst_exists:
+        # os.replace also refuses an EMPTY existing dst cross-device, and the copy
+        # still has to complete there
+        dst.mkdir()
+
+    def cross_device_replace(src, dst_arg):
+        raise OSError(errno.EXDEV, "Invalid cross-device link", str(src))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+
+    activate_staged_dir(staging_dir, dst)
+
+    assert (dst / "libllama.so.0.3.0").read_bytes() == b"\0" * 4096
+    for link, target in (("libllama.so.0", "libllama.so.0.3.0"), ("libllama.so", "libllama.so.0")):
+        assert (
+            dst / link
+        ).is_symlink(), f"{link} was dereferenced into a copy of the library it aliases"
+        assert os.readlink(dst / link) == target
+    on_disk = sum(p.lstat().st_size for p in dst.iterdir())
+    assert on_disk < 2 * len(
+        b"\0" * 4096
+    ), f"the activated tree duplicated libraries ({on_disk} bytes)"
+    assert not staging_dir.exists()
 
 
 def test_activate_staged_dir_reraises_non_busy_errors(
