@@ -53,46 +53,47 @@ check() {
 
 echo "Layouts Unsloth created at the managed root, which must stay removable:"
 check "partial install: the root marker alone" own managed ".unsloth-studio-owned"
-# install.sh guarantees a regular file there, and -f follows a link planted in its place.
-_linkmark="$_TMP_ROOT/linked_root_marker"
-mkdir -p "$_linkmark"
-: > "$_TMP_ROOT/linked_root_marker_target"
-: > "$_linkmark/keepme.txt"
-ln -s "$_TMP_ROOT/linked_root_marker_target" "$_linkmark/.unsloth-studio-owned"
-if _is_studio_root "$_linkmark" managed; then
-    echo "  FAIL: a symlinked root marker was claimed"; FAIL=$((FAIL+1))
-else
-    echo "  PASS: a symlinked root marker is refused"; PASS=$((PASS+1))
-fi
-if _is_studio_root "$_linkmark"; then
-    echo "  FAIL: ... and at a custom root too"; FAIL=$((FAIL+1))
-else
-    echo "  PASS: and at a custom root too"; PASS=$((PASS+1))
-fi
-# Every marker the installers write is a plain file, so the rule holds for all of them and for
-# the directory each sits in. bin/unsloth is the exception: it IS a symlink, validated by target.
+# A relocated install is still an install. Moving a multi-gigabyte venv to another disk and
+# leaving a symlink behind puts a REAL marker behind a link, and refusing it would strand the
+# install this gate exists to keep removable. Refusing links here would also buy nothing: anyone
+# who can plant one at these paths can plant a plain file instead, which the gate has always
+# taken. The link test belongs in install.sh's claim, where following one TRUNCATES the target.
 : > "$_TMP_ROOT/linked_marker_target"
-for _lm in "unsloth_studio/.unsloth-studio-owned" ".venv/.unsloth-studio-owned" "share/studio.conf"; do
+for _lm in ".unsloth-studio-owned" "unsloth_studio/.unsloth-studio-owned" \
+           ".venv/.unsloth-studio-owned" "share/studio.conf"; do
     _lmroot="$_TMP_ROOT/lm_$(printf '%s' "$_lm" | tr -c 'a-zA-Z0-9' '_')"
     mkdir -p "$_lmroot/$(dirname "$_lm")"
     : > "$_lmroot/keepme.txt"
     ln -s "$_TMP_ROOT/linked_marker_target" "$_lmroot/$_lm"
     if _is_studio_root "$_lmroot"; then
-        echo "  FAIL: a symlinked $_lm was claimed"; FAIL=$((FAIL+1))
+        echo "  PASS: a relocated $_lm is still recognised"; PASS=$((PASS+1))
     else
-        echo "  PASS: a symlinked $_lm is refused"; PASS=$((PASS+1))
+        echo "  FAIL: a relocated $_lm stranded the install"; FAIL=$((FAIL+1))
     fi
 done
-# ... and a real marker inside a LINKED venv directory, the same trick one level up.
+# ... and the shape a user really produces: the whole venv directory moved and symlinked back.
 _lmdir="$_TMP_ROOT/lm_linked_dir"
-mkdir -p "$_lmdir" "$_TMP_ROOT/lm_real_venv"
+mkdir -p "$_lmdir" "$_TMP_ROOT/lm_real_venv/bin"
 : > "$_TMP_ROOT/lm_real_venv/.unsloth-studio-owned"
+: > "$_TMP_ROOT/lm_real_venv/pyvenv.cfg"
 : > "$_lmdir/keepme.txt"
 ln -s "$_TMP_ROOT/lm_real_venv" "$_lmdir/unsloth_studio"
 if _is_studio_root "$_lmdir"; then
-    echo "  FAIL: a marker inside a linked venv dir was claimed"; FAIL=$((FAIL+1))
+    echo "  PASS: a relocated venv directory is still recognised"; PASS=$((PASS+1))
 else
-    echo "  PASS: a marker inside a linked venv dir is refused"; PASS=$((PASS+1))
+    echo "  FAIL: a relocated venv directory stranded the install"; FAIL=$((FAIL+1))
+fi
+# The same relocation for a PRE-MARKER install, which reaches the gate by the venv fallback.
+_lmpre="$_TMP_ROOT/lm_linked_premarker"
+mkdir -p "$_lmpre" "$_TMP_ROOT/lm_pre_venv/bin"
+: > "$_TMP_ROOT/lm_pre_venv/pyvenv.cfg"
+: > "$_TMP_ROOT/lm_pre_venv/bin/python"
+: > "$_TMP_ROOT/lm_pre_venv/bin/unsloth"
+ln -s "$_TMP_ROOT/lm_pre_venv" "$_lmpre/.venv"
+if _is_studio_root "$_lmpre" managed; then
+    echo "  PASS: a relocated pre-marker venv is still recognised"; PASS=$((PASS+1))
+else
+    echo "  FAIL: a relocated pre-marker venv stranded the install"; FAIL=$((FAIL+1))
 fi
 check "current: share/studio.conf" own managed "share/studio.conf"
 check "current: unsloth_studio owner marker" own managed "unsloth_studio/.unsloth-studio-owned"

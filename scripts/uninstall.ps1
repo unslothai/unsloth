@@ -440,22 +440,17 @@ Environment:
     # install whose .exe was removed by that policy's quarantine still owns its root.
     # Plus the legacy venv shapes install.ps1 still migrates: share\studio.conf is never written
     # on Windows, so every sentinel above postdates the bin\ shim dir.
-    # A sentinel this gate may trust: a regular file, never a reparse point, never inside a linked
-    # directory. Test-Path follows a link, the installers write these as ordinary files, and this
-    # gate authorizes a recursive delete. bin\unsloth.cmd is not on the list; it is
-    # content-checked instead.
+    # A sentinel this gate may trust. Deliberately a plain existence test, following links:
+    # refusing a reparse point here, or a marker inside one, buys nothing and costs a supported
+    # install. Nothing, because anyone who can plant a junction at that path can plant a plain
+    # file there instead, which this has always accepted. A supported install, because relocating
+    # a multi-gigabyte venv with a junction leaves a REAL marker behind one, and refusing it
+    # strands the install, which is the failure this gate exists to prevent. The link test belongs
+    # in install.ps1's claim, where following one would TRUNCATE the target rather than read it.
     function _IsOwnerMarker {
-        param([string]$Path, [string]$Container)
+        param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-        try {
-            if (-not [string]::IsNullOrWhiteSpace($Container)) {
-                $dir = Get-Item -LiteralPath $Container -Force -ErrorAction SilentlyContinue
-                if ($dir -and (($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) { return $false }
-            }
-            $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-            return (-not $item.PSIsContainer -and
-                (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0))
-        } catch { return $false }
+        return (Test-Path -LiteralPath $Path -PathType Leaf)
     }
 
     # Is $Path a Python venv? What the gate reads out of one is evidence only if the directory
@@ -463,9 +458,10 @@ Environment:
     function _IsVenvDir {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-        $dir = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-        if (-not $dir -or -not $dir.PSIsContainer) { return $false }
-        if (($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        # No reparse check here either, and for the same reason: a relocated venv is still a
+        # venv. The leftover scan below rejects links on its own, where the name came from a
+        # wildcard rather than from us.
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
         if (Test-Path -LiteralPath (Join-Path $Path "pyvenv.cfg") -PathType Leaf) { return $true }
         return (Test-Path -LiteralPath (Join-Path $Path "Scripts\python.exe") -PathType Leaf)
     }
@@ -488,8 +484,8 @@ Environment:
         # before the venv, so a partial install identifies itself instead of being guessed at.
         if (_IsOwnerMarker (Join-Path $Path ".unsloth-studio-owned")) { return $true }
         if (_IsOwnerMarker (Join-Path $Path "share\studio.conf")) { return $true }
-        if (_IsOwnerMarker (Join-Path $Path "unsloth_studio\.unsloth-studio-owned") (Join-Path $Path "unsloth_studio")) { return $true }
-        if (_IsOwnerMarker (Join-Path $Path ".venv\.unsloth-studio-owned") (Join-Path $Path ".venv")) { return $true }
+        if (_IsOwnerMarker (Join-Path $Path "unsloth_studio\.unsloth-studio-owned")) { return $true }
+        if (_IsOwnerMarker (Join-Path $Path ".venv\.unsloth-studio-owned")) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "bin\unsloth.exe") -PathType Leaf) { return $true }
         if (_IsUnslothCmdShim (Join-Path $Path "bin\unsloth.cmd")) { return $true }
         # Below here is INSIDE a venv, where pip puts it for any install of the wheel: it names

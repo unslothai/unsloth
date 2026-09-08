@@ -63,40 +63,51 @@ try {
         (_IsStudioRoot (Make "root-marker" @(".unsloth-studio-owned")) -ManagedDefaultRoot)
     Check "the root marker proves a custom root too" `
         (_IsStudioRoot (Make "custom-root-marker" @(".unsloth-studio-owned")))
-    # install.ps1 guarantees a regular file there, and Test-Path follows a link in its place.
-    $markLink = Make "linked-root-marker" @("keepme.txt")
-    $markTarget = Join-Path $tmp "linked-root-marker-target.txt"
+    # A relocated install is still an install. Moving a multi-gigabyte venv to another drive and
+    # leaving a junction behind puts a REAL marker behind one, and refusing it would strand the
+    # install this gate exists to keep removable. Refusing links here would also buy nothing:
+    # anyone who can plant one at these paths can plant a plain file instead. The link test
+    # belongs in install.ps1's claim, where following one TRUNCATES the target.
+    $markTarget = Join-Path $tmp "linked-marker-target.txt"
     Set-Content -LiteralPath $markTarget -Value "x"
-    $mk = $null
-    try {
-        $mk = New-Item -ItemType SymbolicLink -Path (Join-Path $markLink ".unsloth-studio-owned") -Target $markTarget -ErrorAction Stop
-    } catch { $mk = $null }
-    if ($mk) {
-        Check "a linked root marker is refused" (-not (_IsStudioRoot $markLink -ManagedDefaultRoot))
-        Check "and at a custom root too" (-not (_IsStudioRoot $markLink))
-        # Every marker the installers write is a plain file; same for its directory.
-        foreach ($rel in @("unsloth_studio\.unsloth-studio-owned", ".venv\.unsloth-studio-owned", "share\studio.conf")) {
-            $r = Make ("lm-" + ($rel -replace '[^A-Za-z0-9]', '_')) @("keepme.txt")
-            New-Item -ItemType Directory -Path (Join-Path $r ([System.IO.Path]::GetDirectoryName($rel))) -Force | Out-Null
-            $ok = $null
-            try { $ok = New-Item -ItemType SymbolicLink -Path (Join-Path $r $rel) -Target $markTarget -ErrorAction Stop } catch { $ok = $null }
-            if ($ok) { Check "a symlinked $rel is refused" (-not (_IsStudioRoot $r -ManagedDefaultRoot)) }
-        }
-        # ... and a real marker inside a LINKED venv directory, the same trick one level up.
-        $realVenvDir = Make "lm-real-venv" @(".unsloth-studio-owned")
-        $linkedDir = Make "lm-linked-dir" @("keepme.txt")
-        $dl = $null
+    # (subdirectory, marker) rather than one backslash path: New-Item -Path treats a backslash
+    # as an escape off Windows, so a combined literal would not create the link on the Linux row.
+    foreach ($pair in @(@("", ".unsloth-studio-owned"), @("unsloth_studio", ".unsloth-studio-owned"),
+                        @(".venv", ".unsloth-studio-owned"), @("share", "studio.conf"))) {
+        $label = (($pair | Where-Object { $_ }) -join "/")
+        $r = Make ("lm-" + ($label -replace '[^A-Za-z0-9]', '_')) @("keepme.txt")
+        $at = $r
+        if ($pair[0]) { $at = Join-Path $r $pair[0]; New-Item -ItemType Directory -Path $at -Force | Out-Null }
+        $ok = $null
+        try { $ok = New-Item -ItemType SymbolicLink -Path (Join-Path $at $pair[1]) -Target $markTarget -ErrorAction Stop } catch { $ok = $null }
+        if ($ok) { Check "a relocated $label is still recognised" (_IsStudioRoot $r -ManagedDefaultRoot) }
+        else { Write-Host "  SKIP  no symlink could be created for $label" }
+    }
+    # ... and the shape a user really produces: the whole venv directory moved and linked back.
+    $realVenvDir = Make "lm-real-venv" @(".unsloth-studio-owned", "pyvenv.cfg")
+    $linkedDir = Make "lm-linked-dir" @("keepme.txt")
+    $dl = $null
+    foreach ($kind in @("Junction", "SymbolicLink")) {
+        try {
+            $dl = New-Item -ItemType $kind -Path (Join-Path $linkedDir "unsloth_studio") -Target $realVenvDir -ErrorAction Stop
+            if ($dl -and -not [string]::IsNullOrWhiteSpace(@($dl.Target)[0])) { break }
+        } catch { $dl = $null }
+    }
+    if ($dl -and -not [string]::IsNullOrWhiteSpace(@($dl.Target)[0])) {
+        Check "a relocated venv directory is still recognised" (_IsStudioRoot $linkedDir -ManagedDefaultRoot)
+        # The same relocation for a PRE-MARKER install, which reaches the gate by the fallback.
+        $preVenv = Make "lm-pre-venv" @("pyvenv.cfg", "Scripts\python.exe", "Scripts\unsloth.exe")
+        $preRoot = Make "lm-linked-premarker" @("keepme.txt")
+        $dl2 = $null
         foreach ($kind in @("Junction", "SymbolicLink")) {
             try {
-                $dl = New-Item -ItemType $kind -Path (Join-Path $linkedDir "unsloth_studio") -Target $realVenvDir -ErrorAction Stop
-                if ($dl -and -not [string]::IsNullOrWhiteSpace(@($dl.Target)[0])) { break }
-            } catch { $dl = $null }
+                $dl2 = New-Item -ItemType $kind -Path (Join-Path $preRoot ".venv") -Target $preVenv -ErrorAction Stop
+                if ($dl2 -and -not [string]::IsNullOrWhiteSpace(@($dl2.Target)[0])) { break }
+            } catch { $dl2 = $null }
         }
-        if ($dl -and -not [string]::IsNullOrWhiteSpace(@($dl.Target)[0])) {
-            Check "a marker inside a linked venv dir is refused" (-not (_IsStudioRoot $linkedDir -ManagedDefaultRoot))
-        }
+        if ($dl2) { Check "a relocated pre-marker venv is still recognised" (_IsStudioRoot $preRoot -ManagedDefaultRoot) }
     } else {
-        Write-Host "  SKIP  no symlink could be created here"
+        Write-Host "  SKIP  no reparse point could be created here"
     }
     Check "current layout (venv owner marker)" `
         (_IsStudioRoot (Make "cur-marker" @("unsloth_studio\.unsloth-studio-owned")) -ManagedDefaultRoot)

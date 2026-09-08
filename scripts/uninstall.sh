@@ -370,18 +370,18 @@ _xdg_dir() {
 # directory that happens to contain a folder named "unsloth_studio" is safe.
 # Is $1 a Python venv? What the gate reads out of one is evidence only if the directory really
 # is one; a bare file at that path is somebody else's.
-# A sentinel this gate may trust: a regular file, never a link, never inside a linked directory.
-# -f follows a link, the installers write these as plain files, and this gate authorizes a
-# recursive delete. bin/unsloth is not on the list; that one IS a symlink, validated by target.
-_is_owner_marker() {  # marker path, optional containing dir
-    [ -f "$1" ] || return 1
-    [ -L "$1" ] && return 1
-    [ -n "${2:-}" ] && [ -L "$2" ] && return 1
-    return 0
-}
+# A sentinel this gate may trust. Deliberately just -f, following links: refusing one that is a
+# link, or that sits inside a linked directory, buys nothing here and costs a supported install.
+# It buys nothing because anyone who can plant a link at that path can plant a plain file there
+# instead, which this has always accepted. It costs a supported install because relocating a
+# multi-gigabyte venv with a symlink leaves a REAL marker behind a link, and refusing it strands
+# the install, which is the failure this whole gate exists to prevent. The link test belongs in
+# install.sh's _claim_sentinel, where following one would TRUNCATE the target rather than read it.
+_is_owner_marker() { [ -f "$1" ]; }
 
+# No -L here either, and for the same reason: a relocated venv is still a venv. The leftover scan
+# below rejects links on its own, where the name came from a glob rather than from us.
 _is_venv_dir() {
-    [ -L "$1" ] && return 1
     [ -d "$1" ] || return 1
     [ -f "$1/pyvenv.cfg" ] && return 0
     [ -f "$1/bin/python" ] && return 0
@@ -429,8 +429,8 @@ _is_studio_root() {
     # the legacy venv name, which only install.sh writes.
     _is_owner_marker "$_r/.unsloth-studio-owned" && return 0
     _is_owner_marker "$_r/share/studio.conf" && return 0
-    _is_owner_marker "$_r/unsloth_studio/.unsloth-studio-owned" "$_r/unsloth_studio" && return 0
-    _is_owner_marker "$_r/.venv/.unsloth-studio-owned" "$_r/.venv" && return 0
+    _is_owner_marker "$_r/unsloth_studio/.unsloth-studio-owned" && return 0
+    _is_owner_marker "$_r/.venv/.unsloth-studio-owned" && return 0
     if [ -L "$_r/bin/unsloth" ]; then
         _t=$(readlink "$_r/bin/unsloth" 2>/dev/null || true)
         case "$_t" in *unsloth_studio/bin/unsloth) return 0 ;; esac
