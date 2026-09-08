@@ -27,7 +27,7 @@ import time
 import uuid
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Callable, Generator, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Generator, Mapping, Optional, Sequence, Tuple, Union
 from core.inference.audio_device import audio_device_forces_cpu
 from core.inference.native_audio import NATIVE_AUDIO_TYPES, is_native_audio_model
 from core.inference.audio_errors import (
@@ -447,7 +447,11 @@ class InferenceOrchestrator:
         finally:
             self._top_models_ready.set()
 
-    def _spawn_subprocess(self, config: dict) -> None:
+    def _spawn_subprocess(
+        self,
+        config: dict,
+        cache_environment: Optional[Mapping[str, str]] = None,
+    ) -> None:
         """Spawn a new inference subprocess."""
         from utils.transformers_version import (
             SidecarSwapInProgress,
@@ -464,7 +468,11 @@ class InferenceOrchestrator:
         )
         from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
-        cache_env = get_hf_cache_paths().child_env({})
+        cache_env = (
+            dict(cache_environment)
+            if cache_environment is not None
+            else get_hf_cache_paths().child_env({})
+        )
 
         with (
             child_environment_for_spawn(cache_env),
@@ -956,7 +964,8 @@ class InferenceOrchestrator:
                         else:
                             self._mark_worker_started(owner)
                     other.put(resp)
-                    return None
+                # Outside the mailbox check on purpose: a released request's late frames go to nobody.
+                return None
             return resp
 
         def drain(timeout: float = 5.0) -> bool:
@@ -1632,6 +1641,9 @@ class InferenceOrchestrator:
         audio_device: Optional[str] = None,
         on_prior_worker_released: Optional[Callable[[], None]] = None,
         n_parallel: Optional[int] = None,
+        cache_environment: Optional[Mapping[str, str]] = None,
+        anonymous_hf_access: bool = False,
+        audio_codec_path: Optional[str] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -1678,6 +1690,10 @@ class InferenceOrchestrator:
                 # Read in the worker, which hides the accelerators before detection.
                 "audio_device": audio_device,
             }
+            if anonymous_hf_access:
+                sub_config["anonymous_hf_access"] = True
+            if audio_codec_path is not None:
+                sub_config["audio_codec_path"] = audio_codec_path
             if audio_device_forces_cpu(audio_device) and is_native_audio_model(model_name):
                 # Choosing a card for a load that takes none harms it twice: several
                 # GPUs are rejected as unsupported sharding, and required_gb becomes
@@ -1784,7 +1800,10 @@ class InferenceOrchestrator:
                     ", xet disabled" if disable_xet else "",
                 )
                 sub_config["disable_xet"] = disable_xet
-                self._spawn_subprocess(sub_config)
+                if cache_environment is None:
+                    self._spawn_subprocess(sub_config)
+                else:
+                    self._spawn_subprocess(sub_config, cache_environment)
 
                 # A cancel can land after the pre-spawn recheck but while _spawn_subprocess is still creating the
                 # queues/process. cancel_load runs off the lifecycle gate, so its _shutdown_subprocess can see _proc
@@ -2148,9 +2167,7 @@ class InferenceOrchestrator:
                     if not self._ensure_subprocess_alive():
                         raise RuntimeError(self._subprocess_crash_message("count"))
                     continue
-                # A reply whose own mailbox is gone -- an earlier count that timed out
-                # while the worker still held its command -- is handed back to whoever is
-                # reading, and the type alone cannot tell it from this one's.
+                # _direct_reader already drops a reply whose mailbox is gone; this is the backstop.
                 if (
                     candidate.get("type") == "count_tokens_response"
                     and candidate.get("request_id") == request_id

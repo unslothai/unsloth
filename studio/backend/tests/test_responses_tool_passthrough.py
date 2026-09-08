@@ -818,6 +818,464 @@ class TestNormaliseResponsesInputWithTools:
         assert exc.value.status_code == 400
         assert "image_url" in str(exc.value.detail)
 
+    def test_input_file_message_part_rejected_clearly(self):
+        # Same shape function_call_output already refuses; dropped here, it answered 200.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "summarise this"},
+                        {
+                            "type": "input_file",
+                            "file_data": "data:application/pdf;base64,AAA",
+                            "filename": "report.pdf",
+                        },
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "input_file" in str(exc.value.detail)
+
+    def test_file_id_image_message_part_rejected_clearly(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "what is in this?"},
+                        {"type": "input_image", "file_id": "file_abc"},
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "file_id" in str(exc.value.detail)
+
+    def test_unmodelled_message_part_is_named_not_dropped(self):
+        # Matches _reject_unsupported_content_parts on /chat/completions.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "hello"},
+                        {"type": "input_something_new", "value": 1},
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "input_something_new" in str(exc.value.detail)
+
+    def test_image_message_part_without_any_source_rejected_clearly(self):
+        # Nothing to serve, and the tool-result path already says so in these words.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "what is in this?"},
+                        {"type": "input_image"},
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "require an image_url string" in str(exc.value.detail)
+
+    def test_image_message_part_with_unknown_detail_rejected_clearly(self):
+        # Fails the Literal, degrades to the catch-all, and loses a servable url with it.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "what is in this?"},
+                        {
+                            "type": "input_image",
+                            "image_url": "https://example.com/a.png",
+                            "detail": "medium",
+                        },
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "auto, low, high, or original" in str(exc.value.detail)
+
+    def test_image_message_part_with_url_and_file_id_is_served_from_the_url(self):
+        # file_id means instead of a url, not as well as: with a url, serve it.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "what is in this?"},
+                        {
+                            "type": "input_image",
+                            "image_url": "https://example.com/a.png",
+                            "file_id": "file_abc",
+                        },
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert len(msgs) == 1
+        assert msgs[0].content[1].image_url.url == "https://example.com/a.png"
+
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    def test_attachment_refused_on_the_roles_that_exit_early(self, role):
+        # Both return via `continue`, so a refusal in the user parts loop never sees them.
+        text_part = (
+            {"type": "output_text", "text": "hi"}
+            if role == "assistant"
+            else {"type": "input_text", "text": "hi"}
+        )
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": role,
+                    "content": [text_part, {"type": "input_file", "filename": "r.pdf"}],
+                },
+                {"role": "user", "content": "and now?"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "input_file" in str(exc.value.detail)
+
+    def test_assistant_replay_keeps_its_lenient_text_flatten(self):
+        # Clients round-trip prior assistant output verbatim, so only attachments are
+        # refused on a replay turn.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "earlier answer"},
+                        {"type": "refusal", "refusal": "I cannot help with that"},
+                    ],
+                },
+                {"role": "user", "content": "why not?"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [
+            ("assistant", "earlier answer"),
+            ("user", "why not?"),
+        ]
+
+    def test_string_content_never_hides_an_attachment(self):
+        payload = ResponsesRequest(
+            input = [
+                {"role": "system", "content": "be brief"},
+                {"role": "assistant", "content": "earlier"},
+                {"role": "user", "content": "hello"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [
+            ("system", "be brief"),
+            ("assistant", "earlier"),
+            ("user", "hello"),
+        ]
+
+    def test_refusal_body_is_the_openai_unsupported_parameter_shape(self):
+        # Clients branch on error.code / error.param.
+        payload = ResponsesRequest(
+            input = [{"role": "user", "content": [{"type": "input_file", "filename": "r.pdf"}]}],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        error = exc.value.detail["error"]
+        assert error["code"] == "unsupported_parameter"
+        assert error["param"] == "input"
+        assert error["type"] == "invalid_request_error"
+
+
+# Every part shape and the answer it is owed; the failures live in the combinations.
+_IMG = "https://example.com/a.png"
+_RESPONSES_PART_MATRIX = [
+    # (part, refused, needle in the message)
+    ({"type": "input_text", "text": "hi"}, False, ""),
+    ({"type": "output_text", "text": "hi"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": "auto"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": "low"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": "high"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": "original"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": None}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "file_id": "f1"}, False, ""),
+    ({"type": "input_image", "image_url": "data:image/png;base64,AAAA"}, False, ""),
+    ({"type": "input_image", "file_id": "f1"}, True, "file_id"),
+    ({"type": "input_image"}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": None}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": ""}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": 17}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": {"url": _IMG}}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": _IMG, "detail": "medium"}, True, "auto, low, high"),
+    ({"type": "input_image", "image_url": _IMG, "detail": 4}, True, "auto, low, high"),
+    ({"type": "input_file", "file_id": "f1"}, True, "input_file"),
+    ({"type": "input_file", "file_data": "data:application/pdf;base64,AA"}, True, "input_file"),
+    ({"type": "input_file", "file_url": "https://example.com/d.pdf"}, True, "input_file"),
+    ({"type": "input_file", "filename": "r.pdf"}, True, "input_file"),
+    ({"type": "input_file"}, True, "input_file"),
+    ({"type": "input_audio", "input_audio": {"data": "AA", "format": "wav"}}, True, "input_audio"),
+    ({"type": "input_something_new", "value": 1}, True, "input_something_new"),
+]
+
+
+def _matrix_id(case):
+    part, refused, _ = case
+    keys = "+".join(k for k in part if k != "type")
+    return f"{part['type']}({keys or 'bare'})-{'400' if refused else '200'}"
+
+
+class TestResponsesMessagePartMatrix:
+    """One expected answer per (part shape, role, position). No server, no GPU."""
+
+    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids = _matrix_id)
+    @pytest.mark.parametrize("alone", [True, False], ids = ["alone", "with_text"])
+    def test_user_turn(self, case, alone):
+        part, refused, needle = case
+        content = [part] if alone else [{"type": "input_text", "text": "hi"}, part]
+        payload = ResponsesRequest(input = [{"role": "user", "content": content}])
+        if refused:
+            with pytest.raises(HTTPException) as exc:
+                _normalise_responses_input(payload)
+            assert exc.value.status_code == 400
+            assert needle in str(exc.value.detail)
+        else:
+            assert _normalise_responses_input(payload)
+
+    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids = _matrix_id)
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    def test_attachments_refused_on_every_role(self, case, role):
+        # These roles flatten to text, so only a text-ish part survives; everything else,
+        # servable image included, is caller content the flatten would drop.
+        part, refused, needle = case
+        payload = ResponsesRequest(
+            input = [
+                {"role": role, "content": [{"type": "input_text", "text": "hi"}, part]},
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        survives = part["type"] in ("input_text", "output_text") or (
+            role == "assistant" and part["type"] in ("refusal", "summary_text")
+        )
+        if survives:
+            assert _normalise_responses_input(payload)
+            return
+        if part["type"] == "input_file":
+            expected = needle
+        elif part["type"] == "input_image":
+            expected = needle if refused else "only supported on user messages"
+        else:
+            expected = part["type"]
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert expected in str(exc.value.detail)
+
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    def test_a_servable_image_is_refused_on_a_role_that_flattens(self, role):
+        # Passed every shape check and vanished in the flatten anyway. Nowhere to forward
+        # it to: Chat Completions wants a plain string on system and assistant.
+        text_part = (
+            {"type": "output_text", "text": "hi"}
+            if role == "assistant"
+            else {"type": "input_text", "text": "hi"}
+        )
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": role,
+                    "content": [
+                        text_part,
+                        {"type": "input_image", "image_url": "https://example.com/a.png"},
+                    ],
+                },
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "only supported on user messages" in str(exc.value.detail)
+        assert role in str(exc.value.detail)
+
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    @pytest.mark.parametrize(
+        "part",
+        [
+            {"type": "input_audio", "input_audio": {"data": "AA", "format": "wav"}},
+            {"type": "computer_screenshot", "image_url": "https://example.com/a.png"},
+            {"type": "input_brand_new", "value": 1},
+        ],
+        ids = ["input_audio", "computer_screenshot", "future"],
+    )
+    def test_a_non_text_part_is_refused_on_a_role_that_flattens(self, role, part):
+        # Anything the flatten does not keep is caller content that vanishes.
+        text_part = (
+            {"type": "output_text", "text": "hi"}
+            if role == "assistant"
+            else {"type": "input_text", "text": "hi"}
+        )
+        payload = ResponsesRequest(
+            input = [
+                {"role": role, "content": [text_part, part]},
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert part["type"] in str(exc.value.detail)
+        assert role in str(exc.value.detail)
+
+    @pytest.mark.parametrize("role", ["system", "developer", "user", "assistant"])
+    @pytest.mark.parametrize(
+        "part",
+        [
+            {"type": "input_text"},
+            {"type": "input_text", "text": None},
+            {"type": "input_text", "text": 123},
+            {"type": "output_text"},
+        ],
+        ids = ["no_text", "null_text", "int_text", "output_no_text"],
+    )
+    def test_a_text_part_without_text_is_named_for_what_is_wrong(self, role, part):
+        # A known type name on an untyped part: waved through, then dropped by the flatten.
+        payload = ResponsesRequest(
+            input = [
+                {"role": role, "content": [part]},
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "require a text field" in str(exc.value.detail)
+        assert part["type"] in str(exc.value.detail)
+
+    def test_a_malformed_text_part_does_not_hide_behind_a_good_one(self):
+        # Servable text beside it, so the request succeeded and only the broken part went.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": "keep"}, {"type": "input_text"}],
+                },
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert "require a text field" in str(exc.value.detail)
+
+    @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
+    @pytest.mark.parametrize("role", ["system", "developer"])
+    def test_output_metadata_is_caller_content_on_a_non_assistant_turn(self, role, part_type):
+        # Only the model's own output on a replay turn; elsewhere someone wrote it.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": role,
+                    "content": [
+                        {"type": "input_text", "text": "keep"},
+                        {"type": part_type, "text": "x", "refusal": "x"},
+                    ],
+                },
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert part_type in str(exc.value.detail)
+
+    @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
+    def test_assistant_output_metadata_survives_the_flatten(self, part_type):
+        # Clients round-trip these, and the prompt needs nothing from them.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "earlier answer"},
+                        {"type": part_type, "text": "x", "refusal": "x"},
+                    ],
+                },
+                {"role": "user", "content": "why?"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [
+            ("assistant", "earlier answer"),
+            ("user", "why?"),
+        ]
+
+    def test_a_servable_image_still_passes_on_a_user_turn(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "hi"},
+                        {"type": "input_image", "image_url": "https://example.com/a.png"},
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].content[1].image_url.url == "https://example.com/a.png"
+
+    def test_instructions_still_merge_when_a_turn_is_servable(self):
+        payload = ResponsesRequest(
+            instructions = "be brief",
+            input = [
+                {"role": "developer", "content": [{"type": "input_text", "text": "and kind"}]},
+                {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [
+            ("system", "be brief\n\nand kind"),
+            ("user", "hello"),
+        ]
+
+    def test_top_level_item_types_are_untouched_by_the_refusal(self):
+        # The refusal walks message items only.
+        payload = ResponsesRequest(
+            input = [
+                {"type": "reasoning", "summary": [], "id": "rs_1"},
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "{}",
+                },
+                {"type": "function_call_output", "call_id": "call_1", "output": "sunny"},
+                {"role": "user", "content": "thanks"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [m.role for m in msgs] == ["assistant", "tool", "user"]
+
     def test_empty_function_call_output_gets_no_output_sentinel(self):
         payload = ResponsesRequest(
             input = [

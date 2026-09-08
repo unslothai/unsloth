@@ -1,6 +1,7 @@
 """Binary selection logic in install_llama_prebuilt.py; all I/O monkeypatched."""
 
 import importlib.util
+import json
 import os
 import socket
 import subprocess
@@ -170,6 +171,22 @@ def make_release(artifacts, **overrides):
     )
     defaults.update(overrides)
     return PublishedReleaseBundle(**defaults)
+
+
+def checksum_payload(release_tag, upstream_tag):
+    return {
+        "schema_version": 1,
+        "component": "llama.cpp",
+        "release_tag": release_tag,
+        "upstream_tag": upstream_tag,
+        "artifacts": {
+            source_archive_logical_name(upstream_tag): {
+                "sha256": "a" * 64,
+                "repo": "ggml-org/llama.cpp",
+                "kind": "upstream-source",
+            }
+        },
+    }
 
 
 def make_checksums(asset_names):
@@ -650,7 +667,7 @@ class TestPublishedReleaseResolution:
             lambda repo, published_release_tag = "": iter([invalid, valid]),
         )
 
-        def fake_load(repo, release_tag):
+        def fake_load(repo, release_tag, assets):
             if release_tag == "v2.0":
                 raise PrebuiltFallback("checksum asset missing")
             return make_checksums_with_source([], release_tag = "v1.0", upstream_tag = "b8999")
@@ -676,7 +693,7 @@ class TestPublishedReleaseResolution:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "load_approved_release_checksums",
-            lambda repo, release_tag: make_checksums_with_source(
+            lambda repo, release_tag, assets: make_checksums_with_source(
                 [],
                 release_tag = release_tag,
                 upstream_tag = "b8508",
@@ -706,7 +723,7 @@ class TestPublishedReleaseResolution:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "load_approved_release_checksums",
-            lambda repo, release_tag: make_checksums_with_source(
+            lambda repo, release_tag, assets: make_checksums_with_source(
                 [],
                 release_tag = release_tag,
                 upstream_tag = "b9000",
@@ -736,7 +753,7 @@ class TestPublishedReleaseResolution:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "load_approved_release_checksums",
-            lambda repo, release_tag: make_checksums_with_source(
+            lambda repo, release_tag, assets: make_checksums_with_source(
                 [],
                 release_tag = release_tag,
                 upstream_tag = "b9000",
@@ -764,7 +781,7 @@ class TestPublishedReleaseResolution:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "load_approved_release_checksums",
-            lambda repo, release_tag: make_checksums_with_source(
+            lambda repo, release_tag, assets: make_checksums_with_source(
                 [],
                 release_tag = release_tag,
                 upstream_tag = "b9000",
@@ -775,6 +792,95 @@ class TestPublishedReleaseResolution:
 
         resolved = resolve_published_release(commit, "unslothai/llama.cpp")
         assert resolved.bundle.release_tag == "release-commit"
+
+    def test_walk_back_reads_checksums_from_the_listing(self, monkeypatch):
+        tags = ["b3", "b2", "b1"]
+        cdn = "https://github.com/unslothai/llama.cpp/releases/download"
+        manifest = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_MANIFEST_ASSET
+        sha = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_SHA256_ASSET
+        listing = [
+            {
+                "tag_name": tag,
+                "draft": False,
+                "prerelease": False,
+                "assets": [
+                    {"name": manifest, "browser_download_url": f"{cdn}/{tag}/{manifest}"},
+                    {"name": sha, "browser_download_url": f"{cdn}/{tag}/{sha}"},
+                ],
+            }
+            for tag in tags
+        ]
+        api_calls = []
+
+        def fake_fetch_json(url):
+            if url.startswith("https://api.github.com/"):
+                api_calls.append(url)
+                assert "/releases/tags/" not in url, f"per-release API call: {url}"
+                return listing
+            return checksum_payload(url.rsplit("/", 2)[-2], "b8508")
+
+        def fake_download_bytes(url, **_):
+            return json.dumps(
+                {
+                    "schema_version": 1,
+                    "component": "llama.cpp",
+                    "upstream_tag": "b8508",
+                    "artifacts": [],
+                }
+            ).encode()
+
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "fetch_json", fake_fetch_json)
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_bytes", fake_download_bytes)
+        monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
+
+        resolved = list(
+            INSTALL_LLAMA_PREBUILT.iter_resolved_published_releases("latest", "unslothai/llama.cpp")
+        )
+
+        assert [entry.bundle.release_tag for entry in resolved] == tags
+        assert len(api_calls) == 1
+
+    def test_walk_back_skips_a_release_whose_listing_omits_the_checksum_asset(self, monkeypatch):
+        # A half-published release is judged on the listing snapshot: degrade, do not fail.
+        tags = ["b3", "b2", "b1"]
+        cdn = "https://github.com/unslothai/llama.cpp/releases/download"
+        manifest = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_MANIFEST_ASSET
+        sha = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_SHA256_ASSET
+        listing = []
+        for tag in tags:
+            assets = [{"name": manifest, "browser_download_url": f"{cdn}/{tag}/{manifest}"}]
+            if tag != "b3":
+                assets.append({"name": sha, "browser_download_url": f"{cdn}/{tag}/{sha}"})
+            listing.append({"tag_name": tag, "draft": False, "prerelease": False, "assets": assets})
+        api_calls = []
+
+        def fake_fetch_json(url):
+            if url.startswith("https://api.github.com/"):
+                api_calls.append(url)
+                assert "/releases/tags/" not in url, f"per-release API call: {url}"
+                return listing
+            return checksum_payload(url.rsplit("/", 2)[-2], "b8508")
+
+        def fake_download_bytes(url, **_):
+            return json.dumps(
+                {
+                    "schema_version": 1,
+                    "component": "llama.cpp",
+                    "upstream_tag": "b8508",
+                    "artifacts": [],
+                }
+            ).encode()
+
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "fetch_json", fake_fetch_json)
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_bytes", fake_download_bytes)
+        monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
+
+        resolved = list(
+            INSTALL_LLAMA_PREBUILT.iter_resolved_published_releases("latest", "unslothai/llama.cpp")
+        )
+
+        assert [entry.bundle.release_tag for entry in resolved] == ["b2", "b1"]
+        assert len(api_calls) == 1
 
 
 class TestSourceBuildPlanResolution:
@@ -964,7 +1070,7 @@ class TestValidatedChecksumsForBundle:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "load_approved_release_checksums",
-            lambda repo, release_tag: checksums,
+            lambda repo, release_tag, assets: checksums,
         )
 
         with pytest.raises(PrebuiltFallback, match = "manifest checksum"):
@@ -980,7 +1086,7 @@ class TestValidatedChecksumsForBundle:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "load_approved_release_checksums",
-            lambda repo, release_tag: checksums,
+            lambda repo, release_tag, assets: checksums,
         )
 
         with pytest.raises(PrebuiltFallback, match = "exact source archive"):
@@ -1002,7 +1108,7 @@ class TestValidatedChecksumsForBundle:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "load_approved_release_checksums",
-            lambda repo, release_tag: checksums,
+            lambda repo, release_tag, assets: checksums,
         )
 
         assert validated_checksums_for_bundle("unslothai/llama.cpp", bundle) is checksums
@@ -1012,6 +1118,38 @@ class TestValidatedChecksumsForBundle:
         assert plan.source_url == "https://github.com/ggml-org/llama.cpp"
         assert plan.source_ref_kind == "commit"
         assert plan.source_ref == "a" * 40
+
+    def test_reads_the_checksum_asset_from_the_listing(self, monkeypatch):
+        bundle = make_release([], release_tag = "r1", upstream_tag = "b8508")
+        sha_url = "https://github.com/unslothai/llama.cpp/releases/download/r1/sha.json"
+        bundle.assets[INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_SHA256_ASSET] = sha_url
+        fetched = []
+
+        def fake_fetch_json(url):
+            fetched.append(url)
+            return checksum_payload("r1", "b8508")
+
+        def no_release_api(repo, tag):
+            raise AssertionError(f"release API call for {repo}@{tag}")
+
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "fetch_json", fake_fetch_json)
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release", no_release_api)
+
+        checksums = validated_checksums_for_bundle("unslothai/llama.cpp", bundle)
+
+        assert checksums.release_tag == "r1"
+        assert fetched == [sha_url]
+
+    def test_listing_without_checksum_asset_falls_back(self, monkeypatch):
+        bundle = make_release([], release_tag = "r1", upstream_tag = "b8508")
+
+        def no_release_api(repo, tag):
+            raise AssertionError(f"release API call for {repo}@{tag}")
+
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release", no_release_api)
+
+        with pytest.raises(PrebuiltFallback, match = "did not expose"):
+            validated_checksums_for_bundle("unslothai/llama.cpp", bundle)
 
 
 # ===========================================================================
@@ -2665,6 +2803,95 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
             has_physical_nvidia = False,
             has_usable_nvidia = False,
         )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
+        assert [a.install_kind for a in attempts] == ["linux-cpu"]
+
+    def _vulkan_and_cpu_bundle(self):
+        """What unslothai/llama.cpp actually publishes: both an x64 Vulkan bundle and
+        an x64 CPU one (app-<tag>-linux-x64-vulkan.tar.gz / -cpu.tar.gz)."""
+        return make_release(
+            [
+                make_artifact(
+                    "app-b8508-linux-x64-vulkan.tar.gz",
+                    install_kind = "linux-vulkan",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = "linux-vulkan-x64",
+                    rank = 500,
+                ),
+                make_artifact(
+                    "app-b8508-linux-x64-cpu.tar.gz",
+                    install_kind = "linux-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                    rank = 1000,
+                ),
+            ]
+        )
+
+    def _gpu_host(self, **overrides):
+        base = dict(
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = False,
+        )
+        base.update(overrides)
+        return make_host(**base)
+
+    def test_amd_without_rocm_gets_the_published_vulkan_bundle(self):
+        """The regression this guards: an AMD host with no usable ROCm silently took the
+        CPU bundle.
+
+        The Vulkan preference was stated in direct_upstream_release_plan and in
+        resolve_upstream_asset_choice, but NOT here, and this is the branch that runs whenever a
+        published bundle exists. So a Steam Deck installed the CPU llama.cpp while both upstream
+        paths said Vulkan, reachable only by setting UNSLOTH_LLAMA_CPP_BACKEND by hand.
+        """
+        host = self._gpu_host(has_amd_gpu_without_rocm = True)
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
+            host, self._vulkan_and_cpu_bundle()
+        )
+        # Vulkan first, CPU kept behind it: if the Vulkan bundle fails validation the
+        # host still gets a working engine rather than nothing.
+        assert [a.install_kind for a in attempts] == ["linux-vulkan", "linux-cpu"]
+
+    def test_intel_routing_is_unchanged(self):
+        host = self._gpu_host(has_intel_gpu = True)
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
+            host, self._vulkan_and_cpu_bundle()
+        )
+        assert [a.install_kind for a in attempts] == ["linux-vulkan", "linux-cpu"]
+
+    def test_plain_cpu_host_never_reaches_vulkan(self):
+        host = self._gpu_host()
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
+            host, self._vulkan_and_cpu_bundle()
+        )
+        assert [a.install_kind for a in attempts] == ["linux-cpu"]
+
+    def test_amd_next_to_a_physical_nvidia_does_not_reach_vulkan(self):
+        """Vulkan ignores CUDA_VISIBLE_DEVICES, so a hidden NVIDIA card must not be
+        enumerated through it -- the same reason the other two paths test physical
+        rather than usable NVIDIA."""
+        host = self._gpu_host(has_amd_gpu_without_rocm = True, has_physical_nvidia = True)
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
+            host, self._vulkan_and_cpu_bundle()
+        )
+        assert "linux-vulkan" not in [a.install_kind for a in attempts]
+
+    def test_amd_without_rocm_falls_back_to_cpu_when_no_vulkan_bundle_exists(self):
+        """An older release that shipped no Vulkan bundle must still install something."""
+        host = self._gpu_host(has_amd_gpu_without_rocm = True)
         attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
         assert [a.install_kind for a in attempts] == ["linux-cpu"]
 
