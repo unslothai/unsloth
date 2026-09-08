@@ -102,6 +102,11 @@ class _Props:
             setattr(self, spec["arch_attr"], spec["arch"])
 
 
+def _gfx103x_pair():
+    """The two-card gfx1030 + gfx1036 rig most of this matrix probes."""
+    return [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)]
+
+
 def _fake_torch(
     devices,
     *,
@@ -443,11 +448,7 @@ class TestAmdCoverageCases:
     def test_missing_marker_fails_open(self, os_key, tmp_path, monkeypatch, probe_env):
         # Source build / custom link: coverage unknown, so keep every device.
         _apply_os(monkeypatch, os_key, is_rocm = True)
-        _install_torch(
-            monkeypatch,
-            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd",
-        )
+        _install_torch(monkeypatch, _gfx103x_pair(), vendor = "amd")
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
             (0, 12049),
             (1, 12176),
@@ -458,11 +459,7 @@ class TestAmdCoverageCases:
         # Non-ROCm bundles record []: unknown coverage, not "covers nothing".
         _apply_os(monkeypatch, os_key, is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": []})
-        _install_torch(
-            monkeypatch,
-            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd",
-        )
+        _install_torch(monkeypatch, _gfx103x_pair(), vendor = "amd")
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
             (0, 12049),
             (1, 12176),
@@ -477,11 +474,7 @@ class TestAmdCoverageCases:
         downstream behaviour asserted in TestEveryDeviceUncoveredDownstream."""
         _apply_os(monkeypatch, os_key, is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX120X})
-        _install_torch(
-            monkeypatch,
-            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd",
-        )
+        _install_torch(monkeypatch, _gfx103x_pair(), vendor = "amd")
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == []
         # ... while the unfiltered probe, and therefore every torch caller,
         # still sees both cards.
@@ -493,11 +486,7 @@ class TestAmdCoverageCases:
         gate on exactly the hosts #7624 was reported from."""
         _apply_os(monkeypatch, "windows", is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
-        _install_torch(
-            monkeypatch,
-            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd_sdk",
-        )
+        _install_torch(monkeypatch, _gfx103x_pair(), vendor = "amd_sdk")
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
 
 
@@ -659,11 +648,7 @@ class TestArchStringRobustness:
     ):
         _apply_os(monkeypatch, "linux", is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": [token]})
-        _install_torch(
-            monkeypatch,
-            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd",
-        )
+        _install_torch(monkeypatch, _gfx103x_pair(), vendor = "amd")
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
 
     @pytest.mark.parametrize("attr", ["gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"])
@@ -912,10 +897,7 @@ class TestEveryDeviceUncoveredDownstream:
         child enumerated both unsupported cards and died, with the reactive retry
         unable to help (its guard needs a truthy ``gpu_indices``)."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(
-            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd",
-        )
+        torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
@@ -936,10 +918,7 @@ class TestEveryDeviceUncoveredDownstream:
         the HSA enumeration the dropped agents. The embedding CPU launch states the
         rule; the chat one went through the default HIP arm, which clears ROCR."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(
-            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd",
-        )
+        torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
@@ -962,10 +941,7 @@ class TestEveryDeviceUncoveredDownstream:
         ``is not False``, so the counted classifier's None (the gated probe left the
         detected list empty) would unload one whose death frees nothing."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(
-            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd",
-        )
+        torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
         capture: dict = {}
         launches = _run_auto_load(
             monkeypatch, tmp_path, torch, GFX120X, returncode = None, capture = capture
@@ -991,10 +967,7 @@ class TestEveryDeviceUncoveredDownstream:
         log has to say why: which devices are present, and that the installed
         build covers none of them (#7624)."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(
-            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd",
-        )
+        torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
         # structlog, so the stdlib caplog fixture cannot see these records.
         warnings = []
         monkeypatch.setattr(
@@ -1014,10 +987,7 @@ class TestEveryDeviceUncoveredDownstream:
         fallback: it still pins the survivor, and never pays for the second,
         ungated probe the fallback needs to tell "all gated out" from "no GPU"."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(
-            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd",
-        )
+        torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
         _ungated = []
         _real = LlamaCppBackend._get_gpu_memory
 
@@ -1042,10 +1012,7 @@ class TestEveryDeviceUncoveredDownstream:
         Nothing else writes a mask on that arm, so the child would enumerate the
         dropped card and die, the reactive retry needing `gpu_indices` to help."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(
-            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd",
-        )
+        torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
