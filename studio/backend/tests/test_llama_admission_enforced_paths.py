@@ -244,7 +244,7 @@ class TestTheGeneratorsSendIt:
             monkeypatch,
             payloads,
             admission_output_allowance = _SHARE,
-            on_conversation_grew = lambda _conversation: next(recosted, None),
+            on_conversation_grew = lambda _conversation, _tools: next(recosted, None),
         )
 
         assert _caps(payloads) == [_SHARE - 100, _SHARE - 400]
@@ -256,39 +256,35 @@ class TestTheGeneratorsSendIt:
             monkeypatch,
             payloads,
             admission_output_allowance = _SHARE,
-            on_conversation_grew = lambda _conversation: None,
+            on_conversation_grew = lambda _conversation, _tools: None,
         )
 
         assert _caps(payloads) == [_SHARE, _SHARE]
 
-    def test_the_final_pass_gets_its_own_re_cost(self, monkeypatch):
-        """It is the one request of the run that sends no `tools` array.
-
-        The rounds subtract the injected catalogue from the share because they carry it;
-        subtracting it from a pass that does not send it takes roughly 1250 tokens off a
-        real answer, and floors it at one token once the history is long enough.
-        """
+    def test_the_hook_is_told_which_catalogue_each_request_sends(self, monkeypatch):
+        """The rounds subtract the catalogue because they carry it; the synthesized final
+        answer sends no `tools` array, and the loop narrows a round's own catalogue when
+        sanitisation drops one, a one-shot tool retires or a choice is forced. Priced
+        against the catalogue the route resolved instead, a request has tokens it does not
+        carry taken off its answer, down to the one-token floor."""
         payloads: list[dict] = []
+        seen: list = []
+
+        def _recost(_conversation, tools):
+            seen.append(tools)
+            return _SHARE - (500 if tools else 100)
+
         _run_tool_loop(
             monkeypatch,
             payloads,
             admission_output_allowance = _SHARE,
-            on_conversation_grew = lambda _conversation: _SHARE - 500,
-            on_final_conversation_grew = lambda _conversation: _SHARE - 100,
+            on_conversation_grew = _recost,
         )
 
+        assert len(seen) == 2
+        assert [tool["function"]["name"] for tool in seen[0]] == ["web_search"]
+        assert seen[1] is None, "the final pass sends no tools array"
         assert _caps(payloads) == [_SHARE - 500, _SHARE - 100]
-
-    def test_a_caller_with_no_final_hook_keeps_the_old_behaviour(self, monkeypatch):
-        payloads: list[dict] = []
-        _run_tool_loop(
-            monkeypatch,
-            payloads,
-            admission_output_allowance = _SHARE,
-            on_conversation_grew = lambda _conversation: _SHARE - 500,
-        )
-
-        assert _caps(payloads) == [_SHARE - 500, _SHARE - 500]
 
     def test_a_respawn_refit_does_not_restore_the_window(self, monkeypatch):
         """A replacement server reporting a bigger window is not a bigger reservation.
@@ -345,10 +341,11 @@ class TestTheGeneratorsSendIt:
         )
         monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 10)
         seen: list[int] = []
-        recosted = iter([_SHARE - 100, _SHARE - 700])
+        recosted = iter([None, _SHARE - 100, _SHARE - 700])
 
-        def _final_recost(messages):
-            seen.append(len(messages))
+        def _recost(messages, tools):
+            if tools is None:
+                seen.append(len(messages))
             return next(recosted, None)
 
         _run_tool_loop(
@@ -356,7 +353,7 @@ class TestTheGeneratorsSendIt:
             payloads,
             backend = backend,
             admission_output_allowance = _SHARE,
-            on_final_conversation_grew = _final_recost,
+            on_conversation_grew = _recost,
         )
 
         assert len(seen) == 2, f"the final re-cost ran {len(seen)} time(s), not once per attempt"
@@ -651,16 +648,16 @@ class TestWhatTheWireActuallyCarries:
         assert raw == 1, "the base64 transport should have swamped the share"
         assert wire > 1000, "the normalised part is priced as an image, not as prompt text"
 
-    def test_the_final_pass_keeps_the_catalogue_it_does_not_send(self):
-        """`wire_sends_tools = False` is the whole difference between a real answer and
-        the one-token floor once the history is long."""
+    def test_a_request_is_not_charged_a_catalogue_it_does_not_send(self):
+        """The difference between a real answer and the one-token floor once the history
+        is long, on the final pass and on any round the loop has narrowed."""
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
 
         reservation = _reservation()
         conversation = [{"role": "user", "content": "word " * 700}]
 
-        def _recost(wire_sends_tools):
+        def _recost(wire_tools):
             return _openai_llama_admission_recost(
                 reservation,
                 conversation,
@@ -669,11 +666,11 @@ class TestWhatTheWireActuallyCarries:
                 payload = payload,
                 output_tokens = 16384,
                 injected_tools = _CATALOGUE,
-                wire_sends_tools = wire_sends_tools,
+                wire_tools = wire_tools,
             )
 
-        with_tools = _recost(True)
-        without = _recost(False)
+        with_tools = _recost(_CATALOGUE)
+        without = _recost(None)
         assert without > with_tools, (with_tools, without)
         catalogue = _openai_llama_admission_prompt_tokens(
             _Payload(messages = [{"role": "user", "content": ""}]), injected_tools = _CATALOGUE

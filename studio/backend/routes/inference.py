@@ -2431,7 +2431,7 @@ def _openai_llama_admission_recost(
     output_tokens: Optional[int] = None,
     cancel_event = None,
     injected_tools = None,
-    wire_sends_tools: bool = True,
+    wire_tools = None,
 ) -> Optional[int]:
     """Charge a tool loop for what its conversation now is, not what it opened as.
 
@@ -2453,9 +2453,11 @@ def _openai_llama_admission_recost(
     alone. A cap frozen at the opening prompt is the same drift from the other side: once
     growth carries the conversation past its share the ledger charges the flat allowance
     while the wire still permits ``share - opening_prompt``. The cap is priced from what
-    the round SENDS rather than from the conservative figure charged just above; see
-    ``_openai_llama_admission_wire_prompt_tokens``. ``wire_sends_tools`` is False for the
-    synthesized final answer, which carries the whole history and no ``tools`` array.
+    the request SENDS rather than from the conservative figure charged just above; see
+    ``_openai_llama_admission_wire_prompt_tokens``. ``wire_tools`` is that request's own
+    catalogue, which is narrower than ``injected_tools`` once the loop drops an unsafe
+    declaration, retires a one-shot tool or narrows to a forced one, and None on the
+    synthesized final answer, which sends no ``tools`` array at all.
     """
     if reservation is None:
         return None
@@ -2498,7 +2500,7 @@ def _openai_llama_admission_recost(
         wire_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
-            injected_tools = injected_tools if wire_sends_tools else None,
+            injected_tools = wire_tools,
         )
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.
@@ -22446,7 +22448,7 @@ async def produce_openai_chat_completions(
             # a reservation by the time a round can call it.
             _gguf_admission_hold: dict = {"reservation": None}
 
-            def _gguf_recost(conversation, *, wire_sends_tools: bool = True) -> Optional[int]:
+            def _gguf_recost(conversation, round_tools = None) -> Optional[int]:
                 return _openai_llama_admission_recost(
                     _gguf_admission_hold["reservation"],
                     conversation,
@@ -22459,17 +22461,14 @@ async def produce_openai_chat_completions(
                     # prices as the rest of the budget; zero would re-cost an uncapped
                     # loop down to its share on its very first round.
                     output_tokens = effective_max_tokens,
+                    # The catalogue the LEASE covers, whatever this request carries.
                     injected_tools = tools_to_use,
-                    wire_sends_tools = wire_sends_tools,
+                    # And the one this request actually sends, which the loop narrows.
+                    wire_tools = round_tools,
                     # A round waiting for cache room must still answer Stop. Same event
                     # the loop polls each iteration, so a wait ends where a cancel would.
                     cancel_event = cancel_event,
                 )
-
-            def _gguf_final_recost(conversation) -> Optional[int]:
-                """The synthesized final answer sends no catalogue, so its cap is measured
-                without one. The CHARGE keeps it, as every other round does."""
-                return _gguf_recost(conversation, wire_sends_tools = False)
 
             # Active tool names gating the bare-rehearsal strip, matching the loop gate.
             _gguf_display_tool_names = _display_tool_name_gate(tools_to_use)
@@ -22515,7 +22514,6 @@ async def produce_openai_chat_completions(
                     min_p = payload.min_p,
                     max_tokens = effective_max_tokens,
                     admission_output_allowance = _tool_admission_output_allowance,
-                    on_final_conversation_grew = _gguf_final_recost,
                     repetition_penalty = payload.repetition_penalty,
                     presence_penalty = payload.presence_penalty,
                     frequency_penalty = payload.frequency_penalty,
@@ -30745,7 +30743,7 @@ async def anthropic_messages(
     # estimate for the whole run.
     _anthropic_admission_hold: dict = {"reservation": None}
 
-    def _anthropic_recost(conversation, *, wire_sends_tools: bool = True) -> Optional[int]:
+    def _anthropic_recost(conversation, round_tools = None) -> Optional[int]:
         return _openai_llama_admission_recost(
             _anthropic_admission_hold["reservation"],
             conversation,
@@ -30756,12 +30754,9 @@ async def anthropic_messages(
             payload = payload,
             output_tokens = payload.max_tokens,
             injected_tools = openai_tools,
-            wire_sends_tools = wire_sends_tools,
+            wire_tools = round_tools,
             cancel_event = cancel_event,
         )
-
-    def _anthropic_final_recost(conversation) -> Optional[int]:
-        return _anthropic_recost(conversation, wire_sends_tools = False)
 
     async def _admitted_anthropic(coro, *, tool_loop: bool = False):
         try:
@@ -31066,7 +31061,6 @@ async def anthropic_messages(
                 cancel_event = cancel_event,
                 max_tool_iterations = 25,
                 on_conversation_grew = _anthropic_recost,
-                on_final_conversation_grew = _anthropic_final_recost,
                 auto_heal_tool_calls = True,
                 nudge_tool_calls = payload.nudge_tool_calls,
                 tool_choice = server_tool_choice,

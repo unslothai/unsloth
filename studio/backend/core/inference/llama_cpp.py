@@ -29076,20 +29076,18 @@ class LlamaCppBackend:
         # Appended, never inserted: no bare `*` here, so every parameter is
         # positional-or-keyword and inserting one rebinds later positional arguments.
         #
-        # Called at the top of every round with the conversation as it now stands, so KV
-        # admission can charge what this run occupies rather than its opening estimate.
-        # MAY BLOCK: recost_waiting waits for cache room. Safe at the top of a round,
-        # where the previous round's request has completed.
-        # An int back replaces `admission_output_allowance` for the rounds after it, so
-        # the cap tracks the conversation just charged; None leaves it alone.
-        on_conversation_grew: Optional[Callable[[list], Optional[int]]] = None,
+        # Called once per request with the conversation as it now stands and the tool
+        # catalogue that request will carry, so KV admission can charge what this run
+        # occupies rather than its opening estimate. None for the catalogue means the
+        # request sends no `tools` array, which the synthesized final answer does not.
+        # MAY BLOCK: recost_waiting waits for cache room. Safe here, between rounds, where
+        # the previous request has completed.
+        # An int back replaces `admission_output_allowance` for the requests after it, so
+        # the cap tracks the prompt just charged; None leaves it alone.
+        on_conversation_grew: Optional[Callable[[list, Optional[list]], Optional[int]]] = None,
         # What KV admission reserved for this run's output, applied to the wire cap of
         # every request the loop sends. Appended for the same reason as the hook.
         admission_output_allowance: Optional[int] = None,
-        # The same hook for the synthesized final answer, the one request of the run that
-        # sends no `tools` array: subtracting a catalogue it does not carry can floor a
-        # real answer at one token. Falls back to `on_conversation_grew`.
-        on_final_conversation_grew: Optional[Callable[[list], Optional[int]]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -29568,15 +29566,6 @@ class LlamaCppBackend:
         iteration = -1
         while True:
             iteration += 1
-            # Here rather than at each append: six sites grow the conversation and all of
-            # them pass through this one point before the cache must hold the result.
-            if on_conversation_grew is not None:
-                try:
-                    _recosted_allowance = on_conversation_grew(conversation)
-                    if _recosted_allowance is not None:
-                        admission_output_allowance = _recosted_allowance
-                except Exception:  # accounting must never break a run in progress
-                    logger.debug("tool loop recost failed", exc_info = True)
             if iteration >= max_tool_iterations + _extra + _continuation_credits:
                 break
             if cancel_event is not None and cancel_event.is_set():
@@ -29617,6 +29606,20 @@ class LlamaCppBackend:
                 if matching_tools:
                     safe_tools = matching_tools
                     requested_choice = "required"
+            # Here rather than at each append: six sites grow the conversation and all of
+            # them pass through this one point before the cache must hold the result.
+            # Below the catalogue too, not at the top of the round, because the round is
+            # priced on what it SENDS: sanitisation drops an unsafe declaration, a
+            # completed one-shot tool retires, and a forced choice narrows to one, so a
+            # cap measured against the catalogue the route resolved subtracts tokens this
+            # request does not carry and shrinks with every retirement.
+            if on_conversation_grew is not None:
+                try:
+                    _recosted_allowance = on_conversation_grew(conversation, safe_tools)
+                    if _recosted_allowance is not None:
+                        admission_output_allowance = _recosted_allowance
+                except Exception:  # accounting must never break a run in progress
+                    logger.debug("tool loop recost failed", exc_info = True)
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
             _enabled_tool_names = {
                 (tool.get("function") or {}).get("name")
@@ -32280,9 +32283,8 @@ class LlamaCppBackend:
         # tool-iteration cap, a controller turning tools off) leave the assistant turn,
         # its tool results and any nudge appended after the last re-cost -- making this
         # final pass the largest request of the run and the one the pool never heard
-        # about. Its own hook, since this request sends no `tools` array; it runs at the
-        # top of the retry loop, which every attempt passes through.
-        _final_recost = on_final_conversation_grew or on_conversation_grew
+        # about. It sends no `tools` array, which is what the None below says, and it runs
+        # at the top of the retry loop, which every attempt passes through.
 
         stream_payload = {
             "messages": neutralize_control_markup_in_messages(
@@ -32555,9 +32557,11 @@ class LlamaCppBackend:
             # cap priced on the first attempt lets the retry occupy a whole share again on
             # top of what it already wrote. `stream_payload["messages"]` rather than
             # `conversation`, since the continuation tail lives only on the payload.
-            if _final_recost is not None:
+            if on_conversation_grew is not None:
                 try:
-                    _final_recosted_allowance = _final_recost(stream_payload["messages"])
+                    _final_recosted_allowance = on_conversation_grew(
+                        stream_payload["messages"], None
+                    )
                     if _final_recosted_allowance is not None:
                         admission_output_allowance = _final_recosted_allowance
                 except Exception:  # accounting must never break a run in progress
