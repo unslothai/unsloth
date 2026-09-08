@@ -60,12 +60,14 @@ import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
-  ArrowLeft01Icon,
   Delete02Icon,
   Download01Icon,
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -497,7 +499,7 @@ export function DataTab() {
             aria-label={t("settings.data.backToData")}
             className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+            <ChevronLeftIcon className="size-4" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -526,7 +528,7 @@ export function DataTab() {
             aria-label={t("settings.data.backToData")}
             className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+            <ChevronLeftIcon className="size-4" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -599,7 +601,7 @@ export function DataTab() {
             aria-label={t("settings.data.backToData")}
             className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+            <ChevronLeftIcon className="size-4" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -627,7 +629,7 @@ export function DataTab() {
             aria-label={t("settings.data.backToData")}
             className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+            <ChevronLeftIcon className="size-4" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}

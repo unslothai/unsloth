@@ -5,8 +5,8 @@ import type { LoraModelOption } from "./types";
 
 export type LocalGgufKind = "direct" | "variants" | null;
 
-/** Resolve local GGUF interaction semantics without letting repo-name heuristics
- * override an explicit one-artifact inventory source such as Ollama. */
+/** Resolve local GGUF interaction semantics without letting repo-name heuristics override an
+ *  explicit one-artifact inventory source such as Ollama. */
 export function localGgufKindFor(
   option: Pick<LoraModelOption, "source" | "isDirectGguf">,
   looksLikeVariantRepo: boolean,

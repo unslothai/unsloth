@@ -197,8 +197,7 @@ def test_plain_fixed_seed_disables_slot_prompt_cache_reuse(monkeypatch):
 
 
 def test_the_uint32_random_seed_sentinel_also_keeps_cache_reuse(monkeypatch):
-    """llama.h defines LLAMA_DEFAULT_SEED as 0xFFFFFFFF and the seed is read as uint32, so
-    4294967295 is the same "pick one at random" as -1 and must keep prompt-cache reuse."""
+    """llama.h defines LLAMA_DEFAULT_SEED as 0xFFFFFFFF read as uint32, so 4294967295 is the same "pick one at random" as -1 and must keep prompt-cache reuse."""
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,

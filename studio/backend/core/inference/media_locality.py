@@ -299,8 +299,9 @@ def _pipeline_components_present(root: Path) -> bool:
             # [null, null] marks a component this pipeline deliberately ships without.
             if len(entry) not in (2, 3) or not entry[1]:
                 continue
-            # a modular entry is [library, class, spec], and its spec can name another repo,
-            # which this directory is never expected to hold but the load still pulls
+            # a modular entry is [library, class, spec]
+            # a modular entry is [library, class, spec], and its spec can name another repo, which this directory is
+            # never expected to hold but the load still pulls
             hosted = _hosted_source(entry[2]) if len(entry) == 3 else None
             if hosted is not None:
                 if not _hosted_component_cached(*hosted):
@@ -343,8 +344,9 @@ def _cached_snapshot_root(repo_id: str, revision: str = "") -> Optional[Path]:
 
     repo_dir = Path(hub_cache_dir()) / f"models--{repo_id.replace('/', '--')}"
     snapshots = repo_dir / "snapshots"
-    # a pinned revision is a commit sha, or a branch or tag the cache records under refs/, and
-    # it is the only candidate: falling back to main is how the default snapshot approves a pin
+    # a pinned revision is the only candidate: falling back to main is how the default snapshot approves a pin
+    # a pinned revision is a commit sha, or a branch or tag the cache records under refs/, and it is the only candidate:
+    # falling back to main is how the default snapshot approves a pin
     for candidate in [revision] if revision else ["main"]:
         pinned = snapshots / candidate
         if pinned.is_dir():
@@ -357,7 +359,6 @@ def _cached_snapshot_root(repo_id: str, revision: str = "") -> Optional[Path]:
         if resolved is not None and resolved.is_dir():
             return resolved
     if revision:
-        # pinned and not cached under that name: the default snapshot is not what will load
         return None
     try:
         # no ref file means a commit-pinned download, where any cached revision is the one
@@ -382,8 +383,9 @@ def _hosted_component_cached(source: str, subfolder: str, revision: str, variant
     snapshot = _cached_snapshot_root(source, revision)
     if snapshot is None:
         return False
-    # the same component rules either way: _upstream_is_cached's no-manifest branch is satisfied
-    # by a single weight file, which an interrupted sharded pull leaves behind
+    # _upstream_is_cached's no-manifest branch is satisfied by a single weight file
+    # the same component rules either way: _upstream_is_cached's no-manifest branch is satisfied by a single weight
+    # file, which an interrupted sharded pull leaves behind
     return _component_present(snapshot / subfolder if subfolder else snapshot, variant)
 
 
@@ -414,22 +416,23 @@ def _component_present(component: Path, variant: str = "") -> bool:
         return False
     if variant and not any(f".{variant}." in entry.name for entry in files):
         return False
-    # kept on the full listing: a shard index whose blob is gone must still route here, where
-    # _shards_declared reads the unreadable index and refuses, rather than fall through to the
-    # weight test below and pass on whichever sibling shard did survive
+    # kept on the full listing: a shard index whose blob is gone must still route here, where _shards_declared reads the
+    # unreadable index and refuses, rather than fall through to the weight test below and pass on whichever sibling
+    # shard did survive
     if any(entry.name.endswith(".index.json") for entry in entries):
         # an index is proof only once it declares something; an empty weight_map declares nothing
         return _shards_declared(component)
-    # a weight-bearing component declares config.json; schedulers, tokenizers and processors
-    # carry their own *_config.json instead and ship no weights at all
+    # a weight-bearing component declares config.json; schedulers, tokenizers and processors carry their own
+    # *_config.json instead and ship no weights at all
     if (component / "config.json").is_file():
         return any(entry.suffix.lower() in _WEIGHT_SUFFIXES for entry in files)
-    # a tokenizer ships no weights but is still useless without its vocabulary, and which file
-    # that is varies by class, so any one of the known spellings answers for all of them
+    # a tokenizer ships no weights but is useless without its vocabulary
+    # a tokenizer ships no weights but is still useless without its vocabulary, and which file that is varies by class,
+    # so any one of the known spellings answers for all of them
     if (component / "tokenizer_config.json").is_file():
         return any((component / name).is_file() for name in _TOKENIZER_ASSETS)
-    # a metadata-only component is its config: a scheduler or processor directory holding
-    # anything else at all (a stray README) builds nothing and is fetched at load time
+    # a metadata-only component is its config: a scheduler or processor directory holding anything else at all (a stray
+    # README) builds nothing and is fetched at load time
     return any(entry.name.endswith("config.json") for entry in files)
 
 
@@ -489,13 +492,12 @@ def missing_download_bytes(
     if local_pipeline and not _pipeline_components_present(Path(target.model_path)):
         return UNSIZED_MISSING
     if owner == DIFFUSION:
-        # asked of every image pick, not only local pipelines: a single-file HiDream checkpoint
-        # plans clean and its assembly still loads the encoder repo unconditionally
+        # asked of every image pick, not only local pipelines: a single-file HiDream checkpoint plans clean and its
+        # assembly still loads the encoder repo unconditionally
         external = _missing_external_encoder(target)
         if external is None or external:
             return external
         if local_pipeline:
-            # the pipeline is present, so only a dependency outside it could still be fetched
             return 0
     try:
         ordinal = plan_gpu_ordinal()
@@ -506,10 +508,10 @@ def missing_download_bytes(
                 model_kind = target.model_kind,
                 gpu_ordinal = ordinal,
                 hf_token = hf_token,
-                # Only the verdict, not the probe: this asks whether the pick is already on
-                # disk, so it must count the SAME files the load will fetch. Clearing the probe
-                # drops the pre-cast encoder and the GGUF dense-transformer widening, which is
-                # how a "fully downloaded" answer goes wrong.
+                # only the verdict, not the probe: this must count the SAME files the load will fetch
+                # Only the verdict, not the probe: this asks whether the pick is already on disk, so it must count the
+                # SAME files the load will fetch. Clearing the probe drops the pre-cast encoder and the GGUF
+                # dense-transformer widening, which is how a "fully downloaded" answer goes wrong.
                 memory_verdict = False,
             )
             or {}

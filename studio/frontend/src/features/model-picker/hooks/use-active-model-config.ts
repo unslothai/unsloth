@@ -2,10 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
-import { useMemo } from "react";
 import { usePlatformStore } from "@/config/env";
-import type { PerModelConfig } from "../model-config/per-model-config";
-import { isServedByMlx } from "../model-config/per-model-config";
+import { useMemo } from "react";
+import {
+  type PerModelConfig,
+  isServedByLlamaCpp,
+  residentIsServedByMlx,
+} from "../model-config/per-model-config";
 
 export interface ActiveModelConfigState {
   checkpoint: string | null;
@@ -15,11 +18,13 @@ export interface ActiveModelConfigState {
 
 export function useActiveModelConfig(): ActiveModelConfigState {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint) || null;
-  const deviceType = usePlatformStore((s) => s.deviceType);
-  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const maxSeqLength = useChatRuntimeStore((s) => s.params.maxSeqLength);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
+  const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
+  const activeNativePathToken = useChatRuntimeStore(
+    (s) => s.activeNativePathToken,
+  );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const mlxKvBits = useChatRuntimeStore((s) => s.mlxKvBits);
@@ -47,16 +52,23 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     (s) => s.selectedGpuIndexKind,
   );
 
-  const isGguf =
-    activeGgufVariant != null ||
-    ggufContextLength != null ||
-    (checkpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  const isGguf = isServedByLlamaCpp({
+    loadedIsGguf,
+    activeGgufVariant,
+    activeNativePathToken,
+    checkpoint,
+  });
+  const platform = usePlatformStore();
+  const isMlx = residentIsServedByMlx(
+    isGguf,
+    platform.deviceType,
+    platform.chatOnlyReason,
+    loadedIsMlx,
+  );
 
   // Off-backend this stays null, or the model compares unequal to its own defaults
   // over a field it cannot show.
-  const effectiveMlxKvBits = isServedByMlx(isGguf, deviceType, chatOnlyReason)
-    ? (mlxKvBits ?? null)
-    : null;
+  const effectiveMlxKvBits = isMlx ? (mlxKvBits ?? null) : null;
 
   const config = useMemo<PerModelConfig | null>(() => {
     if (!checkpoint || isExternalModelId(checkpoint)) {
@@ -64,7 +76,10 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     }
     const base: PerModelConfig = {
       customContextLength: customContextLength ?? null,
-      maxSeqLength: isGguf ? null : maxSeqLength,
+      // A self-sizing backend carries no pin here, exactly as the GGUF path does: this
+      // is the runtime's resolved length, and reading it back as the user's choice would
+      // pin every reload to whatever the first load happened to get.
+      maxSeqLength: isGguf || isMlx ? null : maxSeqLength,
       kvCacheDtype: kvCacheDtype ?? null,
       mlxKvBits: effectiveMlxKvBits,
       speculativeType: speculativeType ?? "auto",
@@ -94,6 +109,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   }, [
     checkpoint,
     isGguf,
+    isMlx,
     maxSeqLength,
     customContextLength,
     kvCacheDtype,

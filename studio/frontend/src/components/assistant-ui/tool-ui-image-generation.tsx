@@ -4,11 +4,12 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { cn } from "@/lib/utils";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
-import { ImageIcon, PencilIcon } from "lucide-react";
 import { Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ImageIcon, PencilIcon } from "lucide-react";
 import type { CSSProperties, MouseEvent } from "react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
@@ -357,7 +358,15 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                   )}
                 />
               </button>
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100">
+              <div
+                // Out of find-in-page's reach, like the response model badge: from `sm` up these
+                // actions are transparent until the card is hovered, so "Edit" would be counted and
+                // walked to under a highlight nobody can see. The index leaves opacity alone, since
+                // every user message fades in and reading it would drop one mid-fade. Marked whole
+                // rather than per breakpoint, which costs finding a button label on a phone.
+                {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
+                className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100"
+              >
                 <Button
                   type="button"
                   variant="dark"

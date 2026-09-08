@@ -11,6 +11,10 @@ export type LanAccessStatus = {
   publicUrls: string[];
   error: string | null;
   autoStart: boolean;
+
+  portConfigurationSupported: boolean;
+  configuredPort: number | null;
+  activePort: number | null;
   managedBy: LanAccessOwner;
   canStart: boolean;
   canStop: boolean;
@@ -31,6 +35,11 @@ export type ApiLanAccessStatus = {
   error?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   auto_start: boolean;
+
+  // biome-ignore lint/style/useNamingConvention: API schema
+  configured_port?: number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  active_port?: number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   managed_by?: LanAccessOwner;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -67,6 +76,14 @@ export function normalizeLanAccessStatus(
     publicUrls: Array.isArray(status.public_urls) ? status.public_urls : [],
     error: status.error ?? null,
     autoStart: status.auto_start,
+
+    portConfigurationSupported: Object.hasOwn(status, "configured_port"),
+    configuredPort:
+      typeof status.configured_port === "number"
+        ? status.configured_port
+        : null,
+    activePort:
+      typeof status.active_port === "number" ? status.active_port : null,
     managedBy: status.managed_by ?? null,
     canStart: status.can_start,
     canStop: status.can_stop,
@@ -112,6 +129,20 @@ export function lanAccessAutoStartReadOnly(
   status: LanAccessStatus | null,
 ): boolean {
   return status === null || status.blockReason === "colab";
+}
+
+export function lanAccessPortReadOnly(status: LanAccessStatus | null): boolean {
+  return (
+    status === null ||
+    !status.portConfigurationSupported ||
+    status.state === "online" ||
+    status.blockReason === "colab"
+  );
+}
+
+export function validLanAccessPort(value: string): boolean {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535;
 }
 
 export function lanAccessStopDisconnectsOrigin(
@@ -167,12 +198,17 @@ export function lanAccessBlockMessage(
   }
 }
 
-export function lanAccessErrorMessage(error: string | null): string | null {
+export function lanAccessErrorMessage(
+  error: string | null,
+  configuredPort: number | null = null,
+): string | null {
   switch (error) {
     case "no_lan_address":
       return "No network address found. Connect this machine to Wi-Fi or a wired network, then try again.";
     case "bind_failed":
-      return "Could not open Unsloth's port on this machine's network addresses.";
+      return configuredPort === null
+        ? "Could not open any automatic LAN port from 8888 to 8908."
+        : `Port ${configuredPort} is unavailable. Stop the app using it or choose another custom port.`;
     case "listener_start_failed":
       return "The network listener did not start. Check the logs for details.";
     case "stop_timed_out":

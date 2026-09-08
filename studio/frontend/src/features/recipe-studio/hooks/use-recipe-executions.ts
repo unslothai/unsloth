@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getInferenceStatus, loadModel } from "@/features/chat";
+import { unpinnedLoadContext } from "@/features/chat/presets/preset-policy";
+import { usePlatformStore } from "@/config/env";
+import {
+  DEFAULT_MAX_SEQ_LENGTH,
+  isServedByMlx,
+} from "@/features/model-picker";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
 import { useCallback, useEffect, useState } from "react";
@@ -68,6 +74,11 @@ type LocalModelSelection = {
   target: string;
   ggufVariant: string;
   aliases: string[];
+  /** The context that model's own load asked for, for a selection captured to be
+   *  restored. Absent for a recipe's own target, which pins nothing. */
+  requestedContextLength?: number | null;
+  /** Whether MLX served it. Only there is a positive request above unambiguous. */
+  isMlx?: boolean;
 };
 
 type LocalModelLoadPlan =
@@ -215,18 +226,44 @@ function localSelectionMatchesActive(input: {
   );
 }
 
+/** A context request, read only where it means something.
+ *
+ *  An unpinned MLX load sends 0, so a positive value there is a pin. llama.cpp is
+ *  ambiguous: a same-model reload echoes the resolved n_ctx while the control is still
+ *  Auto (see resolve-ctx-pin-seed.ts), so reading that as a pin would reload the model
+ *  on every run and then re-pin an Auto-sized one. 0 is Auto on both.
+ */
+function contextIntent(
+  value: number | null | undefined,
+  isMlx: boolean | null | undefined,
+): number | null {
+  return isMlx && typeof value === "number" && value > 0 ? value : null;
+}
+
 async function isLocalModelAlreadyLoaded(
   selection: LocalModelSelection,
 ): Promise<boolean> {
-  const { target, ggufVariant } = selection;
+  const { target, ggufVariant, requestedContextLength } = selection;
   try {
     const status = await getInferenceStatus();
-    return localSelectionMatchesActive({
-      target,
-      ggufVariant,
-      activeModel: status.model_identifier ?? status.active_model,
-      activeVariant: status.gguf_variant?.trim() ?? "",
-    });
+    if (
+      !localSelectionMatchesActive({
+        target,
+        ggufVariant,
+        activeModel: status.model_identifier ?? status.active_model,
+        activeVariant: status.gguf_variant?.trim() ?? "",
+      })
+    ) {
+      return false;
+    }
+    // Same checkpoint, different context intent is still a different load: a recipe that
+    // asked for nothing must not inherit whatever window Chat pinned.
+    // The resident backend decides, since both values describe the load that is running.
+    const residentIsMlx = status.is_mlx ?? false;
+    return (
+      contextIntent(requestedContextLength, residentIsMlx) ===
+      contextIntent(status.requested_context_length, residentIsMlx)
+    );
   } catch {
     // Fall through to load attempt; the backend will re-error if needed.
     return false;
@@ -236,7 +273,7 @@ async function isLocalModelAlreadyLoaded(
 async function loadLocalModelSelection(
   selection: LocalModelSelection,
 ): Promise<string | null> {
-  const { target, ggufVariant } = selection;
+  const { target, ggufVariant, requestedContextLength } = selection;
   const modelLabel = ggufVariant ? `${target} (${ggufVariant})` : target;
   let loadToastDismissed = false;
   const toastId = toast.message(`Loading ${modelLabel}...`, {
@@ -250,13 +287,22 @@ async function loadLocalModelSelection(
   });
   try {
     const isGguf = GGUF_MODEL_PATTERN.test(target) || Boolean(ggufVariant);
+    // A recipe's own target loads the way an unpinned chat model does; restoring the
+    // model it displaced replays what that model's own load asked for.
+    const platform = usePlatformStore.getState();
     await loadModel({
       // biome-ignore lint/style/useNamingConvention: api schema
       model_path: target,
       // biome-ignore lint/style/useNamingConvention: api schema
       hf_token: null,
       // biome-ignore lint/style/useNamingConvention: api schema
-      max_seq_length: isGguf ? 0 : 4096,
+      max_seq_length:
+        requestedContextLength ??
+        unpinnedLoadContext(
+          isGguf,
+          isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
+          DEFAULT_MAX_SEQ_LENGTH,
+        ),
       // biome-ignore lint/style/useNamingConvention: api schema
       load_in_4bit: true,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -314,6 +360,8 @@ async function getActiveLocalModelSelection(): Promise<LocalModelSelection | nul
       target,
       ggufVariant: status.gguf_variant?.trim() ?? "",
       aliases: ["previous Chat model"],
+      requestedContextLength: status.requested_context_length ?? null,
+      isMlx: status.is_mlx ?? false,
     };
   } catch {
     return null;
@@ -338,6 +386,8 @@ async function getRestorableActiveLocalModelSelection(): Promise<RestorableLocal
         target,
         ggufVariant: status.gguf_variant?.trim() ?? "",
         aliases: ["previous Chat model"],
+        requestedContextLength: status.requested_context_length ?? null,
+      isMlx: status.is_mlx ?? false,
       },
       unrestorableLabel: null,
     };
@@ -353,7 +403,9 @@ function isSameLocalModelSelection(
   return Boolean(
     left &&
       left.target.toLowerCase() === right.target.toLowerCase() &&
-      left.ggufVariant === right.ggufVariant,
+      left.ggufVariant === right.ggufVariant &&
+      contextIntent(left.requestedContextLength, left.isMlx) ===
+        contextIntent(right.requestedContextLength, right.isMlx),
   );
 }
 
