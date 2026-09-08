@@ -10,6 +10,7 @@ import pytest
 
 from core.rag import captioner, config, ingestion, parsers, store
 from storage import rag_db
+from .test_rag_upload_formats import EXTENSIONS, write_document
 
 
 def test_captioning_is_opt_in(monkeypatch):
@@ -20,13 +21,15 @@ def test_captioning_is_opt_in(monkeypatch):
 
 
 @pytest.mark.parametrize("fails", [False, True])
-def test_duplicate_upload_follows_original_job(rag_home, stub_embeddings, monkeypatch, fails):
+@pytest.mark.parametrize("extension", EXTENSIONS)
+def test_duplicate_upload_follows_original_job(
+    rag_home, stub_embeddings, monkeypatch, fails, extension
+):
     from utils.paths import ensure_dir, rag_uploads_root
 
     uploads = ensure_dir(rag_uploads_root())
-    original = uploads / "report.txt"
-    duplicate = uploads / "copy.txt"
-    original.write_text("Quarterly revenue increased substantially.")
+    original = write_document(uploads / f"report{extension}")
+    duplicate = uploads / f"copy{extension}"
     duplicate.write_bytes(original.read_bytes())
     started, release = threading.Event(), threading.Event()
     parse = parsers.parse

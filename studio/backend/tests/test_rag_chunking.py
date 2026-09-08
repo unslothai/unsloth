@@ -6,6 +6,9 @@
 from core.rag.chunking import chunk_pages
 from core.rag.parsers import Page, parse_text
 
+from collections import Counter
+from functools import lru_cache
+
 WORDS = lambda t: len(t.split())  # noqa: E731
 
 
@@ -67,3 +70,21 @@ def test_parse_text_single_page():
     pages = parse_text("hello world")
     assert len(pages) == 1
     assert pages[0].char_count == len("hello world")
+
+
+def test_large_document_does_not_retokenize_every_piece_after_cache_eviction():
+    # GGUF counts are HTTP requests behind a 4096-entry cache. A long TXT/DOCX
+    # page evicts all its early words before merging reaches them again.
+    requests = Counter()
+
+    @lru_cache(maxsize = 4096)
+    def count(text):
+        requests[text] += 1
+        return len(text.split())
+
+    text = " ".join(f"word{i}" for i in range(10_000))
+    chunks = chunk_pages([_page(text)], max_tokens = 500, overlap = 64, count = count)
+    assert max(requests.values()) == 1
+    assert len(chunks) > 20
+    assert all(c.token_count <= 500 for c in chunks)
+    assert chunks[-1].page_char_end == len(text)

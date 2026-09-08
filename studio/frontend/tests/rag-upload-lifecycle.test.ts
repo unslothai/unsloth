@@ -35,6 +35,7 @@ const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 /** Drive renders of the shipped hook with controlled network responses. */
 function harness(
   options: {
+    filename?: string;
     events?: () => AsyncGenerator<JobEvent>;
     getJob?: () => Promise<IndexJob>;
   } = {},
@@ -45,7 +46,11 @@ function harness(
   const errors: string[] = [];
   const infos: string[] = [];
   const uploads: string[] = [];
-  const uploaded = { documentId: "doc", jobId: "job", filename: "report.pdf" };
+  const uploaded = {
+    documentId: "doc",
+    jobId: "job",
+    filename: options.filename ?? "report.pdf",
+  };
   const lister = async () => [];
   const scope: RagDocumentScope = { type: "thread", threadId: "thread" };
   const react = {
@@ -70,8 +75,7 @@ function harness(
     useEffect(effect: () => void | (() => void), deps: unknown[]) {
       const index = cursor++;
       const previous = slots[index] as
-        | { deps: unknown[]; cleanup?: () => void }
-        | undefined;
+        { deps: unknown[]; cleanup?: () => void } | undefined;
       if (previous && deps.every((dep, i) => Object.is(dep, previous.deps[i])))
         return;
       effects.push(() => {
@@ -139,51 +143,62 @@ function harness(
   };
 }
 
-function report() {
-  return new File(["report"], "report.pdf", { lastModified: 1 });
+function report(filename = "report.pdf") {
+  return new File(["report"], filename, { lastModified: 1 });
 }
 
-test("reselecting an attached PDF skips chat creation and duplicate toasts", async () => {
-  const app = harness();
-  try {
-    let hook = app.render();
-    await flush();
-    await hook.upload([report()]);
-    await flush();
-    hook = app.render();
-    assert.equal(hook.documents[0]?.status, "completed");
-    let initialized = 0;
-    await hook.upload([report()], async () => {
-      initialized += 1;
-      throw new Error("Thread was not persisted");
-    });
-    await flush();
-    assert.equal(initialized, 0);
-    assert.equal(app.uploads.length, 1);
-    assert.deepEqual(app.errors, []);
-    assert.deepEqual(app.infos, []);
-    assert.equal(app.render().documents.length, 1);
-  } finally {
-    app.dispose();
-  }
-});
+for (const extension of [
+  "pdf",
+  "txt",
+  "md",
+  "markdown",
+  "docx",
+  "html",
+  "htm",
+]) {
+  const filename = `report.${extension}`;
+  test(`reselecting an attached ${extension} skips chat creation and duplicate toasts`, async () => {
+    const app = harness({ filename });
+    try {
+      let hook = app.render();
+      await flush();
+      await hook.upload([report(filename)]);
+      await flush();
+      hook = app.render();
+      assert.equal(hook.documents[0]?.status, "completed");
+      let initialized = 0;
+      await hook.upload([report(filename)], async () => {
+        initialized += 1;
+        throw new Error("Thread was not persisted");
+      });
+      await flush();
+      assert.equal(initialized, 0);
+      assert.equal(app.uploads.length, 1);
+      assert.deepEqual(app.errors, []);
+      assert.deepEqual(app.infos, []);
+      assert.equal(app.render().documents.length, 1);
+    } finally {
+      app.dispose();
+    }
+  });
 
-test("chat initialization failure removes the pending chip and reports once", async () => {
-  const app = harness();
-  try {
-    const hook = app.render();
-    await flush();
-    await hook.upload([report()], async () => {
-      throw new Error("Thread deleted");
-    });
-    assert.deepEqual(app.errors, ["Couldn't attach documents"]);
-    assert.deepEqual(app.uploads, []);
-    assert.deepEqual(app.render().documents, []);
-    assert.equal(app.render().uploading, false);
-  } finally {
-    app.dispose();
-  }
-});
+  test(`chat initialization failure removes the ${extension} chip and reports once`, async () => {
+    const app = harness({ filename });
+    try {
+      const hook = app.render();
+      await flush();
+      await hook.upload([report(filename)], async () => {
+        throw new Error("Thread deleted");
+      });
+      assert.deepEqual(app.errors, ["Couldn't attach documents"]);
+      assert.deepEqual(app.uploads, []);
+      assert.deepEqual(app.render().documents, []);
+      assert.equal(app.render().uploading, false);
+    } finally {
+      app.dispose();
+    }
+  });
+}
 
 test("failed scope resolution cannot upload into the previous chat", async () => {
   const app = harness();
