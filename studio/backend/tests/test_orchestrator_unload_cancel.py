@@ -2808,3 +2808,35 @@ def test_run_server_clears_the_route_latch_too():
         "run_server resets the backend but not the route latch, so a restarted "
         "server cancels every load it admits"
     )
+
+
+def test_the_route_latch_clears_only_after_the_backend_lifecycle_reopens():
+    """_begin_server_lifecycle blocks on the teardown lock while a kill is running.
+    Clearing the route latch before that wait leaves a request the OLD lifecycle
+    admitted uncancelled, and it then captures the freshly advanced generation and
+    loads the previous session's model into the new one.
+
+    Nothing legitimate is refused by clearing later: uvicorn does not serve until
+    thread.start(), which is below both calls.
+    """
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    tree = ast.parse(run_py)
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_server")
+    src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
+
+    # Matched as statements, not as text: the comments above these calls name them
+    # too, and an earlier version of this test found "thread.start()" inside one of
+    # them and compared the wrong offsets.
+    backend_reset = src.index("_llama_cpp_backend._begin_server_lifecycle()")
+    route_reset = src.index("\n        begin_load_lifecycle()")
+    serve = src.index("\n    thread.start()")
+
+    assert backend_reset < route_reset, (
+        "the route latch is cleared before the backend lifecycle reopens, so a "
+        "request admitted by the old lifecycle can cross the teardown wait"
+    )
+    assert route_reset < serve, "the route latch is still set when the server starts serving"

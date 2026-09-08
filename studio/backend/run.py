@@ -2888,9 +2888,15 @@ def run_server(
 
         # The route latch as well as the backend's: shutdown sets both, and a second
         # session that cleared only one would refuse every /load it admitted.
-        begin_load_lifecycle()
+        # Backend first, route latch second. _begin_server_lifecycle blocks on the
+        # teardown lock while a kill is still running, and clearing the latch before
+        # that wait would leave a request the OLD lifecycle admitted uncancelled: it
+        # would then capture the freshly advanced generation and load the previous
+        # session's model into this one. Nothing legitimate is refused by the later
+        # clear, since uvicorn does not serve until thread.start() below.
         if _llama_cpp_backend is not None:
             _llama_cpp_backend._begin_server_lifecycle()
+        begin_load_lifecycle()
     except Exception as e:
         logger.warning("Could not reset llama-server shutdown state: %s", e)
 

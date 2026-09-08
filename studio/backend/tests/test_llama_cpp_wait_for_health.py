@@ -1173,8 +1173,10 @@ def test_the_lifecycle_reset_is_the_last_thing_before_the_serve():
     sweep has already run past.
     """
     body = _run_server_body()
-    reset = body.index("_begin_server_lifecycle()")
-    serve = body.index("thread.start()")
+    # Statements, not text: the comments around these calls name them too, and
+    # matching the prose made this compare the wrong offsets.
+    reset = body.index("_llama_cpp_backend._begin_server_lifecycle()")
+    serve = body.index("\n    thread.start()")
     assert reset < serve, "the lifecycle reset no longer precedes the serve"
 
     # Only the window between the reset and the serve. The sys.exit further down is
