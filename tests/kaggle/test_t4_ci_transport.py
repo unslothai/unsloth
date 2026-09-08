@@ -1171,6 +1171,7 @@ def _drive_main(
         kernel_timeout_sec,
         accelerator = "NvidiaTeslaT4",
         attempted = None,
+        **kwargs,
     ):
         clock["t"] += push_seconds
         outcome = outcomes.pop(0)
@@ -1634,6 +1635,7 @@ def _accepting_push(slug: str):
         kernel_timeout_sec,
         accelerator = "NvidiaTeslaT4",
         attempted = None,
+        **kwargs,
     ):
         if attempted is not None:
             attempted.append(slug)
@@ -2330,7 +2332,7 @@ def test_main_bounds_the_whole_evidence_phase_it_is_budgeted_for(monkeypatch, tm
     monkeypatch.setattr(
         launch,
         "push",
-        lambda nb, user, t, accelerator = "NvidiaTeslaT4", attempted = None: (
+        lambda nb, user, t, accelerator = "NvidiaTeslaT4", attempted = None, **kwargs: (
             attempted.append(f"{user}/s{len(attempted)}"),
             {"ok": True, "slug": attempted[-1], "attempts": list(attempted)},
         )[1],

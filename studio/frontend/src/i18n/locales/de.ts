@@ -945,7 +945,11 @@ export const de = {
         currentStreak: "Aktuelle Serie",
         longestStreak: "Längste Serie",
         activityTitle: "Token-Aktivität",
-        activityDescription: "Zeitraum: {weeks} · {total}",
+        activityDescription: {
+          daily: "Zeitraum: {weeks} · {total}",
+          weekly: "Spitzenwoche {total} · letzte {weeks}",
+          cumulative: "{total} kumuliert in den letzten {weeks}",
+        },
         mode: {
           daily: "Täglich",
           weekly: "Wöchentlich",
@@ -2200,6 +2204,7 @@ export const de = {
       memoryEfficient: "Speichereffizient",
       weightDecomposed: "Gewichtszerlegt",
       notSupportedAppleSilicon: "Auf Apple Silicon nicht unterstützt",
+      doraNeedsVisionLayersOff: "Training der Vision-Schichten deaktivieren, um DoRA zu nutzen",
       optimization: "Optimierung",
       schedule: "Zeitplan",
       memory: "Speicher",

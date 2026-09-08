@@ -917,7 +917,11 @@ export const ko = {
         currentStreak: "현재 연속 기록",
         longestStreak: "최장 연속 기록",
         activityTitle: "토큰 활동",
-        activityDescription: "최근 {weeks} 동안 {total}",
+        activityDescription: {
+          daily: "최근 {weeks} 동안 {total}",
+          weekly: "최고 주 {total} · 최근 {weeks}",
+          cumulative: "최근 {weeks} 동안 누적 {total}",
+        },
         mode: {
           daily: "일별",
           weekly: "주별",
@@ -2137,6 +2141,7 @@ export const ko = {
       memoryEfficient: "메모리 효율적",
       weightDecomposed: "가중치 분해",
       notSupportedAppleSilicon: "Apple Silicon에서는 지원되지 않음",
+      doraNeedsVisionLayersOff: "DoRA를 사용하려면 비전 레이어 학습을 끄세요",
       optimization: "최적화",
       schedule: "스케줄",
       memory: "메모리",

@@ -932,7 +932,11 @@ export const ptBR = {
         currentStreak: "Sequência atual",
         longestStreak: "Maior sequência",
         activityTitle: "Atividade de tokens",
-        activityDescription: "Período: {weeks} · {total}",
+        activityDescription: {
+          daily: "Período: {weeks} · {total}",
+          weekly: "Semana de pico {total} · últimas {weeks}",
+          cumulative: "{total} acumulados nas últimas {weeks}",
+        },
         mode: {
           daily: "Diária",
           weekly: "Semanal",
@@ -2170,6 +2174,7 @@ export const ptBR = {
       memoryEfficient: "Eficiente em Memória",
       weightDecomposed: "Pesos Decompostos",
       notSupportedAppleSilicon: "Não compatível com Apple Silicon",
+      doraNeedsVisionLayersOff: "Desative o treinamento das camadas de visão para usar DoRA",
       optimization: "Otimização",
       schedule: "Cronograma",
       memory: "Memória",

@@ -220,7 +220,7 @@ def create_studio_mcp() -> FastMCP:
             approved_remote_code_fingerprint = approved_remote_code_fingerprint,
             hf_token = hf_token,
         )
-        return _dump(await load(request, current_subject = "mcp"))
+        return _dump(await load(request, current_subject = "mcp", allow_ambient = False))
 
     @mcp.tool
     async def export_gguf(
@@ -255,7 +255,7 @@ def create_studio_mcp() -> FastMCP:
             private = private,
             gguf_shard_size = gguf_shard_size,
         )
-        return _dump(await export(request, current_subject = "mcp"))
+        return _dump(await export(request, current_subject = "mcp", allow_ambient = False))
 
     return mcp
 

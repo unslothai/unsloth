@@ -14,6 +14,10 @@ from typing import Callable, Optional
 
 STAGE_DIR_NAME = ".update-stage"
 STAGE_ROOT_ENV = "UNSLOTH_STUDIO_STAGE_ROOT"
+# Where a staged update parks the uv cache it used. The live marker is written only once
+# the stage is accepted, so an update that never activates cannot redirect the environment
+# it did not replace.
+UV_CACHE_MARKER = "uv-cache-dir"
 SHELL_VERSION_ENV = "UNSLOTH_TAURI_SHELL_VERSION"
 READY_MARKER = "READY.json"
 VENV_NAME = "unsloth_studio"
@@ -227,6 +231,30 @@ def run_staged_update(root: Path, args: list[str]) -> int:
     return subprocess.call(command, cwd = str(root), env = child_environment(root))
 
 
+def promote_uv_cache_marker(root: Path, studio_home: Path) -> Optional[Path]:
+    """Publish the staged update's cache choice to the live install.
+
+    Best effort in both directions: a stage that parked nothing leaves the live marker
+    alone, and a live root that cannot be written costs the next update a preference.
+    """
+    source = root / UV_CACHE_MARKER
+    try:
+        payload = source.read_bytes()
+    except OSError:
+        return None
+    if not payload.strip():
+        return None
+    marker = studio_home / "cache" / UV_CACHE_MARKER
+    try:
+        marker.parent.mkdir(parents = True, exist_ok = True)
+        # Unlinked first: a write follows a symlink and truncates its target.
+        marker.unlink(missing_ok = True)
+        marker.write_bytes(payload)
+    except OSError:
+        return None
+    return marker
+
+
 def write_ready_marker(root: Path, backend_version: str, shell_version: Optional[str]) -> Path:
     marker = root / READY_MARKER
     payload = {
@@ -273,6 +301,8 @@ def stage(
         version = installed_version(root / VENV_NAME, env)
         shell_version = (os.environ.get(SHELL_VERSION_ENV) or "").strip() or None
         write_ready_marker(root, version, shell_version)
+        # After verification: until the probes pass there is no accepted stage.
+        promote_uv_cache_marker(root, studio_home)
     except BaseException:
         discard(root)
         raise

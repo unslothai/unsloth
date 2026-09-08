@@ -272,8 +272,9 @@ def _unsloth_install_pretrain_detector(model):
         return model
     marker = getattr(model, "_unsloth_pretrain_marker", None)
     if isinstance(marker, dict):
-        # A live hook is already recording: keep it and do NOT clear seen, since a grad-enabled probe
-        # may already have flagged the poisoned cache and a re-entrant call must not erase that.
+        # A live hook is already recording: keep it (no duplicates) and do NOT clear seen, since a
+        # grad-enabled probe may already have flagged the poisoned cache and a re-entrant
+        # get_peft_model / patch_peft_model call must not erase that before train() resets it.
         if "hook" in marker:
             return model
         # Marker exists but its hook was torn down, so reinstall fresh and reset seen.
@@ -2077,6 +2078,10 @@ elif DEVICE_TYPE == "xpu":
     else:
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+else:
+    # Exhaustive because both names are in __all__: an unbound branch (mlx) breaks `import *`.
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = DEVICE_TYPE_TORCH)
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = DEVICE_TYPE_TORCH)
 
 # Fix KeyError: 'Cache only has 0 layers, attempted to access layer with index 0'.
 

@@ -2047,3 +2047,35 @@ def test_an_exact_generic_variant_beats_the_default_pick(hub):
     hub["info"] = _gguf_repo_info()
     assert _run("unsloth/x-GGUF:Q2_K").status == 404
     assert hub["started"] == []
+
+
+@pytest.mark.parametrize(
+    "sidecar,probe,code",
+    [
+        ((None, True), (None, True), "invalid_value"),
+        (("bicodec", True), (None, True), "invalid_value"),
+        ((None, True), ("bicodec", True), "model_downloading"),
+        (("bicodec", True), (None, False), "model_downloading"),
+        (("csm", True), None, "invalid_value"),
+        ((None, False), None, "model_lookup_failed"),
+    ],
+)
+def test_speech_download_admission(hub, monkeypatch, sidecar, probe, code):
+    metadata, weights = [], []
+    monkeypatch.setattr(
+        "utils.models.model_config.detect_audio_type_checked",
+        lambda repo, **kw: metadata.append(kw) or sidecar,
+    )
+    monkeypatch.setattr(
+        auto_dl, "_probe_remote_gguf_audio_type", lambda *a: weights.append(a) or probe
+    )
+    result = asyncio.run(auto_dl.maybe_auto_download("unsloth/tts-GGUF:Q8_0", require_speech = True))
+    assert result.code == code
+    assert result.status == (400 if code == "invalid_value" else 503)
+    assert bool(hub["started"]) is (code == "model_downloading")
+    assert metadata == [{"hf_token": False, "revision": hub["info"].sha}]
+    assert weights == (
+        []
+        if probe is None
+        else [("unsloth/tts-GGUF", "model-Q8_0-00001-of-00002.gguf", None, hub["info"].sha)]
+    )

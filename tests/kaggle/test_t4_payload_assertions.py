@@ -1957,6 +1957,99 @@ def test_empty_generations_are_a_failure_even_when_every_batch_agrees():
     assert any("generated nothing at all" in f for f in failures), failures
 
 
+def test_an_empty_row_inside_a_batch_is_a_failure_even_when_the_singles_are_fine():
+    from run_t4_smoke import batched_generation_failures
+
+    """The hole: `empty_outputs` was derived from the SINGLES only. A row that
+    decodes to "" inside the batch of 8 while its one-at-a-time output is fine
+    is not caught by that, and the disagreement it causes is excused for a
+    model listed in KNOWN_BATCHED_GENERATION_BREAKAGE. That is #9848, a
+    left-padded row attending to nothing, reported as a pass.
+    """
+    record = _batch_record(
+        batched = {
+            "2": [f"out{i}" for i in range(8)],
+            "4": [f"out{i}" for i in range(8)],
+            "8": [f"out{i}" if i != 2 else "" for i in range(8)],
+        },
+        agrees = {"2": True, "4": True, "8": False},
+        empty_batched_outputs = {"8": [2]},
+    )
+    failures = batched_generation_failures(record, "unsloth/gemma-4-E2B-it")
+    assert any("inside the batch" in f and "[2]" in f for f in failures), failures
+
+
+def test_batched_generation_records_a_row_that_is_empty_only_inside_the_batch():
+    """The rule above is fed a dict. This drives the real `batched_generation`
+    with a stub whose row 2 comes back empty ONLY when it is generated inside
+    a batch of 8, and asserts the record says so. Reverting the payload change
+    leaves `empty_batched_outputs` absent and this goes red."""
+    import torch
+
+    from run_t4_smoke import batched_generation, batched_generation_failures
+
+    class _Enc(dict):
+        def to(self, _device):
+            return self
+
+    class _Tok:
+        padding_side = "right"
+        pad_token = "<pad>"
+        eos_token = "<eos>"
+        pad_token_id = 0
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            padding = False,
+        ):
+            texts = [text] if isinstance(text, str) else list(text)
+            ids = [[ord(c) % 100 + 1 for c in t] for t in texts]
+            if return_tensors is None:
+                return {"input_ids": ids[0] if isinstance(text, str) else ids}
+            width = max(len(i) for i in ids)
+            padded = [[0] * (width - len(i)) + i for i in ids]
+            return _Enc(
+                input_ids = torch.tensor(padded),
+                attention_mask = torch.tensor([[0] * (width - len(i)) + [1] * len(i) for i in ids]),
+            )
+
+        def decode(
+            self,
+            row,
+            skip_special_tokens = False,
+        ):
+            return "".join(chr(int(v)) for v in row if int(v) != 0)
+
+    class _EmptyRowInsideBatch8:
+        device = "cpu"
+
+        def generate(
+            self,
+            input_ids = None,
+            attention_mask = None,
+            max_new_tokens = 8,
+            **_kw,
+        ):
+            outs = []
+            for index, row in enumerate(input_ids):
+                real = [int(v) for v in row if int(v) != 0]
+                tail = [(sum(real) % 26) + 65] * max_new_tokens
+                if input_ids.shape[0] == 8 and index == 2:
+                    tail = [0] * max_new_tokens  # pad only: decodes to ""
+                outs.append([int(v) for v in row] + tail)
+            return torch.tensor(outs)
+
+    prompts = ["abcdefgh"[:n] for n in range(1, 9)]
+    record = batched_generation(_EmptyRowInsideBatch8(), _Tok(), prompts, max_new_tokens = 4)
+
+    assert record["empty_outputs"] == [], "the singles were fine; that is the point"
+    assert record["empty_batched_outputs"] == {"8": [2]}
+    failures = batched_generation_failures(record, "unsloth/gemma-4-E2B-it")
+    assert any("inside the batch" in f and "[2]" in f for f in failures), failures
+
+
 def test_too_few_prompts_to_fill_the_largest_batch_is_reported():
     from run_t4_smoke import batched_generation_failures
 

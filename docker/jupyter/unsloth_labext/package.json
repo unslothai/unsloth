@@ -24,8 +24,8 @@
     "build:prod": "jlpm clean && jlpm build:lib:prod && jlpm build:labextension",
     "build:lib": "tsc --sourceMap",
     "build:lib:prod": "tsc",
-    "build:labextension": "jupyter labextension build .",
-    "build:labextension:dev": "jupyter labextension build --development True .",
+    "build:labextension": "jupyter-builder build .",
+    "build:labextension:dev": "jupyter-builder build --development True .",
     "clean": "rimraf lib tsconfig.tsbuildinfo unsloth-jupyterlab/labextension"
   },
   "dependencies": {
@@ -42,7 +42,7 @@
     "@lumino/widgets": "^2.0.0"
   },
   "devDependencies": {
-    "@jupyterlab/builder": "^4.5.0",
+    "@jupyter/builder": "^1.2.3",
     "rimraf": "^5.0.0",
     "typescript": "~5.5.0"
   },

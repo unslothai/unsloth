@@ -3,6 +3,7 @@
 
 import asyncio
 import socket
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,7 @@ from utils.host_policy import (
     is_wildcard_host,
     normalize_wildcard_bind_host,
     resolved_bind_address_count,
+    published_url_host,
     wildcard_ip_versions,
     wildcard_loopback_host,
 )
@@ -228,3 +230,105 @@ def test_run_server_rejects_an_ephemeral_multi_address_bind(monkeypatch):
     from run import run_server
     with pytest.raises(SystemExit, match = "--port 0 cannot be used"):
         run_server(host = "dual-wildcard.test", port = 0)
+
+
+@pytest.mark.parametrize(
+    "host, expected",
+    [
+        ("127.0.0.1", "127.0.0.1"),
+        ("localhost", "localhost"),
+        ("192.168.1.239", "192.168.1.239"),
+        ("::1", "[::1]"),
+        ("fe80::1234%eth0", "[fe80::1234%25eth0]"),
+        ("fe80::1234%12", "[fe80::1234%2512]"),
+        ("[::1]", "[::1]"),
+    ],
+)
+def test_published_url_host_builds_a_url_authority(host, expected):
+    assert published_url_host(host) == expected
+
+
+def test_run_server_publishes_urls_through_the_shared_formatter():
+    import run
+    assert run._url_host is published_url_host
+
+
+# ── self-call address resolution ─────────────────────────────────────
+
+
+def _resolve_recipe_endpoint(request):
+    from routes.data_recipe.jobs import _resolve_local_v1_endpoint
+    return _resolve_local_v1_endpoint(request)
+
+
+def _recipe_request(
+    *,
+    state = None,
+    server = None,
+    base_url = "http://testserver/",
+):
+    return SimpleNamespace(
+        app = SimpleNamespace(state = state if state is not None else SimpleNamespace()),
+        scope = {"server": server},
+        base_url = base_url,
+    )
+
+
+@pytest.mark.parametrize(
+    "bound_host, expected_authority",
+    [
+        ("192.168.1.239", "192.168.1.239:8889"),
+        ("127.0.0.1", "127.0.0.1:8889"),
+        ("::1", "[::1]:8889"),
+        ("fe80::1234%eth0", "[fe80::1234%eth0]:8889"),
+    ],
+)
+def test_the_data_recipe_endpoint_dials_the_address_the_server_is_bound_to(
+    bound_host, expected_authority
+):
+    request = _recipe_request(
+        state = SimpleNamespace(server_port = 8889, server_request_host = bound_host),
+    )
+    assert _resolve_recipe_endpoint(request) == f"http://{expected_authority}/v1"
+
+
+def test_the_data_recipe_endpoint_falls_back_to_the_accepting_address_outside_run_server():
+    request = _recipe_request(server = ("192.168.1.239", 8889))
+    assert _resolve_recipe_endpoint(request) == "http://192.168.1.239:8889/v1"
+
+
+@pytest.mark.parametrize(
+    "wildcard, expected_authority",
+    [("0.0.0.0", "127.0.0.1:8889"), ("::", "[::1]:8889")],
+)
+def test_the_data_recipe_endpoint_maps_a_wildcard_bind_back_to_loopback(
+    wildcard, expected_authority
+):
+    # The IPv6 family carries this: loopback is also the fallback.
+    request = _recipe_request(server = (wildcard, 8889), base_url = "http://testserver:1234/")
+    assert _resolve_recipe_endpoint(request) == f"http://{expected_authority}/v1"
+
+
+@pytest.mark.parametrize("server", [None, (), ("",), ("192.168.1.239",)])
+def test_the_data_recipe_endpoint_ignores_scope_values_that_carry_no_address(server):
+    request = _recipe_request(server = server, base_url = "http://testserver:8888/")
+    assert _resolve_recipe_endpoint(request) == "http://127.0.0.1:8888/v1"
+
+
+def test_a_data_recipe_scope_address_that_is_unusable_still_yields_its_port():
+    request = _recipe_request(server = ("", 8889), base_url = "http://testserver:8888/")
+    assert _resolve_recipe_endpoint(request) == "http://127.0.0.1:8889/v1"
+
+
+def test_the_data_recipe_endpoint_prefers_the_bound_host_over_the_accepting_address():
+    request = _recipe_request(
+        state = SimpleNamespace(server_port = 8889, server_request_host = "192.168.1.239"),
+        server = ("127.0.0.1", 9999),
+    )
+    assert _resolve_recipe_endpoint(request) == "http://192.168.1.239:8889/v1"
+
+
+def test_the_data_recipe_endpoint_uses_loopback_when_no_address_is_available():
+    assert _resolve_recipe_endpoint(_recipe_request(base_url = "http://testserver:8888/")) == (
+        "http://127.0.0.1:8888/v1"
+    )

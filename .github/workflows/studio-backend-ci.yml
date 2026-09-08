@@ -439,11 +439,11 @@ jobs:
         # --deselect:
         #   - test_model_registration / test_all_model_registration:
         #     hit huggingface_hub for live model existence checks.
-        #   - test_autoconfig_works_with_no_torch_runtime / test_autoconfig_succeeds:
-        #     fail because no-torch-runtime.txt does not pin tokenizers
-        #     and the latest tokenizers (0.23.1) is incompatible with the
-        #     transformers it resolves to. Tracked separately; this is a
-        #     real bug in the no-torch install path, not a CI issue.
+        #   test_autoconfig_works_with_no_torch_runtime / test_autoconfig_succeeds
+        #   used to be deselected here too, for a tokenizers pin no-torch-runtime.txt
+        #   was missing. #5359 added that pin and both now pass, so the lines are gone
+        #   -- they were redundant anyway, since the -m filter above already excludes
+        #   their `e2e` class marker, and the reason they gave outlived the bug.
         #
         # -n 4: 806.1s -> 219.7s locally on the same 4-worker shape as the runner, with an
         # identical 2-failed / 8066-passed / 178-skipped / 40-subtest result. The three pytest
@@ -465,9 +465,7 @@ jobs:
             --ignore=tests/version_compat \
             -m 'not server and not e2e' \
             --deselect tests/test_model_registry.py::test_model_registration \
-            --deselect tests/test_model_registry.py::test_all_model_registration \
-            --deselect 'tests/python/test_tokenizers_and_torch_constraint.py::TestE2ETokenizersFix::test_autoconfig_works_with_no_torch_runtime' \
-            --deselect 'tests/python/test_tokenizers_and_torch_constraint.py::TestE2EFullNoTorchSandbox::test_autoconfig_succeeds'
+            --deselect tests/test_model_registry.py::test_all_model_registration
 
       - name: Hardware-spoof tests (state-sensitive, run in isolation)
         env:
