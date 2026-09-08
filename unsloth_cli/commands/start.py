@@ -1357,6 +1357,8 @@ def _start_studio_server(
     progress: Optional[_ModelDownloadProgress] = None
     downloaded_bytes = 0
     early_key_seen = False
+    healthy_polls = 0
+    mints = 0
     try:
         while time.monotonic() < deadline:
             if server.poll() is not None:
@@ -1366,6 +1368,7 @@ def _start_studio_server(
                 _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
             tail = _log_tail(log_path, lines = 400)
             healthy = _studio_healthy(base)
+            healthy_polls = healthy_polls + 1 if healthy else 0
             key = None
             if not early_key_seen:
                 marker = re.search(
@@ -1379,7 +1382,18 @@ def _start_studio_server(
             # New children emit an early key marker, so wait for the final model banner;
             # older children only print the key after load, so fall back to that.
             ready_signal = "Model loaded:" in tail if early_key_seen else "sk-unsloth-" in tail
-            if progress is None and key is None and healthy and not ready_signal:
+            # A new child echoes the marker just after the health gate opens, so a single
+            # healthy poll doesn't mean it will never print one -- minting on the first
+            # one would race a normal launch into an extra key. Give it another pass, and
+            # cap the attempts so a server that never mints isn't asked once per sleep.
+            if (
+                progress is None
+                and key is None
+                and healthy_polls > 1
+                and not ready_signal
+                and mints < _KEY_MINT_ATTEMPTS
+            ):
+                mints += 1
                 key = _startup_api_key(base)
             if progress is None and key:
                 progress = _ModelDownloadProgress(base, key, model, load.gguf_variant)
@@ -1644,6 +1658,7 @@ def _key_accepted(base: str, key: str) -> bool:
 
 
 _MINTED_KEY_NAME = "Coding agents (unsloth start)"
+_KEY_MINT_ATTEMPTS = 3
 
 
 def _startup_api_key(base: str) -> Optional[str]:

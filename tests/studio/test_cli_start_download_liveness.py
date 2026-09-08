@@ -436,7 +436,7 @@ def test_an_older_child_is_polled_with_a_minted_key(monkeypatch):
     assert server is harness.server
     assert harness.shutdowns == []
     assert harness.mints == 1
-    assert harness.polls >= 40
+    assert harness.polls >= 39
     assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
 
 
@@ -446,7 +446,7 @@ def test_an_older_child_with_no_mintable_key_still_times_out(monkeypatch, capsys
     with pytest.raises(typer.Exit):
         harness.start()
 
-    assert harness.mints > 0
+    assert 0 < harness.mints <= start_cli._KEY_MINT_ATTEMPTS
     assert harness.polls == 0
     assert harness.shutdowns == [harness.server]
     assert f"made no progress for {start_cli._SERVER_START_TIMEOUT_S}s" in capsys.readouterr().err
@@ -483,3 +483,24 @@ def test_a_ready_banner_is_not_mistaken_for_a_child_that_needs_a_key(monkeypatch
     assert server is harness.server
     assert harness.mints == 0
     assert harness.polls == 0
+
+
+def test_a_marker_one_poll_behind_health_does_not_mint(monkeypatch):
+    # The child prints the marker just after its own health gate opens, so the loop can
+    # see a healthy server one pass before the line lands. That is a normal launch, not
+    # an older child, and it must not cost an extra key.
+    harness = Harness(
+        monkeypatch,
+        tail = "starting\n",
+        healthy = True,
+        startup_key = "sk-unsloth-minted",
+        chunk_bytes = 1024**3,
+        marker_at = 1,
+        ready_at = 40,
+    )
+
+    server = harness.start()
+
+    assert server is harness.server
+    assert harness.mints == 0
+    assert harness.polls >= 38
