@@ -2,9 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
@@ -44,10 +42,7 @@ const ENTRY = {
 const OTHER = { ...ENTRY, id: "abcdef012345", title: "Labrador" };
 const KNOWN = new Set([ENTRY.id, OTHER.id]);
 
-const adapterSource = readFileSync(
-  fileURLToPath(new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url)),
-  "utf8",
-);
+const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
 
 function liftAdapterFunction(opener: string): string {
   const start = adapterSource.indexOf(opener);
@@ -850,12 +845,7 @@ test("a replayed web_search result carries no image tokens either", () => {
 // to run on the previous value. The store and the adapter cannot be imported in
 // a bare node test (a .tsx barrel sits in both graphs), so these pin the source
 // the way the sibling store tests do.
-const storeSource = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url),
-  ),
-  "utf8",
-);
+const storeSource = readSrc("features/chat/stores/chat-runtime-store.ts");
 
 test("a queued settings patch is sent before a run reads it", () => {
   const flush = storeSource.slice(
@@ -939,12 +929,7 @@ test("every export path strips the tokens, not just the clipboard", () => {
   // The tokens are renderer markup. A per-message export, a reply saved as a
   // project source and a whole chat saved as one all reach disk (or back into
   // model context) by a different route than the copy button.
-  const threadSource = readFileSync(
-    fileURLToPath(
-      new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    ),
-    "utf8",
-  );
+  const threadSource = readSrc("components/assistant-ui/thread.tsx");
   const exporter = threadSource.slice(
     threadSource.indexOf("async function exportMessageMarkdown("),
     threadSource.indexOf("const AssistantActionBar"),
@@ -960,15 +945,7 @@ test("every export path strips the tokens, not just the clipboard", () => {
     /stripSearchImageTokens\(\s*replySourceMarkdown\(/,
     "a reply saved as a project source must strip the tokens",
   );
-  const dialogSource = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const dialogSource = readSrc("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   const saveSource = dialogSource.slice(
     dialogSource.indexOf("async function saveConversationAsProjectSource("),
     dialogSource.indexOf("export async function saveChatItemAsProjectSource("),
@@ -984,15 +961,7 @@ test("every export path strips the tokens, not just the clipboard", () => {
 test("the web search card survives a query that is not a string", () => {
   // Local models emit `"query": 42` and `"query": {}` routinely, and .trim() on
   // one threw straight through the renderer.
-  const cardSource = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/components/assistant-ui/tool-ui-web-search.tsx",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const cardSource = readSrc("components/assistant-ui/tool-ui-web-search.tsx");
   const args = cardSource.slice(
     cardSource.indexOf("const query ="),
     cardSource.indexOf("const isUrlFetch ="),
@@ -1017,12 +986,7 @@ test("the web search card survives a query that is not a string", () => {
 test("a thumbnail response that lands after the id changed is ignored", () => {
   // Render falls through to idle for a state written under the previous id, and
   // the effect has no reason to run again: a skeleton that never resolves.
-  const source = readFileSync(
-    fileURLToPath(
-      new URL("../src/components/assistant-ui/search-image.tsx", import.meta.url),
-    ),
-    "utf8",
-  );
+  const source = readSrc("components/assistant-ui/search-image.tsx");
   const effect = source.slice(
     source.indexOf("authFetch(searchImagePath(id)"),
     source.indexOf("function useNearViewport"),

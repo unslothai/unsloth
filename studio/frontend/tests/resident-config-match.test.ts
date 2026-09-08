@@ -11,9 +11,7 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
@@ -367,15 +365,7 @@ test("one differing field among many agreeing ones is still a reload", () => {
  * carries forceReload, and a native pick carries a lease this path cannot adopt.
  */
 test("selectModel weighs the config and the lease before confirming a reload", () => {
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   // Newline-tolerant: the call wraps once its argument list grows.
   const configCheck = source.search(/residentRuntimeMatchesConfig\(\s*status/);
   const identityCheck = source.indexOf("residentModelMatchesPick(status");
@@ -1546,15 +1536,7 @@ test("a healthy runtime and a pick wanting no drafter both stay on the shortcut"
  * against the live store rather than in this leaf.
  */
 test("the resident shortcut keeps the picked model's own sequence cap", () => {
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const configCheck = source.search(/residentRuntimeMatchesConfig\(\s*status/);
   const rollback = source.indexOf("restorePreviousConfig();", configCheck);
   const reapply = source.indexOf("pickedMaxSeqLength", configCheck);
@@ -1588,15 +1570,7 @@ test("the resident shortcut keeps the picked model's own sequence cap", () => {
  * is a silent loss rather than one extra reload.
  */
 test("an outstanding audio probe keeps the shortcut from skipping the load", () => {
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const identity = source.search(/residentModelMatchesPick\(\s*status/);
   const probe = source.indexOf("status.audio_probe_pending !== true", identity);
   // The caller tells the repair check whether the load carries a gguf_path, since the
@@ -1627,15 +1601,7 @@ test("an outstanding audio probe keeps the shortcut from skipping the load", () 
  * would leave the picker naming this model while prompts went to the one now loaded.
  */
 test("the shortcut re-reads and re-judges the status before adopting", () => {
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   // The verdict is a named predicate, so it can be applied to more than one status.
   assert.match(
     source,
@@ -1686,15 +1652,7 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
  * client had left running.
  */
 test("with no saved config the gate compares what the load would send", () => {
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const configCheck = source.search(/residentRuntimeMatchesConfig\(\s*status/);
   assert.ok(
     configCheck > 0 &&
@@ -1720,15 +1678,7 @@ test("adopting reseeds the slot and batch controls the rollback left behind", ()
   // kept them: the adopted model could run 4 slots while the control showed the outgoing
   // count, and the next Apply saved that over it. Reachable coming back from an external
   // provider to a still-resident GGUF, which is the case this shortcut began as.
-  const hydrator = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/lib/apply-inference-status-to-store.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const hydrator = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
   assert.match(
     hydrator.replace(/\s+/g, " "),
     /const slotsModelChanged = hydratingExistingModel;/,
@@ -1736,29 +1686,13 @@ test("adopting reseeds the slot and batch controls the rollback left behind", ()
   // Every other load-param seed at that call site already keys off the same flag, so the
   // suppression is gone rather than merely unused.
   assert.equal(hydrator.includes("readoptingSameModel"), false);
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   assert.equal(source.includes("readoptingSameModel"), false);
 });
 
 /** The repair window is only useful if it is consulted before the reload is decided. */
 test("selectModel asks about a repairable drafter before adopting", () => {
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const repairCheck = source.indexOf("residentSpeculativeNeedsRepair(");
   const confirmPrompt = source.indexOf(
     "await confirmStopRunningChatsIfNeeded(",

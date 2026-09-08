@@ -16,6 +16,8 @@ import {
   subscribeAppClosing,
 } from "../src/components/tauri/closing-signal.ts";
 
+import { readText } from "./helpers/kit.ts";
+
 function source(path: string): Promise<string> {
   return readFile(new URL(`../src/${path}`, import.meta.url), "utf8");
 }
@@ -169,10 +171,7 @@ test("the overlay is presentation only, with no way out of a wedged reap", async
 });
 
 test("a quit with no window on screen raises no overlay", async () => {
-  const rust = await readFile(
-    new URL("../../src-tauri/src/main.rs", import.meta.url),
-    "utf8",
-  );
+  const rust = readText("../../src-tauri/src/main.rs");
 
   // Tray Quit reaches request_quit without going through the main window, and an autostart
   // launch passes --hidden, whose window is built "visible": false and never shown. The
@@ -199,10 +198,7 @@ test("the overlay names the wait it is covering", async () => {
 });
 
 test("both sides agree on the event names", async () => {
-  const rust = await readFile(
-    new URL("../../src-tauri/src/main.rs", import.meta.url),
-    "utf8",
-  );
+  const rust = readText("../../src-tauri/src/main.rs");
 
   assert.match(
     rust,

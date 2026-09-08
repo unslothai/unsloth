@@ -2,12 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   installLocalStorageFake,
+  readSrc,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -80,15 +79,7 @@ test("percentToFraction tolerates an off-grid slider value", () => {
 // chat-adapter tests do. The bug it guards: clearing the timer without sending the
 // pending fraction discarded a drag followed within 400ms by Run, the Advanced
 // toggle or closing the panel, and the server-wide budget lives nowhere else.
-const pageSource = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/model-picker/components/model-config-page.tsx",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
-);
+const pageSource = readSrc("features/model-picker/components/model-config-page.tsx");
 
 function vramBudgetRowSource(): string {
   const start = pageSource.indexOf("function VramBudgetRow()");
@@ -134,12 +125,7 @@ test("commit stages the fraction before arming the debounce", () => {
 
 test("the staged fraction is held outside the component that unmounts", () => {
   // The row unmounts on Run, so a ref inside it cannot be read by the load.
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const client = readSrc("features/settings/api/vram-budget.ts");
   assert.match(client, /export function stageVramBudgetSave/);
   assert.match(client, /export function flushVramBudgetSave/);
   // Cleared as it sends, so two flushes cannot write the same edit twice.
@@ -200,12 +186,7 @@ test("Run reports a rejected budget flush instead of voiding it", () => {
 });
 
 test("budget writes are serialised and only the newest publishes", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const client = readSrc("features/settings/api/vram-budget.ts");
   // Two debounced saves can overlap on a slow link; out-of-order responses would
   // let the older edit win both the row and the stored value.
   assert.match(client, /vramBudgetWriteChain/);
@@ -222,12 +203,7 @@ test("budget writes are serialised and only the newest publishes", () => {
 });
 
 test("Run also waits for a save the debounce already sent", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const client = readSrc("features/settings/api/vram-budget.ts");
   // Pause past the 400 ms debounce, then click Load: nothing is staged any more,
   // but the PUT is still open and the load would use the fraction it replaces.
   const settle = client.slice(
@@ -243,12 +219,7 @@ test("Run also waits for a save the debounce already sent", () => {
 });
 
 test("a read waits behind an open write", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const client = readSrc("features/settings/api/vram-budget.ts");
   // A remount right after a flushed drag can read before the PUT commits and
   // answer after it, repainting the row with the value the server just replaced.
   const read = client.slice(
@@ -276,12 +247,7 @@ test("the budget reads as a percentage and steps in tenths", () => {
 });
 
 test("a failed save is re-staged, but never over a newer edit", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const client = readSrc("features/settings/api/vram-budget.ts");
   // The flush clears the staged value as it sends, so without putting it back the
   // control shows a fraction the server never took. It goes back only while it is
   // still the newest intent.
@@ -345,12 +311,7 @@ test("a save that fails during Run is dropped, not left to race the load", () =>
 });
 
 test("only the retry is dropped, never a newer edit staged over it", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const client = readSrc("features/settings/api/vram-budget.ts");
   const flat = client.replace(/\s+/g, " ");
   // Run drops the failed fraction so it cannot race the load, but a drag landing
   // during that PUT stages a newer one, and dropping that would discard the edit
@@ -367,12 +328,7 @@ test("only the retry is dropped, never a newer edit staged over it", () => {
 });
 
 test("a post-load read is not answered by one taken before the load finished", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const client = readSrc("features/settings/api/vram-budget.ts");
   const flat = client.replace(/\s+/g, " ");
   // reloadRequired describes the running child, so an in-flight GET answers about
   // the child being replaced; sharing it republishes the stale notice.
@@ -382,15 +338,7 @@ test("a post-load read is not answered by one taken before the load finished", (
     flat,
     /if \(inFlightVramBudget === read\) \{ inFlightVramBudget = null;/,
   );
-  const row = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/components/model-config-page.tsx",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const row = readSrc("features/model-picker/components/model-config-page.tsx");
   assert.match(row, /loadVramBudgetSettings\(\{ force: true \}\)/);
 });
 
@@ -445,12 +393,7 @@ test("Reload is reachable when only the server-wide budget changed", () => {
 });
 
 test("a read displaced by a forced one does not publish", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const client = readSrc("features/settings/api/vram-budget.ts");
   // Clearing the handle is not enough: the displaced GET still resolves, and it
   // describes the child being replaced, so publishing would restore the notice and
   // the Reload button that the forced read had just cleared.
@@ -461,12 +404,7 @@ test("a read displaced by a forced one does not publish", () => {
 });
 
 test("settling before a load hears about the write that failed", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const client = readSrc("features/settings/api/vram-budget.ts");
   const flat = client.replace(/\s+/g, " ");
   // The chain swallows rejections so one failed save cannot strand the ones behind
   // it, so a Run waiting on the chain was told the save succeeded and never
@@ -482,12 +420,7 @@ test("settling before a load hears about the write that failed", () => {
 });
 
 test("a read does not repaint over a write issued while it was in the air", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const client = readSrc("features/settings/api/vram-budget.ts");
   const flat = client.replace(/\s+/g, " ");
   // Waiting behind the writes open at read time says nothing about a save made
   // while the GET is in the air; that PUT can publish first and the late GET would
@@ -510,12 +443,7 @@ test("Manual with automatic layers still shows the budget", () => {
 });
 
 test("a superseded read is refused, not handed back to the caller", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const client = readSrc("features/settings/api/vram-budget.ts");
   // Holding back the publish is not enough: the row applies the return value with
   // setSettings, so a read overtaken by a save would put back the isStored and
   // reloadRequired that save had just changed. Null is already this function's

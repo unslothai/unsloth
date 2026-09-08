@@ -2,10 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { readSrcAsync, registerBundlerResolver } from "./helpers/kit.ts";
+import {
+  readSrcAsync,
+  readText,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -168,10 +171,7 @@ test("the shared image picker owns native drops and ignores stale reads", async 
 // lists have to stay in step or a droppable image starts being turned away.
 test("the picker's droppable formats match the native path policy", async () => {
   const picker = await readSrcAsync("components/image-dropzone.tsx");
-  const rust = await readFile(
-    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
-    "utf8",
-  );
+  const rust = readText("../../src-tauri/src/native_path_policy.rs");
   const listed = (source: string, pattern: RegExp) =>
     [...(source.match(pattern)?.[1].matchAll(/"([a-z0-9]+)"/g) ?? [])]
       .map((match) => match[1])

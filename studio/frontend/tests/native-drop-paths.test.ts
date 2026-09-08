@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -56,7 +55,7 @@ import {
   isAudioOnly3gpBytes,
   isVideoFile,
 } from "../src/lib/video-utils.ts";
-import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, readText, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -165,10 +164,7 @@ test("OpenDocument picker types are accepted by native drops", () => {
   const threadSource = readSrc("components/assistant-ui/thread.tsx");
   assert.match(threadSource, OPEN_DOCUMENT_DRAIN_RE);
 
-  const rustSource = readFileSync(
-    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
-    "utf8",
-  );
+  const rustSource = readText("../../src-tauri/src/native_path_policy.rs");
   const rust = [
     ...(rustSource
       .match(RUST_OPEN_DOCUMENT_ATTACHMENT_EXTS_RE)?.[1]
@@ -272,14 +268,8 @@ test("registering image drops hold the gate before the queue can", () => {
 
 test("frontend, backend, and Rust accept the same document extensions", () => {
   const frontend = RAG_UPLOAD_ACCEPT.split(",").sort();
-  const backendSource = readFileSync(
-    new URL("../../backend/core/rag/config.py", import.meta.url),
-    "utf8",
-  );
-  const rustSource = readFileSync(
-    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
-    "utf8",
-  );
+  const backendSource = readText("../../backend/core/rag/config.py");
+  const rustSource = readText("../../src-tauri/src/native_path_policy.rs");
   const backend = [
     ...(backendSource
       .match(BACKEND_UPLOAD_EXTS_RE)?.[1]
@@ -303,10 +293,7 @@ test("frontend and Rust accept the same chat image extensions", () => {
   const frontend = CHAT_IMAGE_DROP_ACCEPT.split(",")
     .map((ext) => ext.trim().toLowerCase())
     .sort();
-  const rustSource = readFileSync(
-    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
-    "utf8",
-  );
+  const rustSource = readText("../../src-tauri/src/native_path_policy.rs");
   const rust = [
     ...(rustSource
       .match(RUST_IMAGE_ATTACHMENT_EXTS_RE)?.[1]
@@ -322,10 +309,7 @@ test("frontend and Rust accept the same chat image extensions", () => {
 // composer routes by MIME, so a type VisionImageAdapter does not claim lands on
 // the wrong adapter or nowhere.
 test("every MIME type Rust stamps is one the vision adapter claims", () => {
-  const rustSource = readFileSync(
-    new URL("../../src-tauri/src/native_intents.rs", import.meta.url),
-    "utf8",
-  );
+  const rustSource = readText("../../src-tauri/src/native_intents.rs");
   const stamped = [
     ...new Set(
       [...rustSource.matchAll(RUST_MIME_ARM_RE)].map((match) => match[1]),
@@ -349,10 +333,7 @@ test("every MIME type Rust stamps is one the vision adapter claims", () => {
 // The join between the two tests above: without it an extension can reach both
 // allow-lists with no MIME arm, and the reader refuses it after the drop.
 test("every accepted image extension has a Rust MIME arm", () => {
-  const policySource = readFileSync(
-    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
-    "utf8",
-  );
+  const policySource = readText("../../src-tauri/src/native_path_policy.rs");
   const accepted = [
     ...(policySource
       .match(RUST_IMAGE_ATTACHMENT_EXTS_RE)?.[1]
@@ -361,10 +342,7 @@ test("every accepted image extension has a Rust MIME arm", () => {
     .map((match) => match[1])
     .sort();
 
-  const intentsSource = readFileSync(
-    new URL("../../src-tauri/src/native_intents.rs", import.meta.url),
-    "utf8",
-  );
+  const intentsSource = readText("../../src-tauri/src/native_intents.rs");
   const body = intentsSource.match(MIME_MATCH_BODY_RE)?.[1];
   assert.ok(body, "attachment_mime_type match block not found");
   const mapped = [...body.matchAll(MIME_ARM_EXTENSION_RE)]
@@ -575,10 +553,7 @@ test("frontend and Rust accept the same chat video extensions", () => {
   const frontend = CHAT_VIDEO_DROP_ACCEPT.split(",")
     .map((ext) => ext.trim().toLowerCase())
     .sort();
-  const rustSource = readFileSync(
-    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
-    "utf8",
-  );
+  const rustSource = readText("../../src-tauri/src/native_path_policy.rs");
   const rust = [
     ...(rustSource
       .match(RUST_VIDEO_ATTACHMENT_EXTS_RE)?.[1]
@@ -593,10 +568,7 @@ test("frontend and Rust accept the same chat video extensions", () => {
 // Same seam as the vision and audio checks: a video MIME the adapter does not
 // claim would be read off disk and then refused by the composer.
 test("every video MIME Rust stamps is one the video adapter claims", () => {
-  const rustSource = readFileSync(
-    new URL("../../src-tauri/src/native_intents.rs", import.meta.url),
-    "utf8",
-  );
+  const rustSource = readText("../../src-tauri/src/native_intents.rs");
   const claimed = new Set(
     VIDEO_ACCEPT.split(",").map((token) => token.trim().toLowerCase()),
   );
@@ -620,10 +592,7 @@ test("frontend and Rust accept the same chat audio extensions", () => {
   const frontend = CHAT_AUDIO_DROP_ACCEPT.split(",")
     .map((ext) => ext.trim().toLowerCase())
     .sort();
-  const rustSource = readFileSync(
-    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
-    "utf8",
-  );
+  const rustSource = readText("../../src-tauri/src/native_path_policy.rs");
   const rust = [
     ...(rustSource
       .match(RUST_AUDIO_ATTACHMENT_EXTS_RE)?.[1]
@@ -638,10 +607,7 @@ test("frontend and Rust accept the same chat audio extensions", () => {
 // Same seam as the vision check: an audio MIME the adapter does not claim
 // lands nowhere.
 test("every audio MIME Rust stamps is one the audio adapter claims", () => {
-  const rustSource = readFileSync(
-    new URL("../../src-tauri/src/native_intents.rs", import.meta.url),
-    "utf8",
-  );
+  const rustSource = readText("../../src-tauri/src/native_intents.rs");
   const claimed = new Set(
     AUDIO_ACCEPT.split(",").map((token) => token.trim().toLowerCase()),
   );
@@ -661,10 +627,7 @@ test("every audio MIME Rust stamps is one the audio adapter claims", () => {
 // bounds the data URL it builds from it. Set to the base64 figure, Rust reads
 // and encodes 96 MiB (128 MiB over the bridge) for a clip the picker rejects.
 test("the native video cap is the raw limit the reference picker enforces", () => {
-  const rustSource = readFileSync(
-    new URL("../../src-tauri/src/native_intents.rs", import.meta.url),
-    "utf8",
-  );
+  const rustSource = readText("../../src-tauri/src/native_intents.rs");
   const rustCap = Number(
     rustSource
       .match(/const MAX_NATIVE_VIDEO_BYTES: u64 = ([0-9_]+);/)?.[1]
@@ -705,10 +668,7 @@ test("the picker remains able to show extensionless text basenames", () => {
 });
 
 test("frontend and Rust accept the same extensionless text names", () => {
-  const rustSource = readFileSync(
-    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
-    "utf8",
-  );
+  const rustSource = readText("../../src-tauri/src/native_path_policy.rs");
   const rust = [
     ...(rustSource
       .match(RUST_TEXT_ATTACHMENT_NAMES_RE)?.[1]
@@ -941,10 +901,7 @@ test("the browser text cap matches the native one", () => {
   // Reading happens while attaching now, so an unbounded .mbox would decode
   // gigabytes into the webview before the user could send it.
   assert.equal(MAX_TEXT_ATTACHMENT_BYTES, 20 * 1024 * 1024);
-  const rust = readFileSync(
-    new URL("../../src-tauri/src/native_intents.rs", import.meta.url),
-    "utf8",
-  );
+  const rust = readText("../../src-tauri/src/native_intents.rs");
   const native = rust.match(
     /const MAX_NATIVE_TEXT_BYTES: u64 = (\d+) \* 1024 \* 1024;/,
   )?.[1];
@@ -1318,10 +1275,7 @@ test("the tracker magic tables agree, and cover ProTracker's second marker", asy
   // it at 1080 beside M.K., and a 31-sample module puts byte 470 inside a
   // sample name rather than the order table, so the Soundtracker fallback does
   // not catch one either and the module was read as UTF-8 text.
-  const rust = readFileSync(
-    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
-    "utf8",
-  );
+  const rust = readText("../../src-tauri/src/native_path_policy.rs");
   const table = rust.match(
     /const TRACKER_MOD_MAGICS: &\[&\[u8; 4\]\] = &\[([\s\S]*?)\];/,
   );
@@ -1544,10 +1498,7 @@ test("frontend and Rust accept the same dropped text extensions", () => {
   const frontend = TEXT_ATTACHMENT_EXTENSIONS.map((ext) => ext.toLowerCase())
     .filter((ext) => !docs.includes(ext))
     .sort();
-  const rustSource = readFileSync(
-    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
-    "utf8",
-  );
+  const rustSource = readText("../../src-tauri/src/native_path_policy.rs");
   const rust = [
     ...(rustSource
       .match(RUST_TEXT_ATTACHMENT_EXTS_RE)?.[1]
@@ -2339,10 +2290,7 @@ test("the clipboard reader takes what the native side hands it", () => {
   // Rust reads a pasted clip to MAX_CLIPBOARD_VIDEO_BYTES; refusing it here
   // threw away a file already read and encoded, and dropped the paste with it.
   const source = readSrc("features/chat/utils/clipboard-files.ts");
-  const rust = readFileSync(
-    new URL("../../src-tauri/src/native_clipboard.rs", import.meta.url),
-    "utf8",
-  );
+  const rust = readText("../../src-tauri/src/native_clipboard.rs");
   const rustLimit = (name: string): number => {
     const raw = rust.match(
       new RegExp(`const ${name}: u64 = ([0-9_]+(?:\\\\s*\\\\*\\\\s*[0-9_]+)*)`),

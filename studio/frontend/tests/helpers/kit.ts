@@ -19,6 +19,15 @@ export function readSrc(relative: string): string {
   return readFileSync(new URL(`../../src/${relative}`, import.meta.url), "utf8");
 }
 
+/**
+ * A repository file read as text, addressed relative to `studio/frontend/tests`
+ * so a call reads the same as the `new URL` it replaces. Prefer `readSrc` for
+ * anything under `src`; this is for the Rust crate, configs and the like.
+ */
+export function readText(relative: string): string {
+  return readFileSync(new URL(`../${relative}`, import.meta.url), "utf8");
+}
+
 /** `readSrc` for a caller that is already awaiting. */
 export function readSrcAsync(relative: string): Promise<string> {
   return readFile(new URL(`../../src/${relative}`, import.meta.url), "utf8");

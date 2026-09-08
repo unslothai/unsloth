@@ -2,20 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-import { readSrc } from "./helpers/kit.ts";
+import { readSrc, readText } from "./helpers/kit.ts";
 
-const script = readFileSync(
-  new URL("../public/reload-snapshot.js", import.meta.url),
-  "utf8",
-);
-const indexHtml = readFileSync(
-  new URL("../index.html", import.meta.url),
-  "utf8",
-);
+const script = readText("../public/reload-snapshot.js");
+const indexHtml = readText("../index.html");
 const indexCss = readSrc("index.css");
 const rootRouteSource = readSrc("app/routes/__root.tsx");
 const runtimeProviderSource = readSrc("features/chat/runtime-provider.tsx");
