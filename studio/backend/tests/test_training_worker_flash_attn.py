@@ -39,6 +39,19 @@ def _clear_offline_environment(monkeypatch):
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
 
 
+@pytest.fixture(autouse = True)
+def _restore_fla_tilelang_environment():
+    """monkeypatch.delenv on an absent var records no undo, so the guard's setdefault leaks it."""
+    names = ("FLA_TILELANG", worker._FAST_PATH_HOOKS_SKIP_ENV)
+    saved = {name: os.environ.get(name) for name in names}
+    yield
+    for name, value in saved.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
 def _missing_flash_attn_import():
     real_import = builtins.__import__
 
@@ -999,23 +1012,42 @@ def test_no_install_path_pips_flash_linear_attention_or_tilelang(monkeypatch, uv
         assert package not in flat, f"{package} must never be pip installed: {calls}"
 
 
-# The only worker.py strings allowed to name the stack: prose log lines and the two
-# import-probe arguments in _guard_fla_tilelang (find_spec / metadata.version take a
-# bare package name, never a pip spec).
+# The only worker.py strings allowed to name the stack: these prose log lines, plus the
+# sole argument of an import probe. A bare "tilelang" anywhere else is an unpinned pip spec.
 _FLA_PROSE_LOG_LINES = (
     "flash-linear-attention fast path importable: %s",
     "flash-linear-attention is not importable; continuing on the pure-torch path: %s",
-    "tilelang",
-    "apache-tvm-ffi",
 )
+_FLA_PROBE_CALLS = ("importlib.util.find_spec", "importlib.metadata.version")
+
+
+def _attribute_chain(node: ast.AST) -> str:
+    """Dotted source spelling of a call target, e.g. `importlib.util.find_spec`."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return ""
+    parts.append(node.id)
+    return ".".join(reversed(parts))
 
 
 def test_worker_source_never_pins_the_vendored_stack():
-    """worker.py may name the stack in a log line, never in a pip spec, pinned or not."""
-    for node in ast.walk(ast.parse(inspect.getsource(worker))):
+    """worker.py may name the stack in a log line or an import probe, never in a pip spec."""
+    tree = ast.parse(inspect.getsource(worker))
+    probe_arguments = {
+        id(call.args[0])
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and len(call.args) == 1
+        and not call.keywords
+        and _attribute_chain(call.func) in _FLA_PROBE_CALLS
+    }
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
             continue
-        if node.value in _FLA_PROSE_LOG_LINES:
+        if node.value in _FLA_PROSE_LOG_LINES or id(node) in probe_arguments:
             continue
         for package in _NEVER_PIP_INSTALLED:
             assert not node.value.startswith(
@@ -1053,7 +1085,12 @@ def test_flash_linear_attention_importable_false_and_warns_when_import_raises(mo
 def _force_torch_hip(monkeypatch, hip: str | None):
     """Make the guard's lazily imported torch look like a ROCm (or CUDA) build."""
     import torch
+
     monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    # __version__ too: on a ROCm host its rocm tag would keep the guard active in the CUDA case.
+    monkeypatch.setattr(
+        torch, "__version__", "2.12.1+rocm6.4" if hip else "2.12.1+cu130", raising = False
+    )
 
 
 def test_install_fast_path_hooks_sets_fla_tilelang_zero_on_hip(monkeypatch):
@@ -1152,6 +1189,21 @@ def test_guard_fla_tilelang_respects_user_override_on_a_broken_tvm_ffi(monkeypat
     worker._guard_fla_tilelang()
 
     assert os.environ["FLA_TILELANG"] == "1"
+
+
+def test_guard_fla_tilelang_does_not_log_disabling_under_a_user_override(monkeypatch):
+    """setdefault is a no-op when FLA_TILELANG=1 is preset, so a disabling line would be a lie."""
+    monkeypatch.setenv("FLA_TILELANG", "1")
+    _force_torch_hip(monkeypatch, None)
+    _force_tvm_ffi(monkeypatch, tilelang_present = True, tvm_ffi_version = "0.1.10")
+    # worker.logger is a structlog BoundLogger, so caplog never sees it.
+    messages: list[str] = []
+    monkeypatch.setattr(worker.logger, "info", lambda msg, *a: messages.append(msg % a))
+
+    worker._guard_fla_tilelang()
+
+    assert not any("Disabling" in line for line in messages), messages
+    assert any("Keeping FLA_TILELANG=1" in line for line in messages), messages
 
 
 def test_install_fast_path_hooks_respects_user_fla_tilelang_override(monkeypatch):

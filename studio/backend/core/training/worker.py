@@ -1783,22 +1783,31 @@ def _guard_fla_tilelang() -> None:
             or "rocm" in getattr(_torch_for_fla, "__version__", "").lower()
         ):
             os.environ.setdefault("FLA_TILELANG", "0")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("FLA_TILELANG guard skipped: %s", exc)
 
     # A leftover TileLang plus a broken tvm-ffi crashes the run; steer off it instead of installing.
     try:
         if importlib.util.find_spec("tilelang") is not None:
             tvm_ffi_version = importlib.metadata.version("apache-tvm-ffi")
             if tvm_ffi_version in _TVM_FFI_BROKEN_VERSIONS:
+                before = os.environ.get("FLA_TILELANG")
                 os.environ.setdefault("FLA_TILELANG", "0")
-                logger.info(
-                    "Disabling TileLang: apache-tvm-ffi %s faults under it; FLA_TILELANG is now %s",
-                    tvm_ffi_version,
-                    os.environ.get("FLA_TILELANG"),
-                )
-    except Exception:
-        pass
+                # setdefault is a no-op under an override, so only claim what actually happened.
+                if before is None:
+                    logger.info(
+                        "Disabling TileLang: apache-tvm-ffi %s faults under it; FLA_TILELANG is now %s",
+                        tvm_ffi_version,
+                        os.environ.get("FLA_TILELANG"),
+                    )
+                else:
+                    logger.info(
+                        "Keeping FLA_TILELANG=%s set by the environment despite apache-tvm-ffi %s",
+                        before,
+                        tvm_ffi_version,
+                    )
+    except Exception as exc:
+        logger.debug("FLA_TILELANG guard skipped: %s", exc)
 
 
 def _install_fast_path_hooks(
