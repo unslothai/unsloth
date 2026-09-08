@@ -868,12 +868,20 @@ def test_the_handoff_is_published_only_around_the_setup_child():
     assert "$env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff" in source
     gate = _locate(source, "$previousSetupRuntimeGateHandoff =", "the runtime-gate handoff")
     proxy = _locate(source, "$previousProxyHandoff =", "the proxy handoff save")
+    # The try now opens above the first mutation rather than immediately above the call, so
+    # the child invocation is anchored on its own line. Anchoring it to "try {\n" again would
+    # pin the block's shape instead of the ordering this test is about, and would break on the
+    # next restructure for a second time.
     call = _locate(
         source,
-        "    try {\n        Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs",
+        "        Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs",
         "the child invocation",
     )
+    opened = _locate(source, '\n    try {\n        $env:SKIP_STUDIO_BASE', "the handoff try")
     assert gate < call and proxy < call, "the handoff must be in place before the child runs"
+    # ...and both saves stay ABOVE the try, so the finally can never read an unassigned
+    # $hadPrevious* as "there was nothing here" and clear a value it did not set.
+    assert gate < opened and proxy < opened, "the saves must precede the try that restores them"
 
 
 def test_a_standalone_update_reconstructs_the_proxy_for_itself():
@@ -1534,7 +1542,13 @@ def test_an_installer_launch_with_no_proxy_still_skips_the_probe(monkeypatch):
     handoff = installer[
         installer.index("$previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS") :
     ]
-    handoff = handoff[: handoff.index("try {")]
+    # The publish moved inside the try, so the slice runs to the child invocation rather than
+    # to the try. It must still stop before the finally: that block legitimately DOES remove
+    # the variable, and swallowing it here would make the Remove-Item assertion below fail on
+    # correct code.
+    handoff = handoff[
+        : handoff.index("        Invoke-ManagedUnslothCli -Python $VenvPython")
+    ]
     assert (
         "Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS" not in handoff
     ), "the installer must publish an explicit empty handoff, not remove the variable"

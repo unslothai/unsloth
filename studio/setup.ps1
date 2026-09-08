@@ -1933,7 +1933,13 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
         # $StudioHome is resolved much later, so mirror its override precedence
         # here for the message only. llama.cpp is a sibling of studio under
         # ~/.unsloth on a default install, so name the parent.
-        $_unslothRoot = Join-Path $env:USERPROFILE ".unsloth"
+        # Guarded for the same reason as the copy in install.ps1: USERPROFILE can be absent
+        # in service and CI contexts, and a bare Join-Path throws under Stop.
+        $_unslothRoot = if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            '%USERPROFILE%\.unsloth'
+        } else {
+            Join-Path $env:USERPROFILE ".unsloth"
+        }
         $_elevRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
             $env:UNSLOTH_STUDIO_HOME.Trim()
         } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {

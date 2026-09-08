@@ -784,7 +784,17 @@ function Install-UnslothStudio {
     # mirroring its override precedence here rather than reusing $StudioHome.
     # llama.cpp is a sibling of studio under ~/.unsloth on a default install, so
     # name the parent; a custom root holds every artefact itself.
-    $UnslothRoot = Join-Path $env:USERPROFILE ".unsloth"
+    # USERPROFILE is absent in some service and CI contexts. The resolver below has its own
+    # fallback for that, but this runs ABOVE it, so a bare Join-Path would abort the install
+    # under ErrorActionPreference=Stop before the banner -- and on the env-override path,
+    # which never needs USERPROFILE, that is a run that used to succeed. Guarded the same way
+    # the temp-root scan and the llama.cpp resolver already guard it. The literal keeps the
+    # warning readable when there is no answer to substitute.
+    $UnslothRoot = if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        '%USERPROFILE%\.unsloth'
+    } else {
+        Join-Path $env:USERPROFILE ".unsloth"
+    }
     $ElevationRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
         $env:UNSLOTH_STUDIO_HOME.Trim()
     } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
@@ -6255,6 +6265,23 @@ sys.exit(2 if conflict else (0 if installed else 1))
     $hadPreviousProxyHandoff = ($null -ne $previousProxyHandoff)
     $previousRocmGfxHandoff = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF
     $hadPreviousRocmGfxHandoff = ($null -ne $previousRocmGfxHandoff)
+    # The rest of the handoff table, saved for the same reason and on the same terms. These
+    # are as session-visible as SKIP_STUDIO_BASE under `irm | iex`, and SKIP_STUDIO_FRONTEND
+    # is the one with teeth: a leaked "1" from a desktop install makes the next direct
+    # `unsloth studio setup` in that console report "frontend: bundled (Tauri)" and skip the
+    # build entirely, which on a local/source install leaves Studio with no web UI.
+    $previousStudioPackageName = $env:STUDIO_PACKAGE_NAME
+    $hadPreviousStudioPackageName = ($null -ne $previousStudioPackageName)
+    $previousNoTorch = $env:UNSLOTH_NO_TORCH
+    $hadPreviousNoTorch = ($null -ne $previousNoTorch)
+    $previousInstallerTorchTag = $env:UNSLOTH_INSTALLER_TORCH_TAG
+    $hadPreviousInstallerTorchTag = ($null -ne $previousInstallerTorchTag)
+    $previousSkipStudioFrontend = $env:SKIP_STUDIO_FRONTEND
+    $hadPreviousSkipStudioFrontend = ($null -ne $previousSkipStudioFrontend)
+    $previousStudioLocalInstall = $env:STUDIO_LOCAL_INSTALL
+    $hadPreviousStudioLocalInstall = ($null -ne $previousStudioLocalInstall)
+    $previousStudioLocalRepo = $env:STUDIO_LOCAL_REPO
+    $hadPreviousStudioLocalRepo = ($null -ne $previousStudioLocalRepo)
     try {
         $env:SKIP_STUDIO_BASE = "1"
         $env:STUDIO_PACKAGE_NAME = $PackageName
@@ -6362,6 +6389,36 @@ sys.exit(2 if conflict else (0 if installed else 1))
             $env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff
         } else {
             Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousStudioPackageName) {
+            $env:STUDIO_PACKAGE_NAME = $previousStudioPackageName
+        } else {
+            Remove-Item Env:STUDIO_PACKAGE_NAME -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousNoTorch) {
+            $env:UNSLOTH_NO_TORCH = $previousNoTorch
+        } else {
+            Remove-Item Env:UNSLOTH_NO_TORCH -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousInstallerTorchTag) {
+            $env:UNSLOTH_INSTALLER_TORCH_TAG = $previousInstallerTorchTag
+        } else {
+            Remove-Item Env:UNSLOTH_INSTALLER_TORCH_TAG -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousSkipStudioFrontend) {
+            $env:SKIP_STUDIO_FRONTEND = $previousSkipStudioFrontend
+        } else {
+            Remove-Item Env:SKIP_STUDIO_FRONTEND -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousStudioLocalInstall) {
+            $env:STUDIO_LOCAL_INSTALL = $previousStudioLocalInstall
+        } else {
+            Remove-Item Env:STUDIO_LOCAL_INSTALL -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousStudioLocalRepo) {
+            $env:STUDIO_LOCAL_REPO = $previousStudioLocalRepo
+        } else {
+            Remove-Item Env:STUDIO_LOCAL_REPO -ErrorAction SilentlyContinue
         }
         # ...and the copy this function holds goes with it, rather than sitting in the frame for
         # the rest of a long install.

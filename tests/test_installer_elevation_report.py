@@ -139,7 +139,9 @@ def test_install_ps1_warning_names_the_root_actually_written():
     notice = src[src.index("function Write-ElevationNotice") : src.index("-Tauri:$TauriMode")]
     assert "$Root" in notice, "the warning must name the resolved root, not a fixed path"
     assert "outlives an uninstall" in notice, "the warning must say reinstalling does not clear it"
-    root = src[src.index("$UnslothRoot = Join-Path") : src.index("-Tauri:$TauriMode")]
+    # Anchored on the assignment, not on the expression: the right-hand side has to stay free
+    # to change (it is now a guarded if/else) without breaking a test about the MESSAGE.
+    root = src[src.index("$UnslothRoot =") : src.index("-Tauri:$TauriMode")]
     assert '".unsloth"' in root, "a default install must name the parent that also holds llama.cpp"
     # The notice runs before the resolver, so $StudioHome does not exist yet and
     # naming it would render empty; mirror the override precedence instead.
@@ -208,6 +210,38 @@ def test_installer_restores_skip_studio_base():
     ), "an unset value must be removed again, not left as an empty string"
 
 
+def test_every_handoff_variable_is_restored_not_just_skip_studio_base():
+    """The same argument covers the whole handoff table, not one variable of it. Under
+    `irm ... | iex` all of these are the caller's own session variables, and
+    SKIP_STUDIO_FRONTEND is the one that bites: a leaked "1" from a desktop install makes
+    the next direct `unsloth studio setup` in that console report "bundled (Tauri)" and skip
+    the frontend build, which on a local/source install leaves Studio with no web UI."""
+    src = _read(INSTALL_PS1)
+    restore = src[src.index("} finally {") :]
+    # The handoff try specifically -- install.ps1 opens several, and the first one is
+    # hundreds of lines above this block.
+    handoff_try = src.index('\n    try {\n        $env:SKIP_STUDIO_BASE')
+    for var, saved in (
+        ("SKIP_STUDIO_BASE", "$previousSkipStudioBase"),
+        ("STUDIO_PACKAGE_NAME", "$previousStudioPackageName"),
+        ("UNSLOTH_NO_TORCH", "$previousNoTorch"),
+        ("UNSLOTH_INSTALLER_TORCH_TAG", "$previousInstallerTorchTag"),
+        ("SKIP_STUDIO_FRONTEND", "$previousSkipStudioFrontend"),
+        ("STUDIO_LOCAL_INSTALL", "$previousStudioLocalInstall"),
+        ("STUDIO_LOCAL_REPO", "$previousStudioLocalRepo"),
+    ):
+        save = f"{saved} = $env:{var}"
+        assert save in src, f"{var} is mutated for the child but never captured"
+        assert src.index(save) < handoff_try, (
+            f"{var} must be captured above the try, or a finally entered early reads an "
+            "unassigned $hadPrevious* as 'there was nothing here'"
+        )
+        assert f"$env:{var} = {saved}" in restore, f"{var} is never restored"
+        assert f"Remove-Item Env:{var}" in restore, (
+            f"{var} must be REMOVED when it was originally unset, not left as an empty string"
+        )
+
+
 def test_the_early_bail_restores_the_environment_too():
     """--with-llama-cpp-dir with a missing path returns before `& $UnslothExe`.
     That return used to sit between the env mutations and the `try`, so the bail
@@ -237,11 +271,11 @@ def test_both_scripts_resolve_the_warning_root_the_same_way():
     directory."""
     install_root = _read(INSTALL_PS1)
     install_root = install_root[
-        install_root.index("$UnslothRoot = Join-Path") : install_root.index("-Tauri:$TauriMode")
+        install_root.index("$UnslothRoot =") : install_root.index("-Tauri:$TauriMode")
     ]
     setup_src = _read(SETUP_PS1)
     setup_root = setup_src[
-        setup_src.index("$_unslothRoot = Join-Path") : setup_src.index("# Back up User PATH")
+        setup_src.index("$_unslothRoot =") : setup_src.index("# Back up User PATH")
     ]
     for fragment in (
         "IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)",
@@ -249,6 +283,10 @@ def test_both_scripts_resolve_the_warning_root_the_same_way():
         "IsNullOrWhiteSpace($env:STUDIO_HOME)",
         "$env:STUDIO_HOME.Trim()",
         'Join-Path $env:USERPROFILE ".unsloth"',
+        # Both copies run above the resolver and its USERPROFILE fallback, so both must
+        # guard it themselves. Dropping the guard in one file is the drift this test exists
+        # to catch, and it aborts the install rather than merely naming the wrong folder.
+        "IsNullOrWhiteSpace($env:USERPROFILE)",
     ):
         assert fragment in install_root, f"install.ps1 root resolution lost {fragment!r}"
         assert fragment in setup_root, f"setup.ps1 root resolution lost {fragment!r}"
