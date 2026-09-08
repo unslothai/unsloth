@@ -7062,6 +7062,44 @@ def install_runtime_dir(install_dir: Path, host: HostInfo) -> Path:
     return install_dir / "build" / "bin"
 
 
+"""``libfoo.so``, or ``libfoo.so.0``, but not ``libfoo.so.0.0.10360``."""
+_LINKER_NAME_RE = re.compile(r"^.+\.so(?P<version>(?:\.\d+)*)$")
+
+
+def _payload_match_is_loadable(path: Path) -> bool:
+    """Whether a glob match is a file the loader would actually resolve.
+
+    Two ways a match can satisfy the pattern and still be useless.
+
+    A dangling link: ``Path.glob`` lists names without following them, so a
+    payload that ships a chain and loses the target keeps a match the loader
+    cannot open. ``is_file()`` resolves the link, so a dangling one stops
+    counting, and a directory that happens to match stops counting too.
+
+    A versioned twin: a release ships ``libllama.so.0`` (the SONAME the binary
+    actually asks for) beside ``libllama.so.0.0.10360``, and the group pattern
+    ``libllama.so*`` matches both. Quarantining only the SONAME therefore left
+    the group satisfied by the twin, and the tree reported healthy while
+    ``llama-server --version`` exits 127 with "error while loading shared
+    libraries". Measured on a real install, which is also why this is not a
+    hypothetical: hand-built fixtures write one file per library and a release
+    writes two, so no fixture could show it. A name carrying more version
+    components than a SONAME can only ever be the twin, so it does not count on
+    its own. Names that are not ELF sonames at all (``.dll``, ``.dylib``, a bare
+    executable) are unaffected.
+    """
+    try:
+        if not path.is_file():
+            return False
+    except OSError:
+        # A path that cannot be stat'd is not one we can call present.
+        return False
+    match = _LINKER_NAME_RE.match(path.name)
+    if match is None:
+        return True
+    return match.group("version").count(".") <= 1
+
+
 def _runtime_payload_has(install_dir: Path, host: HostInfo, groups: list[list[str]]) -> bool:
     runtime_dir = install_runtime_dir(install_dir, host)
     if not runtime_dir.exists():
@@ -7069,7 +7107,7 @@ def _runtime_payload_has(install_dir: Path, host: HostInfo, groups: list[list[st
     for pattern_group in groups:
         matched = False
         for pattern in pattern_group:
-            if any(runtime_dir.glob(pattern)):
+            if any(_payload_match_is_loadable(path) for path in runtime_dir.glob(pattern)):
                 matched = True
                 break
         if not matched:
@@ -7179,16 +7217,17 @@ def installed_runtime_health(
     """
     root = install_dir if install_dir is not None else default_managed_llama_dir()
     if load_prebuilt_metadata(root) is None:
-        # Both "no marker" and "a marker that does not parse", on purpose. The
-        # second is tempting to report as broken, since it is what a write
-        # interrupted by a crash or a full disk leaves behind, but it would break
-        # the no-stricter rule above: confirm_install_tree only checks that the
-        # marker file exists, so _existing_install_runs keeps a tree whose marker
-        # is corrupt but whose payload is complete, and that is the branch an
-        # offline update takes. Reporting it broken would repair, keep, and
-        # repair again. Only existing_install_matches_choice rejects it, and only
-        # when the release plan is reachable.
-        return None
+        # An absent marker file is a runtime nobody installed. A marker that is
+        # present and does not parse is a different thing, and it must not
+        # short-circuit to "not installed": that is a real tree, and if a library
+        # is missing from it as well then answering None leaves preflight Ready
+        # and the repair unoffered, which is the failure this function exists to
+        # catch. Fall through and grade it. _kept_install_payload_is_healthy
+        # already reads an unparseable marker as an unknown backend and checks
+        # the payload every kind on the platform shares, so the checks below stay
+        # ones the keep path shares and the no-stricter rule still holds.
+        if not (root / "UNSLOTH_PREBUILT_INFO.json").is_file():
+            return None
     host = host if host is not None else platform_only_host()
     runtime_dir = install_runtime_dir(root, host)
     if not runtime_dir.is_dir():
@@ -7292,6 +7331,26 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
     return all(
         _binary_image_runs(binary, install_dir, host, recorded_runtime_line) for binary in probes
     )
+
+
+def reusable_existing_install(install_dir: Path, host: HostInfo) -> bool:
+    """Whether setup.sh may keep this tree instead of building llama.cpp from source.
+
+    Only reached once the prebuilt path has already failed, so a tree that cannot
+    load a model is never the right thing to keep. The shell test alone was the
+    two entrypoints being executable, which a quarantine that took a library
+    leaves untouched: the rebuild was skipped, the tree came back byte for byte
+    identical, and an update that repaired nothing reported success. Desktop
+    preflight now asks about that same tree on every launch, so the shortcut had
+    to learn what the launch check already knows.
+
+    A tree with no marker is a genuine source build, which ships none of the
+    prebuilt payload (setup.ps1 links statically), so it keeps the old test
+    rather than being rebuilt every time.
+    """
+    if not (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
+        return True
+    return _existing_install_runs(install_dir, host)
 
 
 def existing_install_matches_choice(
@@ -9057,6 +9116,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--check-existing-install",
+        default = None,
+        metavar = "DIR",
+        help = (
+            "Exit 0 when setup.sh may reuse DIR instead of building from source, "
+            "1 when it must not. Prints nothing."
+        ),
+    )
+    parser.add_argument(
         "--output-format",
         choices = ("plain", "json"),
         default = "plain",
@@ -9213,6 +9281,10 @@ def resolve_backends_payload(
 
 def main() -> int:
     args = parse_args()
+    if args.check_existing_install is not None:
+        install_dir = Path(args.check_existing_install)
+        return EXIT_SUCCESS if reusable_existing_install(install_dir, detect_host()) else 1
+
     if args.validate_install is not None:
         try:
             validate_existing_install(
@@ -9343,9 +9415,7 @@ if __name__ == "__main__":
         fatal = _environment_fatal_reason(exc)
         if fatal:
             _fail_no_space(f"prebuilt install failed: {fatal}")
-        log(
-            f"prebuilt install failed: {textwrap.shorten(str(exc), width = 400, placeholder = '...')}"
-        )
+        log(f"prebuilt install failed: {textwrap.shorten(str(exc), width = 400, placeholder = '...')}")
         raise SystemExit(EXIT_FALLBACK)
     except Exception as exc:
         fatal = _environment_fatal_reason(exc)

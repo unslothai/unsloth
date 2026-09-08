@@ -2914,9 +2914,24 @@ fi
 # Source-built llama.cpp installs do not have the prebuilt metadata used above
 # for exact release matching. Reuse a complete local source build unless the
 # caller explicitly requested a rebuild or a PR-specific llama.cpp checkout.
+# The two entrypoints being executable is not enough on its own. Quarantine and
+# a truncated extract both take a library and leave llama-server in place, and
+# this branch only runs once the prebuilt path has already failed, so keeping
+# such a tree returns it byte for byte identical and reports success. Desktop
+# preflight asks about the same tree on every launch, so an update that repaired
+# nothing left it asking forever. A tree with no prebuilt marker is a real source
+# build and keeps the old test.
+_LLAMA_REUSE_EXISTING=true
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
+    python "$SCRIPT_DIR/install_llama_prebuilt.py" \
+        --check-existing-install "$LLAMA_CPP_DIR" >/dev/null 2>&1 \
+        || _LLAMA_REUSE_EXISTING=false
+fi
+
 if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
    [ "$_LLAMA_FORCE_COMPILE" != "1" ] && \
    [ -z "$_LLAMA_PR" ] && \
+   [ "$_LLAMA_REUSE_EXISTING" = true ] && \
    [ -x "$LLAMA_CPP_DIR/build/bin/llama-server" ] && \
    [ -x "$LLAMA_CPP_DIR/build/bin/llama-quantize" ]; then
     step "llama.cpp" "existing source build found; skipping rebuild"

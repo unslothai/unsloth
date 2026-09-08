@@ -482,16 +482,34 @@ def test_the_structural_damage_cases_are_broken_and_never_kept(
     )
     assert ILP.installed_runtime_health(without_marker, host = host) is None, cell
 
-    # An unreadable marker reads the same as an absent one through load_prebuilt_metadata, so
-    # it reports "nothing installed" rather than "broken". Pinned because the alternative
-    # (rejecting it) would be a loop: the repair keeps such a tree on its payload alone.
+    # A marker that is present and unreadable is graded on its tree, not short-circuited to
+    # "nothing installed" (reversed after review, Codex 3957561256). load_prebuilt_metadata
+    # cannot tell the caller which it saw, so the file itself is what distinguishes them.
+    # Complete tree: healthy, which is what keeps the repair from looping, since the keep path
+    # keeps this tree too (confirm_install_tree checks only that the marker file exists).
     corrupt = build_tree(
         tmp_path / "corrupt-marker",
         host = host,
         marker = "{not json",
         backend = backend,
     )
-    assert ILP.installed_runtime_health(corrupt, host = host) is None, cell
+    assert ILP.installed_runtime_health(corrupt, host = host) == (True, ""), cell
+    assert ILP._existing_install_runs(corrupt, host) is True, cell
+
+    # Damaged as well as unreadable: this is the case the old behaviour missed, leaving
+    # preflight Ready with a library gone.
+    corrupt_and_gutted = build_tree(
+        tmp_path / "corrupt-marker-gutted",
+        host = host,
+        marker = "{not json",
+        backend = backend,
+    )
+    for path in sorted(_runtime_dir(corrupt_and_gutted, host).glob("*")):
+        if path.is_file() and not path.name.startswith("llama-"):
+            path.unlink()
+    verdict = ILP.installed_runtime_health(corrupt_and_gutted, host = host)
+    assert verdict is not None and verdict[0] is False, cell
+    assert ILP._existing_install_runs(corrupt_and_gutted, host) is False, cell
 
 
 def test_removing_a_file_this_install_kind_does_not_owe_stays_healthy(tmp_path):
@@ -621,14 +639,17 @@ def test_a_runtime_path_that_is_a_file_is_broken_not_an_exception(tmp_path):
 
 @pytest.mark.skipif(WINDOWS_HOST, reason = "chmod cannot clear read permission on Windows")
 @pytest.mark.skipif(ROOT_USER, reason = "root reads a 000 file regardless of its mode")
-def test_an_unreadable_marker_is_not_installed_rather_than_an_exception(tmp_path):
-    """A marker the process cannot read is indistinguishable from an absent one, and the
-    launch path must not raise on it."""
+def test_a_marker_the_process_cannot_read_is_graded_on_its_tree(tmp_path):
+    """Permission denied is one more way a marker stops parsing, so it lands in the same arm
+    as a truncated one: the file is there, the tree is real, and it is graded rather than
+    reported as nothing installed. The launch path must not raise on it either."""
     root = build_tree(tmp_path / "llama.cpp", host = LINUX, marker = S12, backend = "cuda")
     marker_path = root / "UNSLOTH_PREBUILT_INFO.json"
     os.chmod(marker_path, 0o000)
     try:
-        assert ILP.installed_runtime_health(root, host = LINUX) is None
+        if os.access(marker_path, os.R_OK):
+            pytest.skip("running as a user that ignores the mode, so nothing is denied")
+        assert ILP.installed_runtime_health(root, host = LINUX) == (True, "")
     finally:
         os.chmod(marker_path, 0o644)
 

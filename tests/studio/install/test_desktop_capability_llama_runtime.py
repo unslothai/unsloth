@@ -478,3 +478,57 @@ def test_unknown_keys_do_not_break_the_cli_side_consumer():
     assert isinstance(parsed, dict)
     value = parsed.get("studio_install_ok")
     assert isinstance(value, bool) and value is True
+
+
+def test_the_managed_probe_is_skipped_when_a_custom_runtime_is_active(monkeypatch):
+    """Codex 3957928987, P2. _find_llama_server_binary prefers LLAMA_SERVER_PATH and the
+    folder chosen in Studio's settings ahead of the managed tree, so grading the managed tree
+    regardless would send a user who runs their own build into repair over an install their
+    backend never opens. Offline that repair cannot even succeed, which turns a working
+    custom runtime into a blocked launch."""
+    import importlib.util as _util
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[3]
+    spec = _util.spec_from_file_location(
+        "unsloth_cli_commands_studio_probe", root / "unsloth_cli" / "commands" / "studio.py"
+    )
+    # Importing the whole CLI module is heavy and pulls typer; the helper is a plain function,
+    # so it is read out of the source rather than imported, which keeps this test standalone.
+    source = (root / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
+    start = source.index("def _managed_llama_runtime_is_the_active_one")
+    end = source.index('@studio_app.command("desktop-capabilities"', start)
+    namespace = {"os": __import__("os")}
+    exec(compile(source[start:end], "<helper>", "exec"), namespace)
+    active = namespace["_managed_llama_runtime_is_the_active_one"]
+    assert spec is not None and _sys is not None
+
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+    assert active() is True
+
+    # A direct binary elsewhere wins over the managed tree, so the managed verdict is not ours
+    # to report.
+    monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/mine/llama-server")
+    assert active() is False
+
+    # Whitespace is not a selection: the finder strips before testing it.
+    monkeypatch.setenv("LLAMA_SERVER_PATH", "   ")
+    assert active() is True
+
+
+def test_the_managed_runtime_path_override_is_not_treated_as_a_custom_runtime(monkeypatch):
+    """UNSLOTH_LLAMA_CPP_PATH moves the managed root itself, so default_managed_llama_dir
+    already grades exactly the tree that variable names. Skipping on it would drop the
+    coverage for every user who relocated their install."""
+    source = __import__("pathlib").Path(__file__).resolve().parents[3]
+    text = (source / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
+    start = text.index("def _managed_llama_runtime_is_the_active_one")
+    end = text.index('@studio_app.command("desktop-capabilities"', start)
+    namespace = {"os": __import__("os")}
+    exec(compile(text[start:end], "<helper>", "exec"), namespace)
+    active = namespace["_managed_llama_runtime_is_the_active_one"]
+
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", "/opt/relocated/llama.cpp")
+    assert active() is True

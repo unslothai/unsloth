@@ -4965,6 +4965,31 @@ class _WindowsLauncherUpdateTransaction:
 # ── unsloth studio reset-password ────────────────────────────────────
 
 
+def _managed_llama_runtime_is_the_active_one() -> bool:
+    """Whether the managed tree is the runtime the backend would actually load.
+
+    ``_find_llama_server_binary`` prefers, in order, ``LLAMA_SERVER_PATH``, then
+    ``UNSLOTH_LLAMA_CPP_PATH``, then the folder chosen in Studio's settings, and
+    only then the managed install. Grading the managed tree regardless would send
+    a user who runs their own build into repair over a leftover install their
+    backend never opens, and offline that repair cannot even succeed.
+
+    ``UNSLOTH_LLAMA_CPP_PATH`` is not one of the cases to skip: it moves the
+    managed root itself, so ``default_managed_llama_dir`` already grades exactly
+    the tree that variable names.
+    """
+    if os.environ.get("LLAMA_SERVER_PATH", "").strip():
+        return False
+    try:
+        from studio.backend.utils.llama_cpp_path_settings import (
+            get_stored_custom_llama_cpp_path,
+        )
+    except Exception:
+        # No settings module reachable means no stored selection to honour.
+        return True
+    return get_stored_custom_llama_cpp_path() is None
+
+
 @studio_app.command("desktop-capabilities", hidden = True)
 def desktop_capabilities(
     json_output: bool = typer.Option(
@@ -4996,9 +5021,10 @@ def desktop_capabilities(
     # into a stale one, so a failure here leaves llama_runtime_ok null.
     try:
         from studio.install_llama_prebuilt import installed_runtime_health
-        health = installed_runtime_health()
-        if health is not None:
-            payload["llama_runtime_ok"], payload["llama_runtime_reason"] = health
+        if _managed_llama_runtime_is_the_active_one():
+            health = installed_runtime_health()
+            if health is not None:
+                payload["llama_runtime_ok"], payload["llama_runtime_reason"] = health
     except Exception:
         pass
     try:

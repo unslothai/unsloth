@@ -17,6 +17,7 @@ does not pay for a GPU detection it never reads.
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -171,24 +172,70 @@ def test_an_explicit_host_overrides_the_detected_platform(tmp_path):
     assert ILP.installed_runtime_health(root, host = windows)[1] != "llama_runtime_dir_missing"
 
 
-def test_a_corrupt_marker_is_not_reported_broken_because_the_offline_keep_path_keeps_it(tmp_path):
-    """Pinning a deliberate non-fix. A truncated marker is what an interrupted write leaves
-    behind and reporting it broken looks obviously right, but confirm_install_tree only
-    checks that the marker file exists, so _existing_install_runs keeps such a tree when its
-    payload is complete, and that is the branch an update with no reachable release plan
-    takes. Broken plus kept is a repair loop, so this stays None."""
+def test_a_marker_that_exists_but_does_not_parse_is_still_graded(tmp_path):
+    """Reversed after review (Codex 3957561256, P2). An absent marker file is a runtime
+    nobody installed; a marker that is present and unreadable is a real tree whose write was
+    interrupted. Short-circuiting the second to None left preflight Ready when a library was
+    missing too, which is the exact failure this probe exists to catch. The keep path reads
+    such a marker as an unknown backend and grades the payload anyway, so grading it here
+    stays on the safe side of the no-stricter rule."""
     root = _installed(tmp_path, binaries = True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text('{"release_tag": "b108', encoding = "utf-8")
     assert ILP.load_prebuilt_metadata(root) is None
+    # The payload is empty, so the tree is broken and must be offered for repair.
+    assert ILP.installed_runtime_health(root) == (False, "llama_runtime_payload_incomplete")
+
+
+def test_an_unparsable_marker_over_a_complete_tree_is_still_healthy(tmp_path, monkeypatch):
+    """The other half, and the one that keeps the loop shut: an unreadable marker on a tree
+    that is otherwise intact must not be called broken. _existing_install_runs keeps such a
+    tree (confirm_install_tree only checks the marker file exists), so reporting it broken
+    would repair, keep, and repair again on every launch for an offline user."""
+    root = _installed(tmp_path, binaries = True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text("not json", encoding = "utf-8")
+    monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
+    assert ILP.installed_runtime_health(root) == (True, "")
+
+
+def test_an_absent_marker_is_still_not_installed(tmp_path):
+    """The distinction the fix turns on, asserted directly."""
+    root = _installed(tmp_path, binaries = True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").unlink()
     assert ILP.installed_runtime_health(root) is None
-    # The half that would make it a loop, asserted rather than assumed: the keep
-    # path's structural gate accepts a marker it cannot parse.
+
+
+def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
+    """Codex 3957928993, P1, reproduced before fixing: the tar payloads ship versioned chains
+    (libggml.so -> libggml.so.0 -> libggml.so.0.9.8) and Path.glob lists names without
+    following them, so quarantining only the versioned target left every pattern satisfied by
+    links the loader cannot open. Fixed in _runtime_payload_has, which both this probe and the
+    setup scripts' keep decision share, so the two tighten together."""
+    if os.name == "nt":
+        pytest.skip("the shipped Windows payload has no symlink chains")
+    root = _installed(tmp_path, binaries = True)
     host = ILP.platform_only_host()
     runtime_dir = ILP.install_runtime_dir(root, host)
-    ext = ".exe" if host.is_windows else ""
-    for name in ("server", "quantize"):
-        (root / f"llama-{name}{ext}").write_text("", encoding = "utf-8")
-        (runtime_dir / f"llama-{name}{ext}").write_text("", encoding = "utf-8")
-    (root / "convert_hf_to_gguf.py").write_text("", encoding = "utf-8")
-    (root / "gguf-py").mkdir()
-    ILP.confirm_install_tree(root, host)
+    groups = ILP.runtime_payload_health_groups("linux-cpu")
+    real = []
+    for group in groups:
+        stem = group[0].replace("*", "")
+        target = runtime_dir / f"{stem}.0.9.8"
+        target.write_text("", encoding = "utf-8")
+        os.symlink(target.name, runtime_dir / stem)
+        real.append(target)
+    assert ILP._runtime_payload_has(root, host, groups) is True
+
+    # Quarantine takes the versioned target and leaves the link behind.
+    real[0].unlink()
+    assert (runtime_dir / groups[0][0].replace("*", "")).is_symlink()
+    assert ILP._runtime_payload_has(root, host, groups) is False
+
+
+def test_a_directory_matching_a_payload_pattern_is_not_a_library(tmp_path):
+    """The same guard, from the other side: is_file() is what rejects a dangling link, and it
+    rejects a directory that happens to match too, which a bare glob would have accepted."""
+    root = _installed(tmp_path, binaries = True)
+    host = ILP.platform_only_host()
+    groups = [["libllama.so*"]]
+    (ILP.install_runtime_dir(root, host) / "libllama.so.0").mkdir()
+    assert ILP._runtime_payload_has(root, host, groups) is False
