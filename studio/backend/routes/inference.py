@@ -40,6 +40,7 @@ from typing import (
     Union,
 )
 import functools
+import inspect
 import json
 import httpx
 from loggers import get_logger
@@ -3592,6 +3593,96 @@ async def _send_stream_with_preheader_cancel(
             pass
 
 
+def _live_read_timeout(response: httpx.Response):
+    """The request's read timeout as it is now, or the sentinel when none was ever set.
+
+    httpcore snapshots ``request.extensions["timeout"]["read"]`` once when the body starts,
+    so the post-first-item stall timeout `_set_stream_response_read_timeout` writes later is
+    seen only by a read that asks again."""
+    try:
+        ext = response.request.extensions.get("timeout")
+        if isinstance(ext, dict) and "read" in ext:
+            value = ext["read"]
+            return float(value) if isinstance(value, (int, float)) else None
+    except Exception:
+        pass
+    return _NO_LIVE_READ_TIMEOUT
+
+
+_NO_LIVE_READ_TIMEOUT = object()
+
+
+def _install_park_aware_read(response: httpx.Response, stall_grace: Callable[[], bool]) -> bool:
+    """Wrap the response's network stream so a server park is waited out BELOW the httpx
+    iterators, the way `_install_cancel_aware_read` does for the synchronous streams.
+
+    An async generator that raised is closed: retrying `aiter_lines()` after a read timeout
+    returns StopAsyncIteration, and the relay ended as if the parked answer were complete.
+    So the read timeout is handled here, where nothing above it unwinds: at the deadline the
+    park probe is asked, and a parked slot buys another read window, up to
+    `_RAW_PARK_STALL_CAP_S`. The live read timeout is re-read per call, so the stall bound
+    written after the first item applies. Returns False when there is no stream to wrap."""
+    import httpcore
+
+    try:
+        stream = response.extensions.get("network_stream")
+    except Exception:
+        stream = None
+    if stream is None:
+        return False
+    state = {"response": response, "stall_grace": stall_grace}
+    if getattr(stream, "_unsloth_park_wrapped", False):
+        # A kept-alive connection serves the next request: follow it, not the first one.
+        stream._unsloth_park_state = state
+        return True
+    orig_read = stream.read
+
+    async def read(
+        max_bytes,
+        timeout = None,
+        _orig = orig_read,
+    ):
+        current = getattr(stream, "_unsloth_park_state", None) or state
+        live = _live_read_timeout(current["response"])
+        effective = timeout if live is _NO_LIVE_READ_TIMEOUT else live
+        if effective is None:
+            return await _orig(max_bytes, timeout = None)
+        started = time.monotonic()
+        while True:
+            try:
+                return await _orig(max_bytes, timeout = effective)
+            except httpcore.ReadTimeout:
+                # Asked only at the deadline, so an idle stream costs nothing.
+                if time.monotonic() - started >= _RAW_PARK_STALL_CAP_S:
+                    raise
+                try:
+                    parked = bool(current["stall_grace"]())
+                except Exception:
+                    parked = False
+                if not parked:
+                    raise
+                logger.info(
+                    "llama stream silent for %.0fs with a slot parked by the server; waiting",
+                    time.monotonic() - started,
+                )
+
+    stream.read = read
+    stream._unsloth_park_wrapped = True
+    stream._unsloth_park_state = state
+    return True
+
+
+def _async_iterator_is_closed(async_iter) -> bool:
+    """A raised async generator is done: its next `__anext__` is StopAsyncIteration, so a
+    retry after its exception ends the relay as if the answer were complete."""
+    if not inspect.isasyncgen(async_iter):
+        return False
+    state = getattr(inspect, "getasyncgenstate", None)
+    if state is not None:
+        return state(async_iter) == inspect.AGEN_CLOSED
+    return getattr(async_iter, "ag_frame", None) is None
+
+
 async def _aiter_llama_stream_items(
     async_iter,
     *,
@@ -3609,7 +3700,11 @@ async def _aiter_llama_stream_items(
     of it. It is the backend's `/metrics` park probe (`_raw_park_grace`): a swap build that
     predates the stream notices is silent while it holds a request parked, and the raw
     relays read through this rather than the backend's own read wrapper, so a parked raw
-    request was cut off as a stall and its healthy answer lost."""
+    request was cut off as a stall and its healthy answer lost.
+
+    With an httpx ``response`` the grace is applied below its iterators, by
+    `_install_park_aware_read`: an iterator that raised cannot be retried. The retries here
+    serve an iterator of another kind, and never one that has closed."""
     if first_token_deadline is None:
         first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
     last_item_at: Optional[float] = None
@@ -3617,17 +3712,23 @@ async def _aiter_llama_stream_items(
     # The first-item deadline is excused the same way, bounded from the deadline it first
     # crossed: a request parked during its prefill produces nothing for the whole park.
     first_deadline_crossed_at: Optional[float] = None
+    grace_below = (
+        response is not None
+        and stall_grace is not None
+        and _install_park_aware_read(response, stall_grace)
+    )
+    grace_above = None if grace_below else stall_grace
 
     def _first_item_excused(now: float) -> bool:
         nonlocal first_token_deadline, first_deadline_crossed_at
-        if stall_grace is None:
+        if grace_above is None or _async_iterator_is_closed(async_iter):
             return False
         if first_deadline_crossed_at is None:
             first_deadline_crossed_at = now
         if now - first_deadline_crossed_at >= _RAW_PARK_STALL_CAP_S:
             return False
         try:
-            parked = bool(stall_grace())
+            parked = bool(grace_above())
         except Exception:
             parked = False
         if parked:
@@ -3656,7 +3757,10 @@ async def _aiter_llama_stream_items(
                     _set_stream_response_read_timeout(response, remaining_s)
                 # Keep httpx/httpcore's AnyIO cancel scope in this task.
                 # asyncio.wait_for would drive __anext__ in a child task.
-                async with _same_task_timeout(remaining_s):
+                # With the grace below, the read decides at the deadline and this only
+                # backstops a read that never returns; firing first would close the iterator.
+                backstop_s = remaining_s + (_RAW_PARK_STALL_CAP_S if grace_below else 0.0)
+                async with _same_task_timeout(backstop_s):
                     item = await async_iter.__anext__()
             else:
                 timeout_s = _post_first_timeout_s()
@@ -3686,16 +3790,20 @@ async def _aiter_llama_stream_items(
                     if _first_item_excused(now):
                         continue
                     raise
+                if _async_iterator_is_closed(async_iter):
+                    raise
                 continue
             timeout_s = _post_first_timeout_s()
+            if _async_iterator_is_closed(async_iter):
+                raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
             if request is not None and timeout_s is not None and now - last_item_at < timeout_s:
                 continue
-            if stall_grace is not None and timeout_s is not None:
+            if grace_above is not None and timeout_s is not None:
                 if park_since is None:
                     park_since = last_item_at
                 if now - park_since < _RAW_PARK_STALL_CAP_S:
                     try:
-                        parked = bool(stall_grace())
+                        parked = bool(grace_above())
                     except Exception:
                         parked = False
                     if parked:

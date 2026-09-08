@@ -27,6 +27,7 @@
 import asyncio
 import inspect
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -492,3 +493,113 @@ class TestTheGlobalOptOutBlocksAnAutoLaunch:
         )
         monkeypatch.setattr(llama_mod._preemption, "preemption_enabled", lambda: True)
         assert llama_mod._exact_auto_blocker(exact.EXACT_AUTO, ["llama-server"], {}) is None
+
+
+class TestTheParkGraceLivesBelowTheHttpxIterators:
+    """An httpx async generator that raised is closed, so a retry above it returned
+    StopAsyncIteration and the relay ended as if the parked answer were complete. The grace
+    is applied to the network stream's read, where nothing above it unwinds; this runs the
+    relay over a real httpx stream against a local server that goes silent."""
+
+    @staticmethod
+    async def _serve(first_delay: float, gap: float):
+        async def handle(reader, writer):
+            try:
+                await reader.readuntil(b"\r\n\r\n")
+            except Exception:
+                return
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            )
+            await writer.drain()
+            for delay, chunk in ((first_delay, b"data: a\n\n"), (gap, b"data: b\n\n")):
+                await asyncio.sleep(delay)
+                writer.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
+                await writer.drain()
+            writer.write(b"0\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        return await asyncio.start_server(handle, "127.0.0.1", 0)
+
+    async def _relay(
+        self,
+        first_delay,
+        gap,
+        *,
+        grace,
+        stall_s = 0.05,
+        first_s = 0.05,
+    ):
+        server = await self._serve(first_delay, gap)
+        port = server.sockets[0].getsockname()[1]
+        seen = []
+        try:
+            async with httpx.AsyncClient(timeout = httpx.Timeout(5.0, read = 0.05)) as client:
+                async with client.stream("GET", f"http://127.0.0.1:{port}/") as resp:
+                    async for line in inference._aiter_llama_stream_items(
+                        resp.aiter_lines(),
+                        request = _Request(),
+                        response = resp,
+                        first_token_deadline = time.monotonic() + first_s,
+                        post_first_item_read_timeout_s = stall_s,
+                        stall_grace = grace,
+                    ):
+                        if line:
+                            seen.append(line)
+        finally:
+            server.close()
+            await server.wait_closed()
+        return seen
+
+    def test_a_park_after_the_first_item_is_waited_out(self):
+        asked = []
+
+        def grace():
+            asked.append(time.monotonic())
+            return True
+
+        assert asyncio.run(self._relay(0.0, 0.4, grace = grace)) == ["data: a", "data: b"]
+        assert asked, "the probe was never consulted"
+
+    def test_a_park_during_prefill_is_waited_out(self):
+        assert asyncio.run(self._relay(0.4, 0.0, grace = lambda: True)) == ["data: a", "data: b"]
+
+    def test_without_a_park_the_stall_is_still_an_error_not_a_short_answer(self):
+        with pytest.raises(httpx.ReadTimeout):
+            asyncio.run(self._relay(0.0, 0.4, grace = lambda: False))
+
+    def test_a_closed_iterator_is_never_retried(self, monkeypatch):
+        # Grace above the iterator only: the raised generator is done, and the relay reports
+        # the stall rather than returning the one line it had as the whole answer.
+        monkeypatch.setattr(inference, "_install_park_aware_read", lambda *a, **k: False)
+        with pytest.raises(httpx.ReadTimeout):
+            asyncio.run(self._relay(0.0, 0.4, grace = lambda: True))
+
+    def test_the_wrapper_follows_the_request_a_kept_alive_connection_serves_next(self):
+        class _Stream:
+            async def read(
+                self,
+                max_bytes,
+                timeout = None,
+            ):
+                return b""
+
+        stream = _Stream()
+        first = SimpleNamespace(extensions = {"network_stream": stream})
+        second = SimpleNamespace(extensions = {"network_stream": stream})
+        one, two = (lambda: True), (lambda: False)
+        assert inference._install_park_aware_read(first, one) is True
+        assert inference._install_park_aware_read(second, two) is True
+        assert stream._unsloth_park_state["stall_grace"] is two
+        assert inference._install_park_aware_read(SimpleNamespace(extensions = {}), one) is False
+
+    def test_every_raw_relay_reads_through_the_response(self):
+        source = inspect.getsource(inference)
+        assert source.count("stall_grace = _raw_park_grace(llama_backend),") == 4
+        assert (
+            source.count("                    response = resp,\n")
+            + source.count("                response = resp,\n")
+            >= 4
+        )

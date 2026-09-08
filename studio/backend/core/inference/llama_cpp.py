@@ -2145,8 +2145,9 @@ def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[
         )
     if _preempt_ram_disabled_in(args, env = env):
         return "the server's parking is switched off (--preempt-ram 0)"
-    # The same condition `_stand_down_child_parking` acts on later in the launch: with
-    # Studio's preemption off and nothing naming a budget, the child is handed a zero budget.
+    # The same condition `_stand_down_child_parking` acts on later in the launch (studio mode,
+    # above, is its other): with Studio's preemption off and nothing naming a budget, the child
+    # is handed a zero budget.
     if not _preemption.preemption_enabled() and _named_preempt_ram_mib(args, env) is None:
         return (
             "UNSLOTH_LLAMA_ADMISSION_PREEMPT=0 switches the server's parking off as well, "
@@ -2157,10 +2158,13 @@ def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[
 
 def _stand_down_child_parking(env: dict, args) -> bool:
     """One switch means no preemption anywhere: with Studio's off, the child would still park
-    on its own default budget. Puts ``LLAMA_ARG_PREEMPT_RAM=0`` in ``env`` and returns True,
-    unless something named a budget already: a ``--preempt-ram`` in the extras or an inherited
-    variable keeps its say."""
-    if _preemption.preemption_enabled() or "LLAMA_ARG_PREEMPT_RAM" in env:
+    on its own default budget. ``UNSLOTH_LLAMA_PREEMPT_MODE=studio`` stands it down as well:
+    Studio is the one pausing, `server_preempts_kv` reports the server does not, and a park
+    the child made on its own raced Studio's pause with no relay excusing the silence. Puts
+    ``LLAMA_ARG_PREEMPT_RAM=0`` in ``env`` and returns True, unless something named a budget
+    already: a ``--preempt-ram`` in the extras or an inherited variable keeps its say."""
+    studio_pauses = _preemption.preempt_mode_setting() == _preemption.PREEMPT_MODE_STUDIO
+    if (_preemption.preemption_enabled() and not studio_pauses) or "LLAMA_ARG_PREEMPT_RAM" in env:
         return False
     if any(str(a).startswith("--preempt-ram") for a in (args or ())):
         return False
@@ -23705,8 +23709,10 @@ class LlamaCppBackend:
                     )
                 if _stand_down_child_parking(env, cmd):
                     logger.info(
-                        "Preemption is off (%s), so the server's own parking is off as well",
+                        "Studio's preemption is off or Studio is the one pausing (%s, %s), so "
+                        "the server's own parking is off as well",
                         _preemption.PREEMPT_ENV,
+                        _preemption.PREEMPT_MODE_ENV,
                     )
                 # Same reasoning one level up: a flag validate_extra_args refuses has
                 # an env twin llama.cpp reads before argv, so denying the token alone
@@ -33679,6 +33685,18 @@ class LlamaCppBackend:
                     # charging the declined attempt alone handed the final pass their tokens
                     # a second time.
                     _spent_so_far = _loop_budget_left(0)
+                    if _spent_so_far == 0:
+                        # The caller's cap is spent: the final pass, floored at one token,
+                        # would go past it by that token. Ends as the granted pause does.
+                        logger.info(
+                            "Declined the pause with the caller's output cap spent; ending the turn"
+                        )
+                        _spent_meta = _build_metadata_event(
+                            *_folded_attempt(_iter_usage, _iter_timings), "length"
+                        )
+                        if _spent_meta is not None:
+                            yield _spent_meta
+                        return
                     if _spent_so_far is not None:
                         _declined_charged = max_tokens - _spent_so_far
                     else:

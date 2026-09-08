@@ -29,6 +29,7 @@ from core.inference.llama_admission import (
 from core.inference.llama_cpp import LlamaCppBackend, _preempt_ram_disabled_in
 from core.inference.llama_preemption import (
     PREEMPT_ENV,
+    PREEMPT_MODE_ENV,
     ParticipantState,
     PreemptSignal,
     get_preemption_controller,
@@ -714,6 +715,19 @@ class TestOneSwitchStandsTheChildsParkingDown:
         env: dict = {}
         assert _stand_down_child_parking(env, ["llama-server"]) is False
         assert env == {}
+
+    def test_studio_pausing_stands_the_child_down_too(self, monkeypatch):
+        # Studio is the one pausing and `server_preempts_kv` says the server does not, so a
+        # park the child made on its own default budget raced Studio's pause unexcused.
+        from core.inference.llama_cpp import _stand_down_child_parking
+
+        monkeypatch.setenv(PREEMPT_MODE_ENV, "studio")
+        env: dict = {}
+        assert _stand_down_child_parking(env, ["llama-server", "--kv-unified"]) is True
+        assert env["LLAMA_ARG_PREEMPT_RAM"] == "0"
+        named = {"LLAMA_ARG_PREEMPT_RAM": "4096"}
+        assert _stand_down_child_parking(named, ["llama-server"]) is False
+        assert named["LLAMA_ARG_PREEMPT_RAM"] == "4096"
 
     @pytest.mark.parametrize(
         ("env", "args"),
