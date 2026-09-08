@@ -2377,13 +2377,29 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
     assert ensured_tags == ["b9001"]
 
 
-def write_linux_install_shape(install_dir: Path) -> None:
+def _write_entrypoints(install_dir: Path) -> None:
+    """The two entrypoints, executable, in both the places a caller looks.
+
+    Executable because a real extraction leaves them so, and because
+    existing_install_matches_choice now asks _entrypoint_is_runnable rather than
+    exists(): a tree it keeps but installed_runtime_health rejects is a repair loop.
+    """
     runtime_dir = install_dir / "build" / "bin"
     runtime_dir.mkdir(parents = True, exist_ok = True)
-    (install_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (install_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (runtime_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (runtime_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
+    for directory in (install_dir, runtime_dir):
+        for name in ("llama-server", "llama-quantize"):
+            binary = directory / name
+            binary.write_text("#!/bin/sh\n", encoding = "utf-8")
+            binary.chmod(0o755)
+
+
+def write_linux_install_shape(install_dir: Path) -> None:
+    runtime_dir = install_dir / "build" / "bin"
+    _write_entrypoints(install_dir)
+    # Since the upstream impl split, llama-server and llama-quantize carry no entry
+    # code of their own and load these by DT_NEEDED, so a Linux payload owes them.
+    (runtime_dir / "libllama-server-impl.so").write_bytes(b"DLL")
+    (runtime_dir / "libllama-quantize-impl.so").write_bytes(b"DLL")
     # libllama-common.so* (PR #5135) is a required runtime payload health group.
     (runtime_dir / "libllama-common.so.0").write_bytes(b"DLL")
     (runtime_dir / "libllama.so.0").write_bytes(b"DLL")
@@ -2439,11 +2455,7 @@ def write_macos_install_shape(
     include_libmtmd: bool = True,
 ) -> None:
     runtime_dir = install_dir / "build" / "bin"
-    runtime_dir.mkdir(parents = True, exist_ok = True)
-    (install_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (install_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (runtime_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (runtime_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
+    _write_entrypoints(install_dir)
     # The rest of the libraries a real macos-arm64 bundle ships. The toggles above
     # stay the ones a caller flips, so an off toggle still leaves the tree short of
     # one whole library rather than of the whole payload.
@@ -5820,6 +5832,12 @@ _SHARED_PAYLOAD = {
         "libggml-base.so",
         "libggml-cpu.so",
         "libmtmd.so",
+        # The entry code llama-server and llama-quantize lost to the upstream impl
+        # split; they load these by DT_NEEDED. Owed by a published or upstream
+        # bundle only, and these markers carry no bNNNN tag, which the gate reads
+        # as "assume current".
+        "libllama-server-impl.so",
+        "libllama-quantize-impl.so",
     ],
     "windows": ["llama.dll"],
 }

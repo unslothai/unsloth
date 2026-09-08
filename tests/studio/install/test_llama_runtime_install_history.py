@@ -540,3 +540,100 @@ def test_nothing_installed_leaves_the_runtime_unknown(tmp_path):
     """The same null for a different reason: no marker means NotInstalled, not a broken
     runtime, so the probe returns None and the CLI leaves the key untouched."""
     assert ILP.installed_runtime_health(tmp_path / "nothing-here") is None
+
+
+@pytest.mark.parametrize(
+    "victim", ["libllama-server-impl.so", "libllama-quantize-impl.so"]
+)
+def test_quarantining_a_split_entrypoint_library_is_reported_broken(victim, tmp_path):
+    """The other half of the upstream impl split, on the side that had no group for it.
+
+    ``llama-server`` and ``llama-quantize`` carry no entry code of their own since
+    ggml-org/llama.cpp#23462; they load ``libllama-server-impl.so`` and
+    ``libllama-quantize-impl.so`` by DT_NEEDED. The payload groups named the shared
+    libraries only, so removing one of these left every group satisfied while the binary
+    the desktop is about to start died in the loader: the probe answered Ready and
+    ``_existing_install_runs`` answered false, which is the disagreement this feature
+    exists to remove. Windows already required its ``llama-server-impl.dll``; Linux did
+    not require either of its two.
+    """
+    root = _managed_copy(tmp_path)
+    host = ILP.platform_only_host()
+    if not host.is_linux:
+        pytest.skip("the impl split libraries are the Linux and Windows names, not macOS")
+    runtime_dir = ILP.install_runtime_dir(root, host)
+    library = runtime_dir / victim
+    if not library.is_file():
+        pytest.skip(f"this install predates the impl split: no {victim}")
+    assert ILP.installed_runtime_health(root, host = host) == (True, ""), "copy must start healthy"
+
+    (tmp_path / "vault").mkdir(exist_ok = True)
+    shutil.move(str(library), str(tmp_path / "vault" / victim))
+    verdict = ILP.installed_runtime_health(root, host = host)
+    assert verdict is not None and verdict[0] is False, (
+        f"a runtime missing {victim} cannot load, but the probe said {verdict}"
+    )
+    # And the two answers still agree, which is the property that keeps repair from looping.
+    assert ILP._existing_install_runs(root, host) is False
+
+
+def test_an_older_monolithic_linux_release_is_not_asked_for_the_impl_libraries():
+    """The gate, not just the requirement.
+
+    An archive from before the split ships no ``lib*-impl.so`` at all, so requiring one
+    would reinstall it on every check forever. Same build number as the Windows side, and
+    for the same reason: it is one upstream commit, not one platform's packaging.
+    """
+    before = ILP.runtime_payload_health_groups(
+        "linux-cuda", source_label = "published", tag = "b9279"
+    )
+    after = ILP.runtime_payload_health_groups(
+        "linux-cuda", source_label = "published", tag = "b9283"
+    )
+    flat_before = {pattern for group in before for pattern in group}
+    flat_after = {pattern for group in after for pattern in group}
+    assert "libllama-server-impl.so*" not in flat_before
+    assert "libllama-quantize-impl.so*" not in flat_before
+    assert "libllama-server-impl.so*" in flat_after
+    assert "libllama-quantize-impl.so*" in flat_after
+    # A source build ships neither, whatever the tag says.
+    source_built = ILP.runtime_payload_health_groups(
+        "linux-cuda", source_label = "source", tag = "b10360"
+    )
+    assert not any("impl" in pattern for group in source_built for pattern in group)
+
+
+def test_a_stripped_execute_bit_is_not_reused_as_an_exact_release_match(tmp_path):
+    """The keep-or-reinstall decision has to reject what the probe rejects.
+
+    ``installed_runtime_health`` asks for the execute bit, because that is what
+    ``_find_llama_server_binary`` asks for. ``existing_install_matches_choice`` asked only
+    ``exists()``, and its Linux ``ldd`` gate reads a non-executable ELF quite happily, so a
+    cleared bit produced: preflight says broken, repair says the exact release is already
+    installed, nothing is downloaded, and the next launch says broken again. Checked
+    against the two gates directly, since the surrounding function also wants a matching
+    fingerprint that this test has no business reconstructing.
+    """
+    root = _managed_copy(tmp_path)
+    host = ILP.platform_only_host()
+    if host.is_windows:
+        pytest.skip("there is no execute bit to clear on Windows")
+    runtime_dir = ILP.install_runtime_dir(root, host)
+    server = runtime_dir / "llama-server"
+    if not server.is_file():
+        pytest.skip("this install has no llama-server")
+
+    mode = server.stat().st_mode
+    server.chmod(mode & ~0o111)
+    try:
+        assert ILP.installed_runtime_health(root, host = host) == (
+            False,
+            "llama_runtime_binaries_missing",
+        )
+        assert ILP._existing_install_runs(root, host) is False
+        # The old gate, which is what let the two disagree.
+        assert server.exists(), "the file is still there, which is the whole point"
+        # The new one, shared with both answers above.
+        assert ILP._entrypoint_is_runnable(server, host) is False
+    finally:
+        server.chmod(mode)

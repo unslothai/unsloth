@@ -127,6 +127,10 @@ _SHARED_PAYLOAD = {
         "libggml-base.so",
         "libggml-cpu.so",
         "libmtmd.so",
+        # The Linux half of the same impl split as llama-server-impl.dll below;
+        # llama-server and llama-quantize load these by DT_NEEDED.
+        "libllama-server-impl.so",
+        "libllama-quantize-impl.so",
     ],
     # Written unconditionally: the check is "has", not "has only".
     "windows": [

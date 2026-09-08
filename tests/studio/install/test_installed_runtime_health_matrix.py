@@ -110,6 +110,12 @@ _SHARED_PAYLOAD = {
         "libggml-base.so",
         "libggml-cpu.so",
         "libmtmd.so",
+        # The Linux half of the same impl split as llama-server-impl.dll below:
+        # llama-server and llama-quantize load these by DT_NEEDED. Written for every
+        # shape, like the Windows one, and taken back out by required_runtime_files
+        # for the shapes that do not owe them.
+        "libllama-server-impl.so",
+        "libllama-quantize-impl.so",
     ],
     "windows": [
         "llama.dll",
@@ -295,6 +301,18 @@ def required_runtime_files(platform: str, backend: str, marker: dict) -> list[st
         if build is not None and build < _IMPL_SPLIT_BUILD:
             files.remove("llama-server-impl.dll")
         files.append("llama-server.exe")
+    # The same split, on the side that names the libraries lib<binary>-impl.so.
+    # llama-server and llama-quantize load them by DT_NEEDED, so a Linux bundle from
+    # a published or upstream release owes both; a source build and a pre-split
+    # archive ship neither, and requiring one of those would reinstall forever.
+    if platform == "linux":
+        build = ILP._release_build_number(marker.get("tag"))
+        owed = source in {"published", "upstream"} and (
+            build is None or build >= _IMPL_SPLIT_BUILD
+        )
+        if not owed:
+            files.remove("libllama-server-impl.so")
+            files.remove("libllama-quantize-impl.so")
     files += _BACKEND_PAYLOAD.get((platform, backend), [])
     if backend == "vulkan" and source == "published":
         files += _PUBLISHED_PAYLOAD[platform]

@@ -6976,6 +6976,33 @@ def _windows_shared_groups(source_label: str | None, tag: str | None = None) -> 
     return groups
 
 
+def _linux_split_entrypoint_groups(
+    source_label: str | None, tag: str | None = None
+) -> list[list[str]]:
+    """The impl libraries a Linux entrypoint links against, when the release has them.
+
+    The same upstream split that gave Windows ``llama-server-impl.dll`` gives Linux
+    ``libllama-server-impl.so``: ``llama-server`` and ``llama-quantize`` carry no
+    entry code of their own any more and load these by DT_NEEDED. The library
+    groups above name only the shared libraries, so quarantining one of these left
+    every group satisfied while ``llama-server`` died in the loader and
+    ``_existing_install_runs`` returned false, which is the disagreement this whole
+    probe exists to prevent. Measured on a b10360 managed install: removing either
+    one leaves ``installed_runtime_health`` answering ``(True, "")`` and
+    ``_existing_install_runs`` answering false.
+
+    Gated exactly as the Windows side is, and on the same build for the same
+    reason: an older monolithic archive is healthy without them, and requiring one
+    a bundle does not carry would reinstall on every check forever.
+    """
+    if source_label not in {"published", "upstream"}:
+        return []
+    build = _release_build_number(tag)
+    if build is not None and build < LLAMA_SERVER_IMPL_SPLIT_BUILD:
+        return []
+    return [["libllama-server-impl.so*"], ["libllama-quantize-impl.so*"]]
+
+
 def runtime_payload_health_groups(
     install_kind: str,
     *,
@@ -6992,7 +7019,7 @@ def runtime_payload_health_groups(
             ["libggml-base.so*"],
             ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
-        ]
+        ] + _linux_split_entrypoint_groups(source_label, tag)
     if install_kind in {"linux-cuda", "linux-arm64-cuda"}:
         return [
             ["libllama-common.so*"],
@@ -7002,7 +7029,7 @@ def runtime_payload_health_groups(
             ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
             ["libggml-cuda.so*"],
-        ]
+        ] + _linux_split_entrypoint_groups(source_label, tag)
     if install_kind in {"macos-arm64", "macos-x64"}:
         # One group per library, not three broad alternatives. A real bundle
         # ships libggml, libggml-base, libggml-blas, libggml-cpu, libggml-metal
@@ -7038,7 +7065,7 @@ def runtime_payload_health_groups(
             ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
             ["libggml-hip.so*"],
-        ]
+        ] + _linux_split_entrypoint_groups(source_label, tag)
     if install_kind == "linux-vulkan":
         groups = [
             ["libllama-common.so*"],
@@ -7055,7 +7082,7 @@ def runtime_payload_health_groups(
         ]
         if source_label == "published":
             groups.append(["llama-diffusion-gemma-visual-server"])
-        return groups
+        return groups + _linux_split_entrypoint_groups(source_label, tag)
     if install_kind in {"windows-cpu", "windows-arm64"}:
         return _windows_shared_groups(source_label, tag)
     if install_kind == "windows-cuda":
@@ -7413,11 +7440,18 @@ def existing_install_matches_choice(
     if not runtime_payload_is_healthy(install_dir, host, choice):
         return False
 
-    # Verify primary executables still exist (catches partial deletion)
+    # Verify primary executables are still startable (catches partial deletion, and
+    # damage that leaves the name behind). The same test _existing_install_runs and
+    # installed_runtime_health use, deliberately: this is the keep-or-reinstall
+    # decision, and a tree the probe rejects but this one keeps is repaired by
+    # downloading nothing and rejected again on the next launch. exists() was that
+    # tree: security software or a bad extraction that clears the execute bit
+    # leaves the file in place, and ldd reads a non-executable ELF quite happily,
+    # so both gates here passed while the probe said llama_runtime_binaries_missing.
     runtime_dir = install_runtime_dir(install_dir, host)
     ext = ".exe" if host.is_windows else ""
     for binary in ("llama-server", "llama-quantize"):
-        if not (runtime_dir / f"{binary}{ext}").exists():
+        if not _entrypoint_is_runnable(runtime_dir / f"{binary}{ext}", host):
             return False
     if host.is_linux:
         try:
