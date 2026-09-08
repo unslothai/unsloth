@@ -22,9 +22,6 @@ from auth.authentication import (
 )
 from routes import export as export_routes
 from routes.data_recipe import jobs as data_recipe_jobs_routes
-from core.export import export as export_backend_module
-import inspect
-import os
 
 
 async def _fake_ensure_export_supported():
@@ -206,6 +203,8 @@ def worker_in_process(monkeypatch):
 def test_the_worker_environment_matches_the_callers_policy(
     monkeypatch, worker_in_process, allow_ambient, caller_token, env_token, disable_implicit, passed
 ):
+    import os
+
     worker = worker_in_process
     for key in ("HF_TOKEN", "HF_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN"):
         monkeypatch.setenv(key, "hf_operator_secret")
@@ -245,6 +244,8 @@ def test_a_non_ambient_worker_holds_no_credential_for_the_next_caller(
 ):
     """One worker serves many callers, so a credential in its environment is a credential
     in the ambient position for whoever exports next, the caller's own included."""
+    import os
+
     worker = worker_in_process
     for key in (
         "HF_TOKEN",
@@ -293,6 +294,8 @@ def test_a_non_ambient_worker_holds_no_credential_for_the_next_caller(
 
 def test_an_old_orchestrator_config_keeps_the_previous_behaviour(monkeypatch, worker_in_process):
     """A config from before this change has neither key; it must read as ambient."""
+    import os
+
     worker = worker_in_process
     monkeypatch.setenv("HF_TOKEN", "hf_operator_secret")
     monkeypatch.delenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", raising = False)
@@ -393,6 +396,8 @@ def test_the_weight_loader_never_receives_none_for_an_anonymous_caller(
 ):
     """The whole point of the sentinel: hf_login(None) calls get_token(), which reads the
     operator's stored login from disk, and no environment scrub touches that."""
+    from core.export import export as export_backend_module
+
     seen: dict = {}
 
     class _Stop(Exception):
@@ -431,6 +436,8 @@ def test_the_weight_loader_never_receives_none_for_an_anonymous_caller(
 
 def test_hf_login_reads_none_as_fetch_the_operators_stored_token():
     """The upstream contract the sentinel exists for. If this flips, the threading is moot."""
+    import inspect
+
     # Not importorskip: that skips only on ModuleNotFoundError, and unsloth raises a plain
     # ImportError ("Unsloth: torch not found") on a torch-less install, which is supported.
     try:
@@ -448,6 +455,8 @@ def test_a_local_gguf_lora_conversion_carries_the_sentinel(
     monkeypatch, tmp_path, hf_token, expected
 ):
     """save.py substitutes get_token() only when the token is None, so False has to reach it."""
+    from core.export import export as export_backend_module
+
     seen: dict = {}
 
     class _FakeModel:
@@ -483,6 +492,8 @@ def test_a_local_gguf_lora_conversion_carries_the_sentinel(
 def test_a_local_merged_save_carries_the_sentinel(monkeypatch, tmp_path, hf_token, expected):
     """Not a push, but the merge resolves its base repo, and save.py turns a None into
     get_token(), which is the operator's stored login."""
+    from core.export import export as export_backend_module
+
     seen: dict = {}
 
     class _FakeModel:
@@ -509,6 +520,8 @@ def test_a_local_merged_save_carries_the_sentinel(monkeypatch, tmp_path, hf_toke
 def test_offline_type_detection_is_not_degraded_by_the_sentinel(monkeypatch):
     """model_config's cache guards refuse an anonymous cached read, which offline turns a
     cached vision model into a text one. Detection keeps the plain token for that reason."""
+    from core.export import export as export_backend_module
+
     seen: dict = {}
 
     class _Stop(Exception):
@@ -583,6 +596,8 @@ def test_offline_tier_detection_is_not_degraded_by_the_sentinel(monkeypatch, tmp
 def test_every_export_entry_point_declares_the_anonymous_sentinel_type():
     """``str | None`` on a parameter that receives ``False`` invites normalising it back
     to ``None``, which is the ambient state."""
+    import inspect
+
     from core.export.export import ExportBackend
     from core.export.orchestrator import ExportOrchestrator
     from hub.utils.hf_tokens import HfTokenArg
@@ -610,6 +625,8 @@ def test_every_export_entry_point_declares_the_anonymous_sentinel_type():
 
 def test_every_hub_write_route_names_the_ambient_policy():
     """The check that would have caught the two routes #10126 reported."""
+    import inspect
+
     from auth.authentication import allow_ambient_hf_token
     from routes import export as export_routes
     from routes.data_recipe import jobs as jobs_routes
@@ -638,6 +655,7 @@ def test_every_hub_write_route_names_the_ambient_policy():
 def test_every_mcp_tool_that_calls_a_gated_route_names_the_policy():
     """A direct call never resolves a ``Depends`` default, so each tool passes it or goes
     ambient in silence."""
+    import inspect
     import re
 
     import mcp_server
