@@ -413,8 +413,7 @@ def _registered_command_name(command) -> str:
 
 
 def _scan_start_commands() -> tuple:
-    """(all-knob commands, partial-knob commands) read off the app itself.
-    Hardcoding the roster is how `dsh` shipped without flag tracking."""
+    """(all-knob, partial-knob) commands, read off the app: a hardcoded roster missed dsh."""
     knobs = set(start_cli._LOAD_OPTION_PARAMS)
     full, partial = [], []
     for command in start_cli.start_app.registered_commands:
