@@ -215,11 +215,9 @@ if not _windows_studio_mutation_entry:
         help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh) "
         "against Unsloth.",
     )
-    # DGX Spark only in practice: every subcommand no-ops with a message on other
-    # hardware, and the module it defers to is stdlib-only, so registering the
-    # group here costs a non-Spark machine nothing.
-    # Top-level, because someone with a slow machine reaches for `unsloth doctor`
-    # long before `unsloth spark doctor`. No-ops off a Spark.
+    # Registering this costs a non-Spark machine nothing: every subcommand no-ops with a
+    # message, and the module it defers to is stdlib-only.
+    # Top-level: a slow machine's owner reaches for `unsloth doctor` first. No-ops off a Spark.
     app.add_typer(
         doctor_app,
         name = "doctor",

@@ -5941,27 +5941,17 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
-# ── Optional: Qwen3.5 / hybrid-attention fast path ───────────────────────────
-# transformers gates the Qwen3.5 fused kernels on FOUR symbols being importable
-# (modeling_qwen3_5.py: is_fast_path_available = all((causal_conv1d_fn,
-# causal_conv1d_update, chunk_gated_delta_rule, fused_recurrent_gated_delta_rule))).
-# The first two come from causal-conv1d, the last two from flash-linear-attention,
-# so BOTH are needed -- installing only the cheap one buys nothing.
-#
-# Off by default on purpose: causal-conv1d publishes an sdist and no wheels for any
-# platform, so it compiles from source and costs ~10 minutes on every machine, not
-# just aarch64. Measured benefit on a DGX Spark: QLoRA 56.0s -> 49.0s (~12%) at
-# identical loss and identical peak memory. Worth it for Qwen3.5 users, not worth
-# silently adding to every install.
-#
+# transformers gates the Qwen3.5 fused kernels on FOUR symbols importing, two from
+# causal-conv1d and two from flash-linear-attention, so BOTH are needed: installing only
+# the cheap one buys nothing. Off by default because causal-conv1d ships no wheels for any
+# platform and compiles for ~10 minutes on every machine.
 #   UNSLOTH_QWEN35_FAST_PATH=1 curl -fsSL https://unsloth.ai/install.sh | sh
 _unsloth_qwen35_fast_path() {
     case "${UNSLOTH_QWEN35_FAST_PATH:-}" in
         1|true|TRUE|yes|YES|on|ON) ;;
         *) return 0 ;;
     esac
-    # CUDA-only: both libraries are CUDA kernel packages and are useless (and a long
-    # pointless compile) on CPU, ROCm, XPU or Metal hosts.
+    # CUDA-only: both are CUDA kernel packages, so elsewhere this is a pointless compile.
     case "$(_tauri_gpu_branch "$(_tauri_torch_index_family "$TORCH_INDEX_URL")")" in
         cuda) ;;
         *) substep "UNSLOTH_QWEN35_FAST_PATH ignored: needs an NVIDIA CUDA host" "$C_WARN"; return 0 ;;
@@ -5977,26 +5967,19 @@ _unsloth_qwen35_fast_path() {
 
 _unsloth_qwen35_fast_path
 
-# ── DGX Spark: offer to pair a second Spark ──────────────────────────────────
-# Everything here is behind _unsloth_is_dgx_spark, and that gate is deliberately
-# the cheapest thing in this script: on macOS, Windows, WSL, or any x86_64 Linux
-# host the two shell comparisons below fail and NOT ONE file is opened, so a
-# normal install never pays for this feature existing. Only an aarch64 Linux box
-# reads /etc/dgx-release, which is a few hundred bytes.
+# Everything below is behind this gate, and it opens NOT ONE file off an aarch64 Linux box,
+# so a normal install never pays for the feature existing.
 _unsloth_is_dgx_spark() {
-    # `${OS:-}` rather than `$OS`: both are set unconditionally long before this runs,
-    # but install.sh is the entry point for every user on every platform, and if anyone
-    # ever adds `set -u` above this line an unbound variable would abort the whole
-    # install rather than skipping a hint nobody asked for. Fails closed either way.
+    # `${OS:-}` rather than `$OS`: under a future `set -u` an unbound variable would abort
+    # the whole install rather than skip a hint nobody asked for. Fails closed either way.
     [ "${OS:-}" = "linux" ] || return 1
     case "${_ARCH:-}" in aarch64|arm64) ;; *) return 1 ;; esac
     grep -qiE 'dgx[_ -]*spark' /etc/dgx-release 2>/dev/null && return 0
     grep -qiE 'dgx[_ -]*spark' /sys/class/dmi/id/product_name 2>/dev/null
 }
 
-# A cabled rail is an IB port that is ACTIVE whose netdev also has carrier --
-# together those two say a QSFP cable is seated AND trained at the far end.
-# sysfs globs only: no ibdev2netdev, no ip, no subprocess, no network traffic.
+# A cabled rail is an ACTIVE IB port whose netdev also has carrier: together those two say
+# the QSFP cable is seated AND trained at the far end. sysfs globs only, no subprocess.
 _unsloth_spark_cable_present() {
     for _sp_port in /sys/class/infiniband/*/ports/1; do
         [ -r "$_sp_port/state" ] || continue
@@ -6023,16 +6006,10 @@ _unsloth_spark_cabled_netdevs() {
     done
 }
 
-# The QSFP hot-plug throttle is the usual reason a two-Spark link runs at ~13-14
-# Gb/s per rail instead of ~98: a cable connected after boot can leave the
-# ConnectX-7 throttled, and only rebooting with the cabling in place clears it.
-#
-# We deliberately do NOT try to detect it here. carrier_up_count looks like the
-# signal (a link trained at boot reads 1) but is not one -- measured on a GB10 pair,
-# a node at carrier_up_count=7 ran a full 97.97 Gb/s per rail. Asserting a throttle
-# from that counter reports a broken link on a healthy machine. Benchmarking needs
-# both nodes and takes seconds, which an installer has no business doing, so point
-# at the command that can measure and say nothing more.
+# The QSFP hot-plug throttle is NOT detected here on purpose. carrier_up_count looks like the
+# signal but is not one: a node at count=7 measured a full 97.97 Gb/s per rail, so asserting a
+# throttle from it reports a broken link on a healthy machine. Only a benchmark settles it,
+# and an installer has no business running one.
 _unsloth_spark_perf_hint() {
     substep "If the link ever measures far below ~98 Gb/s per rail, the usual cause"
     substep "is the cable having been connected after boot; reboot both Sparks with"
@@ -6040,14 +6017,7 @@ _unsloth_spark_perf_hint() {
 }
 
 # UNSLOTH_SPARK_CLUSTER lets a piped/CI install answer without a TTY:
-#   1/yes  -> configure now        0/no -> skip silently        unset -> ask
-# A single Spark is the common case, so the single-Spark advice has to be good.
-# Two things surprise every new owner, and both are cheap to say here:
-#   1. the 6.2x prefill difference between NVFP4 kernels, which costs nothing but a flag;
-#   2. the memory number -- "128GB" is 128 GiB, of which ~6.3 GiB is firmware-reserved,
-#      leaving 121.69 GiB usable. People size models against 128 and then OOM.
-# No prompt and no extra install: this is three printed lines on a machine we have
-# already positively identified as a DGX Spark.
+#   1/yes -> configure now        0/no -> skip silently        unset -> ask
 _unsloth_spark_solo_hint() {
     echo ""
     step "spark" "DGX Spark detected (single)" "$C_OK"
@@ -6064,30 +6034,20 @@ _unsloth_spark_cluster_offer() {
         0|no|NO|false|FALSE|off|OFF) return 0 ;;
     esac
 
-    # Idempotent: a Spark that was already paired must not re-ask on every
-    # update. "configured" means a previous run saved a plan AND a cabled rail
-    # still carries IPv4, so this is a settled question, not an unanswered one.
-    # `detect` exits 1 on a Spark with no cable (its exit status IS the cable test, see
-    # spark_cluster.py main), and this script runs under `set -euo pipefail`, so that
-    # status has to be swallowed here or a lone Spark aborts the install on this line.
+    # Idempotent: "configured" means a previous run saved a plan AND a cabled rail still
+    # carries IPv4, so the question is settled. `detect` exits 1 on a Spark with no cable --
+    # its exit status IS the cable test -- and under `set -euo pipefail` that status must be
+    # swallowed here or a lone Spark aborts the install on this line.
     _sp_state=$({ "$VENV_DIR/bin/python" -m studio.spark_cluster detect 2>/dev/null || true; } \
         | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
     if [ "$_sp_state" = "configured" ]; then
         step "spark" "second Spark already paired" "$C_OK"
-        # Still worth saying: pairing is correct but the link may be throttled,
-        # and that is invisible until someone benchmarks it.
         return 0
     fi
 
     if ! _unsloth_spark_cable_present; then
-        # A lone Spark is the common case, and until now this path said nothing at
-        # all -- on the theory that a single-Spark owner has nothing to act on.
-        # That was wrong. The largest measured win in the whole Spark effort needs
-        # NO second machine: choosing the right NVFP4 kernel is 6.2x on prefill
-        # (CUTLASS 309 TF/s vs Marlin 50 TF/s at M=4096). A lone owner who never
-        # hears that leaves more on the table than a second Spark would have added.
-        #
-        # Still no nagging: three lines, printed once, no prompt, no install.
+        # A lone Spark is the common case, and the largest measured win needs NO second
+        # machine: three lines, printed once, no prompt and no install.
         _unsloth_spark_solo_hint
         return 0
     fi
@@ -6096,12 +6056,8 @@ _unsloth_spark_cluster_offer() {
     step "spark" "a second DGX Spark is cabled to this one" "$C_OK"
     substep "Unsloth can set up the 200GbE RoCE link between them"
     substep "(static IPs on both rails, MTU 9000, and GB10-correct NCCL defaults)."
-    # Say what a second Spark actually buys, because the intuitive answer is wrong
-    # and users otherwise pair two machines expecting a speedup they will not get.
-    # Measured on Llama-3.3-70B fp8 across two Sparks:
-    #   tensor parallel  2.09x on ONE request (median TPOT 332.7 ms -> 162.4 ms)
-    #   pipeline parallel 1.08x, with TPOT FLAT -- capacity, not latency
-    #   splitting a model that already FITS on one node: 0.92x, i.e. a LOSS
+    # Say what a second Spark buys: the intuitive answer is wrong, and users otherwise pair
+    # two machines expecting a speedup they will not get.
     substep "What it buys: ~2x faster tokens for a single request (tensor parallel),"
     substep "and room for models too large for one Spark. It does NOT speed up a"
     substep "model that already fits -- splitting one of those measures 0.92x."
@@ -6113,7 +6069,7 @@ _unsloth_spark_cluster_offer() {
         *)
             if [ -t 1 ] && _can_read_tty; then
                 printf "  Set up the second Spark now? [y/N] "
-                # EOF is not consent: default to no, like the autostart prompt.
+                # EOF is not consent.
                 read -r _sp_reply </dev/tty || _sp_reply=n
             else
                 _sp_reply=n
@@ -6123,12 +6079,9 @@ _unsloth_spark_cluster_offer() {
 
     case "${_sp_reply:-n}" in
         [Yy]|[Yy][Ee][Ss])
-            # --yes: the user just answered the prompt above, and without it
-            # spark_cluster's own consent gate would ask the identical question a
-            # second time. Two gates are deliberate -- the module must refuse on its
-            # own for anyone invoking it directly -- but the user should be asked
-            # once. The module still probes the peer for resident GPU work and
-            # refuses to overwrite a venv a running job may be using.
+            # --yes because the prompt above already asked. Two consent gates are deliberate
+            # (the module must refuse on its own when invoked directly) but ask once. The
+            # module still refuses to overwrite a venv a running job may be using.
             "$VENV_DIR/bin/python" -m studio.spark_cluster setup --yes || true
             ;;
         *)

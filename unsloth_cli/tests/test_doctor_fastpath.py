@@ -3,18 +3,10 @@
 
 """The fast-path parity check, driven with fake node responses.
 
-The bug this guards against is silent by construction: a node missing `causal_conv1d`
-and `flash-linear-attention` trained Qwen3.5 at 1183 tok/s against the other node's 2593
-and raised nothing at all, so the only thing that can catch it is a comparison somebody
-actually runs. These tests pin the three properties that make it worth running:
-
-  1. it reports the node, the package, both versions and a command that fixes it;
-  2. it never fails open -- an unreachable peer, or a runtime probe that did not report,
-     answers UNKNOWN, because a check that says OK when it did not look is worse than
-     no check;
-  3. it is inert without a peer, and costs a non-Spark machine nothing.
-
-Nothing here needs a Spark, a GPU, a peer, or a network.
+The bug it guards against is silent by construction, so these tests pin the three properties
+that make the check worth running: it names the node, package, both versions and a fixing
+command; it never fails open, answering UNKNOWN rather than OK when it could not look; and it
+is inert without a peer. Nothing here needs a Spark, a GPU, a peer or a network.
 """
 
 from __future__ import annotations
@@ -25,7 +17,6 @@ from unsloth_cli.commands import doctor as D
 
 
 def _node(host: str, **overrides) -> dict:
-    """A probe result for a healthy node, before overrides are applied."""
     node = {
         "host": host,
         "executable": "/home/u/.unsloth/studio/unsloth_studio/bin/python",
@@ -57,7 +48,6 @@ def _node(host: str, **overrides) -> dict:
 
 @pytest.fixture
 def fake_probes(monkeypatch):
-    """Serve fixed probe results in place of running anything, on either node."""
 
     def install(
         local,
@@ -71,27 +61,16 @@ def fake_probes(monkeypatch):
     return install
 
 
-# ---------------------------------------------------------------------------
-# Comparison
-# ---------------------------------------------------------------------------
-
-
 def test_matching_nodes_report_nothing() -> None:
-    """Two nodes with the same stack must produce no findings at all.
-
-    A check that reports something on a healthy pair is a check people stop reading.
-    """
     assert D.compare_fastpath(_node("a"), _node("b")) == []
 
 
 def test_absent_on_both_nodes_is_not_a_finding() -> None:
-    """xformers on neither node is nobody's problem: both ranks take the same path."""
     findings = D.compare_fastpath(_node("a"), _node("b"))
     assert not [f for f in findings if f["name"] == "xformers"]
 
 
 def test_missing_package_names_the_lagging_node() -> None:
-    """The measured fault: causal_conv1d and fla on the peer only."""
     local = _node(
         "slow",
         **{
@@ -116,14 +95,12 @@ def test_missing_package_names_the_lagging_node() -> None:
 
 
 def test_version_mismatch_is_a_finding_with_no_lagging_side() -> None:
-    """Both nodes have it, at different versions: neither is 'behind', both are wrong."""
     findings = D.compare_fastpath(_node("a", pkg_transformers = "4.57.6"), _node("b"))
     f = next(f for f in findings if f["name"] == "transformers")
     assert (f["local"], f["peer"], f["lagging"]) == ("4.57.6", "5.5.0", None)
 
 
 def test_transformers_4x_missing_gates_is_not_a_finding() -> None:
-    """transformers 4.x does not define the newer gates. Absent on both is not a split."""
     old = {k: v for k, v in _node("a").items() if not k.startswith("tf_")}
     other = {k: v for k, v in _node("b").items() if not k.startswith("tf_")}
     assert D.compare_fastpath(old, other) == []
@@ -135,11 +112,6 @@ def test_both_slow_note_only_for_gates_a_pair_can_fix() -> None:
     b = _node("b", tf_is_causal_conv1d_available = False)
     assert D.fastpath_both_slow(a, b) == ["is_causal_conv1d_available"]
     assert D.fastpath_both_slow(_node("a"), _node("b")) == []
-
-
-# ---------------------------------------------------------------------------
-# Reporting
-# ---------------------------------------------------------------------------
 
 
 def test_report_prints_a_pasteable_fix_for_the_lagging_node(fake_probes, capsys) -> None:
@@ -195,7 +167,6 @@ def test_local_probe_failure_is_unknown(fake_probes, capsys) -> None:
 
 
 def test_runtime_probe_that_did_not_report_is_unknown(fake_probes, capsys) -> None:
-    """Package versions still compare, but an unrun gate probe must not read as OK."""
     local = {k: v for k, v in _node("a").items() if not k.startswith(("gate_", "tf_"))}
     local["gates_error"] = "Segmentation fault (core dumped)"
     fake_probes(local, _node("b"))
@@ -209,7 +180,6 @@ def test_runtime_probe_that_did_not_report_is_unknown(fake_probes, capsys) -> No
 
 
 def test_a_real_divergence_outranks_an_unknown_probe(fake_probes, capsys) -> None:
-    """A version split is still a version split when the gate probe crashed."""
     local = {k: v for k, v in _node("a").items() if not k.startswith(("gate_", "tf_"))}
     local["gates_error"] = "Segmentation fault (core dumped)"
     local["pkg_causal_conv1d"] = None
@@ -235,11 +205,6 @@ def test_node_whose_fast_path_is_installed_but_does_not_import(fake_probes, caps
     assert "no (ImportError)" in out
 
 
-# ---------------------------------------------------------------------------
-# The probe itself
-# ---------------------------------------------------------------------------
-
-
 def test_probe_source_compiles_and_prints_its_marker() -> None:
     for runtime in (True, False):
         src = D.fastpath_probe_source(runtime = runtime)
@@ -249,7 +214,6 @@ def test_probe_source_compiles_and_prints_its_marker() -> None:
 
 
 def test_probe_runs_here_and_reports_this_interpreter() -> None:
-    """It must survive a machine that has none of these packages, and still answer."""
     import json
     import subprocess
     import sys

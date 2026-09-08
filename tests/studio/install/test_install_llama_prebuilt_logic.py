@@ -6882,8 +6882,6 @@ def test_detect_host_reads_the_driver_cuda_version_from_a_localized_nvidia_smi(
     assert host.driver_cuda_version == (13, 1)
 
 
-# ── ggml-rpc-server: copied by every allowlist, backfilled, found by spark_cluster ──
-
 _RPC_INSTALL_KINDS = {
     "linux-cpu": "ggml-rpc-server",
     "linux-cuda": "ggml-rpc-server",
@@ -6949,9 +6947,8 @@ def _load_spark_cluster():
 @pytest.mark.parametrize(("install_kind", "expected"), sorted(_RPC_INSTALL_KINDS.items()))
 @pytest.mark.parametrize("source_label", ["published", "upstream"])
 def test_rpc_server_is_in_every_runtime_allowlist(install_kind, expected, source_label):
-    """The bundle ships ./ggml-rpc-server beside ./libggml-rpc.so; lib*.so* admits the
-    client library only, so the executable has to be named or a fresh install lacks
-    the peer-side half of the two-Spark layer split. Fork and upstream alike."""
+    """lib*.so* admits the client library only, so the executable has to be named or a fresh
+    install lacks it. Fork and upstream alike."""
     patterns = INSTALL_LLAMA_PREBUILT.runtime_patterns_for_choice(
         _rpc_choice(install_kind, source_label = source_label)
     )
@@ -6979,10 +6976,8 @@ def test_rpc_server_is_in_every_runtime_allowlist(install_kind, expected, source
 def test_rpc_server_backfill_true_when_missing_false_once_present(
     tmp_path, host_factory, install_kind, source_label, runtime_parts, library
 ):
-    """An install made before ggml-rpc-server entered the allowlist has the client
-    library (lib*.so* copied it) but not the executable: owed a re-extract. Once the
-    binary is present the backfill is done and must say so, or it would re-extract
-    on every update."""
+    """An install predating the allowlist has the client library but not the executable, so it
+    is owed a re-extract; once the binary is present it must say so, or it re-extracts forever."""
     host = host_factory()
     tag = "b10798" if source_label == "upstream" else "b10798-mix-659e406"
     choice = _rpc_choice(install_kind, source_label = source_label, tag = tag)
@@ -7081,11 +7076,9 @@ def test_every_reuse_path_consults_the_bundle_backfill():
 
 
 def test_installer_places_rpc_server_where_spark_cluster_looks(tmp_path, monkeypatch):
-    """Layout agreement, pinned on both ends: the names the installer copies are the
-    names spark_cluster searches, the overlay directory for every install kind is one
-    spark_cluster searches, and a real overlay of a tarball whose ggml-rpc-server lost
-    its exec bit (extraction does not keep it) ends up where rpc_server_binary() finds
-    it, executable."""
+    """Layout agreement pinned on both ends: the names and directories the installer writes are
+    the ones spark_cluster searches, and a tarball whose exec bit was lost in extraction still
+    ends up executable where rpc_server_binary() finds it."""
     sc = _load_spark_cluster()
     installer_names = set()
     for host in (linux_host(), _macos_host(), _windows_host()):

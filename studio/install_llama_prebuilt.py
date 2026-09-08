@@ -4103,12 +4103,10 @@ def paired_runtime_dll_patterns(choice: AssetChoice) -> list[str]:
     return []
 
 
-# The ggml RPC server executable, current name first, then the name upstream
-# used before ggml-org renamed the target. studio/spark_cluster.py keeps the
-# same list (with .exe variants) in _RPC_SERVER_NAMES; a test pins the two.
+# Current name first, then the pre-rename upstream name. spark_cluster.py keeps the same
+# list in _RPC_SERVER_NAMES; a test pins the two together.
 RPC_SERVER_NAMES = ("ggml-rpc-server", "rpc-server")
-# First unslothai/llama.cpp release whose bundles ship the executable next to
-# libggml-rpc.so (earlier fork bundles shipped only the client library).
+# First fork release shipping the executable; earlier bundles had only the client library.
 RPC_SERVER_FIRST_PUBLISHED_BUILD = 10796
 
 
@@ -4124,14 +4122,10 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     # libraries between b9279 and b9283) without us re-enumerating
     # every new file. Unsloth invokes llama-server, llama-quantize, the
     # DiffusionGemma visual-server (when the bundle ships it, for native
-    # DiffusionGemma serving), and ggml-rpc-server (the peer-side half of the
-    # two-Spark layer split; studio/spark_cluster.py rpc_server_binary() looks
-    # for it in the bundle first). The RPC server is an executable, so the
-    # lib*.so* glob that admits its libggml-rpc client library does not admit
-    # it: it must be named here or a fresh install silently lacks it. The
-    # legacy ``rpc-server`` name covers upstream tags from before ggml-org
-    # renamed the target. Other CLIs upstream ships (llama-cli, llama-bench,
-    # ...) are skipped.
+    # DiffusionGemma serving), and ggml-rpc-server. The RPC server is an
+    # executable, so the lib*.so* glob that admits its libggml-rpc client
+    # library does NOT admit it: it must be named here or a fresh install
+    # silently lacks it. Other upstream CLIs are skipped.
     if choice.install_kind in {
         "linux-cpu",
         "linux-cuda",
@@ -4905,12 +4899,10 @@ def install_from_archives(
         raise PrebuiltFallback("unix executables were not installed correctly into build/bin")
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
-    # Extraction does not keep the archive's exec bits, and spark_cluster.py
-    # rpc_server_binary() skips a file without X_OK, so the RPC server needs
-    # the same chmod as the two primaries. It stays in build/bin with no root
-    # link: nothing resolves it at the install root (the visual-server has no
-    # root link either) and build/bin is the first place rpc_server_binary()
-    # looks. Optional: an upstream bundle built without GGML_RPC has none.
+    # Extraction does not keep exec bits and rpc_server_binary() skips a file
+    # without X_OK, so this needs the same chmod as the two primaries. It stays
+    # in build/bin with no root link, which is where rpc_server_binary() looks
+    # first. Optional: a bundle built without GGML_RPC has none.
     for rpc_name in rpc_server_names_for_host(host):
         rpc_server = build_bin / rpc_name
         if rpc_server.is_file():
@@ -7472,8 +7464,7 @@ def validate_prebuilt_attempts(
                 choice = attempt,
                 approved_checksums = approved_checksums,
             )
-            # Skip a matching candidate unless it still needs a backfill
-            # re-extract (gated per-attempt, not per-plan).
+            # Gated per-attempt, not per-plan.
             and bundle_backfill_reason(existing_install_dir, host, attempt) is None
         ):
             log(
@@ -7882,24 +7873,15 @@ def _release_build_number(tag: str | None) -> int | None:
 
 
 def rpc_server_backfill_needed(install_dir: Path, host: HostInfo, choice: AssetChoice) -> bool:
-    """True when an existing install matches the tag but lacks the ggml-rpc-server
-    the chosen bundle ships. Same shape and same reason as the DiffusionGemma
-    backfill above: an install made before the executable entered the copy
-    allowlist matches on tag yet is missing the binary (only its libggml-rpc
-    client library got through, via lib*.so*), so the tag-match skip never
-    backfills it and the two-Spark layer split finds no RPC server on the peer.
+    """True when an existing install matches the tag but lacks the ggml-rpc-server the chosen
+    bundle ships: before the executable entered the copy allowlist only its libggml-rpc client
+    library got through via lib*.so*, so the tag-match skip never backfills it.
 
-    Not gated to the fork ("published") bundles, unlike the visual-server: upstream
-    ships ggml-rpc-server too (ggml-org's release workflow sets -DGGML_RPC=ON and
-    archives all of build/bin), so a Linux ARM64 host routed to upstream is owed
-    the executable as much as a fork host is. The thrash the visual-server docstring
-    guards against (a bundle that never ships the file would re-extract on every
-    update) is prevented by evidence instead of by source label: a bundle built
-    without GGML_RPC ships neither the library nor the server, and the library is
-    always copied, so no libggml-rpc in the runtime dir means nothing is owed. Fork
-    bundles before RPC_SERVER_FIRST_PUBLISHED_BUILD shipped the library without the
-    server, so those are excluded by build number. Once a re-extract lands the
-    binary this returns False, so it self-limits."""
+    Not gated to fork bundles, since upstream ships the server too. The thrash guard is
+    EVIDENCE, not the source label: a bundle built without GGML_RPC ships neither library nor
+    server, and the library is always copied, so no libggml-rpc means nothing is owed. Fork
+    bundles before RPC_SERVER_FIRST_PUBLISHED_BUILD had the library without the server and are
+    excluded by build number. Once a re-extract lands the binary this returns False."""
     names = rpc_server_names_for_host(host)
     patterns = runtime_patterns_for_choice(choice)
     if not any(name in patterns for name in names):

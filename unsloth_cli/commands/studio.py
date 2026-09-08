@@ -2288,25 +2288,11 @@ _RUN_PANEL_ADVANCED = "Advanced"
 def _spark_topology_hint(model: Optional[str], intent: str = "latency") -> None:
     """On a clustered DGX Spark, say how this model should be spread across the nodes.
 
-    Advisory only -- it never changes what `run` does. Two measured rules it surfaces,
-    neither of which is guessable:
-
-    * a model that FITS on one Spark never decodes faster layer-split across two (0.85x
-      to 1.01x measured from 1 to 32 users): a split moves the same weight bytes per
-      token. Splitting buys capacity and prefill, never decode; two replicas of such a
-      model measured 1.30x to 1.91x at 8 to 32 users instead;
-    * tensor parallel is the ONLY axis that makes a single request faster (2.09x on two
-      Sparks, median TPOT 332.7ms -> 162.4ms). Pipeline parallel's TPOT is flat, and
-      replicas raise aggregate throughput while leaving per-request latency untouched.
-
-    `intent` defaults to latency because someone typing `unsloth run` is starting one
-    interactive session, not building a serving fleet. Node count comes from discovery,
-    so a three-Spark cluster stops being described as a pair.
-
-    Wrapped in a bare except and gated on `is_dgx_spark()` because a hint must never be
-    able to break `unsloth run` on any other machine -- and `spark_cluster` is stdlib-only,
-    so importing it costs nothing. Discovery is passed timeout=0 so no hint ever puts an
-    mDNS browse in front of a model load.
+    Advisory only; it never changes what `run` does. `intent` defaults to latency because
+    someone typing `unsloth run` is starting one interactive session, not a serving fleet.
+    Wrapped in a bare except and gated on `is_dgx_spark()` so a hint can never break
+    `unsloth run` elsewhere, and discovery gets timeout=0 so no mDNS browse ever lands in
+    front of a model load.
     """
     if not model:
         return
@@ -2315,11 +2301,8 @@ def _spark_topology_hint(model: Optional[str], intent: str = "latency") -> None:
 
         if not spark_cluster.is_dgx_spark():
             return
-        # Size first, and only then the peer: sizing is a filesystem read, while
-        # `peer_ip_for()` shells out to `ip` for each rail. A model we cannot size
-        # produces no hint at any node count, so paying for that fork before knowing
-        # whether there is anything to say puts a subprocess on the `run` hot path
-        # for nothing.
+        # Size first: it is a filesystem read, while `peer_ip_for()` forks `ip` per rail, and
+        # a model we cannot size produces no hint at any node count.
         size = spark_cluster.model_size_gib(model)
         if size is None or not spark_cluster.peer_ip_for():
             return
@@ -2337,9 +2320,8 @@ def _spark_topology_hint(model: Optional[str], intent: str = "latency") -> None:
         if advice["topology"] not in ("replicas", "single-or-replicas", "layer-split", "too-large"):
             return
         tag = f"[{nodes} Sparks]"
-        # `single-or-replicas` is new to this gate: it is the case where the model fits
-        # on one node, which is exactly when someone most needs to be told that tensor
-        # parallel would still halve their latency and that splitting would not.
+        # `single-or-replicas` means the model fits on one node, which is exactly when someone
+        # needs telling that tensor parallel still helps and splitting does not.
         if advice["topology"] in ("replicas", "layer-split", "too-large"):
             typer.secho(f"  {tag} {advice['summary']}", fg = "cyan", err = True)
         if advice.get("recommendation"):

@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Spark code must cost nothing, and do nothing, on every other machine.
-
-The whole two-Spark feature set is dead weight for the overwhelming majority of Unsloth
-users -- Windows laptops, Macs, AMD boxes, single NVIDIA GPUs. These tests pin the two
-properties that keep it harmless there:
-
-  1. importing the modules pulls in no heavy dependency, so `unsloth --help` stays fast;
-  2. every entry point degrades to a message and a clean exit off a DGX Spark, rather than
-     raising, hanging, or attempting network calls.
-
-They are deliberately hardware-independent: nothing here needs a Spark, a GPU, or a peer,
-so they run in CI on any machine.
+"""The Spark code must cost nothing, and do nothing, on every other machine: importing the
+modules pulls in no heavy dependency, and every entry point degrades to a message and a clean
+exit rather than raising, hanging or making a network call. Nothing here needs a Spark.
 """
 
 from __future__ import annotations
@@ -55,7 +46,6 @@ def _load(rel: str):
 
 @pytest.mark.parametrize("rel", MODULES)
 def test_no_heavy_imports_at_module_scope(rel: str) -> None:
-    """A user on a Mac must not pay for torch because a Spark module exists."""
     tree = ast.parse((REPO / rel).read_text())
     imported = []
     for node in tree.body:
@@ -68,9 +58,8 @@ def test_no_heavy_imports_at_module_scope(rel: str) -> None:
 
 
 def test_ssh_user_is_this_login_and_never_a_fixed_one(monkeypatch) -> None:
-    """The peer is reached as the account that ran `provision`: the environment's login,
-    else the login database. A hardcoded developer account here would ssh to the wrong
-    user on every pair but one, and only in the service contexts that unset USER."""
+    """The peer is reached as the account that ran `provision`; a hardcoded account would ssh
+    to the wrong user on every pair but one."""
     import getpass
 
     sc = _load("studio/spark_cluster.py")
@@ -84,7 +73,6 @@ def test_ssh_user_is_this_login_and_never_a_fixed_one(monkeypatch) -> None:
 
 
 def test_detection_is_negative_off_a_spark(monkeypatch) -> None:
-    """`is_dgx_spark()` must answer False without touching the filesystem or network."""
     sc = _load("studio/spark_cluster.py")
     monkeypatch.setattr(sc, "_read_first_line", lambda *a, **k: "Generic Laptop", raising = False)
     if hasattr(sc, "is_dgx_spark"):
@@ -92,12 +80,8 @@ def test_detection_is_negative_off_a_spark(monkeypatch) -> None:
 
 
 def test_planner_never_recommends_splitting_a_model_that_fits() -> None:
-    """The rule that is easy to get backwards, pinned.
-
-    Splitting a model that fits never decodes faster than a single Spark (0.85x to 1.01x
-    measured from 1 to 32 users), so the planner must never suggest it for speed.
-    Regressing this would make Unsloth actively slower than not clustering.
-    """
+    """Splitting a model that fits never decodes faster than a single Spark, so the planner
+    must never suggest it for speed: regressing this makes Unsloth slower than not clustering."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     small = sc.plan_deployment(budget / 4, two_sparks = True)
@@ -106,14 +90,13 @@ def test_planner_never_recommends_splitting_a_model_that_fits() -> None:
 
 
 def test_planner_boundaries() -> None:
-    """Each side of both thresholds, including the exact-fit cases."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     cases = [
-        (budget / 4, "replicas"),  # two copies fit easily
-        (budget * 0.6, "single-or-replicas"),  # one fits, two do not
-        (budget * 1.5, "layer-split"),  # exceeds one node, fits across two
-        (budget * 2.5, "too-large"),  # exceeds both
+        (budget / 4, "replicas"),
+        (budget * 0.6, "single-or-replicas"),
+        (budget * 1.5, "layer-split"),
+        (budget * 2.5, "too-large"),
     ]
     for size, expected in cases:
         got = sc.plan_deployment(size, two_sparks = True)["topology"]
@@ -121,18 +104,12 @@ def test_planner_boundaries() -> None:
 
 
 def test_planner_refuses_to_guess_unknown_size() -> None:
-    """An unknown size must produce no recommendation at all.
-
-    Guessing here would hand a user confidently wrong deployment advice, which is worse
-    than saying nothing.
-    """
     sc = _load("studio/spark_cluster.py")
     out = sc.plan_deployment(None, two_sparks = True)
     assert out["topology"] == "unknown"
 
 
 def test_single_spark_path_is_sane() -> None:
-    """With one Spark the planner must talk about fitting, never about splitting."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     fits = sc.plan_deployment(budget / 2, two_sparks = False)
@@ -143,7 +120,6 @@ def test_single_spark_path_is_sane() -> None:
 
 
 def test_stage_layers_is_contiguous_complete_and_balanced() -> None:
-    """A wrong split trains the wrong parameters silently, so pin it hard."""
     sp = _load("studio/spark_pipeline.py")
     for n_layers in (7, 24, 32, 40, 80):
         for world in (2, 3, 4):
@@ -158,7 +134,6 @@ def test_stage_layers_is_contiguous_complete_and_balanced() -> None:
 
 
 def test_two_stage_split_matches_the_70b_run() -> None:
-    """80 layers over 2 stages must reproduce the split the 70B run actually used."""
     sp = _load("studio/spark_pipeline.py")
     assert sp.stage_layers(80, 0, 2) == list(range(0, 40))
     assert sp.stage_layers(80, 1, 2) == list(range(40, 80))
@@ -172,12 +147,9 @@ def test_load_balancer_parses_backends() -> None:
 
 
 def test_interleaved_chunks_cover_every_layer_exactly_once() -> None:
-    """Interleaved PP is how a 2-stage pipeline gets past its ~1.8x bubble ceiling.
-
-    A wrong assignment here is silent in the same way a wrong contiguous split is: the model
-    still runs, it just computes something else. So pin completeness, disjointness, and the
-    alternation that makes consecutive chunks land on different devices.
-    """
+    """Interleaved PP gets a 2-stage pipeline past its bubble ceiling. A wrong assignment is
+    silent -- the model still runs, it just computes something else -- so pin completeness,
+    disjointness and the alternation that puts consecutive chunks on different devices."""
     sp = _load("studio/spark_pipeline.py")
     for n_layers in (24, 32, 64, 80):
         for world in (2,):
@@ -189,7 +161,6 @@ def test_interleaved_chunks_cover_every_layer_exactly_once() -> None:
 
 
 def test_interleaved_alternates_devices() -> None:
-    """Chunk c must live on rank c % world, or the pipeline does not interleave at all."""
     sp = _load("studio/spark_pipeline.py")
     r0 = sp.interleaved_layers(24, 0, 2, 2)
     r1 = sp.interleaved_layers(24, 1, 2, 2)
@@ -198,19 +169,12 @@ def test_interleaved_alternates_devices() -> None:
 
 
 def test_interleaved_refuses_more_chunks_than_layers() -> None:
-    """Refuse rather than silently produce empty chunks."""
     sp = _load("studio/spark_pipeline.py")
     with pytest.raises(RuntimeError):
         sp.interleaved_layers(4, 0, 2, 4)
 
 
-# ── N-Spark planner, discovery and addressing ────────────────────────────────
-# The two-Spark behaviour above is frozen; everything below pins the generalised
-# path so that "more than two" cannot regress into a silent wrong answer.
-
-
 def test_n_nodes_agrees_with_the_legacy_two_sparks_kwarg() -> None:
-    """`n_nodes=2` and `two_sparks=True` must be the same question."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     for size in (budget / 4, budget * 0.6, budget * 1.5, budget * 2.5):
@@ -229,13 +193,11 @@ def test_axis_follows_intent_not_just_fit() -> None:
     fits = budget * 0.6
     assert sc.plan_deployment(fits, n_nodes = 2, intent = "latency")["axis"] == "tensor-parallel"
     assert sc.plan_deployment(fits, n_nodes = 2, intent = "throughput")["axis"] == "replicas"
-    # A model that does not fit must be sharded whatever the intent.
     big = sc.plan_deployment(budget * 1.5, n_nodes = 2, intent = "throughput")
     assert big["axis"] == "tensor-parallel" and big["topology"] == "layer-split"
 
 
 def test_capacity_intent_admits_a_second_spark_does_not_help() -> None:
-    """The honest answer when the model already fits, said in those words."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     out = sc.plan_deployment(budget * 0.5, n_nodes = 2, intent = "capacity")
@@ -244,7 +206,6 @@ def test_capacity_intent_admits_a_second_spark_does_not_help() -> None:
 
 
 def test_speedups_are_measured_only_at_two_nodes() -> None:
-    """Never present an extrapolated number as a measurement."""
     sc = _load("studio/spark_cluster.py")
     two = sc.expected_gain("tensor-parallel", 2)
     assert two["measured"] is True and abs(two["speedup"] - 2.09) < 1e-9
@@ -264,7 +225,6 @@ def test_unknown_size_yields_no_axis_and_no_command_at_any_node_count() -> None:
 
 
 def test_rail_plan_refuses_three_nodes_without_a_switch() -> None:
-    """Three Sparks cannot be cabled point-to-point; a flat /24 would be wrong."""
     sc = _load("studio/spark_cluster.py")
     rails = [
         {"ib_device": "rocep1s0f0", "netdev": "enp1s0f0np0"},
@@ -283,8 +243,7 @@ def test_rail_plan_refuses_three_nodes_without_a_switch() -> None:
 def test_netplan_never_renders_a_config_that_does_nothing() -> None:
     sc = _load("studio/spark_cluster.py")
     text = sc.netplan_yaml([])
-    # Every line a comment: netplan would apply this file and change nothing, which
-    # is the point -- an empty `ethernets:` map looks like a config and is not one.
+    # Every line a comment: an empty `ethernets:` map looks like a config and is not one.
     assert all(line.startswith("#") for line in text.splitlines() if line.strip())
     assert "ethernets:\n" not in text
 
@@ -305,7 +264,6 @@ def test_peers_are_ordered_numerically_and_indexed_from_one() -> None:
 
 
 def test_discovery_is_completely_inert_off_a_spark() -> None:
-    """No sysfs walk, no avahi, no sockets on a machine that is not a Spark."""
     sc = _load("studio/spark_cluster.py")
     sc._IS_SPARK_CACHE = False
     called = []
@@ -317,14 +275,11 @@ def test_discovery_is_completely_inert_off_a_spark() -> None:
     assert called == []
 
 
-# ── Destructive operations need consent, and the peer probe fails closed ──────
-# `_cmd_setup()` used to rsync --delete the studio venv onto the peer as a side
-# effect of merely being called. A peer running a job out of that venv would have
-# lost its interpreter mid-flight, and the failure would have looked like hardware.
+# `_cmd_setup()` once rsync --delete'd the studio venv onto the peer merely by being called,
+# taking the interpreter out from under any job running there.
 
 
 def test_setup_writes_nothing_without_consent(monkeypatch, tmp_path, capsys) -> None:
-    """No TTY and no --yes means: print the plan, touch nothing, exit 0."""
     sc = _load("studio/spark_cluster.py")
     sc._IS_SPARK_CACHE = True
     monkeypatch.setattr(
@@ -386,15 +341,12 @@ def test_peer_gpu_probe_fails_closed(monkeypatch) -> None:
     # nvidia-smi never ran: no RC marker, so unknown -> busy.
     monkeypatch.setattr(sc.subprocess, "run", fake("bash: nvidia-smi: not found\n"))
     assert sc.peer_gpu_busy("h")["busy"] is True
-    # Ran, non-zero: busy.
     monkeypatch.setattr(sc.subprocess, "run", fake("RC=9\n"))
     assert sc.peer_gpu_busy("h")["busy"] is True
-    # Ran, listed nothing: genuinely idle.
     idle = None
     monkeypatch.setattr(sc.subprocess, "run", fake("RC=0\n"))
     idle = sc.peer_gpu_busy("h")
     assert idle["busy"] is False and idle["known"] is True
-    # Ran, a job is resident.
     monkeypatch.setattr(sc.subprocess, "run", fake("1234, 11020\nRC=0\n"))
     busy = sc.peer_gpu_busy("h")
     assert busy["busy"] is True and busy["processes"] == [{"pid": 1234, "used_mib": 11020}]
@@ -413,7 +365,6 @@ def test_peer_gpu_probe_fails_closed(monkeypatch) -> None:
 def test_provision_refuses_a_busy_peer_and_never_deletes_by_default(monkeypatch) -> None:
     sc = _load("studio/spark_cluster.py")
     monkeypatch.setattr(sc.shutil, "which", lambda name: "/usr/bin/" + name)
-    # This pins the ssh path; the rail daemon has its own tests below.
     monkeypatch.setenv(sc.FAST_ENV, "0")
     monkeypatch.setattr(
         sc,
@@ -452,7 +403,6 @@ def test_provision_refuses_a_busy_peer_and_never_deletes_by_default(monkeypatch)
     ran.clear()
     sc.provision_peer("192.168.200.13", delete = True)
     assert all("--delete" in cmd for cmd in ran)
-    # A dry run must not even probe the peer, let alone write to it.
     ran.clear()
     monkeypatch.setattr(sc, "peer_gpu_busy", lambda *a, **k: pytest.fail("dry run probed the peer"))
     sc.provision_peer("192.168.200.13", dry_run = True)
@@ -460,13 +410,9 @@ def test_provision_refuses_a_busy_peer_and_never_deletes_by_default(monkeypatch)
 
 
 def test_consent_declines_when_no_terminal_is_watching(monkeypatch) -> None:
-    """`curl | sh` must not be able to trigger a remote write by answering nothing.
-
-    The installer invokes `python -m studio.spark_cluster setup` after its own prompt,
-    and in a piped install stdin belongs to the shell script, not the user -- so the
-    /dev/tty fallback is the only thing that can ask. When even that is unavailable
-    (container, cron, CI), silence is a no.
-    """
+    """`curl | sh` must not trigger a remote write by answering nothing. In a piped install
+    stdin belongs to the shell script, so /dev/tty is the only thing that can ask; when even
+    that is unavailable, silence is a no."""
     sc = _load("studio/spark_cluster.py")
 
     class _Stream:
@@ -499,13 +445,9 @@ def test_consent_declines_when_no_terminal_is_watching(monkeypatch) -> None:
 
 
 def test_summary_and_recommendation_never_contradict() -> None:
-    """One coherent paragraph, whichever order a caller prints them in.
-
-    `summary` answers "what fits where" and must name no axis; every axis claim lives
-    in `recommendation`. They overlapped once, and a 70B then had a summary naming the
-    llama.cpp layer split beside a recommendation naming tensor parallel (2.09x) --
-    both true, and together they read as the tool arguing with itself.
-    """
+    """One coherent paragraph in either print order: `summary` answers "what fits where" and
+    must name no axis, because every axis claim lives in `recommendation`. Overlapping them
+    once had the tool naming two different engines' answers as though they were one."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     axis_words = (
@@ -526,12 +468,9 @@ def test_summary_and_recommendation_never_contradict() -> None:
 
 
 def test_every_entry_point_guards_on_is_dgx_spark() -> None:
-    """No entry point may reach rail discovery off a Spark. Guarded, not lucky.
-
-    Empty sysfs happens to make these harmless on a laptop today, which is exactly the
-    kind of safe-by-accident this module cannot afford: the file is imported by
-    `unsloth run` on every platform.
-    """
+    """No entry point may reach rail discovery off a Spark: GUARDED, not lucky. Empty sysfs
+    happens to make it harmless on a laptop, and safe-by-accident is not good enough for a
+    file `unsloth run` imports on every platform."""
     sc = _load("studio/spark_cluster.py")
     sc._IS_SPARK_CACHE = False
     sc.cabled_rails = lambda *a, **k: pytest.fail("touched rails off a Spark")
@@ -558,11 +497,8 @@ def test_every_entry_point_guards_on_is_dgx_spark() -> None:
         assert plan["ok"] is False and plan["problems"]
 
 
-# ---------------------------------------------------------------------------
-# Merging per-stage checkpoints. A layer-split run is useless without this step,
-# and the failure mode it guards against is silent: an adapter missing half its
-# layers loads without error and simply trains worse.
-# ---------------------------------------------------------------------------
+# The failure mode here is silent: an adapter missing half its layers loads without error
+# and simply trains worse.
 
 
 def _mk_stage(
@@ -588,7 +524,6 @@ def _mk_stage(
 
 
 def test_merge_layer_key_parsing() -> None:
-    """Pure-string helper, so it runs anywhere with no torch."""
     sm = _load("studio/spark_merge.py")
     assert sm.layer_of("base_model.model.model.layers.17.self_attn.q_proj.lora_A.weight") == 17
     assert sm.layer_of("base_model.model.lm_head.weight") is None
@@ -605,12 +540,10 @@ def test_merge_unions_disjoint_stages(tmp_path) -> None:
     res = sm.merge(str(tmp_path), str(tmp_path / "merged"))
     assert (tmp_path / "merged" / "adapter_model.safetensors").is_file()
     assert (tmp_path / "merged" / "adapter_config.json").is_file()
-    # 24 per-layer tensors + one shared lm_head kept once, not twice.
     assert res["n_tensors"] == 25
 
 
 def test_merge_refuses_overlapping_layers(tmp_path) -> None:
-    """Two stages claiming one layer means the split was not what we think it was."""
     pytest.importorskip("torch")
     pytest.importorskip("safetensors")
     sm = _load("studio/spark_merge.py")
@@ -622,7 +555,6 @@ def test_merge_refuses_overlapping_layers(tmp_path) -> None:
 
 
 def test_merge_refuses_missing_layers(tmp_path) -> None:
-    """A gap would produce an adapter that is untrained in the middle."""
     pytest.importorskip("torch")
     pytest.importorskip("safetensors")
     sm = _load("studio/spark_merge.py")
@@ -634,7 +566,6 @@ def test_merge_refuses_missing_layers(tmp_path) -> None:
 
 
 def test_merge_refuses_noncontiguous_stage_dirs(tmp_path) -> None:
-    """stage0 + stage2 means stage1's layers were never saved."""
     pytest.importorskip("torch")
     pytest.importorskip("safetensors")
     sm = _load("studio/spark_merge.py")
@@ -645,7 +576,6 @@ def test_merge_refuses_noncontiguous_stage_dirs(tmp_path) -> None:
 
 
 def test_merge_module_imports_nothing_heavy() -> None:
-    """The CLI imports this on every platform; it must not drag in torch."""
     tree = ast.parse((REPO / "studio/spark_merge.py").read_text())
     imported = []
     for node in tree.body:
@@ -656,19 +586,17 @@ def test_merge_module_imports_nothing_heavy() -> None:
     assert not [n for n in imported if n.split(".")[0] in HEAVY | {"safetensors"}]
 
 
-# ── The Spark notice on the model-load path of every platform ────────────────
-# notify_device_map_cannot_span_sparks runs inside FastLanguageModel.from_pretrained
-# and FastModel.from_pretrained, so it executes for every Unsloth user on every OS and
-# accelerator. It is cosmetic. The bar is that it can never turn a load that would have
-# succeeded into a crash, and that it is silent on anything that is not a cabled Spark.
+# notify_device_map_cannot_span_sparks runs inside from_pretrained for every user on every
+# OS, and is cosmetic, so the bar is that it can never turn a succeeding load into a crash
+# and is silent on anything that is not a cabled Spark.
 
 _PLATFORMS = [
-    ("Linux", "x86_64"),  # linux x64: NVIDIA, AMD, CPU-only, and WSL2
-    ("Linux", "aarch64"),  # linux arm64 that is not a Spark (GH200, Jetson)
+    ("Linux", "x86_64"),
+    ("Linux", "aarch64"),  # not a Spark: GH200, Jetson
     ("Windows", "AMD64"),
     ("Windows", "ARM64"),
-    ("Darwin", "arm64"),  # Apple Silicon
-    ("Darwin", "x86_64"),  # Intel Mac
+    ("Darwin", "arm64"),
+    ("Darwin", "x86_64"),
 ]
 
 _DEVICE_MAPS = [
@@ -696,7 +624,6 @@ def _spark_notice(
     opener = None,
     device_count = 1,
 ):
-    """Call the notice with every probe pointed at a simulated host."""
     pytest.importorskip("torch")
     import builtins
     import platform as _platform
@@ -722,13 +649,9 @@ def _spark_notice(
 
 @pytest.mark.parametrize("system,machine", _PLATFORMS)
 def test_spark_notice_is_silent_off_a_spark(monkeypatch, capsys, system, machine):
-    """No Unsloth user on another platform should ever see this.
-
-    `opener=FileNotFoundError` simulates the non-Spark filesystem as well as the
-    non-Spark platform. Without it this test passes everywhere except on a real DGX
-    Spark, where the aarch64 case would read the machine's own /etc/dgx-release and see
-    a genuine Spark. CI that ever runs on this hardware must not go red for that.
-    """
+    """No user on another platform should ever see this. `opener=FileNotFoundError` simulates
+    the non-Spark FILESYSTEM as well as the platform; without it the aarch64 case reads a real
+    /etc/dgx-release and this test fails only when CI runs on actual Spark hardware."""
     LU = _spark_notice(monkeypatch, system, machine, opener = FileNotFoundError)
     capsys.readouterr()  # drop unsloth's import banner, which is not ours to assert on
     for device_map in _DEVICE_MAPS:
@@ -741,19 +664,15 @@ def test_spark_notice_is_silent_off_a_spark(monkeypatch, capsys, system, machine
     "opener", [OSError, PermissionError, IsADirectoryError, ValueError, RuntimeError]
 )
 def test_spark_notice_never_breaks_a_load(monkeypatch, system, machine, opener):
-    """A probe that raises must not propagate: the caller is loading a model.
-
-    ValueError and RuntimeError are the point of this test. The probes catch OSError
-    themselves, so only the outer guard stops a non-OSError from escaping into
-    from_pretrained and failing a load that had nothing to do with a Spark.
-    """
+    """A probe that raises must not propagate: the caller is loading a model. The probes catch
+    OSError themselves, so ValueError and RuntimeError are the point -- only the outer guard
+    stops those escaping into from_pretrained."""
     LU = _spark_notice(monkeypatch, system, machine, opener = opener)
     for device_map in _DEVICE_MAPS:
         LU.notify_device_map_cannot_span_sparks(device_map)
 
 
 def test_spark_notice_survives_a_broken_cuda_probe(monkeypatch):
-    """torch.cuda.device_count() can raise on a broken driver; that is not our problem."""
     pytest.importorskip("torch")
     import torch
     from unsloth.models import loader_utils as LU
@@ -766,12 +685,8 @@ def test_spark_notice_survives_a_broken_cuda_probe(monkeypatch):
     LU.notify_device_map_cannot_span_sparks("balanced")
 
 
-# ── UNSLOTH_STUDIO_HOME must move the venv that provision copies ─────────────
-# A user who sets UNSLOTH_STUDIO_HOME installs somewhere other than
-# ~/.unsloth/studio. `spark provision` copying the hardcoded default from such a
-# machine copies a stale venv, or nothing at all, and then prints "Peer now matches
-# this node" -- handing the user the exact 601 s `DistStoreError: 1/2 clients joined`
-# that provision exists to prevent, while reporting success.
+# With UNSLOTH_STUDIO_HOME set, copying the hardcoded default copies a stale venv or nothing
+# and still prints "Peer now matches this node", causing the exact hang provision prevents.
 
 
 def test_provision_paths_follow_studio_home(monkeypatch, tmp_path) -> None:
@@ -780,7 +695,6 @@ def test_provision_paths_follow_studio_home(monkeypatch, tmp_path) -> None:
     venv, label = sc.provision_paths()[0]
     assert label == "Unsloth venv"
     assert venv == str(tmp_path / "elsewhere" / "unsloth_studio"), venv
-    # The llama.cpp bundle follows the studio home too; see the bundle tests below.
     assert sc.provision_paths()[1][1] == "llama.cpp prebuilt"
     # The caches are genuinely per-user and are not moved by STUDIO_HOME.
     assert [p for p, _ in sc.provision_paths()[2:]] == [
@@ -791,7 +705,6 @@ def test_provision_paths_follow_studio_home(monkeypatch, tmp_path) -> None:
 
 
 def test_provision_paths_unchanged_without_studio_home(monkeypatch) -> None:
-    """The default must stay byte-identical: most users never set the variable."""
     sc = _load("studio/spark_cluster.py")
     monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
     monkeypatch.delenv("STUDIO_HOME", raising = False)
@@ -800,12 +713,8 @@ def test_provision_paths_unchanged_without_studio_home(monkeypatch) -> None:
 
 
 def test_peer_activate_stays_home_relative_by_default(monkeypatch) -> None:
-    """`$HOME` is left unexpanded on purpose so it resolves on the PEER.
-
-    That stays correct when the two nodes have different usernames or home
-    directories. Only a custom STUDIO_HOME forces an absolute path, which is right
-    because provision copies to that same absolute path on the peer.
-    """
+    """`$HOME` is left unexpanded so it resolves on the PEER, whose home may differ. Only a
+    custom STUDIO_HOME forces an absolute path, which provision mirrors exactly."""
     sc = _load("studio/spark_cluster.py")
     monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
     monkeypatch.delenv("STUDIO_HOME", raising = False)
@@ -820,15 +729,11 @@ def test_peer_activate_is_absolute_under_studio_home(monkeypatch, tmp_path) -> N
     assert "$HOME" not in act
 
 
-# ── Splitting a model that fits: no longer a single number ───────────────────
-# The flat 0.92x holds only for a llama.cpp whose RPC backend predates
-# ggml-org/llama.cpp#18626. With it, what overlaps is prefill, so the answer becomes a
-# function of prompt length. Getting this backwards in either direction gives users bad
-# deployment advice, so pin both branches.
+# The flat loss holds only for a llama.cpp predating ggml-org/llama.cpp#18626; with it, what
+# overlaps is prefill, so the answer becomes a function of prompt length. Pin both branches.
 
 
 def test_layer_split_speedup_defaults_to_the_conservative_number() -> None:
-    """Without async RPC it is still a flat loss, whatever the prompt length."""
     sc = _load("studio/spark_cluster.py")
     for tokens in (128, 1024, 4096, None):
         assert sc.layer_split_speedup(tokens, 8) == sc.LAYER_SPLIT_FITTING_SPEEDUP
@@ -836,7 +741,6 @@ def test_layer_split_speedup_defaults_to_the_conservative_number() -> None:
 
 def test_layer_split_speedup_is_prompt_dependent_with_async_rpc() -> None:
     sc = _load("studio/spark_cluster.py")
-    # Short prompts still lose; long prompts win; and it is monotonic in prompt length.
     assert sc.layer_split_speedup(128, 8, async_rpc = True) < 1.0
     assert sc.layer_split_speedup(4096, 8, async_rpc = True) > 1.4
     seq = [sc.layer_split_speedup(t, 8, async_rpc = True) for t in (128, 256, 512, 1024, 2048, 4096)]
@@ -844,7 +748,6 @@ def test_layer_split_speedup_is_prompt_dependent_with_async_rpc() -> None:
 
 
 def test_layer_split_speedup_refuses_to_guess_without_a_prompt_length() -> None:
-    """With async RPC the answer genuinely depends on prompt length, so say nothing."""
     sc = _load("studio/spark_cluster.py")
     assert sc.layer_split_speedup(None, 8, async_rpc = True) is None
 
@@ -861,11 +764,8 @@ def test_layer_split_speedup_snaps_down_to_a_measured_row() -> None:
     )
 
 
-# ── Replicas versus layer split for a model that fits ────────────────────────
-# Measured 2026-09-04 on Qwen3.8-27B Q4_K_XL, llama.cpp b10796, two Sparks, uncapped
-# clocks. A layer split never speeds up decode for a model that fits; two replicas
-# win from 8 concurrent users up. Both directions of getting this wrong hand users
-# a slower deployment than the single Spark they started with, so pin the rules.
+# A layer split never speeds up decode for a model that fits; two replicas win from 8
+# concurrent users up. Either direction of getting this wrong is slower than one Spark.
 
 _GIB = 2**30
 
@@ -875,7 +775,6 @@ def test_recommend_topology_layer_split_when_the_model_does_not_fit() -> None:
     out = sc.recommend_topology(150 * _GIB, 0.5 * _GIB, 1, 512, 113 * _GIB)
     assert out["topology"] == "layer_split" and out["fits_one_node"] is False
     assert "does not fit" in out["reason"]
-    # Even a prefill-heavy caller with many users gets the same answer: it is the only option.
     out = sc.recommend_topology(150 * _GIB, 0.5 * _GIB, 32, 2048, 113 * _GIB, prefill_heavy = True)
     assert out["topology"] == "layer_split"
 
@@ -908,7 +807,6 @@ def test_recommend_topology_never_splits_a_fitting_model_unless_prefill_heavy() 
         for tokens in (128, 512, 2048, 8192):
             out = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, users, tokens, 113 * _GIB)
             assert out["topology"] != "layer_split", (users, tokens, out)
-    # The one exception: the caller says the work is prefill-heavy, at few users.
     out = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, 2, 4096, 113 * _GIB, prefill_heavy = True)
     assert out["topology"] == "layer_split"
     assert "prefill" in out["reason"] and "1.7x" in out["reason"]
@@ -919,7 +817,6 @@ def test_recommend_topology_never_splits_a_fitting_model_unless_prefill_heavy() 
 
 
 def test_recommend_topology_counts_kv_for_every_user() -> None:
-    """A model that fits alone but not with its users' KV is not `single`."""
     sc = _load("studio/spark_cluster.py")
     # 100 GiB model, 2 GiB KV per user, 16 users: 132 GiB on one node, 116 per replica.
     out = sc.recommend_topology(100 * _GIB, 2 * _GIB, 16, 512, 120 * _GIB)
@@ -937,14 +834,12 @@ def test_recommend_topology_is_pure_and_tolerant() -> None:
 
 
 def test_measured_tables_snap_to_measured_points() -> None:
-    """Six user counts and two prompt lengths were measured; nothing is interpolated."""
     sc = _load("studio/spark_cluster.py")
     assert sc.replicas_speedup(512, 8) == sc.REPLICAS_DECODE_SPEEDUP[512][8]
     assert sc.replicas_speedup(1023, 8) == sc.REPLICAS_DECODE_SPEEDUP[512][8]
     assert sc.replicas_speedup(4096, 12) == sc.REPLICAS_DECODE_SPEEDUP[2048][8]
     assert sc.layer_split_decode_speedup(512, 8) == 0.85
-    # The rule itself, pinned against the data: no measured split cell beats 1.01x at
-    # prompt 512, and the two above 1.0 at 2048 are prefill contention, not decode.
+    # Pinned against the data: the two cells above 1.0 at prompt 2048 are prefill contention.
     assert max(sc.LAYER_SPLIT_DECODE_SPEEDUP[512].values()) <= 1.01
     assert sc.LAYER_SPLIT_DECODE_ONLY_SPEEDUP < 1.0
     assert all(v >= 1.30 for u, v in sc.REPLICAS_DECODE_SPEEDUP[512].items() if u >= 8)
@@ -963,7 +858,6 @@ def test_plan_deployment_carries_the_serving_layout() -> None:
     assert big["serving"]["topology"] == "layer_split"
     assert "serving" not in sc.plan_deployment(budget * 2.5, n_nodes = 2)
     assert "serving" not in sc.plan_deployment(None, n_nodes = 2)
-    # The headline that came from pre-#18626 RPC is gone from every planner sentence.
     for size in (budget / 4, budget * 0.6, budget * 1.5):
         for intent in sc.INTENTS:
             out = sc.plan_deployment(size, n_nodes = 2, intent = intent)
@@ -973,11 +867,8 @@ def test_plan_deployment_carries_the_serving_layout() -> None:
     assert sc.expected_gain("replicas", 2, 16)["aggregate"] == 1.75
 
 
-# ── Provisioning must carry the llama.cpp bundle ─────────────────────────────
-# The bundle lives beside the studio root, not inside the venv, so copying the venv
-# alone leaves the peer on whatever llama-server it had. Two bundles a release apart
-# speak different RPC protocols and llama-server then fails at load with
-# "RPC server version mismatch".
+# The bundle lives beside the studio root, not inside the venv, so copying the venv alone
+# leaves the peer a release behind and llama-server fails at load on the protocol mismatch.
 
 
 def test_provision_paths_include_the_llama_bundle(monkeypatch) -> None:
@@ -1001,7 +892,6 @@ def test_provision_paths_bundle_follows_studio_home(monkeypatch, tmp_path) -> No
     paths = dict((label, path) for path, label in sc.provision_paths())
     assert paths["llama.cpp prebuilt"] == str(tmp_path / "elsewhere" / "llama.cpp")
     assert paths["Unsloth venv"] == str(tmp_path / "elsewhere" / "unsloth_studio")
-    # The explicit override wins over the studio home, as it does in the installer.
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "custom-llama"))
     paths = dict((label, path) for path, label in sc.provision_paths())
     assert paths["llama.cpp prebuilt"] == str(tmp_path / "custom-llama")
@@ -1027,7 +917,6 @@ def test_provision_copies_the_bundle_to_the_same_path(monkeypatch, tmp_path) -> 
     assert any("mkdir -p" in part for part in bundle_cmd)
 
 
-# ── RPC protocol parity between the two nodes ────────────────────────────────
 # Signal (a): the bundle identity, from BUILD_INFO.txt and the libggml-rpc hash.
 # Signal (b): a live HELLO against a running ggml-rpc-server.
 
@@ -1066,16 +955,14 @@ def test_bundle_identity_reads_version_and_hashes_the_rpc_library(tmp_path) -> N
 
 
 def test_bundle_identity_is_unknown_not_a_crash_without_build_info(tmp_path) -> None:
-    """Older bundles and source builds have no BUILD_INFO.txt."""
     sc = _load("studio/spark_cluster.py")
     root = _mk_bundle(tmp_path / "llama.cpp", version = None)
     ident = sc.llama_bundle_identity(root)
     assert ident["present"] is True and ident["version"] == "unknown"
-    assert ident["rpc_lib_md5"]  # the hash still works as the second signal
+    assert ident["rpc_lib_md5"]
     missing = sc.llama_bundle_identity(tmp_path / "nowhere")
     assert missing["present"] is False and missing["version"] == "unknown"
     assert missing["rpc_lib_md5"] is None and missing["rpc_server"] is None
-    # A BUILD_INFO.txt without the expected key still yields its first line.
     odd = tmp_path / "odd"
     odd.mkdir()
     (odd / "BUILD_INFO.txt").write_text("\n  b10700-custom  \n")
@@ -1144,7 +1031,6 @@ def test_peer_relative_path_keeps_a_home_path_home_relative(monkeypatch, tmp_pat
 
 
 def _fake_rpc_server(behaviour: str):
-    """A one-shot ggml-rpc-server stand-in on 127.0.0.1. Returns (port, thread, seen)."""
     import socket
     import struct
     import threading
@@ -1195,7 +1081,6 @@ def test_rpc_hello_probe_reads_a_six_zero_reply() -> None:
     port, thread, seen = _fake_rpc_server("6.0.0")
     assert sc.rpc_hello_probe("127.0.0.1", port, timeout = 3) == (6, 0, 0)
     thread.join(5)
-    # The request was a well-formed 6.0 HELLO: command 14, exactly RPC_CONN_CAPS_SIZE zero bytes.
     assert seen["cmd"] == bytes([14])
     assert seen["size"] == sc.RPC_CONN_CAPS_SIZE == 24
     assert seen["payload"] == bytes(24)
@@ -1212,7 +1097,6 @@ def test_rpc_hello_probe_survives_a_truncated_reply_and_a_hangup() -> None:
     detail = sc.rpc_hello_probe_detail("127.0.0.1", port, timeout = 3, read_timeout = 3)
     thread.join(5)
     assert detail["state"] == "closed" and detail["version"] is None
-    # Never raises, even for an address that cannot be resolved.
     assert sc.rpc_hello_probe("host.invalid.", 50052, timeout = 1) is None
 
 
@@ -1244,7 +1128,6 @@ def test_rpc_preflight_reports_a_confirmed_mismatch_and_says_the_fix(monkeypatch
     pre = sc.rpc_protocol_preflight("192.168.200.13")
     assert pre["ok"] is False and "version mismatch" in pre["problems"][0]
 
-    # Both servers up and disagreeing.
     def two(host, port, **k):
         version = (5, 1, 0) if host == "192.168.200.13" else (6, 0, 0)
         return {"host": host, "port": port, "state": "ok", "version": version}
@@ -1264,9 +1147,6 @@ def test_rpc_preflight_reports_a_confirmed_mismatch_and_says_the_fix(monkeypatch
     assert pre["ok"] is None and not pre["problems"] and "UNVERIFIED" in pre["notes"][0]
 
 
-# ── ggml-rpc-server ships in the bundle from b10796 ──────────────────────────
-
-
 def test_rpc_server_binary_found_in_the_bundle(monkeypatch, tmp_path) -> None:
     sc = _load("studio/spark_cluster.py")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
@@ -1275,7 +1155,6 @@ def test_rpc_server_binary_found_in_the_bundle(monkeypatch, tmp_path) -> None:
     root = _mk_bundle(tmp_path / "studio" / "llama.cpp")
     assert sc.llama_bundle_dir() == root
     assert sc.rpc_server_binary() == str(root / "build" / "bin" / "ggml-rpc-server")
-    # The explicit override wins, as in the installer.
     other = _mk_bundle(tmp_path / "override")
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(other))
     assert sc.rpc_server_binary() == str(other / "build" / "bin" / "ggml-rpc-server")
@@ -1294,14 +1173,12 @@ def test_rpc_server_binary_accepts_the_legacy_name(monkeypatch, tmp_path) -> Non
 
 
 def test_rpc_server_binary_none_when_absent(monkeypatch, tmp_path) -> None:
-    """An older bundle without the executable, no source build, nothing on PATH."""
     sc = _load("studio/spark_cluster.py")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
     monkeypatch.setattr(sc.Path, "home", classmethod(lambda cls: tmp_path / "home"))
     monkeypatch.setattr(sc.shutil, "which", lambda name: None)
     _mk_bundle(tmp_path / "studio" / "llama.cpp", server = False)
-    # A file that is present but not executable does not count either.
     stub = tmp_path / "studio" / "llama.cpp" / "build" / "bin" / "ggml-rpc-server"
     stub.write_text("not executable")
     stub.chmod(0o644)
@@ -1322,11 +1199,9 @@ def test_bundle_dir_defaults_to_the_legacy_location(monkeypatch, tmp_path) -> No
     assert sc.llama_bundle_dir() == Path.home() / ".unsloth" / "llama.cpp"
 
 
-# ── Fast provisioning: the ephemeral rsync daemon on the direct rail ─────────
-# ssh is the fallback and stays the finaliser; the daemon only carries bulk bytes,
-# unencrypted, over the point-to-point cable. These pin what makes that safe: what
-# the daemon's config says, who it admits, when the path is refused outright, that
-# the work split is disjoint and complete, and that the daemon dies with the command.
+# The daemon carries bulk bytes UNENCRYPTED over the point-to-point cable, so these pin what
+# makes that safe: its config, who it admits, when the path is refused, that the work split
+# is disjoint and complete, and that it dies with the command.
 
 
 def _fast_module(monkeypatch, tmp_path):
@@ -1370,7 +1245,6 @@ def test_fast_daemon_config_is_locked_to_the_rail() -> None:
     assert "log file = /tmp/unsloth-provision-1/rsyncd.log" in lines
     assert "secrets file = /tmp/unsloth-provision-1/rsyncd.secrets" in lines
     assert "munge symlinks = no" in lines
-    # Every module admits the single local rail address and the one-shot user.
     assert lines.count("hosts allow = 192.168.200.12") == 2
     assert lines.count("auth users = unsloth-ab12") == 2
     assert "[m0]" in lines and "path = $HOME/.unsloth/studio/unsloth_studio" in lines
@@ -1501,7 +1375,6 @@ def test_provision_work_split_is_disjoint_complete_and_capped(tmp_path) -> None:
     big = {p for b in buckets for p in b if p in ("f1", "f2")}
     assert big and not any({"f1", "f2"} <= set(b) for b in buckets)
     assert len(sc.provision_work_split(str(root), max_workers = 2)) == 2
-    # One file is one worker; no files is no work.
     single = tmp_path / "single"
     single.mkdir()
     (single / "model.gguf").write_bytes(b"g" * 100)
@@ -1595,7 +1468,6 @@ def test_fast_path_moves_bytes_then_finalises_over_ssh_and_stops_the_daemon(
             ":%d/m0/" % res["fast"]["port"]
         )
     assert sc.FAST_PORT_RANGE[0] <= res["fast"]["port"] <= sc.FAST_PORT_RANGE[1]
-    # The unchanged ssh rsync ran afterwards as the finaliser, then the daemon stopped.
     assert len(fake.ssh_copies()) == 1 and len(fake.stops()) == 1
     order = [
         ("stop" if c[0] == "ssh" and "pgrep" in (k.get("input") or "") else c[0])

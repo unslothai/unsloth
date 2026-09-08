@@ -1,25 +1,12 @@
 """The llama.cpp source-build fallback ships ggml-rpc-server (setup.sh / setup.ps1).
 
-The prebuilt bundles install the RPC server (install_llama_prebuilt.py
-runtime_patterns_for_choice), but when the installer falls back to building llama.cpp
-from source the scripts configured without GGML_RPC and never built the target, so a
-source-built install had no RPC server and the two-Spark layer split
-(studio/spark_cluster.py rpc_server_binary()) could not run on it.
-
-Both scripts now pass -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF on every configure and build
-the RPC server best-effort after llama-server and llama-quantize: "ggml-rpc-server"
-upstream, "rpc-server" on older trees, read from the tree, and a tree without either
-never fails the build. RDMA is off on every platform: that is what every shipped prebuilt
-is built with, and it avoids the hard runtime dependency on libibverbs and libnl that
-ggml-rpc otherwise picks up whenever libibverbs happens to be installed on the build
-host (it auto-enables the transport when it finds a verbs library: libibverbs on every
-DGX Spark, librdma on Apple). macOS additionally checks after the build that the cache
-kept it off and nothing links librdma, the gate the fork's unsloth-prebuilt-macos.yml
-runs, because a Mac with the RDMA framework would otherwise link /usr/lib/librdma.dylib
-into libggml-rpc and the whole install then fails to load on a Mac without it.
-
-llama-server and llama-quantize stay the required targets; the RPC server is neither a
-health requirement nor a validation gate.
+Both scripts pass -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF on every configure and build the RPC
+server best-effort, from a target name read out of the tree, so a tree without one never
+fails the build. RDMA is off on EVERY platform: ggml-rpc auto-enables the transport whenever
+it finds a verbs library on the build host, which would give the artifact a hard runtime
+dependency on libibverbs/libnl (or, on a Mac, link /usr/lib/librdma.dylib and fail to load on
+any Mac without it). llama-server and llama-quantize stay the required targets; the RPC
+server is neither a health requirement nor a validation gate.
 """
 
 import importlib.util
@@ -73,30 +60,21 @@ def _ps1_step_f(text: str) -> str:
     return text[start:end]
 
 
-# ── setup.sh: configure ──
-
-
 class TestSetupShConfigure:
     def test_rpc_on_and_rdma_off_are_set_once_before_the_cpu_fallback_copy(self):
-        """Both flags on the shared CMAKE_ARGS, before CPU_FALLBACK_CMAKE_ARGS copies
-        it: every configure (CUDA, ROCm, Metal, CPU, and each CPU fallback) then
-        carries them. RDMA off everywhere, not only on macOS: it is what every shipped
-        prebuilt is built with, and it avoids the hard runtime dependency on libibverbs
-        and libnl that ggml-rpc otherwise picks up whenever libibverbs happens to be
-        installed on the build host (it is on every DGX Spark)."""
+        """Both flags on the shared CMAKE_ARGS, BEFORE CPU_FALLBACK_CMAKE_ARGS copies it, so
+        every configure carries them."""
         block = _source_build_block(_sh())
         assert block.count("-DGGML_RPC=ON") == 1
         assert block.count("-DGGML_RPC_RDMA=OFF") == 1
         flags = 'CMAKE_ARGS="$CMAKE_ARGS -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF"'
         assert block.index(flags) < block.index(CPU_FALLBACK_COPY)
-        # Not inside any platform branch: the flags sit between the base line and the
-        # Darwin deployment-target block.
+        # Not inside any platform branch.
         base = block.index('CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release')
         darwin = block.index('if [ "$_HOST_SYSTEM" = "Darwin" ]; then')
         assert base < block.index(flags) < darwin
 
     def test_backend_selection_is_untouched(self):
-        """CUDA, HIP, Metal and the Metal CPU fallback lines exactly as before."""
         block = _source_build_block(_sh())
         assert (
             'CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"'
@@ -110,13 +88,8 @@ class TestSetupShConfigure:
         assert 'CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF"' in block
 
 
-# ── setup.sh: targets ──
-
-
 class TestSetupShTargets:
     def test_rpc_server_follows_every_visual_server_build(self):
-        """Both extra-target sites (main build, smoke-test CPU fallback) build the RPC
-        server right after the visual server, with the matching label."""
         lines = _source_build_block(_sh()).splitlines()
         visual = [
             i
@@ -167,8 +140,6 @@ class TestSetupShTargets:
         assert "grep -qi 'librdma'" not in gate
 
 
-# ── setup.sh: the helpers, run ──
-
 _PRELUDE = textwrap.dedent(
     """
     set -euo pipefail
@@ -202,8 +173,6 @@ _STUB_OTOOL = "#!/bin/bash\nprintf '%s\\n' \"${OTOOL_OUT:-}\"\n"
 
 @pytest.fixture
 def sh_env(tmp_path):
-    """A llama.cpp tree with the current RPC tool, a build dir with an RDMA=OFF cache,
-    and stub cmake/otool on PATH that log their calls."""
     tree = tmp_path / "tree"
     (tree / "tools" / "rpc").mkdir(parents = True)
     (tree / "tools" / "rpc" / "CMakeLists.txt").write_text("set(TARGET ggml-rpc-server)\n")
@@ -314,7 +283,6 @@ class TestSetupShHelpersRun:
 
     @pytest.mark.parametrize("cache", ["GGML_RPC_RDMA:BOOL=OFF", "GGML_RPC_RDMA:UNINITIALIZED=OFF"])
     def test_gate_accepts_an_off_cache_of_either_type(self, sh_env, cache):
-        """An older tree without the option keeps the -D value as UNINITIALIZED."""
         tree, _log, env = sh_env
         (tree / "build" / "CMakeCache.txt").write_text(cache + "\n")
         result = _run_helpers(env, f"_llama_macos_rdma_gate_ok '{tree}/build'; echo gate=$?")
@@ -373,9 +341,6 @@ class TestSetupShHelpersRun:
         assert "BUILD_OK=false" in result.stdout
 
 
-# ── setup.ps1 ──
-
-
 class TestSetupPs1:
     def test_rpc_on_and_rdma_off_are_common_flags(self):
         """Once each, between the shared flags and the CUDA selection, so both the CUDA
@@ -428,7 +393,6 @@ class TestSetupPs1:
         assert "return 'ggml-rpc-server'" in body and "return 'rpc-server'" in body
 
     def test_summary_looks_in_the_release_dir(self):
-        """build\\bin\\Release is where rpc_server_binary() looks on Windows."""
         text = _ps1()
         assert 'Join-Path $BuildDir "bin\\Release\\$rpcName.exe"' in text
         assert "@('ggml-rpc-server', 'rpc-server')" in text
@@ -466,9 +430,6 @@ class TestSetupPs1:
         )
         assert result.returncode == 0, result.stderr
         assert f"<{expected}>" in result.stdout
-
-
-# ── the two scripts agree, and the RPC server is never required ──
 
 
 def test_both_scripts_resolve_the_same_names():

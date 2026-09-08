@@ -766,10 +766,9 @@ function Get-LlamaBuildJobs {
     return (Get-LlamaJobsFor -Cores ([Environment]::ProcessorCount) -TotalMb (Get-UsableMemoryMb))
 }
 
-# The RPC server target of the llama.cpp tree at $SourceDir: "ggml-rpc-server" (the
-# current upstream name), "rpc-server" on older trees, '' when the tree has no RPC tool.
-# Read from the tree because the Visual Studio generator has no `cmake --build --target
-# help`; setup.sh _llama_rpc_server_target reads the same two files, so the scripts agree.
+# "ggml-rpc-server", "rpc-server" on older trees, '' when the tree has no RPC tool. Read from
+# the tree because the VS generator has no `cmake --build --target help`; setup.sh's
+# _llama_rpc_server_target reads the same two files, so the scripts agree.
 function Get-LlamaRpcServerTarget {
     param([string]$SourceDir)
     foreach ($rel in @('tools\rpc\CMakeLists.txt', 'examples\rpc\CMakeLists.txt')) {
@@ -6513,12 +6512,9 @@ if ($LocalLlamaCppLinked) {
         $CmakeArgs += '-DLLAMA_BUILD_EXAMPLES=OFF'
         $CmakeArgs += '-DLLAMA_BUILD_SERVER=ON'
         $CmakeArgs += '-DGGML_NATIVE=ON'
-        # Configures the RPC server target that Step F builds best-effort: the peer half of
-        # the two-Spark layer split (studio/spark_cluster.py rpc_server_binary() looks in
-        # build\bin\Release). The prebuilt bundles ship it already. RDMA off as on every
-        # platform (setup.sh does the same): it is what every shipped prebuilt is built with,
-        # and it avoids the hard runtime dependency on a verbs library that ggml-rpc otherwise
-        # picks up whenever one is installed on the build host.
+        # Configures the RPC server target Step F builds best-effort. RDMA off as on every platform:
+        # it is what every shipped prebuilt is built with, and it avoids the hard runtime dependency
+        # on a verbs library that ggml-rpc otherwise picks up whenever one is on the build host.
         $CmakeArgs += '-DGGML_RPC=ON'
         $CmakeArgs += '-DGGML_RPC_RDMA=OFF'
         # HTTPS support via OpenSSL
@@ -6628,11 +6624,9 @@ if ($LocalLlamaCppLinked) {
     }
 
     # -- Step F: Build the RPC server (optional, best-effort) --
-    # ggml-rpc-server (rpc-server on older trees) is the peer half of the two-Spark layer
-    # split; -DGGML_RPC=ON above configures it. The VS generator writes it to
-    # build\bin\Release, where studio/spark_cluster.py rpc_server_binary() looks, so there
-    # is no copy step and no root-level link. A tree without the tool, or a failed link,
-    # keeps the llama-server build as is.
+    # The VS generator writes it to build\bin\Release, where rpc_server_binary() looks, so there
+    # is no copy step and no root-level link. A tree without the tool, or a failed link, keeps
+    # the llama-server build as is.
     if ($BuildOk) {
         $RpcServerTarget = Get-LlamaRpcServerTarget -SourceDir $LlamaCppDir
         if ($RpcServerTarget) {
