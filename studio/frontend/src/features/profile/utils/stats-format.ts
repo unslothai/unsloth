@@ -342,10 +342,7 @@ export type ActivityGridCell = {
 
 export type ActivityGridColumn = ActivityGridCell[];
 
-/**
- * Headline number for the activity card subtitle. Daily and cumulative sum
- * tokens in the visible window; weekly reports the busiest week in that window.
- */
+/** Subtitle headline: weekly reports the busiest week, other modes sum the window. */
 export function activitySummaryForMode(
   grid: ActivityGridColumn[],
   mode: ActivityMode,

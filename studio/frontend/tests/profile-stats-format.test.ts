@@ -212,9 +212,6 @@ test("activity summaries follow the selected chart mode", () => {
 });
 
 test("daily and cumulative still total the window, as the card always did", () => {
-  // The helper replaced an inline reduce over the same grid. If these two modes
-  // ever stop matching it, every existing subtitle silently changes number, and
-  // nothing else in the suite would notice.
   const legacyVisibleTotal = (grid: ActivityGridColumn[]) =>
     grid.reduce(
       (sum, column) =>
@@ -246,8 +243,7 @@ test("daily and cumulative still total the window, as the card always did", () =
 });
 
 test("the shapes a real grid actually takes summarise without NaN", () => {
-  // Every column is padded to a Monday-started week, so null cells are the norm
-  // rather than an edge case, and the final column is short.
+  // Columns are padded to Monday-started weeks, so nulls are normal and the last column is short.
   const allPadding = [Array.from({ length: 7 }, () => ({ day: null }))];
   const ragged = [
     [

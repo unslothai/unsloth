@@ -44,11 +44,7 @@ export function useProfileStats(): ProfileStatsState {
     return () => abortRef.current?.abort();
   }, [load]);
 
-  // Coming back to the tab is when the numbers can have moved: the user chatted
-  // in another window, or an API client spent tokens while this one sat open.
-  // Reopening Settings needs no watcher of its own -- the dialog content is not
-  // force-mounted, so the panel unmounts on close and the effect above refetches
-  // when it mounts again.
+  // Tokens move while backgrounded. Reopen needs no watcher: the dialog is not force-mounted.
   useEffect(() => subscribeResidentStatusRefresh(load), [load]);
 
   const reload = useCallback(() => {

@@ -51,9 +51,7 @@ function fakeTargets(hidden = false) {
 }
 
 test("the profile stats hook refreshes when the tab returns to the foreground", () => {
-  // Source-asserted, like tests/chat-speech-model-not-adopted.test.ts does for
-  // the chat runtime: the wiring is one line and a renderer is not worth it, but
-  // dropping the line would silently restore the stale-stats bug.
+  // Source-asserted: one line of wiring, but dropping it silently restores the stale-stats bug.
   assert.match(HOOK, /subscribeResidentStatusRefresh/);
   assert.match(
     HOOK,
@@ -64,17 +62,11 @@ test("the profile stats hook refreshes when the tab returns to the foreground", 
 });
 
 test("the hook does not watch the settings dialog store", () => {
-  // The panel lives inside a DialogContent that is not force-mounted, so it
-  // unmounts on close and the mount effect already refetches on reopen. A
-  // closed->open watcher here would be unreachable code plus a dependency from
-  // features/profile on features/settings.
+  // DialogContent is not force-mounted, so the panel remounts and refetches; a watcher is dead code.
   assert.doesNotMatch(HOOK, /useSettingsDialogStore/);
 });
 
 test("the refresh subscription hands back a working unsubscribe", () => {
-  // The contract the effect above depends on. If this ever returned void, every
-  // reopen of Settings would leave another listener behind and one focus would
-  // fire a request per listener.
   const harness = fakeTargets();
   let calls = 0;
   const stop = subscribeResidentStatusRefresh(() => {
@@ -108,8 +100,6 @@ test("a tab going hidden does not refetch; coming back does", () => {
 });
 
 test("mounting and unmounting repeatedly leaves no listeners behind", () => {
-  // Opening and closing Settings twenty times should not make one focus fire
-  // twenty requests.
   const harness = fakeTargets();
   let calls = 0;
   const stops = Array.from({ length: 20 }, () =>
