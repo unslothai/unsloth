@@ -1,0 +1,74 @@
+name: Temporary finalize MLX workspace certification
+
+on:
+  push:
+    branches:
+      - feat/agent-workspace-mlx-runtime
+    paths:
+      - .github/workflows/tmp-finalize-agent-workspace-mlx.yml
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/agent-workspace-mlx-runtime
+          fetch-depth: 0
+
+      - name: Verify current upstream API and converge the workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/unslothai/unsloth-zoo /tmp/unsloth-zoo
+          grep -R -F 'MLXTrainer' /tmp/unsloth-zoo/unsloth_zoo/mlx_trainer
+          grep -R -F 'MLXTrainingConfig' /tmp/unsloth-zoo/unsloth_zoo/mlx_trainer
+          ! grep -R -F 'UnslothMLXTrainer' /tmp/unsloth-zoo/unsloth_zoo/mlx_trainer
+
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/mlx-ci.yml')
+          source = path.read_text(encoding='utf-8')
+          source = source.replace(
+              'from unsloth_zoo.mlx_trainer import UnslothMLXTrainer',
+              'from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig',
+          ).replace(
+              "print('OK: UnslothMLXTrainer =', UnslothMLXTrainer)",
+              "print('OK: MLXTrainer =', MLXTrainer)\n"
+              "          print('OK: MLXTrainingConfig =', MLXTrainingConfig)",
+          )
+          expected = 'from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig'
+          if source.count(expected) != 1:
+              raise SystemExit('current MLX trainer import did not converge exactly once')
+          if 'UnslothMLXTrainer' in source:
+              raise SystemExit('legacy MLX trainer alias remains')
+          path.write_text(source, encoding='utf-8')
+          PY
+
+          temporary=(
+            .github/workflows/tmp-apply-mlx-trainer-api-fix.yml
+            .github/workflows/tmp-apply-mlx-trainer-api-fix-linux-v2.yml
+            .github/workflows/tmp-cleanup-mlx-ci-fix.yml
+            .github/workflows/tmp-finalize-agent-workspace-mlx.yml
+          )
+          git rm --ignore-unmatch -- "${temporary[@]}"
+          git diff --check
+
+      - name: Commit the clean final tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Philip John Basile"
+          git config user.email "PBasile@Basilecom.com"
+          git add .github/workflows/mlx-ci.yml
+          if git diff --cached --quiet; then
+            echo 'Final tree already converged'
+            exit 0
+          fi
+          git commit -m "ci(mlx): finalize real workspace certification gate"
+          git push origin HEAD:feat/agent-workspace-mlx-runtime
