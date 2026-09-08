@@ -2133,7 +2133,6 @@ def test_a_live_hip_runtime_still_gets_the_node_hint_alone(monkeypatch, linux):
     assert "usermod -a -G render,video ada" in message
 
 
-
 def test_a_closed_node_beside_an_open_sibling_does_not_speak_for_the_card(monkeypatch, linux):
     """One shut render node on a multi-AMD host leaves the other GPU fully reachable: HIP has
     /dev/kfd plus an open render node, and the Vulkan loader has the same. Claiming "no GPU
@@ -2271,9 +2270,7 @@ def test_a_vulkan_only_run_still_reports_a_closed_render_node():
     """The second control: Vulkan opens the render node, so the scoping must take /dev/kfd and
     nothing else. A filter that dropped the whole diagnosis would silence the node that blocks
     every backend."""
-    out = _install_sh_kfd_scope(
-        "/dev/kfd\n/dev/dri/renderD128", skip_torch = True, backend = "vulkan"
-    )
+    out = _install_sh_kfd_scope("/dev/kfd\n/dev/dri/renderD128", skip_torch = True, backend = "vulkan")
     assert "/dev/dri/renderD128" in out
     assert "/dev/kfd" not in out
 
