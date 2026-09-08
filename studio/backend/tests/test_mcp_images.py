@@ -246,7 +246,9 @@ def test_history_merges_into_a_following_user_turn():
 
     assert [message["role"] for message in messages] == ["tool", "user"]
     assert messages[1]["content"][0]["type"] == "image_url"
-    assert messages[1]["content"][1] == {"type": "text", "text": "what colour was it"}
+    # The note rides along on the merge, ahead of the question's own text.
+    assert messages[1]["content"][1]["text"].startswith(mcp_images.IMAGE_TURN_TEXT)
+    assert messages[1]["content"][2] == {"type": "text", "text": "what colour was it"}
 
 
 def test_local_history_carries_markers_and_payloads():
@@ -2543,3 +2545,31 @@ def test_a_merge_into_a_trailing_nudge_still_says_where_the_pictures_came_from()
     kinds = [part["type"] for part in merged["content"]]
     assert kinds == ["text", "image_url", "text"], kinds
     assert merged["content"][-1]["text"].startswith(mcp_images.DETACHED_IMAGE_TURN_TEXT)
+
+
+def test_a_replay_merged_into_the_question_still_says_where_the_pictures_came_from():
+    """Promotion merges a batch into the user turn that follows it (two user turns in a
+    row is what a strict template rejects). Merged bare, the pictures read as ones the
+    user attached; the note names the tool, detached wording when another tool's result
+    sat between. And the question stays the user's turn for the attachment's ordinal."""
+    history = [
+        {"role": "tool", "name": "mcp__s__shot", "content": _envelope("[1]", _image())},
+        {"role": "tool", "name": "web_search", "content": "three results"},
+        {"role": "user", "content": "what do you see?"},
+    ]
+    out, payloads = mcp_images.promote_history_local(history, vision = True)
+    assert len(payloads) == 1
+    question = out[-1]
+    kinds = [part["type"] for part in question["content"]]
+    assert kinds == ["image", "text", "text"], kinds
+    assert question["content"][1]["text"].startswith(mcp_images.DETACHED_IMAGE_TURN_TEXT)
+    assert question["content"][2]["text"] == "what do you see?"
+    assert not mcp_images.is_synthetic_image_turn(question)
+
+    out = promote_history(history, vision = True)
+    question = out[-1]
+    kinds = [part["type"] for part in question["content"]]
+    assert kinds == ["image_url", "text", "text"], kinds
+    assert question["content"][1]["text"].startswith(mcp_images.DETACHED_IMAGE_TURN_TEXT)
+    assert not mcp_images.is_synthetic_image_turn(question)
+    assert mcp_images.is_synthetic_image_turn(mcp_images.placeholder_turn(1, 1))

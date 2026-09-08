@@ -930,12 +930,14 @@ def is_synthetic_image_turn(message) -> bool:
         return False
     # Both leads: a detached block is promotion's turn just as much, and counting it
     # as a real user turn put the attachment's marker on it instead of the question.
-    return any(
-        isinstance(part, dict)
-        and part.get("type") == "text"
-        and _is_image_turn_note(part.get("text"))
+    # ALL of its text, though: a replay merged into the user's question carries the
+    # note beside the question's own text, and that turn is still the user's.
+    texts = [
+        part.get("text")
         for part in content
-    )
+        if isinstance(part, dict) and part.get("type") == "text"
+    ]
+    return bool(texts) and all(_is_image_turn_note(text) for text in texts)
 
 
 def _with_attachment_markers(message: dict, markers: list[dict]) -> dict:
@@ -1128,7 +1130,11 @@ def _promote(
             if into is None:
                 out.append(placeholder_turn(len(encoded), returned, lead))
                 return None
-            return _with_parts(into, markers)
+            # The note rides along on the merge: merged bare into the question, the
+            # markers read as pictures the user attached, and with a result of another
+            # tool between, as that tool's output.
+            note = {"type": "text", "text": _turn_text(len(encoded), returned, lead)}
+            return _with_parts(into, [*markers, note])
         results = list(pending)
         pending.clear()
         returned_totals.clear()
@@ -1141,7 +1147,10 @@ def _promote(
             return None
         parts = content_parts_per_result(results)
         promoted.extend(parts)
-        return _with_parts(into, parts) if parts else into
+        if not parts:
+            return into
+        note = {"type": "text", "text": _turn_text(len(parts), returned, lead)}
+        return _with_parts(into, [*parts, note])
 
     for position, message in enumerate(messages):
         content = message.get("content")
