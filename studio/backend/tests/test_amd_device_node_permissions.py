@@ -1332,11 +1332,7 @@ def _diag_route(index_url: str) -> bool:
 
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     lines = install_sh.read_text(encoding = "utf-8").splitlines()
-    start = next(
-        i
-        for i, line in enumerate(lines)
-        if line.startswith("_amd_node_diag_leaf=")
-    )
+    start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_diag_leaf="))
     end = next(i for i in range(start, len(lines)) if lines[i] == "esac")
     script = "\n".join(
         [
@@ -2476,8 +2472,7 @@ def test_a_no_torch_cuda_run_is_not_sent_after_the_amd_nodes():
     still handed group and udev repairs for a card nothing in the run would touch."""
     assert _install_sh_kfd_scope("/dev/kfd", skip_torch = True, backend = "cuda").strip() == ""
     assert (
-        _install_sh_kfd_scope("/dev/dri/renderD128", skip_torch = True, backend = "cuda").strip()
-        == ""
+        _install_sh_kfd_scope("/dev/dri/renderD128", skip_torch = True, backend = "cuda").strip() == ""
     )
 
 
