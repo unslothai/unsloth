@@ -47,6 +47,27 @@ import routes.models as model_routes
 import state.tool_policy as _tp
 
 
+def _reset_keepwarm():
+    """Clear the keep-warm counters and mark the model long idle."""
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+
+def _vision_gguf_cache_repo(tmp_path):
+    """An HF cache repo whose older snapshot holds the weights and newer one the companions."""
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    return repo, old, newer
+
+
+
 class _Reached(Exception):
     pass
 
@@ -1035,11 +1056,7 @@ def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
     monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
-    kw._inflight = 0
-    kw._pending = 0
-    kw._last_active = time.monotonic() - 3600
-    kw._last_unloaded_model = None
-    kw._kv_resume = None
+    _reset_keepwarm()
 
     saved = tmp_path / "resume-abc-slot0.bin"
     backend = _FakeBackend("unsloth/Idle-GGUF")
@@ -1963,12 +1980,7 @@ def test_hf_cache_entry_keeps_newer_companions_for_auto_switch(tmp_path, monkeyp
     ModelConfig = model_config_module.ModelConfig
     detect_mmproj_file = model_config_module.detect_mmproj_file
 
-    repo = tmp_path / "models--org--Vision-GGUF"
-    old = repo / "snapshots" / "weights-revision"
-    old.mkdir(parents = True)
-    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
-    newer = repo / "snapshots" / "companion-revision"
-    newer.mkdir(parents = True)
+    repo, old, newer = _vision_gguf_cache_repo(tmp_path)
     mmproj = newer / "mmproj-vision-model-F16.gguf"
     mmproj.write_bytes(b"GGUF companion")
     mtp = newer / "mtp-vision-model-Q4_0.gguf"
@@ -2026,12 +2038,7 @@ def test_hf_cache_entry_keeps_newer_companions_for_auto_switch(tmp_path, monkeyp
 def test_hf_cache_entry_skips_unreadable_sibling_for_mmproj(tmp_path, monkeypatch):
     from utils.models import model_config as model_config_module
 
-    repo = tmp_path / "models--org--Vision-GGUF"
-    old = repo / "snapshots" / "weights-revision"
-    old.mkdir(parents = True)
-    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
-    newer = repo / "snapshots" / "companion-revision"
-    newer.mkdir(parents = True)
+    repo, old, newer = _vision_gguf_cache_repo(tmp_path)
     (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
     unreadable = repo / "snapshots" / "unreadable-revision"
     unreadable.mkdir(parents = True)
@@ -2157,12 +2164,7 @@ def test_disjoint_companion_roots_preserve_selected_snapshot_ancestor_walk(tmp_p
 
 
 def test_auto_switch_carries_hf_cache_companion_roots_into_load(tmp_path, monkeypatch):
-    repo = tmp_path / "models--org--Vision-GGUF"
-    old = repo / "snapshots" / "weights-revision"
-    old.mkdir(parents = True)
-    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
-    newer = repo / "snapshots" / "companion-revision"
-    newer.mkdir(parents = True)
+    repo, old, newer = _vision_gguf_cache_repo(tmp_path)
     (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
     os.utime(old, (1_000, 1_000))
     os.utime(newer, (2_000, 2_000))
@@ -2191,12 +2193,7 @@ def test_auto_switch_carries_hf_cache_companion_roots_into_load(tmp_path, monkey
 
 
 def test_auto_switch_display_alias_keeps_repo_level_companion_scope(tmp_path, monkeypatch):
-    repo = tmp_path / "models--org--Vision-GGUF"
-    old = repo / "snapshots" / "weights-revision"
-    old.mkdir(parents = True)
-    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
-    newer = repo / "snapshots" / "companion-revision"
-    newer.mkdir(parents = True)
+    repo, old, newer = _vision_gguf_cache_repo(tmp_path)
     (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
 
     backend, recorder = _wired(monkeypatch, _FakeBackend("org/Other-GGUF", "Q4_K_M"), (str(old), "Q4_K_M", "org/Vision-GGUF", True))
@@ -2217,12 +2214,7 @@ def test_auto_switch_display_alias_keeps_repo_level_companion_scope(tmp_path, mo
 def test_repo_level_request_reloads_resident_snapshot_without_companion_roots(
     tmp_path, monkeypatch, advertised
 ):
-    repo = tmp_path / "models--org--Vision-GGUF"
-    old = repo / "snapshots" / "weights-revision"
-    old.mkdir(parents = True)
-    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
-    newer = repo / "snapshots" / "companion-revision"
-    newer.mkdir(parents = True)
+    repo, old, newer = _vision_gguf_cache_repo(tmp_path)
     (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
 
     backend = _FakeBackend(str(old), "Q4_K_M")
@@ -2271,12 +2263,7 @@ def test_resident_repo_reloads_when_companion_finishes_in_existing_snapshot(
 
 
 def test_auto_switch_exact_revision_does_not_widen_companion_roots(tmp_path, monkeypatch):
-    repo = tmp_path / "models--org--Vision-GGUF"
-    old = repo / "snapshots" / "weights-revision"
-    old.mkdir(parents = True)
-    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
-    newer = repo / "snapshots" / "companion-revision"
-    newer.mkdir(parents = True)
+    repo, old, newer = _vision_gguf_cache_repo(tmp_path)
     (newer / "mmproj-other-model-F16.gguf").write_bytes(b"GGUF companion")
 
     backend, recorder = _wired(monkeypatch, _FakeBackend("org/Other-GGUF", "Q4_K_M"), (str(old), "Q4_K_M", "org/Vision-GGUF"))
@@ -2299,12 +2286,7 @@ def test_auto_switch_exact_revision_does_not_widen_companion_roots(tmp_path, mon
 
 
 def test_idle_stash_reload_carries_hf_cache_companion_roots(tmp_path, monkeypatch):
-    repo = tmp_path / "models--org--Vision-GGUF"
-    old = repo / "snapshots" / "weights-revision"
-    old.mkdir(parents = True)
-    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
-    newer = repo / "snapshots" / "companion-revision"
-    newer.mkdir(parents = True)
+    repo, old, newer = _vision_gguf_cache_repo(tmp_path)
     (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
     os.utime(old, (1_000, 1_000))
     os.utime(newer, (2_000, 2_000))
@@ -2352,12 +2334,7 @@ def test_loaded_identity_stashes_only_roots_used_by_the_load():
 
 
 def test_idle_stash_reload_of_manual_snapshot_does_not_add_sibling_roots(tmp_path, monkeypatch):
-    repo = tmp_path / "models--org--Vision-GGUF"
-    old = repo / "snapshots" / "weights-revision"
-    old.mkdir(parents = True)
-    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
-    newer = repo / "snapshots" / "companion-revision"
-    newer.mkdir(parents = True)
+    repo, old, newer = _vision_gguf_cache_repo(tmp_path)
     (newer / "mmproj-other-model-F16.gguf").write_bytes(b"GGUF companion")
 
     backend = _FakeBackend(None)
@@ -5978,11 +5955,7 @@ def test_idle_unload_saves_slots_before_unload_and_stashes_manifest(monkeypatch,
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
     monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
-    kw._inflight = 0
-    kw._pending = 0
-    kw._last_active = time.monotonic() - 3600
-    kw._last_unloaded_model = None
-    kw._kv_resume = None
+    _reset_keepwarm()
 
     events = []
     backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
@@ -6019,11 +5992,7 @@ def test_idle_save_failure_still_unloads_plain(monkeypatch):
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
     monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
-    kw._inflight = 0
-    kw._pending = 0
-    kw._last_active = time.monotonic() - 3600
-    kw._last_unloaded_model = None
-    kw._kv_resume = None
+    _reset_keepwarm()
 
     unloads = []
     backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
@@ -6049,11 +6018,7 @@ def test_keep_kv_setting_off_skips_save(monkeypatch):
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
     monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: False)
-    kw._inflight = 0
-    kw._pending = 0
-    kw._last_active = time.monotonic() - 3600
-    kw._last_unloaded_model = None
-    kw._kv_resume = None
+    _reset_keepwarm()
 
     saves, unloads = [], []
     backend = _FakeBackend("unsloth/Idle-GGUF")
@@ -6077,11 +6042,7 @@ def test_keep_kv_disabled_mid_save_discards_manifest(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
     monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: 0.005 > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: keep["on"])
-    kw._inflight = 0
-    kw._pending = 0
-    kw._last_active = time.monotonic() - 3600
-    kw._last_unloaded_model = None
-    kw._kv_resume = None
+    _reset_keepwarm()
 
     unloads = []
     backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
@@ -6116,11 +6077,7 @@ def test_idle_ttl_disabled_mid_save_skips_unload(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: ttl["v"])
     monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: ttl["v"] > 0)
     monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
-    kw._inflight = 0
-    kw._pending = 0
-    kw._last_active = time.monotonic() - 3600
-    kw._last_unloaded_model = None
-    kw._kv_resume = None
+    _reset_keepwarm()
 
     unloads = []
     backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
@@ -8341,11 +8298,7 @@ def test_mlx_kv_bits_survives_the_whole_override_projection():
 
 def _idle_backend(kw, monkeypatch, *, user_loaded):
     """A loaded, long-idle GGUF backend wired into the idle loop."""
-    kw._inflight = 0
-    kw._pending = 0
-    kw._last_active = time.monotonic() - 3600
-    kw._last_unloaded_model = None
-    kw._kv_resume = None
+    _reset_keepwarm()
     backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
     backend._loaded_by_user_action = user_loaded
 
