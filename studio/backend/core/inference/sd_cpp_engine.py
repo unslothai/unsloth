@@ -56,6 +56,10 @@ _SERVER_STEM = "sd-server"
 # before they delete a tree
 OWNER_MARKER = ".unsloth-studio-owned"
 
+# storage_roots.PORTABLE_MARKER, spelled out rather than imported: the derivation below has to keep
+# answering in an environment where utils.paths will not load at all.
+PORTABLE_MARKER = ".unsloth-portable-root"
+
 # the native engine exists FOR slow CPU hosts
 # Ceiling for one native run. The native engine exists FOR slow CPU hosts: on GPU-less CI runners a 512x512 4-step Q2_K
 # generation took 900 s on Linux and 1465 s on Windows, so a 30-minute cap killed jobs that were still progressing. It
@@ -372,34 +376,102 @@ def managed_install_root() -> Path:
     from a user-supplied one (SD_CLI_PATH / UNSLOTH_SD_CPP_PATH / PATH / an in-tree build).
 
     Only a copy under this root may be reinstalled over: replacing anything else would delete
-    a build the user chose. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer, so
+    a build the user chose. Resolves the same Studio root the rest of the backend does, so
     side-by-side Unsloth instances stay isolated.
 
-    ``<studio home>/stable-diffusion.cpp``, which is where every other managed component lives
-    (``default_managed_llama_dir``, ``managed_whisper_dir``, ``managed_node_dir`` all place their
-    tree *under* the Unsloth home). The legacy default home ``~/.unsloth/studio`` keeps mapping to
-    ``~/.unsloth/stable-diffusion.cpp`` so existing installs are still found."""
+    ``<Studio root>/stable-diffusion.cpp``. Unlike llama.cpp, node and whisper.cpp, which setup.sh
+    hangs off the master root as siblings of studio/, sd.cpp installs under the Studio root itself
+    (#8226). The legacy default root ``~/.unsloth/studio`` keeps mapping to
+    ``~/.unsloth/stable-diffusion.cpp`` so existing installs are still found, EXCEPT when that root
+    is also a portable master root; see _studio_component_root."""
     return _studio_component_root("stable-diffusion.cpp")
 
 
-def _studio_component_root(name: str) -> Path:
-    """``<studio home>/<name>``, or the legacy ``~/.unsloth/<name>`` when no custom home is set
-    (or the home *is* the legacy ``~/.unsloth/studio``). The home is expanded and made absolute
-    first: a relative ``UNSLOTH_STUDIO_HOME`` must not leave the root relative, because the
-    process' working directory can change and would silently move the managed tree."""
-    home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
-    legacy = Path.home() / ".unsloth" / name
-    if not home:
-        return legacy
-    root = Path(home).expanduser()
-    legacy_studio = Path.home() / ".unsloth" / "studio"
+def _same_dir(left: Path, right: Path) -> bool:
+    """Whether two paths name the same directory, symlinks included, lexically when the filesystem
+    cannot answer."""
     try:
-        root = root.resolve()
-        is_legacy = root == legacy_studio.resolve()
+        return left.resolve() == right.resolve()
     except (OSError, ValueError):
-        root = root.absolute()
-        is_legacy = root == legacy_studio
-    return legacy if is_legacy else root / name
+        return left == right
+
+
+def _resolved_studio_root() -> Optional[Path]:
+    """The Studio root, or None when neither utils.paths nor the environment can name one.
+
+    Delegating rather than reading UNSLOTH_STUDIO_HOME / STUDIO_HOME first, because those are only
+    set for a process that came through run.py or main.py; anything else fell back to ``~/.unsloth``
+    and claimed a tree belonging to a different install.
+
+    Lazy import, mirroring ``managed_node_dir``: a degraded environment where utils.paths will not
+    load keeps the env-only derivation, whose absolute() guards a relative UNSLOTH_STUDIO_HOME."""
+    try:
+        from utils.paths.storage_roots import studio_root
+        return studio_root()
+    except (ImportError, OSError, ValueError):
+        pass
+    home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+    if not home:
+        return None
+    try:
+        return Path(home).expanduser().resolve()
+    except (OSError, ValueError):
+        return Path(home).expanduser().absolute()
+
+
+def _root_is_portable_master(root: Path) -> bool:
+    """Whether *root* is itself the master root of a portable install, so that ``rm -rf <root>``
+    is advertised to remove the whole of it and nothing may be hung off ``root.parent``.
+
+    ``install.sh --portable`` with UNSLOTH_STUDIO_HOME already set, and ``--root`` pointed at an
+    existing default install, both build the FLAT layout, where the master root and the Studio root
+    are one directory. A NESTED master is the Studio root's parent instead, and answers False here:
+    its llama.cpp, node and whisper.cpp are siblings of studio/ inside it, so a sibling sd.cpp is
+    contained exactly like they are.
+
+    The marker is only the fallback for the degraded path above, where unsloth_home() could not be
+    imported. install.sh writes it at the master root of a flat install, and one level ABOVE the
+    Studio root of a nested one, where it names the parent rather than *root*. Kept in the same
+    order install_sd_cpp_prebuilt._root_is_portable_master uses, since the installer writes where
+    this says to read."""
+    try:
+        from utils.paths.storage_roots import unsloth_home
+        master = unsloth_home()
+    except (ImportError, OSError, ValueError):
+        env_master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+        master = Path(env_master).expanduser() if env_master else None
+    if master is not None:
+        return _same_dir(master, root)
+    try:
+        return (root / PORTABLE_MARKER).is_file()
+    except OSError:
+        return False
+
+
+def _studio_component_root(name: str) -> Path:
+    """``<Studio root>/<name>``, or the legacy ``~/.unsloth/<name>`` when the Studio root is the
+    legacy ``~/.unsloth/studio`` AND that sibling still sits inside what the install owns.
+
+    Resolved through ``studio_root()`` and NOT through the master root: sd.cpp is the one managed
+    component that installs UNDER the Studio root (#8226), while llama.cpp, node and whisper.cpp
+    are siblings of it at the master root. So for a nested portable install this is
+    ``<master>/studio/stable-diffusion.cpp``, matching install_sd_cpp_prebuilt.default_install_dir.
+
+    The legacy remap hangs the tree off ``root.parent``, which is only somebody's to give while
+    something ABOVE the Studio root owns it: a plain legacy install, which promises no containment
+    at all, or a nested portable master at ``~/.unsloth``, which owns that level anyway. When
+    ``~/.unsloth/studio`` is ITSELF the portable master root, the remap lands outside the one
+    directory the install advertises as deletable, so a NEW tree goes under the root like every
+    other portable install's does. A tree that is already out there is still read, through
+    legacy_sibling_install_root(), so converting an existing install re-downloads nothing."""
+    legacy = Path.home() / ".unsloth" / name
+    root = _resolved_studio_root()
+    if root is None:
+        return legacy
+    if not _same_dir(root, Path.home() / ".unsloth" / "studio"):
+        return root / name
+    # The master-root lookup is paid for only on the legacy path, not on every finder pass.
+    return root / name if _root_is_portable_master(root) else legacy
 
 
 def legacy_sibling_install_root() -> Optional[Path]:

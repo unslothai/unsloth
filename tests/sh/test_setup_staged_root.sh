@@ -63,7 +63,7 @@ check "setup.ps1 still removes it on a live update" \
 
 # The WebView cache belongs to the app that is still running and rendering from it.
 check "setup.sh skips the webview cache clear while staging" \
-    "$(has "$SETUP_SH" 'if [ -z "$STAGE_ROOT" ] && [ -x "$VENV_DIR/bin/python" ]; then')"
+    "$(has "$SETUP_SH" 'if [ -z "$STAGE_ROOT" ] && [ -x "$VENV_DIR/bin/python" ] && ! _setup_portable_mode; then')"
 check "setup.ps1 skips the webview cache clear while staging" \
     "$(has "$SETUP_PS1" 'if (-not $StageRoot -and (Test-Path -LiteralPath (Join-Path $VenvDir "Scripts\python.exe") -PathType Leaf)) {')"
 
@@ -71,8 +71,10 @@ check "setup.sh stages the managed Node runtime" \
     "$(has "$SETUP_SH" '_NODE_PARENT="$RUNTIME_ROOT"')"
 check "setup.sh stages llama.cpp and whisper.cpp" \
     "$(has "$SETUP_SH" 'UNSLOTH_HOME="$RUNTIME_ROOT"')"
+# The blanks are load-bearing: build_whisper_cpp.sh resolves UNSLOTH_STUDIO_HOME first,
+# and an inherited one points at <root>/studio, not the root the sidecar searches.
 check "setup.sh forwards the staged helper root to whisper.cpp source builds" \
-    "$(has "$SETUP_SH" 'env UNSLOTH_HOME="$UNSLOTH_HOME" sh "$_WHISPER_BUILD"')"
+    "$(has "$SETUP_SH" 'env UNSLOTH_HOME="$UNSLOTH_HOME" UNSLOTH_STUDIO_HOME= STUDIO_HOME=')"
 check "whisper.cpp source builds honor the managed helper root" \
     "$(has "$SCRIPT_DIR/../../scripts/build_whisper_cpp.sh" '${UNSLOTH_HOME:-}')"
 check "setup.sh does not install global uv while staging" \

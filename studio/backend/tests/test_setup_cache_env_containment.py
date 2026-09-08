@@ -38,8 +38,10 @@ _ALWAYS_PINNED = (
     "DATA_DESIGNER_MANAGED_ASSETS_PATH",
 )
 
-# Shared user data / large re-downloads: portable mode only.
-_PORTABLE_ONLY = ("HF_DATASETS_CACHE", "HF_ASSETS_CACHE", "TORCH_HOME")
+# Shared user data / large re-downloads: portable mode only. PIP_CACHE_DIR is here rather than
+# in _ALWAYS_PINNED for the same reason TORCH_HOME is -- ~/.cache/pip is shared with every other
+# tool on the machine, so a normal install must keep using it.
+_PORTABLE_ONLY = ("HF_DATASETS_CACHE", "HF_ASSETS_CACHE", "TORCH_HOME", "PIP_CACHE_DIR")
 
 _HF_ENV = ("HF_HOME", "HF_HUB_CACHE", "HF_XET_CACHE", "HUGGINGFACE_HUB_CACHE")
 
@@ -134,6 +136,40 @@ def test_portable_mode_moves_the_hf_and_torch_caches_under_the_root(monkeypatch,
         value = os.environ.get(key)
         assert value, f"{key} was not pinned"
         assert value.startswith(root), f"{key} escaped the portable root: {value}"
+
+
+def test_portable_mode_keeps_an_explicit_legacy_assets_cache(monkeypatch, tmp_path):
+    """HUGGINGFACE_ASSETS_CACHE is deprecated, not removed, and huggingface_hub reads
+    HF_ASSETS_CACHE ahead of it. Pinning the modern name in portable mode therefore
+    overrode an explicitly chosen assets cache silently: the alias stayed in the
+    environment and simply stopped meaning anything."""
+    chosen = tmp_path / "chosen-assets"
+    monkeypatch.setenv("HUGGINGFACE_ASSETS_CACHE", str(chosen))
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "portable"))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert (
+        "HF_ASSETS_CACHE" not in os.environ
+    ), "the modern name was pinned over an explicit legacy alias"
+    assert os.environ["HUGGINGFACE_ASSETS_CACHE"] == str(chosen)
+
+
+@pytest.mark.parametrize("value", ("", "   "))
+def test_a_blank_legacy_assets_alias_does_not_block_the_pin(monkeypatch, tmp_path, value):
+    # Blank counts as unset here as it does everywhere else, or an inherited empty alias
+    # would leave the assets cache outside the root the run promises holds everything.
+    monkeypatch.setenv("HUGGINGFACE_ASSETS_CACHE", value)
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    master = tmp_path / "portable"
+    monkeypatch.setenv("UNSLOTH_HOME", str(master))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert os.environ["HF_ASSETS_CACHE"].startswith(str(master))
 
 
 def test_portable_mode_still_leaves_hf_home_alone(monkeypatch, tmp_path):
@@ -330,6 +366,80 @@ def test_studio_home_outranks_unsloth_home(monkeypatch, tmp_path):
     sr = _load_storage_roots()
 
     assert sr.studio_root() == explicit.resolve()
+
+
+def test_portable_mode_keeps_project_workspaces_inside_the_root(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_STUDIO_PROJECTS_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    master = tmp_path / "portable"
+    monkeypatch.setenv("UNSLOTH_HOME", str(master))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert str(sr.project_workspaces_root()).startswith(str(master))
+    assert not str(sr.documents_root()).startswith(str(master))
+
+
+def test_default_install_leaves_project_workspaces_in_documents(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("UNSLOTH_STUDIO_PROJECTS_HOME", raising = False)
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert sr.project_workspaces_root() == home / "Documents" / "Unsloth Studio" / "Projects"
+
+
+def test_an_explicit_projects_home_beats_portable_mode(monkeypatch, tmp_path):
+    chosen = tmp_path / "my-projects"
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(chosen))
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "portable"))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert sr.project_workspaces_root() == chosen
+
+
+def test_the_on_disk_marker_finds_the_root_without_any_environment(monkeypatch, tmp_path):
+    # `source .../activate; unsloth studio` reaches the venv binary past the
+    # shim that exports UNSLOTH_HOME.
+    master = tmp_path / "portable"
+    studio = master / "studio"
+    studio.mkdir(parents = True)
+    (master / ".unsloth-portable-root").write_text(str(master), encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
+    sr = _load_storage_roots()
+
+    assert sr.unsloth_home() == master
+    assert sr.portable_mode() is True
+    sr._setup_cache_env()
+    assert os.environ["TORCH_HOME"].startswith(str(master))
+
+
+def test_the_marker_also_works_when_the_root_is_the_studio_root(monkeypatch, tmp_path):
+    root = tmp_path / "flat"
+    root.mkdir()
+    (root / ".unsloth-portable-root").write_text(str(root), encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root))
+    sr = _load_storage_roots()
+
+    assert sr.unsloth_home() == root
+    assert sr.portable_mode() is True
+
+
+def test_no_marker_means_no_portable_mode(monkeypatch, tmp_path):
+    # Upgrading a plain install would move its HF cache out from under it.
+    studio = tmp_path / "plain"
+    studio.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
+    sr = _load_storage_roots()
+
+    assert sr.unsloth_home() is None
+    assert sr.portable_mode() is False
 
 
 def test_data_designer_home_is_set_before_the_library_would_read_it(tmp_path):

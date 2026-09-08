@@ -77,6 +77,21 @@ def test_unsloth_home_resolves_to_one_studio_root(tmp_path):
     assert result["cli_is_custom"] is True
 
 
+def test_flat_unsloth_home_resolves_to_one_studio_root(tmp_path):
+    # UNSLOTH_PORTABLE=1 UNSLOTH_STUDIO_HOME=<root> puts the venv at <root>/unsloth_studio,
+    # so <root> IS the Studio root and <root>/studio holds nothing.
+    master = tmp_path / "flat"
+    (master / "unsloth_studio" / "bin").mkdir(parents = True)
+    # The installer only calls a root flat when it owns the venv, so the sentinel
+    # is what makes this a flat install rather than a stray directory of that name.
+    (master / "unsloth_studio" / ".unsloth-studio-owned").write_text("")
+    result = _probe({"UNSLOTH_HOME": str(master)})
+
+    assert result["backend"] == str(master)
+    assert result["cli"] == result["backend"]
+    assert result["cli_is_custom"] is True
+
+
 def test_studio_home_still_outranks_unsloth_home(tmp_path):
     explicit = tmp_path / "explicit"
     result = _probe(

@@ -28,6 +28,10 @@ assert_dir()   { _l="$1"; [ -d "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1));
 # Extract the helpers the loop depends on, plus the real custom-root removal loop.
 HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
 {
+    # _custom_studio_roots normalizes the root variables through this before testing
+    # precedence; without it the real resolver sourced below dies with "command not found"
+    # inside a command substitution and every root it should have emitted goes missing.
+    sed -n '/^_trim_ws() {/,/^}/p'          "$UNINSTALL_SH"
     sed -n '/^_remove_path() {/,/^}/p'      "$UNINSTALL_SH"
     sed -n '/^_is_studio_root() {/,/^}/p'   "$UNINSTALL_SH"
     sed -n '/^_is_unsafe_root() {/,/^}/p'   "$UNINSTALL_SH"
@@ -40,6 +44,7 @@ HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
     # ... and the sibling-base lister it asks for the legacy <parent>/stable-diffusion.cpp paths.
     sed -n '/^_sd_cpp_sibling_bases() {/,/^}/p'    "$UNINSTALL_SH"
 } > "$HELPERS_FILE"
+grep -q '_trim_ws() {' "$HELPERS_FILE" || { echo "FAIL: helpers missing _trim_ws"; exit 1; }
 grep -q '_owned_sd_cpp_roots' "$HELPERS_FILE" || { echo "FAIL: helpers missing _owned_sd_cpp_roots"; exit 1; }
 grep -q '_sd_cpp_sibling_bases() {' "$HELPERS_FILE" || { echo "FAIL: helpers missing _sd_cpp_sibling_bases"; exit 1; }
 # Both blocks sit inside the main removal function, so they are indented: anchor on optional

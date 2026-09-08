@@ -67,6 +67,22 @@ _SHORTCUTS_ONLY=false
 _next_is_package=false
 _next_is_python=false
 _next_is_llama_cpp_dir=false
+_next_is_root=false
+# Portable mode: one master root holding Studio, the runtimes and every cache,
+# so nothing is written outside it. Env-seeded for `curl ... | sh`.
+_PORTABLE_MODE=false
+_trim_ws() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+# Trimmed here, not at the first use: a whitespace-only value passes -n, enables
+# portable mode, then resolves to "" and builds roots like /bin and /cache/uv.
+_UNSLOTH_ROOT=$(_trim_ws "${UNSLOTH_HOME:-}")
+# Whether the root above was TYPED on this command line rather than inherited. The portable
+# shim and share/studio.conf both export UNSLOTH_HOME, so a shell opened from a portable
+# install carries one the user never typed, and "root wins" then quietly outranked the
+# UNSLOTH_PORTABLE=0 they did type. See the off-value handling below.
+_ROOT_FROM_FLAG=false
+# Seed from the environment so a caller who exports UNSLOTH_LOCAL_LLAMA_CPP_DIR
+# (the documented piped-install style) is honored; the --with-llama-cpp-dir
+# flag below overrides it when given.
 _WITH_LLAMA_CPP_DIR="${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}"
 for arg in "$@"; do
     if [ "$_next_is_package" = true ]; then
@@ -84,6 +100,18 @@ for arg in "$@"; do
         _next_is_llama_cpp_dir=false
         continue
     fi
+    if [ "$_next_is_root" = true ]; then
+        # Untreated, `--root --local` took --local as the path.
+        case "$arg" in
+            -* ) echo "ERROR: --root requires a path argument, got the flag '$arg'." >&2; exit 1 ;;
+        esac
+        _UNSLOTH_ROOT=$(_trim_ws "$arg")
+        [ -n "$_UNSLOTH_ROOT" ] || { echo "ERROR: --root requires a path argument." >&2; exit 1; }
+        _PORTABLE_MODE=true
+        _ROOT_FROM_FLAG=true
+        _next_is_root=false
+        continue
+    fi
     case "$arg" in
         --local) STUDIO_LOCAL_INSTALL=true ;;
         --package) _next_is_package=true ;;
@@ -94,6 +122,14 @@ for arg in "$@"; do
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
         --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
+        --portable) _PORTABLE_MODE=true; _ROOT_FROM_FLAG=true ;;
+        --root) _next_is_root=true ;;
+        --root=*)
+            _UNSLOTH_ROOT=$(_trim_ws "${arg#--root=}")
+            [ -n "$_UNSLOTH_ROOT" ] || { echo "ERROR: --root requires a path argument." >&2; exit 1; }
+            _PORTABLE_MODE=true
+            _ROOT_FROM_FLAG=true
+            ;;
     esac
 done
 
@@ -101,7 +137,176 @@ done
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
 case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
 case "${UNSLOTH_ISOLATE_UV_CACHE:-}" in 1|true|TRUE|yes|YES|on|ON) _ISOLATE_UV_CACHE=true ;; esac
+# Stripped and case-folded first: storage_roots.portable_mode() and install.ps1 both do,
+# so UNSLOTH_PORTABLE=True read as off here would write the normal roots while the runtime
+# believes the install is contained. tr, not ${var,,}: this script is POSIX sh.
+# Anything on neither list is refused rather than guessed. portable_mode() reads every value
+# except ""/0/false/off/no as ON, so `enabled`, or a typo like `flase`, would install the
+# normal roots with no marker while the backend in the same environment redirected the HF
+# caches and the projects root, reverting again on the next launch that carries no such
+# variable. Neither guess is safe on its own: reading it as ON relocates the tree of someone
+# who meant off, reading it as OFF is that split. install.ps1 already fails the install for
+# exactly these values.
+_PORTABLE_OFF_ASKED=false
+case "$(_trim_ws "${UNSLOTH_PORTABLE:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) _PORTABLE_MODE=true ;;
+    '') ;;
+    0|false|off|no) _PORTABLE_OFF_ASKED=true ;;
+    *)
+        echo "ERROR: UNSLOTH_PORTABLE='${UNSLOTH_PORTABLE:-}' is not a recognized value." >&2
+        echo "       Use 1, true, yes or on to keep the whole install in one directory," >&2
+        echo "       or 0, false, off, no (or leave it unset) for a normal install." >&2
+        exit 1
+        ;;
+esac
+[ "$_next_is_root" = true ] && { echo "ERROR: --root requires a path argument." >&2; exit 1; }
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
+# An off value the user typed beats a root they may not have. The portable shim and
+# share/studio.conf both export UNSLOTH_HOME, so `UNSLOTH_PORTABLE=0 curl ... | sh` run from a
+# portable install's own shell carried a root nobody typed, "a root is what makes it portable"
+# fired, and the documented way back did nothing. Nobody exports UNSLOTH_PORTABLE=0 by
+# accident; an inherited UNSLOTH_HOME is the common case.
+#
+# A root from --root or --portable is different: that WAS typed, on this command line, and
+# together with an off value it is a contradiction rather than an inheritance. Refuse instead
+# of guessing which half they meant.
+if [ "$_PORTABLE_OFF_ASKED" = true ] && [ "$_ROOT_FROM_FLAG" = true ]; then
+    echo "ERROR: --portable/--root ask for a portable install and UNSLOTH_PORTABLE='${UNSLOTH_PORTABLE:-}' asks for a normal one." >&2
+    echo "       Drop one of them: the flag to convert this install back, or the variable to keep it portable." >&2
+    exit 1
+fi
+if [ "$_PORTABLE_OFF_ASKED" = true ] && [ -n "$_UNSLOTH_ROOT" ]; then
+    # Convert the install the inherited root names, rather than the default location, or the
+    # run would build a second install at ~/.unsloth and leave the portable one untouched.
+    # Its Studio root is the nested child when there is one, and the root itself when flat.
+    if [ -z "$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")" ] \
+        && [ -z "$(_trim_ws "${STUDIO_HOME:-}")" ]; then
+        # Ownership, not bare existence. `[ -d "$_UNSLOTH_ROOT/studio" ]` called any root
+        # holding a `studio` directory nested, including a FLAT install that merely has one
+        # beside it -- and a flat root with a `studio` neighbour is a shape this installer
+        # documents and guards elsewhere (see the parent-ownership block further down: a
+        # parent can be a flat portable install in its own right, with a separate normal
+        # install pointed at <parent>/studio through UNSLOTH_STUDIO_HOME). The conversion then
+        # aimed at the neighbour: the parent-marker guard recognised the real flat install and
+        # kept it portable, so the documented way back did nothing while the run built a
+        # second environment at the wrong path and still reported the conversion.
+        #
+        # The same four sentinels, in the same order, as the flat-layout selector in
+        # _resolve_studio_destinations and that guard, so all three agree on what "flat"
+        # means. Each of the three that live outside the venv must NAME this venv rather than
+        # merely exist: `unsloth` is an ordinary word and a reused root can hold somebody
+        # else's `bin/unsloth` beside their own `unsloth_studio`. A root that is already
+        # nested is excluded first. Inline, not a helper: tests lift this block out and run
+        # it alone, where a helper defined elsewhere would go silently inert.
+        _pob_flat_venv="$_UNSLOTH_ROOT/unsloth_studio"
+        _pob_flat_owned=false
+        if [ ! -d "$_UNSLOTH_ROOT/studio/unsloth_studio" ]; then
+            _pob_flat_exe=$(printf '%s' "$_pob_flat_venv/bin/unsloth" | sed "s/'/'\\\\''/g")
+            if [ -f "$_pob_flat_venv/.unsloth-studio-owned" ]; then
+                _pob_flat_owned=true
+            elif grep -qxF "UNSLOTH_EXE='$_pob_flat_exe'" \
+                    "$_UNSLOTH_ROOT/share/studio.conf" 2>/dev/null; then
+                _pob_flat_owned=true
+            elif [ -L "$_UNSLOTH_ROOT/bin/unsloth" ] \
+                 && [ "$_UNSLOTH_ROOT/bin/unsloth" -ef "$_pob_flat_venv/bin/unsloth" ] 2>/dev/null; then
+                _pob_flat_owned=true
+            elif grep -qxF "exec '$_pob_flat_exe' \"\$@\"" \
+                    "$_UNSLOTH_ROOT/bin/unsloth" 2>/dev/null; then
+                _pob_flat_owned=true
+            fi
+        fi
+        if [ "$_pob_flat_owned" = true ]; then
+            UNSLOTH_STUDIO_HOME="$_UNSLOTH_ROOT"
+        elif [ -d "$_UNSLOTH_ROOT/studio" ]; then
+            UNSLOTH_STUDIO_HOME="$_UNSLOTH_ROOT/studio"
+        else
+            UNSLOTH_STUDIO_HOME="$_UNSLOTH_ROOT"
+        fi
+        export UNSLOTH_STUDIO_HOME
+        substep "converting the portable install at $_UNSLOTH_ROOT back to a normal one"
+    fi
+    # Out of the ENVIRONMENT, not only out of the local. This root arrives exported (the
+    # generated bin/unsloth shim, share/studio.conf and the CLI all set it), and studio/setup.sh
+    # takes UNSLOTH_HOME ahead of a custom Studio root for all three native runtimes -- node,
+    # llama.cpp and whisper.cpp. Clearing only the private copy left setup.sh building them at
+    # <master>/*, while the NORMAL share/studio.conf this run writes, the CLI and the backend
+    # all resolve them under <studio-home>/*: a conversion that reported success and then came
+    # up with no llama-server and no managed Node, with the multi-gigabyte trees it had just
+    # updated orphaned at the old root. Note this leak did not need the branch above -- a shell
+    # carrying both UNSLOTH_HOME and UNSLOTH_STUDIO_HOME skips it, and that is the common case.
+    # unset, not blanked: there is nothing here for an empty value to mean, and the readers do
+    # not all treat one as absent.
+    unset UNSLOTH_HOME
+    _UNSLOTH_ROOT=""
+fi
+[ -n "$_UNSLOTH_ROOT" ] && _PORTABLE_MODE=true
+# Nothing on the command line and nothing in the environment: adopt the layout already on
+# disk. The documented update path is `curl ... | sh` with no arguments and no exports, and
+# without this it read as "make this a normal install": _clear_stale_portable_marker deleted
+# the master record and the portable marker, the caches moved back under $HOME, and the only
+# notice was a substep. Converting back is a real thing to want, but it should be something
+# the user asks for, not what routine updating does. UNSLOTH_PORTABLE=0 is that ask.
+#
+# Marker files only, never a bare directory: the same evidence every reader already trusts,
+# written by a previous run of this script.
+if [ "$_PORTABLE_MODE" != true ] && [ -z "$(_trim_ws "${UNSLOTH_PORTABLE:-}")" ]; then
+    _adopt_root=$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
+    [ -n "$_adopt_root" ] || _adopt_root=$(_trim_ws "${STUDIO_HOME:-}")
+    if [ -n "$_adopt_root" ]; then
+        # A named Studio root wears its evidence differently in the two layouts, and checking
+        # only the flat one left a NESTED portable install (--root R, then a rerun carrying
+        # UNSLOTH_STUDIO_HOME=R/studio, which is what studio.conf exports) reading as normal
+        # while both its markers sat on disk. _clear_stale_portable_marker then removed them.
+        # These are the same two signals it uses to decide what to remove, in the same order:
+        # the two must agree about what counts as portable, or one undoes what the other
+        # honoured.
+        if [ -f "$_adopt_root/.unsloth-portable-root" ]; then
+            # Flat: the named root IS the master root.
+            _PORTABLE_MODE=true
+            _UNSLOTH_ROOT="$_adopt_root"
+        elif [ -f "$_adopt_root/.unsloth-master-root" ]; then
+            # Nested: the record names the master root outright, so there is nothing to infer.
+            # First line only, trimmed and required absolute: a truncated or hand-edited record
+            # must not become a relative root resolved against the caller's cwd.
+            _adopt_master=$(_trim_ws "$(head -n 1 "$_adopt_root/.unsloth-master-root" 2>/dev/null)")
+            case "$_adopt_master" in
+                /*)
+                    _PORTABLE_MODE=true
+                    _UNSLOTH_ROOT="$_adopt_master"
+                    ;;
+            esac
+        fi
+    else
+        # Held in a variable rather than spelled out: `        _UNSLOTH_ROOT="$HOME/.unsloth"`
+        # at this indent is the awk anchor tests/sh/test_install_portable_root.sh uses to find
+        # the END of the flag parser, and a second copy here truncated its extraction at the
+        # wrong `fi` -- every --portable assertion then ran against an empty resolution.
+        _adopt_default="$HOME/.unsloth"
+        if [ -f "$_adopt_default/.unsloth-portable-root" ] \
+            || [ -f "$_adopt_default/studio/.unsloth-master-root" ]; then
+            _PORTABLE_MODE=true
+            _UNSLOTH_ROOT="$_adopt_default"
+        fi
+    fi
+    if [ "$_PORTABLE_MODE" = true ]; then
+        substep "this install is portable; keeping it that way"
+        substep "run with UNSLOTH_PORTABLE=0 to convert it back to a normal install"
+    fi
+fi
+# _PORTABLE_FLAT: the master root IS the Studio root. A root the user named for
+# Studio must not gain a studio/ level, which would relocate an existing install.
+_PORTABLE_FLAT=false
+if [ "$_PORTABLE_MODE" = true ] && [ -z "$_UNSLOTH_ROOT" ]; then
+    # Trim before the fallback, or a whitespace-only UNSLOTH_STUDIO_HOME masks a real STUDIO_HOME.
+    _existing_studio=$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
+    [ -n "$_existing_studio" ] || _existing_studio=$(_trim_ws "${STUDIO_HOME:-}")
+    if [ -n "$_existing_studio" ]; then
+        _UNSLOTH_ROOT="$_existing_studio"
+        _PORTABLE_FLAT=true
+    else
+        _UNSLOTH_ROOT="$HOME/.unsloth"
+    fi
+fi
 
 if [ "$_VERBOSE" = true ]; then
     export UNSLOTH_VERBOSE=1
@@ -109,6 +314,35 @@ fi
 
 # Custom Unsloth roots are unsupported with --tauri unless override == legacy default.
 if [ "$TAURI_MODE" = true ]; then
+    # The desktop app resolves ~/.unsloth/studio in Rust and sees no per-session
+    # variable, so it would launch a Studio that is not there.
+    if [ "$_PORTABLE_MODE" = true ]; then
+        # Two ways to get here, and only one of them is about flags. Since portable mode is
+        # also ADOPTED from markers on disk, a desktop repair (which passes --tauri and no
+        # flags at all) on a machine whose ~/.unsloth is portable was refused with a message
+        # naming --portable and --root, neither of which the user typed. `--portable` with no
+        # `--root` selects $HOME/.unsloth, which is the very directory the desktop app
+        # resolves in Rust, so this collision is reachable by following the documented
+        # instructions and the message has to describe the install rather than the command.
+        #
+        # Still a refusal either way: proceeding would build a normal Studio on top of a
+        # portable one, which is the split install this whole path exists to prevent. The
+        # desktop installer also strips UNSLOTH_PORTABLE before spawning us, so the way out
+        # has to be a terminal, and the message says so.
+        if [ "$_ROOT_FROM_FLAG" = true ]; then
+            echo "ERROR: --portable and --root are not supported with --tauri." >&2
+            echo "       The desktop app still uses the legacy ~/.unsloth/studio root." >&2
+            echo "       Run install.sh without --tauri for a portable install." >&2
+        else
+            echo "ERROR: the Unsloth install at $_UNSLOTH_ROOT is portable, and the desktop" >&2
+            echo "       app can only use the legacy ~/.unsloth/studio root." >&2
+            echo "       No flag asked for this: the portable layout was found on disk." >&2
+            echo "       To use the desktop app, convert the install back in a terminal with" >&2
+            echo "       UNSLOTH_PORTABLE=0 sh install.sh" >&2
+            echo "       and then run the desktop installer again." >&2
+        fi
+        exit 1
+    fi
     _tauri_override_var=""
     _tauri_override="${UNSLOTH_STUDIO_HOME:-}"
     if [ -n "$_tauri_override" ]; then
@@ -567,16 +801,22 @@ PYTHON_VERSION=""  # resolved after platform detection
 
 _resolve_studio_destinations() {
     _override_var=""
-    _override="${UNSLOTH_STUDIO_HOME:-}"
-    if [ -n "$_override" ]; then
-        _override_var="UNSLOTH_STUDIO_HOME"
+    # STUDIO_HOME becomes a child so the runtimes and caches are its siblings.
+    if [ "$_PORTABLE_MODE" = true ]; then
+        _override="$_UNSLOTH_ROOT"
+        _override_var="--root"
     else
-        _override="${STUDIO_HOME:-}"
-        [ -n "$_override" ] && _override_var="STUDIO_HOME"
+        # Trimmed before the fallback so " " is treated as unset (matches the Python
+        # resolvers' .strip()) instead of masking a real STUDIO_HOME.
+        _override=$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
+        if [ -n "$_override" ]; then
+            _override_var="UNSLOTH_STUDIO_HOME"
+        else
+            _override=$(_trim_ws "${STUDIO_HOME:-}")
+            [ -n "$_override" ] && _override_var="STUDIO_HOME"
+        fi
     fi
-    # Strip surrounding whitespace so " " is treated as unset (matches Python .strip()).
-    _override=$(printf '%s' "$_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-    # Tilde expansion: quoted env vars aren't subject to it on assignment.
+    # Tilde expansion: env vars are not subject to it when quoted on assignment.
     case "$_override" in
         "~") _override="$HOME" ;;
         "~/"*) _override="$HOME/${_override#'~/'}" ;;
@@ -584,11 +824,177 @@ _resolve_studio_destinations() {
     if [ -n "$_override" ]; then
         mkdir -p -- "$_override" 2>/dev/null || { echo "ERROR: $_override_var=$_override cannot be created." >&2; exit 1; }
         [ -w "$_override" ] || { echo "ERROR: $_override_var=$_override is not writable." >&2; exit 1; }
-        STUDIO_HOME="$(CDPATH= cd -P -- "$_override" && pwd -P)" || exit 1
-        DATA_DIR="$STUDIO_HOME/share"
-        _LOCAL_BIN="$STUDIO_HOME/bin"
+        _resolved_root="$(CDPATH= cd -P -- "$_override" && pwd -P)" || exit 1
+        # A newline anywhere in the resolved path is refused here, before a single file is
+        # written. The portable records hold one path per file -- `printf '%s\n' "$UNSLOTH_ROOT"`
+        # at the publish below -- and every reader takes the first line of it
+        # (storage_roots._in_root_master_root and the CLI's copy of it). A root with a newline
+        # in it therefore records a TRUNCATED prefix while the install reports success: the
+        # `source <root>/studio/unsloth_studio/bin/activate` path either resolves an unrelated
+        # directory that happens to exist at that prefix, or loses portable mode outright and
+        # writes the HF caches, the projects root and studio.db back under $HOME.
+        # Refused rather than escaped: an escape needs a matching decoder in every reader, in
+        # two languages, which is the installer and the runtime disagreeing about one value
+        # again -- the exact failure this record was added to end. Not portable-only either:
+        # share/studio.conf is line-based in both the shell that sources it and unsloth_cli's
+        # parser, so a newline in a plain custom root breaks the launcher's environment the
+        # same way. A newline is legal in a POSIX path and is nearly always a quoting accident.
+        # Checked on the RESOLVED path, so a relative root under a newline-bearing ancestor is
+        # caught too. The pattern carries a literal newline rather than a variable or $'\n':
+        # several tests lift this function out with awk and run it alone, where a variable
+        # defined elsewhere would expand to empty and make the pattern match every path.
+        case "$_resolved_root" in
+            *'
+'*)
+                echo "ERROR: $_override_var names a path containing a newline." >&2
+                echo "       The portable records store one path per line, so this install" >&2
+                echo "       would resolve a truncated prefix of it on the next launch." >&2
+                echo "       Re-run with the path quoted, or pick one without a newline." >&2
+                exit 1
+                ;;
+        esac
+        # And the same truncation one character short of a newline. Both readers .strip() the
+        # line they read, matching the _trim_ws every root goes through above, so a resolved
+        # root that begins or ends in whitespace is recorded and then read back as a DIFFERENT
+        # directory. Reachable despite that trim, because the trim runs on the argument and
+        # this runs on what `pwd -P` made of it: `--root "/vol/x /"` has no trailing space to
+        # trim, and resolves to `/vol/x ` -- recorded as `/vol/x \n`, read back as `/vol/x`,
+        # which is not the root anything was installed into. Refused here rather than made
+        # significant in the readers, so surrounding whitespace means the same thing on both
+        # sides of the record: never part of a root. Interior spaces are untouched.
+        if [ "$_resolved_root" != "$(_trim_ws "$_resolved_root")" ]; then
+            echo "ERROR: $_override_var names a path that starts or ends with whitespace." >&2
+            echo "       The portable records are read back stripped, so this install would" >&2
+            echo "       resolve a different directory on the next launch." >&2
+            echo "       Re-run against a path without leading or trailing whitespace." >&2
+            exit 1
+        fi
+        # And the same refusal for the whitespace `[[:space:]]` does not cover. The check
+        # above is _trim_ws, which is sed, and the readers it is defending are Python's
+        # `.strip()`. Those two sets are NOT the same: `.strip()` with no argument removes
+        # every character `str.isspace()` accepts -- 29 of them -- while `[[:space:]]` in the
+        # C locale is the six ASCII ones. A root ending in U+00A0 therefore passes the gate
+        # above, is recorded verbatim, and is then read back by storage_roots._env_unsloth_home
+        # and unsloth_cli's two copies of it as the path WITHOUT it: `/vol/x<U+00A0>` installs
+        # the managed node, llama.cpp and whisper.cpp under itself, and the generated shim
+        # then looks for all three under `/vol/x`, a directory that need not even exist.
+        # Exactly the divergence the gate above exists to prevent, one character class over.
+        #
+        # The remaining 23 are listed as the UTF-8 bytes a POSIX path carries them as, because
+        # that is what Python decodes before stripping: os.environ and os.fsdecode use UTF-8
+        # with surrogateescape, so the encoded form is what `.strip()` actually sees, and a
+        # lone 0xA0 that is not valid UTF-8 decodes to a surrogate it does NOT strip. Matched
+        # as bytes rather than by a character class, so the answer cannot change with the
+        # caller's locale: `[[:space:]]` under C.UTF-8 already covers 15 of these and under
+        # LC_ALL=C covers none, and an installer that accepts a root only when the operator's
+        # locale happens to be set a certain way is the same disagreement in a new place.
+        # This also covers install.ps1's reader: .NET's String.Trim() uses Char.IsWhiteSpace,
+        # whose set is a strict subset of Python's, so a root that survives here survives there.
+        # Written inline, with the set spelled out in the loop: several tests lift this
+        # function out with awk and run it alone, where a helper or a variable defined
+        # elsewhere expands to empty and the guard silently accepts everything.
+        _rsd_uni_ws=""
+        for _rsd_ws in $(printf '\034\n\035\n\036\n\037\n\302\205\n\302\240\n\341\232\200\n'\
+'\342\200\200\n\342\200\201\n\342\200\202\n\342\200\203\n\342\200\204\n\342\200\205\n'\
+'\342\200\206\n\342\200\207\n\342\200\210\n\342\200\211\n\342\200\212\n\342\200\250\n'\
+'\342\200\251\n\342\200\257\n\342\201\237\n\343\200\200\n'); do
+            case "$_resolved_root" in
+                "$_rsd_ws"* | *"$_rsd_ws") _rsd_uni_ws=y ;;
+            esac
+        done
+        if [ -n "$_rsd_uni_ws" ]; then
+            echo "ERROR: $_override_var names a path that starts or ends with whitespace." >&2
+            echo "       Not a space or a tab, but one Python still strips: the readers would" >&2
+            echo "       resolve a different directory on the next launch, and the managed" >&2
+            echo "       node, llama.cpp and whisper.cpp with it." >&2
+            echo "       Re-run against a path without leading or trailing whitespace." >&2
+            exit 1
+        fi
+        if [ "$_PORTABLE_MODE" = true ]; then
+            UNSLOTH_ROOT="$_resolved_root"
+            # A root holding the venv directly IS the Studio root (flat layout);
+            # otherwise an update re-derives <root>/studio and finds no venv.
+            # Bare existence of <root>/unsloth_studio is NOT enough to say so. --root takes
+            # any writable directory, so a shared or unrelated one that merely holds a folder
+            # of that name -- an empty leftover, or somebody's dev venv -- would turn the
+            # requested nested layout into a flat Studio root and write Studio state straight
+            # into it, and a POPULATED unrelated one would then be refused outright by the
+            # venv-replacement ownership guard further down, costing an otherwise valid
+            # nested install. Require the same three sentinels that guard accepts (the
+            # in-venv owner marker, share/studio.conf, the bin shim), so the layout decision
+            # and the guard can never disagree: choosing flat here now implies that guard
+            # passes. share/studio.conf and bin/unsloth sit at <root> in BOTH layouts, so a
+            # root that is already NESTED is excluded first -- otherwise a stray
+            # <root>/unsloth_studio beside a real <root>/studio install would relocate it.
+            #
+            # And the two sentinels that live OUTSIDE the venv have to NAME it, not merely
+            # exist. `unsloth` is an ordinary word: a reused --root can hold somebody's own
+            # `bin/unsloth` helper script next to their own `unsloth_studio` virtualenv, and
+            # an existence-only test reads that pair as one of our flat installs. The guard
+            # below accepted the very same unverified file, so the two agreed on the wrong
+            # answer and the install moved the user's environment aside and then deleted the
+            # rollback copy on success. Every writer already records the venv in the sentinel
+            # it writes -- create_studio_shortcuts emits UNSLOTH_EXE='<venv>/bin/unsloth' into
+            # share/studio.conf, the portable block writes `exec '<venv>/bin/unsloth' "$@"` as
+            # the last line of its generated wrapper, and a non-portable env-mode install
+            # symlinks bin/unsloth straight at it -- so all three are matched against THIS
+            # candidate venv. The escaping is the writers' own (`'` -> `'\''`), and the paths
+            # compare literally because both sides come from the same `pwd -P` root. The
+            # in-venv marker needs no such match: it is inside the venv it vouches for.
+            # All three are written by a PREVIOUS run (the marker right after `uv venv`, the
+            # other two after setup.sh returns), which is what makes them usable here, before
+            # this run has written anything.
+            # Inline, not a helper: several tests lift this function out on its own, where a
+            # helper defined elsewhere would go silently inert.
+            _rsd_flat_venv="$_resolved_root/unsloth_studio"
+            _rsd_flat_owned=false
+            # No `-d "$_rsd_flat_venv"` in the gate. The venv directory is the ONE piece of
+            # evidence a reinstall takes away: _start_studio_venv_replacement renames it to
+            # unsloth_studio.rollback.<ts>.<pid> before building the new one, so a run killed
+            # in that window (SIGKILL or power loss; HUP/INT/TERM are trapped and roll back)
+            # left a flat root looking un-flat. The retry then resolved <root>/studio, a
+            # DIFFERENT data root, stranding the real studio.db and every cache at <root> and
+            # pruning rollbacks only under the new path -- so the interrupted install read as
+            # total loss of chat history.
+            #
+            # The other three sentinels sit outside the venv and survive that rename, and all
+            # three name the venv path exactly, which is what makes this safe in the other
+            # direction: a NESTED root mid-reinstall has its own venv renamed too, but its
+            # studio.conf records <root>/studio/unsloth_studio/bin/unsloth, so none of them
+            # match here and nested is still chosen.
+            if [ ! -d "$_resolved_root/studio/unsloth_studio" ]; then
+                _rsd_flat_exe=$(printf '%s' "$_rsd_flat_venv/bin/unsloth" | sed "s/'/'\\\\''/g")
+                if [ -f "$_rsd_flat_venv/.unsloth-studio-owned" ]; then
+                    _rsd_flat_owned=true
+                elif grep -qxF "UNSLOTH_EXE='$_rsd_flat_exe'" \
+                        "$_resolved_root/share/studio.conf" 2>/dev/null; then
+                    _rsd_flat_owned=true
+                elif [ -L "$_resolved_root/bin/unsloth" ] \
+                     && [ "$_resolved_root/bin/unsloth" -ef "$_rsd_flat_venv/bin/unsloth" ] 2>/dev/null; then
+                    _rsd_flat_owned=true
+                elif grep -qxF "exec '$_rsd_flat_exe' \"\$@\"" \
+                        "$_resolved_root/bin/unsloth" 2>/dev/null; then
+                    _rsd_flat_owned=true
+                fi
+            fi
+            if [ "$_rsd_flat_owned" = true ]; then
+                _PORTABLE_FLAT=true
+            fi
+            if [ "$_PORTABLE_FLAT" = true ]; then
+                STUDIO_HOME="$UNSLOTH_ROOT"
+            else
+                STUDIO_HOME="$UNSLOTH_ROOT/studio"
+            fi
+            mkdir -p -- "$STUDIO_HOME" 2>/dev/null || { echo "ERROR: $STUDIO_HOME cannot be created." >&2; exit 1; }
+            DATA_DIR="$UNSLOTH_ROOT/share"
+            _LOCAL_BIN="$UNSLOTH_ROOT/bin"
+        else
+            STUDIO_HOME="$_resolved_root"
+            DATA_DIR="$STUDIO_HOME/share"
+            _LOCAL_BIN="$STUDIO_HOME/bin"
+        fi
         _STUDIO_HOME_REDIRECT=env
-        substep "custom $_override_var=$STUDIO_HOME"
+        substep "custom $_override_var=$_resolved_root"
         return 0
     fi
     _default_home=""
@@ -773,6 +1179,629 @@ _prepare_studio_uv_cache_for_launch() {
     export UV_CACHE_DIR
 }
 _resolve_studio_destinations
+UNSLOTH_ROOT="${UNSLOTH_ROOT:-}"
+
+# Prior state of the portable root records, so they can roll back with the venv. Every writer
+# runs before the install can succeed -- the publish in _export_portable_roots is before the
+# uv bootstrap, and _clear_stale_portable_marker's removal is earlier still -- so a failed run
+# would otherwise leave the restored environment described by a record that no longer matches
+# it. _restore_portable_marker, beside the venv rollback below, is what puts these back; the
+# writers only record, and record inline, so a snippet lifted out of any one of them still
+# runs on its own the way the tests around them do it.
+#
+# Three slots, statically assigned, so nothing has to be allocated:
+#   1  the .unsloth-portable-root marker a portable run publishes at $UNSLOTH_ROOT, and the
+#      flat-layout one a normal run clears at $STUDIO_HOME. The two runs are mutually
+#      exclusive, so one slot covers both.
+#   2  the nested-layout parent marker a normal run clears at $STUDIO_HOME/.., which can fire
+#      in the same run as the flat arm above.
+#   3  the .unsloth-master-root record at $STUDIO_HOME: written by a nested portable run,
+#      cleared by a normal one. Same path in both directions, so again one slot.
+# Each holds "y" plus the file's bytes, or "n" for absent. Slots 1 and 2 are informational --
+# every reader of that marker (storage_roots.unsloth_home, setup.sh's _setup_portable_mode,
+# scripts/uninstall.sh) only tests existence. Slot 3 is NOT: storage_roots._in_root_master_root
+# reads the path out of it. The round trip keeps the bytes either way, since `$(cat)` drops
+# only trailing newlines and the restore prints one back.
+#
+# The launcher a conversion displaces rolls back the same way, on the pairs below. Three
+# conversions displace one, and they need TWO pairs, for the same reason the marker needs two
+# slots -- both spellings can be present at once:
+#   normal -> portable   the shim block renames its wrapper over whatever is at $_LOCAL_BIN
+#                        (flat: the normal install's own symlink). Portable mode only.
+#   portable -> normal, nested   _clear_stale_portable_marker retires <root>/bin/unsloth,
+#                        which the new shim under <root>/studio/bin does NOT land on.
+#   portable -> normal, flat     `ln -sfn` lands on <root>/bin/unsloth itself, so there is
+#                        nothing to retire but everything to preserve.
+# The first is portable-only and the other two are normal-only, so the first shares a pair
+# with the second. The second and third are BOTH normal-mode and both can fire in one run:
+# <root>/studio can carry its own flat marker while <root> carries the parent one (the shape
+# tests/sh/test_install_portable_marker_rollback.sh calls D3), and then <root>/bin/unsloth
+# and <root>/studio/bin/unsloth are two different launchers for the same venv. One pair would
+# silently drop one of them, so the flat conversion gets its own. Order matters below: blockM
+# in the tests ends at _PORTABLE_SHIM_BACKUP, so that line stays last.
+# Moved aside rather than snapshotted into a variable, the way the venv is: the copy keeps
+# the executable bit and the exact bytes (a symlink stays a symlink), and a run killed
+# outright leaves the copy on disk instead of nothing at all.
+#
+# And the pair below, on the same discipline, for the third carrier of portable mode. The
+# marker is not the only file that decides whether a tree comes up contained: $DATA_DIR holds
+# studio.conf, which a portable run fills with UNSLOTH_HOME, UNSLOTH_PORTABLE=1 and every
+# cache root, and launch-studio.sh, which sources it -- and the .desktop entry, the macOS
+# .app and the `unsloth studio update` path all launch through those two. A conversion whose
+# $DATA_DIR does not move (flat: UNSLOTH_STUDIO_HOME=D normal, then --portable over D, and
+# the same in reverse) rewrites both in place, several hundred lines before the setup gate
+# that decides whether the conversion happened at all. So they are snapshotted here with
+# everything else. Copied rather than moved: create_studio_shortcuts writes them from
+# scratch, and a move would leave the tree with NO launcher if that write failed. These two
+# arm LAST, at the shortcuts call, and only while the conversion is still uncommitted, so an
+# install that got past the setup gate keeps the rewrite it just made.
+_PORTABLE_MARKER_PATH_1=""
+_PORTABLE_MARKER_PRIOR_1=""
+_PORTABLE_MARKER_PATH_2=""
+_PORTABLE_MARKER_PRIOR_2=""
+_PORTABLE_MARKER_PATH_3=""
+_PORTABLE_MARKER_PRIOR_3=""
+_PORTABLE_CONF_PATH=""
+_PORTABLE_CONF_BACKUP=""
+_PORTABLE_LAUNCHER_PATH=""
+_PORTABLE_LAUNCHER_BACKUP=""
+_PORTABLE_OLDCONF_PATH=""
+_PORTABLE_OLDCONF_BACKUP=""
+_PORTABLE_OLDLAUNCH_PATH=""
+_PORTABLE_OLDLAUNCH_BACKUP=""
+_PORTABLE_FLAT_SHIM_PATH=""
+_PORTABLE_FLAT_SHIM_BACKUP=""
+_PORTABLE_SHIM_PATH=""
+_PORTABLE_SHIM_BACKUP=""
+
+# Must run before the uv bootstrap: a cache cannot be moved afterwards.
+_export_portable_roots() {
+    [ "$_PORTABLE_MODE" = true ] || return 0
+    export UNSLOTH_HOME="$UNSLOTH_ROOT"
+    export UNSLOTH_PORTABLE=1
+    export UNSLOTH_STUDIO_HOME="$STUDIO_HOME"
+    export UNSLOTH_LLAMA_CPP_PATH="$UNSLOTH_ROOT/llama.cpp"
+
+    # Cache locations are DEFAULTED, not forced. storage_roots._setup_cache_env already yields
+    # to a non-blank explicit value, and main's own _configure_uv_cache prints "preserving
+    # custom UV_CACHE_DIR" for one; forcing them here made the same install honour the user's
+    # choice or discard it depending on whether they came through the shim, the launcher or
+    # the backend. Someone who exported a multi-GB wheel cache onto another disk meant it, and
+    # silently refilling it costs them the download twice. Blank counts as unset, matching the
+    # resolver, so an inherited `KEY=` cannot pin a cache to "".
+    # _epr_default VAR VALUE
+    _epr_default() {
+        eval "_epr_cur=\${$1:-}"
+        # A value that already IS the default this would set is not a caller's choice, so it
+        # must not be reported as one. The uv-cache block further down seeds UV_CACHE_DIR
+        # itself before this function ever runs, and counting that as "kept" told a user who
+        # set nothing that their install was not contained. Re-exported rather than skipped:
+        # the seed may have been assigned in a context that did not export it.
+        if [ "$_epr_cur" = "$2" ]; then
+            eval "export $1"
+            return 0
+        fi
+        case "$_epr_cur" in
+            *[![:space:]]*) _epr_kept="$_epr_kept $1" ;;
+            *) eval "export $1=\"\$2\"" ;;
+        esac
+    }
+    _epr_kept=""
+
+    # uv's cache, interpreters and tools are three separate places.
+    _epr_default UV_INSTALL_DIR "$UNSLOTH_ROOT/bin"
+    _epr_default UV_CACHE_DIR "$UNSLOTH_ROOT/cache/uv"
+    _epr_default UV_PYTHON_INSTALL_DIR "$UNSLOTH_ROOT/cache/uv-python"
+    _epr_default UV_TOOL_DIR "$UNSLOTH_ROOT/cache/uv-tools"
+    _epr_default UV_TOOL_BIN_DIR "$UNSLOTH_ROOT/bin"
+    # Separate from UV_PYTHON_INSTALL_DIR: the python3.x symlinks land here,
+    # defaulting to ~/.local/bin.
+    _epr_default UV_PYTHON_BIN_DIR "$UNSLOTH_ROOT/bin"
+    # Forced: not a location but a promise not to write outside the root.
+    export UV_NO_MODIFY_PATH=1
+
+    _epr_default NPM_CONFIG_CACHE "$UNSLOTH_ROOT/cache/npm"
+    # bun, not npm, is what setup.sh reaches for first when it rebuilds a source
+    # frontend, and it reads none of npm's configuration: with only NPM_CONFIG_CACHE
+    # set, `bun pm cache` still answers ~/.bun/install/cache and every package it
+    # downloads lands there, outside the root this run promises holds everything.
+    _epr_default BUN_INSTALL_CACHE_DIR "$UNSLOTH_ROOT/cache/bun"
+    _epr_default CUDA_CACHE_PATH "$UNSLOTH_ROOT/cache/cuda"
+    # install_python_stack falls back to plain pip when uv fails, and not every
+    # call site passes --no-cache-dir, so ~/.cache/pip fills without this.
+    _epr_default PIP_CACHE_DIR "$UNSLOTH_ROOT/cache/pip"
+
+    # Keeping a caller's cache is the right call, but it also means this install is no longer
+    # the single directory the flag promises. Say so rather than letting the closing "remove
+    # the root with one rm" message imply something that is not true.
+    if [ -n "$_epr_kept" ]; then
+        substep "kept your own cache locations:$_epr_kept" "$C_WARN"
+        substep "any of these outside $UNSLOTH_ROOT stay behind when the root is removed" "$C_WARN"
+    fi
+
+    # The one relocation that costs a download rather than a recompile. In portable mode the
+    # runtime resolver moves HF_HUB_CACHE under the root, so a machine that already has models
+    # in the shared cache keeps them on disk but stops seeing them, and the next run fetches
+    # them again. Nothing here moves or deletes anything -- that is the point -- but the user
+    # should hear it before it costs them the bandwidth and twice the space.
+    #
+    # Only when they have not named HF_HOME or HF_HUB_CACHE themselves: the resolver leaves an
+    # explicit one alone, so there is nothing to warn about. `ls`, not `du`: a warm hub cache
+    # is tens of thousands of files and sizing it would stall the install for seconds.
+    if [ -z "$(_trim_ws "${HF_HUB_CACHE:-}")" ] && [ -z "$(_trim_ws "${HF_HOME:-}")" ]; then
+        # Through XDG_CACHE_HOME, the way huggingface_hub itself resolves it: HF_HUB_CACHE
+        # defaults to HF_HOME/hub, and HF_HOME to $XDG_CACHE_HOME/huggingface, with
+        # $HOME/.cache only as XDG's own default. Hardcoding $HOME/.cache looked in the wrong
+        # place for anyone who sets XDG_CACHE_HOME, so exactly the users whose cache is
+        # somewhere unusual got no warning that it was about to be stranded.
+        _epr_xdg_cache=$(_trim_ws "${XDG_CACHE_HOME:-}")
+        # Relative XDG_CACHE_HOME is invalid per the spec and must be ignored, or the probe
+        # would resolve against the caller's cwd.
+        case "$_epr_xdg_cache" in
+            /*) ;;
+            *) _epr_xdg_cache="$HOME/.cache" ;;
+        esac
+        _epr_hf_hub="$_epr_xdg_cache/huggingface/hub"
+        if [ -d "$_epr_hf_hub" ] && [ -n "$(ls -A "$_epr_hf_hub" 2>/dev/null)" ]; then
+            substep "portable mode moves the model cache under the root" "$C_WARN"
+            substep "$_epr_hf_hub stays on disk but is no longer read;" "$C_WARN"
+            substep "models are downloaded again. Delete it to reclaim the space, or export" "$C_WARN"
+            substep "HF_HUB_CACHE='$_epr_hf_hub' to keep sharing it (it then stays" "$C_WARN"
+            substep "behind when the root is removed)." "$C_WARN"
+        fi
+    fi
+
+    # Same filesystem, or uv's hardlink into the venv degrades to a full copy.
+    mkdir -p -- "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" 2>/dev/null || true
+
+    # Marker so the roots survive an invocation carrying none of this
+    # environment: `source .../activate` reaches the venv binary past the shim.
+    # Snapshotted first: published here, before the uv bootstrap, it would otherwise survive
+    # a failed install and describe whatever the rollback restores instead.
+    _PORTABLE_MARKER_PATH_1="$UNSLOTH_ROOT/.unsloth-portable-root"
+    if [ -f "$_PORTABLE_MARKER_PATH_1" ]; then
+        _PORTABLE_MARKER_PRIOR_1="y$(cat -- "$_PORTABLE_MARKER_PATH_1" 2>/dev/null)"
+    else
+        _PORTABLE_MARKER_PRIOR_1=n
+    fi
+    # Fatal, not best-effort. This marker is the ONLY portable signal that survives on disk,
+    # and every reader requires a regular FILE at this exact path: storage_roots.unsloth_home()
+    # tests `(root / PORTABLE_MARKER).is_file()`, and the CLI's venv inference does the same in
+    # _looks_like_installer_managed_studio_home and _portable_marker_root. A directory left at
+    # the name by an earlier partial or manual setup makes every one of them read False, so the
+    # documented `source <root>/.../activate` path silently resolves back to ~/.unsloth and
+    # writes the HF caches, the projects root and the database OUTSIDE the root the user chose
+    # -- an install that reports success and is not portable. Swallowing that with `|| true` is
+    # the one failure here that cannot be noticed later.
+    # Safe to exit from: this runs before the uv bootstrap and before anything is installed, so
+    # the only things on disk are the empty directories mkdir -p just made inside the user's own
+    # root. It is also before the EXIT/signal traps are armed, so the slot recorded four lines
+    # up is cleared by hand rather than left for a rollback that will not run -- it would be a
+    # no-op anyway (prior "n" removes nothing, because -f is false on a directory), and clearing
+    # it keeps that true if the traps ever move earlier. Inline, not a helper, for the same
+    # reason the snapshot above is inline: this block is lifted out and run on its own by tests.
+    # Staged and renamed, not written in place, for the reason the master root record below
+    # is: `> file` truncates before printf runs, so a write that fails partway (ENOSPC, a
+    # quota, SIGXFSZ) leaves a ZERO-BYTE marker at the exact path every reader tests for
+    # with -f / is_file(). The failure arm clears the rollback slot, so nothing removes it
+    # either, and the next plain run adopts a portable identity for an install that was
+    # never made portable -- measured: install.sh and storage_roots.portable_mode() both
+    # report portable=true off an empty marker. mv within the directory is atomic, so the
+    # marker either has this install's root in it or does not exist.
+    _pmp_tmp="$_PORTABLE_MARKER_PATH_1.$$"
+    _PMP_TMP="$_pmp_tmp"
+    # -d first for the same reason as the record below: `mv file dir` moves the file INTO
+    # the directory instead of failing, which would report success and publish nothing.
+    if [ -d "$_PORTABLE_MARKER_PATH_1" ] \
+        || ! { printf '%s\n' "$UNSLOTH_ROOT" > "$_pmp_tmp" 2>/dev/null \
+                && mv -f "$_pmp_tmp" "$_PORTABLE_MARKER_PATH_1" 2>/dev/null; }; then
+        rm -f "$_pmp_tmp" 2>/dev/null || true
+        _PMP_TMP=""
+        _PORTABLE_MARKER_PATH_1=""
+        _PORTABLE_MARKER_PRIOR_1=""
+        echo "ERROR: could not write the portable root marker at $UNSLOTH_ROOT/.unsloth-portable-root." >&2
+        if [ -d "$UNSLOTH_ROOT/.unsloth-portable-root" ]; then
+            echo "       A directory is in its place. Remove or rename it and re-run." >&2
+        else
+            echo "       Check that $UNSLOTH_ROOT is writable and has free space, then re-run." >&2
+        fi
+        echo "       Without it this install is not portable: an activated venv would fall" >&2
+        echo "       back to $HOME/.unsloth and write outside the root you selected." >&2
+        exit 1
+    fi
+    _PMP_TMP=""
+
+    # The same association again, recorded INSIDE the Studio root, which is what makes it
+    # trustworthy. The marker above sits at $UNSLOTH_ROOT, one level ABOVE the tree this install
+    # owns, and a marker there is honoured by handing $UNSLOTH_ROOT to the backend as
+    # UNSLOTH_HOME -- the directory the managed llama.cpp, node and whisper.cpp are then resolved
+    # from and EXECUTED. So every reader first has to prove our installer wrote it
+    # (storage_roots._parent_marker_is_trustworthy: owned by this euid or root, and not group- or
+    # world-writable). Under the `umask 002` that is standard on multi-user boxes and CI images
+    # the root the user picked is group-writable, so that proof fails for an install that
+    # SUCCEEDED, and the documented `source $STUDIO_HOME/unsloth_studio/bin/activate` path
+    # resolves back to $HOME/.unsloth -- the caches, the projects root and studio.db outside the
+    # selected root, silently. $STUDIO_HOME needs no such proof: it is where the venv goes, so
+    # anything able to write this file can already replace the interpreter it points at.
+    # Written for the NESTED layout, and REMOVED for the flat one, which is not a no-op: a flat
+    # run puts its own marker AT $STUDIO_HOME, and a record left there by an earlier nested
+    # install of the same directory names the level ABOVE it and outranks that marker in every
+    # reader. Either way the file describes this install or is not there.
+    # Fatal for the same reason the publish above is, and reachable for one more: $UNSLOTH_ROOT
+    # was checked writable, $STUDIO_HOME never was, so an unwritable one says so here instead of
+    # failing obscurely in `uv venv` several minutes later. The flat removal only warns -- a
+    # record that cannot be removed still resolves to a real portable root, one level too high
+    # rather than nowhere at all.
+    # Inline, not a helper, like the snapshot above: tests lift this block out and run it alone.
+    _epr_record="$STUDIO_HOME/.unsloth-master-root"
+    if [ "$STUDIO_HOME" != "$UNSLOTH_ROOT" ]; then
+        _PORTABLE_MARKER_PATH_3="$_epr_record"
+        if [ -f "$_epr_record" ]; then
+            _PORTABLE_MARKER_PRIOR_3="y$(cat -- "$_epr_record" 2>/dev/null)"
+        else
+            _PORTABLE_MARKER_PRIOR_3=n
+        fi
+        # Temp file plus mv, not `> "$_epr_record"`: the redirection truncates on open, so a
+        # write that then fails (a full volume, which a portable root on a small or removable
+        # disk is exactly where to expect) left a PREVIOUS valid record empty. The error arm
+        # below clears the rollback slot, so nothing put it back either, and an empty record
+        # sends the runtime to $HOME/.unsloth instead of the root it names. mv within the same
+        # directory is atomic, and on failure the old bytes are still there. The shim publish
+        # further down already does it this way.
+        _epr_tmp="$_epr_record.$$"
+        # Also registered for the install-wide cleanup: the failure arm below removes it, but a
+        # signal never reaches that arm and the staging file would sit in the Studio root.
+        _EPR_TMP="$_epr_tmp"
+        # The -d test comes first and is not redundant: `mv file dir` moves the file INTO the
+        # directory rather than failing, so with a directory in the record's place the rename
+        # would report success and leave no record at all.
+        if [ -d "$_epr_record" ] \
+            || ! { printf '%s\n' "$UNSLOTH_ROOT" > "$_epr_tmp" 2>/dev/null \
+                    && mv -f "$_epr_tmp" "$_epr_record" 2>/dev/null; }; then
+            rm -f "$_epr_tmp" 2>/dev/null || true
+            _EPR_TMP=""
+            _PORTABLE_MARKER_PATH_3=""
+            _PORTABLE_MARKER_PRIOR_3=""
+            echo "ERROR: could not write the master root record at $_epr_record." >&2
+            if [ -d "$_epr_record" ]; then
+                echo "       A directory is in its place. Remove or rename it and re-run." >&2
+            else
+                echo "       Check that it is writable and has free space, then re-run." >&2
+            fi
+            echo "       Without it this install is not portable: an activated venv would fall" >&2
+            echo "       back to $HOME/.unsloth and write outside the root you selected." >&2
+            # Slot 1 went out at the top of this function and this run is over, so put it back
+            # by hand -- the same by-hand discipline the publish above uses, and for the same
+            # reason: the EXIT trap that normally pairs a marker with the environment it
+            # describes is armed several hundred lines below, so nothing else will. Left alone,
+            # a failed conversion of an existing normal <root>/studio install keeps reading as
+            # portable through the parent marker at $UNSLOTH_ROOT (every reader only tests that
+            # the file is there) and silently redirects its caches, its projects root and
+            # studio.db into a root this run never finished building. Reverse order: slot 3 was
+            # released four lines up, slot 1 goes now, so the window unwinds the way it was
+            # published. The prior encoding is the one _restore_portable_marker_slot reads --
+            # "y" plus the old bytes, or "n" for absent -- and it is spelled out again here
+            # rather than shared with that function because tests lift this block out and run
+            # it with nothing else defined.
+            if [ -n "$_PORTABLE_MARKER_PATH_1" ]; then
+                case "$_PORTABLE_MARKER_PRIOR_1" in
+                    y*)
+                        printf '%s\n' "${_PORTABLE_MARKER_PRIOR_1#y}" \
+                            > "$_PORTABLE_MARKER_PATH_1" 2>/dev/null || true
+                        ;;
+                    n*)
+                        rm -f -- "$_PORTABLE_MARKER_PATH_1" 2>/dev/null || true
+                        ;;
+                esac
+                _PORTABLE_MARKER_PATH_1=""
+                _PORTABLE_MARKER_PRIOR_1=""
+            fi
+            exit 1
+        fi
+        # The mv consumed it; release the cleanup slot so nothing else can claim that name.
+        _EPR_TMP=""
+    elif [ -f "$_epr_record" ]; then
+        _PORTABLE_MARKER_PATH_3="$_epr_record"
+        _PORTABLE_MARKER_PRIOR_3="y$(cat -- "$_epr_record" 2>/dev/null)"
+        if rm -f -- "$_epr_record" 2>/dev/null; then
+            substep "removed the nested master root record in $STUDIO_HOME"
+        else
+            _PORTABLE_MARKER_PATH_3=""
+            _PORTABLE_MARKER_PRIOR_3=""
+            substep "could not remove $_epr_record; this root still resolves one level up" "$C_WARN"
+        fi
+    fi
+
+    substep "portable: everything under $UNSLOTH_ROOT"
+}
+
+# The mirror image of that marker. It is the only portable signal that survives on
+# disk, and everything reads it: storage_roots.unsloth_home(), setup.sh's
+# _setup_portable_mode, unsloth_cli._looks_like_installer_managed_studio_home. Since
+# portable_mode() is true whenever unsloth_home() is, a marker left behind by an
+# earlier --portable run keeps a NORMAL reinstall of the same tree redirecting the HF
+# caches and the projects root, with UNSLOTH_PORTABLE=0 powerless to turn it off and
+# no supported way back. Only the marker THIS install would be read through is
+# dropped; a portable root that merely happens to be nearby keeps its own.
+_clear_stale_portable_marker() {
+    if [ "$_PORTABLE_MODE" = true ]; then return 0; fi
+    # --shortcuts-only rewrites launchers and installs nothing, so it is not the
+    # reinstall that converts a tree back; carrying no portable environment is
+    # normal for it, and it must not cost a working portable install its marker.
+    if [ "$_SHORTCUTS_ONLY" = true ]; then return 0; fi
+    # The in-root master root record first. It sits at $STUDIO_HOME itself, the directory this
+    # reinstall is taking over, and it outranks both markers below in every reader because it is
+    # the one signal that needs no permission check -- so leaving it behind would keep
+    # storage_roots.unsloth_home() answering the OLD master root no matter what happens to the
+    # markers. Unconditional, not gated on the `*/studio` leaf the parent arm below matches:
+    # this file is INSIDE the tree being reinstalled, so it is ours to drop whatever the
+    # directory is called, whereas a marker one level up may belong to a neighbour. Its own
+    # slot, because both arms below can also fire in the same run and this is a third path.
+    # Snapshot before the removal, and inline, exactly as those arms do it.
+    _spm_record="$STUDIO_HOME/.unsloth-master-root"
+    if [ -f "$_spm_record" ]; then
+        _PORTABLE_MARKER_PATH_3="$_spm_record"
+        _PORTABLE_MARKER_PRIOR_3="y$(cat -- "$_spm_record" 2>/dev/null)"
+        if rm -f -- "$_spm_record" 2>/dev/null; then
+            substep "removed the stale master root record in $STUDIO_HOME"
+        else
+            _PORTABLE_MARKER_PATH_3=""
+            _PORTABLE_MARKER_PRIOR_3=""
+            substep "could not remove $_spm_record; this install still reads as portable" "$C_WARN"
+        fi
+    fi
+    _spm_name=".unsloth-portable-root"
+    # Flat layout: the master root IS the Studio root, so the marker sits in the
+    # directory being installed into. Unless a nested portable install still lives
+    # at <root>/studio, in which case the marker is that install's, not ours.
+    if [ -f "$STUDIO_HOME/$_spm_name" ]; then
+        if [ -d "$STUDIO_HOME/studio/unsloth_studio" ]; then
+            substep "portable marker kept: $STUDIO_HOME/studio still resolves through it" "$C_WARN"
+        else
+            # Snapshot before the removal: this runs before anything is installed, and a
+            # failed run restores the portable venv that was reached through this marker.
+            # Inline, not a helper, so this block still runs when lifted out on its own.
+            _PORTABLE_MARKER_PATH_1="$STUDIO_HOME/$_spm_name"
+            _PORTABLE_MARKER_PRIOR_1="y$(cat -- "$_PORTABLE_MARKER_PATH_1" 2>/dev/null)"
+            if rm -f -- "$STUDIO_HOME/$_spm_name" 2>/dev/null; then
+                substep "removed the stale portable marker in $STUDIO_HOME"
+                # The flat root's own launcher. <root>/bin IS the bin this reinstall writes
+                # into, so `ln -sfn` further down replaces the wrapper in place: nothing to
+                # retire, unlike the nested case below, but the same thing to preserve. The
+                # marker two lines up rolls back on failure, and without this the tree it
+                # comes back to reads as portable through a launcher that no longer exports
+                # UNSLOTH_HOME, UNSLOTH_PORTABLE or any cache root -- the half-restored state
+                # the marker rollback exists to prevent. Nested inside the removal on purpose:
+                # an ordinary reinstall has no flat marker and never reaches this at all, so
+                # nothing here can touch the shim path every normal install takes. Ownership
+                # is the same behavioural probe the nested retirement uses -- a regular file,
+                # not a symlink, exporting UNSLOTH_PORTABLE=1 and exec'ing THIS STUDIO_HOME's
+                # venv -- so a user's own script, another install's launcher, a symlink or a
+                # directory is left alone. Its own slot, not the nested one: both arms can
+                # fire in the same run. Inline, not a helper, so this block still runs when
+                # lifted out on its own.
+                _spm_flat_shim="$STUDIO_HOME/bin/unsloth"
+                _spm_flat_venv=$(printf '%s' "$STUDIO_HOME/unsloth_studio/bin/unsloth" | sed "s/'/'\\\\''/g")
+                if [ -f "$_spm_flat_shim" ] && [ ! -L "$_spm_flat_shim" ] \
+                    && grep -qxF "export UNSLOTH_PORTABLE=1" "$_spm_flat_shim" 2>/dev/null \
+                    && grep -qxF "exec '$_spm_flat_venv' \"\$@\"" "$_spm_flat_shim" 2>/dev/null; then
+                    _PORTABLE_FLAT_SHIM_PATH="$_spm_flat_shim"
+                    _PORTABLE_FLAT_SHIM_BACKUP="$STUDIO_HOME/bin/.unsloth-flat-shim.$$"
+                    if mv -f "$_spm_flat_shim" "$_PORTABLE_FLAT_SHIM_BACKUP" 2>/dev/null; then
+                        substep "replacing the portable launcher at $_spm_flat_shim"
+                    else
+                        _PORTABLE_FLAT_SHIM_PATH=""
+                        _PORTABLE_FLAT_SHIM_BACKUP=""
+                        substep "could not move $_spm_flat_shim aside; a failed reinstall cannot put it back" "$C_WARN"
+                    fi
+                fi
+            else
+                _PORTABLE_MARKER_PATH_1=""
+                _PORTABLE_MARKER_PRIOR_1=""
+                substep "could not remove $STUDIO_HOME/$_spm_name; this install still reads as portable" "$C_WARN"
+            fi
+        fi
+    fi
+    # Nested layout: <root>/studio is the one spelling under which a parent marker
+    # names THIS install. Any other child of a portable root is a different tree,
+    # and its marker is not ours to delete.
+    #
+    # No dirname: BSD dirname has no `--`. Strip whatever the leaf is spelled
+    # rather than the literal `/studio`, which would derive the wrong parent for a
+    # differently-cased leaf.
+    _spm_leafname="${STUDIO_HOME##*/}"
+    _spm_parent="${STUDIO_HOME%/*}"
+    [ -n "$_spm_parent" ] || _spm_parent="/"
+    if [ "$_spm_leafname" != studio ]; then
+        # A leaf spelled otherwise can still BE <parent>/studio: on a
+        # case-insensitive filesystem getcwd hands back the spelling that was
+        # typed rather than the one on disk, so UNSLOTH_STUDIO_HOME=<root>/Studio
+        # opens the `studio` the installer wrote and arrives here spelled
+        # `Studio`. An exact match would leave behind a marker both readers still
+        # honour (storage_roots._inherits_parent_portable_marker, setup.sh's
+        # _setup_portable_mode) and the reinstall would come back up portable.
+        #
+        # Asked of the FILESYSTEM, not of `uname`. macOS is case-insensitive by
+        # default but not by rule, and a case-sensitive APFS volume is exactly
+        # what a portable install on an external disk tends to be formatted as.
+        # There `studio` and `Studio` are two directories, so a platform-wide fold
+        # would delete a nested portable sibling's marker during a normal
+        # reinstall of the neighbour. `-ef` is the st_dev/st_ino comparison the
+        # ownership tests below already use, and it needs neither `readlink -f`
+        # nor `realpath`, neither of which is on the BSD side.
+        #
+        # The cheap name test stays in front of it so the common case costs no
+        # stat at all and so a differently-named child is still never adopted.
+        # Both probes DECLINE on failure: a missing <parent>/studio, or a `[`
+        # without -ef, leaves the marker in place. That is the safe direction --
+        # the readers run the same predicate and decline with it, so the install
+        # degrades to a plain one instead of one tree deleting the record another
+        # is still read through, and a genuine nested portable root keeps its own
+        # .unsloth-master-root record, which outranks the parent marker anyway.
+        case "$(printf '%s' "$_spm_leafname" | tr '[:upper:]' '[:lower:]')" in
+            (studio) ;;
+            (*) return 0 ;;
+        esac
+        [ -d "$_spm_parent/studio" ] || return 0
+        [ "$STUDIO_HOME" -ef "$_spm_parent/studio" ] 2>/dev/null || return 0
+    fi
+    # ...and the parent has to be THIS install's master root, not merely a directory
+    # with a `studio` child. The leaf test above matches a NAME, and a name is not
+    # ownership. <parent> can be a FLAT portable install in its own right -- its venv
+    # directly at <parent>/unsloth_studio, its marker at <parent>/.unsloth-portable-root,
+    # its launcher at <parent>/bin/unsloth -- and a normal install pointed at
+    # <parent>/studio is then a SEPARATE tree that arrived through UNSLOTH_STUDIO_HOME.
+    # Removing the marker there converts nothing: it de-portables the neighbour, which
+    # keeps its venv, its share/studio.conf and its wrapper and simply stops resolving
+    # as portable, so its HF caches and projects root move back under $HOME on the next
+    # launch. The legitimate case is the mirror image -- a NESTED portable install keeps
+    # its venv at <parent>/studio/unsloth_studio and has nothing at
+    # <parent>/unsloth_studio, so the marker at <parent> is the one THIS tree is read
+    # through and retiring it is the entire point of this function.
+    #
+    # The two are told apart by the one question that separates them: does the parent
+    # own a venv DIRECTLY? Same four ownership tests, same order, as the flat-layout
+    # selector in _resolve_studio_destinations and the venv-replacement guard, against
+    # the parent's own paths. The two sentinels that live outside the venv have to NAME
+    # it rather than merely exist, for the reason they do there: `unsloth` is an ordinary
+    # word, and a bare bin/unsloth beside a bare unsloth_studio is somebody's own pair as
+    # often as it is one of ours. Deliberately WITHOUT that selector's already-nested
+    # exclusion: a nested child under the flat parent is exactly the shape this case has,
+    # so excluding on it would answer "not flat" for the wrong reason and delete the
+    # marker all over again. storage_roots._parent_portable_root declines on the same
+    # question, through _flat_venv_is_owned, so the installer and the resolvers agree
+    # about whose marker this is instead of one erasing what the other honours.
+    # Inline, not a helper, so this block still runs when lifted out on its own.
+    _spmp_flat_venv="$_spm_parent/unsloth_studio"
+    _spmp_flat_owned=false
+    if [ -d "$_spmp_flat_venv" ]; then
+        _spmp_flat_exe=$(printf '%s' "$_spmp_flat_venv/bin/unsloth" | sed "s/'/'\\\\''/g")
+        if [ -f "$_spmp_flat_venv/.unsloth-studio-owned" ]; then
+            _spmp_flat_owned=true
+        elif grep -qxF "UNSLOTH_EXE='$_spmp_flat_exe'" \
+                "$_spm_parent/share/studio.conf" 2>/dev/null; then
+            _spmp_flat_owned=true
+        elif [ -L "$_spm_parent/bin/unsloth" ] \
+             && [ "$_spm_parent/bin/unsloth" -ef "$_spmp_flat_venv/bin/unsloth" ] 2>/dev/null; then
+            _spmp_flat_owned=true
+        elif grep -qxF "exec '$_spmp_flat_exe' \"\$@\"" \
+                "$_spm_parent/bin/unsloth" 2>/dev/null; then
+            _spmp_flat_owned=true
+        fi
+    fi
+    if [ "$_spmp_flat_owned" = true ]; then
+        # Everything below this point in the function belongs to the same conversion, so
+        # it stops here too: the wrapper at <parent>/bin/unsloth is the flat install's
+        # own launcher, and moving it aside would break the command that install told its
+        # user to run.
+        substep "portable marker kept: $_spm_parent is a flat install of its own" "$C_WARN"
+        return 0
+    fi
+    if [ -f "$_spm_parent/$_spm_name" ]; then
+        # Snapshot before the removal, as above.
+        _PORTABLE_MARKER_PATH_2="$_spm_parent/$_spm_name"
+        _PORTABLE_MARKER_PRIOR_2="y$(cat -- "$_PORTABLE_MARKER_PATH_2" 2>/dev/null)"
+        if rm -f -- "$_spm_parent/$_spm_name" 2>/dev/null; then
+            substep "removed the stale portable marker in $_spm_parent"
+        else
+            _PORTABLE_MARKER_PATH_2=""
+            _PORTABLE_MARKER_PRIOR_2=""
+            substep "could not remove $_spm_parent/$_spm_name; this install still reads as portable" "$C_WARN"
+        fi
+    fi
+    # The marker is not the only portable artifact this conversion leaves. A nested
+    # `--portable` run put its wrapper at <root>/bin/unsloth and its summary printed
+    # that exact path as the launch command, while this run writes its own shim under
+    # $_LOCAL_BIN instead. So the wrapper survives, and it still exports UNSLOTH_HOME,
+    # UNSLOTH_PORTABLE=1 and the cache roots before exec'ing the venv this run rebuilds
+    # at the same path: the tree reads as converted, yet the command the user was told
+    # to run puts the HF caches and the projects root straight back. Moved aside rather
+    # than deleted so the rollback restores it byte for byte, mode included, with the
+    # marker it belongs to. Only OUR wrapper for THIS install is touched -- it has to
+    # export UNSLOTH_PORTABLE=1 and exec the venv under $STUDIO_HOME -- so a launcher
+    # belonging to another install, a symlink, or a directory is left alone. Inline, not
+    # a helper, so this block still runs when lifted out on its own.
+    _spm_shim="$_spm_parent/bin/unsloth"
+    _spm_venv=$(printf '%s' "$STUDIO_HOME/unsloth_studio/bin/unsloth" | sed "s/'/'\\\\''/g")
+    if [ -f "$_spm_shim" ] && [ ! -L "$_spm_shim" ] \
+        && grep -qxF "export UNSLOTH_PORTABLE=1" "$_spm_shim" 2>/dev/null \
+        && grep -qxF "exec '$_spm_venv' \"\$@\"" "$_spm_shim" 2>/dev/null; then
+        _PORTABLE_SHIM_PATH="$_spm_shim"
+        _PORTABLE_SHIM_BACKUP="$_spm_parent/bin/.unsloth-portable-shim.$$"
+        if mv -f "$_spm_shim" "$_PORTABLE_SHIM_BACKUP" 2>/dev/null; then
+            substep "removed the portable launcher at $_spm_shim"
+            substep "this install launches with $_LOCAL_BIN/unsloth"
+        else
+            _PORTABLE_SHIM_PATH=""
+            _PORTABLE_SHIM_BACKUP=""
+            substep "could not remove $_spm_shim; running it still re-enters portable mode" "$C_WARN"
+        fi
+    fi
+
+    # The wrapper is not the only carrier of the identity. A nested `--portable` run also
+    # wrote share/studio.conf and launch-studio.sh at <parent>/share -- one level ABOVE the
+    # tree this conversion owns -- and that config unconditionally exports UNSLOTH_HOME and
+    # UNSLOTH_PORTABLE=1 before naming the very venv this run rebuilds. The conversion writes
+    # its own pair into $DATA_DIR ($STUDIO_HOME/share), so the old one simply stayed: two
+    # otherwise-valid launchers over one install, and whichever the user kept a path to
+    # decided where the HF caches and the projects root went. The tree reads as converted and
+    # is not.
+    #
+    # Same treatment as the wrapper, for the same reasons: moved aside rather than deleted so
+    # a failed conversion hands back a tree that launches as it did, and only when the config
+    # is OURS and names THIS install -- it has to export UNSLOTH_PORTABLE=1 and record the
+    # venv under $STUDIO_HOME, so a config belonging to another install is left alone.
+    #
+    # Skipped when <parent>/share IS $DATA_DIR, which is the flat layout: there the pair this
+    # run is about to write and the pair being retired are the same two files, and moving them
+    # aside would delete the launchers of the install that is staying.
+    _spm_share="$_spm_parent/share"
+    if [ "$_spm_share" != "$DATA_DIR" ] && [ -f "$_spm_share/studio.conf" ]; then
+        if grep -qxF "export UNSLOTH_PORTABLE=1" "$_spm_share/studio.conf" 2>/dev/null \
+            && grep -qxF "UNSLOTH_EXE='$_spm_venv'" "$_spm_share/studio.conf" 2>/dev/null; then
+            _PORTABLE_OLDCONF_PATH="$_spm_share/studio.conf"
+            _PORTABLE_OLDCONF_BACKUP="$_spm_share/.unsloth-portable-conf.$$"
+            if mv -f "$_PORTABLE_OLDCONF_PATH" "$_PORTABLE_OLDCONF_BACKUP" 2>/dev/null; then
+                substep "removed the portable configuration at $_spm_share/studio.conf"
+                # Only with the config gone: launch-studio.sh is inert on its own (it sources
+                # the config for the roots), and a launcher left with no config to read is a
+                # broken command rather than a second identity.
+                if [ -f "$_spm_share/launch-studio.sh" ] && [ ! -L "$_spm_share/launch-studio.sh" ]; then
+                    _PORTABLE_OLDLAUNCH_PATH="$_spm_share/launch-studio.sh"
+                    _PORTABLE_OLDLAUNCH_BACKUP="$_spm_share/.unsloth-portable-launch.$$"
+                    if ! mv -f "$_PORTABLE_OLDLAUNCH_PATH" "$_PORTABLE_OLDLAUNCH_BACKUP" 2>/dev/null; then
+                        _PORTABLE_OLDLAUNCH_PATH=""
+                        _PORTABLE_OLDLAUNCH_BACKUP=""
+                    fi
+                fi
+            else
+                _PORTABLE_OLDCONF_PATH=""
+                _PORTABLE_OLDCONF_BACKUP=""
+                substep "could not remove $_spm_share/studio.conf; it still describes a portable install" "$C_WARN"
+            fi
+        fi
+    fi
+}
+
+# mkdir -p follows a layout directory the user pre-symlinked to another volume, so
+# the tree lands there and the `rm -rf '<root>'` printed below leaves it behind.
+# Named rather than refused: the big-disk layout is deliberate, our promise is what
+# is wrong.
+_portable_escapes() {
+    [ "$_PORTABLE_MODE" = true ] || return 0
+    # Every top-level name the install writes at the root: the layout dirs plus the three
+    # native runtimes setup.sh hangs off UNSLOTH_HOME (llama.cpp, node, whisper.cpp).
+    for _esc_name in studio share bin cache llama.cpp node whisper.cpp; do
+        _esc_link="$UNSLOTH_ROOT/$_esc_name"
+        [ -L "$_esc_link" ] || continue
+        # No readlink -f / realpath: neither is POSIX and BSD readlink lacks -f.
+        _esc_target="$(CDPATH= cd -P -- "$_esc_link" 2>/dev/null && pwd -P)" || _esc_target=""
+        [ -n "$_esc_target" ] || continue
+        case "$_esc_target" in "$UNSLOTH_ROOT"|"$UNSLOTH_ROOT"/*) continue ;; esac
+        printf '%s -> %s\n' "$_esc_name" "$_esc_target"
+    done
+}
+
 # The PATH we inherited, before anything below prepends to it. The shim setup at the end asks
 # whether a NEW login shell will find _LOCAL_BIN, and by then this process has prepended it
 # several times (uv bootstrap, venv), so testing $PATH there answers yes for a shell that would
@@ -788,7 +1817,21 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 # an existing unwritable directory and -w reads the mode rather than the filesystem, so probe
 # with a real create.
 if [ -z "${UV_CACHE_DIR:-}" ]; then
-    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    # A portable install's uv cache is <root>/cache/uv, NOT <root>/studio/cache/uv. That is
+    # what _export_portable_roots defaults, what the generated bin/unsloth shim and
+    # share/studio.conf restate, and what storage_roots' portable cache defaults resolve.
+    # Seeding the Studio path here instead was wrong twice over, because this block runs
+    # BEFORE the _export_portable_roots call: a nested install filled <root>/studio/cache/uv
+    # and every later launch read the empty <root>/cache/uv, re-downloading the wheels it had
+    # just fetched into a duplicate tree; and _epr_default then read the installer's own seed
+    # back as a caller's explicit choice and told a user who had set nothing that their cache
+    # locations were being kept and might sit outside the root. Still co-located with the venv
+    # either way -- both paths are inside the same root.
+    if [ "${_PORTABLE_MODE:-false}" = true ]; then
+        UV_CACHE_DIR="$UNSLOTH_ROOT/cache/uv"
+    else
+        UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    fi
     export UV_CACHE_DIR
     # mktemp, not a $$ name: a predictable path in another account's directory can be
     # pre-created as a symlink for `: >` to follow and truncate as root.
@@ -969,6 +2012,259 @@ _commit_studio_venv_replacement() {
     _prune_stale_studio_venv_rollbacks
 }
 
+# The portable marker's half of the same discipline, on the slots recorded far above by
+# _export_portable_roots and _clear_stale_portable_marker. Kept here, beside the venv it
+# describes, so both handlers below restore a tree and its marker together: a `--portable`
+# over a normal install that dies later would otherwise restore the normal venv under a
+# marker that keeps redirecting the HF caches and the projects root (UNSLOTH_PORTABLE=0
+# cannot turn that off), and a normal reinstall over a portable one would restore the
+# portable venv with no on-disk root left, so activating it writes outside the volume it
+# was contained in.
+_restore_portable_marker_slot() {  # path prior
+    [ -n "$1" ] || return 0
+    case "$2" in
+        y*)
+            # Never overwrite a marker that is back already: a concurrent portable install
+            # of the same tree owns it now.
+            if [ ! -f "$1" ] && printf '%s\n' "${2#y}" > "$1" 2>/dev/null; then
+                rollback_substep "restored the portable marker at $1"
+            fi
+            ;;
+        n*)
+            if [ -f "$1" ] && rm -f -- "$1" 2>/dev/null; then
+                rollback_substep "removed the portable marker this run published"
+            fi
+            ;;
+    esac
+    return 0
+}
+
+# The launcher a conversion moved aside, put back with the marker it belongs to: a
+# conversion that fails restores the install that was there, and the command that install's
+# summary printed has to work again, still carrying the environment that kept it contained.
+# Never over a path something else has taken back, for the same reason a marker that is back
+# already is left alone -- but "taken back" depends on the direction, so each slot says which
+# extra shape IT is allowed to overwrite, and anything else is refused:
+#   ''         nothing. The nested retirement writes its new shim under <root>/studio/bin,
+#              so <root>/bin/unsloth is simply free by the time this runs.
+#   wrapper    the wrapper this run generated, recognized by the line the shim block writes
+#              two lines into every one of them. Normal -> portable renames onto the SAME
+#              path, so its own wrapper is sitting there and nothing else may be.
+#   symlink    the symlink `ln -sfn` writes. The flat retirement renames onto the same path
+#              too, and `ln -sfn` is the only thing that puts a symlink there. Deliberately
+#              not "-ef this venv": at rollback time the venv restore has already run, and
+#              demanding that it resolve would make this inert exactly when the previous tree
+#              could not be put back -- the case that most needs its launcher returned.
+# -e or -L on both sides, never -e alone: the flat conversions move a SYMLINK aside, and -e
+# follows it to a target the venv rollback may have just deleted.
+_restore_portable_shim_slot() {  # path backup extra-shape
+    [ -n "$1" ] || return 0
+    _rps_free=false
+    if [ ! -e "$1" ] && [ ! -L "$1" ]; then
+        _rps_free=true
+    elif [ "$3" = symlink ]; then
+        if [ -L "$1" ]; then _rps_free=true; fi
+    elif [ "$3" = wrapper ]; then
+        if [ -f "$1" ] && [ ! -L "$1" ] \
+            && grep -qxF "# Generated by install.sh --portable. Keeps every Unsloth path inside" \
+                "$1" 2>/dev/null; then
+            _rps_free=true
+        fi
+    fi
+    if [ "$_rps_free" = true ] \
+        && { [ -e "$2" ] || [ -L "$2" ]; } \
+        && mv -f "$2" "$1" 2>/dev/null; then
+        rollback_substep "restored the previous launcher at $1"
+    fi
+    return 0
+}
+
+_restore_portable_shim() {
+    # The shared pair: the nested retirement leaves the path free, the portable conversion
+    # leaves its own wrapper on it, and the two cannot both run (one is normal-mode only,
+    # the other portable-mode only), so one shape rule covers both.
+    _restore_portable_shim_slot "$_PORTABLE_SHIM_PATH" "$_PORTABLE_SHIM_BACKUP" wrapper
+    _restore_portable_shim_slot "$_PORTABLE_FLAT_SHIM_PATH" "$_PORTABLE_FLAT_SHIM_BACKUP" symlink
+    # The retired portable config and launcher. `free` rather than a shape rule: these sit in
+    # a share/ this run does not write, so nothing should have put anything back at the name,
+    # and restoring over a file that appeared there would destroy it.
+    _restore_portable_shim_slot "$_PORTABLE_OLDCONF_PATH" "$_PORTABLE_OLDCONF_BACKUP" free
+    _restore_portable_shim_slot "$_PORTABLE_OLDLAUNCH_PATH" "$_PORTABLE_OLDLAUNCH_BACKUP" free
+    _PORTABLE_SHIM_PATH=""
+    _PORTABLE_SHIM_BACKUP=""
+    _PORTABLE_FLAT_SHIM_PATH=""
+    _PORTABLE_FLAT_SHIM_BACKUP=""
+    _PORTABLE_OLDCONF_PATH=""
+    _PORTABLE_OLDCONF_BACKUP=""
+    _PORTABLE_OLDLAUNCH_PATH=""
+    _PORTABLE_OLDLAUNCH_BACKUP=""
+    return 0
+}
+
+# studio.conf and launch-studio.sh, taken aside before create_studio_shortcuts writes over
+# them. Armed only when this run is converting -- portable mode, or a marker/launcher slot
+# that _clear_stale_portable_marker filled -- so an ordinary reinstall, whose rewrite of these
+# two is a no-op anyway, never copies anything. Kept here beside the marker restore for the
+# reason the whole file gives: a conversion that fails has to hand back a tree that launches
+# the way it did before, and these two are what the .desktop entry, the .app and the update
+# path actually run.
+_snapshot_portable_launcher() {  # data-dir
+    [ -n "$1" ] || return 0
+    # Armed only while a conversion is still UNCOMMITTED, which is exactly the reported case:
+    # setup.sh failed, so the gate above committed nothing and the rewrite below is about to
+    # describe an install that will not be here. A run whose conversion DID commit rewrites
+    # these two for keeps, because the tree they describe is the one that now exists -- so the
+    # test is the marker and launcher slots, not $_PORTABLE_MODE, which stays true past the
+    # commit and would arm this on a run with nothing left to unwind.
+    if [ -z "${_PORTABLE_MARKER_PATH_1:-}${_PORTABLE_MARKER_PATH_2:-}${_PORTABLE_MARKER_PATH_3:-}${_PORTABLE_SHIM_PATH:-}${_PORTABLE_FLAT_SHIM_PATH:-}" ]; then
+        return 0
+    fi
+    # -f, not -e: a directory at either name is not something this can hand back, and the write
+    # below would fail on it anyway. Only a file that is ALREADY there is recorded; one this
+    # run creates is left where it is, because "shortcuts survive a failed setup" is this
+    # installer's documented contract and deleting a launcher the .desktop entry and the .app
+    # point at would break it for the sake of a file nothing had before. -p keeps
+    # launch-studio.sh executable. A copy that cannot be made takes its own remains with it and
+    # disarms, rather than promising a restore that would find nothing.
+    _spl_conf="$1/studio.conf"
+    if [ -f "$_spl_conf" ]; then
+        _spl_backup="$1/.unsloth-studio-conf.$$"
+        if cp -p "$_spl_conf" "$_spl_backup" 2>/dev/null; then
+            _PORTABLE_CONF_PATH="$_spl_conf"
+            _PORTABLE_CONF_BACKUP="$_spl_backup"
+        else
+            rm -f "$_spl_backup" 2>/dev/null || true
+            substep "could not copy $_spl_conf aside; a failed conversion cannot put it back" "$C_WARN"
+        fi
+    fi
+    _spl_launcher="$1/launch-studio.sh"
+    if [ -f "$_spl_launcher" ]; then
+        _spl_backup="$1/.unsloth-launch-studio.$$"
+        if cp -p "$_spl_launcher" "$_spl_backup" 2>/dev/null; then
+            _PORTABLE_LAUNCHER_PATH="$_spl_launcher"
+            _PORTABLE_LAUNCHER_BACKUP="$_spl_backup"
+        else
+            rm -f "$_spl_backup" 2>/dev/null || true
+            substep "could not copy $_spl_launcher aside; a failed conversion cannot put it back" "$C_WARN"
+        fi
+    fi
+    return 0
+}
+
+# The other half. Copied back rather than renamed back, unlike the shim slots: an operator can
+# point share/studio.conf at a file kept somewhere else, `cat >` in create_studio_shortcuts
+# writes THROUGH that symlink, and a rename would answer it by replacing the link with a plain
+# file and leaving the conversion's bytes in the target with nothing left to undo them. `cp -p`
+# writes through it the same way the rewrite did, so the link survives and the bytes behind it
+# are the ones that were there. The copy goes either way, restored or not, so a failure here
+# cannot leave a dotfile in $DATA_DIR that nothing ever prunes.
+_restore_portable_launcher_slot() {  # path backup
+    [ -n "$1" ] || return 0
+    [ -n "$2" ] || return 0
+    if [ -f "$2" ] && cp -p "$2" "$1" 2>/dev/null; then
+        rollback_substep "restored $1"
+    fi
+    rm -f "$2" 2>/dev/null || true
+    return 0
+}
+
+_restore_portable_launcher() {
+    _restore_portable_launcher_slot "$_PORTABLE_CONF_PATH" "$_PORTABLE_CONF_BACKUP"
+    _restore_portable_launcher_slot "$_PORTABLE_LAUNCHER_PATH" "$_PORTABLE_LAUNCHER_BACKUP"
+    _PORTABLE_CONF_PATH=""
+    _PORTABLE_CONF_BACKUP=""
+    _PORTABLE_LAUNCHER_PATH=""
+    _PORTABLE_LAUNCHER_BACKUP=""
+    return 0
+}
+
+# Called from the exit and signal handlers, so a successful install keeps what it wrote -- and
+# from the one place that exits 0 having built nothing HERE, the WSL reroute, which is the same
+# situation as a failure as far as this distro's records are concerned.
+_restore_portable_marker() {
+    _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_1" "$_PORTABLE_MARKER_PRIOR_1"
+    _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_2" "$_PORTABLE_MARKER_PRIOR_2"
+    _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_3" "$_PORTABLE_MARKER_PRIOR_3"
+    _restore_portable_shim
+    # After the shim, for the same reason the shim comes after the venv: the launcher these
+    # two describe is back on its path by now.
+    _restore_portable_launcher
+    _PORTABLE_MARKER_PATH_1=""
+    _PORTABLE_MARKER_PATH_2=""
+    _PORTABLE_MARKER_PATH_3=""
+    return 0
+}
+
+# The install is committed. Anything that fails after this -- the autostart returning nonzero
+# is the reachable one -- must not undo the marker, exactly as _commit_studio_venv_replacement
+# stops the same exit from restoring the previous environment over the one just installed.
+#
+# Two callers, because the state above does not all become permanent at the same moment. The
+# marker and the record describe the ENVIRONMENT, so they are permanent the instant the venv
+# is, and the caller beside the venv commit asks for `identity` to release exactly those. The
+# launchers are not: the nested retirement leaves <root>/bin/unsloth empty on purpose and the
+# flat one is still waiting for the `ln -sfn` three hundred lines further down, so releasing
+# their copies there would answer a fatal shim step in between by leaving nothing on the path
+# and no copy to put it back -- deleting a launcher of the user's on a run that then reports
+# failure. They wait for the caller at the end of the install, which is past the launcher that
+# supersedes them. One function rather than two, and the slots cleared inline in it, because
+# the tests lift this body out and read it for the slots it names -- and they anchor on the
+# definition line ending in `{`, so the argument is documented here rather than beside it.
+#   $1  "identity" to release the marker slots only; empty to release everything.
+_commit_portable_marker() {
+    _PORTABLE_MARKER_PATH_1=""
+    _PORTABLE_MARKER_PRIOR_1=""
+    _PORTABLE_MARKER_PATH_2=""
+    _PORTABLE_MARKER_PRIOR_2=""
+    _PORTABLE_MARKER_PATH_3=""
+    _PORTABLE_MARKER_PRIOR_3=""
+    # An `if`, not `[ ... ] && return 0`: as the last thing a caller sees, a false AND-list
+    # hands back 1 and ends the install under set -e.
+    if [ "${1:-}" = identity ]; then return 0; fi
+    # The conversion stands, so the launcher it displaced stays displaced -- retired in one
+    # direction, renamed over in the other; drop the copy that was only there to put it back.
+    # An `if`, not `[ ... ] && rm`: set -e is on and the false branch of that AND-list would
+    # end the install right here.
+    if [ -n "$_PORTABLE_SHIM_BACKUP" ]; then
+        rm -f "$_PORTABLE_SHIM_BACKUP" 2>/dev/null || true
+    fi
+    if [ -n "$_PORTABLE_FLAT_SHIM_BACKUP" ]; then
+        rm -f "$_PORTABLE_FLAT_SHIM_BACKUP" 2>/dev/null || true
+    fi
+    # The retired portable config and launcher, committed the same way: once the conversion
+    # stands, the pair describing the install it replaced is not coming back, and leaving the
+    # copies would put two dotfiles in a share/ nothing prunes.
+    if [ -n "$_PORTABLE_OLDCONF_BACKUP" ]; then
+        rm -f "$_PORTABLE_OLDCONF_BACKUP" 2>/dev/null || true
+    fi
+    if [ -n "$_PORTABLE_OLDLAUNCH_BACKUP" ]; then
+        rm -f "$_PORTABLE_OLDLAUNCH_BACKUP" 2>/dev/null || true
+    fi
+    _PORTABLE_SHIM_PATH=""
+    _PORTABLE_SHIM_BACKUP=""
+    _PORTABLE_FLAT_SHIM_PATH=""
+    _PORTABLE_FLAT_SHIM_BACKUP=""
+    _PORTABLE_OLDCONF_PATH=""
+    _PORTABLE_OLDCONF_BACKUP=""
+    _PORTABLE_OLDLAUNCH_PATH=""
+    _PORTABLE_OLDLAUNCH_BACKUP=""
+    # Same for the launcher pair. Empty at the commit beside the venv -- these arm later, at
+    # the shortcuts call -- and holding the copies at the commit that ends the install, which
+    # is the point past which the rewrite stands. Left behind they are two dotfiles in the
+    # user's $DATA_DIR that nothing ever reads or prunes.
+    if [ -n "$_PORTABLE_CONF_BACKUP" ]; then
+        rm -f "$_PORTABLE_CONF_BACKUP" 2>/dev/null || true
+    fi
+    if [ -n "$_PORTABLE_LAUNCHER_BACKUP" ]; then
+        rm -f "$_PORTABLE_LAUNCHER_BACKUP" 2>/dev/null || true
+    fi
+    _PORTABLE_CONF_PATH=""
+    _PORTABLE_CONF_BACKUP=""
+    _PORTABLE_LAUNCHER_PATH=""
+    _PORTABLE_LAUNCHER_BACKUP=""
+    return 0
+}
+
 _cleanup_install_temporaries() {
     [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
     [ -n "${_UV_INSTALL_NAME_TOOL_SHIM_DIR:-}" ] && rm -rf "$_UV_INSTALL_NAME_TOOL_SHIM_DIR" 2>/dev/null || true
@@ -980,6 +2276,15 @@ _cleanup_install_temporaries() {
     [ -n "${_UIP_STAGE:-}" ] && rm -f "$_UIP_STAGE" 2>/dev/null || true
     [ -n "${_UIP_STAGE2:-}" ] && rm -f "$_UIP_STAGE2" 2>/dev/null || true
     [ -n "${_ROCM_TAG_MEMO_DIR:-}" ] && rm -rf "$_ROCM_TAG_MEMO_DIR" 2>/dev/null || true
+    # The master root record's staging file. Its own failure arm removes it, but a signal
+    # (or a write killed by SIGXFSZ) skips that arm, and the leftover sits in the Studio root.
+    [ -n "${_EPR_TMP:-}" ] && rm -f "$_EPR_TMP" 2>/dev/null || true
+    # The parent portable marker's staging file, for the same reason.
+    [ -n "${_PMP_TMP:-}" ] && rm -f "$_PMP_TMP" 2>/dev/null || true
+    # The generated shim's staging file. Its own failure arm removes it, but a signal between
+    # the write and the rename diverts into this trap instead and left .unsloth.shim.<pid> in
+    # the user's ~/.local/bin, where a successful retry never looks and nothing prunes it.
+    [ -n "${_SHIM_TMP:-}" ] && rm -f "$_SHIM_TMP" 2>/dev/null || true
 }
 
 _on_install_exit() {
@@ -988,6 +2293,8 @@ _on_install_exit() {
         _restore_studio_venv_replacement
         # Separate from the venv restore: an install can fail before one is in flight.
         _restore_uv_cache_marker
+        # After the venv, so the marker describes the environment that is back in place.
+        _restore_portable_marker
     fi
     _cleanup_install_temporaries
     exit "$_status"
@@ -1001,6 +2308,7 @@ _on_install_signal() {
     trap '' HUP INT TERM
     _restore_studio_venv_replacement
     _restore_uv_cache_marker
+    _restore_portable_marker
     _cleanup_install_temporaries
     exit "$_signal_status"
 }
@@ -1013,11 +2321,72 @@ _UIP_WORK=""
 _UIP_STAGE=""
 _UIP_STAGE2=""
 _ROCM_TAG_MEMO_DIR=""
+_EPR_TMP=""
+_PMP_TMP=""
+_SHIM_TMP=""
 _ROCM_TAG_MEMO=""
 trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
 trap '_on_install_signal 130' INT
 trap '_on_install_signal 143' TERM
+
+# Only now, with the handlers above armed, does anything get published or retired. Both of
+# these were called at their definitions, three hundred lines up and several hundred before
+# the traps, and every artifact they touch is one the traps exist to put back: the marker at
+# $UNSLOTH_ROOT, the master root record at $STUDIO_HOME, the parent marker one level up, and
+# the two launchers a conversion displaces. A run that ended anywhere in that window kept
+# whatever it had already written -- and the window was never only the two `exit 1`s inside
+# the publish. `_PRIOR="y$(cat -- "$path")"` takes its exit status from the substitution, so
+# a record that exists but cannot be read (mode 640 in a shared root, the umask case these
+# markers are written for) aborts the install under `set -e` with no message at all, from six
+# different lines; a Ctrl-C between the removal at the top of _clear_stale_portable_marker and
+# the parent marker further down did the same. Moving the two CALLS below the traps, rather
+# than snapshotting each of those paths again, is what makes all of it one rule: nothing is
+# published or retired until the thing that unwinds it is listening. The definitions stay
+# where they are -- the tests lift them out by name -- and the by-hand cleanup inside the
+# publish stays too, because it is the same block run standalone there.
+#
+# The trap answers a run that FAILS. It is right not to answer one that succeeds -- an install
+# that finished has to keep what it published -- so a path that exits 0 having installed
+# nothing needs the guard here instead. --shortcuts-only is that path: it rewrites the
+# launchers of an install that is already on disk and exits 0 several hundred lines below,
+# past the publish and before anything is built. Combined with --root or UNSLOTH_PORTABLE=1
+# over an ordinary custom install at <root>/studio, the publish below is a permanent
+# conversion performed by a command documented as installing nothing -- the record lands at
+# $STUDIO_HOME, storage_roots.unsloth_home() answers <root> where it answered None, and the
+# managed llama.cpp, node and whisper.cpp that install keeps under its own Studio root are
+# resolved as portable siblings one level up, where nothing was ever built.
+# Refused rather than skipped: skipping the publish would still leave the run writing a
+# portable studio.conf and launch-studio.sh into <root>/share, a second launcher describing a
+# containment this tree does not have, and it would silently do half of what was asked.
+# Not a blanket refusal -- regenerating the launchers of a tree that IS portable is the whole
+# point of `unsloth studio update` there, and that run reaches this line in portable mode
+# because the shim exports UNSLOTH_HOME. So the gate is on the TREE, not on the flags.
+# Existence, which is the test every reader of these two applies, and EITHER signal passes:
+# a root that was moved carries a marker naming its old path and may have lost the record
+# altogether, and letting the publish below rewrite both is how a --shortcuts-only run repairs
+# it. What it must not do is mint the pair for a tree that never had one.
+# Here rather than at the flag parse because it needs the RESOLVED roots, and inline with
+# literal names rather than a helper, like every other block around the publish: tests lift
+# these out and run them on their own. No `[ -f x ] && flag=true`, either -- at top level under
+# set -e the false one ends the script.
+if [ "$_SHORTCUTS_ONLY" = true ] && [ "$_PORTABLE_MODE" = true ]; then
+    _so_portable_tree=false
+    if [ -f "$UNSLOTH_ROOT/.unsloth-portable-root" ]; then _so_portable_tree=true; fi
+    if [ -f "$STUDIO_HOME/.unsloth-master-root" ]; then _so_portable_tree=true; fi
+    if [ "$_so_portable_tree" = false ]; then
+        echo "ERROR: --shortcuts-only cannot convert $STUDIO_HOME to a portable install." >&2
+        echo "       It only rewrites the launchers of an install that is already here, and" >&2
+        echo "       no portable root is recorded at $UNSLOTH_ROOT or in $STUDIO_HOME." >&2
+        echo "       To convert, re-run without --shortcuts-only:" >&2
+        echo "         install.sh --root '$UNSLOTH_ROOT'" >&2
+        echo "       To refresh the launchers of this install as it is, drop --root and" >&2
+        echo "       UNSLOTH_PORTABLE and re-run with --shortcuts-only alone." >&2
+        exit 1
+    fi
+fi
+_export_portable_roots
+_clear_stale_portable_marker
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
 download() {
@@ -1721,10 +3090,43 @@ LAUNCHER_EOF
                 _css_legacy_studio=$(CDPATH= cd -P -- "$_css_legacy_studio" 2>/dev/null && pwd -P) \
                     || _css_legacy_studio="$HOME/.unsloth/studio"
             fi
-            if [ "$STUDIO_HOME" = "$_css_legacy_studio" ]; then
+            if [ "$_PORTABLE_MODE" = true ]; then
+                _css_llama_path="$UNSLOTH_ROOT/llama.cpp"
+            elif [ "$STUDIO_HOME" = "$_css_legacy_studio" ]; then
                 _css_llama_path="$HOME/.unsloth/llama.cpp"
             else
                 _css_llama_path="$STUDIO_HOME/llama.cpp"
+            fi
+            if [ "$_PORTABLE_MODE" = true ]; then
+                # The launcher inherits nothing, so restate the uv roots or an
+                # update repopulates ~/.cache/uv.
+                _css_quoted_root=$(printf '%s' "$UNSLOTH_ROOT" | sed "s/'/'\\\\''/g")
+                printf '%s\n' "export UNSLOTH_HOME='$_css_quoted_root'"
+                printf '%s\n' "export UNSLOTH_PORTABLE=1"
+                # Defaulted, not forced, the same way UNSLOTH_LLAMA_CPP_PATH is below and the
+                # runtime resolver already behaves: a caller who exported a cache elsewhere
+                # keeps it. UNSLOTH_HOME and UNSLOTH_PORTABLE above are identity and stay
+                # forced. Written with an `||` rather than `${VAR:=...}` because inside "${ }"
+                # the single quotes around the path would end up in the value.
+                printf '%s\n' "[ -n \"\${UV_CACHE_DIR:-}\" ] || export UV_CACHE_DIR='$_css_quoted_root/cache/uv'"
+                printf '%s\n' "[ -n \"\${UV_PYTHON_INSTALL_DIR:-}\" ] || export UV_PYTHON_INSTALL_DIR='$_css_quoted_root/cache/uv-python'"
+                printf '%s\n' "[ -n \"\${UV_TOOL_DIR:-}\" ] || export UV_TOOL_DIR='$_css_quoted_root/cache/uv-tools'"
+                printf '%s\n' "[ -n \"\${UV_TOOL_BIN_DIR:-}\" ] || export UV_TOOL_BIN_DIR='$_css_quoted_root/bin'"
+                printf '%s\n' "[ -n \"\${UV_PYTHON_BIN_DIR:-}\" ] || export UV_PYTHON_BIN_DIR='$_css_quoted_root/bin'"
+                # setup.sh reinstalls uv whenever `command -v uv` misses, which
+                # is every update here. astral's cascade (UV_INSTALL_DIR,
+                # UV_UNMANAGED_INSTALL, XDG_BIN_HOME) ends at ~/.local/bin, so
+                # UV_INSTALL_DIR must be pinned.
+                printf '%s\n' "[ -n \"\${UV_INSTALL_DIR:-}\" ] || export UV_INSTALL_DIR='$_css_quoted_root/bin'"
+                # Forced: not a location, a promise not to write outside the root.
+                printf '%s\n' "export UV_NO_MODIFY_PATH=1"
+                printf '%s\n' "[ -n \"\${NPM_CONFIG_CACHE:-}\" ] || export NPM_CONFIG_CACHE='$_css_quoted_root/cache/npm'"
+                # bun ignores npm's cache configuration entirely, and an update that
+                # rebuilds a source frontend prefers bun over npm.
+                printf '%s\n' "[ -n \"\${BUN_INSTALL_CACHE_DIR:-}\" ] || export BUN_INSTALL_CACHE_DIR='$_css_quoted_root/cache/bun'"
+                printf '%s\n' "[ -n \"\${CUDA_CACHE_PATH:-}\" ] || export CUDA_CACHE_PATH='$_css_quoted_root/cache/cuda'"
+                # uv is not the only installer setup.sh reaches for; pip's own cache needs pinning.
+                printf '%s\n' "[ -n \"\${PIP_CACHE_DIR:-}\" ] || export PIP_CACHE_DIR='$_css_quoted_root/cache/pip'"
             fi
             _css_quoted_home=$(printf '%s' "$STUDIO_HOME" | sed "s/'/'\\\\''/g")
             _css_quoted_llama=$(printf '%s' "$_css_llama_path" | sed "s/'/'\\\\''/g")
@@ -2314,7 +3716,9 @@ _maybe_reroute_strixhalo_to_2404() {
 
     echo ""
     substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
-    substep "Found an existing $_rr_target distro -- continuing the GPU install there." "$C_OK"
+    # Announcing the target, not the decision. Two arms below decline to reroute after this
+    # line, so the promise to continue there is made once both have passed, not before them.
+    substep "Found an existing $_rr_target distro." "$C_OK"
     # A --local checkout can't be replayed by a piped web install (the repo isn't in the target
     # distro), so tell the user to re-run there rather than silently run a different install.
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
@@ -2325,6 +3729,40 @@ _maybe_reroute_strixhalo_to_2404() {
         return 0
     fi
     _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+    # Portable mode names a DIRECTORY, and the reroute runs the install in a different WSL
+    # distribution, which has its own root filesystem -- one ext4 VHDX per distro, each
+    # chrooted into its own mount namespace. So `--root /opt/unsloth` forwarded into
+    # $_rr_target would create /opt/unsloth over THERE, which is not the /opt/unsloth the
+    # user is looking at here, and they would never see it. The one path family that really
+    # is shared is the Windows drives under /mnt/<letter>, and this side cannot recognize
+    # those: `[automount] root` and `[automount] enabled` live in each distro's OWN
+    # /etc/wsl.conf, so a /mnt/c path can be a plain local directory in this distro, or be
+    # absent in the target, and a genuinely shared drive can be spelled /c/... instead. The
+    # prefix test is therefore wrong in both directions, and guessing wrong installs into a
+    # directory nobody named -- the failure this guard exists to end.
+    #
+    # Dropping the flags instead, which is what happened before this guard, was not the safe
+    # option: $STUDIO_HOME IS forwarded (the export below fires for every portable run, since
+    # portable mode always takes the env branch of _resolve_studio_destinations), so the child
+    # built a plain NORMAL install at the portable path -- no master root, no
+    # .unsloth-portable-root marker, caches back under $HOME -- and said nothing about it.
+    # Refuse and hand the choice to the user instead, exactly as the --local arm above does:
+    # only they know whether that path means anything in $_rr_target. The suggested command
+    # carries their own root so it is runnable as printed when the root is on a Windows drive.
+    if [ "$_PORTABLE_MODE" = true ]; then
+        _rr_root="${UNSLOTH_ROOT:-$_UNSLOTH_ROOT}"
+        substep "This is a portable install (root $_rr_root), and $_rr_target has its own" "$C_WARN"
+        substep "filesystem, so that path is not the same directory there. Re-run it in" "$C_WARN"
+        substep "$_rr_target yourself, against a root that exists in that distro:" "$C_WARN"
+        substep "  wsl -d $_rr_target -- bash -lc \"curl -fsSL https://unsloth.ai/install.sh | sh -s -- --root $(_rr_q "$_rr_root")\"" "$C_WARN"
+        substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
+        # Unsupported distro and no reroute: skip the origin ROCm bootstrap, same as --local.
+        UNSLOTH_SKIP_ROCM_WSL_SETUP=1
+        return 0
+    fi
+    substep "Continuing the GPU install there." "$C_OK"
+    # Forward the caller's options/env (custom package/python/home) so the rerouted
+    # install matches what was asked for, not a default install.
     _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
 
     # An automatic path belongs to the origin distro; only an override is portable.
@@ -2359,6 +3797,18 @@ _maybe_reroute_strixhalo_to_2404() {
     _rr_rc=0
     wsl.exe -d "$_rr_target" -- bash -lc "$_rr_exports; $_rr_cmd" || _rr_rc=$?
     if [ "$_rr_rc" -eq 0 ]; then
+        # The install happened in $_rr_target. Nothing was built in THIS distro, and this exit
+        # is a success, so the EXIT handler keeps whatever this run wrote here rather than
+        # unwinding it, and this distro would keep records describing a tree with no venv in
+        # it. Portable runs no longer get here at all (the guard above refuses to reroute
+        # them), but a NORMAL run reaching this point has still been through
+        # _clear_stale_portable_marker, which RETIRES an earlier portable install's marker,
+        # master-root record and launcher at this path and snapshots them into the same slots.
+        # Leaving that cleared is the mirror of the same bug: the working portable install
+        # this run displaced, and then did not replace, would stay demoted. Same call the
+        # failure handler makes, for the same reason -- this distro is going back to how it
+        # was found.
+        _restore_portable_marker
         exit 0
     fi
     # Tauri child exit 2 ([TAURI:NEED_SUDO]) asks the desktop app to elevate.
@@ -2937,6 +4387,35 @@ _configure_uv_cache
 tauri_log "STEP" "Creating virtual environment"
 mkdir -p "$STUDIO_HOME"
 
+# Does share/studio.conf record an executable that IS $VENV_DIR/bin/unsloth, spelled any way?
+# Compares the recorded path's DIRECTORY through cd -P, which is what makes a symlinked HOME
+# and a physical one agree, and keeps the basename exact so a config naming some other
+# program in the same directory still fails. Declines rather than guesses when the recorded
+# path carries an escaped quote: the exact-match test above already handles those, and
+# unescaping here in POSIX sh would be the only place in this file that parses one.
+_venv_guard_conf_names_venv() {
+    # The in-root config by default. The pre-#5190 arm further down passes its own path
+    # instead: that config lives at the fixed ~/.local/share/unsloth and needs exactly the
+    # same canonicalized comparison, for exactly the same reason.
+    _vgc_conf="${1:-$STUDIO_HOME/share/studio.conf}"
+    [ -f "$_vgc_conf" ] || return 1
+    _vgc_rec=$(sed -n "s/^UNSLOTH_EXE='\(.*\)'\$/\1/p" \
+        "$_vgc_conf" 2>/dev/null | head -n 1)
+    [ -n "$_vgc_rec" ] || return 1
+    case "$_vgc_rec" in
+        *"'"*) return 1 ;;
+        /*) ;;
+        *) return 1 ;;
+    esac
+    [ "${_vgc_rec##*/}" = unsloth ] || return 1
+    _vgc_dir="${_vgc_rec%/*}"
+    [ -d "$_vgc_dir" ] || return 1
+    _vgc_dir=$(CDPATH= cd -P -- "$_vgc_dir" 2>/dev/null && pwd -P) || return 1
+    [ -d "$VENV_DIR/bin" ] || return 1
+    _vgc_bin=$(CDPATH= cd -P -- "$VENV_DIR/bin" 2>/dev/null && pwd -P) || return 1
+    [ "$_vgc_dir" = "$_vgc_bin" ]
+}
+
 _MIGRATED=false
 # Empty so an inherited value can never masquerade as a probed torch version.
 _PREV_TORCH_VER=""
@@ -2948,16 +4427,92 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
     # $STUDIO_HOME is a user-chosen workspace, so refuse to nuke an
     # existing $STUDIO_HOME/unsloth_studio that lacks Unsloth sentinels.
     # Accept the in-VENV ownership marker so partial-install retries are
-    # not blocked. Sentinels must be regular files: -f follows symlinks
-    # to files (the legitimate ln -s shim shape) but rejects directories
-    # and broken/dir-targeted symlinks.
+    # not blocked.
+    #
+    # The two sentinels OUTSIDE the venv must NAME this venv, not merely exist at a
+    # path whose basename happens to be `unsloth`: a user-chosen workspace that holds
+    # their own bin/unsloth script and their own unsloth_studio virtualenv is exactly
+    # the shape this guard is here to refuse, and existence alone let it through and
+    # then moved that environment aside for good. Same four tests, same order, as the
+    # flat-layout selector in _resolve_studio_destinations, against the same paths
+    # whenever that selector chose flat (there STUDIO_HOME is the root) -- the two are
+    # a pair, and the one thing worse than a weak check is two checks that disagree
+    # about what they accept. Each shape is what its writer actually produces:
+    # UNSLOTH_EXE='<venv>/bin/unsloth' in share/studio.conf, an ln -s at bin/unsloth in
+    # non-portable env-mode, and `exec '<venv>/bin/unsloth' "$@"` as the last line of
+    # the generated --portable wrapper. All three predate this run: the marker is
+    # written right after `uv venv`, the other two once setup.sh has returned.
+    # The opener stays a two-line `if` with the marker on it: `    if [ "$_STUDIO_HOME_REDIRECT"
+    # = "env" ]; then` on one line is NOT unique in this file (create_studio_shortcuts has two
+    # of them, earlier), and the test above lifts this block out by that first line, so a
+    # one-line opener silently extracts an unrelated block from that function instead.
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
-       && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
-       && [ ! -f "$STUDIO_HOME/share/studio.conf" ] \
-       && [ ! -f "$STUDIO_HOME/bin/unsloth" ]; then
-        echo "ERROR: $VENV_DIR already exists but does not look like an Unsloth Studio install." >&2
-        echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME." >&2
-        exit 1
+       && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ]; then
+        _venv_guard_owned=false
+        # The escape the writers use, rebuilt here so the recorded line can be matched back.
+        _venv_guard_exe=$(printf '%s' "$VENV_DIR/bin/unsloth" | sed "s/'/'\\\\''/g")
+        if grep -qxF "UNSLOTH_EXE='$_venv_guard_exe'" \
+                "$STUDIO_HOME/share/studio.conf" 2>/dev/null; then
+            _venv_guard_owned=true
+        elif _venv_guard_conf_names_venv; then
+            # The same proof, made through the filesystem instead of byte-for-byte. In
+            # env-mode STUDIO_HOME is canonicalized (cd -P), but installers before #5190
+            # wrote UNSLOTH_EXE with the LEXICAL "$HOME/..." spelling, so on a machine where
+            # HOME is a symlink our own config never matches the exact test above and the
+            # upgrade was refused with "does not look like an Unsloth Studio install".
+            # Measured: the two spellings name one file and differ as strings.
+            #
+            # main accepted any existing share/studio.conf here, so this is a refusal these
+            # changes introduced, not one they inherited. The tightening is still right --
+            # a config that names some OTHER venv must not vouch for this one -- so the
+            # comparison is canonicalized rather than dropped.
+            _venv_guard_owned=true
+        elif [ -L "$STUDIO_HOME/bin/unsloth" ] \
+             && [ "$STUDIO_HOME/bin/unsloth" -ef "$VENV_DIR/bin/unsloth" ] 2>/dev/null; then
+            _venv_guard_owned=true
+        elif grep -qxF "exec '$_venv_guard_exe' \"\$@\"" \
+                "$STUDIO_HOME/bin/unsloth" 2>/dev/null; then
+            _venv_guard_owned=true
+        fi
+        # Fourth shape, and the only one that looks outside STUDIO_HOME: an install made
+        # before #5190 (2026-05-05) shipped both the owner marker AND env-mode itself. Such a
+        # tree has none of the three above, because all three are written under a custom root
+        # and it never had one -- its studio.conf went to the fixed default
+        # ~/.local/share/unsloth, where the UNSLOTH_EXE line has been written since #4568
+        # (2026-03-25). Without this, `install.sh --portable` on a default install that has
+        # not been refreshed since April refuses outright, while a plain upgrade of the very
+        # same tree is accepted: --portable always takes the env branch, and env-mode is what
+        # arms this guard.
+        #
+        # Narrow on purpose. It only fires when STUDIO_HOME *is* the legacy default root, so
+        # it cannot vouch for a user-named directory, which is the case this guard exists for.
+        # Canonicalized both sides, like the legacy comparison in create_studio_shortcuts, so
+        # a symlinked $HOME does not defeat the equality.
+        if [ "$_venv_guard_owned" != true ]; then
+            _venv_guard_legacy="$HOME/.unsloth/studio"
+            if [ -d "$_venv_guard_legacy" ]; then
+                _venv_guard_legacy=$(CDPATH= cd -P -- "$_venv_guard_legacy" 2>/dev/null && pwd -P) \
+                    || _venv_guard_legacy="$HOME/.unsloth/studio"
+            fi
+            # Byte-exact first, then the same filesystem proof the in-root config gets three
+            # arms up. This arm exists FOR installs made before #5190, and those recorded
+            # UNSLOTH_EXE with the lexical "$HOME/..." spelling, while env-mode STUDIO_HOME is
+            # canonicalized -- so under a symlinked HOME (a managed or NFS home) the exact
+            # grep never matched, and since such a tree carries none of the newer ownership
+            # sentinels the installer refused its own valid environment outright. The equality
+            # above was already canonicalized on both sides; the record was not.
+            if [ "$STUDIO_HOME" = "$_venv_guard_legacy" ] \
+                && { grep -qxF "UNSLOTH_EXE='$_venv_guard_exe'" \
+                        "$HOME/.local/share/unsloth/studio.conf" 2>/dev/null \
+                     || _venv_guard_conf_names_venv "$HOME/.local/share/unsloth/studio.conf"; }; then
+                _venv_guard_owned=true
+            fi
+        fi
+        if [ "$_venv_guard_owned" != true ]; then
+            echo "ERROR: $VENV_DIR already exists but does not look like an Unsloth Studio install." >&2
+            echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME." >&2
+            exit 1
+        fi
     fi
     # Record the existing venv's torch BEFORE the replacement moves it aside: a re-run
     # rebuilds the venv for clean state, but must keep the torch release the user
@@ -6020,6 +7575,28 @@ if [ "$_SETUP_EXIT" -eq 0 ]; then
     # First: until this runs, anything that fails below reaches the exit trap, which would
     # restore the previous environment over the one just installed.
     _commit_studio_venv_replacement
+    # And immediately with it, the identity that environment was built to have. The venv and
+    # the marker describe one thing, so they commit together or they roll back together; a
+    # half of each is what makes a failure below bad. Until this line the split ran the wrong
+    # way: the venv went permanent here while the marker waited three hundred lines, and a
+    # fatal shim step in between (a directory at <root>/bin/unsloth is the reachable one, and
+    # create_studio_shortcuts returning 1 is the wider one) kept a fully built portable
+    # environment while the exit handler deleted the marker that makes it portable, so running
+    # it directly resolved back to $HOME/.unsloth. The other direction was worse: it restored
+    # the portable markers and the <root>/bin/unsloth wrapper this run had retired, in front of
+    # a venv that is now a NORMAL install, so the converted tree read as portable again.
+    # Committed here rather than by delaying the venv commit to the end: the venv commit is
+    # first in this gate on purpose (tests/sh/test_install_rollback_lifecycle.sh pins it there),
+    # because every command before it is one more chance for the trap to rm -rf the environment
+    # that was just built and move the old one back. Widening that window to cover the shim and
+    # the shortcuts would trade a wrong marker for a destroyed venv. What is still armed after
+    # this line is only what has not been replaced yet -- the launcher the nested retirement
+    # left empty, the one the portable shim block is about to rename over, and the two files
+    # create_studio_shortcuts rewrites -- and the full commit at the end of the install
+    # releases those, once the launcher that supersedes them is on disk. Hence `identity`
+    # here: releasing a launcher copy while its path is still empty would answer a failed
+    # shim step by deleting the user's launcher instead of handing it back.
+    _commit_portable_marker identity
     tauri_clear_install_error "studio setup completed"
 fi
 
@@ -6032,9 +7609,140 @@ if [ -d "$_shim_path" ] && [ ! -L "$_shim_path" ]; then
     echo "       Move or remove it manually, then re-run the installer." >&2
     exit 1
 fi
+# A wrapper, not a symlink: a symlink carries no environment, so uv and
+# llama.cpp would fall back to ~/.unsloth. Temp file plus rename is atomic.
+if [ "$_PORTABLE_MODE" = true ]; then
+    _shim_tmp="$_LOCAL_BIN/.unsloth.shim.$$"
+    _SHIM_TMP="$_shim_tmp"
+    # Each path is interpolated into a single-quoted shell string, so an
+    # apostrophe (`/home/o'brien/...`) would close the quote; escape it.
+    _shim_root=$(printf '%s' "$UNSLOTH_ROOT" | sed "s/'/'\\\\''/g")
+    _shim_studio=$(printf '%s' "$STUDIO_HOME" | sed "s/'/'\\\\''/g")
+    _shim_venv=$(printf '%s' "$VENV_DIR" | sed "s/'/'\\\\''/g")
+    # A conversion the other way lands on the path the tree already launches through.
+    # UNSLOTH_STUDIO_HOME=DIR puts the normal install's symlink at DIR/bin/unsloth, and
+    # README tells that user to add portable mode to contain the caches; --portable over
+    # the same DIR resolves _LOCAL_BIN to DIR/bin as well, so the rename below replaces
+    # that symlink. The setup.sh gate is hundreds of lines further down, so a conversion
+    # that dies there restored the previous environment and dropped the marker it had
+    # published, yet left this wrapper in front of the restored install exporting
+    # UNSLOTH_HOME and UNSLOTH_PORTABLE=1 for good. Moved aside on the same pair the
+    # opposite conversion uses -- the two cannot both fire, _clear_stale_portable_marker
+    # returns immediately in portable mode -- so _restore_portable_shim puts it back with
+    # the marker and _commit_portable_marker drops the copy once the install stands.
+    # Whatever is on the path is kept, not only our own shape: this preserves what the
+    # rename would destroy, it never deletes anything the rename would have left. The copy
+    # lands in $_LOCAL_BIN, which is inside the root in portable mode, so it is not a write
+    # outside it. Inline, not a helper, so this block still runs when lifted out on its own.
+    if [ -z "${_PORTABLE_SHIM_PATH:-}" ] \
+        && { [ -e "$_shim_path" ] || [ -L "$_shim_path" ]; }; then
+        _PORTABLE_SHIM_PATH="$_shim_path"
+        _PORTABLE_SHIM_BACKUP="$_LOCAL_BIN/.unsloth-portable-shim.$$"
+        if ! mv -f "$_shim_path" "$_PORTABLE_SHIM_BACKUP" 2>/dev/null; then
+            _PORTABLE_SHIM_PATH=""
+            _PORTABLE_SHIM_BACKUP=""
+        fi
+    fi
+    # The rename below needs this path EMPTY, and the move above is the only thing that
+    # empties it, so a failed move ends the install here instead of being discarded. The
+    # guard at the top of the section lets a symlink through on purpose (`ln -sfn` in the
+    # normal branch legitimately replaces one), and `mv -f` onto a symlink to a directory
+    # moves INTO it: the shim publishes as <target>/.unsloth.shim.$$, outside the root and
+    # beyond the uninstall's reach, bin/unsloth still not a launcher, exit 0 saying it is.
+    # `mv -T` would say this directly and is GNU-only, so the portable form is to refuse.
+    # Not `rm -f` on the target: whatever denies the rename denies the unlink too. A
+    # reinstall replacing its own wrapper never arrives here, because that rename succeeds.
+    # Inline, not a helper, so this still runs when the block is lifted out on its own.
+    if [ -e "$_shim_path" ] || [ -L "$_shim_path" ]; then
+        echo "ERROR: could not move the existing $_shim_path aside." >&2
+        echo "       Move or remove it manually, then re-run the installer." >&2
+        exit 1
+    fi
+    if {
+        printf '%s\n' "#!/bin/sh" \
+            "# Generated by install.sh --portable. Keeps every Unsloth path inside" \
+            "# one directory; see UNSLOTH_HOME below." \
+            "export UNSLOTH_HOME='$_shim_root'" \
+            "export UNSLOTH_PORTABLE=1" \
+            "export UNSLOTH_STUDIO_HOME='$_shim_studio'" \
+            "# The three above are this install's identity and are forced. Everything below" \
+            "# is a cache location, defaulted only when the caller named none: the runtime" \
+            "# resolver (storage_roots._setup_cache_env) already yields to an explicit value," \
+            "# and a shim that overrode one made the same install honour the user's choice or" \
+            "# ignore it depending on which entry point they happened to use. Someone who" \
+            "# points a multi-GB wheel cache at another disk means it." \
+            "[ -n \"\${UNSLOTH_LLAMA_CPP_PATH:-}\" ] || export UNSLOTH_LLAMA_CPP_PATH='$_shim_root/llama.cpp'" \
+            "[ -n \"\${UV_CACHE_DIR:-}\" ] || export UV_CACHE_DIR='$_shim_root/cache/uv'" \
+            "[ -n \"\${UV_PYTHON_INSTALL_DIR:-}\" ] || export UV_PYTHON_INSTALL_DIR='$_shim_root/cache/uv-python'" \
+            "[ -n \"\${UV_TOOL_DIR:-}\" ] || export UV_TOOL_DIR='$_shim_root/cache/uv-tools'" \
+            "[ -n \"\${UV_TOOL_BIN_DIR:-}\" ] || export UV_TOOL_BIN_DIR='$_shim_root/bin'" \
+            "[ -n \"\${UV_PYTHON_BIN_DIR:-}\" ] || export UV_PYTHON_BIN_DIR='$_shim_root/bin'" \
+            "[ -n \"\${UV_INSTALL_DIR:-}\" ] || export UV_INSTALL_DIR='$_shim_root/bin'" \
+            "# Forced: this one is not a location but a promise not to write outside the root." \
+            "export UV_NO_MODIFY_PATH=1" \
+            "[ -n \"\${NPM_CONFIG_CACHE:-}\" ] || export NPM_CONFIG_CACHE='$_shim_root/cache/npm'" \
+            "[ -n \"\${BUN_INSTALL_CACHE_DIR:-}\" ] || export BUN_INSTALL_CACHE_DIR='$_shim_root/cache/bun'" \
+            "[ -n \"\${CUDA_CACHE_PATH:-}\" ] || export CUDA_CACHE_PATH='$_shim_root/cache/cuda'" \
+            "[ -n \"\${PIP_CACHE_DIR:-}\" ] || export PIP_CACHE_DIR='$_shim_root/cache/pip'" \
+            "exec '$_shim_venv/bin/unsloth' \"\$@\"" > "$_shim_tmp" 2>/dev/null \
+        && chmod +x "$_shim_tmp" 2>/dev/null \
+        && mv -f "$_shim_tmp" "$_shim_path" 2>/dev/null
+    }; then
+        _SHIM_TMP=""
+        substep "portable shim at $_shim_path"
+        # A converted default install leaves its symlink at ~/.local/bin, which
+        # still launches without the environment above and wins on PATH. Warn
+        # rather than delete: portable mode writes nothing outside the root.
+        _legacy_shim="$HOME/.local/bin/unsloth"
+        if [ "$_legacy_shim" != "$_shim_path" ] && [ -L "$_legacy_shim" ] \
+            && [ "$_legacy_shim" -ef "$VENV_DIR/bin/unsloth" ] 2>/dev/null; then
+            substep "an older shim still on PATH runs this install uncontained:" "$C_WARN"
+            substep "  $_legacy_shim" "$C_WARN"
+            substep "  remove it, or always launch $_shim_path" "$C_WARN"
+        fi
+        # The same conversion leaves the default install's managed launcher, and the
+        # desktop entry / .app that invokes it, under $HOME. Both still run this venv
+        # with no portable environment, and the launcher writes its log, port file,
+        # per-port PID file and macOS .command back beside itself. Named, not removed:
+        # portable mode writes nothing outside the root, so it deletes nothing either.
+        # Ownership comes from studio.conf, the way the symlink warning uses -ef, so an
+        # unrelated install's launcher is never named.
+        _legacy_data="$HOME/.local/share/unsloth"
+        _legacy_conf="$_legacy_data/studio.conf"
+        if [ -f "$_legacy_conf" ]; then
+            _legacy_exe=$(sed -n "s/^UNSLOTH_EXE='\(.*\)'\$/\1/p" "$_legacy_conf" | head -n1)
+            _legacy_exe=$(printf '%s' "$_legacy_exe" | sed "s/'\\\\''/'/g")
+            if [ -n "$_legacy_exe" ] && [ "$_legacy_exe" -ef "$VENV_DIR/bin/unsloth" ] 2>/dev/null; then
+                substep "an older launcher for this install still writes outside the root:" "$C_WARN"
+                substep "  $_legacy_data" "$C_WARN"
+                # Only the entries that actually point back at that launcher: these are
+                # fixed paths, and an unrelated install could own the one on disk.
+                for _legacy_entry in \
+                    "$HOME/.local/share/applications/unsloth-studio.desktop" \
+                    "$HOME/Desktop/unsloth-studio.desktop"; do
+                    grep -qF "$_legacy_data/launch-studio.sh" "$_legacy_entry" 2>/dev/null \
+                        || continue
+                    substep "  $_legacy_entry" "$C_WARN"
+                done
+                # The macOS bundle runs a stub one level in, so test that and name the bundle.
+                _legacy_app="$HOME/Applications/Unsloth Studio.app"
+                if grep -qF "$_legacy_data/launch-studio.sh" \
+                    "$_legacy_app/Contents/MacOS/launch-studio" 2>/dev/null; then
+                    substep "  $_legacy_app" "$C_WARN"
+                fi
+                substep "  remove them, or always launch $_shim_path" "$C_WARN"
+            fi
+        fi
+    else
+        rm -f "$_shim_tmp" 2>/dev/null || true
+        _SHIM_TMP=""
+        echo "ERROR: could not create the shim at $_shim_path." >&2
+        echo "       Make $_LOCAL_BIN writable, or run '$VENV_DIR/bin/unsloth' directly." >&2
+        exit 1
+    fi
 # why: -sfn is atomic and -n prevents descent into a symlink-to-directory at
 # the shim path (the directory guard above already rejects a real directory).
-if ! ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path" 2>/dev/null; then
+elif ! ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path" 2>/dev/null; then
     # A reinstall rebuilds the environment at the same path, so an entry already resolving to
     # this executable is the shim we were about to write: not a failed install.
     if [ "$_shim_path" -ef "$VENV_DIR/bin/unsloth" ] 2>/dev/null; then
@@ -6212,6 +7920,20 @@ fi
 
 # Non-Tauri installs keep shortcuts even if setup reports failure.
 if [ "$TAURI_MODE" != true ]; then
+    # ...which is the problem when this run is a conversion, because the setup gate that
+    # decides whether the conversion happened is eight lines BELOW this call, and studio.conf
+    # is where portable mode is written down for everything that launches through $DATA_DIR.
+    # A flat --portable over UNSLOTH_STUDIO_HOME=D resolves $DATA_DIR to the same D/share the
+    # normal install already owns, so a setup.sh failure used to restore the venv, the marker
+    # and D/bin/unsloth and still leave D/share/studio.conf exporting UNSLOTH_PORTABLE=1 --
+    # the restored normal install forced back into portable mode by the launcher that sources
+    # it. The same call strips those exports in the other direction. So take the pair aside
+    # first; the handlers put them back and the commit below drops the copies. Not moved into
+    # create_studio_shortcuts: --shortcuts-only calls that too, and it installs nothing, so it
+    # is not a conversion and has nothing to unwind. _snapshot_portable_launcher is a no-op
+    # unless a conversion is actually in flight, so an ordinary install still writes straight
+    # through, and it returns 0 when $DATA_DIR is empty.
+    _snapshot_portable_launcher "${DATA_DIR:-}"
     create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 fi
 
@@ -6226,6 +7948,11 @@ if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
     exit "$_SETUP_EXIT"
 fi
+
+# Past every step that can fail the install: the environment is built, setup.sh reported
+# success and the shim and shortcuts are written. Keep the portable marker whatever the
+# autostart below does, the way _commit_studio_venv_replacement already keeps the venv.
+_commit_portable_marker
 
 # ── Tauri mode: done, skip shortcuts and auto-launch ──
 if [ "$TAURI_MODE" = true ]; then
@@ -6245,8 +7972,13 @@ if [ -n "$_path_unsloth" ] && [ -x "$VENV_DIR/bin/python" ]; then
     }
     _installed_real=$(_canon "$_installed_bin")
     _path_real=$(_canon "$_path_unsloth")
+    # The shim is a wrapper, so it resolves to itself and would otherwise always
+    # look like a foreign `unsloth`.
+    _shim_real=""
+    [ "$_PORTABLE_MODE" = true ] && _shim_real=$(_canon "$_shim_path")
     if [ -n "$_installed_real" ] && [ -n "$_path_real" ] \
-        && [ "$_installed_real" != "$_path_real" ]; then
+        && [ "$_installed_real" != "$_path_real" ] \
+        && { [ -z "$_shim_real" ] || [ "$_shim_real" != "$_path_real" ]; }; then
         echo ""
         step "warning" "another 'unsloth' wins on PATH:" "$C_WARN"
         substep "$_path_unsloth"
@@ -6261,8 +7993,49 @@ fi
 echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+if [ "$_PORTABLE_MODE" = true ]; then
+    echo ""
+    substep "portable install; everything lives in:"
+    substep "  $UNSLOTH_ROOT"
+    # Single-quoted like the removal command below and the deferred launch hint further
+    # down, both of which quote this same path: an explicitly supported root holding a
+    # space or a glob character otherwise prints a command the shell splits or expands,
+    # so the two launch instructions in one summary would contradict each other.
+    _launch_shim=$(printf '%s' "$_LOCAL_BIN/unsloth" | sed "s/'/'\\\\''/g")
+    substep "launch it with '$_launch_shim' studio"
+    # Nothing was written outside the root, so removing the tree removes the install.
+    _uninstall_root=$(printf '%s' "$UNSLOTH_ROOT" | sed "s/'/'\\\\''/g")
+    substep "remove it with:"
+    substep "  rm -rf '$_uninstall_root'"
+    _escapes="$(_portable_escapes)"
+    if [ -n "$_escapes" ]; then
+        substep "these were already symlinks out of the root, so their contents" "$C_WARN"
+        substep "live elsewhere and that command will not remove them:" "$C_WARN"
+        printf '%s\n' "$_escapes" | while IFS= read -r _escape; do
+            substep "  $_escape" "$C_WARN"
+        done
+    fi
+    # scripts/uninstall.sh treats UNSLOTH_HOME as an ADDITION to the default install it
+    # always removes, so offering it here would delete a coexisting ~/.unsloth/studio.
+    substep "scripts/uninstall.sh is not scoped to this root: it also clears"
+    substep "an install in ~/.unsloth and its chat history."
+    substep "the desktop app and shell PATH were left untouched."
+fi
 echo ""
 
+# Single-quote-escape so paths with spaces / apostrophes copy-paste cleanly.
+_li_shim_q="'$(printf '%s' "${_LOCAL_BIN}/unsloth" | sed "s/'/'\\\\''/g")'"
+_li_act_q="'$(printf '%s' "${VENV_DIR}/bin/activate" | sed "s/'/'\\\\''/g")'"
+# Env-mode appends nothing to the login PATH, so a fresh shell finds either no
+# `unsloth` at all or a different install; every deferred hint below names the shim.
+_li_launch_q="unsloth studio -p 8888"
+if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
+    _li_launch_q="$_li_shim_q studio -p 8888"
+fi
+
+# In interactive terminals, ask the user before starting Unsloth unless the
+# caller explicitly disabled the post-install prompt.
+# In non-interactive environments (Docker, CI, cloud-init) just print instructions.
 if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     echo ""
     # No readable answer (closed/EOF tty) defaults to no; Enter is still yes.
@@ -6302,7 +8075,7 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
             ;;
         *)
             step "launch" "to start later, run:"
-            substep "unsloth studio -p 8888"
+            substep "$_li_launch_q"
             substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
             substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
             echo ""
@@ -6310,21 +8083,11 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     esac
 else
     step "launch" "manual commands:"
-    # Single-quote-escape so paths with spaces / apostrophes copy-paste cleanly.
-    _li_shim_q="'$(printf '%s' "${_LOCAL_BIN}/unsloth" | sed "s/'/'\\\\''/g")'"
-    _li_act_q="'$(printf '%s' "${VENV_DIR}/bin/activate" | sed "s/'/'\\\\''/g")'"
-    if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
-        # Env-mode skips the rc PATH append, so print the absolute shim path.
-        substep "$_li_shim_q studio -p 8888"
-        substep "or activate env first:"
-        substep "source $_li_act_q"
-        substep "unsloth studio -p 8888"
-    else
-        substep "unsloth studio -p 8888"
-        substep "or activate env first:"
-        substep "source $_li_act_q"
-        substep "unsloth studio -p 8888"
-    fi
+    substep "$_li_launch_q"
+    substep "or activate env first:"
+    substep "source $_li_act_q"
+    # Bare name is right here: activating the venv puts its bin/ first on PATH.
+    substep "unsloth studio -p 8888"
     substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
     substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
     echo ""

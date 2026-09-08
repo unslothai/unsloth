@@ -136,13 +136,16 @@ SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
 _SETUP_FN=$(mktemp)
 trap 'rm -rf "$_FN_FILE" "$_TMP" "$_SETUP_FN"' EXIT
 awk '/^# Same uv cache install\.sh chose/,/^fi$/' "$SETUP_SH" > "$_SETUP_FN"
-if ! grep -q 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$_SETUP_FN"; then
+if ! grep -q 'UV_CACHE_DIR="\${UNSLOTH_HOME:-\$STUDIO_HOME}/cache/uv"' "$_SETUP_FN"; then
     echo "  FAIL: could not extract the UV_CACHE_DIR block from studio/setup.sh"
     FAIL=$((FAIL + 1))
 else
-    _run_setup() {  # $1 = STUDIO_HOME, $2 = preset UV_CACHE_DIR ("" for unset)
+    # UNSLOTH_HOME is a parameter of the block now, so it is passed explicitly and never
+    # inherited from whatever shell is running the suite.
+    _run_setup() {  # $1 = STUDIO_HOME, $2 = preset UV_CACHE_DIR ("" for unset), $3 = UNSLOTH_HOME
         "$_SH" -c "
             STUDIO_HOME='$1'
+            if [ -n '${3:-}' ]; then UNSLOTH_HOME='${3:-}'; else unset UNSLOTH_HOME; fi
             if [ -n '$2' ]; then UV_CACHE_DIR='$2'; export UV_CACHE_DIR; else unset UV_CACHE_DIR; fi
             . '$_SETUP_FN'
             printf '%s' \"\${UV_CACHE_DIR:-<unset>}\"
@@ -160,7 +163,31 @@ else
     # succeeded.
     mkdir -p "$_TMP/updro" && : > "$_TMP/updro/cache"
     assert_eq "setup.sh drops an unusable cache" "<unset>" "$(_run_setup "$_TMP/updro" '')"
+
+    # A NESTED portable install keeps its uv cache at <master>/cache/uv, beside studio/ rather
+    # than inside it: that is what install.sh's _export_portable_roots defaults and what the
+    # generated shim, share/studio.conf and storage_roots all resolve. setup.sh used to select
+    # $STUDIO_HOME/cache/uv before the master-root recovery had run, so a bare
+    # `bash studio/setup.sh` filled a second, empty cache one level down and re-downloaded
+    # every Torch and CUDA wheel the master cache already held.
+    assert_eq "setup.sh follows the recovered master root" \
+        "$_TMP/master/cache/uv" "$(_run_setup "$_TMP/master/studio" '' "$_TMP/master")"
+    # And a caller's own value still outranks it.
+    assert_eq "setup.sh keeps a caller-set value under a master root" \
+        "/custom/uvcache" "$(_run_setup "$_TMP/master/studio" '/custom/uvcache' "$_TMP/master")"
 fi
+
+echo "=== structural: the master root is recovered BEFORE the cache is selected ==="
+# The bug was pure ordering, so the ordering is what is pinned. A recovery that drifts back
+# below the cache selection compiles and passes every behavioural check above, because those
+# pass UNSLOTH_HOME in rather than recovering it from disk.
+_recover_line=$(grep -n '^if \[ -z "\$UNSLOTH_HOME" \] && \[ -f "\$STUDIO_HOME/\.unsloth-master-root" \]; then$' \
+    "$SETUP_SH" | head -1 | cut -d: -f1)
+_cache_line=$(grep -n 'UV_CACHE_DIR="\${UNSLOTH_HOME:-\$STUDIO_HOME}/cache/uv"' "$SETUP_SH" | head -1 | cut -d: -f1)
+assert_eq "found both landmarks" "yes" \
+    "$([ -n "$_recover_line" ] && [ -n "$_cache_line" ] && echo yes || echo no)"
+assert_eq "recovery precedes the cache selection" "yes" \
+    "$([ -n "$_recover_line" ] && [ -n "$_cache_line" ] && [ "$_recover_line" -lt "$_cache_line" ] && echo yes || echo no)"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
