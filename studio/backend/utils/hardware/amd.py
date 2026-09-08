@@ -704,8 +704,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     if not closed:
         return None
     # Claim only what the closed set actually blocks.
-    blocked = "no GPU backend can use" if any(p != _KFD_NODE for p in closed) else \
-              "ROCm cannot use"
+    blocked = "no GPU backend can use" if any(p != _KFD_NODE for p in closed) else "ROCm cannot use"
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
     return (
         f"This account cannot open {', '.join(closed)}, so {blocked} the "

@@ -308,15 +308,15 @@ def test_an_nvidia_mismatch_keeps_the_pytorch_message(monkeypatch, linux):
     assert "usermod" not in message
 
 
-def test_a_hybrid_host_whose_amd_card_raised_it_still_gets_the_permission_hint(
-    monkeypatch, linux
-):
+def test_a_hybrid_host_whose_amd_card_raised_it_still_gets_the_permission_hint(monkeypatch, linux):
     """The pair to the test above, differing only in the recorded vendor."""
     from utils.hardware import hardware
 
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setattr(
-        hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd", "nvidia"}),
+        hardware,
+        "CHAT_ONLY_MISMATCH_VENDORS",
+        frozenset({"amd", "nvidia"}),
     )
     monkeypatch.setenv("USER", "ada")
     message = hardware._gpu_present_but_unusable_message(
