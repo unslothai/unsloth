@@ -199,23 +199,21 @@ def test_index_url_value_flag_kept_verbatim(shim):
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, _p2, expected, _p4",
+    "requirements, tool, flag, expected_program, absent",
     [
         pytest.param("-e git+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n", "pip", "-r", "-r", "unsloth", id = "editable_protected_in_requirements_file_dropped"),
         pytest.param("-egit+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n", "pip", "-r", "-r", "unsloth", id = "editable_attached_protected_in_requirements_file_dropped"),
         pytest.param("torch==2.11.0\nsnac==1.2.0\n", "uv", "--requirements", "--requirements", "torch", id = "uv_plural_requirements_filtered"),
     ],
 )
-def test_module_cases(shim, tmp_path, _p0, _p1, _p2, expected, _p4):
+def test_requirements_file_drops_the_protected_package(shim, tmp_path, requirements, tool, flag, expected_program, absent):
     req = tmp_path / 'reqs.txt'
-    req.write_text(_p0, encoding='utf-8')
-    execd, _ = _run(shim, _p1, [_p2, str(req)])
-    assert execd is not None and execd[0] == expected, execd
+    req.write_text(requirements, encoding='utf-8')
+    execd, _ = _run(shim, tool, [flag, str(req)])
+    assert execd is not None and execd[0] == expected_program, execd
     filtered = Path(execd[1]).read_text(encoding='utf-8')
     assert 'snac==1.2.0' in filtered
-    assert _p4 not in filtered
-
-
+    assert absent not in filtered
 
 
 def test_editable_unprotected_in_requirements_file_kept(shim, tmp_path):
@@ -293,7 +291,7 @@ def test_bare_wheel_filename_forms(shim, args, expected):
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1",
+    "tool, argument",
     [
         pytest.param("pip", "git+https://github.com/huggingface/transformers.git", id = "vcs_url_without_egg_protected_dropped"),
         pytest.param("pip", "git+https://github.com/unslothai/unsloth-zoo.git@main", id = "vcs_url_without_egg_with_ref_dropped"),
@@ -303,11 +301,9 @@ def test_bare_wheel_filename_forms(shim, args, expected):
         pytest.param("uv", "--exact", id = "uv_exact_flag_stripped"),
     ],
 )
-def test_module_cases_2(shim, _p0, _p1):
-    execd, _ = _run(shim, _p0, [_p1, 'snac'])
+def test_protected_arguments_are_stripped_before_exec(shim, tool, argument):
+    execd, _ = _run(shim, tool, [argument, 'snac'])
     assert execd == ['snac'], execd
-
-
 
 
 def test_vcs_url_without_egg_unprotected_kept(shim):
@@ -382,8 +378,6 @@ SDIST_URL = "https://files.pythonhosted.org/packages/aa/unsloth-2026.7.1.tar.gz"
 def test_source_archive_forms(shim, args, expected):
     execd, _ = _run(shim, "pip", args)
     assert execd == (args if expected is KEPT else expected), execd
-
-
 
 
 def test_uv_plural_constraints_filtered(shim, tmp_path):

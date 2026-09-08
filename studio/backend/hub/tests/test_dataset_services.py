@@ -221,7 +221,7 @@ def _dataset_snapshot(monkeypatch, tmp_path: Path, filenames: tuple[str, ...]) -
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, _p2, _p3",
+    "file_a, file_b, file_c, file_d",
     [
         pytest.param(".gitattributes", "README.md", "dataset_infos.json", "LICENSE", id = "raw_dataset_cache_has_data_rejects_a_metadata_only_snapshot"),
         # Neither suffix is in `datasets`' extension map, and a script also needs
@@ -232,13 +232,13 @@ def _dataset_snapshot(monkeypatch, tmp_path: Path, filenames: tuple[str, ...]) -
         pytest.param("README.md", ".gitignore", ".gitattributes", ".hidden/notes.txt", id = "raw_dataset_cache_has_data_ignores_any_dotfile"),
     ],
 )
-def test_module_cases(monkeypatch, tmp_path, _p0, _p1, _p2, _p3):
-    repo_root = _dataset_snapshot(monkeypatch, tmp_path, (_p0, _p1, _p2, _p3))
+def test_raw_dataset_cache_has_data_rejects_payload_free_snapshots(monkeypatch, tmp_path, file_a, file_b, file_c, file_d):
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, (file_a, file_b, file_c, file_d))
     assert cache_inventory._raw_dataset_cache_has_data('Org/Data', repo_root) is False
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, expected",
+    "file_a, file_b, expected",
     [
         # Opening the cache dir in Finder or Explorer drops a `.DS_Store`/`Thumbs.db` beside the
         # card, which must not read as payload.
@@ -254,11 +254,9 @@ def test_module_cases(monkeypatch, tmp_path, _p0, _p1, _p2, _p3):
         pytest.param("data.py", "data/train.parquet", True, id = "raw_dataset_cache_has_data_counts_payload_beside_a_loading_script"),
     ],
 )
-def test_module_cases_2(monkeypatch, tmp_path, _p0, _p1, expected):
-    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ('README.md', _p0, _p1))
+def test_raw_dataset_cache_has_data_counts_only_real_payload(monkeypatch, tmp_path, file_a, file_b, expected):
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ('README.md', file_a, file_b))
     assert cache_inventory._raw_dataset_cache_has_data('Org/Data', repo_root) is expected
-
-
 
 
 def test_raw_dataset_cache_has_data_counts_payload_under_a_metadata_named_dir(
@@ -445,8 +443,6 @@ def test_raw_dataset_cache_has_data_ignores_payload_in_an_unpinned_revision(monk
     (other / "train-00000-of-00001.parquet").write_bytes(b"PAR1")
 
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
-
-
 
 
 def test_raw_dataset_cache_has_data_never_walks_outside_the_snapshot(monkeypatch, tmp_path):

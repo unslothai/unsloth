@@ -376,7 +376,7 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
 
 
 @pytest.mark.parametrize(
-    "_p0, expected",
+    "raw, expected",
     [
         # A reply closes with <|eom|> like any other block, so the turn can carry
         # on afterwards; treating the reply as the end would leak the rest verbatim.
@@ -412,13 +412,11 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
             '<atem:invoke name="web_search">\n<atem:parameter name="query">FIFA', "<think>Need a search.</think>", id = "muse_glimmer_cut_short_tool_call_leaks_no_markup"),
     ],
 )
-def test_module_cases(_p0, expected):
+def test_muse_glimmer_normalizer_rewrites_control_markup(raw, expected):
     parser = _muse_normalizer()
-    output = parser.feed(_p0)
+    output = parser.feed(raw)
     output += parser.finish()
     assert output == expected
-
-
 
 
 @pytest.mark.parametrize(
@@ -534,8 +532,6 @@ def test_muse_glimmer_bare_repeated_invokes_are_calls_without_an_envelope():
     assert [json.loads(call["function"]["arguments"])["q"] for call in calls] == [1, 2]
 
 
-
-
 def test_muse_glimmer_a_call_free_block_does_not_disable_later_reasoning():
     """Regression: latching passthrough on an unrecognized block re-exposed the whole
     rest of the turn, which is the leak this normalizer exists to prevent."""
@@ -550,8 +546,6 @@ def test_muse_glimmer_a_call_free_block_does_not_disable_later_reasoning():
 
     assert output == '<think>First.</think>{"q": 1}<think>Second.</think>Answer.'
     assert "<|" not in output
-
-
 
 
 @pytest.mark.parametrize("gap", [" ", "\n", "\n\n"])
@@ -647,8 +641,6 @@ def test_muse_glimmer_turn_marker_is_consumed_wherever_it_lands():
         per_char = _muse_normalizer()
         streamed = "".join(per_char.feed(char) for char in raw) + per_char.finish()
         assert streamed == expected, raw
-
-
 
 
 def test_muse_glimmer_call_closed_inside_a_cut_short_block_survives_finish():

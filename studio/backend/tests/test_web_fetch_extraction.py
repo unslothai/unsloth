@@ -114,7 +114,7 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
 
 
 @pytest.mark.parametrize(
-    "html, _p1, _p2, _p3",
+    "html, present_first, present_second, absent",
     [
         pytest.param("<body><p>visible</p><div hidden><p>secret error text</p></div><p>after</p></body>", "visible", "after", "secret error text", id = "hidden_attribute_subtree_is_dropped"),
         # Error/loading blocks are often hidden with inline CSS rather than the
@@ -132,15 +132,15 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
         pytest.param("<body><p>Skip to content</p><div hidden>gone</div><main><p>hello</p></main></body>", "Skip to content", "hello", "gone", id = "default_conversion_unscoped_and_unstripped"),
     ],
 )
-def test_module_cases(html, _p1, _p2, _p3):
+def test_hidden_subtrees_are_dropped_from_the_conversion(html, present_first, present_second, absent):
     out = html_to_markdown(html)
-    assert _p1 in out
-    assert _p2 in out
-    assert _p3 not in out
+    assert present_first in out
+    assert present_second in out
+    assert absent not in out
 
 
 @pytest.mark.parametrize(
-    "html, _p1",
+    "html, absent",
     [
         pytest.param('<body><p>keep</p><span aria-hidden="true">decoration</span></body>', "decoration", id = "aria_hidden_true_subtree_is_dropped"),
         pytest.param('<body><p>keep</p><span style="visibility:hidden">ghost</span></body>', "ghost", id = "inline_style_visibility_hidden_subtree_is_dropped"),
@@ -152,17 +152,15 @@ def test_module_cases(html, _p1, _p2, _p3):
         pytest.param('<body><p>keep</p><div hidden="false">not rendered</div></body>', "not rendered", id = "hidden_false_is_still_hidden"),
     ],
 )
-def test_module_cases_2(html, _p1):
+def test_hidden_markers_other_than_the_attribute_are_dropped(html, absent):
     out = html_to_markdown(html)
     assert 'keep' in out
-    assert _p1 not in out
+    assert absent not in out
 
 
 def test_aria_hidden_false_subtree_is_kept():
     html = '<body><span aria-hidden="false">still here</span></body>'
     assert "still here" in html_to_markdown(html)
-
-
 
 
 def test_inline_style_visible_display_is_kept():
@@ -182,7 +180,7 @@ def test_inline_style_visible_display_is_kept():
 
 
 @pytest.mark.parametrize(
-    "html, _p1, _p2",
+    "html, absent, present",
     [
         # <p hidden> is never closed; the parent </div> must still end the hidden region.
         pytest.param("<body><div><p hidden>gone</div><p>kept</p></body>", "gone", "kept", id = "hidden_recovers_from_omitted_close_tags"),
@@ -196,10 +194,10 @@ def test_inline_style_visible_display_is_kept():
             "</tr></table></body>", "secret cell", "visible cell", id = "nested_hidden_table_does_not_leak_inner_cells"),
     ],
 )
-def test_module_cases_3(html, _p1, _p2):
+def test_hidden_regions_end_at_the_implied_close_tag(html, absent, present):
     out = html_to_markdown(html)
-    assert _p1 not in out
-    assert _p2 in out
+    assert absent not in out
+    assert present in out
 
 
 def test_nested_hidden_regions():
@@ -208,8 +206,6 @@ def test_nested_hidden_regions():
     assert "inner" not in out
     assert "outer" not in out
     assert "ok" in out
-
-
 
 
 def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
@@ -226,7 +222,7 @@ def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
 
 
 @pytest.mark.parametrize(
-    "html, _p1, _p2",
+    "html, present_first, present_second",
     [
         # <li hidden> without </li> is implicitly closed by the next <li>.
         pytest.param("<body><ul><li hidden>secret<li>shown A</li><li>shown B</li></ul></body>", "shown A", "shown B", id = "hidden_list_item_omitted_close_keeps_following_items"),
@@ -237,13 +233,11 @@ def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
         pytest.param("<body><ul><li hidden><span>secret<li>visible item</ul><p>after</p></body>", "visible item", "after", id = "hidden_list_item_with_inline_child_closed_by_next_item"),
     ],
 )
-def test_module_cases_4(html, _p1, _p2):
+def test_hidden_regions_with_inline_children_end_at_the_implied_close(html, present_first, present_second):
     out = html_to_markdown(html)
     assert 'secret' not in out
-    assert _p1 in out
-    assert _p2 in out
-
-
+    assert present_first in out
+    assert present_second in out
 
 
 def test_skipped_tag_implicitly_closes_hidden_paragraph():
@@ -256,8 +250,6 @@ def test_skipped_tag_implicitly_closes_hidden_paragraph():
         assert "secret" not in out
         assert "chrome" not in out
         assert "VISIBLE" in out
-
-
 
 
 def test_visible_void_hr_still_renders():
@@ -331,8 +323,6 @@ def test_sibling_articles_do_not_leak_after_main_selected():
     out = html_to_markdown(html, main_content = True)
     assert "Main article body content" in out
     assert "Unrelated related-post" not in out
-
-
 
 
 def test_boilerplate_filter_preserves_phrase_inside_real_prose():
@@ -606,7 +596,7 @@ def test_looks_like_html_leading_table_stays_markdown():
 
 
 @pytest.mark.parametrize(
-    "md_readme, _p1, _p2, _p3",
+    "md_readme, first, second, third",
     [
         # A Markdown README opening with a fenced HTML snippet must be served verbatim,
         # never run through html_to_markdown (which would drop the fences/tags).
@@ -639,19 +629,17 @@ def test_looks_like_html_leading_table_stays_markdown():
             "```bash\npip install myproject\n```\n", "# My Project", "- step one", "```bash", id = "fetch_page_text_markdown_readme_with_leading_block_tag_stays_markdown"),
     ],
 )
-def test_module_cases_5(monkeypatch, md_readme, _p1, _p2, _p3):
-    
+def test_fetch_page_text_keeps_a_markdown_readme_verbatim(monkeypatch, md_readme, first, second, third):
+
     def fake_fetch(url, timeout=30, extra_headers=None, deadline=None, cancel_event=None):
         assert url == 'https://api.github.com/repos/unslothai/unsloth/readme'
         return (None, md_readme, 'text/plain')
     monkeypatch.setattr('core.inference.tools._fetch_url_raw', fake_fetch)
     out = _fetch_page_text('https://github.com/unslothai/unsloth')
     assert 'README of https://github.com/unslothai/unsloth' in out
-    assert _p1 in out
-    assert _p2 in out
-    assert _p3 in out
-
-
+    assert first in out
+    assert second in out
+    assert third in out
 
 
 def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
@@ -925,8 +913,6 @@ def test_fetch_page_text_missing_content_type_html_sniffed(monkeypatch):
 # ── implicit-close past unclosed inline descendants (finding 14) ──
 
 
-
-
 # ── nested hidden list/table contents must stay suppressed ──
 
 
@@ -962,8 +948,6 @@ def test_nested_hidden_list_with_omitted_closes_stays_suppressed():
     assert "secret child" not in out
     assert "deeper secret" not in out
     assert "visible sibling" in out
-
-
 
 
 # ── aggregate tiny <article> cards must not displace <main> (finding 15) ──
@@ -1251,8 +1235,6 @@ def test_web_search_query_cancelled_skips_search(monkeypatch):
     assert called["n"] == 0
 
 
-
-
 def test_looks_like_html_document_only_matches_real_documents():
     from core.inference.tools import _looks_like_html_document
 
@@ -1476,7 +1458,7 @@ def test_long_hrefs_count_toward_the_header_size_floor():
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, _p2, _p3, _p4",
+    "template, filler, repeats, present, also_present",
     [
         pytest.param("<article><header><h1><a href='/p'>%s</a></h1><p>By Jane Doe, July 2026</p></header><p>%s</p></article>", "A Very Long Linked Headline About Assorted Things In The World Today ", 5, "By Jane Doe", "Very Long Linked", id = "linked_heading_does_not_condemn_the_byline_beside_it"),
         pytest.param("<article><header><h1>T</h1><a name='intro'>%s</a><p>Byline</p></header><p>%s</p></article>", "Introductory prose that renders as plain text. ", 8, "Introductory prose", "Byline", id = "anchor_without_href_is_prose_not_link_furniture"),
@@ -1485,13 +1467,11 @@ def test_long_hrefs_count_toward_the_header_size_floor():
             "<a href='/author/jane'>Jane</a></header><p>%s</p></article>", "q", 900, "Title", "Jane", id = "a_long_heading_href_does_not_condemn_the_rest_of_the_header"),
     ],
 )
-def test_module_cases_6(_p0, _p1, _p2, _p3, _p4):
-    body = _p0 % (_p1 * _p2, 'Article body. ' * 30)
+def test_header_link_density_is_measured_on_rendered_text(template, filler, repeats, present, also_present):
+    body = template % (filler * repeats, 'Article body. ' * 30)
     out = html_to_markdown(f'<body>{body}</body>', main_content=True)
-    assert _p3 in out
-    assert _p4 in out
-
-
+    assert present in out
+    assert also_present in out
 
 
 def test_linked_heading_is_not_emitted_twice():
@@ -1529,8 +1509,6 @@ def test_furniture_only_card_does_not_suppress_the_main_it_sits_in():
     out = html_to_markdown(f"<body><main>{body}{card}</main></body>", main_content = True)
     assert "The real article body the reader wants." in out
     assert "Language 7" not in out
-
-
 
 
 def test_a_preserved_heading_is_terminated():

@@ -91,7 +91,7 @@ class TestBuildUvCmdTorchBackend:
         ), f"--torch-backend should not appear by default, got: {cmd}"
 
     @pytest.mark.parametrize(
-        "expected_UV_TORCH_BACKEND, _p1",
+        "backend, expected_flag",
         [
             # UV_TORCH_BACKEND=auto adds --torch-backend=auto.
             pytest.param("auto", "--torch-backend=auto", id = "uv_torch_backend_auto"),
@@ -101,10 +101,10 @@ class TestBuildUvCmdTorchBackend:
             pytest.param("cpu", "--torch-backend=cpu", id = "uv_torch_backend_kept_for_unpinned"),
         ],
     )
-    def test_build_uv_cmd_torch_backend_cases(self, expected_UV_TORCH_BACKEND, _p1):
-        with mock.patch.dict(os.environ, {'UV_TORCH_BACKEND': expected_UV_TORCH_BACKEND}):
+    def test_build_uv_cmd_torch_backend_cases(self, backend, expected_flag):
+        with mock.patch.dict(os.environ, {'UV_TORCH_BACKEND': backend}):
             cmd = self._call(('somepackage',))
-        assert _p1 in cmd
+        assert expected_flag in cmd
 
 
     def test_uv_torch_backend_empty(self):
@@ -126,7 +126,6 @@ class TestBuildUvCmdTorchBackend:
             assert not any(
                 a.startswith("--torch-backend") for a in cmd
             ), f"{pin_flag} command must not carry --torch-backend, got: {cmd}"
-
 
 
 class TestUvSafePath:

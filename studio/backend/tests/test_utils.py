@@ -131,7 +131,7 @@ class TestIsAppleSilicon:
         assert isinstance(is_apple_silicon(), bool)
 
     @pytest.mark.parametrize(
-        "_p0, _p1, expected",
+        "system, machine, expected",
         [
             pytest.param("Darwin", "arm64", True, id = "true_on_darwin_arm64"),
             pytest.param("Linux", "x86_64", False, id = "false_on_linux_x86"),
@@ -139,12 +139,11 @@ class TestIsAppleSilicon:
             pytest.param("Darwin", "x86_64", False, id = "false_on_darwin_x86"),
         ],
     )
-    def test_is_apple_silicon_cases(self, _p0, _p1, expected):
+    def test_is_apple_silicon_cases(self, system, machine, expected):
         with patch('utils.hardware.hardware.platform') as mock_plat:
-            mock_plat.system.return_value = _p0
-            mock_plat.machine.return_value = _p1
+            mock_plat.system.return_value = system
+            mock_plat.machine.return_value = machine
             assert is_apple_silicon() is expected
-
 
 
 # ========== clear_gpu_cache() ==========

@@ -55,7 +55,7 @@ def test_unknown_keys_are_ignored():
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, _p2",
+    "section, field, value",
     [
         pytest.param("appearance", "theme", "neon", id = "invalid_theme_rejected"),
         pytest.param("appearance", "palette", "neon", id = "invalid_palette_rejected"),
@@ -63,11 +63,9 @@ def test_unknown_keys_are_ignored():
         pytest.param("profile", "avatarDataUrl", "/Sloth%20emojis/../secret.png", id = "bundled_avatar_traversal_rejected"),
     ],
 )
-def test_module_cases(_p0, _p1, _p2):
+def test_invalid_personalization_values_are_rejected(section, field, value):
     with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate({_p0: {_p1: _p2}})
-
-
+        PersonalizationPayload.model_validate({section: {field: value}})
 
 
 def test_customization_defaults():
@@ -352,8 +350,6 @@ def test_imported_fonts_total_size_capped():
     )
 
 
-
-
 def test_avatar_size_is_capped():
     big = "data:image/png;base64," + "A" * (pers.MAX_AVATAR_DATA_URL_BYTES + 1)
     with pytest.raises(ValidationError):
@@ -384,8 +380,6 @@ def test_bundled_avatar_subpath_allowed():
         {"profile": {"avatarDataUrl": "/studio/Sloth%20emojis/large%20sloth%20yay.png"}}
     )
     assert "Sloth%20emojis" in p.profile.avatarDataUrl
-
-
 
 
 def test_get_read_errors_propagate(monkeypatch):

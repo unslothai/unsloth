@@ -2612,7 +2612,7 @@ class TestLoopRePrompt:
         assert contents[-1].endswith("This is the final visible answer.")
 
     @pytest.mark.parametrize(
-        "_p0",
+        "chunk",
         [
             pytest.param("Let me prepare the requested summary carefully.</think>This is the final visible answer.", id = "prefilled_reasoning_intent_does_not_reprompt_a_visible_answer"),
             pytest.param("Let me prepare the requested summary carefully."
@@ -2622,13 +2622,13 @@ class TestLoopRePrompt:
                 "This is the final visible answer.", id = "prefilled_reasoning_with_later_think_does_not_reprompt"),
         ],
     )
-    def test_loop_re_prompt_cases(self, _p0):
+    def test_loop_does_not_re_prompt_on_prefilled_reasoning(self, chunk):
         generations = 0
-        
+
         def _gen(_messages, active_tools=None):
             nonlocal generations
             generations += 1
-            yield _p0
+            yield chunk
         exec_fn = FakeExecuteTool([])
         events = _collect_events(run_safetensors_tool_loop(single_turn=_gen, messages=[{'role': 'user', 'content': 'summarize this'}], tools=[{'type': 'function', 'function': {'name': 'web_search'}}], execute_tool=exec_fn, nudge_tool_calls=True, reasoning_prefilled=True))
         assert generations == 1
@@ -2819,7 +2819,7 @@ class TestLoopCanonicalHealKey:
     """Per-tool canonical heal key (``code``/``command``/``query``), mirroring GGUF."""
 
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2, _p3, _p4, _p5",
+        "chunk, answer, exec_result, expected_name, expected_key, expected_value",
         [
             # The bare string must heal to {"code": "print(1)"}, not
             # {"query": ...}, so the python sandbox actually executes it.
@@ -2828,11 +2828,10 @@ class TestLoopCanonicalHealKey:
             pytest.param('<tool_call>{"name":"web_search","arguments":"hello"}</tool_call>', "ok", "...", "web_search", "query", "hello", id = "unknown_tool_bare_string_heals_to_query"),
         ],
     )
-    def test_loop_canonical_heal_key_cases(self, _p0, _p1, _p2, _p3, _p4, _p5):
-        loop, exec_fn = _make_loop(turns=[[_p0], [_p1]], exec_results=[_p2])
+    def test_loop_heals_the_call_to_its_canonical_key(self, chunk, answer, exec_result, expected_name, expected_key, expected_value):
+        loop, exec_fn = _make_loop(turns=[[chunk], [answer]], exec_results=[exec_result])
         events = _collect_events(loop)
-        assert exec_fn.calls == [(_p3, {_p4: _p5})]
-
+        assert exec_fn.calls == [(expected_name, {expected_key: expected_value})]
 
 
 class TestGGUFSafetensorsHealingParity:

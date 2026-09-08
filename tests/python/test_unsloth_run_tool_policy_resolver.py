@@ -70,7 +70,6 @@ class TestZeroHost:
         assert resolve_tool_policy(host='0.0.0.0', flag=flag, yes=yes, silent=silent, prompt=_never_prompt) is expected
 
 
-
 class TestIsExternalHost:
     @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "LOCALHOST", "Localhost"])
     def test_loopback_aliases_are_local(self, host):

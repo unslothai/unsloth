@@ -50,7 +50,6 @@ class TestMetadataHostDenylist:
         _blocked(code, expect_phrase = "Blocked: cloud-metadata host")
 
 
-
 class TestTrustedHostAllowlist:
     @pytest.mark.parametrize(
         "url",
@@ -90,7 +89,6 @@ class TestTrustedHostAllowlist:
     )
     def test_trusted_host_allowlist_allowed(self, code):
         _ok(code)
-
 
 
 class TestUntrustedHostBlock:
@@ -186,7 +184,6 @@ class TestUploadDenylist:
             'huggingface_hub.upload_file(path_or_fileobj="../escape.bin", path_in_repo="x", repo_id="r")',
             expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
         )
-
 
 
 class TestSandboxEnvIsolation:
@@ -770,7 +767,7 @@ class TestBashBlocklistPosition:
 
     # ---- argument-position: must NOT be blocked ----
     @pytest.mark.parametrize(
-        "_p0",
+        "command",
         [
             pytest.param("grep -r curl .", id = "grep_for_curl_string_allowed"),
             pytest.param("echo source the data", id = "echo_source_allowed"),
@@ -784,8 +781,8 @@ class TestBashBlocklistPosition:
             pytest.param("grep -x rm file.txt", id = "short_flag_neighbour_not_read_as_command"),
         ],
     )
-    def test_bash_blocklist_position_cases(self, _p0):
-        assert self._find()(_p0) == set()
+    def test_bash_blocklist_finds_nothing_in_safe_commands(self, command):
+        assert self._find()(command) == set()
 
 
     def test_cat_with_word_source_allowed(self):
@@ -797,7 +794,7 @@ class TestBashBlocklistPosition:
 
     # ---- command-position: must be blocked ----
     @pytest.mark.parametrize(
-        "_p0, _p1",
+        "expected, command",
         [
             pytest.param("rm", "rm -rf /", id = "bare_rm_blocked"),
             pytest.param("curl", "curl https://example.com", id = "curl_at_command_position_blocked"),
@@ -814,12 +811,12 @@ class TestBashBlocklistPosition:
             pytest.param("curl", "while true; do curl --version; break; done", id = "while_do_blocked"),
         ],
     )
-    def test_bash_blocklist_position_cases_2(self, _p0, _p1):
-        assert _p0 in self._find()(_p1)
+    def test_bash_blocklist_flags_the_command(self, expected, command):
+        assert expected in self._find()(command)
 
 
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2, _p3",
+        "first_expected, first_command, second_expected, second_command",
         [
             # `rm` after `;` even without surrounding whitespace.
             pytest.param("rm", "echo done; rm -rf /tmp/x", "rm", "echo done;rm -rf /tmp/x", id = "after_semicolon_blocked"),
@@ -838,13 +835,13 @@ class TestBashBlocklistPosition:
             pytest.param("rm", "fd victim . --exec=rm", "rm", "fd victim . --exec-batch=rm", id = "attached_exec_flag_value_blocked"),
         ],
     )
-    def test_bash_blocklist_position_cases_3(self, _p0, _p1, _p2, _p3):
-        assert _p0 in self._find()(_p1)
-        assert _p2 in self._find()(_p3)
+    def test_bash_blocklist_flags_both_commands(self, first_expected, first_command, second_expected, second_command):
+        assert first_expected in self._find()(first_command)
+        assert second_expected in self._find()(second_command)
 
 
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2, _p3, _p4, _p5, _p6",
+        "rm_command, second_expected, second_command, third_expected, third_command, fourth_expected, fourth_command",
         [
             # sed's `e COMMAND` hands COMMAND to the shell, so the payload is a real
             # command position hiding inside the script argument.
@@ -858,11 +855,11 @@ class TestBashBlocklistPosition:
             pytest.param("echo done; r''m -rf /tmp/x", "rm", "echo done;r''m -rf /tmp/x", "curl", "echo done; c''url --version", "curl", "echo done; /usr/bin/c''url --version", id = "split_quotes_after_semicolon_blocked"),
         ],
     )
-    def test_bash_blocklist_position_cases_4(self, _p0, _p1, _p2, _p3, _p4, _p5, _p6):
-        assert 'rm' in self._find()(_p0)
-        assert _p1 in self._find()(_p2)
-        assert _p3 in self._find()(_p4)
-        assert _p5 in self._find()(_p6)
+    def test_bash_blocklist_flags_each_variant(self, rm_command, second_expected, second_command, third_expected, third_command, fourth_expected, fourth_command):
+        assert 'rm' in self._find()(rm_command)
+        assert second_expected in self._find()(second_command)
+        assert third_expected in self._find()(third_command)
+        assert fourth_expected in self._find()(fourth_command)
 
 
     def test_sed_comment_ends_at_newline(self):
@@ -1055,7 +1052,7 @@ class TestBashBlocklistPosition:
         assert self._find()("grep -r pattern . |& head -5") == set()
 
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2, _p3, _p4, _p5",
+        "first_expected, first_command, rm_command, third_expected, third_command, safe_command",
         [
             # A source BOUNDARY closes any continuation open across it, so reading
             # every -e as one uninterrupted text let an unreadable -f in the middle
@@ -1078,11 +1075,11 @@ class TestBashBlocklistPosition:
             pytest.param("rm", 'sed "$((c+1))e rm -f victim" input', 'sed "$[c+1]e rm -f victim" input', "curl", 'sed "$((4/2))e curl https://x" input', 'sed -n "1,$((n + 1))p" f', id = "sed_program_behind_an_arithmetic_expansion"),
         ],
     )
-    def test_bash_blocklist_position_cases_5(self, _p0, _p1, _p2, _p3, _p4, _p5):
-        assert _p0 in self._find()(_p1)
-        assert 'rm' in self._find()(_p2)
-        assert _p3 in self._find()(_p4)
-        assert self._find()(_p5) == set()
+    def test_bash_blocklist_flags_only_the_dangerous_variants(self, first_expected, first_command, rm_command, third_expected, third_command, safe_command):
+        assert first_expected in self._find()(first_command)
+        assert 'rm' in self._find()(rm_command)
+        assert third_expected in self._find()(third_command)
+        assert self._find()(safe_command) == set()
 
     def test_program_flag_behind_the_positional_script(self):
         # A program flag AHEAD of the positional makes that word an input file.
@@ -1507,7 +1504,6 @@ class TestHfUploadImportGate:
         _ok(code)
 
 
-
 class TestHfUploadSandboxLocalPaths:
     """HF upload gate allows only files in the sandbox workdir. Absolute paths,
     `..` traversal, home expansion, and Windows drives are rejected (they could
@@ -1719,7 +1715,6 @@ class TestHfUploadSandboxLocalPaths:
     )
     def test_hf_upload_sandbox_local_paths_blocked(self, code):
         _blocked(code, expect_phrase = "HF upload path must be a sandbox-local relative-path literal")
-
 
 
 class TestHfUploadEnvAndSecretLeakBlock:

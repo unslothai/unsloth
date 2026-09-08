@@ -373,8 +373,6 @@ def _not_partial_snapshot(_kind, _repo_id, _path, **_kw):
     return False
 
 
-
-
 def _download_body(**over) -> SimpleNamespace:
     """A download request with every field the route reads.
 

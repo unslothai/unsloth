@@ -70,7 +70,7 @@ def _nightly_legs():
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1",
+    "leg, why",
     [
         pytest.param("grpo", "the schedule must select the leg; a nightly that runs the wired set "
             "is just another copy of the per-PR run", id = "the_schedule_runs_the_grpo_leg"),
@@ -101,10 +101,8 @@ def _nightly_legs():
             "pairing that found unsloth-zoo #1103", id = "the_schedule_also_runs_the_latest_compile_leg"),
     ],
 )
-def test_module_cases(_p0, _p1):
-    assert _p0 in _nightly_legs(), _p1
-
-
+def test_the_schedule_runs_the_nightly_only_legs(leg, why):
+    assert leg in _nightly_legs(), why
 
 
 def test_every_leg_the_nightly_names_exists():

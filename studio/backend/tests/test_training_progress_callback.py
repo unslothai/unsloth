@@ -22,15 +22,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
-# Shared setup for test_parent_status_advances_over_the_whole_chain, test_stop_status_is_never_replaced_by_the_active_one, test_training_warning_is_emitted_once_and_survives_later_status_updates.
-def _shared_setup_1():
-    owner = _make_owner()
-    backend = TrainingBackend()
-    event_queue = _FakeQueue()
-    owner.add_progress_callback(_create_trainer_progress_callback(event_queue))
-    return backend, event_queue, owner
-
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -164,7 +155,10 @@ def test_logging_reports_an_empty_status_so_the_active_one_is_sent_once():
 
 
 def test_parent_status_advances_over_the_whole_chain():
-    backend, event_queue, owner = _shared_setup_1()
+    owner = _make_owner()
+    backend = TrainingBackend()
+    event_queue = _FakeQueue()
+    owner.add_progress_callback(_create_trainer_progress_callback(event_queue))
     # The worker sends this right before trainer.train().
     event_queue.put({"type": "status", "message": "Starting training...", "ts": 0.0})
 
@@ -178,7 +172,10 @@ def test_parent_status_advances_over_the_whole_chain():
 
 
 def test_training_warning_is_emitted_once_and_survives_later_status_updates():
-    backend, event_queue, owner = _shared_setup_1()
+    owner = _make_owner()
+    backend = TrainingBackend()
+    event_queue = _FakeQueue()
+    owner.add_progress_callback(_create_trainer_progress_callback(event_queue))
 
     owner._record_warning("Evaluation fell back to a held-out training split.")
     owner._record_warning("Evaluation fell back to a held-out training split.")
@@ -212,7 +209,10 @@ def test_mlx_adapter_deduplicates_warning_events():
     ],
 )
 def test_stop_status_is_never_replaced_by_the_active_one(stop_status):
-    backend, event_queue, owner = _shared_setup_1()
+    owner = _make_owner()
+    backend = TrainingBackend()
+    event_queue = _FakeQueue()
+    owner.add_progress_callback(_create_trainer_progress_callback(event_queue))
     callback = owner._create_progress_callback()
 
     def _stop_after_first_step(step):

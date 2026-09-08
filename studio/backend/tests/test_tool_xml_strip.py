@@ -235,7 +235,7 @@ def test_strips_orphan_function_no_close():
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, _p2",
+    "text, removed, kept",
     [
         pytest.param("Search starting.\n<tool_call>", "<tool_call>", "Search starting.", id = "strips_orphan_only_opening_tag"),
         # Outer </function></tool_call> truncated by EOS, inner <parameter=...> DRAINED.
@@ -246,10 +246,10 @@ def test_strips_orphan_function_no_close():
         pytest.param('[TOOL_CALLS]web_search{"q":"x"} and then prose', "[TOOL_CALLS]", "and then prose", id = "strips_complete_bracket_tag_keeps_trailing_prose"),
     ],
 )
-def test_module_cases(_p0, _p1, _p2):
-    cleaned = _TOOL_XML_RE.sub('', _p0)
-    assert _p1 not in cleaned
-    assert _p2 in cleaned
+def test_tool_xml_strip_drops_markup_and_keeps_prose(text, removed, kept):
+    cleaned = _TOOL_XML_RE.sub('', text)
+    assert removed not in cleaned
+    assert kept in cleaned
 
 
 def test_strips_multiple_orphans():
@@ -285,10 +285,8 @@ def test_strips_gemma_native_orphan_closing_tag():
 # ── Tail-only </parameter> (PR #5735 follow-up) ───────────────────
 
 
-
-
 @pytest.mark.parametrize(
-    "_p0, _p1, expected",
+    "text, removed, expected",
     [
         # Close brace lost to EOS: the truncated tail strips to the end instead of leaking.
         pytest.param('here [TOOL_CALLS]web_search{"query":"weather"', "[TOOL_CALLS]", "here", id = "strips_unclosed_bracket_tail"),
@@ -296,12 +294,10 @@ def test_strips_gemma_native_orphan_closing_tag():
         pytest.param('x [TOOL_CALLS]mcp__srv__list-issues{"q":"x"}', "list-issues", "x", id = "strips_hyphenated_mcp_bracket_name"),
     ],
 )
-def test_module_cases_2(_p0, _p1, expected):
-    cleaned = _TOOL_XML_RE.sub('', _p0)
-    assert _p1 not in cleaned
+def test_tool_xml_strip_trims_truncated_bracket_tails(text, removed, expected):
+    cleaned = _TOOL_XML_RE.sub('', text)
+    assert removed not in cleaned
     assert cleaned.strip() == expected
-
-
 
 
 def test_preserves_mid_string_parameter_in_code_sample():

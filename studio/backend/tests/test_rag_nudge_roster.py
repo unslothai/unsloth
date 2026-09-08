@@ -9,15 +9,6 @@ import pytest
 
 from core.rag import store
 
-
-# Shared setup for test_a_transient_failure_does_not_silence_the_next_one, test_roster_degrades_when_the_database_is_unavailable, test_roster_is_skipped_when_rag_cannot_run.
-def _shared_setup_1(rag_conn):
-    from routes import inference
-    from storage import rag_db
-
-    _doc(rag_conn, "project_p1", "d1", "syllabus.pdf")
-    return inference, rag_db
-
 TOOLS = [{"type": "function", "function": {"name": "search_knowledge_base"}}]
 BASE = "Existing tool nudge."
 
@@ -278,7 +269,10 @@ def test_roster_appends_to_a_non_empty_tool_nudge(rag_conn):
 
 
 def test_roster_degrades_when_the_database_is_unavailable(rag_conn, monkeypatch):
-    inference, rag_db = _shared_setup_1(rag_conn)
+    from routes import inference
+    from storage import rag_db
+
+    _doc(rag_conn, "project_p1", "d1", "syllabus.pdf")
 
     def boom():
         raise RuntimeError("sqlite-vec could not be loaded")
@@ -295,7 +289,10 @@ def test_a_transient_failure_does_not_silence_the_next_one(rag_conn, monkeypatch
     whatever runs next in the same interpreter."""
     import sqlite3
 
-    inference, rag_db = _shared_setup_1(rag_conn)
+    from routes import inference
+    from storage import rag_db
+
+    _doc(rag_conn, "project_p1", "d1", "syllabus.pdf")
     monkeypatch.setattr(inference, "_roster_failure_logged", False)
     real = rag_db.get_metadata_connection
     failing = [True]
@@ -320,7 +317,10 @@ def test_roster_is_skipped_when_rag_cannot_run(rag_conn, monkeypatch):
     """The list must never name a file the search behind it would refuse. Without the
     vector extension every retrieval answers "unavailable", and the metadata connection
     the roster would otherwise open runs no schema migration of its own."""
-    inference, rag_db = _shared_setup_1(rag_conn)
+    from routes import inference
+    from storage import rag_db
+
+    _doc(rag_conn, "project_p1", "d1", "syllabus.pdf")
     opened: list[int] = []
     monkeypatch.setattr(rag_db, "rag_available", lambda: False)
     monkeypatch.setattr(rag_db, "get_metadata_connection", lambda: opened.append(1))

@@ -19,15 +19,6 @@ from fastapi import HTTPException
 from hub.services.models import cache_inventory, companion_cleanup, deletion
 from hub.utils import companion_assets
 
-
-# Shared setup for test_a_borrowed_chat_repo_is_never_advertised_as_freeable, test_a_legacy_component_repack_is_not_read_as_a_checkpoint, test_orphaned_native_components_do_not_hold_each_other_on_disk.
-def _shared_setup_1():
-    offered = {
-        c["repo_id"]
-        for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
-    }
-    return offered
-
 GGUF_REPO = "unsloth/FLUX.2-klein-4B-GGUF"
 BASE_REPO = "black-forest-labs/FLUX.2-klein-4B"
 # Real byte counts, measured from a cache holding exactly this pair.
@@ -603,7 +594,10 @@ def test_orphaned_native_components_do_not_hold_each_other_on_disk(monkeypatch):
         _repo(vae, [("split_files/vae/flux2-vae.safetensors", 300_000)]),
     )
     assert companion_cleanup.companion_dependents(vae) == []
-    offered = _shared_setup_1()
+    offered = {
+        c["repo_id"]
+        for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    }
     assert offered == {encoder, vae}
 
 
@@ -632,7 +626,10 @@ def test_a_borrowed_chat_repo_is_never_advertised_as_freeable(monkeypatch):
     )
     impact = asyncio.run(companion_cleanup.delete_impact_response(checkpoint))
     assert borrowed not in {c["repo_id"] for c in impact["freeable_companions"]}
-    offered = _shared_setup_1()
+    offered = {
+        c["repo_id"]
+        for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    }
     assert borrowed not in offered
 
 
@@ -734,7 +731,10 @@ def test_a_legacy_component_repack_is_not_read_as_a_checkpoint(monkeypatch):
         _repo(vae, [("split_files/vae/flux2-vae.safetensors", 300_000)]),
     )
     assert companion_cleanup.companion_dependents(vae) == []
-    offered = _shared_setup_1()
+    offered = {
+        c["repo_id"]
+        for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    }
     assert offered == {legacy, vae}
 
 

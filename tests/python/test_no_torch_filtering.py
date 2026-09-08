@@ -485,7 +485,7 @@ class TestInstallPythonStackSubprocessMock:
         return any("-r" in cmd and prefix in cmd for cmd in cmds)
 
     @pytest.mark.parametrize(
-        "no_torch, is_macos, is_windows, _p3, _p4",
+        "no_torch, is_macos, is_windows, filename, message",
         [
             # With NO_TORCH=True, overrides.txt pip_install must NOT be called.
             pytest.param(True, True, False, "overrides.txt", "overrides.txt should be skipped when NO_TORCH=True", id = "no_torch_macos_skips_overrides"),
@@ -499,9 +499,9 @@ class TestInstallPythonStackSubprocessMock:
             pytest.param(False, False, True, "triton-kernels.txt", "triton-kernels.txt should be skipped on Windows even without NO_TORCH", id = "windows_only_skips_triton"),
         ],
     )
-    def test_install_python_stack_subprocess_mock_cases(self, no_torch, is_macos, is_windows, _p3, _p4):
+    def test_install_python_stack_subprocess_mock_cases(self, no_torch, is_macos, is_windows, filename, message):
         cmds = self._capture_install(no_torch=no_torch, is_macos=is_macos, is_windows=is_windows)
-        assert not self._cmds_contain_file(cmds, _p3), _p4
+        assert not self._cmds_contain_file(cmds, filename), message
 
 
     def test_no_torch_macos_extras_called(self):
@@ -529,7 +529,7 @@ class TestInstallPythonStackSubprocessMock:
         ), "torchao override step (--reinstall) should be called on normal Linux"
 
     @pytest.mark.parametrize(
-        "_p0, _p1",
+        "filename, message",
         [
             # Normal Linux: triton-kernels.txt IS called.
             pytest.param("triton-kernels.txt", "triton-kernels.txt should be called on normal Linux", id = "normal_linux_includes_triton"),
@@ -539,9 +539,9 @@ class TestInstallPythonStackSubprocessMock:
             pytest.param("extras-no-deps.txt", "extras-no-deps.txt should be called on normal Linux", id = "normal_linux_includes_extras_no_deps"),
         ],
     )
-    def test_install_python_stack_subprocess_mock_cases_2(self, _p0, _p1):
+    def test_install_python_stack_keeps_the_requirements_file(self, filename, message):
         cmds = self._capture_install(no_torch=False, is_macos=False, is_windows=False)
-        assert self._cmds_contain_file(cmds, _p0), _p1
+        assert self._cmds_contain_file(cmds, filename), message
 
 
     def test_windows_only_includes_overrides(self):

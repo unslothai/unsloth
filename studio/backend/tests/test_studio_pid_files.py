@@ -641,7 +641,7 @@ def test_the_legacy_file_is_taken_over_from_a_dead_server(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1",
+    "filename, contents",
     [
         # The compiled cache is install-tree relative, so a second backend of this
         # install must not wipe it out from under the first.
@@ -654,8 +654,8 @@ def test_the_legacy_file_is_taken_over_from_a_dead_server(tmp_path, monkeypatch)
         pytest.param("studio.pid", "8550", id = "a_legacy_only_sibling_is_found"),
     ],
 )
-def test_module_cases(tmp_path, _p0, _p1):
-    (tmp_path / _p0).write_text(_p1, encoding='utf-8')
+def test_live_sibling_backend_finds_the_recorded_port(tmp_path, filename, contents):
+    (tmp_path / filename).write_text(contents, encoding='utf-8')
     assert run.live_sibling_backend() == 8550
 
 
@@ -681,8 +681,6 @@ def test_a_reused_pid_is_not_a_sibling(tmp_path, monkeypatch):
     (tmp_path / "studio-8888-8550.pid").write_text("8550\n1.0\n127.0.0.1", encoding = "utf-8")
 
     assert run.live_sibling_backend() is None
-
-
 
 
 def test_a_dead_legacy_record_is_not_a_sibling(tmp_path, monkeypatch):

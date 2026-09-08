@@ -897,7 +897,7 @@ class TestGetTransformersTier:
         _config_needs_550_cache.clear()
 
     @pytest.mark.parametrize(
-        "_p0, expected",
+        "model_name, expected",
         [
             pytest.param("google/gemma-4-E2B-it", "550", id = "gemma4_substring_returns_550"),
             pytest.param("unsloth/gemma-4-12b-it", "510", id = "gemma4_12b_substring_returns_510"),
@@ -907,8 +907,8 @@ class TestGetTransformersTier:
             pytest.param("gemma-4-model", "550", id = "550_checked_before_530"),
         ],
     )
-    def test_get_transformers_tier_cases(self, _p0, expected):
-        assert get_transformers_tier(_p0) == expected
+    def test_get_transformers_tier_cases(self, model_name, expected):
+        assert get_transformers_tier(model_name) == expected
 
 
     @pytest.mark.parametrize(
@@ -926,7 +926,7 @@ class TestGetTransformersTier:
         assert get_transformers_tier(model_id) == "550"
 
     @pytest.mark.parametrize(
-        "_p0, expected_model_type, expected",
+        "architecture, model_type, expected",
         [
             # Local checkpoint with Gemma4 architecture → 550.
             pytest.param("Gemma4ForConditionalGeneration", "gemma4", "550", id = "gemma4_config_json_returns_550"),
@@ -936,8 +936,8 @@ class TestGetTransformersTier:
             pytest.param("Gemma4AssistantForCausalLM", "gemma4_assistant", "510", id = "gemma4_assistant_config_json_returns_510"),
         ],
     )
-    def test_get_transformers_tier_cases_2(self, tmp_path, _p0, expected_model_type, expected):
-        cfg = {'architectures': [_p0], 'model_type': expected_model_type}
+    def test_get_transformers_tier_cases_2(self, tmp_path, architecture, model_type, expected):
+        cfg = {'architectures': [architecture], 'model_type': model_type}
         (tmp_path / 'config.json').write_text(json.dumps(cfg))
         assert get_transformers_tier(str(tmp_path)) == expected
 
