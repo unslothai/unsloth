@@ -13,7 +13,7 @@ import {
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
-import { showCarveoutAdvice } from "@/features/igpu-carveout";
+import { dismissCarveoutAdviceForModel, showCarveoutAdvice } from "@/features/igpu-carveout";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
@@ -297,7 +297,7 @@ export async function loadModel(
       // Absent on nearly every load, and the store ignores anything malformed, so
       // this is unconditional rather than guarded. Never blocks: the model is
       // already resident by the time this runs.
-      showCarveoutAdvice(loaded.carveout_advice);
+      showCarveoutAdvice(loaded.carveout_advice, payload.model_path ?? null);
       return loaded;
     },
   );
@@ -441,6 +441,10 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
     body: JSON.stringify(payload),
   });
   await parseJsonOrThrow<unknown>(response, "Model unload");
+  // Only after the unload is known to have happened: a rejected one leaves the
+  // model resident and the notice true. The advice describes a model, so a
+  // different model's unload leaves it standing.
+  dismissCarveoutAdviceForModel(payload.model_path);
 }
 
 /** Allow or deny a tool call paused awaiting user confirmation, identified by the backend

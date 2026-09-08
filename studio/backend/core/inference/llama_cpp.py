@@ -10677,16 +10677,30 @@ class LlamaCppBackend:
         path is never reached; off Windows it returns nothing instantly and costs
         one function call.
         """
+        sizes: list[int] = []
         try:
-            from utils.hardware.hardware import _windows_amd_adapter_records_by_luid
-            records = _windows_amd_adapter_records_by_luid() or {}
+            from utils.hardware.hardware import (
+                _AMD_PCI_VENDOR_ID,
+                _INTEL_PCI_VENDOR_ID,
+                _windows_amd_adapter_records_by_luid,
+            )
+
+            # Both vendors, because the count below is what stands in for the
+            # attribution: the physical inventory reads the same registry for Intel
+            # (an Arc host whose XPU wheel became a CPU one), and asking for AMD
+            # alone on an Intel-iGPU-plus-Radeon-dGPU host returns exactly one
+            # record -- the discrete card's -- which then reads as the integrated
+            # GPU's allocation and produces a toast quoting fixed dGPU VRAM against
+            # a firmware setting for a different vendor's part.
+            for vendor_id in (_AMD_PCI_VENDOR_ID, _INTEL_PCI_VENDOR_ID):
+                records = _windows_amd_adapter_records_by_luid(vendor_id) or {}
+                sizes.extend(
+                    int(record["dedicated_memory_bytes"])
+                    for record in records.values()
+                    if record.get("dedicated_memory_bytes")
+                )
         except Exception:
-            records = {}
-        sizes = [
-            int(record["dedicated_memory_bytes"])
-            for record in records.values()
-            if record.get("dedicated_memory_bytes")
-        ]
+            sizes = []
         # Only with exactly one such adapter. Picking between two needs the
         # LUID-to-device join the inventory does, and attributing the wrong
         # adapter's allocation would produce advice about the wrong GPU. A machine
@@ -10808,6 +10822,7 @@ class LlamaCppBackend:
         shared_gpu_ids = None,
         detected_gpus = None,
         target_unknown = False,
+        forced_cpu = False,
     ) -> None:
         """Work out whether this load is worth advising about, and stash the result.
 
@@ -10826,6 +10841,11 @@ class LlamaCppBackend:
         properties. Nearly every load has a model that fits, and those loads now pay
         only the cheap half.
 
+        ``forced_cpu`` is the architecture gate having emptied the pool: the env block
+        below masks every device away, so the child runs on the CPU and a larger
+        allocation would not put a single weight on the GPU. The advice is priced
+        before that mask is written, so without this it would offer exactly that.
+
         ``target_unknown`` is the cache tuning's test, borrowed for the same reason:
         with no ``gpu_ids`` a user ``--device`` (or ``LLAMA_ARG_DEVICE``) survives
         into the child and wins last-wins over the generated pin, so the placement
@@ -10834,7 +10854,7 @@ class LlamaCppBackend:
         """
         self._last_carveout_advice = None
         try:
-            if not need_bytes or target_unknown:
+            if not need_bytes or target_unknown or forced_cpu:
                 return
             # Vulkan is gated HERE rather than beside the ROCm gate below, because on
             # that backend gpu_indices holds VULKAN ORDINALS: handing them to
@@ -23607,6 +23627,7 @@ class LlamaCppBackend:
                         shared_gpu_ids = _shared_gpu_ids,
                         detected_gpus = _detected_gpus,
                         target_unknown = _cache_target_unknown,
+                        forced_cpu = _arch_gate_forced_cpu,
                     )
                     if not _unified_env_applied:
                         return
@@ -23656,6 +23677,7 @@ class LlamaCppBackend:
                     shared_gpu_ids = _shared_gpu_ids,
                     detected_gpus = _detected_gpus,
                     target_unknown = _cache_target_unknown,
+                    forced_cpu = _arch_gate_forced_cpu,
                 )
 
                 # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
@@ -24950,6 +24972,22 @@ class LlamaCppBackend:
                             # From the argv, like the fit-strip above: `cmd` is what
                             # the respawn runs, and the record has to match it.
                             self._memory_state = resolve_effective_memory_state(cmd, env)
+                        # And the carve-out advice with them. _begin_load_warnings()
+                        # above dropped the one priced for the crashed placement, which
+                        # is right, but the respawn can land on a unified-memory APU
+                        # whose allocation the same weights outgrow: the mirror of the
+                        # case that clear exists for, and it would load with nothing
+                        # said. Priced here, against `cmd` as the respawn will run it
+                        # and against _remaining alone, so a spill only this placement
+                        # has is the one reported.
+                        self._record_carveout_advice(
+                            _remaining,
+                            _unified_need_now(argv = cmd),
+                            is_vulkan_backend = is_vulkan_backend,
+                            shared_gpu_ids = _shared_gpu_ids,
+                            detected_gpus = _retry_rows or _detected_gpus,
+                            target_unknown = _cache_target_unknown,
+                        )
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
 
                 # Studio adds --kv-unified itself above one slot, so nothing the user

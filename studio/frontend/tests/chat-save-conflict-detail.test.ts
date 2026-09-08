@@ -70,7 +70,10 @@ function harness(response: ReturnType<typeof jsonResponse>) {
       // loadModel hands every load's advice field to the notice, including the
       // loads that carry none. This harness names chat-api's imports exactly, so
       // the stub has to exist even though nothing here raises a toast.
-      "@/features/igpu-carveout": { showCarveoutAdvice: () => {} },
+      "@/features/igpu-carveout": {
+        dismissCarveoutAdviceForModel: () => {},
+        showCarveoutAdvice: () => {},
+      },
       "@/features/hub/lib/abort-signals": {},
       "@/features/hub/lib/hub-token-header": { hubTokenHeader: () => ({}) },
       "@/features/hub/lib/network": { isHuggingFaceOffline: () => false },

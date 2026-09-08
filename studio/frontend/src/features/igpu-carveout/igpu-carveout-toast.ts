@@ -49,20 +49,42 @@ export const IGPU_CARVEOUT_ACTION_CLASS =
   "!justify-self-end !h-[26px] !border !border-border !bg-transparent !px-3 " +
   "!font-medium !text-foreground hover:!bg-accent";
 
+/** The model the notice on screen is about, so an unload can take it down.
+ *
+ * A path rather than a flag: several models can be resident, and unloading one of
+ * the others leaves this notice true. Null when the caller did not say which, and
+ * an unload then clears it, because a notice that cannot be matched to a model is
+ * worse left up. */
+let advisedModelPath: string | null = null;
+
+/** Take the notice down when the model it describes is unloaded.
+ *
+ * The toast lives 12 seconds and says "this model could run faster" beside an
+ * offer to remember the dismissal for the current allocation. Both stop being
+ * true the moment the model is gone, and the load path cannot clear it because no
+ * load happened. */
+export function dismissCarveoutAdviceForModel(modelPath?: string | null): void {
+  if (advisedModelPath !== null && modelPath && modelPath !== advisedModelPath) return;
+  advisedModelPath = null;
+  toast.dismiss(IGPU_CARVEOUT_TOAST_ID);
+}
+
 /** Hand a load response's advice field to the notice. Safe to call on every load.
  *
  * Absent on nearly every load, so callers pass the field through unconditionally
  * and anything malformed is treated as no advice at all: the notice quotes numbers,
  * and a partial payload must produce no toast rather than one reading "undefined
  * GB". */
-export function showCarveoutAdvice(value: unknown): void {
+export function showCarveoutAdvice(value: unknown, modelPath?: string | null): void {
   const advice = parseCarveoutAdvice(value);
   if (!advice) {
     // This load has nothing to advise, so the previous load's numbers have stopped
     // being true. Same moment the store used to clear its copy.
+    advisedModelPath = null;
     toast.dismiss(IGPU_CARVEOUT_TOAST_ID);
     return;
   }
+  advisedModelPath = modelPath ?? null;
   toast.info(IGPU_CARVEOUT_NOTICE_TITLE, {
     id: IGPU_CARVEOUT_TOAST_ID,
     description: advice.message,

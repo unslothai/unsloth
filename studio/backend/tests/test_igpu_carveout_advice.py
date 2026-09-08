@@ -9,6 +9,7 @@ worth telling the user about, but only when raising the setting would actually
 help, and only on hardware where the setting exists.
 """
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -511,3 +512,120 @@ class TestTheResponseRechecksTheDismissal:
     def test_no_advice_stays_no_advice(self):
         from routes.inference import _live_carveout_advice
         assert _live_carveout_advice(self._backend(None)) is None
+
+
+class TestTheArchitectureGatedCpuLaunch:
+    """Every GPU unsupported by this llama.cpp build, so the child runs on the CPU."""
+
+    def test_a_forced_cpu_launch_is_never_advised(self, monkeypatch):
+        # The advice is priced before the env block masks every device away
+        # ("-1"), so at the point it is recorded the argv still reads as a full GPU
+        # offload. On an unsupported APU that means a successful CPU-only load
+        # returning a toast that says raising the allocation would put the weights
+        # on the GPU, when this build cannot use that GPU at all.
+        probes = []
+
+        def _read(_i = None):
+            probes.append(_i)
+            return 32 * _GB
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        monkeypatch.setattr(LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(_read))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_amd_apu_wants_unified_memory", staticmethod(lambda _i = None: True)
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 95 * 1024)
+        )
+        backend._record_carveout_advice([0], gb(42.90), forced_cpu = True)
+        assert backend.last_carveout_advice is None
+        assert probes == [], "the allocation was read for a launch that reaches no GPU"
+
+
+class TestEveryCallSitePricesThePlacementItRuns:
+    """The gate and the retry, pinned at the call sites rather than in prose.
+
+    Both are one keyword argument, and both were missing at first: a launch that
+    reaches no GPU was advised to enlarge one, and a crash retry that lands on a
+    different GPU said nothing about it.
+    """
+
+    @staticmethod
+    def _calls():
+        source = Path(sys.modules[LlamaCppBackend.__module__].__file__)
+        tree = ast.parse(source.read_text(encoding = "utf-8"))
+        return [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_record_carveout_advice"
+        ]
+
+    def test_the_launch_call_sites_pass_the_forced_cpu_gate(self):
+        by_target = {
+            ast.unparse(call.args[0]): {kw.arg for kw in call.keywords} for call in self._calls()
+        }
+        assert "forced_cpu" in by_target["gpu_indices"]
+        assert "forced_cpu" in by_target["_unified_gpu_indices"]
+
+    def test_the_architecture_retry_reprices_against_the_surviving_gpus(self):
+        # _begin_load_warnings() drops the advice priced for the crashed placement.
+        # The respawn can land on a unified-memory APU whose allocation the same
+        # weights outgrow, and that load is worth advising about, so the retry has
+        # to price it again rather than only clear.
+        by_target = {
+            ast.unparse(call.args[0]): {kw.arg for kw in call.keywords} for call in self._calls()
+        }
+        assert (
+            "_remaining" in by_target
+        ), "the arch-crash retry does not re-price the carve-out advice"
+        assert "shared_gpu_ids" in by_target["_remaining"]
+
+
+class TestWhichAdapterTheAllocationBelongsTo:
+    """A registry record is only the integrated GPU's when nothing else could be."""
+
+    @staticmethod
+    def _with_records(monkeypatch, by_vendor):
+        import utils.hardware.hardware as hw
+
+        def _records(vendor_id = hw._AMD_PCI_VENDOR_ID, *, distinguish_failure = False):
+            return by_vendor.get(vendor_id, {})
+
+        monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", _records)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_selected_pool_mib", staticmethod(lambda _i = None: None)
+        )
+
+    def test_one_adapter_is_the_one_being_advised_about(self, monkeypatch):
+        import utils.hardware.hardware as hw
+        self._with_records(
+            monkeypatch, {hw._AMD_PCI_VENDOR_ID: {1: {"dedicated_memory_bytes": 32 * _GB}}}
+        )
+        assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) == 32 * _GB
+
+    def test_an_intel_igpu_beside_a_discrete_radeon_declines(self, monkeypatch):
+        # The case the AMD-only query got wrong: the Vulkan gate correctly finds the
+        # selected Intel iGPU shared, the registry returns the single AMD record
+        # that exists, and the discrete card's fixed VRAM is then quoted as the
+        # integrated GPU's allocation, under a firmware suggestion for a part that
+        # is not even the same vendor's.
+        import utils.hardware.hardware as hw
+        self._with_records(
+            monkeypatch,
+            {
+                hw._AMD_PCI_VENDOR_ID: {1: {"dedicated_memory_bytes": 16 * _GB}},
+                hw._INTEL_PCI_VENDOR_ID: {2: {"dedicated_memory_bytes": 2 * _GB}},
+            },
+        )
+        assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) is None
+
+    def test_an_intel_igpu_alone_is_still_readable(self, monkeypatch):
+        # Declining on the ambiguity must not turn into declining on Intel: an Arc
+        # or iGPU host with no AMD adapter has exactly one candidate.
+        import utils.hardware.hardware as hw
+        self._with_records(
+            monkeypatch, {hw._INTEL_PCI_VENDOR_ID: {2: {"dedicated_memory_bytes": 8 * _GB}}}
+        )
+        assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) == 8 * _GB

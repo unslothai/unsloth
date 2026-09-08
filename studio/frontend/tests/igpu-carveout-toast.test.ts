@@ -23,6 +23,7 @@ const {
   IGPU_CARVEOUT_ACTION_CLASS,
   IGPU_CARVEOUT_NOTICE_TITLE,
   IGPU_CARVEOUT_TOAST_ID,
+  dismissCarveoutAdviceForModel,
   showCarveoutAdvice,
 } = await import("../src/features/igpu-carveout/igpu-carveout-toast.ts");
 
@@ -160,4 +161,40 @@ test("a failing dismissal is swallowed rather than rejected", async () => {
   const action = calls[0].options?.action as { onClick: () => void };
   assert.doesNotThrow(() => action.onClick());
   await new Promise((resolve) => setTimeout(resolve, 0));
+});
+
+test("unloading the advised model takes its notice down", () => {
+  // The toast lives 12 seconds and says "this model could run faster" beside an
+  // offer to remember the dismissal. Unload the model inside that window and both
+  // halves are false, with no load coming to correct them.
+  reset();
+  showCarveoutAdvice(ADVICE, "/models/qwen3-30b.gguf");
+  dismissCarveoutAdviceForModel("/models/qwen3-30b.gguf");
+  const dismissed = calls.filter((call) => call.kind === "dismiss");
+  assert.equal(dismissed.length, 1);
+  assert.equal(dismissed[0].id, IGPU_CARVEOUT_TOAST_ID);
+});
+
+test("unloading a different model leaves it up", () => {
+  // Several models can be resident at once, and the notice is about one of them.
+  reset();
+  showCarveoutAdvice(ADVICE, "/models/qwen3-30b.gguf");
+  dismissCarveoutAdviceForModel("/models/gemma3-27b.gguf");
+  assert.equal(
+    calls.filter((call) => call.kind === "dismiss").length,
+    0,
+  );
+});
+
+test("every dismissal names this notice and only this notice", () => {
+  // The id is what keeps a second load from stacking a second toast, and it is
+  // also what keeps these dismissals off every other toast on screen.
+  reset();
+  showCarveoutAdvice(ADVICE, "/models/qwen3-30b.gguf");
+  dismissCarveoutAdviceForModel("/models/qwen3-30b.gguf");
+  dismissCarveoutAdviceForModel("/models/gemma3-27b.gguf");
+  showCarveoutAdvice(null);
+  for (const call of calls.filter((entry) => entry.kind === "dismiss")) {
+    assert.equal(call.id, IGPU_CARVEOUT_TOAST_ID);
+  }
 });
