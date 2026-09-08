@@ -33,7 +33,12 @@ import pytest
 if sys.platform != "linux":
     pytest.skip("the bubblewrap backend is Linux only", allow_module_level = True)
 
-from core.inference import os_sandbox, sandbox_linux, sandbox_seccomp  # noqa: E402
+from core.inference import (  # noqa: E402
+    os_sandbox,
+    sandbox_landlock,
+    sandbox_linux,
+    sandbox_seccomp,
+)
 from core.inference.os_sandbox import SandboxUnavailableError, ToolLaunchPlan  # noqa: E402
 
 
@@ -141,20 +146,19 @@ def test_the_private_tmpfs_replaces_the_shared_directories(prepared):
     assert argv.index("--tmpfs") > remount
 
 
-def test_the_tls_private_key_directories_are_masked(prepared):
-    """/etc/ssl and /etc/pki are bound whole because the CA bundle's spelling moves
-    between distributions, and each carries a private-key directory beside the
-    public trust material. A Studio running as root in a container can read it, and
-    the network in here is open. An empty tmpfs cannot break certificate validation
-    the way naming the bundle by hand could."""
-    argv = prepared.argv
-    tmpfs = [argv[i + 1] for i, token in enumerate(argv) if token == "--tmpfs"]
-    present = [path for path in sandbox_linux._TLS_PRIVATE_DIRS if os.path.isdir(path)]
-    assert present, "no TLS private-key directory on this host, so this proves nothing"
-    for path in present:
-        assert path in tmpfs
-        # After the trust tree is bound, or the bind would put it back.
-        assert tmpfs.index(path) > tmpfs.index("/tmp")
+def test_no_private_key_directory_enters_the_jail_at_all(prepared):
+    """The public halves of the trust trees are named one by one, so nothing has to
+    remember which distribution called its key directory what. Binding /etc/ssl and
+    /etc/pki whole and masking the secrets fails in the wrong direction: the mask
+    list is finished only until the next name for one."""
+    sources = [source for source, _ in _pairs(prepared.argv, "--ro-bind-try")]
+    assert "/etc/ssl/certs" in sources
+    assert "/etc/ssl" not in sources and "/etc/pki" not in sources
+    # Not by luck: this host has one, and no bind reaches it.
+    secret = "/etc/ssl/private"
+    assert os.path.isdir(secret), "no private-key directory here, so this proves nothing"
+    for source, _ in (*_pairs(prepared.argv, "--ro-bind-try"), *_pairs(prepared.argv, "--ro-bind")):
+        assert not sandbox_linux._within(secret, source), source
 
 
 def test_pip_gets_a_writable_target_inside_the_workdir(prepared):
@@ -344,12 +348,16 @@ def test_a_tmpdir_outside_the_workdir_is_replaced_by_the_private_tmpfs(tmp_path)
 
 
 def test_the_outer_setsid_preexec_is_preserved(tmp_path):
-    marker = lambda: None  # noqa: E731 - identity is the whole assertion
-    launch = sandbox_linux.prepare(_plan(tmp_path, preexec_fn = marker))
+    ran = []
+    launch = sandbox_linux.prepare(_plan(tmp_path, preexec_fn = lambda: ran.append("plan")))
     try:
         # tools.py kills a tool call with killpg. --new-session covers the inside
-        # of the jail; without this the outer process group never exists.
-        assert launch.preexec_fn is marker
+        # of the jail; without this the outer process group never exists. Composed
+        # with the Landlock scope rather than handed through, so what is asserted
+        # is that it RUNS, and first, not that it is the same object.
+        assert launch.preexec_fn is not None
+        launch.preexec_fn()
+        assert ran == ["plan"]
     finally:
         launch.cleanup()
 
@@ -909,3 +917,82 @@ def test_a_runtime_prefix_contributes_its_git_helpers(tmp_path, monkeypatch):
     paths = sandbox_linux._runtime_read_paths(str(tmp_path / "session"), ("/usr/lib",))
     assert str(prefix / "libexec") in paths
     assert str(prefix) not in paths
+
+
+# ── the network namespace is shared, and abstract sockets live in it ──
+
+
+def test_the_launch_pre_exec_scopes_abstract_sockets(tmp_path):
+    """An abstract AF_UNIX socket is in the network namespace, not the filesystem,
+    so no mount, bind or seccomp rule in this backend touches one: /proc/net/unix
+    names every socket on the host and a connect needs nothing else. On an
+    ordinary desktop that reaches the session bus and the X server, which is a way
+    out of the boundary this backend claims."""
+    if not sandbox_landlock.abstract_scope_supported():
+        pytest.skip("this kernel predates the Landlock abstract-socket scope")
+    name = b"\0unsloth-abstract-probe-" + os.urandom(6).hex().encode()
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(name)
+    listener.listen(1)
+    read_fd, write_fd = os.pipe()
+    try:
+        child = os.fork()
+        if child == 0:  # pragma: no cover - runs in the forked child
+            try:
+                os.close(read_fd)
+                sandbox_landlock.with_abstract_scope(None)()
+                probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                probe.settimeout(2)
+                try:
+                    probe.connect(name)
+                    os.write(write_fd, b"connected")
+                except OSError as error:
+                    os.write(write_fd, str(error.errno).encode())
+            finally:
+                os._exit(0)
+        os.close(write_fd)
+        write_fd = -1
+        with os.fdopen(read_fd, "rb") as stream:
+            verdict = stream.read()
+        read_fd = -1
+        os.waitpid(child, 0)
+        assert verdict == str(errno.EPERM).encode(), verdict
+        # The positive control: unscoped, this host can reach that socket, so the
+        # refusal above is the scope and not a socket nobody could have connected to.
+        control = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        control.settimeout(2)
+        control.connect(name)
+        control.close()
+    finally:
+        for fd in (read_fd, write_fd):
+            if fd >= 0:
+                os.close(fd)
+        listener.close()
+
+
+def test_the_backend_says_so_when_the_kernel_cannot_scope_them(monkeypatch):
+    """A boundary that is not there has to be named. LIMITATIONS is built at import
+    from the kernel's Landlock ABI, so the record on an older host carries the
+    reachable-sockets entry that this host's does not."""
+    supported = sandbox_landlock.abstract_scope_supported()
+    assert ("host_abstract_sockets_reachable" in sandbox_linux.LIMITATIONS) is not supported
+
+
+def test_the_plan_pre_exec_still_runs_before_the_scope():
+    """Composed, never replaced: the plan's pre-exec is the os.setsid() every kill
+    path in tools.py signals."""
+    ran = []
+    composed = sandbox_landlock.with_abstract_scope(lambda: ran.append("plan"))
+    composed()
+    assert ran == ["plan"]
+
+
+def test_a_runtime_prefix_contributes_its_certificate_store(tmp_path, monkeypatch):
+    """A Conda prefix builds OpenSSL against its own <prefix>/ssl/cacert.pem, so
+    an https clone reaches git-remote-https and then cannot verify a certificate."""
+    prefix = tmp_path / "conda"
+    for name in ("bin", "ssl", "lib"):
+        (prefix / name).mkdir(parents = True)
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    paths = sandbox_linux._runtime_read_paths(str(tmp_path / "session"), ("/usr/lib",))
+    assert str(prefix / "ssl") in paths

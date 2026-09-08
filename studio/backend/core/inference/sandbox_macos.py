@@ -87,6 +87,12 @@ LIMITATIONS = (
     # namespace to hide the host the way the Linux backend does. Named here so
     # the record does not read as though it did.
     "host_process_metadata_readable",
+    # (deny default) grants only RootDomainUserClient, and Metal needs the GPU's
+    # IOAccelerator and AGX user clients, so torch's MPS backend cannot initialise
+    # a device in here. Named rather than granted: those user clients are a large
+    # authority to hand a tool call on a platform nothing here can test, and the
+    # Linux backend already treats a CPU-only jail as the trade worth taking.
+    "gpu_devices_hidden",
 )
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
@@ -479,7 +485,7 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
         candidates.extend(
             posixpath.join(prefix, name)
-            for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg")
+            for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl")
         )
     try:
         paths = sysconfig.get_paths()

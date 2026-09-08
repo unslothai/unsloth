@@ -33,7 +33,7 @@ import sysconfig
 import tempfile
 from functools import lru_cache
 
-from . import sandbox_seccomp
+from . import sandbox_landlock, sandbox_seccomp
 from .os_sandbox import (
     PROFILE_VERSION,
     SESSION_PACKAGES_RELPATH,
@@ -62,6 +62,13 @@ LIMITATIONS = (
     # path, where tools.py sweeps such a descendant afterwards: output the
     # background job would have written after the leader exited is not collected.
     "detached_processes_die_with_the_call",
+    # The sandbox shares the host's network namespace so tool calls can reach the
+    # internet, and an ABSTRACT AF_UNIX socket lives in that namespace rather than
+    # in the filesystem: the mount boundary does not touch it. On Linux 6.12 and
+    # newer a Landlock scope closes it, and where the kernel cannot, a launch can
+    # reach the session bus and the X server through /proc/net/unix. That is a way
+    # out of the filesystem claim, so it is named rather than left implied.
+    *(() if sandbox_landlock.abstract_scope_supported() else ("host_abstract_sockets_reachable",)),
     "shared_kernel",
 )
 
@@ -102,6 +109,15 @@ _ETC_FILES = (
 )
 # Resolution and TLS trust. pip carries certifi; curl, git and urllib do not, and
 # Debian keeps the bundle under /etc/ssl where Fedora and RHEL use /etc/pki.
+#
+# The PUBLIC halves of those trees, one by one, never /etc/ssl or /etc/pki whole.
+# Both carry a private-key directory beside the certificates -- a local CA's
+# signing key, the RHEL subscription keys -- and binding the tree and then masking
+# what is secret fails in the wrong direction: the mask list is finished only
+# until the next distribution invents a name for one. Naming the public material
+# fails the other way, which is the way to fail. A miss here breaks certificate
+# verification loudly on the host that has it; a miss in a mask list leaks a key
+# quietly on every host.
 _NETWORK_FILES = (
     "/etc/resolv.conf",
     "/etc/hosts",
@@ -109,22 +125,20 @@ _NETWORK_FILES = (
     "/etc/gai.conf",
     "/etc/services",
     "/etc/protocols",
-    "/etc/ssl",
-    "/etc/pki",
+    # Debian, Alpine, Arch, and the Fedora spelling that symlinks here.
+    "/etc/ssl/certs",
+    "/etc/ssl/cert.pem",
+    "/etc/ssl/openssl.cnf",
+    # Fedora and RHEL, where /etc/pki/tls is the real location.
+    "/etc/pki/tls/certs",
+    "/etc/pki/tls/cert.pem",
+    "/etc/pki/tls/openssl.cnf",
+    "/etc/pki/ca-trust",
     "/etc/ca-certificates",
     "/etc/ca-certificates.conf",
     "/etc/crypto-policies",
-)
-# Shadowed with an empty tmpfs after those trees are bound. /etc/ssl and /etc/pki
-# are bound whole because the CA bundle's spelling moves between distributions,
-# and both carry a private-key directory beside the public trust material. It is
-# mode 0700 root, so an ordinary Studio cannot read it and the mask costs
-# nothing; a Studio running as root in a container can, and the network in here
-# is open by design. Emptying the directory cannot break certificate validation
-# the way naming the bundle by hand could.
-_TLS_PRIVATE_DIRS = (
-    "/etc/ssl/private",
-    "/etc/pki/tls/private",
+    # SUSE keeps the generated bundle out of /etc entirely.
+    "/var/lib/ca-certificates",
 )
 # pip installs into the running interpreter's site-packages, which is bound
 # read-only here, so `pip install X` failed with a read-only filesystem error on
@@ -269,6 +283,9 @@ def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[st
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site"),
     ]
     # The subdirectories a Python installation lives in, never the prefix itself.
+    # "ssl" for the same git: a Conda prefix builds OpenSSL against its own
+    # <prefix>/ssl/cacert.pem, so an https clone reaches git-remote-https and
+    # then fails to verify a certificate without it.
     # "libexec" for git: a Conda or Homebrew prefix that supplies its own git
     # keeps git-remote-https and the rest of the helpers there, and PATH selects
     # that git, so an https clone fails at the helper without it.
@@ -283,7 +300,7 @@ def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[st
     for prefix in prefixes:
         candidates.extend(
             os.path.join(prefix, name)
-            for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg")
+            for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl")
         )
     try:
         paths = sysconfig.get_paths()
@@ -546,9 +563,6 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         # writable bind onto it, and the private /tmp, come after.
         argv += ["--dir", workdir, "--remount-ro", "/"]
         argv += ["--tmpfs", "/dev/shm", "--tmpfs", "/tmp"]
-        for path in _TLS_PRIVATE_DIRS:
-            if os.path.isdir(path):
-                argv += ["--tmpfs", path]
         for path in tmp_runtime_paths:
             argv += ["--ro-bind", path, path]
         argv += ["--bind", workdir, workdir, "--chdir", workdir]
@@ -587,9 +601,11 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             argv = tuple(argv),
             workdir = workdir,
             env = dict(plan.env),
-            # bwrap's --new-session covers the inner side only. tools.py kills a tool
-            # call with killpg, so the outer setsid this carries still has to run.
-            preexec_fn = plan.preexec_fn,
+            # The plan's own pre-exec, plus the Landlock scope. bwrap's
+            # --new-session covers the inner side only; tools.py kills a tool call
+            # with killpg, so the outer setsid the plan carries still has to run,
+            # and dropping it is what _prepare_tool_launch checks for.
+            preexec_fn = sandbox_landlock.with_abstract_scope(plan.preexec_fn),
             backend = BACKEND_NAME,
             pass_fds = (seccomp.fileno(),),
             owned_files = [seccomp],

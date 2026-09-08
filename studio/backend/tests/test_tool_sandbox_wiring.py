@@ -250,7 +250,26 @@ def test_the_process_unsloth_holds_still_lands_in_its_own_session():
         assert "6" in tools._bash_exec("echo 6", None, 60, _SESSION)
     finally:
         subprocess.Popen = real
-    assert seen == [tools._sandbox_preexec, tools._sandbox_preexec]
+    assert len(seen) == 2 and all(preexec is not None for preexec in seen)
+    # Run what Popen was given, in a fork of our own, and ask the result rather
+    # than the identity: an isolated launch composes the plan's pre-exec with the
+    # backend's, so the object differs while the setsid that killpg needs is the
+    # invariant either way.
+    for preexec in seen:
+        read_fd, write_fd = os.pipe()
+        child = os.fork()
+        if child == 0:  # pragma: no cover - runs in the forked child
+            try:
+                os.close(read_fd)
+                preexec()
+                os.write(write_fd, b"1" if os.getsid(0) == os.getpid() else b"0")
+            finally:
+                os._exit(0)
+        os.close(write_fd)
+        with os.fdopen(read_fd, "rb") as stream:
+            leads_its_session = stream.read()
+        os.waitpid(child, 0)
+        assert leads_its_session == b"1"
 
 
 def test_a_timeout_kills_the_tool_and_leaves_the_server_running():
