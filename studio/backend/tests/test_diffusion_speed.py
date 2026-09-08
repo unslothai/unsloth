@@ -1121,9 +1121,13 @@ def test_cuda_graph_cache_engaged_overrides_cache_active_for_the_graph_arm(monke
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
     common = dict(is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
-    apply_speed_optims(_Pipe(with_compile = True), _target(), cache_active = True, cache_engaged = False, **common)
+    apply_speed_optims(
+        _Pipe(with_compile = True), _target(), cache_active = True, cache_engaged = False, **common
+    )
     assert calls["eligible"][0]["cache_active"] is False
-    apply_speed_optims(_Pipe(with_compile = True), _target(), cache_active = False, cache_engaged = True, **common)
+    apply_speed_optims(
+        _Pipe(with_compile = True), _target(), cache_active = False, cache_engaged = True, **common
+    )
     assert calls["eligible"][1]["cache_active"] is True
     apply_speed_optims(_Pipe(with_compile = True), _target(), cache_active = True, **common)
     assert calls["eligible"][2]["cache_active"] is True
