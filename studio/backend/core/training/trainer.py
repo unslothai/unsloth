@@ -3136,7 +3136,10 @@ class UnslothTrainer:
             elif self._audio_type == "whisper":
                 train_data, eval_data = self._preprocess_whisper_dataset(
                     dataset,
-                    eval_split = eval_split,
+                    # Whisper carves 6% off train whenever eval_split is set. Without the gate
+                    # it would do that, and feature-extract the rows, for a cadence the trainer
+                    # branch then refuses.
+                    eval_split = eval_split if eval_enabled else None,
                     custom_format_mapping = custom_format_mapping,
                     eval_dataset = eval_dataset,
                 )
@@ -3888,10 +3891,18 @@ class UnslothTrainer:
                 from utils.datasets import DataCollatorSpeechSeq2SeqWithPadding
 
                 eval_dataset = training_args.get("eval_dataset", None)
+                eval_steps_val = training_args.get("eval_steps", 5)
                 extra = {"remove_unused_columns": False, "label_names": ["labels"]}
-                if eval_dataset:
+                if eval_dataset and not evaluation_enabled(eval_steps_val):
+                    # The named-split carve-out below runs off eval_split, not off the cadence, so
+                    # this branch is the only thing standing between an inf and an OverflowError
+                    # inside Seq2SeqTrainingArguments.
+                    logger.info(
+                        f"⚠️  Eval dataset provided but eval_steps={eval_steps_val} (disabled)\n"
+                    )
+                elif eval_dataset:
                     extra["eval_strategy"] = "steps"
-                    extra["eval_steps"] = training_args.get("eval_steps", 5)
+                    extra["eval_steps"] = float(eval_steps_val)
                     # HF's default of 8 can OOM audio runs, as the codec branches already note.
                     extra["per_device_eval_batch_size"] = training_args.get("batch_size") or 2
 
