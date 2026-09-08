@@ -315,6 +315,38 @@ def _assume_bare_metal(monkeypatch):
     )
 
 
+# HSA_OVERRIDE_GFX_VERSION RELABELS a device's reported architecture for kernel compatibility.
+# _torch_unified_memory_classification_known reads it as a spoof and then declines to prove ANY
+# device discrete, so a value inherited from the shell silently answers the question these tests
+# ask with fabricated devices.
+#
+# MEASURED, both directions, on a clean checkout: exporting it turns exactly eleven
+# test_a_known_discrete_rocm_arch_is_proved_discrete cases plus
+# test_the_classification_seam_survives_a_gguf_only_install red and nothing else in the file
+# (12 failed, 3 passed), and clearing it puts all 15 back. That is precisely the set the AMD CI's
+# Windows runner reports while the Linux runner stays green, which fits: install.sh unsets this
+# variable in 20 places and install.ps1 has no equivalent.
+#
+# Deliberately NOT extended to CUDA_VISIBLE_DEVICES, HIP_VISIBLE_DEVICES, ROCR_VISIBLE_DEVICES or
+# GPU_DEVICE_ORDINAL. Those ASSIGN devices rather than relabel them -- they are how an operator
+# confines a process to the GPUs it owns -- and clearing them lets a test reach hardware that was
+# deliberately excluded. Measured on a shared box: clearing them introduced 97 failures against a
+# clean baseline of 0, nearly all in the diffusion checkpoint suite.
+_GPU_ARCH_OVERRIDE_ENV = ("HSA_OVERRIDE_GFX_VERSION",)
+
+
+@pytest.fixture(autouse = True)
+def _isolate_gpu_arch_override_env(monkeypatch):
+    """Drop an inherited architecture override so device classification tests are hermetic.
+
+    Tests that want one set it themselves; monkeypatch.setenv in the test body runs after this
+    fixture, so the deliberate cases (the gfx1035-presents-as-gfx1030 override, the roster compat
+    matrix, the device probe) are unaffected.
+    """
+    for name in _GPU_ARCH_OVERRIDE_ENV:
+        monkeypatch.delenv(name, raising = False)
+
+
 _LOOPBACK_HOSTS = frozenset({"::1", "localhost", "localhost.localdomain", "0.0.0.0", "::", ""})
 
 # The spellings worth writing into NO_PROXY. Same set as above minus the wildcards and

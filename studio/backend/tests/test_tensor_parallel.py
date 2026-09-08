@@ -1777,7 +1777,7 @@ def test_load_model_tensor_admission_and_capacity_gate_use_usable_budget():
     # The gate's required footprint must include the non-shrinkable MTP reserve,
     # not weights alone, or a separate-drafter MTP load can still overcommit.
     assert "_tp_mtp_floor" in src
-    assert "model_size + _tp_mtp_floor" in src
+    assert "_tp_model_size + _tp_mtp_floor" in src
 
 
 def test_load_model_tensor_floor_keeps_flat_reserve_for_weights_only():
@@ -1797,9 +1797,9 @@ def test_load_model_reserves_pipeline_per_device_overhead():
     # adds nothing.
     assert LlamaCppBackend._PIPELINE_PER_DEVICE_OVERHEAD_MIB > 0
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-    assert "def_subset_model_size(n_gpus:int)->int:" in compact
+    assert "def_subset_model_size(n_gpus:int,subset=None)->int:" in compact
     assert "max(0,n_gpus-1)*_pipeline_overhead_bytes" in compact
-    assert "_subset_model_size(n_gpus)" in compact  # used in the layer-split fit
+    assert "_subset_model_size(n_gpus,subset)" in compact  # used in the layer-split fit
 
 
 def test_load_model_does_not_gate_the_kv_cache_on_tensor_mode():

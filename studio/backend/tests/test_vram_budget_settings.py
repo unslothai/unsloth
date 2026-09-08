@@ -587,14 +587,16 @@ class TestFloorReserve:
         assert lc._vram_usable_mib(12_000, None, 1.0, pooled = True) == pytest.approx(12_000)
 
     def test_every_pooled_caller_says_so(self):
-        # Five call sites hand _fit_context_to_vram an absolute pool budget; each
+        # Six call sites hand _fit_context_to_vram an absolute pool budget; each
         # has to be marked, since the flag is what keeps them from double-paying.
+        # The sixth is the arch-crash retry's re-fit, which prices the narrowed
+        # pool the respawn actually reaches with its own _pool_budget_mib.
         import inspect
 
         import core.inference.llama_cpp as lc
 
         compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
-        assert compact.count("budget_frac=1.0,pooled=True,total_mib=None,") == 5
+        assert compact.count("budget_frac=1.0,pooled=True,total_mib=None,") == 6
 
 
 class TestRetriesAndDedup:

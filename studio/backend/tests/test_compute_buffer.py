@@ -1258,7 +1258,9 @@ class TestSplitRateRecheckAfterSelection:
         # projector-floor site spells its context `_mm_floor_ctx`, so it was invisible
         # to the check that claimed to cover every call site. It has been wired
         # correctly the whole time; nothing was holding it there.
-        assert len(wired) == 4, wired
+        # A fifth arrived: the per-candidate re-selection over proved-discrete GPUs
+        # only, priced at effective_ctx like the sibling selection it mirrors.
+        assert len(wired) == 5, wired
         # Each passes the step at a context of its own, so none is exempt and none
         # hardcodes one: `_cc_split_extra(4096)` would not match.
         for expression in wired:
