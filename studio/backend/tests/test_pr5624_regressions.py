@@ -306,7 +306,7 @@ def test_deepseek_v3_1_truncated_after_end_marker_still_yields_call():
 
 
 @pytest.mark.parametrize(
-    "_p0",
+    "text",
     [
         pytest.param("before "
             "<｜tool▁calls▁begin｜>"
@@ -330,9 +330,8 @@ def test_deepseek_v3_1_truncated_after_end_marker_still_yields_call():
             " after", id = "routes_layer_strip_removes_glm_block"),
     ],
 )
-def test_module_cases(_p0):
+def test_module_cases(text):
     from routes.inference import _strip_tool_xml as _routes_strip
-    text = _p0
     stripped = _routes_strip(text)
     assert stripped == 'before  after'
 

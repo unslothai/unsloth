@@ -25,7 +25,7 @@ def _stub_transformers(monkeypatch, version):
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, _p2",
+    "_p0, expected, _p2",
     [
         pytest.param("4.51.3", True, "torch_dtype", id = "old_transformers_uses_torch_dtype"),
         pytest.param("4.57.6", False, "dtype", id = "new_transformers_uses_dtype"),
@@ -34,9 +34,9 @@ def _stub_transformers(monkeypatch, version):
         pytest.param("not-a-version", False, "dtype", id = "malformed_version_prefers_modern_name"),
     ],
 )
-def test_module_cases(monkeypatch, _p0, _p1, _p2):
+def test_module_cases(monkeypatch, _p0, expected, _p2):
     _stub_transformers(monkeypatch, _p0)
-    assert _has_torch_dtype_kwarg() is _p1
+    assert _has_torch_dtype_kwarg() is expected
     assert dtype_kwargs('float16') == {_p2: 'float16'}
 
 

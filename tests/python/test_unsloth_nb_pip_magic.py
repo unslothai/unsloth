@@ -24,7 +24,7 @@ def _rewrite(line):
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1",
+    "_p0, expected",
     [
         pytest.param("!python -m pip install peft\n", "!pip install peft\n", id = "literal_python_rewritten"),
         pytest.param("!python3.12 -m pip install peft", "!pip install peft", id = "literal_python_version_rewritten"),
@@ -37,8 +37,8 @@ def _rewrite(line):
         pytest.param("    !{sys.executable} -m pip install peft", "    !pip install peft", id = "indent_preserved"),
     ],
 )
-def test_module_cases(_p0, _p1):
-    assert _rewrite(_p0) == _p1
+def test_module_cases(_p0, expected):
+    assert _rewrite(_p0) == expected
 
 
 

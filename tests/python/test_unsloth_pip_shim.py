@@ -199,18 +199,18 @@ def test_index_url_value_flag_kept_verbatim(shim):
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, _p2, _p3, _p4",
+    "_p0, _p1, _p2, expected, _p4",
     [
         pytest.param("-e git+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n", "pip", "-r", "-r", "unsloth", id = "editable_protected_in_requirements_file_dropped"),
         pytest.param("-egit+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n", "pip", "-r", "-r", "unsloth", id = "editable_attached_protected_in_requirements_file_dropped"),
         pytest.param("torch==2.11.0\nsnac==1.2.0\n", "uv", "--requirements", "--requirements", "torch", id = "uv_plural_requirements_filtered"),
     ],
 )
-def test_module_cases(shim, tmp_path, _p0, _p1, _p2, _p3, _p4):
+def test_module_cases(shim, tmp_path, _p0, _p1, _p2, expected, _p4):
     req = tmp_path / 'reqs.txt'
     req.write_text(_p0, encoding='utf-8')
     execd, _ = _run(shim, _p1, [_p2, str(req)])
-    assert execd is not None and execd[0] == _p3, execd
+    assert execd is not None and execd[0] == expected, execd
     filtered = Path(execd[1]).read_text(encoding='utf-8')
     assert 'snac==1.2.0' in filtered
     assert _p4 not in filtered

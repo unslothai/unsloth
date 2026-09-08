@@ -286,7 +286,7 @@ class TestTorchConstraintShell:
         return result.stdout.strip()
 
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2, _p3",
+        "py_minor, os_val, arch, expected",
         [
             pytest.param(13, "macos", "arm64", "torch>=2.6,<2.11.0", id = "arm64_macos_py313_tightened"),
             pytest.param(14, "macos", "arm64", "torch>=2.6,<2.11.0", id = "arm64_macos_py314_tightened"),
@@ -302,9 +302,9 @@ class TestTorchConstraintShell:
             pytest.param(13, "macos", "arm64", "torch>=2.6,<2.11.0", id = "boundary_py_minor_13_tightened"),
         ],
     )
-    def test_torch_constraint_shell_cases(self, tmp_path, _p0, _p1, _p2, _p3):
-        out = self._run(tmp_path, py_minor=_p0, os_val=_p1, arch=_p2)
-        assert out == _p3
+    def test_torch_constraint_shell_cases(self, tmp_path, py_minor, os_val, arch, expected):
+        out = self._run(tmp_path, py_minor=py_minor, os_val=os_val, arch=arch)
+        assert out == expected
 
 
     # Linux is unaffected by the tightening.
@@ -452,7 +452,7 @@ class TestTorchConstraintShell:
         assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.12.0"
 
     @pytest.mark.parametrize(
-        "_p0, _p1",
+        "url, expected",
         [
             pytest.param("https://download.pytorch.org/whl/rocm7.2", "torch>=2.11.0,<2.12.0", id = "rocm72_index_uses_211_floor"),
             # /cpu must NOT match the */cu[0-9]* branch.
@@ -461,9 +461,8 @@ class TestTorchConstraintShell:
             pytest.param("https://internal.example.com/pytorch/cu128", "torch>=2.4,<2.12.0", id = "cuda_index_custom_mirror_widens"),
         ],
     )
-    def test_torch_constraint_shell_cases_2(self, tmp_path, _p0, _p1):
-        url = _p0
-        assert self._resolve_index(tmp_path, url) == _p1
+    def test_torch_constraint_shell_cases_2(self, tmp_path, url, expected):
+        assert self._resolve_index(tmp_path, url) == expected
 
 
     @pytest.mark.parametrize(

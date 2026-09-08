@@ -114,7 +114,7 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, _p2, _p3",
+    "html, _p1, _p2, _p3",
     [
         pytest.param("<body><p>visible</p><div hidden><p>secret error text</p></div><p>after</p></body>", "visible", "after", "secret error text", id = "hidden_attribute_subtree_is_dropped"),
         # Error/loading blocks are often hidden with inline CSS rather than the
@@ -132,8 +132,7 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
         pytest.param("<body><p>Skip to content</p><div hidden>gone</div><main><p>hello</p></main></body>", "Skip to content", "hello", "gone", id = "default_conversion_unscoped_and_unstripped"),
     ],
 )
-def test_module_cases(_p0, _p1, _p2, _p3):
-    html = _p0
+def test_module_cases(html, _p1, _p2, _p3):
     out = html_to_markdown(html)
     assert _p1 in out
     assert _p2 in out
@@ -141,7 +140,7 @@ def test_module_cases(_p0, _p1, _p2, _p3):
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1",
+    "html, _p1",
     [
         pytest.param('<body><p>keep</p><span aria-hidden="true">decoration</span></body>', "decoration", id = "aria_hidden_true_subtree_is_dropped"),
         pytest.param('<body><p>keep</p><span style="visibility:hidden">ghost</span></body>', "ghost", id = "inline_style_visibility_hidden_subtree_is_dropped"),
@@ -153,8 +152,7 @@ def test_module_cases(_p0, _p1, _p2, _p3):
         pytest.param('<body><p>keep</p><div hidden="false">not rendered</div></body>', "not rendered", id = "hidden_false_is_still_hidden"),
     ],
 )
-def test_module_cases_2(_p0, _p1):
-    html = _p0
+def test_module_cases_2(html, _p1):
     out = html_to_markdown(html)
     assert 'keep' in out
     assert _p1 not in out
@@ -184,7 +182,7 @@ def test_inline_style_visible_display_is_kept():
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, _p2",
+    "html, _p1, _p2",
     [
         # <p hidden> is never closed; the parent </div> must still end the hidden region.
         pytest.param("<body><div><p hidden>gone</div><p>kept</p></body>", "gone", "kept", id = "hidden_recovers_from_omitted_close_tags"),
@@ -198,8 +196,7 @@ def test_inline_style_visible_display_is_kept():
             "</tr></table></body>", "secret cell", "visible cell", id = "nested_hidden_table_does_not_leak_inner_cells"),
     ],
 )
-def test_module_cases_3(_p0, _p1, _p2):
-    html = _p0
+def test_module_cases_3(html, _p1, _p2):
     out = html_to_markdown(html)
     assert _p1 not in out
     assert _p2 in out
@@ -229,7 +226,7 @@ def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, _p2",
+    "html, _p1, _p2",
     [
         # <li hidden> without </li> is implicitly closed by the next <li>.
         pytest.param("<body><ul><li hidden>secret<li>shown A</li><li>shown B</li></ul></body>", "shown A", "shown B", id = "hidden_list_item_omitted_close_keeps_following_items"),
@@ -240,8 +237,7 @@ def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
         pytest.param("<body><ul><li hidden><span>secret<li>visible item</ul><p>after</p></body>", "visible item", "after", id = "hidden_list_item_with_inline_child_closed_by_next_item"),
     ],
 )
-def test_module_cases_4(_p0, _p1, _p2):
-    html = _p0
+def test_module_cases_4(html, _p1, _p2):
     out = html_to_markdown(html)
     assert 'secret' not in out
     assert _p1 in out
@@ -600,7 +596,7 @@ def test_looks_like_html_leading_table_stays_markdown():
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, _p2, _p3",
+    "md_readme, _p1, _p2, _p3",
     [
         # A Markdown README opening with a fenced HTML snippet must be served verbatim,
         # never run through html_to_markdown (which would drop the fences/tags).
@@ -633,8 +629,7 @@ def test_looks_like_html_leading_table_stays_markdown():
             "```bash\npip install myproject\n```\n", "# My Project", "- step one", "```bash", id = "fetch_page_text_markdown_readme_with_leading_block_tag_stays_markdown"),
     ],
 )
-def test_module_cases_5(monkeypatch, _p0, _p1, _p2, _p3):
-    md_readme = _p0
+def test_module_cases_5(monkeypatch, md_readme, _p1, _p2, _p3):
     
     def fake_fetch(url, timeout=30, extra_headers=None, deadline=None, cancel_event=None):
         assert url == 'https://api.github.com/repos/unslothai/unsloth/readme'

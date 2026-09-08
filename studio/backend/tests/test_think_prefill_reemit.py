@@ -376,7 +376,7 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1",
+    "_p0, expected",
     [
         # A reply closes with <|eom|> like any other block, so the turn can carry
         # on afterwards; treating the reply as the end would leak the rest verbatim.
@@ -412,11 +412,11 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
             '<atem:invoke name="web_search">\n<atem:parameter name="query">FIFA', "<think>Need a search.</think>", id = "muse_glimmer_cut_short_tool_call_leaks_no_markup"),
     ],
 )
-def test_module_cases(_p0, _p1):
+def test_module_cases(_p0, expected):
     parser = _muse_normalizer()
     output = parser.feed(_p0)
     output += parser.finish()
-    assert output == _p1
+    assert output == expected
 
 
 

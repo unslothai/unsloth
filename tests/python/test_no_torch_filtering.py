@@ -320,7 +320,7 @@ class TestNoTorchConstant:
             return ips._infer_no_torch()
 
     @pytest.mark.parametrize(
-        "_p0, _p1",
+        "expected_UNSLOTH_NO_TORCH, expected",
         [
             pytest.param("true", True, id = "true_lowercase"),
             pytest.param("1", True, id = "true_one"),
@@ -329,9 +329,9 @@ class TestNoTorchConstant:
             pytest.param("0", False, id = "false_zero"),
         ],
     )
-    def test_no_torch_constant_cases(self, _p0, _p1):
-        with mock.patch.dict(os.environ, {'UNSLOTH_NO_TORCH': _p0}):
-            assert self._reimport_no_torch() is _p1
+    def test_no_torch_constant_cases(self, expected_UNSLOTH_NO_TORCH, expected):
+        with mock.patch.dict(os.environ, {'UNSLOTH_NO_TORCH': expected_UNSLOTH_NO_TORCH}):
+            assert self._reimport_no_torch() is expected
 
 
     def test_not_set(self):
@@ -485,7 +485,7 @@ class TestInstallPythonStackSubprocessMock:
         return any("-r" in cmd and prefix in cmd for cmd in cmds)
 
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2, _p3, _p4",
+        "no_torch, is_macos, is_windows, _p3, _p4",
         [
             # With NO_TORCH=True, overrides.txt pip_install must NOT be called.
             pytest.param(True, True, False, "overrides.txt", "overrides.txt should be skipped when NO_TORCH=True", id = "no_torch_macos_skips_overrides"),
@@ -499,8 +499,8 @@ class TestInstallPythonStackSubprocessMock:
             pytest.param(False, False, True, "triton-kernels.txt", "triton-kernels.txt should be skipped on Windows even without NO_TORCH", id = "windows_only_skips_triton"),
         ],
     )
-    def test_install_python_stack_subprocess_mock_cases(self, _p0, _p1, _p2, _p3, _p4):
-        cmds = self._capture_install(no_torch=_p0, is_macos=_p1, is_windows=_p2)
+    def test_install_python_stack_subprocess_mock_cases(self, no_torch, is_macos, is_windows, _p3, _p4):
+        cmds = self._capture_install(no_torch=no_torch, is_macos=is_macos, is_windows=is_windows)
         assert not self._cmds_contain_file(cmds, _p3), _p4
 
 

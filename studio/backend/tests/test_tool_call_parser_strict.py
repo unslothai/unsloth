@@ -33,7 +33,7 @@ def _only(text: str) -> dict:
 
 class TestFunctionStyleTrailingText:
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2, _p3",
+        "text, expected_name, _p2, _p3",
         [
             pytest.param("<function=web_search><parameter=query>weather london</parameter></function>"
                 " Let me check that for you.", "web_search", "query", "weather london", id = "closed_function_with_trailing_prose_is_accepted"),
@@ -49,10 +49,9 @@ class TestFunctionStyleTrailingText:
                 "</param></function> all done", "python", "code", 'print("</function>")', id = "attribute_form_literal_close_tag_is_preserved"),
         ],
     )
-    def test_function_style_trailing_text_cases(self, _p0, _p1, _p2, _p3):
-        text = _p0
+    def test_function_style_trailing_text_cases(self, text, expected_name, _p2, _p3):
         call = _only(text)
-        assert call == {'name': _p1, 'arguments': {_p2: _p3}}
+        assert call == {'name': expected_name, 'arguments': {_p2: _p3}}
 
 
     def test_multi_param_with_trailing_prose(self):
@@ -979,7 +978,7 @@ class TestPythonTagOuterOverXmlLiteral:
     attribute-form leading-ownership rules. XML before the tag keeps normal order."""
 
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2, _p3",
+        "text, _p1, _p2, expected",
         [
             # A closed <function=...> in a .call() code arg must not beat the leading python_tag call.
             pytest.param('<|python_tag|>python.call(code="<function=render_html>'
@@ -991,16 +990,15 @@ class TestPythonTagOuterOverXmlLiteral:
                 '{"code":"<function=terminal>ls</function>"}}', "python", "code", "<function=terminal>ls</function>", id = "json_form_code_arg_quoting_function_xml"),
         ],
     )
-    def test_python_tag_outer_over_xml_literal_cases(self, _p0, _p1, _p2, _p3):
-        text = _p0
+    def test_python_tag_outer_over_xml_literal_cases(self, text, _p1, _p2, expected):
         calls = parse_tool_calls_from_text(text)
         assert [c['function']['name'] for c in calls] == [_p1]
         args = json.loads(calls[0]['function']['arguments'])
-        assert args[_p2] == _p3
+        assert args[_p2] == expected
 
 
     @pytest.mark.parametrize(
-        "_p0, _p1",
+        "text, _p1",
         [
             pytest.param("<|python_tag|>save_file.call(content="
                 '"<tool_call>{\\"name\\": \\"delete\\", \\"arguments\\": {}}</tool_call>")', "save_file", id = "call_arg_quoting_tool_call_json"),
@@ -1013,8 +1011,7 @@ class TestPythonTagOuterOverXmlLiteral:
                 '<|python_tag|>python.call(code="y")', "web_search", id = "xml_before_python_tag_keeps_xml_order"),
         ],
     )
-    def test_python_tag_outer_over_xml_literal_cases_2(self, _p0, _p1):
-        text = _p0
+    def test_python_tag_outer_over_xml_literal_cases_2(self, text, _p1):
         calls = parse_tool_calls_from_text(text)
         assert [c['function']['name'] for c in calls] == [_p1]
 
@@ -1550,7 +1547,7 @@ class TestProseCloseTagAfterClosedFunctionCall:
     swallow the prose between the real close and the literal."""
 
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2, _p3, _p4",
+        "text, _p1, _p2, _p3, _p4",
         [
             pytest.param("<function=web_search><parameter=query>cats</parameter></function>"
                 " Done. The tag </function> closes a call.", "web_search", "web_search", "query", "cats", id = "arguments_do_not_swallow_prose"),
@@ -1561,8 +1558,7 @@ class TestProseCloseTagAfterClosedFunctionCall:
                 " Done. The tag </function> closes a call.", "web_search", "web_search", "query", "cats", id = "attribute_form_arguments_do_not_swallow_prose"),
         ],
     )
-    def test_prose_close_tag_after_closed_function_call_cases(self, _p0, _p1, _p2, _p3, _p4):
-        text = _p0
+    def test_prose_close_tag_after_closed_function_call_cases(self, text, _p1, _p2, _p3, _p4):
         calls = parse_tool_calls_from_text(text, enabled_tool_names={_p1})
         assert [c['function']['name'] for c in calls] == [_p2], calls
         assert json.loads(calls[0]['function']['arguments']) == {_p3: _p4}
@@ -1738,7 +1734,7 @@ class TestGemmaAwareClosedBlockPrePass:
     Gemma span (a quoted <function=...> plus a later real </function>)."""
 
     @pytest.mark.parametrize(
-        "_p0, _p1",
+        "text, expected",
         [
             pytest.param('before <|tool_call>call:python{code:<|"|>print("<function=x>")<|"|>}'
                 "<tool_call|> <function=terminal><parameter=cmd>ls</parameter>"
@@ -1748,10 +1744,9 @@ class TestGemmaAwareClosedBlockPrePass:
                 "</function> after", "after", id = "gemma_opener_inside_function_param_still_strips_block"),
         ],
     )
-    def test_gemma_aware_closed_block_pre_pass_cases(self, _p0, _p1):
+    def test_gemma_aware_closed_block_pre_pass_cases(self, text, expected):
         from core.tool_healing import strip_tool_call_markup
-        text = _p0
-        assert strip_tool_call_markup(text, final=True) == _p1
+        assert strip_tool_call_markup(text, final=True) == expected
 
     def test_literal_function_in_gemma_arg_with_prose_closer(self):
         from core.tool_healing import strip_tool_call_markup

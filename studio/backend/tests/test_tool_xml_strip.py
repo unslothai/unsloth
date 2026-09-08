@@ -288,7 +288,7 @@ def test_strips_gemma_native_orphan_closing_tag():
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, _p2",
+    "_p0, _p1, expected",
     [
         # Close brace lost to EOS: the truncated tail strips to the end instead of leaking.
         pytest.param('here [TOOL_CALLS]web_search{"query":"weather"', "[TOOL_CALLS]", "here", id = "strips_unclosed_bracket_tail"),
@@ -296,10 +296,10 @@ def test_strips_gemma_native_orphan_closing_tag():
         pytest.param('x [TOOL_CALLS]mcp__srv__list-issues{"q":"x"}', "list-issues", "x", id = "strips_hyphenated_mcp_bracket_name"),
     ],
 )
-def test_module_cases_2(_p0, _p1, _p2):
+def test_module_cases_2(_p0, _p1, expected):
     cleaned = _TOOL_XML_RE.sub('', _p0)
     assert _p1 not in cleaned
-    assert cleaned.strip() == _p2
+    assert cleaned.strip() == expected
 
 
 

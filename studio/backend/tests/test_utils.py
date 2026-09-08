@@ -131,7 +131,7 @@ class TestIsAppleSilicon:
         assert isinstance(is_apple_silicon(), bool)
 
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2",
+        "_p0, _p1, expected",
         [
             pytest.param("Darwin", "arm64", True, id = "true_on_darwin_arm64"),
             pytest.param("Linux", "x86_64", False, id = "false_on_linux_x86"),
@@ -139,11 +139,11 @@ class TestIsAppleSilicon:
             pytest.param("Darwin", "x86_64", False, id = "false_on_darwin_x86"),
         ],
     )
-    def test_is_apple_silicon_cases(self, _p0, _p1, _p2):
+    def test_is_apple_silicon_cases(self, _p0, _p1, expected):
         with patch('utils.hardware.hardware.platform') as mock_plat:
             mock_plat.system.return_value = _p0
             mock_plat.machine.return_value = _p1
-            assert is_apple_silicon() is _p2
+            assert is_apple_silicon() is expected
 
 
 

@@ -611,7 +611,7 @@ class TestNemotronHNeedsMlpSupport:
     """Dense NemotronH configs (MLP layers) require transformers >= 5.10."""
 
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2",
+        "expected_model_type, expected_hybrid_override_pattern, expected",
         [
             pytest.param("nemotron_h", "M-M-M*-M-", True, id = "hybrid_override_pattern_with_dash"),
             # A pure MoE NemotronH (no MLP) does not need the 5.10 tier.
@@ -620,9 +620,9 @@ class TestNemotronHNeedsMlpSupport:
             pytest.param("llama", "M-M-", False, id = "non_nemotron_with_dash_returns_false"),
         ],
     )
-    def test_nemotron_h_needs_mlp_support_cases(self, _p0, _p1, _p2):
-        cfg = {'model_type': _p0, 'hybrid_override_pattern': _p1}
-        assert _nemotron_h_needs_mlp_support(cfg) is _p2
+    def test_nemotron_h_needs_mlp_support_cases(self, expected_model_type, expected_hybrid_override_pattern, expected):
+        cfg = {'model_type': expected_model_type, 'hybrid_override_pattern': expected_hybrid_override_pattern}
+        assert _nemotron_h_needs_mlp_support(cfg) is expected
 
     def test_layers_block_type_with_mlp(self):
         cfg = {
@@ -897,7 +897,7 @@ class TestGetTransformersTier:
         _config_needs_550_cache.clear()
 
     @pytest.mark.parametrize(
-        "_p0, _p1",
+        "_p0, expected",
         [
             pytest.param("google/gemma-4-E2B-it", "550", id = "gemma4_substring_returns_550"),
             pytest.param("unsloth/gemma-4-12b-it", "510", id = "gemma4_12b_substring_returns_510"),
@@ -907,8 +907,8 @@ class TestGetTransformersTier:
             pytest.param("gemma-4-model", "550", id = "550_checked_before_530"),
         ],
     )
-    def test_get_transformers_tier_cases(self, _p0, _p1):
-        assert get_transformers_tier(_p0) == _p1
+    def test_get_transformers_tier_cases(self, _p0, expected):
+        assert get_transformers_tier(_p0) == expected
 
 
     @pytest.mark.parametrize(
@@ -926,7 +926,7 @@ class TestGetTransformersTier:
         assert get_transformers_tier(model_id) == "550"
 
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2",
+        "_p0, expected_model_type, expected",
         [
             # Local checkpoint with Gemma4 architecture → 550.
             pytest.param("Gemma4ForConditionalGeneration", "gemma4", "550", id = "gemma4_config_json_returns_550"),
@@ -936,10 +936,10 @@ class TestGetTransformersTier:
             pytest.param("Gemma4AssistantForCausalLM", "gemma4_assistant", "510", id = "gemma4_assistant_config_json_returns_510"),
         ],
     )
-    def test_get_transformers_tier_cases_2(self, tmp_path, _p0, _p1, _p2):
-        cfg = {'architectures': [_p0], 'model_type': _p1}
+    def test_get_transformers_tier_cases_2(self, tmp_path, _p0, expected_model_type, expected):
+        cfg = {'architectures': [_p0], 'model_type': expected_model_type}
         (tmp_path / 'config.json').write_text(json.dumps(cfg))
-        assert get_transformers_tier(str(tmp_path)) == _p2
+        assert get_transformers_tier(str(tmp_path)) == expected
 
 
     def test_dense_nemotron_h_config_json_returns_510(self, tmp_path: Path):

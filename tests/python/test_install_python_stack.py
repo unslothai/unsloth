@@ -91,7 +91,7 @@ class TestBuildUvCmdTorchBackend:
         ), f"--torch-backend should not appear by default, got: {cmd}"
 
     @pytest.mark.parametrize(
-        "_p0, _p1",
+        "expected_UV_TORCH_BACKEND, _p1",
         [
             # UV_TORCH_BACKEND=auto adds --torch-backend=auto.
             pytest.param("auto", "--torch-backend=auto", id = "uv_torch_backend_auto"),
@@ -101,8 +101,8 @@ class TestBuildUvCmdTorchBackend:
             pytest.param("cpu", "--torch-backend=cpu", id = "uv_torch_backend_kept_for_unpinned"),
         ],
     )
-    def test_build_uv_cmd_torch_backend_cases(self, _p0, _p1):
-        with mock.patch.dict(os.environ, {'UV_TORCH_BACKEND': _p0}):
+    def test_build_uv_cmd_torch_backend_cases(self, expected_UV_TORCH_BACKEND, _p1):
+        with mock.patch.dict(os.environ, {'UV_TORCH_BACKEND': expected_UV_TORCH_BACKEND}):
             cmd = self._call(('somepackage',))
         assert _p1 in cmd
 
@@ -1576,7 +1576,7 @@ class TestDuplicateCoreMetadataRepair:
         assert cmd[cmd.index("--only-binary") + 1] == ":all:"
 
     @pytest.mark.parametrize(
-        "_p0",
+        "stdout",
         [
             # Measured on uv 0.10.7: the emitted index lines carry userinfo and the
             # `# from` annotation has it stripped. Taking the annotation at face value
@@ -1597,9 +1597,9 @@ class TestDuplicateCoreMetadataRepair:
                 b"    # from https://private.corp/simple\n", id = "the_credentialed_form_wins_over_a_bare_duplicate"),
         ],
     )
-    def test_duplicate_core_metadata_repair_cases(self, monkeypatch, _p0):
+    def test_duplicate_core_metadata_repair_cases(self, monkeypatch, stdout):
         self._uv_only(monkeypatch)
-        self._uv_plan(monkeypatch, stdout=_p0)
+        self._uv_plan(monkeypatch, stdout=stdout)
         _requirement, overrides, _options = ips._uv_staging_plan('unsloth-zoo')
         assert overrides['PIP_INDEX_URL'] == 'https://user:secret@private.corp/simple'
 

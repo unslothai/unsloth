@@ -55,7 +55,7 @@ class TestLocalhostHost:
 
 class TestZeroHost:
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2, _p3",
+        "flag, yes, silent, expected",
         [
             # A network bind installs no override, so the UI's tool pills (which send enable_tools: false when all
             # off) are honored rather than overridden.
@@ -66,8 +66,8 @@ class TestZeroHost:
             pytest.param(None, True, True, None, id = "yes_and_silent_accepted_but_do_not_change_result"),
         ],
     )
-    def test_zero_host_cases(self, _p0, _p1, _p2, _p3):
-        assert resolve_tool_policy(host='0.0.0.0', flag=_p0, yes=_p1, silent=_p2, prompt=_never_prompt) is _p3
+    def test_zero_host_cases(self, flag, yes, silent, expected):
+        assert resolve_tool_policy(host='0.0.0.0', flag=flag, yes=yes, silent=silent, prompt=_never_prompt) is expected
 
 
 
@@ -87,7 +87,7 @@ class TestSpecificNetworkIP:
     """Binding to a specific LAN IP follows the same rules as 0.0.0.0."""
 
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2",
+        "host, flag, expected",
         [
             pytest.param("192.168.1.5", None, None, id = "default_is_unset"),
             pytest.param("192.168.1.5", True, True, id = "explicit_on_no_prompt"),
@@ -95,6 +95,6 @@ class TestSpecificNetworkIP:
             pytest.param("localhost", True, True, id = "localhost_alias_does_not_prompt"),
         ],
     )
-    def test_specific_network_i_p_cases(self, _p0, _p1, _p2):
-        assert resolve_tool_policy(host=_p0, flag=_p1, yes=False, silent=False, prompt=_never_prompt) is _p2
+    def test_specific_network_i_p_cases(self, host, flag, expected):
+        assert resolve_tool_policy(host=host, flag=flag, yes=False, silent=False, prompt=_never_prompt) is expected
 

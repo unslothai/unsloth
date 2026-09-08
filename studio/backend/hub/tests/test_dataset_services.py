@@ -238,7 +238,7 @@ def test_module_cases(monkeypatch, tmp_path, _p0, _p1, _p2, _p3):
 
 
 @pytest.mark.parametrize(
-    "_p0, _p1, _p2",
+    "_p0, _p1, expected",
     [
         # Opening the cache dir in Finder or Explorer drops a `.DS_Store`/`Thumbs.db` beside the
         # card, which must not read as payload.
@@ -254,9 +254,9 @@ def test_module_cases(monkeypatch, tmp_path, _p0, _p1, _p2, _p3):
         pytest.param("data.py", "data/train.parquet", True, id = "raw_dataset_cache_has_data_counts_payload_beside_a_loading_script"),
     ],
 )
-def test_module_cases_2(monkeypatch, tmp_path, _p0, _p1, _p2):
+def test_module_cases_2(monkeypatch, tmp_path, _p0, _p1, expected):
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ('README.md', _p0, _p1))
-    assert cache_inventory._raw_dataset_cache_has_data('Org/Data', repo_root) is _p2
+    assert cache_inventory._raw_dataset_cache_has_data('Org/Data', repo_root) is expected
 
 
 

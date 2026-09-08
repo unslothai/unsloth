@@ -3103,7 +3103,7 @@ class TestTranslatedMessagesValidate:
 # generation begins inside the block; the extractor must start in reasoning.
 class TestReasoningPrefilledExtractor:
     @pytest.mark.parametrize(
-        "_p0, _p1, _p2, _p3, _p4",
+        "_p0, parse_think_markers, reasoning_prefilled, expected, _p4",
         [
             # T1: reasoning...</think>answer with a prefilled (unseen) open tag.
             pytest.param("plan</think>answer", True, True, "plan", "answer", id = "prefilled_single_feed_splits_lone_close"),
@@ -3123,9 +3123,9 @@ class TestReasoningPrefilledExtractor:
             pytest.param("just an answer", False, False, "", "just an answer", id = "prefilled_ignored_when_markers_not_parsed"),
         ],
     )
-    def test_reasoning_prefilled_extractor_cases(self, _p0, _p1, _p2, _p3, _p4):
-        reasoning, visible = _extract_responses_reasoning(_p0, parse_think_markers=_p1, reasoning_prefilled=_p2)
-        assert reasoning == _p3
+    def test_reasoning_prefilled_extractor_cases(self, _p0, parse_think_markers, reasoning_prefilled, expected, _p4):
+        reasoning, visible = _extract_responses_reasoning(_p0, parse_think_markers=parse_think_markers, reasoning_prefilled=reasoning_prefilled)
+        assert reasoning == expected
         assert visible == _p4
 
 
