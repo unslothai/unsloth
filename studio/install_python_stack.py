@@ -4595,7 +4595,16 @@ def _ensure_rocm_torch() -> None:
         # NVIDIA takes precedence on mixed hosts (only if a GPU is usable), unless this
         # run asked for ROCm outright. The AMD-presence test below still has to pass:
         # the request relaxes which vendor wins, not whether there is a card to serve.
-        if _has_usable_nvidia_gpu() and not _rocm_torch_explicitly_requested():
+        #
+        # An explicit CUDA pin outranks the request, as _rocm_torch_explicitly_requested's
+        # own docstring promises: a pin names the exact wheels, the request only names a
+        # preference. _rocm_pin is the ROCm pin, so a CUDA pin leaves it None and this is
+        # the only place that check can happen -- otherwise _ensure_cuda_torch installs the
+        # pinned build and this function immediately replaces it.
+        if _has_usable_nvidia_gpu() and (
+            not _rocm_torch_explicitly_requested()
+            or _explicit_cuda_torch_index_url() is not None
+        ):
             return
         # _has_rocm_gpu() (rocminfo / amd-smi rows) is the authoritative AMD-host signal;
         # the old /opt/rocm-or-hipcc gate broke runtime-only ROCm installs.

@@ -3334,7 +3334,12 @@ _ensure_rocm_probe_env() {
 # one vendor, so this SWAPS the stack rather than adding to it. Mirrors
 # install_python_stack._rocm_torch_explicitly_requested; keep the two in step.
 _rocm_torch_explicitly_requested() {
-    case "$(printf '%s' "${UNSLOTH_FORCE_ROCM_TORCH:-}" | tr '[:upper:]' '[:lower:]')" in
+    # Trimmed, because the Python twin reads the same variable through .strip() and an
+    # env file or launcher can hand this one " true ". Untrimmed, install.sh keeps CUDA
+    # and exports an authoritative CUDA backend, which then stops the Python half
+    # honouring the identical value -- the two would disagree about one string.
+    case "$(printf '%s' "${UNSLOTH_FORCE_ROCM_TORCH:-}" \
+            | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')" in
         1|true|yes|on) return 0 ;;
         *) return 1 ;;
     esac
@@ -3405,7 +3410,16 @@ _amd_gfx_has_wheel_route() {
 # tag, which opens solely when gfx906 is the sole arch, so on a mixed-AMD box it is
 # unroutable. install_python_stack.py's _MIXED_HOST_UNROUTABLE says the same.
 _amd_request_has_a_wheel_route() {
-    _arwr_all=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
+    # A visibility mask makes the inventory the wrong set to judge: the physical probe
+    # strips the mask deliberately, so a box with one routable and one unsupported card
+    # answers yes on the strength of the card the mask just hid. Ask about the ones that
+    # will run. Fail open to the inventory when the masked probe answers nothing, since
+    # an empty answer is a detection miss rather than evidence of no route.
+    _arwr_all=""
+    if [ -n "${HIP_VISIBLE_DEVICES:-}${ROCR_VISIBLE_DEVICES:-}" ]; then
+        _arwr_all=$(_probe_amd_gfx_arch selected 2>/dev/null || true)
+    fi
+    [ -n "$_arwr_all" ] || _arwr_all=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
     [ -n "$_arwr_all" ] || _arwr_all=$(_kfd_gfx_targets 2>/dev/null || true)
     if [ -z "$_arwr_all" ]; then
         # Runtime-less but inferable, which a pure-AMD host is already served on: the
@@ -3768,9 +3782,12 @@ _hsa_spoofed_physical_gfx() {
 #       physical also strip HSA_OVERRIDE_GFX_VERSION, which ROCr applies in userland so
 #                rocminfo reports the SPOOFED ISA while it is set (unslothai#7331).
 #                Mirrors _detect_amd_gfx_codes(ignore_hsa_override = True).
+#       selected strip HSA_OVERRIDE_GFX_VERSION but KEEP the visibility masks, so the answer
+#                is the real silicon this run will actually expose.
 #
-# Neither mode answers which device the runtime SELECTS, and no probe here applies both mask
-# families. _runtime_gfx_target() in install_python_stack.py answers that.
+# Only "selected" narrows to what the runtime exposes, and it honours one mask family per the
+# layer that set it rather than composing them; _runtime_gfx_target() in
+# install_python_stack.py is the one that resolves the composition.
 #
 # shellcheck disable=SC2086  # $_pg_strip is a LIST of names for unset; quoting it would
 # unset one variable whose name contains spaces.
@@ -3778,12 +3795,18 @@ _probe_amd_gfx_arch() {
     _ensure_rocm_probe_env
     case "${1:-}" in
         physical) _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES HSA_OVERRIDE_GFX_VERSION" ;;
+        # "selected" is "physical" with the visibility masks LEFT IN PLACE: real silicon
+        # rather than a declared arch or an HSA spoof, but only the cards this run will
+        # actually expose. That is the right question for "will the card that runs have
+        # kernels", where the whole inventory is the right one for "which family do the
+        # wheels come from".
+        selected) _pg_strip="HSA_OVERRIDE_GFX_VERSION" ;;
         *)        _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES" ;;
     esac
     # "physical" ignores the declared arch: a stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real Van
     # Gogh would answer the miscomputing gate with a healthy arch. It stays authoritative for
     # ordinary routing.
-    if [ "${1:-}" = "physical" ]; then
+    if [ "${1:-}" = "physical" ] || [ "${1:-}" = "selected" ]; then
         _pg=""
     else
         _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')

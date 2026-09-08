@@ -972,3 +972,196 @@ def test_the_reroute_predicate_still_yields_for_a_routable_one():
     """The control: same host, routable arch, and the request must still win. A fix that
     stopped yielding altogether passes the test above and removes the feature."""
     assert not _nvidia_wins("UNSLOTH_FORCE_ROCM_TORCH=1", _MIXED)
+
+
+def _shell_request_flag(value: "str | None") -> bool:
+    """install.sh's own request test, run verbatim, for one value of the variable."""
+    import subprocess
+
+    # Through the environment rather than the script text: a tab quoted into a bash
+    # single-quoted string arrives as a literal backslash-t, so a harness that inlined the
+    # value would test a different string than the one named.
+    env = dict(os.environ)
+    env.pop("UNSLOTH_FORCE_ROCM_TORCH", None)
+    if value is not None:
+        env["UNSLOTH_FORCE_ROCM_TORCH"] = value
+    script = "\n".join(
+        [
+            _shell_function("_rocm_torch_explicitly_requested"),
+            "_rocm_torch_explicitly_requested && echo yes || echo no",
+        ]
+    )
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, env = env)
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip() == "yes"
+
+
+@pytest.mark.parametrize("value", [" true ", "\ttrue", "1 ", " ON"])
+def test_the_shell_flag_is_trimmed_like_its_python_twin(value):
+    """install_python_stack.py reads this variable through .strip(); install.sh did not.
+
+    Untrimmed, an env file or launcher passing " true " left install.sh on CUDA and
+    exporting an authoritative CUDA backend, which then stopped the Python half honouring
+    the identical value -- the two halves disagreeing about one string.
+    """
+    assert _shell_request_flag(value) is True
+
+
+@pytest.mark.parametrize("value", ["  ", "", "tru e", None])
+def test_trimming_does_not_widen_what_counts_as_a_request(value):
+    """The control. Trimming must not turn whitespace, or an internally-spaced value,
+    into a request: that would swap a CUDA host's stack on an exported-but-empty
+    variable, which is how a shell passes "unset"."""
+    assert _shell_request_flag(value) is False
+
+
+def _probe_modes(rocminfo_for: "dict[str, str]", mask: str) -> "dict[str, str]":
+    """_probe_amd_gfx_arch in each mode against a rocminfo that honours HIP_VISIBLE_DEVICES.
+
+    The stub prints the arch keyed by the mask's value, and "gfx1100 gfx1010" when no mask
+    is set, so which arch comes back says exactly whether the mode kept the mask.
+    """
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cases = "\n".join(
+            f'  {key!r}) printf "gfx%s\\n" {arch[3:]!r} ;;' for key, arch in rocminfo_for.items()
+        )
+        Path(tmp, "rocminfo").write_text(
+            "#!/bin/sh\ncase \"${HIP_VISIBLE_DEVICES-unset}\" in\n"
+            f"{cases}\n"
+            '  *) printf "gfx1100\\ngfx1010\\n" ;;\n'
+            "esac\n",
+            encoding = "utf-8",
+        )
+        Path(tmp, "rocminfo").chmod(0o755)
+        script = "\n".join(
+            [
+                f'PATH={tmp!r}:"$PATH"; export PATH',
+                f"HIP_VISIBLE_DEVICES={mask!r}; export HIP_VISIBLE_DEVICES",
+                "_ensure_rocm_probe_env() { :; }",
+                _shell_function("_probe_amd_gfx_arch"),
+                'printf "physical=%s\\n" "$(_probe_amd_gfx_arch physical | tr "\\n" ",")"',
+                'printf "selected=%s\\n" "$(_probe_amd_gfx_arch selected | tr "\\n" ",")"',
+            ]
+        )
+        out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    assert out.returncode == 0, out.stderr
+    return dict(line.split("=", 1) for line in out.stdout.strip().splitlines())
+
+
+def test_the_selected_probe_honours_the_visibility_mask():
+    """"selected" answers which silicon this run exposes, so it must not strip the mask."""
+    modes = _probe_modes({"1": "gfx1010"}, mask = "1")
+    assert modes["selected"] == "gfx1010,"
+
+
+def test_the_physical_probe_still_strips_it():
+    """The control. Without this the fix could be "never strip", which would break the
+    #7314 case the physical mode exists for: a container mask hiding a card the
+    env-independent KFD detection still sees."""
+    modes = _probe_modes({"1": "gfx1010"}, mask = "1")
+    assert modes["physical"] == "gfx1100,gfx1010,"
+
+
+def _route_shell_masked(physical: "list[str]", selected: "list[str]", mask: str) -> bool:
+    """The request route test with a mode-aware probe and a visibility mask set.
+
+    The arches are passed as lists and emitted as separate printf arguments: a "\\n" inside
+    a bash single-quoted string is a literal backslash-n, so a harness that joined them
+    would hand the route test one unroutable token and answer no whatever the fix does.
+    """
+    import subprocess
+
+    def _emit(archs: "list[str]") -> str:
+        return 'printf "%s\\n" ' + " ".join(repr(a) for a in archs) if archs else ":"
+
+    script = "\n".join(
+        [
+            f"HIP_VISIBLE_DEVICES={mask!r}; export HIP_VISIBLE_DEVICES",
+            "_probe_amd_gfx_arch() {",
+            f'  if [ "$1" = selected ]; then {_emit(selected)}; else {_emit(physical)}; fi',
+            "}",
+            "_kfd_gfx_targets() { :; }",
+            "_infer_linux_amd_gfx_arch() { :; }",
+            "_amd_gpu_present_via_pci() { return 0; }",
+            _shell_function("_amd_hardware_corroborated"),
+            _shell_function("_amd_arch_index_family_for_gfx"),
+            _shell_function("_amd_gfx_has_wheel_route"),
+            _shell_function("_amd_request_has_a_wheel_route"),
+            "_amd_request_has_a_wheel_route && echo yes || echo no",
+        ]
+    )
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip() == "yes"
+
+
+def test_a_mask_that_selects_only_an_unroutable_card_keeps_cuda():
+    """The physical probe strips the mask deliberately, so judging the inventory answered
+    yes on the strength of the very card the mask had just hidden: the request then traded
+    a working CUDA stack for wheels carrying no kernels for the card that will run."""
+    assert _route_shell_masked(["gfx1100", "gfx1010"], ["gfx1010"], mask = "1") is False
+
+
+def test_a_mask_that_selects_a_routable_card_still_deposes_it():
+    """The control: same host, mask pointing the other way. Without it the fix could be
+    "a mask always keeps CUDA", which passes the test above and removes the feature on
+    every masked host."""
+    assert _route_shell_masked(["gfx1100", "gfx1010"], ["gfx1100"], mask = "0") is True
+
+
+def test_an_unreadable_masked_probe_falls_back_to_the_inventory():
+    """A masked probe answering nothing is a detection miss, not evidence of no route, so
+    it must not be read as one: that would deny every host whose rocminfo cannot be run
+    under its own mask."""
+    assert _route_shell_masked(["gfx1100"], [], mask = "0") is True
+
+
+def test_an_explicit_cuda_pin_outranks_the_request(stack, monkeypatch):
+    """_rocm_torch_explicitly_requested's docstring promises an index pin still outranks
+    the request, and _rocm_pin is the ROCm pin, so a CUDA pin leaves it None and the
+    request skipped the NVIDIA-precedence return. _ensure_cuda_torch installs the pinned
+    build and this function replaced it, so the environment ended up holding the stack the
+    pin ruled out."""
+    monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu128")
+    monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: False)
+    monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+    reached = {"ran": False}
+    monkeypatch.setattr(
+        stack,
+        "_has_rocm_gpu",
+        lambda: (reached.__setitem__("ran", True), True)[1],
+    )
+    stack._ensure_rocm_torch()
+    assert reached["ran"] is False
+
+
+def test_a_rocm_pin_is_still_honoured_over_an_nvidia_card(stack, monkeypatch):
+    """The control: the pin that names ROCm wheels must still win, or the fix would read
+    as "any pin keeps CUDA" and break the headless/CI case _rocm_pin exists for."""
+    monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "rocm7.0")
+    monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+    # A ROCm pin skips the whole vendor-precedence block, so reaching the version probe
+    # is what "the pin still won" looks like from outside.
+    reached = {"ran": False}
+    monkeypatch.setattr(
+        stack,
+        "_detect_rocm_version",
+        lambda *a, **k: (reached.__setitem__("ran", True), None)[1],
+    )
+    stack._ensure_rocm_torch()
+    assert reached["ran"] is True
