@@ -315,22 +315,51 @@ fn managed_bin_fingerprint(bin: &Path) -> Option<ManagedBinFingerprint> {
 /// resolver honours it: managed spawns scrub it (MANAGED_CHILD_SCRUBBED_ENV), so
 /// the CLI answering the capability probe falls through to the legacy root too.
 fn llama_runtime_override() -> Option<PathBuf> {
-    let value = std::env::var("UNSLOTH_LLAMA_CPP_PATH").ok()?;
-    let value = value.trim();
+    llama_runtime_override_from(std::env::var("UNSLOTH_LLAMA_CPP_PATH").ok().as_deref())
+}
+
+/// The resolution itself, split out from the read so the tests can drive it
+/// without setting a process-wide variable that the rest of the crate reads.
+fn llama_runtime_override_from(value: Option<&str>) -> Option<PathBuf> {
+    let value = value?.trim();
     if value.is_empty() {
         return None;
     }
     if value == "~" {
         return dirs::home_dir();
     }
-    if let Some(rest) = value.strip_prefix("~/").or_else(|| {
-        cfg!(windows)
-            .then(|| value.strip_prefix("~\\"))
-            .flatten()
-    }) {
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| cfg!(windows).then(|| value.strip_prefix("~\\")).flatten())
+    {
         return Some(dirs::home_dir()?.join(rest));
     }
-    Some(PathBuf::from(value))
+    let path = PathBuf::from(value);
+    // A relative override resolves against whatever the reader's working
+    // directory is, and this process and the CLI child do not share one: the
+    // child runs under the pinned managed context. Fingerprinting whatever sits
+    // beside the desktop instead is worse than not fingerprinting at all, so
+    // this degrades to no runtime coverage rather than to the wrong tree.
+    path.is_absolute().then_some(path)
+}
+
+/// The managed llama.cpp install root, the same one default_managed_llama_dir
+/// picks in Python.
+fn llama_runtime_root() -> Option<PathBuf> {
+    // Hermetic under test, and not merely overridable: this walks a real
+    // directory, so a developer who happens to have a runtime installed and a CI
+    // runner that does not would otherwise run different tests, and every
+    // fingerprint assertion in this module would depend on the home directory.
+    // Unset means no runtime at all. Mirrors capability_cache_path()'s hook.
+    #[cfg(test)]
+    {
+        return std::env::var_os("UNSLOTH_TEST_LLAMA_RUNTIME_ROOT").map(PathBuf::from);
+    }
+    #[cfg(not(test))]
+    match llama_runtime_override() {
+        Some(root) => Some(root),
+        None => Some(dirs::home_dir()?.join(".unsloth").join("llama.cpp")),
+    }
 }
 
 /// A cheap stand-in for "the llama.cpp runtime tree is unchanged": how many
@@ -342,10 +371,11 @@ fn llama_runtime_override() -> Option<PathBuf> {
 /// both halves of this. None when no runtime is installed, which is a
 /// NotInstalled case rather than a broken one.
 fn llama_runtime_fingerprint() -> Option<String> {
-    let root = match llama_runtime_override() {
-        Some(root) => root,
-        None => dirs::home_dir()?.join(".unsloth").join("llama.cpp"),
-    };
+    llama_runtime_fingerprint_at(&llama_runtime_root()?)
+}
+
+/// The walk itself, against a given root, so the tests need no shared state.
+fn llama_runtime_fingerprint_at(root: &Path) -> Option<String> {
     let mut bin = root.join("build").join("bin");
     if cfg!(windows) {
         bin = bin.join("Release");
@@ -903,6 +933,214 @@ mod tests {
         capability.llama_runtime_reason = None;
         assert_eq!(desktop_capability_stale_reason(&capability), None);
         assert!(desktop_capability_ready(&capability));
+    }
+
+    /// The payload a CLI without this PR prints, as JSON rather than as a Rust
+    /// literal: a struct literal cannot show that a missing key deserializes.
+    fn pre_pr_capability_json() -> String {
+        format!(
+            r#"{{
+              "desktop_protocol_version": {protocol},
+              "desktop_manageability_version": {manageability},
+              "supports_api_only": true,
+              "supports_provision_desktop_auth": true,
+              "supports_desktop_backend_ownership": true,
+              "desktop_auth_stale_reason": null,
+              "studio_install_ok": true,
+              "studio_install_reason": null,
+              "version": "{version}"
+            }}"#,
+            protocol = DESKTOP_PROTOCOL_VERSION,
+            manageability = DESKTOP_MANAGEABILITY_VERSION,
+            version = MIN_DESKTOP_BACKEND_VERSION,
+        )
+    }
+
+    #[test]
+    fn a_capability_payload_without_the_new_keys_still_parses_and_is_ready() {
+        // The single most damaging way this change could go wrong: every install
+        // whose CLI predates it prints a payload with neither key. If that failed
+        // to deserialize, or deserialized to something stale, the desktop would
+        // send every existing user into repair on their next launch.
+        let capability: DesktopCapability =
+            serde_json::from_str(&pre_pr_capability_json()).expect("pre-PR payload must parse");
+        assert_eq!(capability.llama_runtime_ok, None);
+        assert_eq!(capability.llama_runtime_reason, None);
+        assert_eq!(desktop_capability_stale_reason(&capability), None);
+        assert!(desktop_capability_ready(&capability));
+    }
+
+    #[test]
+    fn a_payload_from_a_newer_cli_ignores_keys_this_desktop_does_not_know() {
+        // The other direction, and the one an upgrade sequence hits: the CLI and
+        // the desktop shell update separately, so a newer CLI can answer an older
+        // desktop. An unknown key must be ignored, not fatal.
+        let json = pre_pr_capability_json().replace(
+            "\"studio_install_ok\": true,",
+            "\"studio_install_ok\": true, \"a_field_from_the_future\": {\"nested\": [1]},",
+        );
+        let capability: DesktopCapability =
+            serde_json::from_str(&json).expect("an unknown key must not be fatal");
+        assert!(desktop_capability_ready(&capability));
+    }
+
+    #[test]
+    fn a_null_llama_runtime_ok_is_not_a_broken_runtime() {
+        // What the CLI prints when the probe itself failed, which must not be
+        // read as a verdict. Explicit nulls, not absent keys, since the CLI seeds
+        // both keys before trying.
+        let json = pre_pr_capability_json().replace(
+            "\"studio_install_ok\": true,",
+            "\"llama_runtime_ok\": null, \"llama_runtime_reason\": \"\", \"studio_install_ok\": true,",
+        );
+        let capability: DesktopCapability = serde_json::from_str(&json).unwrap();
+        assert_eq!(desktop_capability_stale_reason(&capability), None);
+    }
+
+    #[test]
+    fn a_broken_runtime_survives_the_json_round_trip() {
+        // The reason has to reach the window intact: the frontend switches its
+        // message on this exact string.
+        let json = pre_pr_capability_json().replace(
+            "\"studio_install_ok\": true,",
+            "\"llama_runtime_ok\": false, \"llama_runtime_reason\": \"llama_runtime_binaries_missing\", \"studio_install_ok\": true,",
+        );
+        let capability: DesktopCapability = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            desktop_capability_stale_reason(&capability).as_deref(),
+            Some("llama_runtime_binaries_missing")
+        );
+    }
+
+    #[test]
+    fn a_cache_file_written_before_this_field_is_ignored_rather_than_fatal() {
+        // On disk in every existing install. It must miss and be rewritten, not
+        // panic and not be served: schema 3 predates the runtime fingerprint, so
+        // its Ready verdict was reached without ever looking at the runtime.
+        let old = format!(
+            r#"{{
+              "schema": 3,
+              "bin_path": "/managed/unsloth",
+              "bin_size": 1,
+              "bin_mtime_ms": 1,
+              "studio_root_id": null,
+              "marker_path": null,
+              "marker_size": null,
+              "marker_mtime_ms": null,
+              "desktop_protocol_version": {protocol},
+              "desktop_manageability_version": {manageability},
+              "capability": {capability}
+            }}"#,
+            protocol = DESKTOP_PROTOCOL_VERSION,
+            manageability = DESKTOP_MANAGEABILITY_VERSION,
+            capability = pre_pr_capability_json(),
+        );
+        let cache: ManagedCapabilityCache =
+            serde_json::from_str(&old).expect("an old cache file must still parse");
+        assert_eq!(cache.llama_runtime, None);
+        assert_ne!(cache.schema, MANAGED_CAPABILITY_CACHE_SCHEMA);
+
+        let fingerprint = ManagedBinFingerprint {
+            bin_path: "/managed/unsloth".to_string(),
+            bin_size: 1,
+            bin_mtime_ms: 1,
+            studio_root_id: None,
+            marker_path: None,
+            marker_size: None,
+            marker_mtime_ms: None,
+            llama_runtime: Some("12:345".to_string()),
+        };
+        assert!(
+            !cache_matches(&cache, &fingerprint),
+            "a cache from before the runtime was fingerprinted must not be served"
+        );
+    }
+
+    #[test]
+    fn a_quarantined_runtime_file_changes_the_fingerprint() {
+        // The half that makes the stale check reachable at all. Without the
+        // runtime in the fingerprint the cache hits, preflight answers Ready from
+        // it, and the CLI is never asked whether the runtime is intact.
+        let root = std::env::temp_dir().join(format!(
+            "unsloth-llama-fingerprint-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let mut bin = root.join("build").join("bin");
+        if cfg!(windows) {
+            bin = bin.join("Release");
+        }
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("llama.dll"), vec![0u8; 1024]).unwrap();
+        fs::write(bin.join("ggml-base.dll"), vec![0u8; 2048]).unwrap();
+
+        let intact =
+            llama_runtime_fingerprint_at(&root).expect("an installed runtime must fingerprint");
+        assert_eq!(
+            intact,
+            llama_runtime_fingerprint_at(&root).unwrap(),
+            "the same tree must fingerprint the same twice, or every launch misses its own cache"
+        );
+
+        fs::remove_file(bin.join("ggml-base.dll")).unwrap();
+        let quarantined = llama_runtime_fingerprint_at(&root).unwrap();
+        assert_ne!(intact, quarantined);
+
+        // A directory is not a file: a stray subfolder must not read as a binary.
+        fs::create_dir(bin.join("some-subdir")).unwrap();
+        assert_eq!(quarantined, llama_runtime_fingerprint_at(&root).unwrap());
+
+        // A file replaced by one of a different size is caught by the byte total
+        // even though the count is unchanged.
+        fs::write(bin.join("llama.dll"), vec![0u8; 4096]).unwrap();
+        assert_ne!(quarantined, llama_runtime_fingerprint_at(&root).unwrap());
+
+        // And the whole tree going is distinct from an empty one, because only
+        // one of the two means nothing was ever installed.
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(llama_runtime_fingerprint_at(&root), None);
+        fs::create_dir_all(&bin).unwrap();
+        assert_eq!(llama_runtime_fingerprint_at(&root).as_deref(), Some("0:0"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_runtime_override_is_resolved_the_way_python_resolves_it() {
+        // default_managed_llama_dir() strips the value and calls expanduser on it.
+        // Reading it raw would fingerprint a folder literally named "~", find
+        // nothing, and silently drop the runtime out of the fingerprint for every
+        // user who wrote the override that way.
+        let home = dirs::home_dir().expect("a home directory to expand against");
+        let cases: Vec<(Option<&str>, Option<PathBuf>)> = vec![
+            (None, None),
+            (Some(""), None),
+            (Some("   "), None),
+            (Some("~"), Some(home.clone())),
+            (Some("~/llama.cpp"), Some(home.join("llama.cpp"))),
+            (Some("  ~/llama.cpp  "), Some(home.join("llama.cpp"))),
+            (
+                Some("/opt/llama.cpp"),
+                Some(PathBuf::from("/opt/llama.cpp")),
+            ),
+            // Not expanded: nothing here can resolve another user's home. It is
+            // then relative, so it drops out rather than naming a folder called
+            // "~someone" beside the desktop.
+            (Some("~someone/llama.cpp"), None),
+            // Relative overrides resolve against a working directory this process
+            // and the CLI child do not share.
+            (Some("llama.cpp"), None),
+            (Some("./llama.cpp"), None),
+            (Some("../llama.cpp"), None),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(
+                llama_runtime_override_from(value),
+                expected,
+                "value {value:?}"
+            );
+        }
     }
 
     #[test]

@@ -31,15 +31,20 @@ sys.modules[SPEC.name] = ILP
 SPEC.loader.exec_module(ILP)
 
 
-def _installed(tmp_path: Path) -> Path:
+def _installed(tmp_path: Path, *, binaries: bool = False) -> Path:
     """An install root with a marker and a runtime directory, and nothing else."""
     root = tmp_path / "llama.cpp"
     host = ILP.platform_only_host()
-    ILP.install_runtime_dir(root, host).mkdir(parents = True)
+    runtime_dir = ILP.install_runtime_dir(root, host)
+    runtime_dir.mkdir(parents = True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps({"release_tag": "b10830-mix-d5c17a0", "tag": "b10830"}) + "\n",
         encoding = "utf-8",
     )
+    if binaries:
+        ext = ".exe" if host.is_windows else ""
+        for name in ("server", "quantize"):
+            (runtime_dir / f"llama-{name}{ext}").write_text("", encoding = "utf-8")
     return root
 
 
@@ -70,7 +75,7 @@ def test_an_empty_runtime_directory_is_broken_not_healthy(tmp_path):
 def test_the_verdict_is_delegated_to_the_payload_tables(tmp_path, monkeypatch):
     """One payload decider, not two. Duplicating the required-file list here is how the
     launch probe and the keep-install path would drift apart."""
-    root = _installed(tmp_path)
+    root = _installed(tmp_path, binaries = True)
     monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
     assert ILP.installed_runtime_health(root) == (True, "")
 
@@ -122,3 +127,63 @@ def test_a_probe_that_raises_is_not_swallowed_here(tmp_path, monkeypatch, broken
     monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", raise_it)
     with pytest.raises(type(broken)):
         ILP.installed_runtime_health(root)
+
+
+def test_a_quarantined_llama_server_is_caught_even_with_a_complete_payload(tmp_path, monkeypatch):
+    """The payload groups are libraries, and on Linux and macOS they name no executable at
+    all, so the server binary going missing has to be looked for separately."""
+    root = _installed(tmp_path, binaries = True)
+    monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
+    host = ILP.platform_only_host()
+    ext = ".exe" if host.is_windows else ""
+    (ILP.install_runtime_dir(root, host) / f"llama-server{ext}").unlink()
+    assert ILP.installed_runtime_health(root) == (False, "llama_runtime_binaries_missing")
+
+
+def test_llama_quantize_is_required_because_the_setup_scripts_require_it(tmp_path, monkeypatch):
+    """Not an arbitrary second file: _existing_install_runs demands both, so demanding
+    both here keeps this call no stricter than the repair that answers it."""
+    root = _installed(tmp_path, binaries = True)
+    monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
+    host = ILP.platform_only_host()
+    ext = ".exe" if host.is_windows else ""
+    (ILP.install_runtime_dir(root, host) / f"llama-quantize{ext}").unlink()
+    assert ILP.installed_runtime_health(root) == (False, "llama_runtime_binaries_missing")
+
+
+def test_an_explicit_host_overrides_the_detected_platform(tmp_path):
+    """The simulation matrices grade a tree for a platform this machine is not, and the
+    desktop capability probe is the only caller that wants the local one."""
+    root = tmp_path / "llama.cpp"
+    (root / "build" / "bin" / "Release").mkdir(parents = True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}\n", encoding = "utf-8")
+    windows = ILP.detect_host()
+    windows = type(windows)(**{
+        **windows.__dict__,
+        "system": "Windows", "is_windows": True, "is_linux": False, "is_macos": False,
+    })
+    # Windows looks in build/bin/Release, which exists; a Linux host looks in build/bin.
+    assert ILP.installed_runtime_health(root, host = windows)[1] != "llama_runtime_dir_missing"
+
+
+def test_a_corrupt_marker_is_not_reported_broken_because_the_offline_keep_path_keeps_it(tmp_path):
+    """Pinning a deliberate non-fix. A truncated marker is what an interrupted write leaves
+    behind and reporting it broken looks obviously right, but confirm_install_tree only
+    checks that the marker file exists, so _existing_install_runs keeps such a tree when its
+    payload is complete, and that is the branch an update with no reachable release plan
+    takes. Broken plus kept is a repair loop, so this stays None."""
+    root = _installed(tmp_path, binaries = True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text('{"release_tag": "b108', encoding = "utf-8")
+    assert ILP.load_prebuilt_metadata(root) is None
+    assert ILP.installed_runtime_health(root) is None
+    # The half that would make it a loop, asserted rather than assumed: the keep
+    # path's structural gate accepts a marker it cannot parse.
+    host = ILP.platform_only_host()
+    runtime_dir = ILP.install_runtime_dir(root, host)
+    ext = ".exe" if host.is_windows else ""
+    for name in ("server", "quantize"):
+        (root / f"llama-{name}{ext}").write_text("", encoding = "utf-8")
+        (runtime_dir / f"llama-{name}{ext}").write_text("", encoding = "utf-8")
+    (root / "convert_hf_to_gguf.py").write_text("", encoding = "utf-8")
+    (root / "gguf-py").mkdir()
+    ILP.confirm_install_tree(root, host)

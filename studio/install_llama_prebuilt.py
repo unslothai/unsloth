@@ -7128,18 +7128,23 @@ def platform_only_host() -> HostInfo:
     """A HostInfo carrying platform facts and nothing probed.
 
     detect_host() costs over a second because it shells out to nvidia-smi and
-    friends. The payload health checks read only the platform booleans, so a
-    caller that just wants to know whether the installed tree still has its
-    files should not pay for a GPU probe.
+    friends. The payload health checks read only the platform booleans and the
+    marker's own backend, never a probed GPU field, so a caller that just wants
+    to know whether the installed tree still has its files should not pay for a
+    GPU probe. Held to that by a parity test against detect_host().
+
+    macos_version comes from platform.mac_ver(), which reads no hardware and is
+    the one non-boolean detect_host() derives rather than probes.
     """
     system = platform.system()
     machine = platform.machine().lower()
+    is_macos = system == "Darwin"
     return HostInfo(
         system = system,
         machine = machine,
         is_windows = system == "Windows",
         is_linux = system == "Linux",
-        is_macos = system == "Darwin",
+        is_macos = is_macos,
         is_x86_64 = machine in {"x86_64", "amd64"},
         is_arm64 = machine in {"arm64", "aarch64"},
         nvidia_smi = None,
@@ -7148,10 +7153,15 @@ def platform_only_host() -> HostInfo:
         visible_cuda_devices = None,
         has_physical_nvidia = False,
         has_usable_nvidia = False,
+        macos_version = parse_macos_version(platform.mac_ver()[0]) if is_macos else None,
     )
 
 
-def installed_runtime_health(install_dir: Path | None = None) -> tuple[bool, str] | None:
+def installed_runtime_health(
+    install_dir: Path | None = None,
+    *,
+    host: HostInfo | None = None,
+) -> tuple[bool, str] | None:
     """(ok, reason) for the managed llama.cpp runtime, or None when none is installed.
 
     Smart App Control and antivirus quarantine individual files out of a tree
@@ -7160,15 +7170,40 @@ def installed_runtime_health(install_dir: Path | None = None) -> tuple[bool, str
     runtime that lost files after a clean install is offered for repair instead
     of failing later at model load, which is where it surfaced before as an
     unrelated-looking error.
+
+    Deliberately no stricter than the setup scripts' own keep-or-reinstall
+    decision, and that is the load-bearing property rather than a preference: a
+    tree this call rejects but ``_existing_install_runs`` keeps would be repaired,
+    kept unchanged by the repair, and rejected again on the next launch, which is
+    a loop with no way out for the user. Every check below has a counterpart
+    there. Nothing here is executed, only looked for, since preflight is on the
+    launch path and the setup scripts already own the exec probes.
     """
     root = install_dir if install_dir is not None else default_managed_llama_dir()
     if load_prebuilt_metadata(root) is None:
+        # Both "no marker" and "a marker that does not parse", on purpose. The
+        # second is tempting to report as broken, since it is what a write
+        # interrupted by a crash or a full disk leaves behind, but it would break
+        # the no-stricter rule above: confirm_install_tree only checks that the
+        # marker file exists, so _existing_install_runs keeps a tree whose marker
+        # is corrupt but whose payload is complete, and that is the branch an
+        # offline update takes. Reporting it broken would repair, keep, and
+        # repair again. Only existing_install_matches_choice rejects it, and only
+        # when the release plan is reachable.
         return None
-    host = platform_only_host()
-    if not install_runtime_dir(root, host).is_dir():
+    host = host if host is not None else platform_only_host()
+    runtime_dir = install_runtime_dir(root, host)
+    if not runtime_dir.is_dir():
         return False, "llama_runtime_dir_missing"
     if not _kept_install_payload_is_healthy(root, host):
         return False, "llama_runtime_payload_incomplete"
+    # The payload groups are libraries, and on Linux and macOS they name no
+    # executable at all, so a quarantined llama-server would otherwise read as a
+    # complete install. _existing_install_runs requires both of these too.
+    ext = ".exe" if host.is_windows else ""
+    for name in ("server", "quantize"):
+        if not (runtime_dir / f"llama-{name}{ext}").exists():
+            return False, "llama_runtime_binaries_missing"
     return True, ""
 
 
