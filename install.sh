@@ -4837,6 +4837,31 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
     esac
 fi
 
+# The request buys a swap, never a downgrade. The AMD branch answers with the cpu index
+# for a ROCm too old for wheels, an arch no index covers, or a non-x86_64 host, and the
+# reroutes above were the last chance to turn a cpu index into per-arch wheels. Still cpu
+# here means the request found nothing to serve, and leaving it would replace a working
+# CUDA install with CPU torch -- the one outcome this feature must not have.
+#
+# Asked of the resolved index rather than of the preconditions, so it cannot drift out of
+# step with the branch that made the choice, and answered by the same selector with the
+# request suppressed rather than by a second copy of the CUDA logic.
+if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
+   _rocm_torch_explicitly_requested && _has_usable_nvidia_gpu; then
+    case "$TORCH_INDEX_URL" in
+        */rocm*|*/gfx*) : ;;
+        *)
+            _cuda_fallback_index=$(UNSLOTH_FORCE_ROCM_TORCH=0 get_torch_index_url)
+            if [ -n "$_cuda_fallback_index" ] && \
+               [ "$_cuda_fallback_index" != "$TORCH_INDEX_URL" ]; then
+                echo "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but no ROCm wheel index could be selected for this host." >&2
+                echo "[WARN] Keeping the CUDA build rather than installing CPU PyTorch on a machine with a working NVIDIA GPU." >&2
+                TORCH_INDEX_URL="$_cuda_fallback_index"
+            fi
+            ;;
+    esac
+fi
+
 # Export the resolved torch backend ("cuda", "rocm", or "cpu") so that
 # downstream scripts (setup.sh -> install_python_stack.py) know what was
 # chosen here and can skip ROCm-specific repair steps on CUDA/CPU hosts.

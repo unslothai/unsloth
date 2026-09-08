@@ -21,6 +21,7 @@ assert it is honoured, and that it changes nothing at all unless it is set.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
@@ -386,3 +387,91 @@ def test_the_cuda_repair_still_runs_when_the_request_finds_no_amd_card(stack, mo
     monkeypatch.setattr(stack, "pip_install", lambda *a, **k: None)
     stack._ensure_cuda_torch()
     assert probed["ran"] is True
+
+
+def _cuda_restore_block() -> str:
+    """install.sh's request-downgrade guard, lifted by text.
+
+    Restated here it would agree with itself; taken from the file it fails when the
+    guard is removed, which is the only thing worth asserting about it.
+
+    An absent guard returns the empty string rather than raising, so removing it makes
+    these tests describe the behaviour BEFORE the fix instead of an extraction error.
+    That is what keeps the two controls below controls: they must still pass with no
+    guard present, and only the dead-end case must fail.
+    """
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    start = next(
+        (
+            i for i, line in enumerate(lines)
+            if line.startswith('if [ "$_torch_index_pinned" = false ]')
+            and "_rocm_torch_explicitly_requested" in "".join(lines[i : i + 2])
+        ),
+        None,
+    )
+    if start is None:
+        return ""
+    end = next(i for i in range(start, len(lines)) if lines[i] == "fi")
+    return "\n".join(lines[start : end + 1])
+
+
+def _index_after_the_guard(env: str, resolved: str, cuda_answer: str) -> str:
+    """TORCH_INDEX_URL after the guard, given what the AMD branch resolved.
+
+    ``cuda_answer`` is what the same selector returns with the request suppressed,
+    which the guard obtains by calling get_torch_index_url again; it is stubbed so the
+    test states the two inputs rather than re-deriving one of them.
+    """
+    import subprocess
+
+    script = "\n".join([
+        _shell_function("_rocm_torch_explicitly_requested"),
+        "_has_usable_nvidia_gpu() { return 0; }",
+        f'get_torch_index_url() {{ echo {cuda_answer!r}; }}',
+        "_torch_index_pinned=false",
+        "SKIP_TORCH=false",
+        f'TORCH_INDEX_URL={resolved!r}',
+        f"{env} true",
+        _cuda_restore_block(),
+        'printf "%s\\n" "$TORCH_INDEX_URL"',
+    ])
+    out = subprocess.run(
+        ["bash", "-c", script], capture_output = True, text = True,
+        env = {**os.environ, **dict(
+            [env.split("=", 1)] if "=" in env else []
+        )},
+    )
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip()
+
+
+_CUDA = "https://download.pytorch.org/whl/cu130"
+
+
+def test_a_dead_end_amd_route_keeps_cuda():
+    """ROCm 5.x, an arch no index covers, or a non-x86_64 host all end the AMD branch
+    at the cpu index. The request asked for a swap; handing back CPU torch on a machine
+    with a working NVIDIA GPU is a downgrade, and is the outcome the PR description
+    says this feature must not have."""
+    assert _index_after_the_guard(
+        "UNSLOTH_FORCE_ROCM_TORCH=1",
+        resolved = "https://download.pytorch.org/whl/cpu",
+        cuda_answer = _CUDA,
+    ) == _CUDA
+
+
+def test_a_resolved_rocm_index_is_left_alone():
+    """The control that makes the test above mean something: when the request DID
+    reach ROCm wheels, the guard must not undo it."""
+    rocm = "https://repo.amd.com/rocm/whl/gfx1151"
+    assert _index_after_the_guard(
+        "UNSLOTH_FORCE_ROCM_TORCH=1", resolved = rocm, cuda_answer = _CUDA,
+    ) == rocm
+
+
+def test_a_deliberate_cpu_install_without_the_request_is_untouched():
+    """No request, no guard. A CPU index chosen for any other reason is a decision
+    this must not reverse."""
+    cpu = "https://download.pytorch.org/whl/cpu"
+    assert _index_after_the_guard("", resolved = cpu, cuda_answer = _CUDA) == cpu
