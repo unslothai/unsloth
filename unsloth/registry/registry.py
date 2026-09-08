@@ -44,6 +44,11 @@ class ModelInfo:
     description: str = None
 
     def __post_init__(self):
+        # None is the default on this field and on register_model, and it means unquantized.
+        # Normalize it so every reader sees one value for that: search_models compares
+        # quant_type by equality, so a None would match neither QuantType.NONE nor anything else.
+        if self.quant_type is None:
+            self.quant_type = QuantType.NONE
         self.name = self.name or self.construct_model_name(
             self.base_name,
             self.version,
