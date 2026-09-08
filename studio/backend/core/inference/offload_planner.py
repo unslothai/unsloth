@@ -1522,6 +1522,7 @@ def plan_placement(
                 [],
                 False,
                 host_ram_bytes,
+                requested_ctx = n_ctx,
                 reason = (
                     f"shrank context {n_ctx} -> {min(shrunk, n_ctx)} to keep every tensor "
                     "resident, which outruns a larger spilled context"
@@ -2035,6 +2036,7 @@ def _plan_at(
             kv_bytes_floor = floor,
             budget = budget,
             knobs = knobs,
+            requested_ctx = requested_ctx,
             reason = (
                 f"the whole load fits in VRAM ({needed / GIB:.2f} of "
                 f"{budget / GIB:.2f} GiB usable"
@@ -2080,6 +2082,7 @@ def _plan_at(
             kv_bytes_floor = kv_bytes_floor,
             budget = budget,
             knobs = knobs,
+            requested_ctx = requested_ctx,
             reason = (
                 "spilled the output head after its device could not cover "
                 "the local shortfall with FFN blocks alone"
@@ -2175,6 +2178,7 @@ def _plan_at(
             budget = budget,
             kv_on_host_rung = kv_host,
             knobs = knobs,
+            requested_ctx = requested_ctx,
             reason = reason,
         )
 
@@ -2495,9 +2499,14 @@ def _finish(
     budget: Optional[int] = None,
     kv_on_host_rung: bool = False,
     knobs: Optional[_Knobs] = None,
+    requested_ctx: int = 0,
     reason: str = "",
 ) -> Plan:
     """Assemble patterns, decide the load mode, and account for both sides.
+
+    ``requested_ctx`` is the context the caller asked for; a plan at a shorter one
+    is a change in its own right even when it spills nothing, since the launch
+    has to carry the shorter ``-c``.
 
     Also the one gate: every plan that spills anything is scored against what
     llama.cpp's own fitter would have done with the same budget, and dropped if
@@ -2607,6 +2616,10 @@ def _finish(
         or n_parallel > 0
         or mmproj_to_host
         or draft_dropped
+        # A resident fit found by the context ladder emits no pattern and no knob,
+        # and is still a different launch from the one the caller priced: the
+        # planner proved a context the fallback path had already capped below.
+        or (0 < n_ctx < requested_ctx)
     )
     return Plan(
         changed = changed,

@@ -2194,3 +2194,34 @@ def test_a_windowed_cache_does_not_cap_the_context_bound_at_the_naive_product():
 def _usable_vram_for(vram, opts, n_ctx):
     from core.inference.offload_planner import _usable_vram
     return _usable_vram(vram, opts, n_ctx)
+
+
+def test_a_resident_fit_below_the_requested_context_is_a_change():
+    """The context ladder can settle on a context where every tensor stays
+    resident. That plan emits no pattern and moves no knob, and with the host RAM
+    unknown it cannot claim --load-mode none either, so nothing else marked it
+    changed and the seam dropped it: the child launched at the fallback cap with
+    the proved context thrown away. A shorter context than requested is a
+    change on its own."""
+    blocks = tuple(
+        BlockLayout(index = i, spillable_bytes = 0, resident_bytes = 128 * MIB) for i in range(32)
+    )
+    layout = ModelLayout(
+        arch = "qwen3",
+        n_layers = 32,
+        n_attention_layers = 32,
+        blocks = blocks,
+        lm_head_bytes = 256 * MIB,
+        token_embd_bytes = 256 * MIB,
+        kv_bytes_per_token_f16 = 64 * 1024,
+        n_ctx_train = 131072,
+        complete = True,
+    )
+    opts = PlanOptions(context_policy = ContextPolicy.FIT_ONLY, allow_lm_head_spill = False)
+    resident = max_context_for(layout, [8 * GIB], opts = opts)
+    assert opts.min_ctx <= resident < 131072, resident
+    plan = plan_placement(layout, [8 * GIB], None, 131072, opts = opts)
+    assert not plan.insufficient, plan.reason
+    assert not plan.ot_patterns and not plan.load_mode_none
+    assert plan.n_ctx == resident
+    assert plan.changed

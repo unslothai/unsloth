@@ -303,7 +303,7 @@ def test_a_planner_owned_launch_on_windows_carries_the_clamp_and_not_the_tuning_
     assert "--ctx-checkpoints" not in cmd
 
 
-def _launch_crash_then_ok(tmp_path, monkeypatch, plan):
+def _launch_crash_then_ok(tmp_path, monkeypatch, plan, **load_kwargs):
     """The planned launch crashes at startup; the revocation retry comes up healthy.
 
     Mirrors the real recovery in _spawn_and_wait: the first child exits on a signal,
@@ -368,6 +368,7 @@ def _launch_crash_then_ok(tmp_path, monkeypatch, plan):
                 model_identifier = "test",
                 speculative_type = "off",
                 n_parallel = 4,
+                **load_kwargs,
             )
         )
     return cmds, backend
@@ -409,3 +410,45 @@ def test_the_planner_admits_against_ram_the_launch_has_already_spent(tmp_path, m
 
     _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan, cache_ram = 20000)
     assert seen["inputs"]["host_ram_unpriced_bytes"] >= 20000 * MIB
+
+
+def test_the_batch_floor_follows_the_slots_the_plan_lowered(tmp_path, monkeypatch):
+    """--batch-size is raised to max(slots, 2) when it is emitted, and llama.cpp
+    derives the micro-batch from the emitted value. Rung 1 priced the cache and
+    draft tables at the floor for the REDUCED slot count, so the flag has to
+    follow the slots or the child runs a larger micro-batch than the pinned plan
+    reserved for. The fitter's value is recorded so a revocation restores it."""
+    plan = Plan(changed = True, n_ctx = 8192, n_parallel = 1)
+    cmd, backend, _ = _launch_with(tmp_path, monkeypatch, plan, n_batch = 1)
+    assert _flag(cmd, "--parallel") == "1"
+    assert _flag(cmd, "--batch-size") == "2"
+    assert backend._spill_plan_restore.get("--batch-size") == "4"
+
+    # A batch already above every floor is untouched and not recorded.
+    cmd, backend, _ = _launch_with(tmp_path, monkeypatch, plan, n_batch = 512)
+    assert _flag(cmd, "--batch-size") == "512"
+    assert "--batch-size" not in backend._spill_plan_restore
+
+    cmds, _backend = _launch_crash_then_ok(tmp_path, monkeypatch, plan, n_batch = 1)
+    assert _flag(cmds[0], "--batch-size") == "2"
+    assert _flag(cmds[1], "--batch-size") == "4"
+
+
+def test_a_context_only_shrink_plan_is_launched_at_the_context_it_proved(tmp_path, monkeypatch):
+    """The auto path capped -c at 8192 before the planner was asked at the
+    context it wanted. A plan that fits every tensor at a shorter context than
+    requested spills nothing and moves no knob, and was discarded for exactly that,
+    launching the child at the cap. It is Unsloth's placement all the same: every
+    layer on the GPU, pinned, at the context the planner proved."""
+    plan = Plan(changed = True, n_ctx = 12288)
+    cmd, backend, seen = _launch_with(tmp_path, monkeypatch, plan)
+    assert seen["inputs"]["n_ctx"] == NATIVE_CTX
+    assert _flag(cmd, "-c") == "12288"
+    assert _flag(cmd, "--fit") == "off" and _flag(cmd, "-ngl") == "-1"
+    assert backend._spill_plan_restore.get("-c") == "8192"
+    assert backend._effective_context_length == 12288
+
+    # At the requested context with nothing spilled it is llama.cpp's own launch.
+    cmd, backend, _ = _launch_with(tmp_path, monkeypatch, Plan(changed = True, n_ctx = NATIVE_CTX))
+    assert _flag(cmd, "--fit") == "on"
+    assert backend._spill_plan_flags == []

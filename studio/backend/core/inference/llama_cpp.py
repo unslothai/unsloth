@@ -22411,7 +22411,14 @@ class LlamaCppBackend:
                     )
                     # NOT `if _spill:` -- Plan is a dataclass, so every instance is
                     # truthy, including ones saying it could not place this at all.
-                    _spill_flags = self._spill_plan_flags_for(_spill)
+                    # The context the planner was asked at comes from the snapshot,
+                    # which is None on a load that could not be priced at all.
+                    _spill_flags = self._spill_plan_flags_for(
+                        _spill,
+                        requested_ctx = (
+                            int((_spill_inputs or {}).get("n_ctx") or 0) if "-c" in cmd else 0
+                        ),
+                    )
                     if _spill_flags:
                         self._spill_plan_flags = _spill_flags
                         self._spill_plan_restore = {}
@@ -22428,6 +22435,19 @@ class LlamaCppBackend:
                             # the plan priced the cache at fewer slots (rung 1)
                             n_parallel = _spill.n_parallel  # allow-slot-clamp: planner rung 1
                             _effective_ubatch = _ubatch_for_slots(n_parallel)
+                            # The batch floor was emitted at the fitter's slot count
+                            # (max(slots, 2)) and llama.cpp derives the micro-batch
+                            # from the EMITTED value, while the plan priced its cache
+                            # and draft tables at the floor for the reduced count. The
+                            # flag follows the slots, or a --batch-size 1 request with
+                            # four slots is priced at micro-batch 2 and launches at 4
+                            # under a pin that reserved for 2.
+                            if n_batch is not None and "--batch-size" in cmd:
+                                _b_at = cmd.index("--batch-size")
+                                _new_batch = str(_emitted_n_batch(n_batch, n_parallel))
+                                if cmd[_b_at + 1] != _new_batch:
+                                    self._spill_plan_restore["--batch-size"] = cmd[_b_at + 1]
+                                    cmd[_b_at + 1] = _new_batch
                         if _spill.n_ctx and _spill.n_ctx != effective_ctx and "-c" in cmd:
                             _c_at = cmd.index("-c")
                             self._spill_plan_restore["-c"] = cmd[_c_at + 1]
@@ -27714,8 +27734,11 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _spill_plan_flags_for(plan: "Optional[SpillPlan]") -> "list[str]":
+    def _spill_plan_flags_for(plan: "Optional[SpillPlan]", requested_ctx: int = 0) -> "list[str]":
         """The argv tokens for ``plan``, or ``[]`` when it must not be emitted.
+
+        ``requested_ctx`` is the context the planner was asked at, or 0 when the
+        caller cannot rewrite ``-c`` and so must not act on a shorter one.
 
         The emptiness test is the point. ``Plan`` is a dataclass with no
         ``__bool__``/``__len__``, so EVERY instance is truthy -- including the
@@ -27743,7 +27766,14 @@ class LlamaCppBackend:
         """
         if plan is None or plan.insufficient or not plan.changed:
             return []
-        if not (plan.spills_anything or plan.reshapes_launch):
+        # A plan the context ladder settled at a SHORTER context than the one asked
+        # for is a launch of its own even when it spills nothing and moves no knob:
+        # the auto path capped -c below it before the planner was asked, so
+        # discarding the plan launches the child at the cap and throws away the
+        # context the planner proved. A plan at the requested context that spills
+        # nothing is llama.cpp's own launch and stays undisturbed.
+        shrinks_context = 0 < plan.n_ctx < requested_ctx
+        if not (plan.spills_anything or plan.reshapes_launch or shrinks_context):
             return []
         tokens = [tok for pat in plan.ot_patterns for tok in ("-ot", f"{pat}=CPU")]
         if plan.spills_anything and not tokens:
