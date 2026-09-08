@@ -232,6 +232,8 @@ def _scope(app, body: bytes) -> dict:
             (b"host", b"testserver"),
             (b"content-type", b"application/json"),
             (b"content-length", str(len(body)).encode()),
+            # The Studio UI's opt-in: tools with confirmation are refused without it.
+            (b"x-unsloth-events", b"1"),
         ],
         "client": ("127.0.0.1", 12345),
         "server": ("testserver", 80),

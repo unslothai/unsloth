@@ -17,6 +17,7 @@ paused chat's cells are never erased for the waiter they were freed for.
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 
 from core.inference.llama_stats import erase_llama_slot, fetch_llama_slots
@@ -86,12 +87,14 @@ class TestTheRouteHandsThemTheBackendsKey:
         assert "def _llama_slot_headers(" in source
         # Every call site, not most of them: one unauthenticated read is enough to make
         # the residency figure None and disable the probe for everybody.
-        assert source.count("fetch_llama_slots(") == source.count(
-            "fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))"
-        )
-        assert source.count("erase_llama_slot(") == source.count(
-            "erase_llama_slot(base, slot_id, headers = _llama_slot_headers(llama_backend))"
-        )
+        # Whitespace-blind: a formatter may wrap a call across lines.
+        flat = re.sub(r"\s+", " ", source)
+        assert flat.count("fetch_llama_slots(") == flat.count(
+            "fetch_llama_slots( base, headers = _llama_slot_headers(llama_backend) )"
+        ) + flat.count("fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))")
+        assert flat.count("erase_llama_slot(") == flat.count(
+            "erase_llama_slot( base, slot_id, headers = _llama_slot_headers(llama_backend) )"
+        ) + flat.count("erase_llama_slot(base, slot_id, headers = _llama_slot_headers(llama_backend))")
 
     def test_the_helper_reads_the_backends_own_bearer(self):
         from routes.inference import _llama_slot_headers

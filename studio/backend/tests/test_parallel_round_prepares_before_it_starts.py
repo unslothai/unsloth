@@ -48,9 +48,9 @@ class TestEveryCallIsAttachedBeforeAnyStarts:
             order.append(("attach", self_.tool_name))
             return real_attach(self_)
 
-        def _start(decision, stream, budget_cell, starved_cell):
+        def _start(decision, stream, budget_cell, starved_cell, *rest, **kw):
             order.append(("start", decision.tool_name))
-            return real_start(decision, stream, budget_cell, starved_cell)
+            return real_start(decision, stream, budget_cell, starved_cell, *rest, **kw)
 
         monkeypatch.setattr(controller_mod.ToolCallDecision, "as_assistant_tool_call", _attach)
         monkeypatch.setattr(llama_mod, "_start_tool_call", _start)

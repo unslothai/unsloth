@@ -75,7 +75,8 @@ def _client(monkeypatch, backend, *, tools: bool):
     app = FastAPI()
     app.include_router(inference_route.router)
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    return TestClient(app)
+    # The Studio UI's opt-in: local tool execution with confirmation is refused without it.
+    return TestClient(app, headers = {"X-Unsloth-Events": "1"})
 
 
 def _payload(tools: bool):
