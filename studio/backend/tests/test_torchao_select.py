@@ -198,21 +198,27 @@ def test_the_torchao_step_pins_the_index_and_retries_without_it():
     assert "_strip_index_url_credentials(index)" in body
 
 
-def test_the_fallback_is_blocked_where_a_cuda_12_build_cannot_load(monkeypatch):
-    """PyPI only builds torchao for CUDA 12. torchao's cpp loads whenever the torch RELEASE
-    matches, so on a CUDA-13, ROCm or XPU torch the fallback would trade "kernels skipped"
-    for libcudart.so.12 at import. A private mirror makes this reachable without any public
-    index lagging: it can serve torch and not the selected torchao."""
-    mod = _load_module(monkeypatch)
-    for version in ("2.13.0+cu130", "2.13.0+cu132", "2.11.0+rocm7.2", "2.10.0+xpu"):
-        assert not mod._default_index_torchao_can_load(version), version
-    for version in ("2.13.0+cu128", "2.9.0+cu118", "2.13.0+cpu", "2.13.0", None, ""):
-        assert mod._default_index_torchao_can_load(version), version
-    # And the installer takes that branch rather than falling back.
+def test_the_fallback_is_never_conditioned_on_the_accelerator(monkeypatch):
+    """A wrong-accelerator torchao COSTS ITS KERNELS; it does not fail to import, so the
+    fallback must stay unconditional. Guarding it on the CUDA major would regress a CUDA-13,
+    ROCm or XPU host from a working-but-slower torchao to none at all.
+
+    The premise is checked here rather than trusted, because a comment claiming otherwise is
+    what motivated a guard that had to be reverted. torchao/__init__.py has wrapped the whole
+    cpp load in try/except since 0.12.0 (and per-file since 0.16.0), logging "Failed to load
+    {file}: {e}" -- the exact message unsloth/import_fixes.py already filters as expected on
+    an ABI mismatch. Forcing torch.ops.load_library to raise the libcudart.so.12 OSError
+    leaves `import torchao` and torchao.quantization both working."""
     body = _torchao_installer_source()
-    assert "if not _default_index_torchao_can_load(torch_version):" in body
-    blocked = body.split("if not _default_index_torchao_can_load(torch_version):", 1)[1]
-    assert "Leaving torchao alone" in blocked.split("_note(", 1)[0]
+    fallback = body.split("retrying from the default index", 1)[1]
+    assert 'pip_install("Installing dependency overrides", *args, spec)' in fallback
+    # No branch may stand between the failed pin and the retry. Comments carry the word,
+    # so compare code only.
+    between = body.split("if pip_install_try(", 1)[1].split("retrying from the default index", 1)[0]
+    code = [l for l in between.split("\n") if not l.strip().startswith("#")]
+    assert not any(l.strip().startswith(("if ", "elif ")) for l in code), between
+    mod = _load_module(monkeypatch)
+    assert not hasattr(mod, "_default_index_torchao_can_load")
 
 
 @pytest.mark.parametrize(

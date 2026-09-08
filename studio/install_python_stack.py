@@ -301,10 +301,14 @@ _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
     "torchaudio>=2.4,<2.12.0",
 )
 
-# torchao's cpp extensions are pinned to ONE torch release AND CUDA major. A torch
-# mismatch just skips the cpp kernels (slow Python fallback); a CUDA mismatch fails
-# to import ("libcudart.so.12: cannot open shared object file"). The torch pin is a
-# range, so match torchao to the installed torch (table: pytorch/ao#2919):
+# torchao's cpp extensions are pinned to ONE torch release AND CUDA major, and either
+# mismatch costs the kernels rather than the import. A torch mismatch is refused up front
+# ("Skipping import of cpp extensions due to incompatible torch version"); a CUDA mismatch
+# gets as far as the dlopen and fails there on libcudart, which torchao/__init__.py has
+# caught and logged since 0.12 -- unsloth/import_fixes.py filters that exact warning. So
+# the wrong build is the slow path, never a crash. Verified by forcing torch.ops.load_library
+# to raise that error: `import torchao` and torchao.quantization both still work.
+# The torch pin is a range, so match torchao to the installed torch (table: pytorch/ao#2919):
 #   2.9.x            -> 0.14.0
 #   2.10.x, CUDA<=12 -> 0.16.0 (cpp built for 2.10, loads via the CUDA-12 wheel)
 #   2.10.x, CUDA>=13 -> 0.17.0 (cu130: 0.16.0's CUDA-12 cpp crashes on load; 0.17.0
@@ -4309,20 +4313,6 @@ def _resident_xformers_build_torch() -> "str | None":
     return recorded.strip() if isinstance(recorded, str) and recorded.strip() else None
 
 
-# PyPI's torchao is the CUDA-12 build, so falling back to it is only safe where a CUDA-12
-# extension could load at all. On CUDA 13, ROCm or XPU it cannot, and torchao's cpp loads
-# whenever the torch release matches, so the fallback would trade "no kernels" for
-# "libcudart.so.12: cannot open shared object file" at import. Absence is the supported
-# state there -- _resync_torch_coupled_packages already removes torchao across a CUDA-major
-# move, and Windows ROCm skips this step entirely and stubs torchao at runtime.
-def _default_index_torchao_can_load(torch_version: "str | None") -> bool:
-    local = str(torch_version or "").partition("+")[2].strip().lower()
-    if not local or local == "cpu":
-        return True  # untagged is PyPI's own torch; cpu needs no CUDA runtime at all
-    major = _cuda_major_from_torch_version(str(torch_version or ""))
-    return major is not None and major <= 12
-
-
 def _install_torchao_for_torch(torch_version: "str | None") -> None:
     """Select the torchao matching torch_version and install it from its own index.
 
@@ -4351,21 +4341,15 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
         return
     # The pinned index may simply not carry this release: cu129 stops at 0.17.0 while
     # serving torch up to 2.13, cu118 stops at 0.11.0, rocm7.0 publishes 0.16.0 alone, and
-    # a private mirror or a leaf added upstream after this shipped can lag by a release.
-    if not _default_index_torchao_can_load(torch_version):
-        _safe_print(
-            f"   [WARN] {_strip_index_url_credentials(index)} did not serve {spec}, and the "
-            f"default index only builds torchao for CUDA 12, which cannot load beside this "
-            f"torch. Leaving torchao alone; install {spec} from a matching index by hand to "
-            f"restore its kernels."
-        )
-        return
-    # Otherwise the default index is where this step went before it pinned anything, so
-    # falling back is a working install rather than a failed one. Still fatal if that fails
-    # too: torchao is not optional the way audio is, and this step was fatal before.
+    # a private mirror or a leaf added upstream after this shipped can lag by a release. The
+    # default index is where this step went before it pinned anything, so falling back is a
+    # working install rather than a failed one, and PyPI's CUDA-12 build beside another
+    # accelerator costs the cpp kernels and nothing else (see _TORCHAO_DEFAULT_SPEC). Still
+    # fatal if that fails too: torchao is not optional the way audio is, and this step was
+    # fatal before.
     _note(
         f"{_strip_index_url_credentials(index)} did not serve {spec} "
-        "-- retrying from the default index"
+        "-- retrying from the default index; its kernels may be skipped"
     )
     pip_install("Installing dependency overrides", *args, spec)
 
@@ -4386,12 +4370,17 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
     if not _label_after or _label_after == label_before:
         return True
     _touched_torch = False
-    # Release OR CUDA major: cu124 to cu130 at one release still changes the build.
+    # Release OR accelerator family: cu124 to cu130 at one release still changes the build,
+    # and so does cpu to xpu, which moves no CUDA major at all (both read None) and so was
+    # invisible to a cuda-major-only test. Compare the whole local tag.
     _release_moved = _label_after.split("+", 1)[0] != str(label_before).split("+", 1)[0]
+    _family_moved = _label_after.partition("+")[2].strip().lower() != (
+        str(label_before).partition("+")[2].strip().lower()
+    )
     _cuda_moved = _cuda_major_from_torch_version(_label_after) != (
         _cuda_major_from_torch_version(str(label_before))
     )
-    if _release_moved or _cuda_moved:
+    if _release_moved or _family_moved or _cuda_moved:
         try:
             _spec = _select_torchao_spec(_label_after)
             # The same index pin step 4 uses. Without it this call reinstalls PyPI's CUDA-12

@@ -1643,16 +1643,31 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert calls["torchao"], "the CUDA major moved, so the pin has to be re-selected"
         assert any("torchao==0.17.0" in " ".join(c) for c in calls["torchao"])
 
-    def test_a_flavor_change_within_one_cuda_major_leaves_torchao_alone(self):
+    def test_a_flavor_change_within_one_cuda_major_re_pins_torchao(self):
+        """This left torchao alone while every host took PyPI's one build, where cu124 and
+        cu128 really did resolve to the same file. Now that the install is pinned to the leaf
+        matching torch, they are different wheels and the move has to be followed."""
         calls = self._resync("2.10.0+cu124", "2.10.0+cu128")
-        assert calls["torchao"] == []
+        assert calls["torchao"], "the leaf moved, so the pinned build has to be re-selected"
+        assert any("cu128" in " ".join(c) for c in calls["torchao"]), calls["torchao"]
+
+    def test_a_cpu_to_xpu_move_re_pins_torchao(self):
+        """Neither side names a CUDA major, so a cuda-major-only test read None == None and
+        skipped the resync entirely, leaving a +cpu torchao beside an xpu torch."""
+        calls = self._resync("2.10.0+cpu", "2.10.0+xpu")
+        assert calls["torchao"], "cpu to xpu changes the build even at one release"
+        assert any("/xpu" in " ".join(c) for c in calls["torchao"]), calls["torchao"]
+
+    def test_a_build_that_kept_its_leaf_is_still_left_alone(self):
+        """The widened test must not have become "always re-pin"."""
+        assert self._resync("2.10.0+cu128", "2.10.0+cu128")["torchao"] == []
+        assert self._resync("2.10.0", "2.10.0")["torchao"] == []
 
     def test_a_flavor_change_alone_still_rechecks_xformers(self):
         # xFormers links against the exact (torch, CUDA) pair.
         calls = self._resync("2.10.0+cu124", "2.10.0+cu128", resident_xformers = "2.10.0+cu124")
-        assert calls["torchao"] == [], "the release did not move; torchao is fine"
         assert calls["removed"] == ["xformers"]
-        assert calls["ok"] is True, "nothing here touched torch"
+        assert calls["ok"] is False, "re-pinning torchao asks for a re-verify, as anywhere else"
 
     def test_the_torchao_reinstall_cannot_drag_torch_back(self):
         # torchao depends on torch: resolving deps re-pulls the wheel just removed.

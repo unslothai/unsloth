@@ -277,16 +277,27 @@ class TestStepThirteenWiring:
             "not IS_MACOS and (not NO_TORCH)",
             "not IS_WINDOWS and (not IS_MACOS) and (not NO_TORCH)",
         ]
+        repairs = [
+            "_ensure_cuda_torch",
+            "_ensure_rocm_torch",
+            "_ensure_xpu_torch",
+            "_ensure_cpu_torch",
+            "_ensure_xpu_triton",
+        ]
         for guard in guards:
-            assert _calls_in(guard) == [
-                "_progress",
-                "_torch_step_label",
-                "_ensure_cuda_torch",
-                "_ensure_rocm_torch",
-                "_ensure_xpu_torch",
-                "_ensure_cpu_torch",
-                "_ensure_xpu_triton",
-            ]
+            calls = _calls_in(guard)
+            assert [c for c in calls if c in repairs] == repairs
+            assert calls[:2] == ["_progress", "_torch_step_label"]
+        # str() is the label coercion around the probe, not a step.
+        step13 = [c for c in _calls_in(guards[1]) if c != "str"]
+        # Step 13 additionally re-selects torchao when a repair moved the torch label: the
+        # spec and the index leaf are both read off it, so the earlier choice can be stale.
+        # Nothing else may join the set, and step 2b must not have grown the same call.
+        assert step13 == (
+            ["_progress", "_torch_step_label", "_probe_installed_torch_version"]
+            + repairs + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
+        ), step13
+        assert "_install_torchao_for_torch" not in _calls_in(guards[0])
 
     def test_the_invariant_is_wired_in_exactly_once(self):
         body = ast.unparse(_install_stack_ast())
