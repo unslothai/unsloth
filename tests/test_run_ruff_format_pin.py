@@ -133,3 +133,19 @@ class TestRefusing:
         # and must not be failed for a version it never used.
         monkeypatch.setattr("run_ruff_format.installed_ruff_version", lambda *a, **k: "9.9.9")
         assert main([]) == 0
+
+
+class TestTheScriptStaysRunnable:
+    """It has a shebang and is invoked as a program, so the mode bit is part of it.
+
+    Rewriting the file wholesale is how the bit gets dropped -- an editor writes 0644
+    and the change is invisible in the content diff.
+    """
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason = "no POSIX mode bits")
+    def test_the_formatter_is_executable(self):
+        script = _ROOT / "scripts" / "run_ruff_format.py"
+        assert script.read_text(encoding = "utf-8").startswith("#!")
+        assert (
+            script.stat().st_mode & 0o111
+        ), "scripts/run_ruff_format.py lost its executable bit; git tracks it as 100755"
