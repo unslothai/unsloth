@@ -1,0 +1,39 @@
+name: Temporary cleanup MLX CI fix workflows
+
+on:
+  push:
+    branches:
+      - feat/agent-workspace-mlx-runtime
+    paths:
+      - .github/workflows/mlx-ci.yml
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/agent-workspace-mlx-runtime
+          fetch-depth: 0
+
+      - name: Remove temporary fix workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            .github/workflows/tmp-apply-mlx-trainer-api-fix.yml
+            .github/workflows/tmp-apply-mlx-trainer-api-fix-linux-v2.yml
+            .github/workflows/tmp-cleanup-mlx-ci-fix.yml
+          )
+          git rm --ignore-unmatch -- "${files[@]}"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name "Philip John Basile"
+          git config user.email "PBasile@Basilecom.com"
+          git commit -m "ci: remove temporary MLX fix workflows"
+          git push origin HEAD:feat/agent-workspace-mlx-runtime
