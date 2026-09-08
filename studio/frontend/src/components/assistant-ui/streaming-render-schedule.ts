@@ -103,6 +103,14 @@ const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 // unchanged, against 2.45ms -> 11.95ms on one 50k line dense with `[`. That
 // last shape is the price, and it is the same shape the bound above exists for.
 const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\\]){1,999}\]:/;
+// The same probe plus the destination, for the remount key. Derived from
+// LINK_DEFINITION_RE, not written out again, so the key can never see fewer
+// definitions than the parity does: matching per line missed a label that spans
+// lines, and the key collapsed to a constant that no resolved definition moved.
+const LINK_DEFINITION_KEY_RE = new RegExp(
+  `${LINK_DEFINITION_RE.source}[^\\n]*`,
+  "g",
+);
 const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
@@ -121,10 +129,7 @@ export function markdownRenderKey(markdown: string): string {
   if (markdownRenderScope(markdown) === "blocks") {
     return "blocks";
   }
-  return `document:${markdown
-    .split("\n")
-    .filter((line) => LINK_DEFINITION_RE.test(line))
-    .join("\n")}`;
+  return `document:${(markdown.match(LINK_DEFINITION_KEY_RE) ?? []).join("\n")}`;
 }
 
 export function parseMarkdownIntoRenderableBlocks(markdown: string): string[] {

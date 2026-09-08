@@ -195,6 +195,22 @@ test("link references and definitions stay in one rendered document", () => {
   );
 });
 
+test("a definition that spans lines still moves the render key", () => {
+  const usage = `Before [reference][foo bar].\n\n${paragraphs(20)}`;
+
+  for (const label of ["foo", "x".repeat(250), "foo\nbar"]) {
+    const partial = `${usage}[${label}]: `;
+    const complete = `${partial}https://example.com/reference`;
+
+    assert.equal(markdownRenderScope(complete), "document", label);
+    assert.notEqual(
+      markdownRenderKey(partial),
+      markdownRenderKey(complete),
+      `render key did not move for ${JSON.stringify(label)}`,
+    );
+  }
+});
+
 test("a transient marker imbalance can recover incremental parsing", () => {
   const cache = new IncrementalMarkdownCache();
   const unbalanced = `Match *.py files here.\n\n${paragraphs(20)}`;
