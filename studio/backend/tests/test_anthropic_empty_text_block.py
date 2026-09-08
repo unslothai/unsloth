@@ -206,6 +206,55 @@ def test_cached_image_only_turn_marks_the_image(monkeypatch):
     assert parts[-1].get("cache_control") is not None
 
 
+def test_whitespace_only_assistant_text_beside_a_tool_call(monkeypatch):
+    # A model that emits a newline before calling a tool: the whitespace block 400s
+    # and takes the tool_use with it.
+    captured = _capture(
+        monkeypatch,
+        [
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": "  \n ",
+                "tool_calls": [
+                    {
+                        "id": "toolu_1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "42"},
+        ],
+    )
+    blocks = captured["body"]["messages"][1]["content"]
+    assert [b["type"] for b in blocks] == ["tool_use"], blocks
+
+
+def test_real_assistant_text_beside_a_tool_call_survives(monkeypatch):
+    captured = _capture(
+        monkeypatch,
+        [
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": "calling f",
+                "tool_calls": [
+                    {
+                        "id": "toolu_1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "42"},
+        ],
+    )
+    blocks = captured["body"]["messages"][1]["content"]
+    assert blocks[0] == {"type": "text", "text": "calling f"}
+    assert blocks[1]["type"] == "tool_use"
+
+
 def test_missing_text_key_does_not_raise(monkeypatch):
     # `part["text"]` used to KeyError, taking down the whole request.
     captured = _capture(

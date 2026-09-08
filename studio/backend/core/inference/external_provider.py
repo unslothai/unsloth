@@ -2245,7 +2245,9 @@ class ExternalProviderClient:
                 ):
                     _text_content = msg.get("content")
                     _blocks: list[dict[str, Any]] = []
-                    if isinstance(_text_content, str) and _text_content:
+                    if isinstance(_text_content, str) and _anthropic_text_is_sendable(
+                        _text_content
+                    ):
                         _blocks.append({"type": "text", "text": _text_content})
                     for _tc in msg["tool_calls"]:
                         if not isinstance(_tc, dict):
