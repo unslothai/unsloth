@@ -3,8 +3,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # The ownership gate on ~/.unsloth/studio must still recognise the layouts older installers left.
 # On Windows share\studio.conf is never written, so the sentinels that decide a Windows root all
-# postdate the bin\ shim dir, while install.ps1 still migrates <root>\.venv. The uninstaller body
-# writes to the registry, so the helpers are lifted out by AST and exercised on their own.
+# postdate the bin\ shim dir, while install.ps1 still migrates <root>\.venv. What is INSIDE a venv
+# only proves ownership at the managed root, so every case names the mode it asserts about.
+# The uninstaller body writes to the registry, so the helpers are lifted out by AST and exercised
+# on their own.
 #
 # Run: pwsh -NoProfile -File tests/studio/test_uninstall_legacy_layout_gate.ps1
 
@@ -59,34 +61,54 @@ try {
         return $root
     }
 
+    # -ManagedDefaultRoot is what the uninstaller passes for %USERPROFILE%\.unsloth\studio and
+    # for nothing else, so every case names the mode it is asserting about.
     Check "current layout (venv owner marker)" `
-        (_IsStudioRoot (Make "cur-marker" @("unsloth_studio\.unsloth-studio-owned")))
+        (_IsStudioRoot (Make "cur-marker" @("unsloth_studio\.unsloth-studio-owned")) -ManagedDefaultRoot)
     Check "shim .exe" `
-        (_IsStudioRoot (Make "cur-exe" @("bin\unsloth.exe")))
+        (_IsStudioRoot (Make "cur-exe" @("bin\unsloth.exe")) -ManagedDefaultRoot)
     Check "shim .cmd alone, when a policy quarantined the .exe" `
-        (_IsStudioRoot (Make "cur-cmd" @("bin\unsloth.cmd")))
+        (_IsStudioRoot (Make "cur-cmd" @("bin\unsloth.cmd")) -ManagedDefaultRoot)
 
     Check "legacy .venv carrying our owner marker" `
-        (_IsStudioRoot (Make "old-marker" @(".venv\.unsloth-studio-owned", ".venv\Scripts\python.exe")))
+        (_IsStudioRoot (Make "old-marker" @(".venv\.unsloth-studio-owned", ".venv\Scripts\python.exe")) -ManagedDefaultRoot)
     Check "legacy .venv carrying the unsloth console script" `
-        (_IsStudioRoot (Make "old-cli" @(".venv\Scripts\python.exe", ".venv\Scripts\unsloth.exe")))
+        (_IsStudioRoot (Make "old-cli" @(".venv\Scripts\python.exe", ".venv\Scripts\unsloth.exe")) -ManagedDefaultRoot)
     Check "pre-marker unsloth_studio venv carrying the unsloth console script" `
-        (_IsStudioRoot (Make "pre-marker" @("unsloth_studio\Scripts\python.exe", "unsloth_studio\Scripts\unsloth.exe")))
+        (_IsStudioRoot (Make "pre-marker" @("unsloth_studio\Scripts\python.exe", "unsloth_studio\Scripts\unsloth.exe")) -ManagedDefaultRoot)
+    # install.ps1 installs and repairs through this: antivirus deletes the generated .exe out of
+    # a venv that still runs. A pre-marker root has nothing else left, so the package answers.
+    Check "pre-marker venv whose unsloth.exe antivirus quarantined" `
+        (_IsStudioRoot (Make "quarantined" @(".venv\Scripts\python.exe", ".venv\Lib\site-packages\unsloth_cli\__init__.py")) -ManagedDefaultRoot)
+
+    # A marker is proof wherever the root sits; it is the only thing a custom root can offer.
+    Check "a custom root with the venv owner marker" `
+        (_IsStudioRoot (Make "custom-marker" @("unsloth_studio\.unsloth-studio-owned")))
+    Check "a custom root with share\studio.conf" `
+        (_IsStudioRoot (Make "custom-conf" @("share\studio.conf")))
 
     Check "a hand-made directory is refused" `
-        (-not (_IsStudioRoot (Make "scratch" @("notes.md"))))
+        (-not (_IsStudioRoot (Make "scratch" @("notes.md")) -ManagedDefaultRoot))
     Check "an ordinary project venv is refused" `
-        (-not (_IsStudioRoot (Make "plain-venv" @(".venv\Scripts\python.exe", "notes.md"))))
+        (-not (_IsStudioRoot (Make "plain-venv" @(".venv\Scripts\python.exe", "notes.md")) -ManagedDefaultRoot))
     Check "a venv merely NAMED unsloth_studio is refused" `
-        (-not (_IsStudioRoot (Make "named-venv" @("unsloth_studio\Scripts\python.exe"))))
+        (-not (_IsStudioRoot (Make "named-venv" @("unsloth_studio\Scripts\python.exe")) -ManagedDefaultRoot))
     Check "somebody else's bin\unsloth.cmd is refused" `
-        (-not (_IsStudioRoot (Make "foreign-cmd" @("bin\python.exe"))))
+        (-not (_IsStudioRoot (Make "foreign-cmd" @("bin\python.exe")) -ManagedDefaultRoot))
+    # The reason the flag exists. pip writes Scripts\unsloth.exe into ANY venv the unsloth wheel
+    # is installed into, so a UNSLOTH_STUDIO_HOME left pointing at a project must not make the
+    # custom-root loop delete the project. install.ps1:4453 skips the legacy migration for those
+    # roots, so a custom root never had one of our .venv layouts to strand.
+    Check "a project venv with unsloth pip-installed is refused as a custom root" `
+        (-not (_IsStudioRoot (Make "custom-project" @(".venv\Scripts\python.exe", ".venv\Scripts\unsloth.exe", "pyproject.toml"))))
+    Check "that project's site-packages is refused as a custom root too" `
+        (-not (_IsStudioRoot (Make "custom-pkg" @(".venv\Scripts\python.exe", ".venv\Lib\site-packages\unsloth_cli\__init__.py"))))
     $foreign = Make "foreign-shim" @()
     New-Item -ItemType Directory -Path (Join-Path $foreign "bin") -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $foreign "bin\unsloth.cmd") -Value "@echo off`r`npython -m mytool %*`r`n"
-    Check "a bin\unsloth.cmd without the trampoline is refused" (-not (_IsStudioRoot $foreign))
-    Check "a missing path is refused" (-not (_IsStudioRoot (Join-Path $tmp "does-not-exist")))
-    Check "an empty path is refused" (-not (_IsStudioRoot ""))
+    Check "a bin\unsloth.cmd without the trampoline is refused" (-not (_IsStudioRoot $foreign -ManagedDefaultRoot))
+    Check "a missing path is refused" (-not (_IsStudioRoot (Join-Path $tmp "does-not-exist") -ManagedDefaultRoot))
+    Check "an empty path is refused" (-not (_IsStudioRoot "" -ManagedDefaultRoot))
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

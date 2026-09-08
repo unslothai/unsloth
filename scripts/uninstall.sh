@@ -355,20 +355,28 @@ _xdg_dir() {
 # directory that happens to contain a folder named "unsloth_studio" is safe.
 _is_studio_root() {
     _r="$1"
+    # $2 = "managed": $_r is the default root install.sh manages, $HOME/.unsloth/studio.
+    _managed="${2:-}"
     [ -n "$_r" ] || return 1
     [ -f "$_r/share/studio.conf" ] && return 0
     [ -f "$_r/unsloth_studio/.unsloth-studio-owned" ] && return 0
-    # The venv shapes older installers left: before the unsloth_studio rename the venv was
-    # $_r/.venv, and before .unsloth-studio-owned neither name carried a marker. Accept the
-    # legacy venv's own marker, and either venv dir carrying bin/unsloth, pip's console script.
+    # Before the unsloth_studio rename the venv was $_r/.venv; its own marker still proves
+    # ownership wherever the root sits, because only install.sh writes that file.
     [ -f "$_r/.venv/.unsloth-studio-owned" ] && return 0
-    for _v in unsloth_studio .venv; do
-        [ -f "$_r/$_v/bin/unsloth" ] && return 0
-    done
     if [ -L "$_r/bin/unsloth" ]; then
         _t=$(readlink "$_r/bin/unsloth" 2>/dev/null || true)
         case "$_t" in *unsloth_studio/bin/unsloth) return 0 ;; esac
     fi
+    # Pre-marker installs have no marker at all, so the only thing left is bin/unsloth inside
+    # the venv -- pip's console script for the unsloth distribution, which ANY venv with the
+    # wheel installed has. It proves ownership only at the managed root, and that is also the
+    # only root that can hold this layout: install.sh:2987 skips the legacy migration in env
+    # mode, so a custom root never had a $_r/.venv of ours. Trusting it everywhere would let a
+    # UNSLOTH_STUDIO_HOME left pointing at a project delete the project.
+    [ "$_managed" = managed ] || return 1
+    for _v in unsloth_studio .venv; do
+        [ -f "$_r/$_v/bin/unsloth" ] && return 0
+    done
     return 1
 }
 
@@ -595,7 +603,7 @@ _unsloth_uninstall_main() {
     # Gated on the same ownership sentinels as a custom root: "studio" under ~/.unsloth is an
     # ordinary thing to create by hand, and an ungated bare run takes that directory and then
     # ~/.unsloth with it via the empty-dir prune below, having removed nothing of ours.
-    if [ -e "$HOME/.unsloth/studio" ] && ! _is_studio_root "$HOME/.unsloth/studio"; then
+    if [ -e "$HOME/.unsloth/studio" ] && ! _is_studio_root "$HOME/.unsloth/studio" managed; then
         echo "  refusing to remove non-Unsloth path: $HOME/.unsloth/studio" >&2
     else
         _remove_root_recording_db "$HOME/.unsloth/studio"

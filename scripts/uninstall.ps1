@@ -397,17 +397,30 @@ Environment:
     # Plus the venv shapes older installers left, or the gate strands them. On Windows
     # share\studio.conf is never written, so the three sentinels that decide a Windows root all
     # postdate the bin\ shim dir, while install.ps1 still migrates <root>\.venv. So also accept
-    # the marker inside the legacy venv dir, and either venv dir carrying Scripts\unsloth.exe.
+    # the marker inside the legacy venv dir, and -ManagedDefaultRoot only, what is inside a venv.
     function _IsStudioRoot {
-        param([string]$Path)
+        param([string]$Path, [switch]$ManagedDefaultRoot)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
         if (Test-Path -LiteralPath (Join-Path $Path "share\studio.conf") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "unsloth_studio\.unsloth-studio-owned") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path ".venv\.unsloth-studio-owned") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "bin\unsloth.exe") -PathType Leaf) { return $true }
         if (_IsUnslothCmdShim (Join-Path $Path "bin\unsloth.cmd")) { return $true }
+        # Everything below is INSIDE a venv, and pip puts it in any venv the unsloth wheel is
+        # installed into, so it identifies the wheel and not the owner of the root. It is proof
+        # only at the managed root, which is also the only root that can hold a pre-marker
+        # layout: install.ps1:4453 gates the legacy migration on $studioUsesLegacyLayout, so a
+        # custom root never had a <root>\.venv of ours. Trusting it everywhere would let a
+        # UNSLOTH_STUDIO_HOME left pointing at a project delete the project.
+        if (-not $ManagedDefaultRoot) { return $false }
         foreach ($venv in @("unsloth_studio", ".venv")) {
             if (Test-Path -LiteralPath (Join-Path $Path "$venv\Scripts\unsloth.exe") -PathType Leaf) { return $true }
+            # Antivirus quarantines that generated .exe out of a venv that still runs perfectly
+            # (install.ps1:6412 installs and repairs through exactly that condition), and a
+            # pre-marker root has no other sentinel left, so fall back to the package it came from.
+            foreach ($pkg in @("unsloth_cli", "unsloth")) {
+                if (Test-Path -LiteralPath (Join-Path $Path "$venv\Lib\site-packages\$pkg") -PathType Container) { return $true }
+            }
         }
         return $false
     }
@@ -876,7 +889,7 @@ Environment:
     # same ownership sentinels as a custom root: "studio" under ~/.unsloth is an ordinary thing to
     # create by hand, and an ungated bare run takes it and then ~/.unsloth with the prune below.
     if ($defaultStudioHome -and (Test-Path -LiteralPath $defaultStudioHome) -and
-        -not (_IsStudioRoot $defaultStudioHome)) {
+        -not (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot)) {
         _Substep "refusing to remove non-Unsloth path: $defaultStudioHome" "Yellow"
     } elseif ($defaultStudioHome) {
         _RemoveRootRecordingDb $defaultStudioHome

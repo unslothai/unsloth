@@ -57,9 +57,10 @@ on:
       - 'scripts/install*.ps1'
       - 'scripts/uninstall*.sh'
       - 'scripts/uninstall*.ps1'
-      # These two assert over scripts/uninstall.ps1 and were wired into no workflow at all.
+      # These assert over the uninstallers and were wired into no workflow at all.
       - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
       - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
+      - 'tests/studio/test_uninstall_legacy_layout_gate.ps1'
       - 'tests/sh/test_uninstall_legacy_layout_gate.sh'
       - 'scripts/build_whisper_cpp.sh'
       - 'studio/setup*.bat'
@@ -128,9 +129,10 @@ on:
       - 'scripts/install*.ps1'
       - 'scripts/uninstall*.sh'
       - 'scripts/uninstall*.ps1'
-      # These two assert over scripts/uninstall.ps1 and were wired into no workflow at all.
+      # These assert over the uninstallers and were wired into no workflow at all.
       - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
       - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
+      - 'tests/studio/test_uninstall_legacy_layout_gate.ps1'
       - 'tests/sh/test_uninstall_legacy_layout_gate.sh'
       - 'scripts/build_whisper_cpp.sh'
       - 'studio/setup*.bat'
@@ -295,6 +297,11 @@ jobs:
       - name: Uninstaller reparse stop-root tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_uninstall_reparse_stop_roots.ps1
+      # The Windows half of the ownership gate, twin of the POSIX run below. It lifts the two
+      # helpers out by AST and builds its fixtures under TEMP, so it runs on every row.
+      - name: Uninstaller ownership gate tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_uninstall_legacy_layout_gate.ps1
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh
