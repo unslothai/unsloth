@@ -29,7 +29,11 @@ if str(_BACKEND) not in sys.path:
 _STUBBED: list[str] = []
 
 
-def _stub_if_missing(name, attrs = (), named_spec = False):
+def _stub_if_missing(
+    name,
+    attrs = (),
+    named_spec = False,
+):
     """Register a stub for a dep this job does not install. A real install is left alone.
 
     Same helper and reason as test_vision_client_tools.py: core.inference.inference imports
