@@ -4169,7 +4169,7 @@ class TestThePyPIProbeHonoursUvConfiguration:
             (tmp_path / name).write_text(body, encoding = "utf-8")
         setenv = "\n".join(f"$env:{k} = '{v}'" for k, v in env.items())
         script = _script(
-            "foreach ($n in 'UV_OFFLINE','PIP_NO_INDEX','UV_DEFAULT_INDEX','UV_INDEX_URL','PIP_INDEX_URL','UV_INDEX','UV_EXTRA_INDEX_URL','PIP_EXTRA_INDEX_URL','UV_NO_CONFIG','UV_CONFIG_FILE') { Remove-Item Env:$n -ErrorAction SilentlyContinue }",
+            "foreach ($n in 'UV_OFFLINE','UV_NO_INDEX','PIP_NO_INDEX','UV_DEFAULT_INDEX','UV_INDEX_URL','PIP_INDEX_URL','UV_INDEX','UV_EXTRA_INDEX_URL','PIP_EXTRA_INDEX_URL','UV_NO_CONFIG','UV_CONFIG_FILE') { Remove-Item Env:$n -ErrorAction SilentlyContinue }",
             f"$env:APPDATA = '{tmp_path / 'appdata'}'",
             f"$env:ProgramData = '{tmp_path / 'programdata'}'",
             f"Set-Location -LiteralPath '{tmp_path / 'proj'}'",
@@ -4291,9 +4291,30 @@ class TestThePyPIProbeHonoursUvConfiguration:
             ),
             (
                 {},
-                {"PIP_INDEX_URL": "https://user:token@pypi.org/simple"},
+                {"UV_INDEX_URL": "https://user:token@pypi.org/simple"},
                 "True",
                 "credentials do not hide the host",
+            ),
+            (
+                {},
+                {"PIP_INDEX_URL": "https://pypi.corp.test/simple"},
+                "True",
+                "pip's variable: uv, which resolves here, never reads it",
+            ),
+            (
+                {},
+                {
+                    "UV_INDEX_URL": "https://pypi.corp.test/simple",
+                    "PIP_EXTRA_INDEX_URL": "https://pypi.org/simple",
+                },
+                "False",
+                "a pip extra does not put PyPI back for uv",
+            ),
+            (
+                {},
+                {"UV_NO_INDEX": "1"},
+                "False",
+                "uv's no-index",
             ),
             (
                 {},
@@ -5367,6 +5388,7 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
         files,
         env,
         source = None,
+        resolver = "uv",
     ):
         src = INSTALL_SRC if source is None else source
         for name, body in files.items():
@@ -5385,7 +5407,7 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
             _function_source(src, "Read-WoaUvTomlIndexKeys"),
             _function_source(src, "Get-WoaUvConfigIndexPolicy"),
             _function_source(src, "Get-WoaDependencyIndexArgs"),
-            "Write-Output ('[' + ((Get-WoaDependencyIndexArgs) -join '|') + ']')",
+            f"Write-Output ('[' + ((Get-WoaDependencyIndexArgs -Resolver '{resolver}') -join '|') + ']')",
         )
         return _ps_last(script)[1:-1]
 
@@ -5398,7 +5420,7 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
         [
             ({}, {}, PYPI, "nothing configured: public PyPI"),
             ({}, {"UV_NO_INDEX": "1"}, "", "uv no-index: the wheelhouse is the whole source"),
-            ({}, {"PIP_NO_INDEX": "true"}, "", "pip's spelling"),
+            ({}, {"PIP_NO_INDEX": "true"}, PYPI, "pip's variable, which uv never reads"),
             ({}, {"UV_NO_INDEX": "0"}, PYPI, "a false flag is not set"),
             (
                 {},
@@ -5412,7 +5434,21 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
                 CORP.rstrip("/") + "/",
                 "the older spelling, kept as written",
             ),
-            ({}, {"PIP_INDEX_URL": "https://pypi.corp.test/simple"}, CORP, "pip's default"),
+            (
+                {},
+                {"PIP_INDEX_URL": "https://pypi.corp.test/simple"},
+                PYPI,
+                "pip's default is not uv's",
+            ),
+            (
+                {},
+                {
+                    "UV_INDEX_URL": "https://pypi.corp.test/simple",
+                    "PIP_EXTRA_INDEX_URL": "https://pypi.org/simple",
+                },
+                CORP,
+                "a pip extra does not put PyPI back for uv",
+            ),
             (
                 {},
                 {
@@ -5485,12 +5521,52 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
         assert self._args(tmp_path, files, env) == expected, why
 
     @requires_pwsh
+    @pytest.mark.parametrize(
+        "files, env, expected, why",
+        [
+            ({}, {}, PYPI, "nothing configured: public PyPI"),
+            ({}, {"PIP_NO_INDEX": "1"}, "", "pip no-index"),
+            (
+                {},
+                {"PIP_INDEX_URL": "https://pypi.corp.test/simple"},
+                CORP,
+                "pip's default replaces PyPI",
+            ),
+            (
+                {},
+                {
+                    "PIP_INDEX_URL": "https://pypi.corp.test/simple",
+                    "PIP_EXTRA_INDEX_URL": "https://pypi.org/simple",
+                },
+                CORP + "|" + PYPI,
+                "pip's extra",
+            ),
+            ({}, {"UV_NO_INDEX": "1"}, PYPI, "uv's variable, which pip never reads"),
+            (
+                {},
+                {"UV_INDEX_URL": "https://pypi.corp.test/simple"},
+                PYPI,
+                "uv's default is not pip's",
+            ),
+            (
+                {"proj/uv.toml": "no-index = true\n"},
+                {},
+                PYPI,
+                "uv's configuration files are not pip's",
+            ),
+        ],
+    )
+    def test_the_pip_fallback_reads_pips_policy(self, tmp_path, files, env, expected, why):
+        assert self._args(tmp_path, files, env, resolver = "pip") == expected, why
+
+    @requires_pwsh
     def test_setup_answers_the_same(self, tmp_path):
         files = {
             "proj/uv.toml": 'default-index = "https://pypi.corp.test/simple"\nextra-index-url = ["https://pypi.org/simple"]\n'
         }
         assert self._args(tmp_path, files, {}, SETUP_SRC) == self.CORP + "|" + self.PYPI
         assert self._args(tmp_path, {}, {"UV_NO_INDEX": "1"}, SETUP_SRC) == ""
+        assert self._args(tmp_path, {}, {"PIP_NO_INDEX": "1"}, SETUP_SRC, resolver = "pip") == ""
 
     @pytest.mark.parametrize(
         "name",
@@ -5510,8 +5586,11 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
         trio = INSTALL_SRC[INSTALL_SRC.index("# NVIDIA's index publishes only the trio") :][:900]
         assert "$_woaDependencyIndexArgs = @(Get-WoaDependencyIndexArgs)" in trio
         assert '"--extra-index-url", "https://pypi.org/simple"' not in trio
-        shared = SETUP_SRC[SETUP_SRC.index("$WinArm64IndexArgs = if ($WinArm64Venv) {") :][:400]
-        assert "@(Get-WoaDependencyIndexArgs)" in shared
+        shared = SETUP_SRC[SETUP_SRC.index("$WinArm64IndexArgs = if ($WinArm64Venv) {") :][:500]
+        assert '$_woaResolver = if ($UseUv) { "uv" } else { "pip" }' in shared, (
+            "the resolver that runs the install"
+        )
+        assert "@(Get-WoaDependencyIndexArgs -Resolver $_woaResolver)" in shared
         assert '"--extra-index-url", "https://pypi.org/simple"' not in shared
 
 

@@ -4035,21 +4035,27 @@ function Get-WoaUvConfigIndexPolicy {
 }
 
 function Get-WoaDependencyIndexArgs {
-    foreach ($name in @("UV_NO_INDEX", "PIP_NO_INDEX")) {
+    param([string]$Resolver = "uv")
+    $pip = ($Resolver -eq "pip")
+    $noIndexNames = if ($pip) { @("PIP_NO_INDEX") } else { @("UV_NO_INDEX") }
+    $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
+    $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
+    foreach ($name in $noIndexNames) {
         $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
         if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return @() }
     }
     $default = $null
-    foreach ($name in @("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL")) {
+    foreach ($name in $defaultNames) {
         $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
         if ($url -and $url.Trim()) { $default = $url.Trim(); break }
     }
     $extras = @()
-    foreach ($name in @("UV_INDEX", "UV_EXTRA_INDEX_URL", "PIP_EXTRA_INDEX_URL")) {
+    foreach ($name in $extraNames) {
         $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
         foreach ($u in ($list -split '\s+' | Where-Object { $_ })) { $extras += $u }
     }
-    if (-not $default -or -not $extras) {
+    # uv's configuration files are uv's; pip does not read them.
+    if (-not $pip -and (-not $default -or -not $extras)) {
         $cfg = Get-WoaUvConfigIndexPolicy
         if ($cfg.NoIndex) { return @() }
         if (-not $default -and $cfg.DefaultIndex) { $default = $cfg.DefaultIndex }
@@ -5663,7 +5669,8 @@ $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "tri
 # needs the extra index too.
 $WinArm64IndexArgs = if ($WinArm64Venv) {
     # The dependency index follows the caller's resolver policy, as install.ps1's trio step does.
-    $_woaIndexArgs = @("--index-strategy", "unsafe-best-match") + @(Get-WoaDependencyIndexArgs)
+    $_woaResolver = if ($UseUv) { "uv" } else { "pip" }
+    $_woaIndexArgs = @("--index-strategy", "unsafe-best-match") + @(Get-WoaDependencyIndexArgs -Resolver $_woaResolver)
     # install.ps1 read this off the wheel it selected; the URL spelling is only a second signal.
     if (($WinArm64HandoffApplies -and $env:UNSLOTH_WOA_TORCH_PRERELEASE -eq "1") -or
         ($WinArm64EffectiveTorchIndexUrl -match 'nightly')) {

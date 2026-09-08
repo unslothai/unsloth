@@ -6000,23 +6000,32 @@ def _public_pypi_is_reachable() -> bool:
     the resolve will look. Offline, or pointed at an exclusive corporate index, those wheels
     are neither cached nor served: unblocking librosa there drops the skip and then fails the
     whole extras pass on an unavailable numba, which is exactly what the skip prevents.
-    UV_INDEX_URL / UV_DEFAULT_INDEX REPLACE the default index; --extra-index-url adds to it,
-    so a configured extra leaves PyPI in play and is not consulted here. Environment outranks
-    uv's configuration files, so an index set there decides on its own; otherwise the files
-    do. Doubt resolves to False: that answer keeps the skip, the other fails the extras pass.
+
+    Judged for the resolver that runs the pass. uv reads UV_* and its configuration files and
+    ignores PIP_*; pip reads PIP_* and ignores UV_*. Mixing the two reported PyPI reachable
+    from a PIP_EXTRA_INDEX_URL that uv, the resolver in use, never consults. A default index
+    REPLACES PyPI; an extra index adds to it, so PyPI named there is still consulted.
+    Environment outranks uv's configuration files. Doubt resolves to False: that answer keeps
+    the skip, the other fails the extras pass.
     """
-    if _uv_is_offline():
+    if USE_UV:
+        return _uv_reaches_public_pypi()
+    return _pip_reaches_public_pypi()
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() not in ("", "0", "false")
+
+
+def _uv_reaches_public_pypi() -> bool:
+    if _uv_is_offline() or _env_flag("UV_NO_INDEX"):
         return False
-    if os.environ.get("PIP_NO_INDEX", "").strip().lower() not in ("", "0", "false"):
-        return False
-    # An extra index adds to the default rather than replacing it (uv: UV_INDEX, UV_EXTRA_INDEX_URL;
-    # pip: PIP_EXTRA_INDEX_URL), so PyPI named there is still consulted.
     extra_is_pypi = any(
         _url_is_public_pypi(u)
-        for var in ("UV_INDEX", "UV_EXTRA_INDEX_URL", "PIP_EXTRA_INDEX_URL")
+        for var in ("UV_INDEX", "UV_EXTRA_INDEX_URL")
         for u in os.environ.get(var, "").split()
     )
-    for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL"):
+    for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL"):
         value = os.environ.get(var, "").strip()
         if value:
             return extra_is_pypi or _url_is_public_pypi(value)
@@ -6029,6 +6038,19 @@ def _public_pypi_is_reachable() -> bool:
     default = policy["default_index"]
     if isinstance(default, str) and not _url_is_public_pypi(default):
         return extra_is_pypi
+    return True
+
+
+def _pip_reaches_public_pypi() -> bool:
+    """pip's environment only: its configuration files are not read, and doubt keeps the skip."""
+    if _env_flag("PIP_NO_INDEX"):
+        return False
+    extra_is_pypi = any(
+        _url_is_public_pypi(u) for u in os.environ.get("PIP_EXTRA_INDEX_URL", "").split()
+    )
+    value = os.environ.get("PIP_INDEX_URL", "").strip()
+    if value:
+        return extra_is_pypi or _url_is_public_pypi(value)
     return True
 
 

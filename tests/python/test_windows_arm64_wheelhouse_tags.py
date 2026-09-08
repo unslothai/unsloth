@@ -869,12 +869,18 @@ class TestThePublicIndexClaimNeedsTheIndex:
     def _native(self, ips, monkeypatch):
         monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
         monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
+        # uv runs the pass; the pip rows below switch it off explicitly.
+        monkeypatch.setattr(ips, "USE_UV", True)
         for var in (
             "UV_OFFLINE",
+            "UV_NO_INDEX",
             "UV_DEFAULT_INDEX",
             "UV_INDEX_URL",
+            "UV_INDEX",
+            "UV_EXTRA_INDEX_URL",
             "PIP_INDEX_URL",
             "PIP_NO_INDEX",
+            "PIP_EXTRA_INDEX_URL",
         ):
             monkeypatch.delenv(var, raising = False)
 
@@ -882,18 +888,48 @@ class TestThePublicIndexClaimNeedsTheIndex:
         assert ips._public_index_win_arm64_versions("numba") == {"0.67.0"}
 
     @pytest.mark.parametrize(
-        "var, value",
+        "use_uv, var, value",
         [
-            ("UV_OFFLINE", "1"),
-            ("UV_DEFAULT_INDEX", "https://pypi.corp.test/simple"),
-            ("UV_INDEX_URL", "https://pypi.corp.test/simple"),
-            ("PIP_INDEX_URL", "https://pypi.corp.test/simple"),
-            ("PIP_NO_INDEX", "1"),
+            (True, "UV_OFFLINE", "1"),
+            (True, "UV_NO_INDEX", "1"),
+            (True, "UV_DEFAULT_INDEX", "https://pypi.corp.test/simple"),
+            (True, "UV_INDEX_URL", "https://pypi.corp.test/simple"),
+            (False, "PIP_INDEX_URL", "https://pypi.corp.test/simple"),
+            (False, "PIP_NO_INDEX", "1"),
         ],
     )
-    def test_an_unreachable_pypi_claims_nothing(self, ips, monkeypatch, var, value):
+    def test_an_unreachable_pypi_claims_nothing(self, ips, monkeypatch, use_uv, var, value):
+        monkeypatch.setattr(ips, "USE_UV", use_uv)
         monkeypatch.setenv(var, value)
         assert ips._public_index_win_arm64_versions("numba") == set()
+
+    @pytest.mark.parametrize(
+        "use_uv, var, value",
+        [
+            (True, "PIP_INDEX_URL", "https://pypi.corp.test/simple"),
+            (True, "PIP_NO_INDEX", "1"),
+            (False, "UV_INDEX_URL", "https://pypi.corp.test/simple"),
+            (False, "UV_NO_INDEX", "1"),
+            (False, "UV_OFFLINE", "1"),
+        ],
+    )
+    def test_the_other_resolvers_variables_do_not_move_it(
+        self, ips, monkeypatch, use_uv, var, value
+    ):
+        """uv never reads PIP_*, pip never reads UV_*: the pass is judged for the one that runs."""
+        monkeypatch.setattr(ips, "USE_UV", use_uv)
+        monkeypatch.setenv(var, value)
+        assert ips._public_index_win_arm64_versions("numba") == {"0.67.0"}
+
+    def test_a_pip_extra_does_not_put_pypi_back_for_uv(self, ips, monkeypatch):
+        """The cross-resolver case: an exclusive uv index with PyPI named only for pip."""
+        monkeypatch.setenv("UV_INDEX_URL", "https://pypi.corp.test/simple")
+        monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "https://pypi.org/simple")
+        assert ips._public_index_win_arm64_versions("numba") == set()
+        monkeypatch.setattr(ips, "USE_UV", False)
+        assert ips._public_index_win_arm64_versions("numba") == {"0.67.0"}, (
+            "pip: its own default is PyPI"
+        )
 
     def test_a_pypi_mirror_url_still_counts(self, ips, monkeypatch):
         """Replacing the default index with PyPI itself changes nothing about availability."""
@@ -920,9 +956,12 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
     does not carry."""
 
     @pytest.fixture(autouse = True)
-    def _clean(self, monkeypatch, tmp_path):
+    def _clean(self, ips, monkeypatch, tmp_path):
+        # uv's configuration files only matter to uv, the resolver that runs the pass here.
+        monkeypatch.setattr(ips, "USE_UV", True)
         for var in (
             "UV_OFFLINE",
+            "UV_NO_INDEX",
             "PIP_NO_INDEX",
             "UV_DEFAULT_INDEX",
             "UV_INDEX_URL",
@@ -1099,7 +1138,15 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
                     "PIP_EXTRA_INDEX_URL": "https://pypi.org/simple",
                 },
                 True,
-                "pip's spelling",
+                "pip's variables: uv never reads them, so its default PyPI stands",
+            ),
+            (
+                {
+                    "UV_INDEX_URL": "https://pypi.corp.test/simple",
+                    "PIP_EXTRA_INDEX_URL": "https://pypi.org/simple",
+                },
+                False,
+                "a pip extra does not put PyPI back for uv",
             ),
             (
                 {

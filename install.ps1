@@ -694,21 +694,23 @@ function Install-UnslothStudio {
         return ($u.Host.ToLowerInvariant() -eq "pypi.org")
     }
 
+    # This script resolves with uv, so uv's policy is the one that counts: UV_* and its configuration
+    # files. pip's PIP_* variables are pip's alone; uv never reads them, so they say nothing here.
     function Test-WoaResolveReachesPyPI {
-        foreach ($name in @("UV_OFFLINE", "PIP_NO_INDEX")) {
+        foreach ($name in @("UV_OFFLINE", "UV_NO_INDEX")) {
             $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
             if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $false }
         }
-        # An extra index adds to the default rather than replacing it (uv: UV_INDEX,
-        # UV_EXTRA_INDEX_URL; pip: PIP_EXTRA_INDEX_URL), so PyPI named there is still consulted.
+        # An extra index adds to the default rather than replacing it (UV_INDEX, UV_EXTRA_INDEX_URL),
+        # so PyPI named there is still consulted.
         $extraIsPyPI = $false
-        foreach ($name in @("UV_INDEX", "UV_EXTRA_INDEX_URL", "PIP_EXTRA_INDEX_URL")) {
+        foreach ($name in @("UV_INDEX", "UV_EXTRA_INDEX_URL")) {
             $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
             foreach ($u in ($list -split '\s+' | Where-Object { $_ })) {
                 if (Test-WoaUrlIsPublicPyPI $u) { $extraIsPyPI = $true }
             }
         }
-        foreach ($name in @("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL")) {
+        foreach ($name in @("UV_DEFAULT_INDEX", "UV_INDEX_URL")) {
             $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
             if ($url -and ($url.Trim())) { return ($extraIsPyPI -or (Test-WoaUrlIsPublicPyPI $url)) }
         }
@@ -722,24 +724,31 @@ function Install-UnslothStudio {
 
     # The index beside the CUDA one for torch's shared dependencies. Invoke-InstallCommand clears the
     # inherited index settings whenever --default-index is passed, so the caller's policy is restated
-    # here: the default and extra indexes it names (env, then uv config), public PyPI when it names
-    # none, and no index at all under no-index, where the find-links wheelhouse is the whole source.
+    # here, for the resolver that runs the install: uv reads UV_* and its configuration files, pip reads
+    # PIP_* alone. The default and extra indexes it names, public PyPI when it names none, and no index
+    # at all under no-index, where the find-links wheelhouse is the whole source.
     function Get-WoaDependencyIndexArgs {
-        foreach ($name in @("UV_NO_INDEX", "PIP_NO_INDEX")) {
+        param([string]$Resolver = "uv")
+        $pip = ($Resolver -eq "pip")
+        $noIndexNames = if ($pip) { @("PIP_NO_INDEX") } else { @("UV_NO_INDEX") }
+        $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
+        $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
+        foreach ($name in $noIndexNames) {
             $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
             if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return @() }
         }
         $default = $null
-        foreach ($name in @("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL")) {
+        foreach ($name in $defaultNames) {
             $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
             if ($url -and $url.Trim()) { $default = $url.Trim(); break }
         }
         $extras = @()
-        foreach ($name in @("UV_INDEX", "UV_EXTRA_INDEX_URL", "PIP_EXTRA_INDEX_URL")) {
+        foreach ($name in $extraNames) {
             $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
             foreach ($u in ($list -split '\s+' | Where-Object { $_ })) { $extras += $u }
         }
-        if (-not $default -or -not $extras) {
+        # uv's configuration files are uv's; pip does not read them.
+        if (-not $pip -and (-not $default -or -not $extras)) {
             $cfg = Get-WoaUvConfigIndexPolicy
             if ($cfg.NoIndex) { return @() }
             if (-not $default -and $cfg.DefaultIndex) { $default = $cfg.DefaultIndex }

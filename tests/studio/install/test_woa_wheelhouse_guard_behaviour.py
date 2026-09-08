@@ -146,14 +146,23 @@ def test_a_wheel_is_usable_only_where_it_actually_imports(wheel, py_tag, abi_tag
         # Bug 3: these REPLACE the default index, so PyPI is not consulted at all.
         ({"UV_DEFAULT_INDEX": "https://corp.example.com/simple"}, False),
         ({"UV_INDEX_URL": "https://corp.example.com/simple"}, False),
-        ({"PIP_INDEX_URL": "https://corp.example.com/simple"}, False),
+        # install.ps1 resolves with uv, which never reads pip's variables.
+        ({"PIP_INDEX_URL": "https://corp.example.com/simple"}, True),
+        ({"PIP_NO_INDEX": "1"}, True),
+        (
+            {
+                "UV_INDEX_URL": "https://corp.example.com/simple",
+                "PIP_EXTRA_INDEX_URL": "https://pypi.org/simple",
+            },
+            False,
+        ),
         # Pointed at PyPI explicitly is still PyPI.
         ({"UV_DEFAULT_INDEX": "https://pypi.org/simple"}, True),
         ({"UV_OFFLINE": "1"}, False),
-        ({"PIP_NO_INDEX": "1"}, False),
+        ({"UV_NO_INDEX": "1"}, False),
         # An unset-looking value must not read as "offline".
         ({"UV_OFFLINE": "0"}, True),
-        ({"PIP_NO_INDEX": "false"}, True),
+        ({"UV_NO_INDEX": "false"}, True),
     ],
 )
 def test_pypi_counts_only_when_the_resolve_would_reach_it(env, reaches):
