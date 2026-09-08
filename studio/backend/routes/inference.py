@@ -20038,10 +20038,13 @@ async def _proxy_to_external_provider(
                 chat_messages = _append_to_codex_instructions(
                     chat_messages, _codex_full_access_nudge
                 )
+        # Ollama answers a request-level system message as a full replacement of the Modelfile
+        # SYSTEM, so with no system prompt of the user's the date must not invent one (#10436).
         chat_messages = _prepend_current_date_to_messages(
             chat_messages,
             request,
             include_api_key = bool(studio_tool_payloads),
+            user_turn_fallback = provider_type == "ollama",
         )
         cancel_event = threading.Event()
         cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
