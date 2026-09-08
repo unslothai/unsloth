@@ -235,11 +235,16 @@ test("every RAG response path reports availability", async () => {
     /noteRagResponse\(response\.status, body\)/,
     "the SSE endpoints bypass ragRequest too",
   );
+  assert.match(
+    functionBody(src, "boundedEventStream"),
+    /openEventStream\(/,
+    "the budgeted stream opens without the availability check",
+  );
   for (const generator of ["streamJobEvents", "streamFolderSyncJobEvents"]) {
     assert.match(
       functionBody(src, generator),
-      /openEventStream\(/,
-      `${generator} opens its stream without the availability check`,
+      /boundedEventStream</,
+      `${generator} opens its stream outside the budgeted opener`,
     );
   }
 });
