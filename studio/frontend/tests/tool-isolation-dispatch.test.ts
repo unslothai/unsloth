@@ -218,6 +218,7 @@ for (const scenario of [
         revoke();
       },
       fetch: async (url: string, init: RequestInit) => {
+        assert.equal(new Headers(init.headers).get("X-Unsloth-Events"), "1");
         wire.push({ url, payload: JSON.parse(String(init.body)) });
         if (scenario.includes("transport") && wire.length === 1)
           throw new TypeError("transport");

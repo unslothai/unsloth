@@ -566,6 +566,11 @@ jobs:
                   headers = {
                       "Authorization": f"Bearer {KEY}",
                       "Content-Type": "application/json",
+                      # A server-side tool leaves no OpenAI-spec trace, so the
+                      # tool_start/tool_end envelopes _tool_invoked looks for are
+                      # Unsloth control frames, sent only to a caller that asks.
+                      # This helper exists to prove the tool path ran, so it asks.
+                      "X-Unsloth-Events": "1",
                   },
               )
               for attempt in range(retries + 1):

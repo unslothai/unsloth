@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import forge from "node-forge";
 
 import type { ProviderConfig } from "../src/features/chat/api/providers-api.ts";
 
@@ -12,6 +13,7 @@ import {
   installLocalStorageFake,
   registerStoreStubResolver,
 } from "./helpers/kit.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 registerStoreStubResolver();
 
@@ -754,4 +756,121 @@ test("credential gate follows authentication session transitions", () => {
     /hasAuthToken\(\) && getAuthSessionEpoch\(\) === sessionEpoch/,
   );
 
+});
+
+
+// ── API key transport envelope ──────────────────────────────────────
+//
+// encryptProviderApiKey wraps a per-request AES key under RSA rather than encrypting the API
+// key itself, so key length stops being bounded by the modulus: RSA-2048/OAEP-SHA256 caps a
+// directly encrypted key at 190 bytes, and providers issue longer ones.
+
+type EncryptionModule = {
+  encryptProviderApiKey: (plaintextApiKey: string, forceRefresh?: boolean) => Promise<string>;
+  clearProviderPublicKeyCache: () => void;
+};
+
+// Spelled out rather than imported: this is the contract decrypt_api_key reads, so taking it
+// from the module under test would let both sides drift together.
+const ENVELOPE_AAD = "unsloth-studio-provider-key-v1";
+const TAG_BYTES = 16;
+// The backend decodes with validate=True, which forge's decode64 does not model.
+const STRICT_BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+const OAEP = { md: forge.md.sha256.create(), mgf1: { md: forge.md.sha256.create() } };
+
+const keypair = forge.pki.rsa.generateKeyPair({ bits: 2048, e: 0x10001 });
+const publicKeyPem = forge.pki.publicKeyToPem(keypair.publicKey);
+
+function encryptionHarness() {
+  let fetches = 0;
+  const module = loadWithStubs<EncryptionModule>(
+    new URL("../src/features/chat/api/providers-api.ts", import.meta.url),
+    {
+      // transpileModule runs without esModuleInterop, so a default import reads .default
+      "node-forge": { default: forge },
+      "@/features/auth/api": {
+        authFetch: async () => {
+          fetches += 1;
+          return { ok: true, status: 200, json: async () => ({ public_key: publicKeyPem }) };
+        },
+      },
+      "@/lib/format-fastapi-error": { formatFastApiDetail: () => null },
+    },
+  );
+  return { module, publicKeyFetches: () => fetches };
+}
+
+/** The backend half of the envelope, so a round-trip proves the wire format and not itself. */
+function openEnvelope(envelope: string): { apiKey: string; aesKey: string } {
+  const parts = envelope.split(".");
+  assert.equal(parts.length, 4);
+  assert.equal(parts[0], "v1");
+  for (const part of parts.slice(1)) {
+    assert.match(part, STRICT_BASE64);
+  }
+  const [wrappedKey, nonce, sealed] = parts.slice(1).map((part) => forge.util.decode64(part));
+  const aesKey = keypair.privateKey.decrypt(wrappedKey, "RSA-OAEP", OAEP);
+  assert.equal(aesKey.length, 32);
+  assert.equal(nonce.length, 12);
+
+  const decipher = forge.cipher.createDecipher("AES-GCM", aesKey);
+  decipher.start({
+    iv: nonce,
+    additionalData: ENVELOPE_AAD,
+    tagLength: 128,
+    tag: forge.util.createBuffer(sealed.slice(-TAG_BYTES)),
+  });
+  decipher.update(forge.util.createBuffer(sealed.slice(0, -TAG_BYTES)));
+  assert.ok(decipher.finish(), "AES-GCM tag did not verify");
+  return { apiKey: forge.util.decodeUtf8(decipher.output.getBytes()), aesKey };
+}
+
+test("api keys round-trip at every length, including past the old RSA ceiling", async () => {
+  const { module } = encryptionHarness();
+  // 190 is the last length RSA-OAEP-SHA256 could carry directly; 238 is the reported OVH key.
+  for (const length of [1, 189, 190, 191, 238, 4096]) {
+    const apiKey = `k${"x".repeat(length - 1)}`;
+    assert.equal(openEnvelope(await module.encryptProviderApiKey(apiKey)).apiKey, apiKey);
+  }
+});
+
+test("a non-ascii api key survives the round-trip", async () => {
+  const { module } = encryptionHarness();
+  const apiKey = "sk-café-日本語-🔑-Ünïcödé";
+  assert.equal(openEnvelope(await module.encryptProviderApiKey(apiKey)).apiKey, apiKey);
+});
+
+test("each envelope carries fresh key material", async () => {
+  const { module } = encryptionHarness();
+  const [first, second] = await Promise.all([
+    module.encryptProviderApiKey("sk-same"),
+    module.encryptProviderApiKey("sk-same"),
+  ]);
+  assert.notEqual(first.split(".")[2], second.split(".")[2], "nonce was reused");
+  // RSA-OAEP is randomized, so the wrapped-key part differs even for one constant AES key.
+  const opened = [openEnvelope(first), openEnvelope(second)];
+  assert.notEqual(opened[0].aesKey, opened[1].aesKey, "AES content key was reused");
+  for (const { apiKey } of opened) {
+    assert.equal(apiKey, "sk-same");
+  }
+});
+
+test("a tampered envelope fails the tag instead of yielding plaintext", async () => {
+  const { module } = encryptionHarness();
+  const parts = (await module.encryptProviderApiKey("sk-tamper")).split(".");
+  const sealed = forge.util.decode64(parts[3]);
+  parts[3] = forge.util.encode64(
+    String.fromCharCode(sealed.charCodeAt(0) ^ 0x01) + sealed.slice(1),
+  );
+  assert.throws(() => openEnvelope(parts.join(".")), /tag did not verify/);
+});
+
+test("the public key is fetched once and reused until the cache is cleared", async () => {
+  const { module, publicKeyFetches } = encryptionHarness();
+  await module.encryptProviderApiKey("sk-a");
+  await module.encryptProviderApiKey("sk-b");
+  assert.equal(publicKeyFetches(), 1);
+  module.clearProviderPublicKeyCache();
+  await module.encryptProviderApiKey("sk-c");
+  assert.equal(publicKeyFetches(), 2);
 });

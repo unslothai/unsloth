@@ -1519,7 +1519,12 @@ export async function* streamChatCompletions(
     "/v1/chat/completions",
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        // Opt into Unsloth's UI control frames (tool cards, statuses, reasoning timing). The
+        // endpoint defaults to a clean OpenAI stream for external clients.
+        "X-Unsloth-Events": "1",
+      },
       body: JSON.stringify(payload),
       signal,
     },
