@@ -378,6 +378,11 @@ def _png_data_url(data: str) -> str | None:
         # JPEG decodes straight to a smaller raster; a no-op for every other format.
         image.draft("RGB", (MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
         image.load()
+        # A camera JPEG carries its display orientation in EXIF; re-encoded as PNG
+        # without applying it, the model was shown the picture sideways.
+        from PIL import ImageOps
+
+        image = ImageOps.exif_transpose(image) or image
         if max(image.size) > MAX_IMAGE_EDGE:
             image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
@@ -429,13 +434,26 @@ def placeholder_turn(
     }
 
 
-def _relabelled(kept: list, part_type: str, original: int) -> list:
+def _relabelled(
+    kept: list,
+    part_type: str,
+    original: int,
+    owned: "set | None" = None,
+) -> list:
     """The turn's note rewritten for what actually survived a partial trim.
 
     The label exists to tell the model which of the returned images it was really
     shown, so a turn left holding two while still saying it carries four defeats it.
+    *owned* names the promoted parts; the caller's own attachments in the same turn
+    are not the tool's and are not counted into its note.
     """
-    remaining = sum(1 for part in kept if isinstance(part, dict) and part.get("type") == part_type)
+    remaining = sum(
+        1
+        for part in kept
+        if isinstance(part, dict)
+        and part.get("type") == part_type
+        and (owned is None or id(part) in owned)
+    )
     out = []
     for part in kept:
         if (
@@ -516,8 +534,15 @@ def _drop_oldest_image_parts(
         content = message.get("content")
         if not isinstance(content, list):
             continue
+        # Only what this trim may touch: with caller attachments beside promoted
+        # parts, counting every picture told the model the attachments came from the
+        # tool -- five attachments plus a four-image result cut to three read (8 of 9).
         original = sum(
-            1 for part in content if isinstance(part, dict) and part.get("type") == part_type
+            1
+            for part in content
+            if isinstance(part, dict)
+            and part.get("type") == part_type
+            and (owned is None or id(part) in owned)
         )
         kept = []
         for part in content:
@@ -544,7 +569,7 @@ def _drop_oldest_image_parts(
         else:
             conversation[index] = {
                 **message,
-                "content": _relabelled(kept, part_type, original),
+                "content": _relabelled(kept, part_type, original, owned = owned),
             }
     for index in reversed(drained):
         del conversation[index]

@@ -1104,6 +1104,13 @@ function isSandboxWrapper(
   return isSandboxToolResult(result);
 }
 
+/** Exactly the live parser's wrapper: text and images, no other field. */
+export function isBareMcpImageWrapper(val: unknown): boolean {
+  if (!isMcpImageToolResult(val)) return false;
+  const keys = Object.keys(val as object).filter((key) => key !== "text" && key !== "images");
+  return keys.length === 0;
+}
+
 export function isMcpImageToolResult(val: unknown): val is McpImageToolResult {
   if (typeof val !== "object" || val === null) {
     return false;
@@ -1141,11 +1148,14 @@ function serializeToolResultPart(
     // Backend ChatMessage rejects role="tool" with empty content; a sentinel JSON round-trips it.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
   } else if (
-    // Shape alone, deliberately: the live parser builds this wrapper from any tool
-    // whose raw output ends in a valid envelope, and excluding those here dropped
-    // them into JSON.stringify below -- which replays the whole base64 array as
-    // ordinary prompt text. Provenance gates the ENVELOPE, a few lines down.
-    isMcpImageToolResult(result) ||
+    // The wrapper the live parser builds -- {text, images} and nothing else -- from an
+    // MCP result, or from any tool whose raw output ends in a valid envelope. Those
+    // are unwrapped by shape, since JSON.stringify below would replay the whole base64
+    // array as ordinary prompt text; provenance gates the ENVELOPE, a few lines down.
+    // A client tool's own structured result that merely carries text and images among
+    // OTHER fields is not that wrapper, and keeps its normal JSON serialization.
+    (isMcpImageToolResult(result) &&
+      (isMcpToolName(tc.toolName) || isBareMcpImageWrapper(result))) ||
     isSearchImagesToolResult(result) ||
     isSandboxWrapper(result, tc.toolName ?? "")
   ) {

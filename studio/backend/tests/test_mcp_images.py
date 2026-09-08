@@ -2573,3 +2573,72 @@ def test_a_replay_merged_into_the_question_still_says_where_the_pictures_came_fr
     assert question["content"][1]["text"].startswith(mcp_images.DETACHED_IMAGE_TURN_TEXT)
     assert not mcp_images.is_synthetic_image_turn(question)
     assert mcp_images.is_synthetic_image_turn(mcp_images.placeholder_turn(1, 1))
+
+
+def test_a_camera_jpeg_is_shown_the_way_up_its_exif_says():
+    """The coded raster of a portrait photo is landscape with orientation 6 in EXIF;
+    re-encoding it as PNG without the transpose showed the model a sideways picture."""
+    from PIL import Image
+
+    source = Image.new("RGB", (8, 4), (10, 120, 200))
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    buffer = io.BytesIO()
+    source.save(buffer, format = "JPEG", exif = exif.tobytes())
+    url = mcp_images._png_data_url(base64.b64encode(buffer.getvalue()).decode("ascii"))
+    assert url
+    decoded = Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1])))
+    assert decoded.size == (4, 8), decoded.size
+
+
+def test_the_content_part_extractor_never_parses_the_envelope(monkeypatch):
+    """The awaited audio and count paths strip tool envelopes on the event loop; the
+    cut at the marker gives the same text as the parsed strip without the json-load."""
+    import routes.inference as inference_route
+    from models.inference import ChatMessage
+
+    content = _envelope("what the tool said", _image())
+
+    def boom(_content):
+        raise AssertionError("parsed on the loop")
+
+    monkeypatch.setattr(inference_route, "split_mcp_images", boom)
+    _system, chat_messages, _image_b64 = inference_route._extract_content_parts(
+        [
+            ChatMessage(role = "user", content = "look"),
+            ChatMessage(role = "tool", tool_call_id = "c0", content = content),
+        ]
+    )
+    tool = next(m for m in chat_messages if m.get("role") == "tool")
+    assert tool["content"] == "what the tool said"
+
+
+def test_the_note_counts_only_the_tools_pictures_in_a_mixed_turn():
+    """Five caller attachments beside a four-picture result trimmed to three: the note
+    must read (3 of 4), not (8 of 9) -- the attachments are not the tool's."""
+    attachments = [
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,A{i}"}} for i in range(5)
+    ]
+    promoted = [
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,T{i}"}} for i in range(4)
+    ]
+    turn = {
+        "role": "user",
+        "content": [
+            *attachments,
+            *promoted,
+            {"type": "text", "text": mcp_images.IMAGE_TURN_TEXT},
+            {"type": "text", "text": "what do you see?"},
+        ],
+    }
+    conversation = [turn]
+    mcp_images._drop_oldest_image_parts(conversation, 1, "image_url", only = list(promoted))
+    parts = conversation[0]["content"]
+    assert sum(1 for p in parts if p.get("type") == "image_url") == 8
+    note = next(
+        p["text"]
+        for p in parts
+        if p.get("type") == "text" and p["text"].startswith(mcp_images.IMAGE_TURN_TEXT)
+    )
+    assert note == f"{mcp_images.IMAGE_TURN_TEXT} (3 of 4)", note
+    assert all(p in parts for p in attachments), "the attachments were not the ones dropped"

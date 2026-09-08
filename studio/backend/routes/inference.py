@@ -19958,7 +19958,11 @@ def _extract_content_parts(
         if combined_text is None:
             continue
         if msg.role == "tool" and not keep_tool_images:
-            combined_text = split_mcp_images(combined_text)[0]
+            # Cut, not parsed: the awaited audio and count paths call this on the
+            # event loop, and the exact split json-loads a permitted 12 MB envelope.
+            # The same text whenever the suffix is a real envelope; a malformed one
+            # loses its tail here, which is base64 the model must never read anyway.
+            combined_text = mcp_text_before_envelope(combined_text)
         chat_message = {"role": msg.role, "content": combined_text}
         # Carried through: promote_history reads it to decide whether an envelope
         # came from an MCP server, and dropping it here made an unnamed tool

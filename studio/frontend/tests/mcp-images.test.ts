@@ -573,3 +573,17 @@ test("a message's results are batched by replay exchange, not as one block", () 
     /localToolExchangeIndexes\(\n\s*toolParts,\n\s*\(\{ part \}\) => codexLocalToolRoundId\(getToolReplayProvenance\(part\)\),\n\s*\(\{ part \}\) => shouldFlushCompletedLocalToolPair\(part\),/,
   );
 });
+
+test("a client tool's structured result is not unwrapped as the MCP wrapper", () => {
+  // Unwrapping by shape alone reduced {text, images, ...} from a non-MCP client tool
+  // to its text, silently dropping every other field. The bare live-parser wrapper
+  // is still unwrapped, since JSON of it would replay base64 as prompt text.
+  assert.match(
+    adapter,
+    /\(isMcpImageToolResult\(result\) &&\n\s*\(isMcpToolName\(tc\.toolName\) \|\| isBareMcpImageWrapper\(result\)\)\) \|\|/,
+  );
+  assert.match(
+    adapter,
+    /export function isBareMcpImageWrapper\(val: unknown\): boolean \{\n\s*if \(!isMcpImageToolResult\(val\)\) return false;\n\s*const keys = Object\.keys\(val as object\)\.filter\(\(key\) => key !== "text" && key !== "images"\);\n\s*return keys\.length === 0;/,
+  );
+});
