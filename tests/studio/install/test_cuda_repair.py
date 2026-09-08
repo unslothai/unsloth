@@ -1670,7 +1670,9 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert calls["ok"] is False, "re-pinning torchao asks for a re-verify, as anywhere else"
 
     def test_the_torchao_reinstall_cannot_drag_torch_back(self):
-        # torchao depends on torch: resolving deps re-pulls the wheel just removed.
+        # Belt and braces: torchao declares no runtime torch dependency in any release, so
+        # this skips nothing today, but a reinstall right after a repair is the one place
+        # where a torchao that gained one would undo the repair.
         calls = self._resync("2.11.0+cu124", "2.10.0+cu124")
         assert calls["torchao"], "the release moved, so torchao is re-pinned"
         assert all("--no-deps" in c for c in calls["torchao"])

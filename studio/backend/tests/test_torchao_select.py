@@ -287,6 +287,26 @@ def test_every_torchao_call_site_asks_for_the_pinned_tag():
     assert "_torch_index_tag(_label_after) if _ao_index else _NO_INDEX_PINNED" in source
 
 
+def test_no_torchao_install_can_resolve_a_dependency():
+    """Both call sites pass --no-deps. The post-repair one is why: it runs directly after
+    step 13 has fixed the torch build, so any dependency resolution there could undo it.
+
+    No torchao release actually declares a runtime torch dependency -- PyPI and the
+    cpu/cu126/cu130/cu132/xpu/rocm7.2 leaves all carry Requires-Dist entries only under the
+    dev extra -- so this is hardening rather than a live fix, and the test exists so that
+    stays true if a future torchao adds a pin."""
+    body = _torchao_installer_source()
+    assert 'args = ["--no-deps", "--no-cache-dir"]' in body
+    # --force-reinstall must not be able to widen the install back out.
+    for call in ("pip_install(", "pip_install_try("):
+        for fragment in body.split(call)[1:]:
+            assert "*args" in fragment.split(")")[0], fragment[:120]
+    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
+    resync = source.split("def _resync_torch_coupled_packages", 1)[1]
+    ao = resync.split("_ao_index", 1)[1][:1200]
+    assert "--no-deps" in ao
+
+
 def test_torchao_is_re_selected_after_the_linux_torch_repair():
     """Step 4 chooses torchao from the torch present BEFORE step 13's repairs, which move
     torch across families and releases. The explicit XPU pin is the sharp case: its spec is

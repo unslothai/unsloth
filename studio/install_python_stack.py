@@ -4326,7 +4326,12 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
     # indexes carry a build per tag. rocm is included here, unlike torchcodec -- the rocm
     # leaves really do publish torchao.
     index = _torch_accelerator_index_url(torch_version)
-    args = ["--no-cache-dir"]
+    # --no-deps matches the resync call site. No torchao release declares a runtime torch
+    # dependency (checked on PyPI and on the cpu/cu126/cu130/cu132/xpu/rocm7.2 leaves, every
+    # one of which is Requires-Dist free outside its dev extra), so today this skips nothing.
+    # It is here because the second caller runs immediately after the torch repair, where a
+    # torchao that ever gained a torch pin would resolve it and undo that repair.
+    args = ["--no-deps", "--no-cache-dir"]
     if _pin_needs_reinstall(spec, _torch_index_tag(torch_version) if index else _NO_INDEX_PINNED):
         args.insert(0, "--force-reinstall")
     _note(
