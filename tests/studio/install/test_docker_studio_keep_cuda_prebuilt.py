@@ -459,9 +459,9 @@ def test_setup_sh_keeps_the_bundle_instead_of_installing_a_prebuilt():
     )
     assert "_LLAMA_KEEP_PREBUILT_ACTIVE=true" in text
     call = text[keep : text.index("\n", keep)]
-    assert "${UNSLOTH_LLAMA_RELEASE_TAG:-}" in call, (
-        "an explicit published release pin must reach the keep decision"
-    )
+    assert (
+        "${UNSLOTH_LLAMA_RELEASE_TAG:-}" in call
+    ), "an explicit published release pin must reach the keep decision"
 
 
 def test_the_arm64_cpu_last_resort_cannot_undo_a_kept_bundle():

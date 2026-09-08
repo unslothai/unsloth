@@ -1201,7 +1201,6 @@ def _bind_is_wildcard(host: str) -> bool:
     is not a new cost here.
     """
     from unsloth_cli._tool_policy import is_wildcard_host
-
     return is_wildcard_host(host)
 
 
