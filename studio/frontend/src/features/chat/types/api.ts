@@ -722,9 +722,8 @@ export interface OpenAIChatChunk {
     // The prompt's share of the window (context_length minus the reply reserve), which is what one turn
     // must fit inside. Not re-derived here: the formula lives in the fit.
     prompt_target?: number;
-    // Why this event was sent, when it was not sent by a fit at all. Only value so far is
-    // "preempt_gave_up", which is not a truncation and carries `fits: true` with
-    // `dropped_messages: 0`. It rides this event because this event reaches every surface.
+    // Why this event was sent when no fit sent it. Only "preempt_gave_up" so far, which is not a
+    // truncation and carries `fits: true`. It rides this event because this event reaches everyone.
     reason?: string;
   };
 }

@@ -49,12 +49,10 @@ export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
 }
 
 /** assistant-ui's reason for each of ours. `length` is a truthful stop, not a failure: mapping it
- *  to `error` paints a red box and a Retry button over a turn that already offers the Continue
- *  bar. `interrupted` keeps `error` on purpose, since a cut stream must be told about.
- *
- *  `paused` is a turn the backend put on hold so another chat could finish. assistant-ui has no
- *  value for it, so it takes `cancelled`: neither an error box over a healthy turn nor a false
- *  claim that Max Tokens was reached. */
+ *  to `error` paints a red box and a Retry over a turn that already offers the Continue bar.
+ *  `interrupted` keeps `error` on purpose, a cut stream needing to be told about. `paused` takes
+ *  `cancelled`, assistant-ui having no value for it: neither an error box over a healthy turn nor
+ *  a false claim that Max Tokens was reached. */
 const STATUS_REASON: Record<
   IncompleteReason,
   "cancelled" | "length" | "error"
@@ -330,11 +328,10 @@ export function readContinuationRequest(
 }
 
 /** Resuming a Max Tokens cut WITHOUT asking: hitting the cap is not a decision the user made.
- *  Every other reason is left alone, since `cancelled` would restart what the user just
- *  stopped and `interrupted` can hide a broken link. Bounded, because a model that will not
- *  stop would loop forever. `paused` is refused, pinned by a test: a pause is the backend
- *  rationing one KV cache and it resumes in place, so a client-side continuation asks for a
- *  SECOND slot for a turn already queued for one. */
+ *  Every other reason is left alone, since `cancelled` would restart what the user just stopped
+ *  and `interrupted` can hide a broken link. Bounded, because a model that will not stop would
+ *  loop forever. `paused` is refused, pinned by a test: a pause is the backend rationing one KV
+ *  cache and it resumes in place, so a client continuation would ask for a SECOND slot. */
 export const AUTO_CONTINUE_LIMIT = 3;
 
 /** Rounds already spent per logical turn, keyed by the parent the continuation hangs off: a

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A diffusion runner records `off` for exact concurrency because it is not llama-server and
-cannot apply the setting. Compared against an effective `auto` or `on`, the settings route
-told the user to reload the diffusion model forever, and the reload recorded `off` again."""
+"""A diffusion runner records `off` for exact concurrency, not being llama-server and unable to
+apply the setting. Compared against an effective `auto` or `on`, the settings route told the user
+to reload the diffusion model forever, and the reload recorded `off` again."""
 
 import routes.inference as inference
 import routes.settings as settings

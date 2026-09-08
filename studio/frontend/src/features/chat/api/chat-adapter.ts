@@ -6354,11 +6354,9 @@ export function createOpenAIStreamAdapter(
                 responseModelId = chunkModel;
               }
 
-              // Queued for a slot, or paused so another chat can finish. Neither is an error
-              // and neither produces a token, so without a line on screen both look exactly
-              // like a wedged backend. Routed through setToolStatus because that setter already
-              // handles two runs sharing the unresolved "__default" thread key, where a naive
-              // clear wipes the sibling's status.
+              // Queued for a slot, or paused so another chat can finish. Neither is an error and
+              // neither produces a token, so without a line on screen both look like a wedged
+              // backend. Via setToolStatus, which handles two runs sharing the "__default" key.
               const admissionStatus = (
                 chunk as unknown as { _admissionStatus?: AdmissionStatus }
               )._admissionStatus;
@@ -6940,10 +6938,8 @@ export function createOpenAIStreamAdapter(
               } else if (chunk.choices?.[0]?.finish_reason) {
                 incompleteReason = null;
                 if (completedAfterGivingUp(chunk.choices[0].finish_reason)) {
-                  // The give-up latch too, not just the reason it set. A tool run that gave up
-                  // breaks into the final answering pass, which can finish normally, and the
-                  // override below is unconditional: without this a completed answer was
-                  // stamped paused and offered a Continue with nothing to continue.
+                  // The give-up latch too, not just the reason it set: a tool run that gave up
+                  // breaks into the final pass, which can finish, and the override is unconditional.
                   preemptGaveUp = false;
                 }
               }
@@ -7670,10 +7666,8 @@ export function createOpenAIStreamAdapter(
           incompleteReason = "length";
         }
 
-        // A turn the backend gave up on is `paused`, not `length`. It ends on
-        // `finish_reason: "length"` because that is the shape a continuation resumes from, but
-        // the cause was contention for one KV cache, and `paused` also refuses the AUTOMATIC
-        // continuation, which is the point. Last, so it wins over both assignments above.
+        // A turn the backend gave up on is `paused`, not `length`: it ends on `length` because that
+        // is the shape a continuation resumes from, but `paused` also refuses the AUTOMATIC one.
         if (preemptGaveUp) {
           incompleteReason = "paused";
         }

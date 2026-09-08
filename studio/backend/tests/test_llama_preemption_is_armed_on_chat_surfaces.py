@@ -586,9 +586,8 @@ class TestTheResidencySweep:
 
 
 class TestTheRespawnRetryKeepsItsControls:
-    """`_respawn_if_dead()` re-opens the same generation against a replacement server.
-    Reproducing it needs a llama-server that dies and comes back, so this is the one
-    check here that reads the source rather than driving the path."""
+    """`_respawn_if_dead()` re-opens the same generation against a replacement server. Reproducing
+    it needs a llama-server that dies and comes back, so this check reads the source instead."""
 
     def test_the_connect_error_retry_forwards_the_preemption_arguments(self):
         from pathlib import Path

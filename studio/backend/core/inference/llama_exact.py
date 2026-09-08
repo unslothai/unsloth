@@ -4,16 +4,14 @@
 """Ask llama-server for output that does not depend on the neighbours it decodes beside.
 
 A llama-server built with unslothai/llama.cpp#194 reads ``LLAMA_EXACT_CONCURRENCY`` from its OWN
-environment, and a sequence's generated tokens are then byte-identical however many chats share
-its cache. There is no flag for it and nothing in ``--help``; the running server reports the mode
-as ``exact_concurrency`` in ``/props`` (unslothai/llama.cpp#197), and that field is the only
-evidence Studio accepts. A build that ignores the variable starts all the same and says nothing,
-so it reads as not running the mode; ``--preempt-ram``, which ships in the same fork, is not a
-stand-in, since a build can carry the parking flag without the mode.
+environment, and a sequence's generated tokens are then byte-identical however many chats share its
+cache. There is no flag for it: the running server reports the mode as ``exact_concurrency`` in
+``/props`` (unslothai/llama.cpp#197), and that field is the only evidence Studio accepts, a build
+that ignores the variable starting all the same and saying nothing.
 
-Three values, because two cannot express "I would like this" against "I require this": ``off``
-(the default, the mode costing about 9 per cent of solo decode), ``auto`` (relaunch once without
-it and report ``unavailable``), and ``on`` (a refusal is a failed load, a caller that asked for
+Three values, because two cannot express "I would like this" against "I require this": ``off`` (the
+default, the mode costing about 9 per cent of solo decode), ``auto`` (relaunch once without it and
+report ``unavailable``), and ``on`` (a refusal is a failed load, a caller that asked for
 byte-identical output being unable to notice a downgrade).
 """
 
@@ -31,13 +29,11 @@ EXACT_ON = "on"
 EXACT_SETTINGS = (EXACT_AUTO, EXACT_OFF, EXACT_ON)
 DEFAULT_EXACT_SETTING = EXACT_OFF
 
-# What the CHILD reads (unslothai/llama.cpp#194). Setting it on Studio is the workaround this
-# module replaces.
+# What the CHILD reads (unslothai/llama.cpp#194). Setting it on Studio is the workaround this replaces.
 CHILD_ENV = "LLAMA_EXACT_CONCURRENCY"
 
-# What the finished load reports. `unavailable` carries what a boolean cannot: the mode was
-# asked for, the load is running without it (the server refused, or Studio withheld it), and
-# the chat is running anyway.
+# What the finished load reports. `unavailable` carries what a boolean cannot: the mode was asked
+# for, and the chat runs anyway without it (the server refused, or Studio withheld it).
 EXACT_STATE_ON = "on"
 EXACT_STATE_OFF = "off"
 EXACT_STATE_UNAVAILABLE = "unavailable"
@@ -70,9 +66,8 @@ def child_flag_set(environ: Mapping[str, str]) -> bool:
 
 
 def child_flag_inherited(environ: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether the Studio process itself was started with ``LLAMA_EXACT_CONCURRENCY``. Read as
-    the DEFAULT setting rather than ignored: a default of ``off`` would silently turn the mode
-    off for exactly the people who had gone to the trouble of turning it on."""
+    """Whether the Studio process itself was started with ``LLAMA_EXACT_CONCURRENCY``. Read as the
+    DEFAULT setting: ``off`` would silently disable the mode for the people who turned it on."""
     return child_flag_set(os.environ if environ is None else environ)
 
 
@@ -142,10 +137,10 @@ def is_exact_refusal(text: Optional[str]) -> bool:
     return any(marker in text.lower() for marker in _REFUSAL_MARKERS)
 
 
-# What the mode cannot live beside, each checked in llama.cpp itself, so Studio can warn about
-# its own launch line. `--cache-reuse` and `--context-shift` move a sequence's positions and a
-# cell's offset inside its 256-cell page IS its position modulo 256; `--no-kv-offload` leaves a
-# layer off the CUDA backend, and no flash attention leaves V transposed.
+# What the mode cannot live beside, checked in llama.cpp itself so Studio can warn about its own
+# launch line: `--cache-reuse` and `--context-shift` move positions while a cell's offset in its
+# 256-cell page IS its position mod 256; `--no-kv-offload` drops a layer, and no flash attention
+# leaves V transposed.
 _CACHE_TYPE_FLAGS = ("--cache-type-k", "--cache-type-v", "-ctk", "-ctv")
 _BARE_CONTRADICTIONS = (
     "--context-shift",
@@ -211,9 +206,8 @@ def contradicting_args(args: Optional[Sequence[str]]) -> list[str]:
 
 
 def apply_child_env(env: dict, *, on: bool) -> bool:
-    """Put the child's variable in ``env`` (or take it out). True when ``env`` changed. Taking
-    it OUT is not redundant: ``env`` starts as a copy of Studio's own environment, so an
-    inherited ``LLAMA_EXACT_CONCURRENCY`` would outvote a load that resolved to ``off``."""
+    """Put the child's variable in ``env`` (or take it out). True when ``env`` changed. Taking it
+    OUT matters: ``env`` copies Studio's own, so an inherited value would outvote a load's ``off``."""
     if on:
         if env.get(CHILD_ENV) == "1":
             return False

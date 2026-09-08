@@ -1047,8 +1047,7 @@ class ToolLoopController:
 
     def call_key(self, tool_call: Mapping[str, Any]) -> str:
         """The key ``prepare_call`` will file this call under, healed the same way. A round's
-        parallel gate compares these: keyed on the arguments as they arrived, two calls healing
-        to one key both ran, and the second was work the ledger would have refused."""
+        parallel gate compares these: keyed on raw arguments, two calls healing to one key both ran."""
         function = tool_call.get("function")
         function = function if isinstance(function, Mapping) else {}
         tool_name = str(function.get("name") or "").strip()

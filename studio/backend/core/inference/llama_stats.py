@@ -30,11 +30,10 @@ def fetch_llama_slots(
     """One ``GET /slots`` read as a list, or None if it could not be read.
 
     ``headers`` carries the backend's ``Authorization`` when the load was launched with
-    ``--api-key``, llama.cpp exempting only ``/health`` from the key check: unauthenticated, the
-    read answers 401 and the ``except`` below turns that into None, switching the residency probe
-    off. /metrics cannot replace this, reporting nothing about cells still held by IDLE slots:
-    one held 16383 of a 16384 cache while the scheduler believed it nearly empty. None means
-    "cannot tell" and must never be read as "the cache is empty".
+    ``--api-key``, llama.cpp exempting only ``/health`` from the key check: unauthenticated the read
+    answers 401 and reads back as None, switching the residency probe off. /metrics cannot replace
+    this, saying nothing about cells still held by IDLE slots: one held 16383 of a 16384 cache while
+    the scheduler believed it nearly empty. None means "cannot tell", never "the cache is empty".
     """
     url = f"{str(base_url).rstrip('/')}/slots"
     try:
@@ -79,9 +78,8 @@ def scrape_llama_metrics(
     timeout_s = 3.0,
     headers = None,
 ):
-    """One /metrics read as a {name: float} dict, or None if it could not be read. Split out of
-    the daemon's own scrape so a single-sample caller reuses this parser. None means "cannot
-    tell", covering every reason the read did not happen."""
+    """One /metrics read as a {name: float} dict, or None if it could not be read. Split out of the
+    daemon's own scrape so a single-sample caller reuses this parser. None means "cannot tell"."""
     url = f"{str(base_url).rstrip('/')}/metrics"
     try:
         req = urllib.request.Request(url, headers = headers or {})

@@ -1615,10 +1615,9 @@ _REEXEC_DEPTH_ENV = "UNSLOTH_STUDIO_REEXEC_DEPTH"
 
 
 def _running_inside_studio_venv(studio_venv_dir: Path) -> bool:
-    """Whether this interpreter is the Studio venv's, symlinks and all. Compared on resolved
-    paths: `sys.prefix` is the venv's REAL directory while `STUDIO_HOME / "unsloth_studio"` is
-    whatever path the user gave, so a symlinked venv never matched and the parent re-executed
-    the venv's console script forever at 100 percent CPU, printing nothing."""
+    """Whether this interpreter is the Studio venv's, symlinks and all. Compared on resolved paths:
+    `sys.prefix` is the venv's REAL directory while `STUDIO_HOME / "unsloth_studio"` is whatever path
+    the user gave, so a symlinked venv never matched and the parent re-executed forever."""
     try:
         prefix = Path(sys.prefix).resolve()
         target = Path(studio_venv_dir).resolve()

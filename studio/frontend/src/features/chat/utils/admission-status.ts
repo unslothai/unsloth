@@ -4,10 +4,9 @@
 /**
  * The queue and pause signals the local llama-server path sends as SSE comments.
  *
- * N chats share one `--kv-unified` cache while each is told it has all of it, so a chat spends
- * real time waiting for room and can be paused mid-answer. Both are invisible on the wire: a
- * 200 that produces nothing for a while, indistinguishable from a wedged backend. Sent as SSE
- * *comments*, so every reader that predates them ignores them for free.
+ * N chats share one `--kv-unified` cache while each is told it has all of it, so a chat waits for
+ * room and can be paused mid-answer, both invisible on the wire: a 200 that produces nothing for a
+ * while. Sent as SSE *comments*, so every reader that predates them ignores them for free.
  */
 
 /** Queued: the request is admitted to the queue but holds no slot yet. */

@@ -1199,16 +1199,14 @@ def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
 
 _PARALLEL_TOOL_CALLS_ENV = "UNSLOTH_PARALLEL_TOOL_CALLS"
 
-# The most calls one round overlaps, each a worker with a pump task on top, all starting their
-# side effects at once. Same figure as the GGUF loop's `_MAX_PARALLEL_TOOL_CALLS_PER_ROUND`,
-# kept here because the two loops must not import each other.
+# The most calls one round overlaps, each a worker with a pump task on top. Same figure as the GGUF
+# loop's `_MAX_PARALLEL_TOOL_CALLS_PER_ROUND`, kept here because the two loops must not import.
 _MAX_PARALLEL_TOOL_CALLS_PER_ROUND = 8
 
 
 def parallel_tool_calls_enabled() -> bool:
-    """Whether one turn's tool calls may run at the same time. On unless switched off. The switch
-    exists because independent is the model's claim, not a guarantee: two calls that write the
-    same file interleave differently when they overlap."""
+    """Whether one turn's tool calls may run at the same time. On unless switched off: independent
+    is the model's claim, and two calls that write the same file interleave differently."""
     raw = os.environ.get(_PARALLEL_TOOL_CALLS_ENV)
     if raw is None:
         return True
@@ -1216,9 +1214,8 @@ def parallel_tool_calls_enabled() -> bool:
 
 
 def round_call_key(name: Any, arguments: Any) -> tuple:
-    """A conservative identity for one call, computed before the controller heals it: llama.cpp
-    can leak the raw `<tool_call>` markup AND emit the parsed call, so both are parsed and
-    re-serialised with sorted keys."""
+    """A conservative identity for one call, computed before the controller heals it: llama.cpp can
+    leak the raw `<tool_call>` markup AND emit the parsed call, so both are re-serialised sorted."""
     if isinstance(arguments, str):
         try:
             arguments = json.loads(arguments)
@@ -1236,9 +1233,8 @@ async def _pump_tool_stream(
     queue: "asyncio.Queue[Any]",
     cancel_event: threading.Event,
 ) -> None:
-    """Drive one tool's event stream to completion, buffering what it emits. The tool only
-    advances while somebody calls ``next()`` on its generator, so running two at once means two of
-    these in flight. Events are queued, the SSE stream having to stay in the model's order."""
+    """Drive one tool's event stream to completion, buffering what it emits: the tool only advances
+    while somebody calls ``next()``. Events are queued, the SSE stream staying in the model's order."""
     try:
         while True:
             if cancel_event.is_set():
@@ -1657,9 +1653,8 @@ async def stream_with_studio_tools(
         noop_messages: list[dict[str, Any]] = []
         turn_executed_real_tool = False
 
-        # Whether this round's calls may overlap. Decided BEFORE any is prepared, because it has
-        # to hold for the whole round: starting call two and then discovering call three needs an
-        # approval dialog would put a modal in front of work already in flight.
+        # Whether this round's calls may overlap. Decided BEFORE any is prepared: it has to hold for
+        # the whole round, or a modal lands in front of work already in flight.
         _approval_gate = confirm_tool_calls and not bypass_permissions and permission_mode != "off"
         if _approval_gate and permission_mode == "auto":
             _approval_gate = any(
@@ -1733,9 +1728,8 @@ async def stream_with_studio_tools(
                 elif "result" in outcome:
                     result = outcome["result"]
                 elif cancel_event.is_set():
-                    # Stopped before the tool returned. Defaulting to "" would paint a normal
-                    # tool_end, claiming a tool produced nothing when its side effects may
-                    # already have happened.
+                    # Stopped before the tool returned. "" would paint a normal tool_end, claiming
+                    # nothing was produced when its side effects may already have happened.
                     result = _TOOL_CANCELLED
                 else:
                     result = ""
@@ -1768,9 +1762,8 @@ async def stream_with_studio_tools(
         for call in calls:
             if cancel_event.is_set():
                 break
-            # The LAUNCHED entries are the ones that will each spend one when they settle.
-            # Counting the whole list also counted duplicates, denials and budget refusals, none
-            # of which decrement `remaining`.
+            # The LAUNCHED entries each spend one when they settle. Counting the whole list also
+            # counted duplicates, denials and budget refusals, none of which decrement `remaining`.
             _launched = sum(1 for _entry in pending_calls if _entry[0] != "lines")
             if not unlimited and remaining - _launched <= 0:
                 # Budget spent.

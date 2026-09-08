@@ -3,12 +3,9 @@
 
 """Every KV-preemption switch has to reach every surface that acts on it.
 
-The optimistic allowance, the wire clamp, the arm and the disarm's erase are four different
-decisions taken from one question -- can the difference between what a request is charged and
-what it may generate be reclaimed? Each of these covers one place where the answer was assumed
-instead of asked: a request that cannot be paused, a server whose parking was switched off
-through its environment, a binary that never implemented exact concurrency, and the two
-accounting opt-outs.
+The optimistic allowance, the wire clamp, the arm and the disarm's erase are four decisions taken
+from one question: can the difference between what a request is charged and what it may generate
+be reclaimed? Each check covers one place where the answer was assumed instead of asked.
 """
 
 from __future__ import annotations

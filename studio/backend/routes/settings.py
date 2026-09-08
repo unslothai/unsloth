@@ -673,8 +673,7 @@ class ExactConcurrencyPayload(BaseModel):
 
 
 class ExactConcurrencyResponse(BaseModel):
-    # The stored value, or None when nothing is stored, which is not the same as a stored
-    # "off": see utils.exact_concurrency_settings.
+    # The stored value, or None when nothing is stored, which is not the same as a stored "off".
     exact_concurrency: Optional[str] = None
     # What the next load will resolve to, once the environment override, this stored value and
     # an inherited LLAMA_EXACT_CONCURRENCY have all been read.
@@ -1294,9 +1293,8 @@ def _exact_concurrency_active() -> str:
 
 
 def _exact_concurrency_reload_required(effective: str) -> bool:
-    """True when a child is running under a setting the next load would not repeat. Compared
-    against what that child was ASKED for, not what it got: a load that resolved to `auto` and
-    came up `unavailable` is still the load this setting produces."""
+    """True when a child is running under a setting the next load would not repeat. Compared against
+    what that child was ASKED for: an `auto` that came up `unavailable` is still this setting."""
     try:
         from routes.inference import get_llama_cpp_backend
         backend = get_llama_cpp_backend()

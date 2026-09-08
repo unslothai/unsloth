@@ -662,9 +662,8 @@ class TestReadingWhatTheCacheActuallyHolds:
         assert [slot for slot, _ in occupancy["idle"]] == [0, 2], "largest idle first"
 
     def test_generated_tokens_are_added_to_the_cache_field_and_only_to_it(self):
-        # `n_prompt_tokens` ALREADY includes them: measured over 128 samples,
-        # `n_prompt_tokens - n_decoded` is constant within a request to within 3 tokens,
-        # and adding them again scored 28238 in a 16384-cell cache.
+        # `n_prompt_tokens` ALREADY includes them: over 128 samples `n_prompt_tokens - n_decoded`
+        # is constant within a request, and adding them again scored 28238 in a 16384 cache.
         def _slot(field, processing = True):
             return [
                 {

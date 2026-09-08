@@ -2,15 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * What the running llama-server reports about exact concurrency: with LLAMA_EXACT_CONCURRENCY
- * a chat gets the same tokens whether it decodes alone or beside others in one unified KV
- * cache, which is otherwise not true. Plain `.ts` and free of imports, because the test runner
- * strips types but does not transform JSX.
+ * What the running llama-server reports about exact concurrency: with LLAMA_EXACT_CONCURRENCY a
+ * chat gets the same tokens whether it decodes alone or beside others in one unified KV cache,
+ * which is otherwise not true. Plain `.ts` and free of imports, because the test runner strips
+ * types but does not transform JSX.
  */
 
-/** `on` the server was launched with it and came up; `off` it was not asked for; `unavailable`
- *  it was asked for under `auto` and this load is not running with it, whether the server
- *  refused or Studio withheld it (its own pausing, parking off, a short parking budget). */
+/** `on` the server was launched with it and came up; `off` it was not asked for; `unavailable` it
+ *  was asked for under `auto` and this load is not running with it. */
 export type ExactConcurrencyState = "on" | "off" | "unavailable";
 
 /** `off` for anything unrecognised, including the `undefined` a backend older than the switch
@@ -47,9 +46,8 @@ export function exactConcurrencyChip(
   return null;
 }
 
-/** Whether the chip describes the model the user is looking at. The state is the local
- *  llama-server's, and it stays resident when a hosted model is selected beside it, so
- *  unconditionally the chip put the local server's guarantee next to a hosted model's output. */
+/** Whether the chip describes the model the user is looking at: the state is the local
+ *  llama-server's, and it stays resident when a hosted model is selected beside it. */
 export function exactConcurrencyChipApplies({
   isExternalModel,
   residentCheckpoint,

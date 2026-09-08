@@ -7009,9 +7009,8 @@ const ContinueMessageBarForLastMessage: FC = () => {
     cancelled && stamped?.reason !== "paused"
       ? ("cancelled" as const)
       : stamped?.reason;
-  // A turn the backend gave up on can be empty: the chat was evicted while still prefilling.
-  // Both content gates below are written for a turn that has text, and together they hid the
-  // bar on exactly the turn that most needed it.
+  // A turn the backend gave up on can be empty: the chat was evicted while still prefilling, and
+  // both content gates below are written for a turn that has text.
   const noTextIsExpected = resumesWithoutText(reason);
 
   // Every gate the bar itself answers to. Resuming without asking has to clear the same

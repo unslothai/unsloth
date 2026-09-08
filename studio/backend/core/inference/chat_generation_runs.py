@@ -465,15 +465,11 @@ _park_probe_at: list = [None]
 def _server_park_probe_now(backend: Any) -> bool:
     """Ask `/metrics` ourselves whether a slot is parked right now, rate limited across runs.
 
-    The read wrapper only asks at its read deadline, and before the first token that deadline IS
-    the 20 minute first-token budget, i.e. the whole default lease. Waiting for its stamp means a
-    request parked during prefill renews nothing until the sweeper has already had its chance to
-    cancel a healthy generation, and any shorter UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S loses the
-    race outright. Bounded by the wrapper's own _SERVER_PARK_STALL_CAP_S: a server that reports a
-    park forever still has its stream cut there, so renewing here cannot keep a wedged run alive.
-
-    Blocking (one HTTP GET); only ever called from a worker thread. The backend stamps the grace
-    when this returns True, so the cheap stamp check covers the calls that follow.
+    The read wrapper only asks at its read deadline, and before the first token that deadline IS the
+    20 minute first-token budget, so waiting for its stamp lets the sweeper cancel a healthy
+    generation first, and a shorter UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S loses outright. Bounded
+    by the wrapper's own _SERVER_PARK_STALL_CAP_S, so this cannot keep a wedged run alive. Blocking
+    (one HTTP GET); only ever called from a worker thread.
     """
     if not bool(getattr(backend, "server_preempts_kv", False)):
         return False  # nothing parks slots, so silence is a stall and /metrics is noise
@@ -490,9 +486,8 @@ def _server_park_probe_now(backend: Any) -> bool:
 
 def _server_park_excused_recently() -> bool:
     """Whether the resident llama-server has lately excused a silent stream as parked from
-    `/metrics`, asking it ourselves when no stamp is in hand. Only a swap build predating the
-    stream notices parks in silence; one with them sends `: preempt-keepalive`, which the run
-    loop renews on directly."""
+    `/metrics`, asking it ourselves when no stamp is in hand. Only a swap build predating the stream
+    notices parks in silence; one with them sends `: preempt-keepalive`, renewed on directly."""
     try:
         from routes.inference import get_llama_cpp_backend
 
@@ -788,9 +783,8 @@ class ChatGenerationSupervisor:
                         - (time.monotonic() - last_flush),
                     )
                     if pending
-                    # Bounded even with nothing to flush: a silent park on a swap build without
-                    # the stream notices sends no bytes, and the lease can only be renewed from
-                    # here (see _server_park_excused_recently).
+                    # Bounded even with nothing to flush: a silent park on a swap build without the
+                    # stream notices sends no bytes, and only here can the lease be renewed.
                     else _renew_interval_seconds()
                 )
                 ready, _waiting = await asyncio.wait({next_raw_task}, timeout = timeout)
@@ -832,9 +826,8 @@ class ChatGenerationSupervisor:
                         await self._try_touch_progress(run_id)
                 status_chunks = _admission_status_chunks(text)
                 if status_chunks:
-                    # Written at once, not batched: nothing follows a pause for as long as it
-                    # lasts, so a batched notice would reach the follower with the resume. The
-                    # pause is also progress for the lease.
+                    # Written at once, not batched: nothing follows a pause while it lasts, so a
+                    # batched notice would reach the follower with the resume. Also lease progress.
                     now_ms = db.now_ms()
                     pending.extend(("chunk", chunk, now_ms) for chunk in status_chunks)
                     await asyncio.to_thread(db.append_events, run_id, worker_token, pending)

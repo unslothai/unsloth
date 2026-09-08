@@ -3,8 +3,7 @@
 
 /**
  * A turn paused so another chat could finish is not a failure. assistant-ui has no "paused"
- * status, so the obvious mapping is `error`, which paints a red box and a Retry button over a
- * turn that is merely waiting its turn on the KV cache.
+ * status, so the obvious mapping is `error`, a red box and a Retry over a turn merely waiting.
  */
 
 import assert from "node:assert/strict";

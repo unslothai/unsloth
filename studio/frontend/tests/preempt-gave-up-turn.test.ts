@@ -2,10 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A turn the backend gave up on can be EMPTY: a chat evicted while still prefilling never
- * produced a token, and the row mounted with no text, no notice and no Continue.
- * `isContinuableContent` and the bar's `partial.trim()` both require text, which is right for
- * every other reason a turn stops early and wrong for the only one raised before the first token.
+ * A turn the backend gave up on can be EMPTY: a chat evicted while still prefilling never produced
+ * a token, and the row mounted with no text, no notice and no Continue. `isContinuableContent` and
+ * the bar's `partial.trim()` both require text, wrong for the one reason raised before any token.
  */
 
 import assert from "node:assert/strict";

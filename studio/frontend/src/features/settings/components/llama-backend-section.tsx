@@ -269,9 +269,8 @@ function ExactConcurrencyRow() {
     }
   };
 
-  // The environment pins the machine, so show what it pins rather than a stored value that is
-  // not being used. Nothing stored shows what the next load resolves to, which an inherited
-  // LLAMA_EXACT_CONCURRENCY can turn on.
+  // The environment pins the machine, so show what it pins rather than a stored value that is not
+  // being used. Nothing stored shows what the next load resolves to.
   const shown =
     settings?.envOverride ?? settings?.stored ?? settings?.effective ?? null;
   const value = shown !== null && isExactConcurrencySetting(shown) ? shown : "";

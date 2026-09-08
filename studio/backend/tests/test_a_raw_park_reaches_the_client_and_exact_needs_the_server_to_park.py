@@ -3,25 +3,19 @@
 
 """Four gaps between what a park promises and what reached the client or the ledger.
 
-1. The raw passthrough loops (Responses, chat and completions passthrough, Anthropic
-   passthrough) relayed ``data:`` lines only. A request the server parked sent
-   ``: preempted`` and a ``: preempt-keepalive`` every two seconds, each of which reset
-   the stall clock and reached nobody, so a long park sent the client no bytes at all.
-   ``_server_park_sse`` maps those notices onto the comments every other surface forwards.
+1. The raw passthrough loops relayed ``data:`` lines only, so a parked request's ``: preempted``
+   and two-second ``: preempt-keepalive`` reached nobody and a long park sent the client no bytes
+   at all. ``_server_park_sse`` maps those notices onto the comments every surface forwards.
 
-2. Exact concurrency was reported ``on`` under ``UNSLOTH_LLAMA_PREEMPT_MODE=studio``. A chat
-   the server parks is restored cell for cell; one Studio pauses is resumed as a
-   continuation with fresh sampler and draft state, so the promise needs the server to be
-   the one pausing. ``_exact_state_after_launch`` now takes ``server_parks``.
+2. Exact concurrency was reported ``on`` under ``UNSLOTH_LLAMA_PREEMPT_MODE=studio``, though a
+   chat Studio pauses resumes with fresh sampler and draft state where one the server parks is
+   restored cell for cell. ``_exact_state_after_launch`` now takes ``server_parks``.
 
-3. A user-named ``--preempt-ram`` below the KV pool was reported exact too, though a park
-   that outgrows it is re-prefilled. ``_exact_parking_shortfall_mib`` names the shortfall
-   and the state reads ``unavailable`` for it.
+3. A user-named ``--preempt-ram`` below the KV pool was reported exact too, though a park that
+   outgrows it is re-prefilled; ``_exact_parking_shortfall_mib`` names the shortfall.
 
-4. A swap build predating the stream notices parks in silence. The read wrapper excused the
-   silence from `/metrics` and forwarded nothing, so a durable run's lease had nothing to
-   renew on and the sweeper could cancel a legitimate park. The backend stamps the excuse
-   and the run loop renews from it.
+4. A swap build predating the stream notices parks in silence, and the read wrapper forwarded
+   nothing, so a durable run's lease had nothing to renew on. The backend stamps the excuse.
 """
 
 import asyncio
@@ -241,10 +235,9 @@ class TestASilentParkStillRenewsTheLease:
 
 
 class TestTheRunLoopProbesParkingRatherThanWaitForTheStamp:
-    """The read wrapper only asks `/metrics` when its read deadline fires, and before the first
-    token that deadline IS the 20 minute first-token budget, i.e. the whole default lease. A run
-    parked during prefill therefore had no stamp to renew from until the sweeper had already had
-    its chance to cancel it, and any shorter lease lost outright. The run loop asks for itself."""
+    """The read wrapper only asks `/metrics` at its read deadline, and before the first token that
+    deadline IS the 20 minute first-token budget, so a run parked during prefill had no stamp to
+    renew from until the sweeper had had its chance to cancel it. The run loop asks for itself."""
 
     @pytest.fixture(autouse = True)
     def _reset_probe_rate_limit(self):
@@ -567,9 +560,8 @@ class TestTheGlobalOptOutBlocksAnAutoLaunch:
 
 class TestTheParkGraceLivesBelowTheHttpxIterators:
     """An httpx async generator that raised is closed, so a retry above it returned
-    StopAsyncIteration and the relay ended as if the parked answer were complete. The grace
-    is applied to the network stream's read, where nothing above it unwinds; this runs the
-    relay over a real httpx stream against a local server that goes silent."""
+    StopAsyncIteration and the relay ended as if the parked answer were complete. The grace is
+    applied to the network stream's read; this runs the relay against a server that goes silent."""
 
     @staticmethod
     async def _serve(first_delay: float, gap: float):
@@ -785,10 +777,9 @@ class TestAnExplicitOptOutOfTheUnifiedCacheIsKept:
 
 
 class TestTheGlobalOptOutBlocksAnExactOnLaunchToo:
-    """`auto` was preflighted for the opt-out, `on` was not: the exact launch sized a parking
-    budget of its own (a finite one for a pool past the server's default), and
-    `_stand_down_child_parking` reads any `--preempt-ram` as a budget somebody named, so the
-    child parked with UNSLOTH_LLAMA_ADMISSION_PREEMPT=0 set. The budget is generated only when
+    """`auto` was preflighted for the opt-out, `on` was not: the exact launch sized a parking budget
+    of its own, and `_stand_down_child_parking` reads any `--preempt-ram` as one somebody named, so
+    the child parked with UNSLOTH_LLAMA_ADMISSION_PREEMPT=0 set. The budget is generated only when
     the child is going to be allowed to park at all."""
 
     _POOL = 12 * _GIB
@@ -847,14 +838,10 @@ class TestTheGlobalOptOutBlocksAnExactOnLaunchToo:
 
 class TestAnAbandonedExactAttemptLeavesNoUnlimitedParkingBudget:
     """The exact launch used to append ``--preempt-ram -1`` for an auto-fit context, before the
-    running server had confirmed the mode. Every way the attempt is abandoned keeps that argv:
-    the refusal rung takes the mode off the child's ENVIRONMENT and relaunches the same command,
-    and a build that ignores ``LLAMA_EXACT_CONCURRENCY`` comes up healthy and is reported
-    ``unavailable`` with nothing relaunched at all. Either way a server with no exact
-    concurrency parked into unbounded host RAM instead of llama.cpp's 8192 MiB default
-    (unslothai/llama.cpp#184: ``--preempt-ram N`` bounds the host RAM parked sequences hold,
-    ``-1`` is no limit). So the launch names no budget it cannot size, and the default it left
-    the child on is judged after launch instead."""
+    running server had confirmed the mode, and every way the attempt is abandoned keeps that argv
+    (the refusal rung relaunches the same command; a build ignoring the variable never relaunches).
+    A server with no exact concurrency then parked into unbounded host RAM instead of llama.cpp's
+    8192 MiB default. So the launch names no budget it cannot size, judging the default later."""
 
     def test_the_launch_never_generates_an_unlimited_budget(self):
         source = inspect.getsource(LlamaCppBackend.load_model)

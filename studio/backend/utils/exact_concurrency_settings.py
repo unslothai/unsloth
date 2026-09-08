@@ -3,8 +3,7 @@
 
 """The persisted half of the exact-concurrency switch. ``core.inference.llama_exact`` owns what
 ``auto | off | on`` MEAN; this file only stores one. Stored ``off`` and nothing stored are
-deliberately different: nothing stored falls through to an inherited
-``LLAMA_EXACT_CONCURRENCY``, so the setter never normalises ``off`` away to "unset".
+deliberately different: nothing stored falls through to an inherited ``LLAMA_EXACT_CONCURRENCY``.
 """
 
 from __future__ import annotations
