@@ -123,9 +123,7 @@ requires_pwsh = pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
 
 def _wheelhouse_assignment(source: str) -> str:
     """The `$script:WoaWheelhouse = if (...) {...} else {...}` block, lifted verbatim."""
-    match = re.search(
-        r"(?ms)^    \$script:WoaWheelhouse = if .*?^    \}$", source
-    )
+    match = re.search(r"(?ms)^    \$script:WoaWheelhouse = if .*?^    \}$", source)
     assert match, "install.ps1 no longer assigns $script:WoaWheelhouse in one block"
     return match.group(0)
 
@@ -150,20 +148,29 @@ def test_the_default_is_an_https_resolve_url_under_our_own_org(source):
         ("https://example.test/wheels", "https://example.test/wheels", "a mirror is honoured"),
         ("https://example.test/wheels/", "https://example.test/wheels", "one trailing slash goes"),
         ("https://example.test/wheels///", "https://example.test/wheels", "so do several"),
-        ("  https://example.test/wheels  ", "https://example.test/wheels", "surrounding space goes"),
+        (
+            "  https://example.test/wheels  ",
+            "https://example.test/wheels",
+            "surrounding space goes",
+        ),
         (r"C:\wheels", r"C:\wheels", "a local directory survives untouched"),
-        ("C:" + chr(92) + "wheels" + chr(92), "C:" + chr(92) + "wheels" + chr(92),
-         "TrimEnd takes '/' only, so a trailing backslash stays"),
+        (
+            "C:" + chr(92) + "wheels" + chr(92),
+            "C:" + chr(92) + "wheels" + chr(92),
+            "TrimEnd takes '/' only, so a trailing backslash stays",
+        ),
     ],
 )
 def test_the_wheelhouse_override_is_normalised(source, configured, expected, why):
     script = (
         "$ErrorActionPreference = 'Stop'; "
-        + ("Remove-Item Env:UNSLOTH_WOA_WHEELHOUSE -ErrorAction SilentlyContinue; "
-           if configured is None else
-           f"$env:UNSLOTH_WOA_WHEELHOUSE = '{configured}'; ")
+        + (
+            "Remove-Item Env:UNSLOTH_WOA_WHEELHOUSE -ErrorAction SilentlyContinue; "
+            if configured is None
+            else f"$env:UNSLOTH_WOA_WHEELHOUSE = '{configured}'; "
+        )
         + _wheelhouse_assignment(source).strip()
-        + "; Write-Output \"<<<$script:WoaWheelhouse>>>\""
+        + '; Write-Output "<<<$script:WoaWheelhouse>>>"'
     )
     done = subprocess.run(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],

@@ -133,7 +133,11 @@ class TestWriteSide:
 PWSH = shutil.which("pwsh")
 
 
-def _ps(script, timeout = 120, **kwargs):
+def _ps(
+    script,
+    timeout = 120,
+    **kwargs,
+):
     """Run a PowerShell snippet and hand back the completed process."""
     return subprocess.run(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
@@ -144,7 +148,11 @@ def _ps(script, timeout = 120, **kwargs):
     )
 
 
-def _ps_ok(script, timeout = 120, **kwargs):
+def _ps_ok(
+    script,
+    timeout = 120,
+    **kwargs,
+):
     """Same, but fail the test with PowerShell's own stderr when it does not exit 0."""
     done = _ps(script, timeout = timeout, **kwargs)
     assert done.returncode == 0, done.stderr
@@ -267,7 +275,9 @@ class TestResolverEnvironmentRestore:
             ]
         )
         # The function assigns real environment variables; keep them out of the parent.
-        done = _ps_ok(script, env = {**os.environ, "UV_OVERRIDE": "", "UV_FIND_LINKS": "", "PIP_FIND_LINKS": ""})
+        done = _ps_ok(
+            script, env = {**os.environ, "UV_OVERRIDE": "", "UV_FIND_LINKS": "", "PIP_FIND_LINKS": ""}
+        )
         return json.loads(done.stdout.strip().splitlines()[-1])
 
     @staticmethod
@@ -730,7 +740,9 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         the flag asks for, so the opt-out arm expects the CPU kind INSTEAD of the CUDA
         kind.
         """
-        assert self._kinds("0") == "windows-arm64 windows-vulkan", "opted out: CUDA is no longer valid"
+        assert (
+            self._kinds("0") == "windows-arm64 windows-vulkan"
+        ), "opted out: CUDA is no longer valid"
         assert self._kinds("") == "windows-arm64-cuda windows-arm64 windows-vulkan"
 
     @staticmethod
@@ -3395,9 +3407,9 @@ class TestALocalDirectoryRequirementIsRebasedToo:
         got = TestARebasedOptionPathKeepsItsQuoting._rebase(source, line, base.as_posix())
         # The value, not the option token in front of it, and without any extras suffix.
         value = got.split(None, 1)[1] if got.startswith("-") else got
-        assert os.path.isabs(re.sub(r"\[[^\]]*\]$", "", value.strip())), (
-            f"{why}: the line was left relative and now resolves against %TEMP%: {got!r}"
-        )
+        assert os.path.isabs(
+            re.sub(r"\[[^\]]*\]$", "", value.strip())
+        ), f"{why}: the line was left relative and now resolves against %TEMP%: {got!r}"
         assert got.rstrip().replace(os.sep, "/").endswith(expected_suffix), f"{why}: {got!r}"
 
     @requires_pwsh
