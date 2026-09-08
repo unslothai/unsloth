@@ -9,9 +9,14 @@
 // produced them, extended one event at a time.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
+
+const read = (relative: string) =>
+  readFileSync(new URL(relative, import.meta.url), "utf8");
 
 registerBundlerResolver();
 
@@ -300,5 +305,63 @@ test("a thinking part with its own tags lands in the thought the replay opened",
     replay.content() as Array<Record<string, unknown>>,
     live,
     "a second open tag must not survive as literal text inside the thought",
+  );
+});
+
+// The follower builds its accumulator when it attaches and only learns WHICH session the run ran in once
+// the stored run comes back. A replay that read the option at construction would shape every already-folded
+// frame under whatever scope this tab happens to be on, so a python turn that plotted a chart comes back as
+// a path from someone else's sandbox instead of an image from the run that made it.
+// The laziness above only pays off because BOTH accumulators the follower builds are handed the SAME holder,
+// and because the run's own field is what fills it. Pin both call sites the way the clock is pinned: a fresh
+// literal at the prefill rebuild silently hands the new accumulator an option it has been folding frames under.
+test("the follower hands the run its own sandbox session, at both places it builds an accumulator", () => {
+  const provider = read("../src/features/chat/runtime-provider.tsx");
+  // Both accumulators get the holder, never a literal: one is built before the stored run exists to be read.
+  const builds = provider.split("createRecoveryReplay(").slice(1);
+  assert.equal(
+    builds.filter((build) => build.slice(0, 240).includes("replayOptions,")).length,
+    builds.length,
+    "every accumulator the follower builds must be handed the holder it can still be updated through",
+  );
+  assert.ok(
+    provider.includes("const replayOptions: { sandboxSessionId?: string } = {};"),
+    "the session has to travel in one object both constructions share",
+  );
+  assert.ok(
+    provider.includes("replayOptions.sandboxSessionId ??=") &&
+      provider.includes("update.run.requestPayload.session_id;"),
+    "a replayed card names the session that ran, which only exists once the follow yields a run",
+  );
+});
+
+test("a replayed python card names the session that ran, not the tab that reopened it", () => {
+  const options: { sandboxSessionId?: string } = {};
+  const replay = createRecoveryReplay("", undefined, options);
+  // Filled AFTER construction, exactly as the follower fills it once followChatGenerationRun yields a run.
+  options.sandboxSessionId = "sess_ran";
+  replay.applyChunk({ choices: [{ delta: { content: "here is the plot" } }] });
+  replay.applyChunk({
+    _toolEvent: {
+      type: "tool_start",
+      tool_call_id: "call_0",
+      tool_name: "python",
+      arguments: {},
+    },
+  });
+  replay.applyChunk({
+    _toolEvent: {
+      type: "tool_end",
+      tool_call_id: "call_0",
+      result: 'done\n__IMAGES__:["plot_0.png"]',
+    },
+  });
+
+  const parts = replay.content() as Array<Record<string, unknown>>;
+  const card = parts.find((part) => part.type === "tool-call")!;
+  assert.deepEqual(
+    card.result,
+    { text: "done", images: ["plot_0.png"], sessionId: "sess_ran", files: [] },
+    "the replayed card must carry the run's session, split out of the wire's marker",
   );
 });

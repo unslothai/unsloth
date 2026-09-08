@@ -869,11 +869,18 @@ function scheduleGenerationRecovery(
     // cursor were never folded here, so what the closing tab timed is all anyone will ever know about
     // those groups, and a group this reader DOES watch has to land in the next slot instead of
     // overwriting one it inherited.
+    // Read lazily, at whichever frame needs it, so filling it in below still reaches every frame after
+    // this one. One holder for BOTH constructions: the accumulator is rebuilt mid-follow when storage
+    // holds nothing yet, and a fresh literal there would hand the new one back an option it has already
+    // been folding frames with -- a python card that loses WHICH session ran names a folder from the
+    // reader's current scope instead of the run's.
+    const replayOptions: { sandboxSessionId?: string } = {};
     let replay = createRecoveryReplay(
       storedMessage.content,
       Array.isArray(metadata.reasoningDurations)
         ? (metadata.reasoningDurations as number[])
         : undefined,
+      replayOptions,
     );
     let completionTokens: number | undefined;
     let recoveryUsage:
@@ -1020,6 +1027,11 @@ function scheduleGenerationRecovery(
         for await (const update of followChatGenerationRun(runId, {
           replayFrom: cursor,
         })) {
+          // The run's own sandbox session, from the first frame that carries a run at all: a chart saved
+          // under the RUN's session id then opens as an image instead of a path in whatever scope this tab
+          // happens to be on.
+          replayOptions.sandboxSessionId ??=
+            update.run.requestPayload.session_id;
           if (!identityValidated) {
             if (
               update.run.threadId !== threadId ||
@@ -1039,7 +1051,11 @@ function scheduleGenerationRecovery(
                 // Continue sends the old partial as an assistant prefill. The server-owned placeholder is
                 // empty until the first client save, so a reload before that save seeds replay from the
                 // request instead.
-                replay = createRecoveryReplay(lastRequestMessage.content);
+                replay = createRecoveryReplay(
+                  lastRequestMessage.content,
+                  undefined,
+                  replayOptions,
+                );
               }
             }
             identityValidated = true;
