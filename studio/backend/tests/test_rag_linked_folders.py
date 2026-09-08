@@ -2324,6 +2324,36 @@ def test_a_project_recreated_during_delete_keeps_its_rag_scope(rag_home, monkeyp
 
 
 @requires_sqlite_vec
+def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
+    rag_home, monkeypatch
+):
+    """The purge deletes the whole scope, so the retirement bound is moot unless it is skipped.
+
+    The reconciler already refuses to purge a scope whose owner exists; this is the same
+    guard on the delete route, which reached the purge unconditionally.
+    """
+    from routes import chat_history
+
+    scope = store.project_scope("p1")
+    source = rag_home / "relinked-by-the-new-project"
+    source.mkdir()
+    seen = {"checks": 0}
+
+    def recreated_after_the_check(project_id):
+        # gone for the check that decides to retire, back by the time the purge asks
+        seen["checks"] += 1
+        return None if seen["checks"] == 1 else {"id": project_id}
+
+    folder = folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(source))
+    monkeypatch.setattr(chat_history, "get_chat_project", recreated_after_the_check)
+
+    chat_history._delete_project_rag_sources("p1")
+
+    assert folder_sync.get_folder(folder["id"]) is not None
+    assert seen["checks"] == 2
+
+
+@requires_sqlite_vec
 def test_reconciliation_restores_a_scope_whose_project_came_back(rag_home):
     scope = store.project_scope("p1")
     source = rag_home / "recreated-project"

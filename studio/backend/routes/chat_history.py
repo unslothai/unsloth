@@ -1147,8 +1147,12 @@ def _delete_project_rag_sources(project_id: str) -> None:
         if get_chat_project(project_id) is not None:
             return
         folder_sync.retire_scope(scope, owned)
-    if rag_db.rag_available():
-        folder_sync.delete_retired_scope(scope)
+        # The purge deletes every folder and document under the scope, `owned` or not, so
+        # sparing the new folders above buys nothing unless it is skipped too. Recheck rather
+        # than bound it: a recreated project wants its scope back whole, and the periodic
+        # reconciler already refuses to purge a scope whose owner exists.
+        if rag_db.rag_available() and get_chat_project(project_id) is None:
+            folder_sync.delete_retired_scope(scope)
 
 
 @router.delete("/projects/{project_id}", response_model = ChatProjectDeleted)
