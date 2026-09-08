@@ -13,6 +13,7 @@ import {
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
+import { showCarveoutAdvice } from "@/features/igpu-carveout";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
@@ -292,7 +293,12 @@ export async function loadModel(
         }),
         signal: options?.signal,
       });
-      return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+      const loaded = await parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+      // Absent on nearly every load, and the store ignores anything malformed, so
+      // this is unconditional rather than guarded. Never blocks: the model is
+      // already resident by the time this runs.
+      showCarveoutAdvice(loaded.carveout_advice);
+      return loaded;
     },
   );
 }

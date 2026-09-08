@@ -624,6 +624,17 @@ class XetNoticeResponse(BaseModel):
     limit: int
 
 
+class IgpuCarveoutNoticeDismissPayload(BaseModel):
+    # The GPU allocation the user is dismissing at, so raising it later and hitting
+    # the ceiling again can say so once more. Absent means "dismiss at whatever is
+    # already recorded", which never lowers it.
+    current_gb: Optional[float] = None
+
+
+class IgpuCarveoutNoticeResponse(BaseModel):
+    dismissed_at_gb: Optional[float] = None
+
+
 class ChatPreferencesPayload(BaseModel):
     show_model_disclaimer: StrictBool
 
@@ -1183,6 +1194,31 @@ def post_xet_notice_reserve(
             log = logger,
         ) from exc
     return XetNoticeResponse(**result)
+
+
+@router.post("/igpu-carveout-notice/dismiss", response_model = IgpuCarveoutNoticeResponse)
+def post_igpu_carveout_notice_dismiss(
+    payload: IgpuCarveoutNoticeDismissPayload,
+    current_subject: str = Depends(get_current_subject),
+) -> IgpuCarveoutNoticeResponse:
+    """Stop offering the integrated-GPU memory advice at this allocation.
+
+    POST because it writes. Stored server-side rather than in the browser: an
+    Unsloth origin is not stable, so a per-origin store would hand out a fresh
+    notice every time the port moved.
+    """
+    from utils.igpu_carveout_notice_settings import dismiss_notice
+    try:
+        stored = dismiss_notice(payload.current_gb)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not dismiss the GPU memory notice."),
+            event = "settings.dismiss_igpu_carveout_notice_failed",
+            log = logger,
+        ) from exc
+    return IgpuCarveoutNoticeResponse(dismissed_at_gb = stored)
 
 
 @router.get("/chat-preferences", response_model = ChatPreferencesResponse)

@@ -23,6 +23,7 @@ import {
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
+import { IgpuCarveoutDialog } from "@/features/igpu-carveout";
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
@@ -543,6 +544,9 @@ function RootLayout() {
       <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
       <TransformersUpgradeDialog />
+      {/* Advisory after a load on an integrated GPU whose dedicated memory is
+          smaller than the model; shows at most once per allocation. */}
+      <IgpuCarveoutDialog />
       {/* At the root, not under /chat: a swap can start from the Hub too. */}
       <StopRunningChatsDialog />
       {hideNavbar ? (

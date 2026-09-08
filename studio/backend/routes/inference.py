@@ -6527,6 +6527,10 @@ def _gguf_load_response(
         # weights outgrow fast memory, so the client can say why generation is slow.
         # getattr: older/custom backend doubles predate this additive field.
         memory_warning = getattr(llama_backend, "last_load_warning", None),
+        # Also advisory and also usually None: the integrated GPU's dedicated memory
+        # is smaller than this model's weights, which the user can change and we
+        # cannot. getattr for the same reason as above.
+        carveout_advice = getattr(llama_backend, "last_carveout_advice", None),
         **_llama_runtime_fields(llama_backend),
     )
 
