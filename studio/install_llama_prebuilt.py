@@ -4247,37 +4247,52 @@ def _confirmed_reparse_point(path: Path) -> bool:
         return False
 
 
-def blocked_replace_hint(winerror: object, path: Path) -> str:
-    """Why a replace was blocked, chosen by the error Windows actually returned.
+def blocked_replace_cause(winerror: object) -> str:
+    """What blocked a replace, per the error Windows actually returned.
 
-    32 is a held handle and 145 is ERROR_DIR_NOT_EMPTY. 5 is both: Defender and
-    the indexer report it (``activate_staged_dir``, ``is_busy_lock_error``) and so
-    do broken ACLs (#9928), so it names both causes and carries the repair for the
-    second. Printed, never run.
+    32 is a held handle and 145 is ERROR_DIR_NOT_EMPTY. 5 is both: Defender and the
+    indexer report it (``activate_staged_dir``, ``is_busy_lock_error``) and so do
+    broken ACLs (#9928). Cause only -- the repair for the ACL case is
+    ``blocked_replace_hint``, which is earned once the retries are spent.
     """
     if winerror == 5:
-        lead = (
-            "access is denied -- usually a scanner, indexer or running process still "
-            "holding a handle, which clears on its own. If the retries do not clear it, "
-        )
-        antivirus = "Antivirus or Controlled folder access can deny it too"
-        if _confirmed_reparse_point(path):
-            # takeown /R walks through a linked root and icacls resolves one without
-            # /L, so the repair would rewrite a --with-llama-cpp-dir tree we do not own.
-            return (
-                f"{lead}the permissions are broken on {path} or on what it links to. That "
-                f"tree is not managed here, so repair it at the source. {antivirus}"
-            )
         return (
-            f"{lead}this tree's permissions are broken; in an elevated PowerShell, run "
-            "each command:\n"
-            f'takeown /F "{path}" /R /D Y\n'
-            f'icacls "{path}" /reset /T\n'
-            f"{antivirus}"
+            "access is denied -- usually a scanner, indexer or running process still "
+            "holding a handle"
         )
     if winerror == 145:
         return "the directory is not empty yet -- an earlier copy is still being removed"
     return "a scanner is likely still holding the install open"
+
+
+def blocked_replace_hint(winerror: object, path: Path) -> str:
+    """``blocked_replace_cause`` plus, for a denied rename, how to repair it.
+
+    Printed once the backoff is spent, never per retry: most of these clear on their
+    own, and a recursive takeown/icacls is not something to put in front of a user
+    whose install is about to succeed. Printed, never run.
+    """
+    cause = blocked_replace_cause(winerror)
+    if winerror != 5:
+        return cause
+    antivirus = "Antivirus or Controlled folder access can deny this path too"
+    if _confirmed_reparse_point(path):
+        # takeown /R walks through a linked root and icacls resolves one without /L,
+        # so the repair would rewrite a --with-llama-cpp-dir tree we do not own.
+        return (
+            f"{cause}, but it did not clear: the permissions are broken on {path} or on "
+            f"what it links to. That tree is not managed here, so repair it at the "
+            f"source. {antivirus}"
+        )
+    return (
+        f"{cause}, but it did not clear, so this tree's permissions are broken. In an "
+        "elevated PowerShell, run each command:\n"
+        f'takeown /F "{path}" /R /D Y\n'
+        # /C, as in #9928: without it icacls stops at the first file it cannot read,
+        # which on a tree this broken is usually the first one.
+        f'icacls "{path}" /reset /T /C\n'
+        f"{antivirus}"
+    )
 
 
 def replace_with_busy_retry(
@@ -4288,9 +4303,9 @@ def replace_with_busy_retry(
 ) -> None:
     """``os.replace``, retried against transient Windows sharing violations.
 
-    WinError 5/32/145 blocks the rename and usually clears in a second or two,
-    but the cause differs per code, so the retry line says which (see
-    ``blocked_replace_hint``). Without a backoff that turns an update
+    WinError 5/32/145 blocks the rename and usually clears in a second or two, but
+    the cause differs per code, so the retry line says which and the last line adds
+    the repair (see ``blocked_replace_cause``). Without a backoff that turns an update
     into a failure, and on the aside-move of the *existing* install that is the
     failure this installer most needs to avoid. Mirrors the Node installer's
     ``_replace_with_retry``. Other errors raise at once, and POSIX never
@@ -4306,12 +4321,22 @@ def replace_with_busy_retry(
             return
         except OSError as exc:
             transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
-            if not transient or attempt == attempts - 1:
+            if not transient:
                 raise
-            # src, not dst: the aside-move's dst is a rollback path that does not exist yet.
+            if attempt == attempts - 1:
+                # src, not dst: the aside-move's dst is a rollback path that does not
+                # exist yet. log_lines so every line keeps the [llama-prebuilt] prefix.
+                log_lines(
+                    (
+                        f"rename {src.name} -> {dst.name} still blocked ({exc.winerror}) "
+                        f"after {attempts} attempts -- "
+                        f"{blocked_replace_hint(exc.winerror, src)}"
+                    ).splitlines()
+                )
+                raise
             log(
                 f"rename {src.name} -> {dst.name} blocked ({exc.winerror}), retrying in "
-                f"{delay:.2f}s -- {blocked_replace_hint(exc.winerror, src)}"
+                f"{delay:.2f}s -- {blocked_replace_cause(exc.winerror)}"
             )
             time.sleep(delay)
             delay = min(delay * 2, 4.0)

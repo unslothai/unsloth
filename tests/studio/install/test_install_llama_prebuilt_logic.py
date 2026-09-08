@@ -42,6 +42,7 @@ activate_staged_dir = INSTALL_LLAMA_PREBUILT.activate_staged_dir
 create_install_staging_dir = INSTALL_LLAMA_PREBUILT.create_install_staging_dir
 replace_with_busy_retry = INSTALL_LLAMA_PREBUILT.replace_with_busy_retry
 blocked_replace_hint = INSTALL_LLAMA_PREBUILT.blocked_replace_hint
+blocked_replace_cause = INSTALL_LLAMA_PREBUILT.blocked_replace_cause
 remove_tree_logged = INSTALL_LLAMA_PREBUILT.remove_tree_logged
 prune_stale_install_side_paths = INSTALL_LLAMA_PREBUILT.prune_stale_install_side_paths
 sha256_file = INSTALL_LLAMA_PREBUILT.sha256_file
@@ -1068,11 +1069,12 @@ def test_blocked_replace_hint_offers_the_acl_repair_only_for_access_denied(tmp_p
     assert "access is denied" in denied
     assert "scanner" in denied
     assert f'takeown /F "{target}" /R /D Y' in denied
-    assert f'icacls "{target}" /reset /T' in denied
-    # One command per line, as install.ps1 prints them: pasteable as-is.
+    # /C, as #9928 used: icacls stops at the first unreadable file without it.
+    assert f'icacls "{target}" /reset /T /C' in denied
+    # One command per line, as install.ps1 prints them.
     command_lines = [line.strip() for line in denied.splitlines()]
     assert f'takeown /F "{target}" /R /D Y' in command_lines
-    assert f'icacls "{target}" /reset /T' in command_lines
+    assert f'icacls "{target}" /reset /T /C' in command_lines
 
     not_empty = blocked_replace_hint(145, target)
     assert "scanner" not in not_empty
@@ -1112,13 +1114,13 @@ def test_blocked_replace_hint_keeps_the_acl_repair_when_the_path_cannot_be_probe
 
     denied = blocked_replace_hint(5, target)
     assert f'takeown /F "{target}" /R /D Y' in denied
-    assert f'icacls "{target}" /reset /T' in denied
+    assert f'icacls "{target}" /reset /T /C' in denied
 
 
-def test_replace_with_busy_retry_reports_denied_access_as_permissions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """The retry line itself has to carry the ACL hint, not just the helper."""
+def _denied_replace_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, clears_after: int | None
+) -> tuple[list[str], Path, Path]:
+    """Drive replace_with_busy_retry against WinError 5, collecting what it logged."""
     source = tmp_path / "src"
     source.mkdir()
     (source / "payload.txt").write_text("payload\n")
@@ -1129,27 +1131,60 @@ def test_replace_with_busy_retry_reports_denied_access_as_permissions(
 
     def access_denied(src, dst):
         attempts["count"] += 1
-        if attempts["count"] < 2:
-            exc = OSError(errno.EACCES, "Access is denied")
-            exc.winerror = 5
-            raise exc
-        return original_replace(src, dst)
+        if clears_after is not None and attempts["count"] > clears_after:
+            return original_replace(src, dst)
+        exc = OSError(errno.EACCES, "Access is denied")
+        exc.winerror = 5
+        raise exc
 
     logged: list[str] = []
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "nt")
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", access_denied)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "log", logged.append)
+    return logged, source, destination
+
+
+def test_replace_with_busy_retry_does_not_advertise_the_acl_repair_while_retrying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A lock that clears must never leave a recursive takeown/icacls on screen.
+
+    Most WinError 5s here are a scanner and resolve in a second or two, so a repair
+    printed per retry tells a user whose install then succeeds to reset ownership
+    and ACLs across the whole tree for nothing.
+    """
+    logged, source, destination = _denied_replace_run(tmp_path, monkeypatch, clears_after = 2)
 
     replace_with_busy_retry(source, destination)
 
     assert (destination / "payload.txt").read_text() == "payload\n"
     retry_lines = [line for line in logged if "blocked (5)" in line]
     assert retry_lines, logged
-    assert "takeown" in retry_lines[0]
+    assert "access is denied" in retry_lines[0]
+    assert not [line for line in logged if "takeown" in line or "icacls" in line], logged
+
+
+def test_replace_with_busy_retry_prints_the_acl_repair_once_when_the_retries_are_spent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """#9928: the repair is earned only after the backoff fails, and then just once."""
+    logged, source, destination = _denied_replace_run(tmp_path, monkeypatch, clears_after = None)
+
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 4)
+
+    assert [line for line in logged if "takeown" in line] == [
+        f'takeown /F "{source}" /R /D Y'
+    ]
+    assert [line for line in logged if "icacls" in line] == [
+        f'icacls "{source}" /reset /T /C'
+    ]
     # src, not dst: the aside-move's dst does not exist yet.
-    assert f'"{source}"' in retry_lines[0]
-    assert f'"{destination}"' not in retry_lines[0]
+    assert not [line for line in logged if str(destination) in line]
+    # log_lines, not one embedded-newline log call, so every line keeps the prefix.
+    assert not [line for line in logged if "\n" in line], logged
+    assert [line for line in logged if "still blocked (5) after 4 attempts" in line]
 
 
 def test_replace_with_busy_retry_does_not_retry_a_posix_permission_error(
