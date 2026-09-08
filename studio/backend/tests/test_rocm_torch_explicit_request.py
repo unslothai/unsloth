@@ -404,7 +404,8 @@ def _cuda_restore_block() -> str:
     lines = install_sh.read_text(encoding = "utf-8").splitlines()
     start = next(
         (
-            i for i, line in enumerate(lines)
+            i
+            for i, line in enumerate(lines)
             if line.startswith('if [ "$_torch_index_pinned" = false ]')
             and "_rocm_torch_explicitly_requested" in "".join(lines[i : i + 2])
         ),
@@ -425,22 +426,24 @@ def _index_after_the_guard(env: str, resolved: str, cuda_answer: str) -> str:
     """
     import subprocess
 
-    script = "\n".join([
-        _shell_function("_rocm_torch_explicitly_requested"),
-        "_has_usable_nvidia_gpu() { return 0; }",
-        f'get_torch_index_url() {{ echo {cuda_answer!r}; }}',
-        "_torch_index_pinned=false",
-        "SKIP_TORCH=false",
-        f'TORCH_INDEX_URL={resolved!r}',
-        f"{env} true",
-        _cuda_restore_block(),
-        'printf "%s\\n" "$TORCH_INDEX_URL"',
-    ])
+    script = "\n".join(
+        [
+            _shell_function("_rocm_torch_explicitly_requested"),
+            "_has_usable_nvidia_gpu() { return 0; }",
+            f"get_torch_index_url() {{ echo {cuda_answer!r}; }}",
+            "_torch_index_pinned=false",
+            "SKIP_TORCH=false",
+            f"TORCH_INDEX_URL={resolved!r}",
+            f"{env} true",
+            _cuda_restore_block(),
+            'printf "%s\\n" "$TORCH_INDEX_URL"',
+        ]
+    )
     out = subprocess.run(
-        ["bash", "-c", script], capture_output = True, text = True,
-        env = {**os.environ, **dict(
-            [env.split("=", 1)] if "=" in env else []
-        )},
+        ["bash", "-c", script],
+        capture_output = True,
+        text = True,
+        env = {**os.environ, **dict([env.split("=", 1)] if "=" in env else [])},
     )
     assert out.returncode == 0, out.stderr
     return out.stdout.strip()
@@ -454,20 +457,28 @@ def test_a_dead_end_amd_route_keeps_cuda():
     at the cpu index. The request asked for a swap; handing back CPU torch on a machine
     with a working NVIDIA GPU is a downgrade, and is the outcome the PR description
     says this feature must not have."""
-    assert _index_after_the_guard(
-        "UNSLOTH_FORCE_ROCM_TORCH=1",
-        resolved = "https://download.pytorch.org/whl/cpu",
-        cuda_answer = _CUDA,
-    ) == _CUDA
+    assert (
+        _index_after_the_guard(
+            "UNSLOTH_FORCE_ROCM_TORCH=1",
+            resolved = "https://download.pytorch.org/whl/cpu",
+            cuda_answer = _CUDA,
+        )
+        == _CUDA
+    )
 
 
 def test_a_resolved_rocm_index_is_left_alone():
     """The control that makes the test above mean something: when the request DID
     reach ROCm wheels, the guard must not undo it."""
     rocm = "https://repo.amd.com/rocm/whl/gfx1151"
-    assert _index_after_the_guard(
-        "UNSLOTH_FORCE_ROCM_TORCH=1", resolved = rocm, cuda_answer = _CUDA,
-    ) == rocm
+    assert (
+        _index_after_the_guard(
+            "UNSLOTH_FORCE_ROCM_TORCH=1",
+            resolved = rocm,
+            cuda_answer = _CUDA,
+        )
+        == rocm
+    )
 
 
 def test_a_deliberate_cpu_install_without_the_request_is_untouched():
