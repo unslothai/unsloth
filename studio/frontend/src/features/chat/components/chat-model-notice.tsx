@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { publicModelId } from "@/features/hub/lib/model-identity";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   type ChatHistoryUpdatedDetail,
@@ -82,7 +83,7 @@ export function ChatModelNotice({
   if (!chatModelIsSelectable(createdModel.modelId, selectableModelIds)) {
     return null;
   }
-  const label = compareModelDisplayName(createdModel.modelId);
+  const label = compareModelDisplayName(publicModelId(createdModel.modelId));
   return (
     // Positioned, not in flow. The chat header is `absolute ... z-40` with an opaque `bg-background`,
     // so an in-flow sibling starts at y=0 UNDER it and the bar is invisible bar the 10px the

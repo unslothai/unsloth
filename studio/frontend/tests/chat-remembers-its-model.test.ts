@@ -25,6 +25,12 @@ const {
   createChatModelHistoryReader,
   resolveChatModelSwitchTarget,
 } = await import("../src/features/chat/components/chat-model-notice-switch.ts");
+const { compareModelDisplayName } = await import(
+  "../src/features/chat/lib/external-model-label.ts"
+);
+const { publicModelId } = await import(
+  "../src/features/hub/lib/model-identity.ts"
+);
 const { chatLocalModelOptions } = await import(
   "../src/features/chat/local-model-options.ts"
 );
@@ -228,6 +234,21 @@ test("a snapshot-path chat is already on its repo-id checkpoint", () => {
   assert.equal(
     chatModelIsResident(created, "unsloth/Other-GGUF", "Q4_K_M"),
     false,
+  );
+});
+
+test("a snapshot-path chat is labelled by its repo name, not the revision sha", () => {
+  const snapshotPath =
+    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
+  assert.equal(compareModelDisplayName(snapshotPath), "2f1c9ab");
+  assert.equal(
+    compareModelDisplayName(publicModelId(snapshotPath)),
+    "Repo-GGUF",
+  );
+  const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
+  assert.match(
+    body,
+    /compareModelDisplayName\(\s*publicModelId\(\s*createdModel\.modelId\s*\)\s*\)/,
   );
 });
 
