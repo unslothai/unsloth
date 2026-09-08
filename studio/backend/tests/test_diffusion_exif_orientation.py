@@ -27,7 +27,11 @@ PIL = pytest.importorskip("PIL.Image")
 RED, GREEN, BLUE, YELLOW = (220, 20, 20), (20, 200, 20), (20, 20, 220), (220, 200, 20)
 
 
-def _phone_photo_data_url(width: int = 64, height: int = 32, orientation: int = 6) -> str:
+def _phone_photo_data_url(
+    width: int = 64,
+    height: int = 32,
+    orientation: int = 6,
+) -> str:
     """A JPEG whose stored pixels are landscape, tagged for display rotated."""
     img = PIL.new("RGB", (width, height))
     img.paste(RED, (0, 0, width // 2, height // 2))
@@ -44,9 +48,11 @@ def _phone_photo_data_url(width: int = 64, height: int = 32, orientation: int = 
 def _quadrants(img) -> list:
     w, h = img.size
     names = {RED: "red", GREEN: "green", BLUE: "blue", YELLOW: "yellow"}
+
     def at(fx, fy):
         px = img.getpixel((int(w * fx), int(h * fy)))
         return names[min(names, key = lambda c: sum((a - b) ** 2 for a, b in zip(c, px)))]
+
     return [at(0.25, 0.25), at(0.75, 0.25), at(0.25, 0.75), at(0.75, 0.75)]
 
 
