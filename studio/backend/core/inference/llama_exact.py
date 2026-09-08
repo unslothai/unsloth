@@ -5,10 +5,11 @@
 
 A llama-server built with unslothai/llama.cpp#194 reads ``LLAMA_EXACT_CONCURRENCY`` from its OWN
 environment, and a sequence's generated tokens are then byte-identical however many chats share
-its cache. There is no flag for it, nothing in ``--help`` and nothing in ``/props``, and the
-server prints nothing at load when the mode is running, so a build that implements it is told
-apart from one that ignores the variable only by ``--preempt-ram``, which ships in the same
-fork.
+its cache. There is no flag for it and nothing in ``--help``; the running server reports the mode
+as ``exact_concurrency`` in ``/props`` (unslothai/llama.cpp#197), and that field is the only
+evidence Studio accepts. A build that ignores the variable starts all the same and says nothing,
+so it reads as not running the mode; ``--preempt-ram``, which ships in the same fork, is not a
+stand-in, since a build can carry the parking flag without the mode.
 
 Three values, because two cannot express "I would like this" against "I require this": ``off``
 (the default, the mode costing about 9 per cent of solo decode), ``auto`` (relaunch once without
