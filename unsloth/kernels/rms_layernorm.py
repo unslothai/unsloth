@@ -207,7 +207,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     def backward(ctx, dY: torch.Tensor):
         shape = dY.shape
         dim: int = shape[-1]
-        dY = dY.reshape(-1, dim)
+        dY = dY.reshape(-1, dim).contiguous()
         X, W, r = ctx.saved_tensors
         n_rows: int
         n_cols: int
