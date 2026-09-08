@@ -156,7 +156,19 @@ def _stream_events(
     tool loop and returns the final text alone, so a turn that never ran a
     tool is indistinguishable from one that did.
     """
-    headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        # tool_start / tool_end carry no `choices`, so /v1/chat/completions
+        # suppresses them for external clients and emits a clean OpenAI stream;
+        # the Studio frontend opts back in with this header
+        # (chat-api.ts, _ui_stream_events_enabled in routes/inference.py).
+        # Without it the tool turns below see an empty `finished` list, report
+        # "no tool_end event: the turn executed no tool", and the scenario exits
+        # non-zero on every real Studio, so the probe cannot measure the tool
+        # behaviour it drives the stream for.
+        "X-Unsloth-Events": "1",
+    }
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(
@@ -430,6 +442,15 @@ def chat(
         payload["enable_tools"] = True
         payload["enabled_tools"] = names
         payload["tool_choice"] = {"type": "function", "function": {"name": names[0]}}
+        # Nobody is at the keyboard. An unset permission_mode is read as "auto",
+        # and under auto web_search prompts as soon as the model supplies a url,
+        # since the tool then fetches that page (routes/inference.py,
+        # _confirm_gate_needs_stream). The approval would be written to the
+        # stream and waited on for _DECISION_TIMEOUT, an hour, against this
+        # script's 900s read timeout, so the turn would hang and then fail as a
+        # transport error. "off" disables the confirmation gate only; the
+        # python/terminal sandbox stays on, unlike "full" / bypass_permissions.
+        payload["permission_mode"] = "off"
         status, events, error = _stream_events(
             base_url, "/v1/chat/completions", payload, token = token
         )

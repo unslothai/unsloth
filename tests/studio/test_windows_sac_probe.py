@@ -621,7 +621,8 @@ def test_studio_logs_reach_the_evidence_only_through_the_backend_redactor(tmp_pa
     assert "Copy-Item -LiteralPath $studioLogs" not in ps1 and "Redact-Secrets" not in ps1
     assert (
         "redact_logs.py" in ps1
-        and "$python = Get-StudioPython" in ps1[ps1.index("function Invoke-Collect") :]
+        and "$python = Resolve-StudioPythonFor $dir"
+        in ps1[ps1.index("function Invoke-Collect") :]
     )
     assert "no managed interpreter to run the redactor" in ps1
     # The helper, driven against this checkout's backend on the canonical cases.
@@ -1665,8 +1666,125 @@ def test_the_prepare_timestamp_is_read_back_culture_invariantly():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
     assert "[datetime]::Parse($runBaseline.CapturedAt)" not in run
-    # The audit-policy cell and the Smart App Control cell, both of them.
-    assert run.count("[datetime]::Parse([string]$runBaseline.CapturedAt,") == 2
-    assert run.count("[cultureinfo]::InvariantCulture") == 2
+    # The audit-policy cell, the Smart App Control cell, and the window-start
+    # freshness guard, all three of them.
+    assert run.count("[datetime]::Parse([string]$runBaseline.CapturedAt,") == 3
+    # Four reads now: the two CapturedAt reboot checks, and the freshness guard,
+    # which parses window-start.txt and CapturedAt as a pair.
+    assert run.count("[cultureinfo]::InvariantCulture") == 4
     # Still gating the control, not a parse nobody reads.
     assert run.count("$bootedAt -and $preparedAt -and $bootedAt -gt $preparedAt") == 2
+
+
+def test_the_streamed_turns_opt_into_the_tool_control_frames(monkeypatch):
+    """/v1/chat/completions emits a clean OpenAI stream for external clients:
+    tool_start and tool_end carry no `choices`, so they are suppressed unless
+    the caller sends X-Unsloth-Events, which the Studio frontend does. Without
+    it chat() saw an empty `finished` list on every real Studio, reported 'no
+    tool_end event: the turn executed no tool', and the scenario exited nonzero
+    with the tool behaviour it exists to measure never observed."""
+    backend = (REPO_ROOT / "studio" / "backend" / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    # The gate this opts into, so the test fails if the backend renames it.
+    assert 'UI_STREAM_EVENTS_HEADER = "X-Unsloth-Events"' in backend
+    frontend = (
+        REPO_ROOT / "studio" / "frontend" / "src" / "features" / "chat" / "api" / "chat-api.ts"
+    ).read_text(encoding = "utf-8")
+    assert '"X-Unsloth-Events": "1"' in frontend
+
+    s = _load_scenario()
+    seen: dict[str, str] = {}
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __iter__(self):
+            return iter([b'data: {"type": "tool_end", "tool_name": "web_search", "result": "x"}\n',
+                         b"data: [DONE]\n"])
+
+    def fake_urlopen(req, timeout = None):
+        seen.update(req.headers)
+        return _Resp()
+
+    monkeypatch.setattr(s.urllib.request, "urlopen", fake_urlopen)
+    status, events, error = s._stream_events("http://x", "/v1/chat/completions", {}, token = "t")
+    # urllib title-cases header keys.
+    assert seen.get("X-unsloth-events") == "1", seen
+    assert status == 200 and error is None
+    assert any(e.get("type") == "tool_end" for e in events)
+
+
+def test_collect_reads_the_studio_logs_of_the_install_run_measured():
+    """Both the log root and the redactor interpreter went through
+    Get-StudioHome, so a collect from a shell without a custom
+    UNSLOTH_STUDIO_HOME looked under the legacy default: Studio's backend logs
+    were absent from the zip with nothing recording why, and no managed
+    interpreter was found to redact even the probe's own raw logs."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    assert "function Resolve-StudioHomeFor([string] $dir) {" in ps1
+    assert "function Resolve-StudioPythonFor([string] $dir) {" in ps1
+    helpers = ps1[ps1.index("function Resolve-StudioHomeFor") : ps1.index("function Test-StudioResponding")]
+    # Both derive from the venv run recorded, and both still fall back to the
+    # live search for an evidence directory that predates venv-selection.txt.
+    assert helpers.count("Resolve-VenvDir $dir") == 2
+    assert "return (Get-StudioHome)" in helpers and "return (Get-StudioPython)" in helpers
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    assert "$studioLogs = Join-Path (Resolve-StudioHomeFor $dir) 'logs'" in collect
+    assert "$python = Resolve-StudioPythonFor $dir" in collect
+    assert "Join-Path (Get-StudioHome) 'logs'" not in collect
+
+
+def test_run_refuses_an_event_window_older_than_its_own_baseline():
+    """prepare captures a fresh baseline for a reverted label and only reopens
+    the window at the very end, so a throw in between - a CodeIntegrity channel
+    it cannot raise, a missing -AuditPolicy, a policy that will not load -
+    leaves an unspent baseline beside the previous run's window-start.txt. The
+    spent-baseline guard passes on that, and collect then exported the reverted
+    run's events against the inventories taken now."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
+    assert "$runStartPath = Join-Path $dir 'window-start.txt'" in run
+    assert "$runStart -and $runPrepared -and $runStart -lt $runPrepared" in run
+    # Before anything is measured, and after the spent-baseline guard.
+    assert run.index("$runStartPath = Join-Path") < run.index("Write-Section 'Venv signature inventory'")
+    assert run.index("if ($runBaseline.RevertCompletedAt) {") < run.index("$runStartPath = Join-Path")
+    # collect must NOT gain the same guard: an operator who never collected the
+    # previous cycle can still collect it after a prepare failed.
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    assert "$runPrepared" not in collect
+    # And the window still opens last, after the positive control, so the
+    # control's own event stays outside the window it measures.
+    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    assert prepare.rindex("Test-AuditPolicyEvaluating") < prepare.index("'window-start.txt'")
+
+
+def test_the_unattended_tool_turns_never_wait_on_an_approval_nobody_reads():
+    """Opting into the control frames also opens the confirm gate: an unset
+    permission_mode is read as 'auto', and under auto web_search prompts as soon
+    as the model supplies a url. The approval is waited on for an hour against
+    this script's 900s read timeout, so the turn would hang and fail as a
+    transport error. 'off' disables the gate only; the sandbox stays on."""
+    scenario = (PROBE_DIR / "studio_scenario.py").read_text(encoding = "utf-8")
+    assert 'payload["permission_mode"] = "off"' in scenario
+    # Only on the tool turns, and beside the selection they gate.
+    tools = scenario[scenario.index("    if tools:") : scenario.index("        text = \"\"")]
+    assert 'payload["permission_mode"] = "off"' in tools
+    assert 'payload["permission_mode"] = "full"' not in scenario
+    # The sandbox stays on: neither of the two ways to drop it is set.
+    assert 'payload["bypass_permissions"]' not in scenario
+    # The backend meanings this relies on.
+    models = (REPO_ROOT / "studio" / "backend" / "models" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    assert '_KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")' in models
+    backend = (REPO_ROOT / "studio" / "backend" / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    assert 'if mode in ("off", "full"):' in backend

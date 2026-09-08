@@ -435,6 +435,33 @@ function Resolve-VenvDir([string] $dir) {
     return $VENV_DIR
 }
 
+# The Studio install run measured, derived from the venv it recorded. Both of
+# these went through Get-StudioHome, so a collect from a shell without a custom
+# UNSLOTH_STUDIO_HOME looked for Studio's logs under the legacy default: the
+# backend logs were then simply absent from the zip with nothing recording why,
+# and no managed interpreter was found to redact even the probe's own raw logs.
+# Deriving from the venv is also more accurate than Get-StudioHome on its own,
+# since Get-StudioPython already falls back to the legacy root.
+function Resolve-StudioHomeFor([string] $dir) {
+    $venv = Resolve-VenvDir $dir
+    if ($venv) {
+        $parent = Split-Path -Parent $venv
+        if ($parent) { return $parent }
+    }
+    return (Get-StudioHome)
+}
+
+function Resolve-StudioPythonFor([string] $dir) {
+    $venv = Resolve-VenvDir $dir
+    if ($venv) {
+        $py = Join-Path $venv 'Scripts\python.exe'
+        if (Test-Path -LiteralPath $py) { return $py }
+    }
+    # No recorded venv, or it is not on this machine: the live search, which is
+    # what every caller outside collect wants anyway.
+    return (Get-StudioPython)
+}
+
 function Test-StudioResponding([int] $port) {
     try {
         $r = Invoke-WebRequest -Uri "http://127.0.0.1:$port/api/liveness" -TimeoutSec 5 -UseBasicParsing
@@ -1171,6 +1198,32 @@ function Invoke-Run {
         if ($runBaseline.RevertCompletedAt) {
             throw "label '$Label' was reverted at $($runBaseline.RevertCompletedAt), so its baseline is spent and the event window on disk belongs to the run that was undone. Running now would file events from that window against this run's inventory. Run prepare for this label again (or use a new -Label) first."
         }
+        # The window on disk has to belong to THIS baseline, and the check above
+        # cannot see when it does not. prepare captures a fresh unspent baseline
+        # for a reverted label and only reopens the window at the very end, so a
+        # throw in between - a CodeIntegrity channel it cannot raise, an
+        # -AuditPolicy that is not there, a policy that will not load - leaves an
+        # unspent baseline beside the PREVIOUS run's window-start.txt, and the
+        # guard above passes on it. collect would then export the reverted run's
+        # events against the inventories taken here. A retry that reuses an
+        # unspent baseline keeps the window its first pass wrote, which is newer
+        # than that baseline, so re-preparing the same label is unaffected.
+        $runStartPath = Join-Path $dir 'window-start.txt'
+        if (Test-Path -LiteralPath $runStartPath) {
+            $runStart = $null
+            $runPrepared = $null
+            # Invariant, for the reason the two CapturedAt parses below give.
+            try {
+                $runStart = [datetime]::Parse(
+                    (Get-Content -LiteralPath $runStartPath -Raw).Trim(),
+                    [cultureinfo]::InvariantCulture)
+                $runPrepared = [datetime]::Parse([string]$runBaseline.CapturedAt,
+                    [cultureinfo]::InvariantCulture)
+            } catch { }
+            if ($runStart -and $runPrepared -and $runStart -lt $runPrepared) {
+                throw "the event window on disk opened at $($runStart.ToString('o')), before this label's baseline was captured at $($runPrepared.ToString('o')): prepare took a new baseline and then failed before it reopened the window, so collect would export the previous run's events against this run's inventory. Run prepare for label '$Label' again first."
+            }
+        }
         if ($runBaseline.AuditPolicyApplied) {
             Write-Section 'Audit policy still active'
             $state = Get-SacState
@@ -1679,12 +1732,16 @@ function Invoke-Collect {
     # raw-logs\ (the redirected Studio stdout and the scenario's console
     # output) goes through the same redactor and is never archived as is.
     $sources = @()
-    $studioLogs = Join-Path (Get-StudioHome) 'logs'
+    # The install run measured, not the one this shell resolves. See
+    # Resolve-StudioHomeFor: a collect after the supported between-stage reboot
+    # looked under the legacy default and shipped a zip with no backend logs and
+    # nothing saying so.
+    $studioLogs = Join-Path (Resolve-StudioHomeFor $dir) 'logs'
     if (Test-Path -LiteralPath $studioLogs) { $sources += $studioLogs }
     $rawLogs = Join-Path $dir 'raw-logs'
     if (Test-Path -LiteralPath $rawLogs) { $sources += $rawLogs }
     if ($sources.Count -gt 0) {
-        $python = Get-StudioPython
+        $python = Resolve-StudioPythonFor $dir
         if ($python) {
             $redactor = Join-Path $PSScriptRoot 'redact_logs.py'
             foreach ($source in $sources) {
