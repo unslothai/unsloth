@@ -934,8 +934,14 @@ function Install-UnslothStudio {
         param([string]$Reason)
         if ($script:StudioFinalPathWarned) { return }
         $script:StudioFinalPathWarned = $true
+        # "installation is unaffected" is what this used to promise, and it is a
+        # promise this line is not in a position to keep: the same security software
+        # that can stop a type being defined can also be acting on the rest of the
+        # run. What is true is the narrower thing, that the installer has a way to
+        # continue without it.
         Write-StudioLine "[WARN] Could not load the native path resolver ($Reason)." -ForegroundColor Yellow
-        Write-StudioLine "       Continuing with the PowerShell resolver; installation is unaffected." -ForegroundColor Yellow
+        Write-StudioLine "       Continuing with the PowerShell resolver, which cannot recover a path's" -ForegroundColor Yellow
+        Write-StudioLine "       stored casing or expand an 8.3 name, so paths are compared as written." -ForegroundColor Yellow
     }
 
     function Initialize-StudioFinalPathNativeType {
