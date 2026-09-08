@@ -3867,7 +3867,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
               status.supports_preserve_thinking ?? false,
             preserveThinking: resolvePreserveThinkingOnLoad(status),
             loadedContextLength: loadedContextFields(status).loadedContextLength,
-            loadedIsGguf: status.is_gguf ?? null,
+            loadedIsGguf: loadedContextFields(status).loadedIsGguf,
             loadedIsMultimodal: isMultimodalResponse(status),
             modelCapabilities: {
               isVision: status.is_vision ?? false,
@@ -4964,22 +4964,16 @@ export function createOpenAIStreamAdapter(
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
-      // Media turns use the legacy stream, so they must carry the same explicit
-      // compaction policy as text turns. Prefer the backend's loaded-model answer;
-      // catalog metadata is only a fallback while no backend answer has arrived.
-      // The pre-load classifier also covers a selected GGUF whose catalog row is
-      // not present yet (native path/variant or a .gguf checkpoint), while the
-      // shared helper keeps a stale local flag from affecting external models.
-      const isGgufForCompaction =
-        isServedByLlamaCpp({
-          loadedIsGguf: runtime.loadedIsGguf,
-          activeGgufVariant: runtime.activeGgufVariant,
-          activeNativePathToken: runtime.activeNativePathToken,
-          checkpoint: params.checkpoint,
-        }) ||
-        (runtime.loadedIsGguf == null &&
-          !isExternalModelId(params.checkpoint) &&
-          activeModel?.isGguf === true);
+      // The same owner the settings panel asks, so the body and the panel cannot disagree
+      // about the model they both describe. A catalog row would: /api/models/list can
+      // replace the row a load minted, and the variant / native path token still classify
+      // a GGUF the backend has not answered for yet.
+      const isGgufForCompaction = isServedByLlamaCpp({
+        loadedIsGguf: runtime.loadedIsGguf,
+        activeGgufVariant: runtime.activeGgufVariant,
+        activeNativePathToken: runtime.activeNativePathToken,
+        checkpoint: params.checkpoint,
+      });
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");

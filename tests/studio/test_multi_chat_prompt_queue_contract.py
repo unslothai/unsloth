@@ -604,7 +604,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "loadedIsMultimodal: state.loadedIsMultimodal" in CHAT_ADAPTER
     assert "loadedIsGguf: state.loadedIsGguf" in CHAT_ADAPTER
-    assert "loadedIsGguf: status.is_gguf ?? null" in lifecycle
+    assert "loadedIsGguf: loadedContextFields(status).loadedIsGguf" in lifecycle
     assert "queuedEmptyModelRuntime?.loadedIsMultimodal" in auto_load_merge
     assert "usesLocalModel:" in target
     assert "usePromptQueueUI.getState().byThreadId" in CONFIRM_MODEL_SWAP
