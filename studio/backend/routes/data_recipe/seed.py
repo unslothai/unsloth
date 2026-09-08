@@ -342,8 +342,8 @@ def inspect_seed_dataset(
         hf_env_offline() or isinstance(token, str)
     ):
         # Offline, `datasets` satisfies a streaming load from its own cache and the sentinel
-        # never reaches an authorization check. An explicit token that cannot reach the
-        # repo is the same leak online: the cache never consults the credential.
+        # never reaches an authorization check. A token that cannot reach the repo is the
+        # same leak online: the cache never consults the credential.
         raise HTTPException(
             status_code = 404,
             detail = "Dataset preview is not available without Hub authorization.",

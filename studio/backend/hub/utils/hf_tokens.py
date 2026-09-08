@@ -18,19 +18,11 @@ ANONYMOUS_CACHE_IDENTITY = "anon"
 
 
 class AmbientAuthorizedToken(str):
-    """An explicit token from a caller that is ALSO entitled to the ambient credential.
+    """A UI session's own saved token: entitled to ambient, so never behind the probe.
 
-    The UI sends the operator's own saved token on most Hub routes, so it arrives as a
-    plain string and is indistinguishable BY VALUE from an API key's token. Only the
-    caller class tells them apart, and that is exactly what ``allow_ambient_token``
-    carries, so it is recorded here rather than thrown away.
-
-    Without this, sending your own credential bought you strictly less than sending none:
-    a tokenless UI session keeps the host cache offline, while the same session with a
-    token saved in Settings had to prove reachability to a Hub it cannot reach, and lost
-    the GGUF variant list, the default chat template and the dataset format check on
-    repos already in its own cache. A subclass of ``str`` so every existing consumer,
-    fingerprint and cache key treats it as the string it is.
+    Indistinguishable by value from an API key's token; only ``allow_ambient_token`` tells
+    them apart. Sending your own credential must not buy less than sending none. ``str``
+    subclass so every consumer, fingerprint and cache key sees the string it is.
     """
 
     __slots__ = ()
@@ -53,11 +45,8 @@ _HF_TOKEN_ENV_KEYS = (
     "HUGGINGFACEHUB_API_TOKEN",
 )
 
-# ``auth_check`` has no timeout kwarg in the pinned Hub client, and neither does the
-# session under it: 0.x hands requests no timeout at all and 1.30's httpx client carries
-# ``Timeout(timeout=None)``. Call ``/auth-check`` through ``get_session().get`` with an
-# explicit ``timeout`` instead (same pattern as ``hf_token_validation._check_remote``), so
-# a stalled connection cannot leave orphan probe workers behind after the caller returns.
+# Neither auth_check nor the session under it takes a timeout (0.x passes requests none,
+# 1.30's httpx client carries Timeout(None)), so /auth-check is called directly instead.
 _REPO_ACCESS_PROBE_TIMEOUT_S = 10.0
 
 
@@ -87,8 +76,7 @@ def normalize_token(hf_token: HfTokenArg) -> HfTokenArg:
     if is_anonymous(hf_token):
         return False
     trimmed = (hf_token or "").strip() or None
-    # ``str.strip`` returns a plain ``str``, so trimming would quietly demote a UI
-    # session's token to an API key's and put it back behind the probe.
+    # str.strip returns a plain str, which would demote a UI session to an API key.
     if trimmed is not None and isinstance(hf_token, AmbientAuthorizedToken):
         return AmbientAuthorizedToken(trimmed)
     return trimmed
@@ -99,27 +87,16 @@ def is_anonymous(hf_token: HfTokenArg) -> bool:
     return hf_token is False
 
 
-# Positive and negative answers share this TTL: a revoked token must not keep
-# reading the host cache, and a flapping Hub must not be hit on every request.
+# Both signs: a revoked token must not keep reading, a flapping Hub must not be re-dialled.
 _REPO_ACCESS_TTL_S = 60.0
-# A probe that never reached the Hub got no answer *about the credential*, so it is not
-# worth a minute. The request in hand is still denied: fail closed, just not for long.
-#
-# Longer than _REPO_ACCESS_PROBE_TIMEOUT_S on purpose. At 5s against a stalled Hub the memo
-# expired before the next request could reach it -- a probe takes the full 10s and the memo
-# then lived 5 -- so only callers arriving inside a 5s window were spared and everyone else
-# re-dialled and paid another 10s. Measured steady state was one probe per 15s per key with
-# most requests stalling. Above the timeout the memo actually spans consecutive requests,
-# which is what this constant was for.
+# Says nothing about the credential. MUST exceed the probe timeout, or it expires before
+# the next request and every caller re-pays the stall.
 _REPO_ACCESS_UNREACHABLE_TTL_S = 30.0
 _REPO_ACCESS_CACHE_MAX = 1024
 _repo_access_cache: dict[tuple[str, str, str], tuple[float, bool]] = {}
 _repo_access_lock = threading.Lock()
-# One probe per key, not one per caller. The probe runs outside ``_repo_access_lock`` (it
-# is a network call and must not hold a lock every reader needs), so without this a cold
-# key with N concurrent callers opens N connections -- measured at 32/32, and 16/16 TCP
-# connections against a stalled Hub. Callers that arrive during a probe wait for its
-# answer.
+# One probe per key: the probe runs outside _repo_access_lock, so a cold key would
+# otherwise open a connection per caller.
 _repo_access_inflight: dict[tuple[str, str, str], threading.Lock] = {}
 
 
@@ -127,10 +104,8 @@ class _ProbeTimedOut(Exception):
     """Raised when /auth-check could not be asked at all, rather than answering."""
 
 
-# A refusal, a DNS failure and a dead proxy are as much "could not ask" as a stall is, and
-# the asymmetry was visible: a proxy that hung denied a valid token briefly, while a proxy
-# that refused denied it for a full minute. Both mean the Hub never judged the credential.
-# Name-based rather than by class, so neither client has to be imported to classify one.
+# A refusal, DNS failure or dead proxy is "could not ask" exactly as a stall is. By name,
+# so neither client must be imported.
 _UNREACHABLE_EXC_NAMES = frozenset(
     {
         "Timeout",
@@ -151,16 +126,12 @@ def _is_probe_timeout(exc: BaseException) -> bool:
     """Could not ask, as opposed to asked and told no. Named for its original narrow case."""
     for cls in type(exc).__mro__:
         name = cls.__name__
-        # Bare builtins.ConnectionError is a real transport failure and is worth catching,
-        # but only the client packages below may claim the looser names.
+        # Builtin ConnectionError is a real transport failure; looser names need a package.
         if name in {"Timeout", "ReadTimeout", "ConnectTimeout", "ConnectionError"}:
             return True
         module = getattr(cls, "__module__", "") or ""
-        # Top-level package, not a dotted prefix. httpx's exceptions live in ``httpx``
-        # itself, so ``"httpx."`` matched none of them: PoolTimeout, WriteTimeout and a
-        # bare TimeoutException all read as hard denials and took the full TTL instead of
-        # the short one. That is the branch where the session IS httpx (hub 1.x), and a
-        # pool timeout is what a burst of concurrent probes produces.
+        # Top-level package, not a dotted prefix: httpx's live in "httpx" itself, so
+        # "httpx." matched none of PoolTimeout, WriteTimeout, TimeoutException.
         if module.split(".", 1)[0] in _UNREACHABLE_PACKAGES and (
             "Timeout" in name or name in _UNREACHABLE_EXC_NAMES
         ):
@@ -183,40 +154,21 @@ def cache_reads_authorized(
 ) -> bool:
     """Whether this caller may read the host Hub disk cache for *repo_id*.
 
-    ``is_anonymous`` authenticates the caller class, not the credential: any
-    token-shaped string leaves the sentinel and would otherwise take the disk
-    fast paths. Ambient ``None`` is the operator and may use the cache. An
-    explicit token is authorized only after ``auth_check`` confirms it can
-    read the named repository. ``repo_info`` is not enough: gated public
-    metadata still returns for an invalid token, which would serve the host
-    cache to a credential that cannot fetch the files.
+    ``is_anonymous`` authenticates the caller class, not the credential: any token-shaped
+    string leaves the sentinel and would otherwise take the disk fast paths. ``repo_info``
+    is not enough to replace the probe, since gated public metadata still returns for an
+    invalid token.
 
-    What the probe does and does not establish, measured against the live Hub:
-    ``/auth-check`` answers "is this repo reachable", not "is this credential
-    valid". A PUBLIC repo returns 200 for any string, and for no credential at
-    all, so for public repos this authorizes everyone. That is the intended
-    scope: the reads being closed are of cached PRIVATE and GATED repos, which
-    is exactly where the endpoint discriminates (401 unauthenticated, 403 with
-    a token that lacks access, 404 for a private repo it cannot see). Do not
-    read a ``True`` from here as "this token is valid".
+    A ``True`` here does NOT mean "this token is valid": /auth-check answers "is this repo
+    reachable", and a public repo returns 200 for any string and for no credential at all.
+    It discriminates on private and gated repos, which is where the cached reads are.
 
-    Offline: the Hub probe cannot run, so an explicit token is denied unless a
-    recent online probe is still memoized (see ``_REPO_ACCESS_TTL_S``). That is
-    intentional fail-closed: without wire proof, the cache must not answer for a
-    credential that might be a token-shaped string from an API key. UI sessions
-    keep ``None`` and still read the cache offline.
-
-    A local filesystem path is not a repo id and is denied without a probe. Only
-    ``None`` and the empty string mean ambient; every other non-``str`` is denied,
-    so a value that reaches here untyped cannot fall through to the ambient answer.
+    Offline an explicit token is denied unless a recent probe is memoized: fail closed
+    without wire proof. Ambient ``None`` still reads the cache offline.
     """
     if is_anonymous(hf_token):
         return False
-    # Deny-by-default on the type, not allow-by-default: ``not isinstance(str)`` would
-    # hand the ambient answer to True, 1, b"...", or any object a future untyped
-    # ``payload.get("hf_token")`` puts here. Nothing reaches this today -- every HTTP
-    # boundary is a pydantic ``Optional[str]``, which rejects rather than coerces -- and
-    # this keeps it that way.
+    # Deny by default: `not isinstance(str)` gave the ambient answer to True, 1, b"...".
     if hf_token is None:
         return True
     if not isinstance(hf_token, str):
@@ -224,19 +176,14 @@ def cache_reads_authorized(
     if not hf_token:
         return True
     if isinstance(hf_token, AmbientAuthorizedToken):
-        # A UI session that also sent the operator's own saved token. Sending your own
-        # credential must not buy you less than sending none, and a tokenless session of
-        # the same caller class reads the cache from the ``None`` branch above.
+        # Same caller class reads the cache tokenless from the None branch above.
         return True
     repo = (repo_id or "").strip()
     if not repo:
         return False
     if _is_local_path(repo):
-        # ``auth_check`` does not validate its argument, it interpolates it into
-        # ``{endpoint}/api/{repo_type}s/{repo_id}/auth-check``. Probing a local path would
-        # put that path on the wire to the Hub with the caller's bearer token attached,
-        # for a round trip whose only possible answer is "no". The host Hub cache is not
-        # what a local path names, so there is nothing here to authorize.
+        # Unvalidated in the URL, so probing puts the caller's path on the wire with their
+        # bearer token, for an answer that can only be no.
         return False
     return _explicit_token_reaches_repo(repo, hf_token, repo_type)
 
@@ -255,9 +202,7 @@ def _hub_offline() -> bool:
         from utils.utils import hf_env_offline
         return hf_env_offline()
     except Exception:
-        # Fail-open on the *offline question* only: authorization still needs a probe to
-        # succeed. Logged because deciding "online" inside an air-gapped install means
-        # every explicit-token request pays the full probe timeout.
+        # Fail open on the offline question only; authorization still needs a live probe.
         import logging
         logging.getLogger(__name__).debug(
             "Could not determine Hub offline state; assuming online", exc_info = True
@@ -282,12 +227,9 @@ def _explicit_token_reaches_repo(repo_id: str, token: str, repo_type: str) -> bo
     if cached is not None:
         return cached
     if _hub_offline():
-        # No wire to verify against; only a memo from a recent online probe counts.
         return False
 
     with _inflight_lock(key):
-        # Filled while this caller waited for whoever held the lock: take their answer
-        # rather than dialling the Hub a second time for the same question.
         cached = _cached_repo_access(key, time.monotonic())
         if cached is not None:
             return cached
@@ -298,13 +240,9 @@ def _explicit_token_reaches_repo(repo_id: str, token: str, repo_type: str) -> bo
         except _ProbeTimedOut:
             allowed = False
             timed_out = True
-        # AFTER the probe, not before it. Reading the clock first and storing
-        # ``start + TTL`` means a probe slower than the TTL memoizes an entry that is
-        # already expired, so every later request re-probes and the memo never takes
-        # effect -- exactly the regime a stalled Hub creates.
+        # AFTER the probe: `start + TTL` memoizes an already-expired entry once the probe
+        # outlasts the TTL, which a stalled Hub does.
         finished = time.monotonic()
-        # A timed-out probe never heard "no" from the Hub, so it says nothing about the
-        # credential and must not deny a valid token for the full TTL.
         if not timed_out:
             timed_out = not allowed and (finished - started) >= _REPO_ACCESS_PROBE_TIMEOUT_S
         expiry = finished + (_REPO_ACCESS_UNREACHABLE_TTL_S if timed_out else _REPO_ACCESS_TTL_S)
@@ -321,8 +259,6 @@ def _evict_repo_access_locked() -> None:
     for expired in [k for k, (deadline, _) in _repo_access_cache.items() if deadline <= now]:
         _repo_access_cache.pop(expired, None)
     if len(_repo_access_cache) >= _REPO_ACCESS_CACHE_MAX:
-        # Still full of live entries: clear rather than grow without bound. Dropping a
-        # valid answer costs one probe; keeping every answer costs memory forever.
         _repo_access_cache.clear()
 
 
@@ -331,8 +267,6 @@ def _inflight_lock(key: tuple[str, str, str]) -> threading.Lock:
         lock = _repo_access_inflight.get(key)
         if lock is None:
             if len(_repo_access_inflight) >= _REPO_ACCESS_CACHE_MAX:
-                # Waiters already hold their own reference, so clearing the registry only
-                # risks an extra probe, never a lost wakeup.
                 _repo_access_inflight.clear()
             lock = threading.Lock()
             _repo_access_inflight[key] = lock
@@ -342,12 +276,9 @@ def _inflight_lock(key: tuple[str, str, str]) -> threading.Lock:
 def _probe_endpoint() -> str:
     """The endpoint the rest of the backend means, not the raw env value.
 
-    ``HfApi().endpoint`` hands back ``HF_ENDPOINT`` verbatim, so a mirror configured as
-    ``hf-mirror.example`` with no scheme builds a URL both clients reject outright, and
-    every explicit-token cache read on that machine is denied without a request ever
-    leaving the process. ``hf_endpoint_url`` is where Unsloth already normalises that, and
-    says so: "Mirror users point this elsewhere". Fall back rather than fail if the import
-    is unavailable, since this module is imported beneath that one.
+    ``HfApi().endpoint`` returns ``HF_ENDPOINT`` verbatim, so a scheme-less mirror builds a
+    URL both clients reject and every probe on that machine is denied. ``hf_endpoint_url``
+    is where the backend already normalises it; falls back since this module sits beneath.
     """
     try:
         from utils.utils import hf_endpoint_url
@@ -364,19 +295,12 @@ def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:
 
         if repo_type not in constants.REPO_TYPES:
             return False
-        # Quoted, because this builds the URL itself rather than handing the repo id to
-        # auth_check. A raw "?" or "#" in the id ends the path early, so the request
-        # would land on /api/models/{id} instead, which answers 200 with public metadata
-        # for a gated repo and an invalid token: exactly the repo_info weakness the probe
-        # moved off. Valid repo ids are [A-Za-z0-9._-] and "/", none of which quote, so
-        # this is invisible to every real caller.
+        # A raw "?" or "#" ends the path early and lands on /api/{type}s/{id}, which answers
+        # 200 with public metadata for a gated repo.
         from urllib.parse import quote
 
-        # Quoting keeps "/" so "org/repo" stays two segments, which also keeps ".." intact,
-        # and both clients then apply RFC 3986 dot-segment removal: "org/../x" is requested
-        # as "/api/models/x". The memo would be keyed on the id the caller named while the
-        # wire proof was about a different repo. Refuse rather than quote it away, since no
-        # real repo id has a dot segment.
+        # quote keeps "/", so ".." survives and dot-segment removal probes a different repo
+        # than the one memoized.
         if any(segment in {".", ".."} for segment in repo_id.split("/")):
             return False
         path = f"{_probe_endpoint()}/api/{repo_type}s/{quote(repo_id, safe = '/')}/auth-check"
@@ -386,10 +310,8 @@ def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:
             timeout = _REPO_ACCESS_PROBE_TIMEOUT_S,
         )
         hf_raise_for_status(response)
-        # hf_raise_for_status passes 3xx through, and both default clients follow redirects
-        # so one never arrives. It does arrive if an operator installs a client factory
-        # without follow_redirects, and a bare 307 would then read as authorized without
-        # anything having been checked. Legacy repo aliases do redirect, so fail closed.
+        # hf_raise_for_status passes 3xx, so a client without follow_redirects would read a
+        # bare 307 as authorized.
         if 300 <= getattr(response, "status_code", 0) < 400:
             return False
         return True

@@ -139,7 +139,6 @@ def test_trimming_does_not_demote_a_ui_session_to_an_api_key():
 
     assert isinstance(normalize_token(ui), hf_tokens.AmbientAuthorizedToken)
     assert normalize_token(ui) == "hf_saved"
-    # And the other direction stays put.
     assert not isinstance(
         normalize_token(hf_token_arg("hf_saved", allow_ambient_token = False)),
         hf_tokens.AmbientAuthorizedToken,
@@ -252,13 +251,11 @@ def test_the_hand_rolled_url_still_matches_the_one_auth_check_builds(monkeypatch
     monkeypatch.delenv("HF_ENDPOINT", raising = False)
 
     upstream = _patch_auth_check_get(monkeypatch, lambda *_a, **_k: _ok_auth_check_response())
-    # hf_api binds get_session at import, so patching huggingface_hub.utils alone does not
-    # reach it. The probe's own import is inside the function, which is why that one works.
+    # hf_api binds get_session at import, so patching huggingface_hub.utils misses it.
     monkeypatch.setattr("huggingface_hub.hf_api.get_session", lambda: upstream, raising = False)
     try:
         huggingface_hub.auth_check("org/repo", repo_type = "model", token = "hf_dummy")
     except Exception:
-        # Only the URL it asked for matters; the fake response may not satisfy it.
         pass
     assert upstream.calls, "could not observe the URL auth_check builds"
     upstream_url = upstream.calls[0]["url"]
@@ -656,8 +653,6 @@ def test_the_local_config_probe_stays_local_for_an_explicit_token(monkeypatch, t
             )
         )
     except Exception:
-        # As above: the handler runs on past the probe into machinery this test does not
-        # stand up, and the probe argument is what is being pinned.
         pass
 
     assert seen.get("local_files_only") is True
@@ -676,7 +671,6 @@ def test_the_unreachable_hub_does_not_hand_back_the_template_the_walk_refused(mo
     monkeypatch.setattr(
         picker_service, "iter_snapshots_preferring_whole", lambda *_a, **_k: iter(())
     )
-    # A cached copy exists, which is the only thing the fallback could hand back.
     monkeypatch.setattr(picker_service, "get_cache_path", lambda _n: Path("/cached/repo"))
     downloads: list = []
 
@@ -1217,13 +1211,7 @@ def test_an_anonymous_config_read_does_not_strip_the_process_credential(monkeypa
 
 
 @pytest.mark.parametrize(
-    # The explicit-token leg is an API KEY, driven below with allow_ambient_token=False.
-    # It used to run as a UI session, which is the caller class that already holds the
-    # ambient credential (`allow_ambient_hf_token` is `not via_api_key`), so it asserted
-    # that the operator loses the fast path by saving a token in Settings. That is the
-    # regression `test_a_ui_session_that_saved_a_token_still_reads_its_own_cache` pins.
-    # What this test is for -- an unverified token does not get local_files_only -- is
-    # unchanged, and is now pinned against the caller the gate is actually aimed at.
+    # Explicit-token leg is an API key; as a UI session it asserted the regression.
     "hf_token, expected_local_only",
     [(None, True), ("hf_tok", False), (False, False)],
 )
@@ -1268,8 +1256,6 @@ def test_the_config_probes_do_not_go_local_only_for_an_anonymous_caller(
                 prefer_local_cache = True,
                 local_path = None,
                 header_hf_token = hf_token if isinstance(hf_token, str) else None,
-                # Ambient only for the tokenless leg. A caller that sends a token here is
-                # an API key, which is what `allow_ambient_hf_token` returns False for.
                 allow_ambient_token = hf_token is None,
                 current_subject = "tester",
             )
@@ -1699,5 +1685,4 @@ def test_an_unreachable_hub_is_a_404_not_a_500():
 
     assert hf_error_status(LocalEntryNotFoundError("no cache, no hub")) == 404
     assert hf_error_status(OfflineModeIsEnabled("offline")) == 404
-    # Still a 500 for things that really are ours.
     assert hf_error_status(RuntimeError("boom")) is None
