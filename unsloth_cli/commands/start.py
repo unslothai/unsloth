@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Literal, NamedTuple, NoReturn, Optional
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import click
 import typer
@@ -998,6 +998,18 @@ def _normalized_variant(value: object) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
 
+def _combined_reading(readings: list[dict]) -> dict:
+    if len(readings) == 1:
+        return readings[0]
+    combined = {
+        field: sum(max(0, int(reading.get(field) or 0)) for reading in readings)
+        for field in ("downloaded_bytes", "completed_bytes", "expected_bytes")
+    }
+    expected = combined["expected_bytes"]
+    combined["progress"] = min(1.0, combined["downloaded_bytes"] / expected) if expected else 0.0
+    return combined
+
+
 class _ModelDownloadProgress:
     """Best-effort polling of the model download endpoints."""
 
@@ -1014,6 +1026,10 @@ class _ModelDownloadProgress:
         self._configured = False
         self._disabled = not _is_hub_model_id(model)
         self._progress_prefix = "/api/hub"
+        self._companions: Optional[list[str]] = None
+
+    def _is_gguf(self) -> bool:
+        return bool(self._variant) or "gguf" in self._model.lower()
 
     def _configure(self) -> None:
         self._configured = True
@@ -1021,7 +1037,7 @@ class _ModelDownloadProgress:
             return
         # GGUF repos need the selected quant's size; the repo endpoint totals every
         # quant. Resolve the variant first, otherwise show bytes only.
-        if self._variant or "gguf" in self._model.lower():
+        if self._is_gguf():
             try:
                 params = urlencode({"repo_id": self._model})
                 try:
@@ -1055,6 +1071,33 @@ class _ModelDownloadProgress:
                 # Older servers lack this endpoint; byte progress is still useful.
                 pass
 
+    def _companion_repos(self) -> Optional[list[str]]:
+        if self._is_gguf():
+            return []
+        try:
+            info = _http_json(
+                "GET", f"{self._base}/api/models/config/{quote(self._model)}", self._key
+            )
+        except urllib.error.HTTPError as exc:
+            return [] if exc.code < 500 else None
+        except Exception:
+            return None
+        base_model = str(info.get("base_model") or "")
+        if info.get("is_lora") and base_model != self._model and _is_hub_model_id(base_model):
+            return [base_model]
+        return []
+
+    def _read(self, repo: str, gguf: bool = False) -> dict:
+        if gguf:
+            params = urlencode(
+                {"repo_id": repo, "variant": self._variant, "expected_bytes": self._expected_bytes}
+            )
+            url = f"{self._base}{self._progress_prefix}/gguf-download-progress?{params}"
+        else:
+            params = urlencode({"repo_id": repo})
+            url = f"{self._base}{self._progress_prefix}/download-progress?{params}"
+        return _http_json("GET", url, self._key, timeout = 10)
+
     def poll(self) -> None:
         if not self._configured:
             self._configure()
@@ -1063,28 +1106,19 @@ class _ModelDownloadProgress:
         if time.monotonic() < self._retry_at:
             return
         try:
-            if self._variant or "gguf" in self._model.lower():
-                params = urlencode(
-                    {
-                        "repo_id": self._model,
-                        "variant": self._variant,
-                        "expected_bytes": self._expected_bytes,
-                    }
-                )
-                url = f"{self._base}{self._progress_prefix}/gguf-download-progress?{params}"
-            else:
-                url = (
-                    f"{self._base}{self._progress_prefix}/download-progress?"
-                    f"{urlencode({'repo_id': self._model})}"
-                )
+            if self._companions is None:
+                self._companions = self._companion_repos()
             try:
-                reading = _http_json("GET", url, self._key, timeout = 10)
+                reading = self._read(self._model, gguf = self._is_gguf())
             except urllib.error.HTTPError as exc:
                 if exc.code != 404 or self._progress_prefix == "/api/models":
                     raise
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
+            reading = _combined_reading(
+                [reading, *(self._read(repo) for repo in self._companions or [])]
+            )
             # The liveness baseline only ever rises. A reading falls for reasons that are
             # not "bytes left the disk": an incomplete scan reporting a lower bound, a
             # cache mount vanishing cleanly (`hf_cache_state._safe_is_dir` calls that a

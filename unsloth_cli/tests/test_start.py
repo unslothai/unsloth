@@ -3982,6 +3982,99 @@ def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
     assert not any(isinstance(event, tuple) and "server ready" in event[-1] for event in created)
 
 
+def test_model_download_progress_counts_a_lora_base_model(monkeypatch, capsys):
+    calls = []
+    base_bytes = iter([1024**3, 2 * 1024**3])
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append(url)
+        if url == f"{BASE}/api/models/config/owner/adapter":
+            return {"is_lora": True, "base_model": "owner/base"}
+        if url.endswith("download-progress?repo_id=owner%2Fadapter"):
+            return {
+                "downloaded_bytes": 8 * 1024**2,
+                "completed_bytes": 8 * 1024**2,
+                "expected_bytes": 8 * 1024**2,
+                "progress": 1.0,
+            }
+        if url.endswith("download-progress?repo_id=owner%2Fbase"):
+            return {"downloaded_bytes": next(base_bytes), "expected_bytes": 4 * 1024**3}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    progress.poll()
+
+    assert progress.downloaded_bytes == 8 * 1024**2 + 2 * 1024**3
+    assert calls.count(f"{BASE}/api/models/config/owner/adapter") == 1
+    assert "1.0 GiB / 4.0 GiB" in capsys.readouterr().out
+
+
+def test_model_download_progress_retries_base_model_resolution(monkeypatch):
+    lookups = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            lookups.append(url)
+            if len(lookups) == 1:
+                raise urllib.error.URLError("busy")
+            return {"is_lora": True, "base_model": "owner/base"}
+        if url.endswith("repo_id=owner%2Fbase"):
+            return {"downloaded_bytes": 3 * 1024**3, "expected_bytes": 4 * 1024**3}
+        return {"downloaded_bytes": 1024, "expected_bytes": 1024, "progress": 1.0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    assert progress.downloaded_bytes == 1024
+    progress.poll()
+    assert progress.downloaded_bytes == 1024 + 3 * 1024**3
+    assert len(lookups) == 2
+
+
+def test_model_download_progress_asks_for_a_base_model_once_when_the_answer_is_final(monkeypatch):
+    lookups = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            lookups.append(url)
+            raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+        return {"downloaded_bytes": 1024, "expected_bytes": 4096}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/model", None)
+
+    progress.poll()
+    progress.poll()
+
+    assert progress.downloaded_bytes == 1024
+    assert len(lookups) == 1
+
+
 def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
     release = start.threading.Event()
     calls = []
