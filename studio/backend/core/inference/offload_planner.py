@@ -1307,14 +1307,21 @@ def cache_bytes(
     cache it can land either side. Over is harmless -- the plan just reserves
     more. UNDER is the dangerous direction: the deficit comes out too small, too
     few blocks are spilled, and the launch path follows that with ``--fit off``,
-    so the server OOMs on a cache the caller had already sized correctly. MLA is
-    the worst case (a compressed K-only latent that this product models as a full
-    K+V pair), and it is exactly the huge-MoE shape this planner exists for.
+    so the server OOMs on a cache the caller had already sized correctly.
 
     Taking the maximum keeps the planner conservative in both directions without
-    a tolerance to tune. The floor is a measurement at the REQUESTED context, so
-    where a shrink rung re-prices at a smaller context it over-reserves; that is
-    the safe direction and at worst gives up a rung.
+    a tolerance to tune, on the plain GQA shapes where the product is at worst a
+    little short. Two shapes break the product in the UP direction by so much
+    that the maximum would throw the measurement away, and there the supplied
+    floor wins outright: sliding-window attention (below) and MLA, where the
+    cache is one compressed K-only latent per token that the per-head K+V product
+    models as a full pair per head, about 70x over on DeepSeek-V3 at f16. Under
+    the maximum a fully resident MLA load read as several GiB over budget and was
+    shrunk or spilled for nothing; the launch seam's estimator prices the latent
+    exactly (_estimate_kv_cache_bytes handles kv_lora_rank). The floor is a
+    measurement at the REQUESTED context, so where a shrink rung re-prices at a
+    smaller context it over-reserves; that is the safe direction and at worst
+    gives up a rung.
     """
     naive = layout.kv_bytes(n_ctx, _kv_elem_bytes(kv_quantised))
     floor = max(0, kv_bytes_floor)
@@ -1333,8 +1340,10 @@ def cache_bytes(
         # So a supplied measurement wins here. It is a measurement of the cache
         # the caller is about to allocate, which is strictly better evidence than
         # a product with no SWA term -- and the max is kept everywhere else,
-        # where the product's failure mode is UNDER-counting (MLA) and the
-        # measurement is the thing that might be short.
+        # where the product's failure mode is under-counting and the measurement
+        # is the thing that might be short.
+        return floor
+    if layout.has_mla and floor:
         return floor
     return max(naive, floor)
 
@@ -2565,6 +2574,26 @@ def _cost_gate(
     refused = _host_ram_refusal(opts, n_ctx, host_bytes, host_ram_bytes)
     if refused is not None:
         return refused, 0.0, 0.0
+    if opts.prompt_cache_unbounded:
+        # --cache-ram -1 bounds the prompt cache by nothing, so the host side can
+        # never be proved resident and an accepted spill launches under mmap
+        # (_finish keeps it pageable). Every host-side number the ranking below
+        # rests on was measured with the weights UNMAPPED, and mapped reads run 2
+        # to 4.6x slower, so a spill that wins here can lose on the launch it
+        # gets. There is no pageable cost model to score it with; decline.
+        return (
+            Plan(
+                n_ctx = n_ctx,
+                declined_by_gate = True,
+                reason = (
+                    "the prompt cache is unbounded (--cache-ram -1), so the spill "
+                    "would run mapped and the cost model, measured with host weights "
+                    "resident, cannot price it; left to --fit on"
+                ),
+            ),
+            0.0,
+            0.0,
+        )
     n_slots = max(1, knobs.n_parallel if knobs is not None else opts.n_parallel)
     # One shared stream under --kv-unified, so the window a single request may
     # fill is the whole n_ctx however many slots are served; N private windows

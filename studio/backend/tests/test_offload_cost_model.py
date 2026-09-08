@@ -337,3 +337,24 @@ def test_a_host_cache_is_not_free_during_prefill():
 
     # Still zero where moving bytes between two names for one pool is free.
     assert prefill_penalty_ms_per_token(kv_host, host = HostProfile(unified_memory = True)) == 0.0
+
+
+def test_a_partial_prefill_batch_still_copies_every_spilled_tensor():
+    """The weights cross once per micro-batch and a partial batch pays the same
+    copy, so a 512-token prompt at --ubatch-size 2048 is one transfer, not a
+    quarter of one, and 513 tokens at 512 are two."""
+    from core.inference.offload_cost_model import prefill_penalty_ms
+
+    p = Placement([DENSE_FFN_G])
+    one = prefill_penalty_ms(p, 2048, n_ubatch = 2048)
+    assert one > 0.0
+    assert prefill_penalty_ms(p, 512, n_ubatch = 2048) == pytest.approx(one)
+    assert prefill_penalty_ms(p, 513, n_ubatch = 512) == pytest.approx(
+        2.0 * prefill_penalty_ms(p, 512, n_ubatch = 512)
+    )
+    assert prefill_penalty_ms(p, 0, n_ubatch = 512) == 0.0
+    # rank scores the whole request the same way, so a short embedding prompt
+    # is not priced below the transfer it makes.
+    short = rank([p], n_generated = 0, n_prompt = 512, n_ubatch = 2048)[0][1]
+    full = rank([p], n_generated = 0, n_prompt = 2048, n_ubatch = 2048)[0][1]
+    assert short == pytest.approx(full)

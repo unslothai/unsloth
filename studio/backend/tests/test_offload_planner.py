@@ -2613,3 +2613,38 @@ def test_an_unbounded_prompt_cache_keeps_the_plan_pageable():
     assert unbounded.cache_ram_mib == -1
     # Not a refusal: the spill still fits RAM and stays pageable under mmap.
     assert not unbounded.declined_by_gate
+
+
+def test_an_mla_cache_trusts_the_measured_floor():
+    """MLA keeps one compressed K-only latent per token; the layout's per-head
+    K+V product over-counts it by up to two orders of magnitude, and taking the
+    maximum let that product override the seam's byte-accurate floor, so a fully
+    resident full-context load read as over budget and was shrunk or spilled."""
+    from core.inference.offload_planner import cache_bytes
+
+    n_ctx = 65536
+    gqa = q4_layout()
+    mla = replace(gqa, has_mla = True)
+    product = gqa.kv_bytes(n_ctx)
+    latent = product // 64
+    assert cache_bytes(gqa, n_ctx, kv_bytes_floor = latent) == product
+    assert cache_bytes(mla, n_ctx, kv_bytes_floor = latent) == latent
+    # No measurement: the product is still the only size on offer.
+    assert cache_bytes(mla, n_ctx) == product
+    # And the same trust reaches a plan: resident at the latent, over budget under the product.
+    flat = PlanOptions(overhead_bytes_per_device = 0, overhead_bytes_per_token = 0)
+    budget = all_resident_bytes(mla, n_ctx) - product + latent + 256 * MIB
+    assert plan_placement(
+        gqa, [budget], 64 * GIB, n_ctx, kv_bytes_floor = latent, opts = flat
+    ).spills_anything
+    got = plan_placement(mla, [budget], 64 * GIB, n_ctx, kv_bytes_floor = latent, opts = flat)
+    assert not got.spills_anything and got.n_ctx == n_ctx, got.reason
+
+
+def test_layout_from_gguf_marks_a_latent_attention_cache():
+    fields = _shard_fields(**{"llama.attention.kv_lora_rank": 512})
+    assert _layout_from_reader(_StubReader(fields, _shard_tensors(range(64)))).has_mla is True
+    assert (
+        _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64)))).has_mla
+        is False
+    )

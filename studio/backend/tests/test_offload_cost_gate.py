@@ -832,3 +832,23 @@ def test_a_saturated_windowed_cache_is_charged_flat_when_the_fitter_moves_it():
     flat = floor * moved / len(layout.blocks)
     assert placement.kv_host_bytes >= flat * 0.98, (placement.kv_host_bytes, flat)
     assert placement.kv_host_bytes > flat * live_fraction * 2
+
+
+def test_an_unbounded_prompt_cache_declines_a_weight_spill():
+    """--cache-ram -1 keeps an accepted spill pageable, and the gate scored it with
+    host-side numbers measured unmapped, where mapped reads run 2 to 4.6x slower;
+    a spill that won on paper could lose on the launch it got."""
+    layout = dense_layout()
+    budget = 14848 * 1024 * 1024
+    lenient = dict(host = HostProfile(threads = 6), min_penalty_reduction = 0.0)
+    accepted = plan_placement(layout, [budget], 94 * GIB, 32768, opts = gated(**lenient))
+    assert accepted.spilled_blocks, accepted.reason
+    declined = plan_placement(
+        layout, [budget], 94 * GIB, 32768, opts = gated(**lenient, prompt_cache_unbounded = True)
+    )
+    assert declined.declined_by_gate and not declined.spilled_blocks
+    assert "unbounded" in declined.reason and "--fit on" in declined.reason
+    # Ungated callers still get the pageable plan the seam asked for.
+    assert plan_placement(
+        layout, [budget], 94 * GIB, 32768, opts = PlanOptions(prompt_cache_unbounded = True)
+    ).spilled_blocks

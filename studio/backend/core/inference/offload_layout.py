@@ -216,6 +216,10 @@ class ModelLayout:
     # Every layer is still an attention layer, so n_attention_layers does NOT reveal this. A multi-device split has to
     # know WHERE the big caches land, so the planner abstains.
     has_swa: bool = False
+    # Multi-head latent attention (attention.kv_lora_rank): the cache is one compressed K-only latent per token, not
+    # a K+V pair per head, so the per-head product above over-counts it by up to two orders of magnitude. A caller's
+    # architecture-aware measurement is the only honest size and is trusted over the product.
+    has_mla: bool = False
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
 
@@ -408,6 +412,7 @@ def _layout_from_readers(readers) -> ModelLayout:
     # Charging every layer the full context above is the safe direction for the TOTAL; what it cannot say is which
     # layers hold the big caches.
     has_swa = bool(_field(reader, f"{arch}.attention.sliding_window") or 0)
+    has_mla = bool(_field(reader, f"{arch}.attention.kv_lora_rank") or 0)
 
     # Mamba conv + SSM state, one f32 copy per sequence. Mirrors llama.cpp's own sizing; zero when the model has no
     # recurrent layers.
@@ -537,6 +542,7 @@ def _layout_from_readers(readers) -> ModelLayout:
         n_layers = n_layers,
         n_attention_layers = int(n_attention),
         has_swa = has_swa,
+        has_mla = has_mla,
         blocks = blocks,
         lm_head_bytes = lm_head,
         token_embd_bytes = token_embd + per_layer_embd,

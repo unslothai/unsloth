@@ -232,8 +232,38 @@ def prefill_penalty_ms_per_token(
     host_bytes = sum(g.bytes_total for g in placement.host_groups) + placement.kv_host_bytes
     if host_bytes <= 0 or n_ubatch <= 0:
         return 0.0
-    per_ubatch_ms = (host_bytes / GIB) / PREFILL_STREAM_GIB_S * 1000.0
-    return per_ubatch_ms / float(n_ubatch)
+    return _prefill_per_ubatch_ms(placement) / float(n_ubatch)
+
+
+def _prefill_per_ubatch_ms(placement: Placement) -> float:
+    """Milliseconds to stream every host-side byte once, i.e. per micro-batch."""
+    host_bytes = sum(g.bytes_total for g in placement.host_groups) + placement.kv_host_bytes
+    if host_bytes <= 0:
+        return 0.0
+    return (host_bytes / GIB) / PREFILL_STREAM_GIB_S * 1000.0
+
+
+def prefill_penalty_ms(
+    placement: Placement,
+    n_prompt: int,
+    n_ubatch: int = 512,
+    host: HostProfile | None = None,
+) -> float:
+    """Extra milliseconds to prefill ``n_prompt`` tokens.
+
+    The weights are copied once per micro-batch, and a partial batch copies them
+    just the same: a 512-token prompt at ``--ubatch-size 2048`` is ONE transfer,
+    not a quarter of one. Charged per whole batch, ceiling, so a prompt shorter
+    than the batch, or one that is not a multiple of it, is not priced below the
+    transfer it has to make. (That under-pricing was enough to flip the cost
+    gate on an embedding launch, where generation is zero and prefill is the
+    whole score.)
+    """
+    host = host or HostProfile()
+    if host.unified_memory or n_prompt <= 0 or n_ubatch <= 0:
+        return 0.0
+    batches = -(-int(n_prompt) // int(n_ubatch))
+    return batches * _prefill_per_ubatch_ms(placement)
 
 
 def rank(
@@ -258,7 +288,7 @@ def rank(
         (
             c,
             n_generated * generation_penalty_ms(c, host)
-            + n_prompt * prefill_penalty_ms_per_token(c, n_ubatch, host),
+            + prefill_penalty_ms(c, n_prompt, n_ubatch, host),
         )
         for c in candidates
     ]
