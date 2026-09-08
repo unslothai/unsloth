@@ -968,8 +968,25 @@ LINK_TOKEN_EXPIRE_SECONDS = 600  # 10 minutes
 MAX_OUTSTANDING_LINK_TOKENS_PER_USER = 32
 
 
-def save_link_token(jti: str, username: str, expires_at: str) -> None:
+def save_link_token(jti: str, username: str, expires_at: str,
+                    *, require_pending_setup: bool = False) -> bool:
     """Record a minted one-time link token so it can be consumed exactly once.
+
+    Returns whether the row was recorded. A token whose row is absent cannot be
+    exchanged, so a False here is a token that was never usable.
+
+    ``require_pending_setup`` makes the insert conditional on the account still
+    awaiting its first password, evaluated INSIDE this transaction. The setup
+    page needs that: it checks "is setup pending" and then mints, and a rotation
+    committing between those two steps would otherwise leave a token signed with
+    the NEW secret, recorded after update_password deleted the old ones, and so
+    exchangeable once setup was already complete -- which hands out an ordinary
+    authenticated session rather than the one-shot setup credential it is meant
+    to be. SQLite serialises writers, so pinning the check to the write settles
+    the race: either the guard sees must_change_password = 1 and the row lands
+    before the rotation, or the rotation lands first and no row is written.
+    Off by default, because a link token is a general mechanism and nothing else
+    that mints one is tied to first boot.
 
     Only the opaque jti (a random id) is stored; the token signature never
     touches disk.
@@ -990,11 +1007,28 @@ def save_link_token(jti: str, username: str, expires_at: str) -> None:
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("DELETE FROM link_tokens WHERE expires_at < ?", (now,))
-        conn.execute(
-            "INSERT INTO link_tokens (jti, username, expires_at) VALUES (?, ?, ?)",
-            (jti, username, expires_at),
-        )
+        if require_pending_setup:
+            cursor = conn.execute(
+                """
+                INSERT INTO link_tokens (jti, username, expires_at)
+                SELECT ?, ?, ?
+                WHERE EXISTS (
+                    SELECT 1 FROM auth_user
+                    WHERE username = ? AND must_change_password = 1
+                )
+                """,
+                (jti, username, expires_at, username),
+            )
+            if cursor.rowcount == 0:
+                conn.rollback()
+                return False
+        else:
+            conn.execute(
+                "INSERT INTO link_tokens (jti, username, expires_at) VALUES (?, ?, ?)",
+                (jti, username, expires_at),
+            )
         # rowid, not expires_at: a burst mints tokens with near-identical
         # expiries, so insertion order is the only thing that actually orders
         # them.
@@ -1010,6 +1044,7 @@ def save_link_token(jti: str, username: str, expires_at: str) -> None:
             (username, username, MAX_OUTSTANDING_LINK_TOKENS_PER_USER),
         )
         conn.commit()
+        return True
     finally:
         conn.close()
 

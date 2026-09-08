@@ -436,7 +436,8 @@ def _decode_link_payload(payload_b64: str) -> Optional[dict]:
         return None
 
 
-def create_link_token(subject: str, *, expires_in: Optional[int] = None) -> str:
+def create_link_token(subject: str, *, expires_in: Optional[int] = None,
+                      require_pending_setup: bool = False) -> str:
     """Mint a one-time, short-TTL HMAC-signed link token bound to *subject*.
 
     The token is ``<payload_b64>.<sig_b64>`` where the payload carries the
@@ -446,6 +447,13 @@ def create_link_token(subject: str, *, expires_in: Optional[int] = None) -> str:
 
     SECURITY: the returned value is a bearer credential. NEVER log it, and only
     ever place it on the private same-tab URL, never on a shared/public link.
+
+    ``require_pending_setup`` refuses to mint unless the account is still
+    awaiting its first password, checked inside the same transaction that records
+    the nonce. The setup page passes it so a rotation landing between "is setup
+    pending" and this call cannot leave behind a token that outlives setup; see
+    storage.save_link_token. A refusal raises rather than returning a token that
+    was never recorded, so no caller can accidentally hand out a dead credential.
 
     ``expires_in`` overrides the default TTL in seconds. The default suits a URL
     handoff, which is redeemed within seconds of being issued. The setup token
@@ -460,7 +468,12 @@ def create_link_token(subject: str, *, expires_in: Optional[int] = None) -> str:
     ttl = LINK_TOKEN_EXPIRE_SECONDS if expires_in is None else max(1, int(expires_in))
     expires_at = datetime.now(timezone.utc) + timedelta(seconds = ttl)
     expires_iso = expires_at.isoformat()
-    save_link_token(jti, subject, expires_iso)
+    if not save_link_token(jti, subject, expires_iso,
+                           require_pending_setup = require_pending_setup):
+        raise RuntimeError(
+            f"refusing to mint a setup link token for {subject!r}: the account is no "
+            "longer awaiting its first password"
+        )
     payload = {"sub": subject, "jti": jti, "exp": expires_iso}
     payload_b64 = _b64url_encode(json.dumps(payload, separators = (",", ":")).encode("utf-8"))
     sig = hmac.new(key, payload_b64.encode("ascii"), hashlib.sha256).digest()

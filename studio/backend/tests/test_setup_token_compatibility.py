@@ -543,3 +543,100 @@ def test_the_auth_import_graph_pulls_in_no_hardware_module():
     assert result.returncode == 0, result.stderr
     forbidden = [m for m in result.stdout.strip().split(";") if m]
     assert not forbidden, f"auth now imports hardware machinery: {forbidden}"
+
+
+# --------------------------------------------------------------------------
+# The mint/rotation race, with real threads on real connections.
+#
+# The monkeypatched version in test_index_serves_setup_token_not_seed.py forces
+# one exact interleaving. This one does not force anything: it runs rotation and
+# minting concurrently against SQLite's own writer lock, many times, and asserts
+# the invariant holds however the two land. Either the token was recorded while
+# setup was still pending, or it was refused; never a row surviving a completed
+# setup.
+# --------------------------------------------------------------------------
+
+
+def test_minting_never_outlives_a_concurrent_rotation(tmp_path, monkeypatch):
+    import secrets
+    import threading
+
+    from auth import storage as st
+
+    monkeypatch.setattr(st, "DB_PATH", tmp_path / "auth.db")
+    monkeypatch.setattr(st, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
+    monkeypatch.setattr(st, "_bootstrap_password", None)
+
+    attempts = 40
+    recorded_after_rotation = 0
+
+    for round_no in range(attempts):
+        st.DB_PATH.unlink(missing_ok = True)
+        st._bootstrap_password = None
+        st.create_initial_user(
+            username = st.DEFAULT_ADMIN_USERNAME,
+            password = "seeded-pw-for-the-race",
+            jwt_secret = secrets.token_urlsafe(64),
+            must_change_password = True,
+        )
+
+        start = threading.Barrier(2)
+        saved: list[bool] = []
+        errors: list[BaseException] = []
+
+        def _mint():
+            try:
+                start.wait(timeout = 10)
+                saved.append(st.save_link_token(
+                    f"jti-{round_no}", st.DEFAULT_ADMIN_USERNAME,
+                    "2099-01-01T00:00:00+00:00",
+                    require_pending_setup = True,
+                ))
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                errors.append(exc)
+
+        def _rotate():
+            try:
+                start.wait(timeout = 10)
+                st.update_password(st.DEFAULT_ADMIN_USERNAME, "operator-chosen-pw")
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                errors.append(exc)
+
+        threads = [threading.Thread(target = _mint), threading.Thread(target = _rotate)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout = 30)
+
+        assert not errors, f"round {round_no} raised: {errors[0]!r}"
+        assert saved, f"round {round_no}: the minting thread never finished"
+
+        conn = st.get_connection()
+        try:
+            rows = conn.execute("SELECT COUNT(*) FROM link_tokens").fetchone()[0]
+            pending = conn.execute(
+                "SELECT must_change_password FROM auth_user WHERE username = ?",
+                (st.DEFAULT_ADMIN_USERNAME,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        # Setup always completes here, so any surviving row is a token that
+        # outlived it. update_password deletes link_tokens, so a row can only
+        # survive by having been written after that delete.
+        assert pending == 0, f"round {round_no}: rotation did not complete"
+        if rows:
+            recorded_after_rotation += 1
+        # Only one direction is an invariant. True with no rows is the SAFE
+        # outcome: the mint won the lock, wrote while setup was still pending,
+        # and the rotation then deleted it, which is what update_password is
+        # supposed to do. A refusal that somehow left a row behind is not.
+        if not saved[0]:
+            assert rows == 0, (
+                f"round {round_no}: save_link_token refused but left {rows} row(s)"
+            )
+
+    assert recorded_after_rotation == 0, (
+        f"{recorded_after_rotation}/{attempts} rounds left a link token behind after "
+        "setup had already completed; the mint is not bound to the pending-setup check"
+    )
