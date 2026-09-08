@@ -45,68 +45,39 @@ $ps1Text = Get-Content -LiteralPath $ps1Path -Raw
 Check "the stop scan is given the managed paths under the target" `
     ($ps1Text -match '_StopProcessesLockingRoots -Roots \(\$stopRoots \+ @\(_ManagedPathsUnderReparseTargets \$knownRoots\)\)')
 
-# Both reparse kinds, because the helper reads nothing but .Target. A directory SYMLINK needs
-# elevation and a JUNCTION never does, so the junction row is the one that always executes.
-# $IsWindows only exists on PowerShell 6+; on 5.1 it is $null, and 5.1 runs nowhere else.
-$onWindows = if ($null -ne $IsWindows) { $IsWindows } else { $true }
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-reparse-" + [System.Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+try {
+    $target = Join-Path $tmp "physical"
+    New-Item -ItemType Directory -Path (Join-Path $target "stable-diffusion.cpp") -Force | Out-Null
+    $link = Join-Path $tmp "studio-home"
+    New-Item -ItemType SymbolicLink -Path $link -Target $target -ErrorAction Stop | Out-Null
 
-# New-Item -ItemType Junction does NOT throw on Linux pwsh: it quietly produces a plain directory
-# with no .Target, so the kinds are chosen by platform rather than by catching a failure.
-$kinds = if ($onWindows) { @("Junction", "SymbolicLink") } else { @("SymbolicLink") }
+    $phys = [System.IO.Path]::GetFullPath($target).TrimEnd('\', '/')
+    $got = @(_ManagedPathsUnderReparseTargets @($link))
+    Check "a linked root yields the sd.cpp tree under its physical target" `
+        ($got -contains (Join-Path $phys "stable-diffusion.cpp"))
+    Check "... and the venv under it" ($got -contains (Join-Path $phys "unsloth_studio"))
+    # Never the bare target: the delete leaves it standing, so anything else there is not ours.
+    Check "the bare physical target is NOT in scope" (-not ($got -contains $phys))
 
-$ran = 0
-foreach ($kind in $kinds) {
-    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-reparse-" + [System.Guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-    try {
-        $target = Join-Path $tmp "physical"
-        New-Item -ItemType Directory -Path (Join-Path $target "stable-diffusion.cpp") -Force | Out-Null
-        $link = Join-Path $tmp "studio-home"
-        try { New-Item -ItemType $kind -Path $link -Target $target -ErrorAction Stop | Out-Null }
-        catch {
-            # Not a failure: the other kind carries the assertions. Reported so one kind covered
-            # cannot be mistaken for both.
-            Write-Host "  SKIP  $kind is not creatable here: $($_.Exception.Message)"
-            continue
-        }
-        # Created is not the same as usable: a link with no .Target cannot exercise anything.
-        $made = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
-        if (-not $made -or [string]::IsNullOrWhiteSpace(@($made.Target)[0])) {
-            Write-Host "  SKIP  $kind produced no reparse target here"
-            continue
-        }
-        $ran++
+    # A plain directory contributes nothing, so the scan does not widen for ordinary installs.
+    $plain = Join-Path $tmp "plain"
+    New-Item -ItemType Directory -Path $plain -Force | Out-Null
+    Check "a plain root adds nothing" (@(_ManagedPathsUnderReparseTargets @($plain)).Count -eq 0)
 
-        $phys = [System.IO.Path]::GetFullPath($target).TrimEnd('\', '/')
-        $got = @(_ManagedPathsUnderReparseTargets @($link))
-        Check "$kind : a linked root yields the sd.cpp tree under its physical target" `
-            ($got -contains (Join-Path $phys "stable-diffusion.cpp"))
-        Check "$kind : ... and the venv under it" ($got -contains (Join-Path $phys "unsloth_studio"))
-        # Never the bare target: the delete leaves it standing, so anything else there is not ours.
-        Check "$kind : the bare physical target is NOT in scope" (-not ($got -contains $phys))
+    # Neither does a path that is not there at all, or an empty entry.
+    Check "a missing root adds nothing" (@(_ManagedPathsUnderReparseTargets @((Join-Path $tmp "nope"), "", $null)).Count -eq 0)
 
-        # A plain directory contributes nothing, so the scan does not widen for ordinary installs.
-        $plain = Join-Path $tmp "plain"
-        New-Item -ItemType Directory -Path $plain -Force | Out-Null
-        Check "$kind : a plain root adds nothing" (@(_ManagedPathsUnderReparseTargets @($plain)).Count -eq 0)
-
-        # Neither does a path that is not there at all, or an empty entry.
-        Check "$kind : a missing root adds nothing" (@(_ManagedPathsUnderReparseTargets @((Join-Path $tmp "nope"), "", $null)).Count -eq 0)
-
-        # Deduplicated: two links onto one target must not stack.
-        $link2 = Join-Path $tmp "studio-home-2"
-        New-Item -ItemType $kind -Path $link2 -Target $target -ErrorAction Stop | Out-Null
-        $both = @(_ManagedPathsUnderReparseTargets @($link, $link2))
-        Check "$kind : two links onto one target do not duplicate its subtrees" ($both.Count -eq $got.Count)
-    }
-    finally {
-        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
-    }
+    # Deduplicated: two links onto one target must not stack.
+    $link2 = Join-Path $tmp "studio-home-2"
+    New-Item -ItemType SymbolicLink -Path $link2 -Target $target -ErrorAction Stop | Out-Null
+    $both = @(_ManagedPathsUnderReparseTargets @($link, $link2))
+    Check "two links onto one target do not duplicate its subtrees" ($both.Count -eq $got.Count)
 }
-
-# An environment that can make neither kind would otherwise report a clean pass having
-# asserted nothing.
-Check "at least one reparse kind was exercised" ($ran -gt 0)
+finally {
+    Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }

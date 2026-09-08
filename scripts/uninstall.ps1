@@ -61,16 +61,11 @@ Environment:
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         if (-not (Test-Path -LiteralPath $Path)) { return }
-        # Escalating backoff rather than a flat 700ms x4: torch inductor's compile workers keep
-        # plain data handles on files under TORCHINDUCTOR_CACHE_DIR for seconds after the server
-        # stops, and neither pass in _StopProcessesLockingRoots can attribute those to a process.
-        $delays = @(250, 500, 1000, 2000, 4000, 4000, 4000, 4000)
-        for ($attempt = 0; $attempt -le $delays.Count; $attempt++) {
-            $lastTry = ($attempt -eq $delays.Count)
+        for ($attempt = 1; $attempt -le 4; $attempt++) {
             try {
                 Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
             } catch {
-                if (-not $lastTry) { Start-Sleep -Milliseconds $delays[$attempt]; continue }
+                if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
                 _Substep "could not remove: $Path ($($_.Exception.Message))" "Yellow"
                 # The closing summary must not promise the data is gone.
                 $script:RemoveFailed = $true
@@ -83,7 +78,7 @@ Environment:
                 _Substep "removed: $Path" "Green"
                 return
             }
-            if (-not $lastTry) { Start-Sleep -Milliseconds $delays[$attempt]; continue }
+            if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
             _Substep "still present (files held open): $Path" "Yellow"
             $script:RemoveFailed = $true
         }
@@ -113,15 +108,13 @@ Environment:
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         # Anchor a relative reparse-point target to the link's own parent, or Join-Path
         # resolves it from the uninstaller's working directory and the db test reads false.
-        # Split-Path -LiteralPath takes no -Parent: 5.1 puts them in different parameter sets and
-        # the call throws. -LiteralPath alone already splits off the parent, and -Path globs.
         $resolveTarget = {
             param($Item, $Fallback)
             if (-not $Item -or -not $Item.Target) { return $Fallback }
             $t = @($Item.Target)[0]
             if ([string]::IsNullOrWhiteSpace($t)) { return $Fallback }
             if (-not [System.IO.Path]::IsPathRooted($t)) {
-                $t = Join-Path (Split-Path -LiteralPath $Item.FullName) $t
+                $t = Join-Path (Split-Path -LiteralPath $Item.FullName -Parent) $t
             }
             return $t
         }
@@ -394,21 +387,13 @@ Environment:
     # The .cmd is the interpreter-based launcher install.ps1 writes beside the .exe for
     # machines whose Application Control policy denies the generated console script. An
     # install whose .exe was removed by that policy's quarantine still owns its root.
-    # Plus the venv shapes older installers left, or the gate strands them. On Windows
-    # share\studio.conf is never written, so the three sentinels that decide a Windows root all
-    # postdate the bin\ shim dir, while install.ps1 still migrates <root>\.venv. So also accept
-    # the marker inside the legacy venv dir, and either venv dir carrying Scripts\unsloth.exe.
     function _IsStudioRoot {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
         if (Test-Path -LiteralPath (Join-Path $Path "share\studio.conf") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "unsloth_studio\.unsloth-studio-owned") -PathType Leaf) { return $true }
-        if (Test-Path -LiteralPath (Join-Path $Path ".venv\.unsloth-studio-owned") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "bin\unsloth.exe") -PathType Leaf) { return $true }
         if (_IsUnslothCmdShim (Join-Path $Path "bin\unsloth.cmd")) { return $true }
-        foreach ($venv in @("unsloth_studio", ".venv")) {
-            if (Test-Path -LiteralPath (Join-Path $Path "$venv\Scripts\unsloth.exe") -PathType Leaf) { return $true }
-        }
         return $false
     }
 
@@ -427,7 +412,7 @@ Environment:
             $userProfile = $userProfile.TrimEnd('\','/')
             if ($norm -ieq $userProfile) { return $true }
             try {
-                $parent = Split-Path -LiteralPath $userProfile
+                $parent = Split-Path -LiteralPath $userProfile -Parent
                 if ($parent -and ($norm -ieq $parent.TrimEnd('\','/'))) { return $true }
             } catch { }
         }
@@ -456,9 +441,9 @@ Environment:
         if ($line -match "^UNSLOTH_EXE\s*=\s*'(.*)'\s*$") {
             $exe = $Matches[1] -replace "''", "'"
             try {
-                $bin = Split-Path -LiteralPath $exe
-                $studio = Split-Path -LiteralPath $bin
-                $root = Split-Path -LiteralPath $studio
+                $bin = Split-Path -LiteralPath $exe -Parent
+                $studio = Split-Path -LiteralPath $bin -Parent
+                $root = Split-Path -LiteralPath $studio -Parent
                 if ($root) { return $root }
             } catch { }
         }
@@ -644,7 +629,7 @@ Environment:
                 # A symlink target may be relative; a junction's never is. Anchor it on the link's
                 # own parent, or GetFullPath would read it from the uninstaller's working directory.
                 if (-not [System.IO.Path]::IsPathRooted($t)) {
-                    $t = Join-Path (Split-Path -LiteralPath $item.FullName) $t
+                    $t = Join-Path (Split-Path -LiteralPath $item.FullName -Parent) $t
                 }
                 $t = [System.IO.Path]::GetFullPath($t).TrimEnd('\', '/')
                 if (-not $t) { continue }
@@ -830,7 +815,7 @@ Environment:
     # so add them to the handle scan too, gated on the same owner marker.
     $customSdCppToStop = @()
     foreach ($r in $customRoots) {
-        $sdc = Join-Path (Split-Path -LiteralPath $r) "stable-diffusion.cpp"
+        $sdc = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
         if ((Test-Path -LiteralPath $sdc) -and (Test-Path -LiteralPath (Join-Path $sdc ".unsloth-studio-owned") -PathType Leaf)) {
             $customSdCppToStop += $sdc
         }
@@ -863,7 +848,7 @@ Environment:
         # "stable-diffusion.cpp" is exactly what a git clone of the upstream project produces, so
         # require our owner marker (written by install_sd_cpp_prebuilt) before rm, and keep any
         # unowned checkout. Guard the derived parent path the same way.
-        $customSdCpp = Join-Path (Split-Path -LiteralPath $r) "stable-diffusion.cpp"
+        $customSdCpp = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
         if (_IsUnsafeRoot $customSdCpp) {
             _Substep "refusing to remove unsafe path: $customSdCpp" "Yellow"
         } elseif ((Test-Path -LiteralPath $customSdCpp) -and -not (Test-Path -LiteralPath (Join-Path $customSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
@@ -872,15 +857,8 @@ Environment:
             _RemovePath $customSdCpp
         }
     }
-    # Default install dir (always at %USERPROFILE%\.unsloth\studio when present). Gated on the
-    # same ownership sentinels as a custom root: "studio" under ~/.unsloth is an ordinary thing to
-    # create by hand, and an ungated bare run takes it and then ~/.unsloth with the prune below.
-    if ($defaultStudioHome -and (Test-Path -LiteralPath $defaultStudioHome) -and
-        -not (_IsStudioRoot $defaultStudioHome)) {
-        _Substep "refusing to remove non-Unsloth path: $defaultStudioHome" "Yellow"
-    } elseif ($defaultStudioHome) {
-        _RemoveRootRecordingDb $defaultStudioHome
-    }
+    # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
+    if ($defaultStudioHome) { _RemoveRootRecordingDb $defaultStudioHome }
     # Default data dir. The private temp sweep goes FIRST and hands back what it
     # kept: the primary temp directory lives under this data dir, so a wholesale
     # removal here would erase a live Unsloth's %TEMP% before the sweep ever looked
