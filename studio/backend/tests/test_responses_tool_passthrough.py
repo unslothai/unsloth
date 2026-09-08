@@ -3045,7 +3045,7 @@ class TestReasoningPrefilledExtractor:
         ],
     )
     def test_reasoning_prefilled_extractor_cases(self, text, parse_think_markers, reasoning_prefilled, expected, expected_visible):
-        reasoning, visible = _extract_responses_reasoning(text, parse_think_markers=parse_think_markers, reasoning_prefilled=reasoning_prefilled)
+        reasoning, visible = _extract_responses_reasoning(text, parse_think_markers = parse_think_markers, reasoning_prefilled = reasoning_prefilled)
         assert reasoning == expected
         assert visible == expected_visible
 

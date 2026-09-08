@@ -154,7 +154,7 @@ def test_hidden_subtrees_are_dropped_from_the_conversion(html, present_first, pr
 )
 def test_hidden_markers_other_than_the_attribute_are_dropped(html, absent):
     out = html_to_markdown(html)
-    assert 'keep' in out
+    assert "keep" in out
     assert absent not in out
 
 
@@ -235,7 +235,7 @@ def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
 )
 def test_hidden_regions_with_inline_children_end_at_the_implied_close(html, present_first, present_second):
     out = html_to_markdown(html)
-    assert 'secret' not in out
+    assert "secret" not in out
     assert present_first in out
     assert present_second in out
 
@@ -631,12 +631,12 @@ def test_looks_like_html_leading_table_stays_markdown():
 )
 def test_fetch_page_text_keeps_a_markdown_readme_verbatim(monkeypatch, md_readme, first, second, third):
 
-    def fake_fetch(url, timeout=30, extra_headers=None, deadline=None, cancel_event=None):
-        assert url == 'https://api.github.com/repos/unslothai/unsloth/readme'
-        return (None, md_readme, 'text/plain')
-    monkeypatch.setattr('core.inference.tools._fetch_url_raw', fake_fetch)
-    out = _fetch_page_text('https://github.com/unslothai/unsloth')
-    assert 'README of https://github.com/unslothai/unsloth' in out
+    def fake_fetch(url, timeout = 30, extra_headers = None, deadline = None, cancel_event = None):
+        assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
+        return (None, md_readme, "text/plain")
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://github.com/unslothai/unsloth")
+    assert "README of https://github.com/unslothai/unsloth" in out
     assert first in out
     assert second in out
     assert third in out
@@ -1468,8 +1468,8 @@ def test_long_hrefs_count_toward_the_header_size_floor():
     ],
 )
 def test_header_link_density_is_measured_on_rendered_text(template, filler, repeats, present, also_present):
-    body = template % (filler * repeats, 'Article body. ' * 30)
-    out = html_to_markdown(f'<body>{body}</body>', main_content=True)
+    body = template % (filler * repeats, "Article body. " * 30)
+    out = html_to_markdown(f'<body>{body}</body>', main_content = True)
     assert present in out
     assert also_present in out
 

@@ -655,7 +655,7 @@ def test_the_legacy_file_is_taken_over_from_a_dead_server(tmp_path, monkeypatch)
     ],
 )
 def test_live_sibling_backend_finds_the_recorded_port(tmp_path, filename, contents):
-    (tmp_path / filename).write_text(contents, encoding='utf-8')
+    (tmp_path / filename).write_text(contents, encoding = "utf-8")
     assert run.live_sibling_backend() == 8550
 
 

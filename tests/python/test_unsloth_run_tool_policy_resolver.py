@@ -67,7 +67,7 @@ class TestZeroHost:
         ],
     )
     def test_zero_host_cases(self, flag, yes, silent, expected):
-        assert resolve_tool_policy(host='0.0.0.0', flag=flag, yes=yes, silent=silent, prompt=_never_prompt) is expected
+        assert resolve_tool_policy(host = "0.0.0.0", flag = flag, yes = yes, silent = silent, prompt = _never_prompt) is expected
 
 
 class TestIsExternalHost:
@@ -95,5 +95,5 @@ class TestSpecificNetworkIP:
         ],
     )
     def test_specific_network_i_p_cases(self, host, flag, expected):
-        assert resolve_tool_policy(host=host, flag=flag, yes=False, silent=False, prompt=_never_prompt) is expected
+        assert resolve_tool_policy(host = host, flag = flag, yes = False, silent = False, prompt = _never_prompt) is expected
 

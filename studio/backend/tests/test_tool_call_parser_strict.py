@@ -51,7 +51,7 @@ class TestFunctionStyleTrailingText:
     )
     def test_function_style_trailing_text_cases(self, text, expected_name, expected_key, expected_value):
         call = _only(text)
-        assert call == {'name': expected_name, 'arguments': {expected_key: expected_value}}
+        assert call == {"name": expected_name, "arguments": {expected_key: expected_value}}
 
 
     def test_multi_param_with_trailing_prose(self):
@@ -994,8 +994,8 @@ class TestPythonTagOuterOverXmlLiteral:
     )
     def test_python_tag_outer_over_xml_literal_cases(self, text, expected_name, expected_key, expected):
         calls = parse_tool_calls_from_text(text)
-        assert [c['function']['name'] for c in calls] == [expected_name]
-        args = json.loads(calls[0]['function']['arguments'])
+        assert [c["function"]["name"] for c in calls] == [expected_name]
+        args = json.loads(calls[0]["function"]["arguments"])
         assert args[expected_key] == expected
 
 
@@ -1015,7 +1015,7 @@ class TestPythonTagOuterOverXmlLiteral:
     )
     def test_python_tag_outer_over_xml_literal_cases_2(self, text, expected_name):
         calls = parse_tool_calls_from_text(text)
-        assert [c['function']['name'] for c in calls] == [expected_name]
+        assert [c["function"]["name"] for c in calls] == [expected_name]
 
 
 class TestBareJsonOuterOverXmlLiteral:
@@ -1560,9 +1560,9 @@ class TestProseCloseTagAfterClosedFunctionCall:
         ],
     )
     def test_prose_close_tag_after_closed_function_call_cases(self, text, enabled_name, expected_name, expected_key, expected_value):
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={enabled_name})
-        assert [c['function']['name'] for c in calls] == [expected_name], calls
-        assert json.loads(calls[0]['function']['arguments']) == {expected_key: expected_value}
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {enabled_name})
+        assert [c["function"]["name"] for c in calls] == [expected_name], calls
+        assert json.loads(calls[0]["function"]["arguments"]) == {expected_key: expected_value}
 
 
     def test_attribute_form_literal_close_in_open_parameter_stays_data(self):
@@ -1747,7 +1747,7 @@ class TestGemmaAwareClosedBlockPrePass:
     )
     def test_gemma_aware_closed_block_pre_pass_cases(self, text, expected):
         from core.tool_healing import strip_tool_call_markup
-        assert strip_tool_call_markup(text, final=True) == expected
+        assert strip_tool_call_markup(text, final = True) == expected
 
     def test_literal_function_in_gemma_arg_with_prose_closer(self):
         from core.tool_healing import strip_tool_call_markup

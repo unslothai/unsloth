@@ -207,12 +207,12 @@ def test_index_url_value_flag_kept_verbatim(shim):
     ],
 )
 def test_requirements_file_drops_the_protected_package(shim, tmp_path, requirements, tool, flag, expected_program, absent):
-    req = tmp_path / 'reqs.txt'
-    req.write_text(requirements, encoding='utf-8')
+    req = tmp_path / "reqs.txt"
+    req.write_text(requirements, encoding = "utf-8")
     execd, _ = _run(shim, tool, [flag, str(req)])
     assert execd is not None and execd[0] == expected_program, execd
-    filtered = Path(execd[1]).read_text(encoding='utf-8')
-    assert 'snac==1.2.0' in filtered
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "snac==1.2.0" in filtered
     assert absent not in filtered
 
 
@@ -302,8 +302,8 @@ def test_bare_wheel_filename_forms(shim, args, expected):
     ],
 )
 def test_protected_arguments_are_stripped_before_exec(shim, tool, argument):
-    execd, _ = _run(shim, tool, [argument, 'snac'])
-    assert execd == ['snac'], execd
+    execd, _ = _run(shim, tool, [argument, "snac"])
+    assert execd == ["snac"], execd
 
 
 def test_vcs_url_without_egg_unprotected_kept(shim):

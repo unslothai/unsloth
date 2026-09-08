@@ -330,7 +330,7 @@ class TestNoTorchConstant:
         ],
     )
     def test_no_torch_constant_cases(self, expected_UNSLOTH_NO_TORCH, expected):
-        with mock.patch.dict(os.environ, {'UNSLOTH_NO_TORCH': expected_UNSLOTH_NO_TORCH}):
+        with mock.patch.dict(os.environ, {"UNSLOTH_NO_TORCH": expected_UNSLOTH_NO_TORCH}):
             assert self._reimport_no_torch() is expected
 
 
@@ -500,7 +500,7 @@ class TestInstallPythonStackSubprocessMock:
         ],
     )
     def test_install_python_stack_subprocess_mock_cases(self, no_torch, is_macos, is_windows, filename, message):
-        cmds = self._capture_install(no_torch=no_torch, is_macos=is_macos, is_windows=is_windows)
+        cmds = self._capture_install(no_torch = no_torch, is_macos = is_macos, is_windows = is_windows)
         assert not self._cmds_contain_file(cmds, filename), message
 
 
@@ -540,7 +540,7 @@ class TestInstallPythonStackSubprocessMock:
         ],
     )
     def test_install_python_stack_keeps_the_requirements_file(self, filename, message):
-        cmds = self._capture_install(no_torch=False, is_macos=False, is_windows=False)
+        cmds = self._capture_install(no_torch = False, is_macos = False, is_windows = False)
         assert self._cmds_contain_file(cmds, filename), message
 
 

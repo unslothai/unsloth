@@ -102,8 +102,8 @@ class TestBuildUvCmdTorchBackend:
         ],
     )
     def test_build_uv_cmd_torch_backend_cases(self, backend, expected_flag):
-        with mock.patch.dict(os.environ, {'UV_TORCH_BACKEND': backend}):
-            cmd = self._call(('somepackage',))
+        with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": backend}):
+            cmd = self._call(("somepackage",))
         assert expected_flag in cmd
 
 
@@ -1598,9 +1598,9 @@ class TestDuplicateCoreMetadataRepair:
     )
     def test_duplicate_core_metadata_repair_cases(self, monkeypatch, stdout):
         self._uv_only(monkeypatch)
-        self._uv_plan(monkeypatch, stdout=stdout)
-        _requirement, overrides, _options = ips._uv_staging_plan('unsloth-zoo')
-        assert overrides['PIP_INDEX_URL'] == 'https://user:secret@private.corp/simple'
+        self._uv_plan(monkeypatch, stdout = stdout)
+        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
+        assert overrides["PIP_INDEX_URL"] == "https://user:secret@private.corp/simple"
 
 
     @pytest.mark.parametrize(

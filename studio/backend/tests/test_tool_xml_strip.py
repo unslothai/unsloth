@@ -247,7 +247,7 @@ def test_strips_orphan_function_no_close():
     ],
 )
 def test_tool_xml_strip_drops_markup_and_keeps_prose(text, removed, kept):
-    cleaned = _TOOL_XML_RE.sub('', text)
+    cleaned = _TOOL_XML_RE.sub("", text)
     assert removed not in cleaned
     assert kept in cleaned
 
@@ -295,7 +295,7 @@ def test_strips_gemma_native_orphan_closing_tag():
     ],
 )
 def test_tool_xml_strip_trims_truncated_bracket_tails(text, removed, expected):
-    cleaned = _TOOL_XML_RE.sub('', text)
+    cleaned = _TOOL_XML_RE.sub("", text)
     assert removed not in cleaned
     assert cleaned.strip() == expected
 

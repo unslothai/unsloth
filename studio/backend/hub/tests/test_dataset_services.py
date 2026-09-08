@@ -234,7 +234,7 @@ def _dataset_snapshot(monkeypatch, tmp_path: Path, filenames: tuple[str, ...]) -
 )
 def test_raw_dataset_cache_has_data_rejects_payload_free_snapshots(monkeypatch, tmp_path, file_a, file_b, file_c, file_d):
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, (file_a, file_b, file_c, file_d))
-    assert cache_inventory._raw_dataset_cache_has_data('Org/Data', repo_root) is False
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
 
 
 @pytest.mark.parametrize(
@@ -255,8 +255,8 @@ def test_raw_dataset_cache_has_data_rejects_payload_free_snapshots(monkeypatch, 
     ],
 )
 def test_raw_dataset_cache_has_data_counts_only_real_payload(monkeypatch, tmp_path, file_a, file_b, expected):
-    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ('README.md', file_a, file_b))
-    assert cache_inventory._raw_dataset_cache_has_data('Org/Data', repo_root) is expected
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md", file_a, file_b))
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is expected
 
 
 def test_raw_dataset_cache_has_data_counts_payload_under_a_metadata_named_dir(

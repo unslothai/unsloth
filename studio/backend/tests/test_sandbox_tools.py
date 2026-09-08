@@ -856,7 +856,7 @@ class TestBashBlocklistPosition:
         ],
     )
     def test_bash_blocklist_flags_each_variant(self, rm_command, second_expected, second_command, third_expected, third_command, fourth_expected, fourth_command):
-        assert 'rm' in self._find()(rm_command)
+        assert "rm" in self._find()(rm_command)
         assert second_expected in self._find()(second_command)
         assert third_expected in self._find()(third_command)
         assert fourth_expected in self._find()(fourth_command)
@@ -1077,7 +1077,7 @@ class TestBashBlocklistPosition:
     )
     def test_bash_blocklist_flags_only_the_dangerous_variants(self, first_expected, first_command, rm_command, third_expected, third_command, safe_command):
         assert first_expected in self._find()(first_command)
-        assert 'rm' in self._find()(rm_command)
+        assert "rm" in self._find()(rm_command)
         assert third_expected in self._find()(third_command)
         assert self._find()(safe_command) == set()
 

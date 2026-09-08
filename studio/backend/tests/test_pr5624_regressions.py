@@ -333,7 +333,7 @@ def test_deepseek_v3_1_truncated_after_end_marker_still_yields_call():
 def test_routes_layer_strip_removes_tool_envelopes(text):
     from routes.inference import _strip_tool_xml as _routes_strip
     stripped = _routes_strip(text)
-    assert stripped == 'before  after'
+    assert stripped == "before  after"
 
 
 # strip_tool_markup (parser-level finalise path) over the new families

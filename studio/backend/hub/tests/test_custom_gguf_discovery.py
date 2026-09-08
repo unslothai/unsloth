@@ -243,7 +243,7 @@ def test_symlinked_and_real_parent_roots_dedupe_group_rows(tmp_path):
     ],
 )
 def test_gguf_variants_of_one_model_stay_grouped(tmp_path, folder, first_file, second_file):
-    root = tmp_path / 'root'
+    root = tmp_path / "root"
     model = root / folder
     _write_gguf(model / first_file)
     _write_gguf(model / second_file)

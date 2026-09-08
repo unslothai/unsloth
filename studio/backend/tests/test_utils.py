@@ -140,7 +140,7 @@ class TestIsAppleSilicon:
         ],
     )
     def test_is_apple_silicon_cases(self, system, machine, expected):
-        with patch('utils.hardware.hardware.platform') as mock_plat:
+        with patch("utils.hardware.hardware.platform") as mock_plat:
             mock_plat.system.return_value = system
             mock_plat.machine.return_value = machine
             assert is_apple_silicon() is expected

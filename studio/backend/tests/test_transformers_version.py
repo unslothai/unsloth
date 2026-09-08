@@ -621,7 +621,7 @@ class TestNemotronHNeedsMlpSupport:
         ],
     )
     def test_nemotron_h_needs_mlp_support_cases(self, expected_model_type, expected_hybrid_override_pattern, expected):
-        cfg = {'model_type': expected_model_type, 'hybrid_override_pattern': expected_hybrid_override_pattern}
+        cfg = {"model_type": expected_model_type, "hybrid_override_pattern": expected_hybrid_override_pattern}
         assert _nemotron_h_needs_mlp_support(cfg) is expected
 
     def test_layers_block_type_with_mlp(self):
@@ -937,8 +937,8 @@ class TestGetTransformersTier:
         ],
     )
     def test_get_transformers_tier_cases_2(self, tmp_path, architecture, model_type, expected):
-        cfg = {'architectures': [architecture], 'model_type': model_type}
-        (tmp_path / 'config.json').write_text(json.dumps(cfg))
+        cfg = {"architectures": [architecture], "model_type": model_type}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
         assert get_transformers_tier(str(tmp_path)) == expected
 
 

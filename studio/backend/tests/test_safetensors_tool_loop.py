@@ -238,7 +238,7 @@ class TestParser:
             pytest.param('Now web_search[ARGS]{"query":"x"}</think> answer',
                 "web_search", id = "stray_close_after_real_call_not_treated_as_prefill"),
             # The think block is stripped before matching so the post-thinking call is recognised.
-            pytest.param('<think>I will use web_search to find the weather.</think>'
+            pytest.param("<think>I will use web_search to find the weather.</think>"
                 '<tool_call>{"name":"web_search","arguments":{"query":"sf"}}</tool_call>',
                 "web_search", id = "think_block_stripped_before_xml"),
             pytest.param('<think>Let me search for that.</think>\n[TOOL_CALLS]web_search{"query":"weather"}',
@@ -2625,16 +2625,16 @@ class TestLoopRePrompt:
     def test_loop_does_not_re_prompt_on_prefilled_reasoning(self, chunk):
         generations = 0
 
-        def _gen(_messages, active_tools=None):
+        def _gen(_messages, active_tools = None):
             nonlocal generations
             generations += 1
             yield chunk
         exec_fn = FakeExecuteTool([])
-        events = _collect_events(run_safetensors_tool_loop(single_turn=_gen, messages=[{'role': 'user', 'content': 'summarize this'}], tools=[{'type': 'function', 'function': {'name': 'web_search'}}], execute_tool=exec_fn, nudge_tool_calls=True, reasoning_prefilled=True))
+        events = _collect_events(run_safetensors_tool_loop(single_turn = _gen, messages = [{"role": "user", "content": "summarize this"}], tools = [{"type": "function", "function": {"name": "web_search"}}], execute_tool = exec_fn, nudge_tool_calls = True, reasoning_prefilled = True))
         assert generations == 1
         assert exec_fn.calls == []
-        contents = [e['text'] for e in events if e['type'] == 'content']
-        assert contents[-1].endswith('This is the final visible answer.')
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1].endswith("This is the final visible answer.")
 
 
     def test_reasoning_only_intent_still_reprompts_and_uses_a_tool(self):
@@ -2829,7 +2829,7 @@ class TestLoopCanonicalHealKey:
         ],
     )
     def test_loop_heals_the_call_to_its_canonical_key(self, chunk, answer, exec_result, expected_name, expected_key, expected_value):
-        loop, exec_fn = _make_loop(turns=[[chunk], [answer]], exec_results=[exec_result])
+        loop, exec_fn = _make_loop(turns = [[chunk], [answer]], exec_results = [exec_result])
         events = _collect_events(loop)
         assert exec_fn.calls == [(expected_name, {expected_key: expected_value})]
 

@@ -279,8 +279,8 @@ def test_snapshot_options_offer_nothing_when_the_splits_disagree_on_a_format(tmp
 )
 def test_snapshot_options_rejects_unusable_splits(tmp_path, train_text, sibling_name, sibling_text):
     snapshot = _snapshot(tmp_path)
-    (snapshot / 'train.csv').write_text(train_text, encoding='utf-8')
-    (snapshot / sibling_name).write_text(sibling_text, encoding='utf-8')
+    (snapshot / "train.csv").write_text(train_text, encoding = "utf-8")
+    (snapshot / sibling_name).write_text(sibling_text, encoding = "utf-8")
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -296,7 +296,7 @@ def test_snapshot_options_rejects_unusable_splits(tmp_path, train_text, sibling_
 )
 def test_snapshot_options_stay_empty_for_a_dataless_cache(tmp_path, filename, contents):
     snapshot = _snapshot(tmp_path)
-    (snapshot / filename).write_text(contents, encoding='utf-8')
+    (snapshot / filename).write_text(contents, encoding = "utf-8")
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -424,7 +424,7 @@ def test_snapshot_options_leave_a_declared_card_to_its_own_configs(tmp_path):
 )
 def test_snapshot_options_stand_down_when_the_card_cannot_be_read(tmp_path, card_name, card_text, data_file):
     snapshot = _snapshot(tmp_path)
-    (snapshot / card_name).write_text(card_text, encoding='utf-8')
+    (snapshot / card_name).write_text(card_text, encoding = "utf-8")
     _rows(snapshot, data_file)
     assert local_options._snapshot_options(snapshot) == set()
 
@@ -446,9 +446,9 @@ def test_snapshot_options_stand_down_when_the_card_cannot_be_read(tmp_path, card
 )
 def test_snapshot_options_still_infer_when_the_card_declares_nothing(tmp_path, card_name, card_text, data_file):
     snapshot = _snapshot(tmp_path)
-    (snapshot / card_name).write_text(card_text, encoding='utf-8')
+    (snapshot / card_name).write_text(card_text, encoding = "utf-8")
     _rows(snapshot, data_file)
-    assert local_options._snapshot_options(snapshot) == {('default', 'train')}
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
 
 
 def test_snapshot_options_stay_empty_for_a_licence_only_subdirectory(tmp_path):

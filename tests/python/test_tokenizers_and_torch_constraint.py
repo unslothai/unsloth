@@ -303,7 +303,7 @@ class TestTorchConstraintShell:
         ],
     )
     def test_torch_constraint_shell_cases(self, tmp_path, py_minor, os_val, arch, expected):
-        out = self._run(tmp_path, py_minor=py_minor, os_val=os_val, arch=arch)
+        out = self._run(tmp_path, py_minor = py_minor, os_val = os_val, arch = arch)
         assert out == expected
 
 
