@@ -72,12 +72,14 @@ def is_companion_gguf_path(path: str) -> bool:
     return is_gguf_filename(path) and (is_mmproj_filename(path) or is_mtp_drafter_path(path))
 
 
-def is_main_gguf_variant_path(path: str, variant: str) -> bool:
-    """Whether *path* is one of *variant*'s own weight files.
+def is_main_gguf_candidate(path: str) -> bool:
+    """Whether *path* could be SOME variant's own weight file, whichever one.
 
-    Keyed on :func:`gguf_variant_key`, in lockstep with the listers: a row built under
-    one identity and matched under another produces a variant that can be shown but
-    not downloaded.
+    The variant-independent half of :func:`is_main_gguf_variant_path`, split out so that a
+    caller resolving a spelling onto a key sees exactly the files that predicate would accept.
+    An mmproj is named for its OWN precision and keys like any other file
+    (``Qwen3.8-27B-mmproj-hybrid-Q8_0-F16.gguf`` -> ``Q8_0``), so leaving companions in that set
+    let one match a bare quant exactly and shadow the real build the caller asked for.
     """
     return (
         is_gguf_filename(path)
@@ -87,8 +89,17 @@ def is_main_gguf_variant_path(path: str, variant: str) -> bool:
         # The endian predicate reads a quant TOKEN, so hand it the label: given the qualified key it
         # cannot see a parent-only quant and drops the file, leaving the plan with no main files.
         and not is_big_endian_gguf_path(path, extract_quant_label(path))
-        and gguf_variant_key(path).lower() == variant.lower()
     )
+
+
+def is_main_gguf_variant_path(path: str, variant: str) -> bool:
+    """Whether *path* is one of *variant*'s own weight files.
+
+    Keyed on :func:`gguf_variant_key`, in lockstep with the listers: a row built under
+    one identity and matched under another produces a variant that can be shown but
+    not downloaded.
+    """
+    return is_main_gguf_candidate(path) and gguf_variant_key(path).lower() == variant.lower()
 
 
 def _gguf_rfilename(sibling) -> Optional[str]:
@@ -357,7 +368,7 @@ def plan_from_expected_files(
     # finding no main file and aborting on top of the partial blobs it already fetched.
     resolved = (
         resolve_variant_alias(
-            {gguf_variant_key(file.path) for file in expected if is_gguf_filename(file.path)},
+            {gguf_variant_key(file.path) for file in expected if is_main_gguf_candidate(file.path)},
             variant,
         )
         or variant

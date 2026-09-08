@@ -351,3 +351,30 @@ def test_an_interrupted_bare_alias_download_still_resumes():
     plan = plan_from_expected_files("q4_0", expected)
     assert plan.main_filenames == frozenset({"gemma-4-31B_q4_0-it.gguf"})
     assert plan.main_size_bytes == 17
+
+
+def test_a_companion_cannot_shadow_the_build_a_bare_pin_names():
+    """An mmproj is named for its OWN precision and keys like any other file
+    (``Qwen3.8-27B-mmproj-hybrid-Q8_0-F16.gguf`` -> ``Q8_0``, live on
+    ``NikiKrutan/Kiwen1.1-27B-MTP-GGUF``). Resolving the bare pin over every GGUF in the manifest
+    let that exact match win and hand the caller a plan with no main file at all."""
+    from hub.utils.download_manifest import ExpectedFile
+
+    expected = [
+        ExpectedFile(path = "model-Q8_0-mtp.gguf", size = 10, sha256 = "main"),
+        ExpectedFile(path = "mmproj-Q8_0.gguf", size = 2, sha256 = "mmproj"),
+    ]
+    plan = plan_from_expected_files("q8_0", expected)
+    assert plan.main_filenames == frozenset({"model-Q8_0-mtp.gguf"})
+
+
+def test_the_main_candidate_predicate_stays_in_lockstep():
+    """``is_main_gguf_variant_path`` is the candidate test plus the key comparison; if the two
+    drift, the resolver sees a different file set than the filter that follows it."""
+    from hub.utils.gguf_plan import is_main_gguf_candidate, is_main_gguf_variant_path
+
+    for path in ("model-Q8_0-mtp.gguf", "mmproj-Q8_0.gguf", "imatrix-model.gguf", "notes.txt"):
+        key = gguf_variant_key(path)
+        assert is_main_gguf_variant_path(path, key) == (
+            is_main_gguf_candidate(path) and gguf_variant_key(path).lower() == key.lower()
+        )
