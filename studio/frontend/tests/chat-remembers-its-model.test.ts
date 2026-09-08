@@ -19,6 +19,7 @@ import {
 registerBundlerResolver();
 const { store } = installLocalStorageFake();
 const {
+  chatModelIsSelectable,
   chatModelSwitchMeta,
   createChatModelHistoryReader,
   resolveChatModelSwitchTarget,
@@ -103,7 +104,11 @@ test("the notice stays quiet when it has nothing to offer", () => {
   );
   assert.match(
     body,
-    /if \(!selectableModelIds\.has\(createdModel\.modelId\)\) return null;/,
+    /chatModelIsSelectable\(\s*createdModel\.modelId,\s*selectableModelIds\s*\)/,
+  );
+  assert.doesNotMatch(
+    body,
+    /selectableModelIds\.has\(createdModel\.modelId\)/,
   );
 });
 
@@ -187,6 +192,25 @@ test("only models that can actually be selected are offered", () => {
       `${source} is missing from the selectable set`,
     );
   }
+});
+
+test("a snapshot-path chat is selectable through its repo row", () => {
+  const snapshotPath =
+    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
+  const repoId = "unsloth/Repo-GGUF";
+  assert.equal(
+    chatModelIsSelectable(snapshotPath, new Set([repoId])),
+    true,
+  );
+  assert.equal(
+    chatModelIsSelectable(snapshotPath, new Set(["unsloth/Other-GGUF"])),
+    false,
+  );
+  assert.equal(chatModelIsSelectable(repoId, new Set([repoId])), true);
+  assert.equal(
+    chatModelIsSelectable("/srv/models/a/Repo-Q4_K_M.gguf", new Set(["Repo-Q4_K_M"])),
+    false,
+  );
 });
 
 test("the notice clears the chat header instead of rendering underneath it", () => {

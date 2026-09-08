@@ -8,6 +8,7 @@ import type {
 import {
   ggufQuantLabel,
   normalizeGgufVariantIdentity,
+  publicModelId,
 } from "../../model-picker/model-config/model-identity";
 import { resolveOnlyRememberedGgufVariant } from "../../model-picker/model-config/per-model-config";
 
@@ -15,6 +16,21 @@ export type ChatModelSwitchTarget = {
   modelId: string;
   ggufVariant?: string | null;
 };
+
+/** Exact picker id, or the namespaced HF-cache alias resolveResidentInitialConfig uses. */
+export function chatModelIsSelectable(
+  modelId: string,
+  selectableModelIds: ReadonlySet<string>,
+): boolean {
+  if (selectableModelIds.has(modelId)) {
+    return true;
+  }
+  const alias = publicModelId(modelId);
+  if (alias === modelId || !alias.includes("/")) {
+    return false;
+  }
+  return selectableModelIds.has(alias);
+}
 
 type ChatModelThreadSnapshot = {
   id: string;

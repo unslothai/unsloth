@@ -13,6 +13,7 @@ import { compareModelDisplayName } from "../lib/external-model-label";
 import { getStoredChatThread } from "../utils/chat-history-storage";
 import {
   type ChatModelSwitchTarget,
+  chatModelIsSelectable,
   createChatModelHistoryReader,
 } from "./chat-model-notice-switch";
 
@@ -82,7 +83,9 @@ export function ChatModelNotice({
   }
   // A model that has since been deleted, or a connection that is gone: the switch could not be
   // honoured, and saying so on every open is just noise.
-  if (!selectableModelIds.has(createdModel.modelId)) return null;
+  if (!chatModelIsSelectable(createdModel.modelId, selectableModelIds)) {
+    return null;
+  }
   const label = compareModelDisplayName(createdModel.modelId);
   return (
     // Positioned, not in flow. The chat header is `absolute ... z-40` with an opaque `bg-background`,
