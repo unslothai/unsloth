@@ -98,8 +98,7 @@ def _tool_event(**overrides):
         "type": "tool_start",
         "tool_name": "python",
         "tool_call_id": "call_0",
-        # Explicit, not left to the consumer's .get("arguments", {}): that fallback is the
-        # malformed-event path, so omitting it stops these tests covering the real wire shape.
+        # Explicit: the consumer's .get("arguments", {}) fallback is the malformed-event path, so omitting it drops the real wire shape.
         "arguments": {},
         **overrides,
     }
