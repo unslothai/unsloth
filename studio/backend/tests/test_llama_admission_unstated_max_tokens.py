@@ -76,12 +76,9 @@ class TestTheDefaultChatNoLongerTakesTheWholeCache:
     def test_max_tokens_max_does_not_reserve_the_budget(self):
         cost = self._cost(_chat(max_tokens = self.BUDGET))
         assert cost < self.BUDGET, "Max Tokens = Max still reserves the whole cache"
-        # Its FAIR SHARE, not the flat allowance. This asserted `<= 1024 + 100` while the
-        # charge was a flat estimate the share could only lower; the charge is now the
-        # whole share, because charging less than the wire permits is what made the
-        # reservation unsafe. The property this test exists for is unchanged and is the
-        # one asserted here: a default chat never reserves the cache, and `capacity` of
-        # them still fit (test_four_default_chats_fit_at_once).
+        # Its FAIR SHARE, not the flat allowance: charging less than the wire permits is
+        # what made the reservation unsafe. The property is unchanged, a default chat
+        # never reserves the cache and `capacity` of them still fit.
         assert cost <= self.BUDGET // self.CAPACITY
 
     def test_four_default_chats_fit_at_once(self):

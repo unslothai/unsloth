@@ -1128,11 +1128,9 @@ def test_a_second_call_at_one_index_keeps_its_own_argument_fragments(executed):
     )
     _run(transport)
 
-    # Sorted, because the two calls now RUN at the same time and whichever thread reaches
-    # the tool first records first. What this test is about is argument routing: each call
-    # must keep its own fragments instead of inheriting the other's tail. The order the
-    # model sees is asserted where it matters, on the transcript, which is still built in
-    # call order by `_settle_call`.
+    # Sorted: a round's calls run together now, so which thread records first is not
+    # fixed. This is about argument ROUTING; the order the model sees is asserted on
+    # the transcript, which `_settle_call` still builds in call order.
     assert sorted((call["arguments"]["query"] for call in executed)) == ["first", "second"]
 
 
@@ -1173,9 +1171,7 @@ def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
     )
     _run(transport)
 
-    # Sorted, because the two calls now RUN at the same time and whichever thread reaches
-    # the tool first records first. What this test is about is argument routing: each call
-    # must keep its own fragments instead of inheriting the other's tail. The order the
-    # model sees is asserted where it matters, on the transcript, which is still built in
-    # call order by `_settle_call`.
+    # Sorted: a round's calls run together now, so which thread records first is not
+    # fixed. This is about argument ROUTING; the order the model sees is asserted on
+    # the transcript, which `_settle_call` still builds in call order.
     assert sorted((call["arguments"]["query"] for call in executed)) == ["first", "second"]

@@ -41,7 +41,7 @@ def test_a_resume_keeps_the_thought_that_preceded_the_prose(monkeypatch, site):
         streams,
         signal = signal,
         pause_after = {attempt: 2},
-        supports_reasoning = True,
+        _supports_reasoning = True,
         execute_tool = True,
     )
     if site == "plain":
