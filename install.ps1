@@ -1812,16 +1812,41 @@ public static class UnslothStudioFinalPathV2
         param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path)
 
         if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
-        $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-        if (-not $item) { return "" }
-        # Non-filesystem providers do not expose FileSystemInfo attributes.
-        if ($item -isnot [System.IO.FileSystemInfo]) { return "" }
-        if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
-        $target = $null
-        try { $target = $item.Target } catch { $target = $null }
-        # PS 5.1 exposes .Target as a collection; PS 7 as a string.
-        if ($target) { return " (it is a link to $(@($target) -join ', '))" }
-        return " (it is a link)"
+
+        # Read attributes through the filesystem API rather than Get-Item. Getting
+        # attributes needs only FILE_READ_ATTRIBUTES, which survives the ACLs that
+        # deny reading the directory itself, so Get-Item returns nothing in exactly
+        # the case this detail is meant to describe and the caller silently loses
+        # every hint below.
+        $attrs = $null
+        try { $attrs = [System.IO.File]::GetAttributes($Path) } catch { $attrs = $null }
+        if ($null -eq $attrs) { return "" }
+
+        # Ordered by how much each one changes the fix. takeown/icacls cannot help
+        # with any of the first three, so name them before falling back to ACLs.
+        if ($attrs -band [System.IO.FileAttributes]::Encrypted) {
+            return " (it is EFS-encrypted, so it stays unreadable even elevated unless the encrypting account or its recovery certificate is available)"
+        }
+        # Offline plus either recall attribute is a cloud placeholder, typically
+        # OneDrive Files On-Demand that cannot hydrate.
+        # RECALL_ON_OPEN (0x40000) and RECALL_ON_DATA_ACCESS (0x400000) are absent
+        # from the FileAttributes enum on Windows PowerShell 5.1, so test the bits.
+        $offline = ([int]$attrs -band [int][System.IO.FileAttributes]::Offline) -ne 0
+        $recall = ([int]$attrs -band (0x00040000 -bor 0x00400000)) -ne 0
+        if ($offline -or $recall) {
+            return " (it is a cloud placeholder, e.g. OneDrive Files On-Demand, that cannot be hydrated right now)"
+        }
+        if ($attrs -band [System.IO.FileAttributes]::ReparsePoint) {
+            $target = $null
+            try {
+                $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+                if ($item -is [System.IO.FileSystemInfo]) { $target = $item.Target }
+            } catch { $target = $null }
+            # PS 5.1 exposes .Target as a collection; PS 7 as a string.
+            if ($target) { return " (it is a link to $(@($target) -join ', '))" }
+            return " (it is a link)"
+        }
+        return ""
     }
 
     # Print guidance; returns the failure reason as its only pipeline output.
@@ -1920,6 +1945,31 @@ public static class UnslothStudioFinalPathV2
         $suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir } else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }
         $userSupplied = (-not [string]::IsNullOrWhiteSpace($suppliedDir)) -and
             ((Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir))
+
+        # Only the default branch below tells the user to delete this folder, so
+        # only that case may move it. A user-supplied build is not ours to touch,
+        # and an unreadable custom home cannot be confirmed as a managed cache.
+        # Renaming needs DELETE on the folder plus write on its parent, neither of
+        # which is read access, so this recovers denials that takeown and icacls
+        # do not: the folder is a managed cache that setup reinstalls anyway.
+        if (-not $userSupplied -and -not $homeIsCustom) {
+            $asideDir = "$dir.denied-$(Get-Date -Format 'yyyyMMddHHmmss')"
+            $moved = $false
+            try {
+                Move-Item -LiteralPath $dir -Destination $asideDir -ErrorAction Stop
+                $moved = $true
+            } catch {
+                # Expected when the denial also covers rename; fall through to guidance.
+            }
+            if ($moved) {
+                step "permissions" "llama.cpp install at $dir could not be read, so it was moved aside" "Yellow"
+                substep "Moved to $asideDir; it is a managed cache and setup reinstalls it" "Yellow"
+                substep "Delete the moved folder once access is restored, it is no longer used" "Yellow"
+                Write-StudioLine ""
+                return $null
+            }
+        }
+
         $reason = Write-PathAccessDenied -Path $dir -Label "llama.cpp install" `
             -UserSupplied:$userSupplied -OwnershipUnverified:$homeIsCustom
         substep "Stopping here, before phase 1: nothing has been downloaded or installed" "Yellow"
