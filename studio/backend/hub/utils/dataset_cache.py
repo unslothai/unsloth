@@ -619,26 +619,45 @@ def dataset_cache_can_answer(repo_id: str) -> bool:
         return True
 
 
-def refuse_unauthorized_dataset_preview(hf_token, dataset_name: str) -> None:
+def refuse_unauthorized_dataset_preview(
+    hf_token, dataset_name: str, *, offline: bool = False
+) -> None:
     """Raise 404 when a cached dataset preview would be served to a caller who cannot reach it.
 
-    ``datasets`` satisfies a streaming load from its own cache without consulting the
+    ``datasets`` satisfies a load from its own prepared cache without consulting the
     credential, so an explicit token that cannot reach the repo is a leak online as well as
-    off. The anonymous sentinel has no network over which to establish access, so it is
-    refused offline. Both preview routes spelled this out separately, and not equivalently,
-    under comments claiming they mirrored each other; stating it once removes that trap.
+    off. Both preview routes spelled this out separately, and not equivalently, under
+    comments claiming they mirrored each other; stating it once removes that trap.
+
+    The anonymous sentinel was refused only under a declared offline env, which left the
+    case that matters: a Hub merely unreachable is not a Hub declared absent, and the load
+    then falls back to the prepared cache all the same. It cannot authorize itself, so ask
+    the question it can answer instead, which is whether the repo is public at all.
+
+    ``offline`` is the caller's own cache-only intent, forwarded so a prefer-local request
+    does not put its credential and repo id on the wire for a branch that will not use them.
     """
     from fastapi import HTTPException
-    from hub.utils.hf_tokens import cached_read_refused, is_anonymous
-    from utils.utils import hf_env_offline
+    from hub.utils.hf_tokens import (
+        cached_read_refused,
+        is_anonymous,
+        public_cache_read_authorized,
+    )
 
     refused = cached_read_refused(
         hf_token,
         repo_id = dataset_name,
         repo_type = "dataset",
         is_cached = lambda: dataset_cache_can_answer(dataset_name),
+        offline = offline,
     )
-    if refused and (isinstance(hf_token, str) or (is_anonymous(hf_token) and hf_env_offline())):
+    if not refused:
+        return
+    if is_anonymous(hf_token) and public_cache_read_authorized(
+        repo_id = dataset_name, repo_type = "dataset", offline = offline
+    ):
+        return
+    if isinstance(hf_token, str) or is_anonymous(hf_token):
         raise HTTPException(
             status_code = 404,
             detail = "Dataset preview is not available without Hub authorization.",

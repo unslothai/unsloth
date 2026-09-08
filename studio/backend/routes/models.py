@@ -2597,14 +2597,14 @@ async def scan_model_remote_code(
         # _repo_in_any_hf_cache returns False when every cache root raises, which would open
         # this path on an internal error; its other caller drives deletion semantics where
         # that False is right, so fail closed here rather than changing it there.
-        def _repo_maybe_cached() -> bool:
+        def _repo_maybe_cached(repo: str) -> bool:
             try:
-                return _repo_in_any_hf_cache(model_name)
+                return _repo_in_any_hf_cache(repo)
             except Exception:
                 return True
 
         if not local_model and cached_read_refused(
-            hf_token, repo_id = model_name, is_cached = _repo_maybe_cached
+            hf_token, repo_id = model_name, is_cached = lambda: _repo_maybe_cached(model_name)
         ):
             raise HTTPException(
                 status_code = 404,
@@ -2690,6 +2690,18 @@ async def scan_model_remote_code(
                     dict.fromkeys((*_subdirs, *security_load_subdirs(model_name, hf_token)))
                 )
             _target, _subdirs = load_scan_target(_requested_target, _subdirs)
+            # The gate above authorized model_name. A base model, native-audio dependency or
+            # auto_map repo reached from it is a DIFFERENT repo, scanned with the same token,
+            # and the scanner's downloads fall back to its cached configs and Python files.
+            # Refusing rather than dropping the target: a silently unscanned base would
+            # under-report has_remote_code, which is worse than no answer.
+            if not is_local_path(_target) and cached_read_refused(
+                hf_token, repo_id = _target, is_cached = lambda t = _target: _repo_maybe_cached(t)
+            ):
+                raise HTTPException(
+                    status_code = 404,
+                    detail = "This model is not available to an unauthorized caller.",
+                )
             if _target not in consent_load_subdirs:
                 security_targets.append(_target)
                 consent_load_subdirs[_target] = ()
@@ -4575,7 +4587,13 @@ async def get_gguf_variants(
             or hub_gguf_variants.pinned_snapshot_for_request(repo_id, local_path)
             or repo_id
         )
-        local = is_local_path(context_model)
+        # The first two are directories the listing already authorized; the bare repo id is
+        # not, and reading it walks every local cache for that repo. A denied caller who
+        # could still list a gated repo's public metadata would get its cached context_length
+        # from that walk alone, after the service suppressed every other local fact.
+        if not answer.cache_authorized and not is_local_path(context_model):
+            context_model = None
+        local = context_model is not None and is_local_path(context_model)
 
         return GgufVariantsResponse(
             repo_id = response.repo_id,
@@ -4600,7 +4618,11 @@ async def get_gguf_variants(
             ],
             has_vision = response.has_vision,
             default_variant = response.default_variant,
-            context_length = await _read_native_context_length_bounded(context_model, local),
+            context_length = (
+                await _read_native_context_length_bounded(context_model, local)
+                if context_model is not None
+                else None
+            ),
             resolved_locally = bool(getattr(response, "resolved_locally", False)),
             loadable_variants = getattr(response, "loadable_variants", None),
             loadable = getattr(response, "loadable", None),

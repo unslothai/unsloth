@@ -2426,8 +2426,22 @@ def _resolve_embedding_model_plan(
     The cache lookups below read the operator's disk without consulting the credential,
     so a caller who cannot reach the repo must not learn its cached state from them. A
     local path the caller named itself is not the Hub cache and stays available.
+
+    Authorization is per REPO, not per request: the artifact a lookup returns is often not
+    ``resolved`` but a stored override, a ``sentence-transformers/`` alias or a derived
+    ``-GGUF`` conversion, and /auth-check answers 200 for any string on a public base. One
+    decision taken from the base would let a token that reaches the public model select the
+    operator's cached private conversion of it.
     """
     cache_ok = cache_reads_authorized(token, repo_id = resolved)
+
+    def _authorized(repo: Optional[str]) -> bool:
+        """The repo a cache lookup actually matched, asked about in its own right."""
+        if not repo:
+            return False
+        if repo == resolved:
+            return cache_ok
+        return cache_reads_authorized(token, repo_id = repo)
     # Resolve for the model being selected.
     on_llama = _llama_backend_active(resolved)
     backend: Literal["llama", "sentence-transformers"] = (
@@ -2444,6 +2458,10 @@ def _resolve_embedding_model_plan(
         # The alias-aware predicate alone, which already pairs the ST file family with the loadable check per candidate;
         # the repo the cache hit came from is what the PUT verifies and scans.
         cached_source = _cached_st_source(resolved) if cache_ok else None
+        # Reading our own disk to learn WHICH repo answered is not the leak; handing that
+        # repo's cached state back is, and for an alias it is not the one just authorized.
+        if cached_source is not None and not _authorized(cached_source[0]):
+            cached_source = None
         cached = cached_source is not None
         source = None if cached else _st_weight_source(resolved, token)
         if not cached and source is None:
@@ -2509,6 +2527,8 @@ def _resolve_embedding_model_plan(
     # Match the loader's online fast path exactly: only the preferred repo and
     # only the configured variant can suppress the download offer.
     cached_repo = _cached_embedding_gguf(candidates[:1], require_variant = True) if cache_ok else None
+    if cached_repo and not _authorized(cached_repo):
+        cached_repo = None
     if cached_repo:
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
@@ -2523,6 +2543,8 @@ def _resolve_embedding_model_plan(
         cached_repo = (
             _cached_embedding_gguf(candidates, require_variant = False) if cache_ok else None
         )
+        if cached_repo and not _authorized(cached_repo):
+            cached_repo = None
         if cached_repo:
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved,

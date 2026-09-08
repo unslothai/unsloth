@@ -1004,6 +1004,9 @@ class VariantsAnswer(NamedTuple):
 
     response: GgufVariantsResponse
     context_source: Optional[str]
+    # False when the caller may not read this repo's caches, so a reader that falls back to
+    # the repo id rather than ``context_source`` does not walk them anyway.
+    cache_authorized: bool = True
 
 
 def _default_variant_candidates(variants) -> list[str]:
@@ -1041,6 +1044,9 @@ async def get_gguf_variants_answer(
     # A repo-shaped id resolving to a directory is answered by that directory alone, not the HF cache
     # of the same-named repo, else a GGUF-less directory could evict the resident model.
     answered_locally = [False]
+    # Whether this caller may be told anything the local caches hold about this repo. The
+    # route reads it before its own cache walk, which the listing does not cover.
+    cache_authorized = [True]
 
     def _compute() -> GgufVariantsResponse:
         repo_cache_dir = (
@@ -1401,7 +1407,11 @@ async def get_gguf_variants_answer(
         # so shared blobs are not double-counted, and keys are lowercased since cache casing can differ.
         cached_filenames_by_snapshot: list[dict[str, int]] = []
         cached_quant_bytes_by_snapshot: list[dict[str, int]] = []
-        if _is_valid_repo_id(repo_id):
+        # A gated repo can list its files publicly, so reaching here does not mean the caller
+        # was authorized: the cache-only and exception paths above both refuse them, and this
+        # walk would hand the same caller `downloaded`, `partial` and remaining-byte state for
+        # the operator's copy. Everything below reads only the local caches.
+        if _is_valid_repo_id(repo_id) and cache_reads_authorized:
             # A pinned row resolves inside one directory, so nothing else counts as downloaded.
             scoped_snapshots = (
                 [snapshot_scope]
@@ -1659,7 +1669,7 @@ async def get_gguf_variants_answer(
     def _compute_with_cleanables() -> VariantsAnswer:
         # Returned with the answer, not read from the closure afterwards: coalesced callers share one
         # computation and must all see the copy it answered from.
-        return VariantsAnswer(_compute_response(), answered_from[0])
+        return VariantsAnswer(_compute_response(), answered_from[0], cache_authorized[0])
 
     def _compute_response() -> GgufVariantsResponse:
         skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
@@ -1671,6 +1681,9 @@ async def get_gguf_variants_answer(
             hf_token, repo_id = repo_id, offline = bool(offline)
         ):
             skip = True
+            # Carried out with the answer: the route falls back to the bare repo id for its
+            # context-length lookup, which walks the same caches this refusal just closed.
+            cache_authorized[0] = False
         try:
             response = _compute()
         except Exception:

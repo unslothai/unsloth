@@ -392,19 +392,24 @@ def read_default_chat_template(
         _api = HfApi(token = hf_token)
 
         def _remote_worth_downloading(rel: str) -> bool:
+            # hf_hub_download below returns the cached pointer for ANY failed head call,
+            # a 403 on a gated repo as much as an unreachable Hub, and does it before it
+            # re-raises. So neither the offline gate nor a successful metadata lookup is
+            # enough: a gated repo can publish its file metadata publicly, and that 200
+            # says nothing about who may download. Ask once, ahead of both.
+            if cached_read_refused(
+                hf_token,
+                repo_id = resolved,
+                is_cached = lambda: get_cache_path(resolved) is not None,
+            ):
+                return False
             # Reuse the size lookup to skip absent or oversized files.
             try:
                 infos = _api.get_paths_info(resolved, [rel], repo_type = "model", token = hf_token)
             except Exception:
-                # hf_hub_download below serves the cached copy on an unreachable Hub
-                # without consulting the credential. The offline gate misses that: "hub
-                # unreachable" is not "env offline". get_paths_info is network-only, so its
-                # success is the wire proof.
-                return not cached_read_refused(
-                    hf_token,
-                    repo_id = resolved,
-                    is_cached = lambda: get_cache_path(resolved) is not None,
-                )
+                # Nothing cached to serve, so the download is free to try the Hub, which
+                # enforces its own access.
+                return True
             matched = [info for info in infos if getattr(info, "path", None) == rel]
             if not matched:
                 return False

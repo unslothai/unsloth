@@ -209,6 +209,25 @@ def cache_reads_authorized(
     return _explicit_token_reaches_repo(repo, hf_token, repo_type, offline = offline)
 
 
+def public_cache_read_authorized(
+    *,
+    repo_id: str,
+    repo_type: str = "model",
+    offline: bool = False,
+) -> bool:
+    """Whether serving *repo_id* from the cache to a caller with NO credential leaks anything.
+
+    The forced-anonymous sentinel can never authorize itself, so ``cache_reads_authorized``
+    denies it outright. That is the right answer for a private repo and the wrong one for a
+    public repo the caller was always entitled to read, and the difference is exactly what an
+    unauthenticated /auth-check answers. Fail closed when it cannot be asked.
+    """
+    repo = (repo_id or "").strip()
+    if not repo or _is_local_path(repo):
+        return False
+    return _explicit_token_reaches_repo(repo, None, repo_type, offline = offline)
+
+
 def cached_read_refused(
     hf_token: HfTokenArg,
     *,
@@ -265,14 +284,16 @@ def _cached_repo_access(key: tuple[str, str, str], now: float) -> Optional[bool]
 
 def _explicit_token_reaches_repo(
     repo_id: str,
-    token: str,
+    token: Optional[str],
     repo_type: str,
     offline: bool = False,
 ) -> bool:
+    # ``None`` asks the public question instead, and takes its own memo key: a public repo
+    # answers 200 for every token, so sharing one would let any string claim that verdict.
     key = (
         repo_id.casefold(),
         repo_type,
-        hashlib.sha256(token.encode()).hexdigest()[:16],
+        hashlib.sha256(token.encode()).hexdigest()[:16] if token else "anonymous",
     )
     cached = _cached_repo_access(key, time.monotonic())
     if cached is not None:
@@ -339,7 +360,7 @@ def _probe_endpoint() -> str:
         return HfApi().endpoint
 
 
-def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:
+def _probe_repo_access(repo_id: str, token: Optional[str], repo_type: str) -> bool:
     try:
         from huggingface_hub import constants
         from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status
@@ -357,13 +378,22 @@ def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:
         path = f"{_probe_endpoint()}/api/{repo_type}s/{quote(repo_id, safe = '/')}/auth-check"
         response = get_session().get(
             path,
-            headers = build_hf_headers(token = token),
+            # False, not None: None lets build_hf_headers fall back to the ambient login,
+            # so the public question would be asked with the operator's own credential.
+            headers = build_hf_headers(token = token if token else False),
             timeout = _REPO_ACCESS_PROBE_TIMEOUT_S,
         )
         hf_raise_for_status(response)
-        # hf_raise_for_status passes 3xx, so a client without follow_redirects would read a
-        # bare 307 as authorized.
+        # hf_raise_for_status passes 3xx, so a client that does not follow redirects would
+        # read a bare 307 as authorized.
         if 300 <= getattr(response, "status_code", 0) < 400:
+            return False
+        # get_session's client DOES follow redirects (httpx.Client(follow_redirects=True)),
+        # so the check above never sees the 3xx: a proxy that redirects /auth-check to a
+        # login page or another repo hands back a 200 that approved something else. Only the
+        # repo we asked about may answer for it.
+        final_url = getattr(response, "url", None)
+        if final_url is not None and str(final_url) != path:
             return False
         return True
     except Exception as exc:

@@ -523,21 +523,32 @@ def test_the_local_config_probe_stays_local_for_an_explicit_token(monkeypatch, t
 
 
 @pytest.mark.parametrize(
-    "hf_token, probe, cached, may_download",
+    "hf_token, probe, cached, may_download, metadata_ok",
     [
         # picker's fallback is hf_hub_download, which serves the cached copy when the Hub is
         # unreachable without consulting the credential. Its gate was hf_env_offline(), and
         # "hub unreachable" is not "env offline", so an unverified token still got it.
-        ("hf_dummy", False, True, False),
+        ("hf_dummy", False, True, False, False),
         # Ambient is entitled to the operator's cache, so it keeps the fallback.
-        (None, None, True, True),
+        (None, None, True, True, False),
         # Nothing cached is nothing to withhold: refusing here would break the ordinary
         # first-run download, which is the common case rather than the edge case.
-        ("hf_dummy", False, False, True),
+        ("hf_dummy", False, False, True, False),
+        # A gated repo can publish its file metadata publicly, so a 200 from get_paths_info
+        # is not permission to download: hf_hub_download returns the cached pointer for any
+        # failed head call, a 403 as much as an unreachable Hub, before it re-raises.
+        ("hf_dummy", False, True, False, True),
     ],
-    ids = ["unverified-denied", "ambient-served", "uncached-still-fetched"],
+    ids = [
+        "unverified-denied",
+        "ambient-served",
+        "uncached-still-fetched",
+        "public-metadata-is-not-authorization",
+    ],
 )
-def test_the_chat_template_fallback_follows_the_caller(monkeypatch, hf_token, probe, cached, may_download):
+def test_the_chat_template_fallback_follows_the_caller(
+    monkeypatch, hf_token, probe, cached, may_download, metadata_ok
+):
     if probe is not None:
         _counting_probe(monkeypatch, probe)
     _hub_reachable(monkeypatch)
@@ -555,8 +566,10 @@ def test_the_chat_template_fallback_follows_the_caller(monkeypatch, hf_token, pr
         def __init__(self, *_a, **_k):
             pass
 
-        def get_paths_info(self, *_a, **_k):
-            raise ConnectionError("hub unreachable")
+        def get_paths_info(self, _repo, paths, *_a, **_k):
+            if not metadata_ok:
+                raise ConnectionError("hub unreachable")
+            return [SimpleNamespace(path = paths[0], size = 1024)]
 
     def _download(*a, **k):
         downloads.append(a)
@@ -1894,3 +1907,228 @@ def test_the_dataset_cache_predicate_counts_both_caches(monkeypatch):
     assert dc.dataset_cache_can_answer("acme/ds") is True, "a failed check must not open the gate"
 
 
+
+
+def test_a_redirected_probe_does_not_authorize_the_repo_it_left(monkeypatch):
+    """get_session builds httpx.Client(follow_redirects=True), so the 3xx check never sees
+    the hop: a proxy that sends /auth-check to a login page or a different repo returns a
+    200 whose approval was never about the repo the memo is keyed on."""
+    _hub_reachable(monkeypatch)
+    _patch_auth_check_get(
+        monkeypatch,
+        lambda *_a, **_k: SimpleNamespace(
+            status_code = 200,
+            raise_for_status = lambda: None,
+            url = "https://huggingface.co/login",
+        ),
+    )
+
+    assert cache_reads_authorized("hf_dummy", repo_id = "org/repo") is False
+
+
+def test_a_cache_only_caller_is_never_put_on_the_wire(monkeypatch):
+    """`local_files_only` and `prefer_local_cache` are promises, not hints. Both gates took
+    the process env as the only offline signal, so on a host with no offline variables set
+    they probed anyway: the /loras scan contacts the Hub once per cached repo and stalls for
+    the probe timeout, for an answer neither branch was going to use."""
+    from utils.models import model_config
+
+    probes = _counting_probe(monkeypatch, True)
+    _hub_reachable(monkeypatch)
+
+    assert model_config._offline_cache_read_refused("hf_dummy", "acme/m", "acme/m", True) is True
+
+    from hub.services.datasets import formatting
+    from hub.schemas.datasets import CheckFormatRequest
+
+    monkeypatch.setattr(dataset_cache, "dataset_cache_can_answer", lambda *_a, **_k: True)
+    with pytest.raises(HTTPException) as excinfo:
+        formatting.check_format_response(
+            CheckFormatRequest(dataset_name = "acme/ds", prefer_local_cache = True), "hf_dummy"
+        )
+    assert excinfo.value.status_code == 404
+    assert probes["n"] == 0
+
+
+@pytest.mark.parametrize("public, refused", [(True, False), (False, True)])
+def test_an_anonymous_caller_keeps_a_public_cached_dataset_and_loses_a_private_one(
+    monkeypatch, public, refused
+):
+    """The sentinel was refused only under a declared offline env, which missed the case
+    that matters: a Hub merely unreachable is not a Hub declared absent, and `datasets`
+    falls back to its prepared cache either way. The sentinel cannot authorize itself, so
+    ask the question it can answer, which is whether the repo is public at all."""
+    _counting_probe(monkeypatch, public)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(dataset_cache, "dataset_cache_can_answer", lambda *_a, **_k: True)
+
+    def _preview():
+        dataset_cache.refuse_unauthorized_dataset_preview(False, "acme/ds")
+
+    if refused:
+        with pytest.raises(HTTPException) as excinfo:
+            _preview()
+        assert excinfo.value.status_code == 404
+    else:
+        _preview()
+
+
+def test_the_public_probe_does_not_borrow_the_operators_login(monkeypatch):
+    """`build_hf_headers(token=None)` falls back to the ambient saved login, which would ask
+    the public question with the operator's own credential and call every private repo they
+    can reach public. False is the value that means no credential."""
+    _hub_reachable(monkeypatch)
+    seen: dict = {}
+
+    def _headers(*, token = "unset", **_k):
+        seen["token"] = token
+        return {}
+
+    monkeypatch.setattr("huggingface_hub.utils.build_hf_headers", _headers)
+    _patch_auth_check_get(monkeypatch, lambda *_a, **_k: _ok_auth_check_response())
+
+    assert hf_tokens.public_cache_read_authorized(repo_id = "acme/ds") is True
+    assert seen["token"] is False
+
+
+def test_the_public_verdict_takes_its_own_memo_key(monkeypatch):
+    """A public repo answers 200 for every token, so sharing one key would let any string
+    read back the anonymous verdict as its own authorization."""
+    verdicts = iter([True, False])
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: next(verdicts))
+    _hub_reachable(monkeypatch)
+
+    assert hf_tokens.public_cache_read_authorized(repo_id = "acme/ds") is True
+    assert cache_reads_authorized("hf_dummy", repo_id = "acme/ds") is False
+
+
+def test_a_cached_alias_repo_is_authorized_in_its_own_right(monkeypatch):
+    """One decision taken from the base repo covered lookups that answer with a DIFFERENT
+    one: a `sentence-transformers/` alias or a derived `-GGUF` conversion. /auth-check
+    returns 200 for any string on a public base, so that decision is nearly free, and it
+    would hand back the operator's cached private conversion of a public model."""
+    from routes import settings as settings_routes
+
+    reachable = {"acme/base"}
+    monkeypatch.setattr(
+        hf_tokens,
+        "_probe_repo_access",
+        lambda repo_id, *_a, **_k: repo_id in reachable,
+    )
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(settings_routes, "_llama_backend_active", lambda _m: False)
+    monkeypatch.setattr(
+        settings_routes, "_local_sentence_transformer_is_present", lambda _m: False
+    )
+    monkeypatch.setattr(
+        settings_routes,
+        "_cached_st_source",
+        lambda _m: ("sentence-transformers/private-conversion", Path("/cache/snap")),
+    )
+    monkeypatch.setattr(settings_routes, "_st_weight_source", lambda *_a, **_k: None)
+
+    plan = settings_routes._resolve_embedding_model_plan("acme/base", "hf_dummy")
+
+    assert plan.cached is False, "the cached alias was never authorized"
+    assert plan.error, "with the alias withheld there is no artifact to offer"
+
+
+def test_the_gguf_listing_withholds_local_readiness_from_a_denied_caller(monkeypatch, tmp_path):
+    """A gated repo can serve its file metadata publicly, so the lister succeeding is not
+    authorization. The cache-only and exception paths both refuse that caller; the success
+    path walked the snapshots anyway and reported `downloaded`, which is the same fact."""
+    from hub.services.models import gguf_variants as gv
+    from hub.utils.gguf import GgufVariantInfo
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"x" * 256)
+
+    monkeypatch.setattr(
+        gv,
+        "list_gguf_variants",
+        lambda repo_id, hf_token = None: (
+            [GgufVariantInfo(filename = "Model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 256)],
+            False,
+            [],
+        ),
+    )
+    monkeypatch.setattr(gv, "iter_hf_cache_snapshots", lambda *_a, **_k: [snapshot])
+    _hub_reachable(monkeypatch)
+
+    def _answer(token):
+        return asyncio.run(gv.get_gguf_variants_answer("acme/gated", hf_token = token))
+
+    _counting_probe(monkeypatch, True)
+    assert _answer("hf_dummy").response.variants[0].downloaded is True
+    reset_repo_access_cache()
+    _counting_probe(monkeypatch, False)
+    answer = _answer("hf_dummy")
+    assert answer.response.variants[0].downloaded is False
+    assert answer.cache_authorized is False
+
+
+def test_the_context_length_lookup_honours_the_listings_refusal(monkeypatch):
+    """The route falls back to the bare repo id when the listing names no directory, and
+    reading that walks every local cache for the repo. It is the one local fact the service
+    cannot suppress on its own, so the answer carries the verdict out to it."""
+    from hub.services.models import gguf_variants as gv
+    from models.models import GgufVariantsResponse as ServiceResponse
+
+    reads: list = []
+    monkeypatch.setattr(
+        models_routes,
+        "_read_native_context_length",
+        lambda model, *, is_local: reads.append(model) or 8192,
+    )
+
+    async def _denied(repo_id, **_k):
+        return gv.VariantsAnswer(
+            ServiceResponse(repo_id = repo_id, variants = [], has_vision = False),
+            None,
+            False,
+        )
+
+    monkeypatch.setattr(gv, "get_gguf_variants_answer", _denied)
+    monkeypatch.setattr(gv, "pinned_snapshot_for_request", lambda *_a, **_k: None)
+
+    result = asyncio.run(
+        models_routes.get_gguf_variants(
+            repo_id = "acme/gated", hf_token = "hf_dummy", current_subject = "alice"
+        )
+    )
+
+    assert result.context_length is None
+    assert reads == [], "the cache walk ran for a caller the listing had just refused"
+
+
+def test_every_scan_target_is_authorized_not_only_the_one_named(monkeypatch):
+    """The scan expands to the adapter's base, native-audio dependencies and auto_map repos,
+    and downloads each with the same token; those downloads fall back to their cached
+    configs and Python files. Refused rather than dropped: a silently unscanned base would
+    under-report has_remote_code, which is worse than no answer at all."""
+    import fastapi
+
+    reachable = {"acme/adapter"}
+    monkeypatch.setattr(
+        hf_tokens,
+        "_probe_repo_access",
+        lambda repo_id, *_a, **_k: repo_id in reachable,
+    )
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(models_routes, "_repo_in_any_hf_cache", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "core.inference.native_audio.native_audio_security_targets",
+        lambda target, **_k: [target, "acme/private-base"],
+    )
+
+    with pytest.raises(fastapi.HTTPException) as excinfo:
+        asyncio.run(
+            models_routes.scan_model_remote_code(
+                model_name = "acme/adapter",
+                hf_token = "hf_dummy",
+                allow_ambient_token = False,
+                current_subject = "alice",
+            )
+        )
+    assert excinfo.value.status_code == 404

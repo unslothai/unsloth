@@ -803,11 +803,15 @@ def _offline_cache_read_refused(hf_token, model_name: str, repo_id: str, offline
     """Offline, the capability probes read the cache and never authorize, so local_files_only
     being False does not put an unentitled caller back on the wire: it would just take the
     disk. A local path the caller named itself is not the Hub cache and stays available.
+
+    ``offline`` is forwarded, not just tested: a local_files_only call on a host whose env
+    carries no offline flag would otherwise probe /auth-check, which is the one thing that
+    kind of call promises not to do, and stall the /loras scan for the probe timeout per repo.
     """
     return (
         offline
         and not is_local_path(model_name)
-        and not cache_reads_authorized(hf_token, repo_id = repo_id)
+        and not cache_reads_authorized(hf_token, repo_id = repo_id, offline = offline)
     )
 
 

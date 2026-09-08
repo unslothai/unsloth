@@ -366,7 +366,13 @@ def check_format_response(
         # Both streaming tiers run on the default prefer_local_cache=false, ahead of the
         # guarded cache reader below, so the gate stands in front of them.
         if not dataset_exists:
-            refuse_unauthorized_dataset_preview(hf_token, request.dataset_name)
+            refuse_unauthorized_dataset_preview(
+                hf_token,
+                request.dataset_name,
+                # A prefer-local request either reads the cache or returns the cache-miss
+                # 404 below, so the probe is a network round trip it had decided not to use.
+                offline = bool(request.prefer_local_cache),
+            )
         if dataset_exists:
             train_split = request.train_split or "train"
             preview_slice, total_rows = _load_local_preview_slice(
