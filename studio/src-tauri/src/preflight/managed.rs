@@ -417,7 +417,26 @@ fn llama_runtime_fingerprint_at(root: &Path) -> Option<String> {
     if cfg!(windows) {
         bin = bin.join("Release");
     }
-    let entries = fs::read_dir(&bin).ok()?;
+    match fs::read_dir(&bin) {
+        Ok(entries) => Some(format!("bin:{}", counted(entries))),
+        // The binary directory is gone but something is still there. Reading that
+        // as None too would make it identical to "nothing was ever installed",
+        // and those are the two ends of the transition this cache has to catch: a
+        // Ready cached while no runtime existed (installed_runtime_health finds no
+        // marker, answers None, and llama_runtime_ok stays null, which is not
+        // stale) still matched once a marker appeared over a missing build/bin,
+        // so the CLI was never asked and never got to say
+        // llama_runtime_dir_missing. Fingerprinting the root's own entries makes
+        // the marker's arrival move it.
+        Err(_) => fs::read_dir(root)
+            .ok()
+            .map(|entries| format!("nobin:{}", counted(entries))),
+    }
+}
+
+/// How many files a directory holds and how many bytes they total. A directory is
+/// not a file, so a stray subfolder cannot read as a binary.
+fn counted(entries: fs::ReadDir) -> String {
     let mut count: u64 = 0;
     let mut bytes: u64 = 0;
     for entry in entries.flatten() {
@@ -428,7 +447,7 @@ fn llama_runtime_fingerprint_at(root: &Path) -> Option<String> {
             }
         }
     }
-    Some(format!("{count}:{bytes}"))
+    format!("{count}:{bytes}")
 }
 
 fn capability_cache_path() -> Option<PathBuf> {
@@ -1138,7 +1157,62 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(llama_runtime_fingerprint_at(&root), None);
         fs::create_dir_all(&bin).unwrap();
-        assert_eq!(llama_runtime_fingerprint_at(&root).as_deref(), Some("0:0"));
+        assert_eq!(
+            llama_runtime_fingerprint_at(&root).as_deref(),
+            Some("bin:0:0")
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_marker_left_over_a_missing_build_dir_changes_the_fingerprint() {
+        // The other transition into a broken runtime, and the one a
+        // read_dir(bin).ok()? alone cannot see. Nothing installed and a marker
+        // sitting on a tree with no build/bin both fail that read, so both used to
+        // fingerprint as None -- while the CLI's verdict moves from "no marker, no
+        // opinion" (llama_runtime_ok null, which desktop_capability_stale_reason
+        // deliberately does not call stale) to llama_runtime_dir_missing. The
+        // cached Ready outlived the change and preflight never re-asked.
+        let root = std::env::temp_dir().join(format!(
+            "unsloth-llama-nobin-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(
+            llama_runtime_fingerprint_at(&root),
+            None,
+            "no tree at all is the NotInstalled case, and stays None"
+        );
+
+        fs::create_dir_all(&root).unwrap();
+        let empty_tree = llama_runtime_fingerprint_at(&root);
+        assert!(
+            empty_tree.is_some(),
+            "a runtime root with no build/bin is a broken install, not an absent one"
+        );
+
+        fs::write(root.join("unsloth_llama_prebuilt.json"), b"{}").unwrap();
+        assert_ne!(
+            empty_tree,
+            llama_runtime_fingerprint_at(&root),
+            "a marker arriving over a missing build/bin must invalidate the cached Ready"
+        );
+
+        // And it is still distinct from a tree whose build/bin exists and is
+        // empty, so the two are never confused for each other.
+        let mut bin = root.join("build").join("bin");
+        if cfg!(windows) {
+            bin = bin.join("Release");
+        }
+        fs::create_dir_all(&bin).unwrap();
+        assert_ne!(
+            llama_runtime_fingerprint_at(&root),
+            empty_tree,
+            "an empty binary directory is not the same state as a missing one"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
