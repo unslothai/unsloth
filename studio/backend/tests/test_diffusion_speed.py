@@ -85,6 +85,9 @@ def _stub_torch(monkeypatch):
         cuda = types.SimpleNamespace(matmul = types.SimpleNamespace(allow_tf32 = False)),
         cudnn = types.SimpleNamespace(allow_tf32 = False, benchmark = False),
     )
+    # No CUDA on the test host, and the stub says so explicitly: the CUDA-graph arm reads torch.cuda.is_available()
+    # and must refuse deterministically here rather than depend on whatever the machine has.
+    torch.cuda = types.SimpleNamespace(is_available = lambda: False)
     # The VAE-decode compile wraps a bound method; identity wrap is enough for tests.
     torch.compile = lambda fn, **kwargs: fn
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -246,6 +249,7 @@ def test_speed_off_applies_nothing(monkeypatch):
         "compiled_dequant": False,
         "compiled_vae_decode": False,
         "fp16_accum": False,
+        "cuda_graph": False,
     }
     assert pipe.vae.mem_format is None and pipe.compiled is False
     # off must not touch any process-wide flag (the bit-identical reference path).
@@ -1003,3 +1007,127 @@ def test_video_snapshot_precedes_transformer_quant():
     raise AssertionError(
         "no video.py function calls both snapshot_backend_flags and quantize_transformer"
     )
+
+
+# ── CUDA-graph arm ────────────────────────────────────────────────────────────
+
+
+def _stub_cuda_graph(monkeypatch, *, eligible = True, reason = "ok"):
+    """Replace ``core.inference.diffusion_cuda_graph`` with a recorder, so the tier gating and the
+    plumbing in apply_speed_optims are tested without capturing anything.
+
+    Injected as a module rather than monkeypatched onto the real one: the arm imports it lazily by
+    name, so this works whether or not the capture layer is importable on this host (it needs
+    torch.cuda), and it never reaches a real ``torch.cuda.CUDAGraph``. It goes into BOTH sys.modules
+    and the package attribute, because ``from . import X`` reads the attribute when some earlier
+    import already bound it and falls back to sys.modules only when it has not."""
+    import core.inference as inference_pkg
+
+    calls = {"eligible": [], "installs": 0}
+
+    stub = types.ModuleType("core.inference.diffusion_cuda_graph")
+
+    def _graph_eligible(target, **kwargs):
+        calls["eligible"].append(kwargs)
+        return eligible, reason
+
+    def _install_cuda_graphs(pipe, *, logger = None):
+        calls["installs"] += 1
+        return ("h",)
+
+    stub.graph_eligible = _graph_eligible
+    stub.install_cuda_graphs = _install_cuda_graphs
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_cuda_graph", stub)
+    monkeypatch.setattr(inference_pkg, "diffusion_cuda_graph", stub, raising = False)
+    return calls
+
+
+@pytest.mark.parametrize("mode", [SPEED_DEFAULT, SPEED_MAX])
+def test_cuda_graph_engages_on_compile_tiers(monkeypatch, mode):
+    # Both compile tiers arm the capture, and the arm is NOT gated on the compile landing: an uncompiled quantised DiT
+    # is exactly the launch-bound case the graph helps most.
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    calls = _stub_cuda_graph(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = mode
+    )
+    assert applied["cuda_graph"] is True
+    assert calls["installs"] == 1
+    # The reason is stashed on the pipe so status / the resolved record can report it.
+    assert pipe._unsloth_cuda_graph_reason == "ok"
+
+
+@pytest.mark.parametrize("mode", [SPEED_OFF, SPEED_EAGER])
+def test_cuda_graph_skipped_below_the_compile_tiers(monkeypatch, mode):
+    # off is the bit-identical reference and eager is the no-compile tier: neither asks about graphs at all.
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    calls = _stub_cuda_graph(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = mode
+    )
+    assert applied["cuda_graph"] is False
+    assert calls["installs"] == 0 and calls["eligible"] == []
+
+
+def test_cuda_graph_refusal_stashes_the_reason(monkeypatch):
+    # A refusal (offload, a U-Net, a step cache, no CUDA) must record WHY, and must not capture anything.
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    calls = _stub_cuda_graph(monkeypatch, eligible = False, reason = "cpu offload active")
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cuda_graph"] is False
+    assert calls["installs"] == 0
+    assert pipe._unsloth_cuda_graph_reason == "cpu offload active"
+
+
+def test_cuda_graph_default_is_forwarded_as_family_default(monkeypatch):
+    # The video backend passes cuda_graph_default=False so only a family that sets supports_cuda_graph opts in; the
+    # image backend leaves the default True. Either way it reaches graph_eligible as family_default.
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    calls = _stub_cuda_graph(monkeypatch)
+    apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        cuda_graph_default = False,
+    )
+    assert calls["eligible"][0]["family_default"] is False
+    apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert calls["eligible"][1]["family_default"] is True
+
+
+def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
+    # Capture allocates a graph pool worth about one step of activations, so it can OOM on a big model: that must
+    # degrade to eager, never fail the load.
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    calls = _stub_cuda_graph(monkeypatch)
+
+    def _boom(pipe, *, logger = None):
+        calls["installs"] += 1
+        raise RuntimeError("CUDA out of memory during capture")
+
+    sys.modules["core.inference.diffusion_cuda_graph"].install_cuda_graphs = _boom
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cuda_graph"] is False and calls["installs"] == 1
+    # The rest of the tier still engaged.
+    assert applied["compiled"] is True

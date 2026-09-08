@@ -4035,6 +4035,9 @@ class VideoBackend:
                 # crashes)
                 cache_active = cache_engaged is not None or cache_may_toggle,
                 offload_active = plan.offload_policy != "none",
+                # Video families measured device-bound gain nothing from a captured denoiser step; only a family that
+                # opts in via supports_cuda_graph (MiniMax-H3) is captured.
+                cuda_graph_default = False,
             )
             if view is pipe:
                 attention_engaged = engaged
@@ -4790,6 +4793,8 @@ class VideoBackend:
                 # The conditioner and the VAEs stay in the rotation even when the denoiser is pinned, so the onload
                 # hooks are live and fullgraph has to drop.
                 offload_active = offload_policy != "none",
+                # MiniMax-H3 opts in through supports_cuda_graph: one denoiser forward per step, no CFG, no step cache.
+                cuda_graph_default = False,
                 logger = logger,
             )
             speed_optims = tuple(k for k, v in applied.items() if v)
@@ -4817,6 +4822,13 @@ class VideoBackend:
                     "cuDNN fused attention on NVIDIA when a speed profile is active",
                 ),
                 "transformer_cache": (None, "off", "not supported by this modular workflow"),
+                "cuda_graph": (
+                    None,
+                    "on" if "cuda_graph" in speed_optims else "off",
+                    "denoiser step captured per input shape, replayed bit-identically"
+                    if "cuda_graph" in speed_optims
+                    else str(getattr(pipe, "_unsloth_cuda_graph_reason", None) or "speed tier does not capture"),
+                ),
                 "transformer_quant": (
                     transformer_quant_requested,
                     transformer_quant_engaged or "off",
@@ -6219,8 +6231,13 @@ class VideoBackend:
             # A GGUF load may have installed the compiled GGUF dequantizer; restore the stock kernels so a later
             # speed=off load is bit-identical.
             from . import diffusion_gguf_compile
+            from . import diffusion_cuda_graph
 
             diffusion_gguf_compile.uninstall_all()
+            # Captured denoiser graphs and their pool go before clear_gpu_cache(), or the pool stays reserved.
+            diffusion_cuda_graph.uninstall_all(
+                getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
+            )
             del state
             clear_gpu_cache()
 

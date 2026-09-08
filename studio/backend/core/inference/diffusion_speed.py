@@ -245,13 +245,18 @@ def apply_speed_optims(
     speed_mode: str = SPEED_OFF,
     cache_active: bool = False,
     offload_active: bool = False,
+    cuda_graph_default: bool = True,
     logger: Any = None,
 ) -> dict[str, bool]:
     """Apply the opt-in speed optims for ``speed_mode`` to a built pipeline, BEFORE placement /
     offload. Returns which engaged; every step is best-effort (unsupported ones are skipped).
 
     ``offload_active`` (offload policy != none) installs ``@torch.compiler.disable``d onload hooks,
-    so the compile must drop ``fullgraph`` (like an active step cache) or it crashes at step 1."""
+    so the compile must drop ``fullgraph`` (like an active step cache) or it crashes at step 1.
+
+    ``cuda_graph_default`` is what the CUDA-graph arm assumes for a family that declares nothing:
+    the image backend leaves it True (every image DiT was measured to gain), while the video backend
+    passes False, so only a video family that opts in with ``supports_cuda_graph`` gets graphs."""
     applied = {
         "channels_last": False,
         "cudnn_benchmark": False,
@@ -261,6 +266,7 @@ def apply_speed_optims(
         "compiled": False,
         "compiled_dequant": False,
         "compiled_vae_decode": False,
+        "cuda_graph": False,
     }
     mode = normalize_speed_mode(speed_mode)
     # TF32 (max) and cudnn.benchmark are process-global
@@ -321,6 +327,43 @@ def apply_speed_optims(
         if on_cuda:
             applied["tf32"] = _enable_tf32(logger)
         applied["fused_qkv"] = _fuse_qkv(pipe, logger)
+
+    # Capture the denoiser forward into a CUDA graph on the two compile tiers, so the per-step Python launch cost goes
+    # away. Deliberately NOT gated on applied["compiled"]: the measured gains are largest on the quantised arms (fp8
+    # 1.72x, int8 1.49x, NVFP4 2.0-2.4x at 512px), which is exactly where a launch-bound step survives the compile, and
+    # an uncompiled bf16 arm still gains (1.29x on z-image). The refusals that matter -- a U-Net denoiser (whose
+    # Module.compile call impl a forward swap would bypass), an active offload rotation (weights move under the graph)
+    # and an active step cache (cond and uncond share a key but not their residual state) -- all live in
+    # graph_eligible, so this arm only has to hand it the context. The import is lazy because
+    # diffusion_cuda_graph imports _denoiser_dits / _denoiser_unet back out of this module.
+    if mode in (SPEED_DEFAULT, SPEED_MAX):
+        cuda_graph = None
+        ok, reason = False, "cuda graph layer unavailable"
+        try:
+            from . import diffusion_cuda_graph as cuda_graph  # noqa: PLC0415 - import cycle
+
+            ok, reason = cuda_graph.graph_eligible(
+                target,
+                family = family,
+                pipe = pipe,
+                offload_active = offload_active,
+                cache_active = cache_active,
+                speed_mode = mode,
+                family_default = cuda_graph_default,
+                logger = logger,
+            )
+        except Exception as exc:  # noqa: BLE001 - an unimportable graph layer means eager, never a failed load
+            _warn(logger, "cuda graph eligibility", exc)
+        # Stash the reason either way: status / the resolved record report WHY graphs are off, not just that they are.
+        try:
+            pipe._unsloth_cuda_graph_reason = reason
+        except Exception:  # noqa: BLE001 - a pipe that refuses attributes still renders
+            pass
+        if ok and cuda_graph is not None:
+            try:
+                applied["cuda_graph"] = bool(cuda_graph.install_cuda_graphs(pipe, logger = logger))
+            except Exception as exc:  # noqa: BLE001 - optimisation only; the load proceeds eager
+                _warn(logger, "cuda graph capture", exc)
 
     return applied
 
@@ -392,8 +435,12 @@ def _compile_repeated_blocks(
     if not dits and unet is None:
         return False
     # default: dynamic=True, fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs +
-    # dynamic=False, a few % more for a longer compile and a recompile per resolution (CUDA-graph modes crash on the
-    # regional block). fullgraph drops to False under a step cache or offload.
+    # dynamic=False, a few % more for a longer compile and a recompile per resolution. Inductor's own cudagraph modes
+    # ("max-autotune", "reduce-overhead") still fail on the regional block -- "accessing tensor output of CUDAGraphs
+    # that has been overwritten" -- on image DiTs and on MiniMax-H3 alike, so the tier stays on the -no-cudagraphs
+    # variant and the CUDA graph is taken manually, with static input buffers, one level up at the denoiser module
+    # boundary (diffusion_cuda_graph.py) where it sits ABOVE these compiled blocks rather than inside them.
+    # fullgraph drops to False under a step cache or offload.
     kwargs: dict[str, Any] = {
         "fullgraph": not (cache_active or offload_active),
         "dynamic": not max_autotune,

@@ -9053,3 +9053,17 @@ def test_a_direct_worker_call_keeps_its_cancellation(fake_runtime, tmp_path, mon
     assert (
         progress["error"] == VIDEO_CANCELLED_MSG
     ), f"a direct call reported {progress['error']!r} instead of the cancellation sentinel"
+
+
+def test_cuda_graph_is_a_per_family_opt_in():
+    # The video backend passes cuda_graph_default=False, so the denoiser capture reaches only a family that asks for
+    # it. MiniMax-H3 does (one forward per step, no CFG, no step cache); the families measured device-bound stay off.
+    from core.inference.video_families import detect_video_family
+
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert h3 is not None and h3.name == "minimax-h3"
+    assert h3.supports_cuda_graph is True
+
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert wan is not None and wan.name == "wan2.2-ti2v-5b"
+    assert wan.supports_cuda_graph is False
