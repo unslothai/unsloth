@@ -2934,8 +2934,10 @@ class ResponsesOutputTextPart(BaseModel):
 class ResponsesUnknownContentPart(BaseModel):
     """Catch-all for unmodelled content-part types.
 
-    Keeps validation green for newer part types (e.g. ``input_audio``); skipped
-    during normalisation rather than rejected with a 422.
+    Keeps validation green for newer part types (e.g. ``input_audio``) so an unrelated turn
+    is never answered with a 422 schema dump. Normalisation then refuses the part by name,
+    the way ``UnknownContentPart`` is refused on the Chat Completions side: landing here
+    means the part was understood well enough to say what it is, not that it can be served.
     """
 
     type: str
