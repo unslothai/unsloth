@@ -374,6 +374,7 @@ _TORCHCODEC_TORCH_SPECS: dict[int, str] = {
     6: "torchcodec>=0.2.0,<0.3.0",
     5: "torchcodec>=0.1.0,<0.2.0",
 }
+_TORCHCODEC_MIN_KNOWN_MINOR = min(_TORCHCODEC_TORCH_SPECS)
 _TORCHCODEC_MAX_KNOWN_MINOR = max(_TORCHCODEC_TORCH_SPECS)
 
 # Not every platform was published from 0.1. Read off the live PyPI index:
@@ -591,7 +592,7 @@ def _select_torchcodec_spec(torch_version: "str | None") -> "str | None":
         return _TORCHCODEC_DEFAULT_SPEC
     if major != 2:
         return _TORCHCODEC_DEFAULT_SPEC
-    if minor < min(_TORCHCODEC_TORCH_SPECS):
+    if minor < _TORCHCODEC_MIN_KNOWN_MINOR:
         return None
     # Clamp to the ABI-stable floor, never the 0.11 row: 0.11 is locked to torch 2.11 exactly.
     minor = min(minor, _TORCHCODEC_MAX_KNOWN_MINOR)
@@ -7827,6 +7828,10 @@ def install_python_stack() -> int:
         _note("could not read the installed torch version -- leaving torchcodec alone")
     elif _select_torchcodec_spec(_codec_torch_ver) is None:
         _progress("torchcodec (skipped, unsupported torch version)")
+        _note(
+            f"torch {_codec_torch_ver} is below the oldest supported torchcodec pairing "
+            f"(torch 2.{_TORCHCODEC_MIN_KNOWN_MINOR}) -- leaving audio decoding disabled"
+        )
     elif not _torchcodec_spec_is_installable(_select_torchcodec_spec(_codec_torch_ver)):
         # This platform published no wheel in the window this torch selects. Skipping is what
         # such a host got before this step existed; attempting it would end the install.

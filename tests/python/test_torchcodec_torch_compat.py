@@ -291,6 +291,10 @@ def test_torchcodec_step_skips_older_torch(version):
     namespace["_progress"].assert_called_once_with(
         "torchcodec (skipped, unsupported torch version)"
     )
+    namespace["_note"].assert_called_once_with(
+        f"torch {version} is below the oldest supported torchcodec pairing "
+        f"(torch 2.{ips._TORCHCODEC_MIN_KNOWN_MINOR}) -- leaving audio decoding disabled"
+    )
 
 
 def test_select_torchcodec_spec_matches_pyproject_audio_extras():
@@ -316,7 +320,7 @@ def test_select_torchcodec_spec_matches_pyproject_audio_extras():
 # `2.6: {0.2, 0.3}` and `2.5: {0.1, 0.2}` survived: upstream pairs 0.3 with torch 2.7 and 0.2
 # with torch 2.6, so the installer's window picked a release built against the NEXT torch.
 # torch 2.4 -> 0.0.3 is deliberately omitted below: the installer floors at 2.5 and returns
-# _TORCHCODEC_DEFAULT_SPEC underneath it.
+# None underneath it.
 _UPSTREAM_TORCH_TO_TORCHCODEC_MINORS = {
     "2.11": {"0.11"},
     "2.10": {"0.10"},
