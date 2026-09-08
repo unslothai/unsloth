@@ -110,7 +110,11 @@ class _RestoreTtyOnSignals:
                 pass
 
 
-def _read_masked_posix(prompt: str, out: TextIO, first_key_timeout: "float | None" = None) -> str:
+def _read_masked_posix(
+    prompt: str,
+    out: TextIO,
+    first_key_timeout: "float | None" = None,
+) -> str:
     import codecs
     import termios
     import tty
@@ -169,7 +173,11 @@ def _read_masked_posix(prompt: str, out: TextIO, first_key_timeout: "float | Non
     return "".join(chars)
 
 
-def _read_masked_windows(prompt: str, out: TextIO, first_key_timeout: "float | None" = None) -> str:
+def _read_masked_windows(
+    prompt: str,
+    out: TextIO,
+    first_key_timeout: "float | None" = None,
+) -> str:
     import msvcrt
 
     out.write(prompt)
@@ -209,7 +217,10 @@ def _read_masked_windows(prompt: str, out: TextIO, first_key_timeout: "float | N
 
 
 def read_masked(
-    prompt: str, out: TextIO | None = None, *, first_key_timeout: "float | None" = None
+    prompt: str,
+    out: TextIO | None = None,
+    *,
+    first_key_timeout: "float | None" = None,
 ) -> str:
     """Read one line with ``*`` echo. Raises KeyboardInterrupt on Ctrl-C and
     EOFError on Ctrl-D/Ctrl-Z at an empty prompt, and PromptUnattended when

@@ -603,9 +603,7 @@ def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
 
     monkeypatch.setattr(auth_storage, "ensure_default_admin", _boom)
 
-    assert run._terminal_password_gate(
-        tunnel_will_start = False, **_RAW_BIND_KWARGS
-    ) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
 
 
 def test_a_backgrounded_tunnel_launch_still_fails_closed(monkeypatch):
@@ -615,16 +613,12 @@ def test_a_backgrounded_tunnel_launch_still_fails_closed(monkeypatch):
     monkeypatch.setattr(run.os, "tcgetpgrp", lambda _fd: 4242)
     monkeypatch.setattr(run.os, "getpgrp", lambda: 99)
     _patch_seeded_admin(monkeypatch, requires_change = True)
-    monkeypatch.setattr(
-        terminal_prompt, "prompt_for_password_change", lambda **_kw: False
-    )
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
 
     # The process group check is scoped to the raw-bind branch, so a tunnel
     # launch still reaches the prompt and still aborts when it is refused.
     assert run._prompt_owns_the_terminal() is False
-    assert run._terminal_password_gate(
-        tunnel_will_start = True, **_GATE_KWARGS
-    ) == (False, False)
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
 
 
 def test_a_foreground_raw_bind_still_reaches_the_prompt(monkeypatch):
@@ -634,18 +628,15 @@ def test_a_foreground_raw_bind_still_reaches_the_prompt(monkeypatch):
     monkeypatch.setattr(run.os, "tcgetpgrp", lambda _fd: 4242)
     monkeypatch.setattr(run.os, "getpgrp", lambda: 4242)
     _patch_seeded_admin(monkeypatch, requires_change = True)
-    monkeypatch.setattr(
-        terminal_prompt, "prompt_for_password_change", lambda **_kw: True
-    )
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: True)
 
-    assert run._terminal_password_gate(
-        tunnel_will_start = False, **_RAW_BIND_KWARGS
-    ) == (True, True)
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, True)
 
 
 def test_no_job_control_falls_back_to_the_isatty_answer(monkeypatch):
     """Windows / no controlling terminal: nothing can stop us, so still prompt."""
     for exc in (OSError("ENOTTY"), AttributeError(), ValueError()):
+
         def _boom(_fd, _exc = exc):
             raise _exc
 
@@ -770,12 +761,10 @@ def test_a_refusal_does_not_promise_a_deadline_that_is_disabled(monkeypatch):
     _patch_seeded_admin(monkeypatch, requires_change = True)
 
     from auth import terminal_prompt
-    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change",
-                        lambda **_kw: False)
 
-    assert run._terminal_password_gate(
-        tunnel_will_start = False, **_RAW_BIND_KWARGS
-    ) == (True, False)
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
     err = stderr.getvalue()
     assert "DISABLED for this launch" in err, err
     assert "shuts down after the bootstrap deadline" not in err, err
@@ -787,12 +776,10 @@ def test_a_refusal_still_names_the_deadline_when_one_will_arm(monkeypatch):
     _patch_seeded_admin(monkeypatch, requires_change = True)
 
     from auth import terminal_prompt
-    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change",
-                        lambda **_kw: False)
 
-    assert run._terminal_password_gate(
-        tunnel_will_start = False, **_RAW_BIND_KWARGS
-    ) == (True, False)
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
     err = stderr.getvalue()
     assert "shuts down after the bootstrap deadline" in err, err
     assert "DISABLED" not in err, err

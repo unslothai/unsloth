@@ -204,7 +204,11 @@ def _install_prompt_env(
     # dedicated test that overrides this.
     monkeypatch.setattr(studio_mod, "_tunnel_binary_confirmed_unavailable", lambda: False)
 
-    def fake_prompt(verify_current, out = None, **_kw):
+    def fake_prompt(
+        verify_current,
+        out = None,
+        **_kw,
+    ):
         events.append(("prompt", verify_current))
         if isinstance(scripted, BaseException):
             raise scripted
@@ -1854,14 +1858,20 @@ def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
     monkeypatch.setattr(studio.os, "getpgrp", lambda: 99)
     monkeypatch.setattr(studio.sys, "stdin", _FdStream())
 
-    assert studio._should_prompt_password_change(
-        cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
-    ) is False
+    assert (
+        studio._should_prompt_password_change(
+            cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
+        )
+        is False
+    )
     # The tunnel is published on the public internet either way: it must keep
     # failing closed rather than quietly proceeding.
-    assert studio._should_prompt_password_change(
-        cloudflare = None, host = "0.0.0.0", secure = True, api_only = False
-    ) is True
+    assert (
+        studio._should_prompt_password_change(
+            cloudflare = None, host = "0.0.0.0", secure = True, api_only = False
+        )
+        is True
+    )
 
 
 def test_a_foreground_raw_bind_still_prompts(monkeypatch):
@@ -1872,9 +1882,12 @@ def test_a_foreground_raw_bind_still_prompts(monkeypatch):
     monkeypatch.setattr(studio.os, "getpgrp", lambda: 4242)
     monkeypatch.setattr(studio.sys, "stdin", _FdStream())
 
-    assert studio._should_prompt_password_change(
-        cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
-    ) is True
+    assert (
+        studio._should_prompt_password_change(
+            cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
+        )
+        is True
+    )
 
 
 @pytest.mark.parametrize("raised", [OSError("ENOTTY"), AttributeError(), ValueError()])
@@ -1889,14 +1902,20 @@ def test_no_job_control_falls_back_to_the_isatty_answer(monkeypatch, raised):
     monkeypatch.setattr(studio.os, "tcgetpgrp", _boom, raising = False)
     monkeypatch.setattr(studio.sys, "stdin", _FdStream())
 
-    assert studio._should_prompt_password_change(
-        cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
-    ) is True
+    assert (
+        studio._should_prompt_password_change(
+            cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
+        )
+        is True
+    )
 
 
 class _FdStream:
-    def fileno(self): return 0
-    def isatty(self): return True
+    def fileno(self):
+        return 0
+
+    def isatty(self):
+        return True
 
 
 # ── a pty is not a person ────────────────────────────────────────────
@@ -1937,7 +1956,11 @@ def test_an_unattended_pty_still_aborts_a_tunnel_launch(monkeypatch, tmp_path):
     studio_mod = _studio()
     seen = {}
 
-    def _fake_prompt(verify_current, out = None, **kw):
+    def _fake_prompt(
+        verify_current,
+        out = None,
+        **kw,
+    ):
         seen.update(kw)
         return _NEW_PW
 
@@ -1954,7 +1977,11 @@ def test_a_raw_bind_prompt_carries_the_unattended_deadline(monkeypatch, tmp_path
     studio_mod = _studio()
     seen = {}
 
-    def _fake_prompt(verify_current, out = None, **kw):
+    def _fake_prompt(
+        verify_current,
+        out = None,
+        **kw,
+    ):
         seen.update(kw)
         return _NEW_PW
 
@@ -1978,8 +2005,12 @@ def test_read_masked_gives_up_on_a_pty_nobody_types_into(monkeypatch):
 
     class _PtyStdin:
         encoding = "utf-8"
-        def fileno(self): return slave
-        def isatty(self): return True
+
+        def fileno(self):
+            return slave
+
+        def isatty(self):
+            return True
 
     try:
         monkeypatch.setattr(_password_prompt.sys, "stdin", _PtyStdin())

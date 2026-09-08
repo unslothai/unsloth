@@ -2232,9 +2232,7 @@ def _terminal_password_gate(
     # read-only or locked home a new place to fail, none of which a container
     # operator asked for. Tunnel launches are unaffected: they always came here.
     if not tunnel_will_start and not (
-        _stream_isatty(sys.stdin)
-        and _stream_isatty(sys.stderr)
-        and _prompt_owns_the_terminal()
+        _stream_isatty(sys.stdin) and _stream_isatty(sys.stderr) and _prompt_owns_the_terminal()
     ):
         return True, False
 

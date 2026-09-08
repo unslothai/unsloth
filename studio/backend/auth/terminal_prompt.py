@@ -186,7 +186,10 @@ def _wait_for_first_key(timeout: float) -> bool:
 
 
 def _read_password(
-    prompt: str, *, out: "TextIO | None" = None, first_key_timeout: "float | None" = None
+    prompt: str,
+    *,
+    out: "TextIO | None" = None,
+    first_key_timeout: "float | None" = None,
 ) -> str:
     """Read one masked line: echo ``*`` per char, support backspace editing.
 
@@ -332,8 +335,7 @@ def prompt_for_password_change(
             return True
     except PromptUnattended:
         out.write(
-            "No response at the terminal; leaving the auto-generated admin "
-            "password in place.\n"
+            "No response at the terminal; leaving the auto-generated admin password in place.\n"
         )
         out.flush()
         return False
