@@ -13,8 +13,12 @@ Dependency-light: builds real tokenizers backends in memory, no model weights an
 
 from __future__ import annotations
 
+import importlib
+import importlib.machinery
 import sys
+import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -22,7 +26,64 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+_STUBBED: list[str] = []
+
+
+def _stub_if_missing(name, attrs = (), named_spec = False):
+    """Register a stub for a dep this job does not install. A real install is left alone.
+
+    Same helper and reason as test_vision_client_tools.py: core.inference.inference imports
+    unsloth and trl at module scope, which the studio-backend-ci.yml matrix does not install,
+    so unstubbed this module fails COLLECTION and takes the whole job down.
+
+    ``named_spec`` gives the stub a real ModuleSpec, which only torchao needs: transformers
+    probes it with find_spec, which raises ValueError on ``__spec__ = None``.
+    """
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - unusable here either way, so stub it
+        pass
+    _STUBBED.append(name)
+    module = types.ModuleType(name)
+    module.__spec__ = importlib.machinery.ModuleSpec(name, None) if named_spec else None
+    module.__version__ = "0.0.0"
+    module.__getattr__ = lambda _attr: MagicMock()
+    for attr in attrs:
+        setattr(module, attr, MagicMock())
+    sys.modules[name] = module
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, module)
+
+
+# Fires only where torchao is installed but unusable against the local torch, in which
+# case transformers.quantizers imports it and poisons transformers for every later module.
+for _torchao in (
+    "torchao",
+    "torchao.prototype",
+    "torchao.prototype.safetensors",
+    "torchao.prototype.safetensors.safetensors_support",
+    "torchao.prototype.safetensors.safetensors_utils",
+    "torchao.quantization",
+    "torchao.dtypes",
+    "torchao.float8",
+    "torchao.utils",
+):
+    _stub_if_missing(_torchao, named_spec = True)
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+_stub_if_missing("unsloth_zoo")
+_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+
 from core.inference.inference import _prompt_already_has_bos  # noqa: E402
+
+# Drop the stubs now the name is bound; one left behind outlives this module.
+for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)
 
 
 def _tokenizer(auto_adds_bos: bool):
