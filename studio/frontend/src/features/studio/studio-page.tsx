@@ -17,6 +17,7 @@ import {
 import { useT } from "@/i18n";
 import { MediaPageLink } from "@/components/media-page-link";
 import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
+import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
 import {
   Image03Icon,
 } from "@hugeicons/core-free-icons";
@@ -54,6 +55,7 @@ export function StudioPage(): ReactElement {
   const [paramMode, setParamMode] = useParamMode();
   useTrainingRuntimeLifecycle();
   useTrainingCacheReconciliation();
+  useLowDiskNotice();
   const runtimeMessage = useTrainingRuntimeStore((state) => state.message);
   const isHydratingRuntime = useTrainingRuntimeStore(
     (state) => state.isHydrating,
