@@ -3069,10 +3069,11 @@ MTP_SMALL_MODEL_B = 8.0  # below this many B parameters the 4B table is the clos
 # one step rather than being halved across two groups, so the batch is WIDER at the same row
 # count and the width penalty this table is about can only be larger. Extrapolating a
 # narrower draft there is the safe direction, and it is the only extrapolation here.
-# This changes the DEPTH only. Whether a split turns speculation on at all is
-# ``groups_x_mtp_wins`` and its crossover, which this measurement does not touch: at 64 and
-# 128 rows the drafter loses at every depth, which is the same direction that table already
-# had, only smaller (-8 % rather than -20 % at 64 rows, once the depth is chosen well).
+# This table answers two questions, and they are kept apart below. The DEPTH once a drafter
+# runs is ``mtp_draft_n_max``. WHETHER a drafter runs on a split at all is
+# ``split_mtp_wins`` and ``SPLIT_MTP_OFF_ROWS`` (64): at 64 and 128 rows the drafter loses at
+# every depth, so above the boundary the split runs with none. Neither is
+# ``GROUPS_X_MTP_CROSSOVER_ROWS`` (16), which is groups against one context and does not move.
 MTP_DRAFT_N_MAX_X_ROWS_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL split over two DGX Sparks, llama-server --pipeline-groups 2 "
     "--kv-unified --tensor-split 0.5,0.5 --spec-type draft-mtp, unslothai/llama.cpp PR #187 "
@@ -3107,6 +3108,88 @@ def mtp_draft_n_max(users: Optional[int] = None) -> int:
         if rows >= key:
             depth = MTP_DRAFT_N_MAX_BY_ROWS[key]
     return depth
+
+
+# ── The rows above which a layer split is faster with NO drafter at all ───────────────
+# The depth rule above picks the best depth for the row count. It does not answer the prior
+# question, which the same matrix answers: whether a drafter pays at all. Reading the "best
+# depth" column of MTP_DRAFT_N_MAX_X_ROWS_TOKS against the drafter-off column, the best depth
+# is worth +11.0 % at 32 rows, -7.9 % at 64 and -22.9 % at 128. So above 32 rows the answer is
+# no drafter, at any depth, and the split gives away 8 to 23 percent by keeping one.
+# This is the LAYER SPLIT only. On one Spark and on two replicas the one-Spark table governs
+# (MTP_SPEEDUP_27B / MTP_SPEEDUP_4B: 2.61x / 1.87x / 1.59x at 1 / 4 / 8 users), MTP is a large
+# win there, and nothing in this matrix was measured on either of those topologies.
+# rows -> what the BEST depth is worth, in percent, against the same split with the drafter
+# off. From the unrounded leg means (32: 162.94 against 146.83, 64: 171.68 against 186.32,
+# 128: 164.06 against 212.72); MTP_DRAFT_N_MAX_X_ROWS_TOKS above is rounded to 0.1 tok/s, so
+# recomputing these from it lands within 0.2 points of them.
+SPLIT_MTP_BEST_DEPTH_VS_OFF_PCT = {32: 11.0, 64: -7.9, 128: -22.9}
+SPLIT_MTP_OFF_ROWS = 64
+"""Concurrent rows at or above which a two-Spark layer split runs with the drafter OFF.
+
+The measured boundary is somewhere between 32 and 64 rows, and 33 to 63 is INTERPOLATED:
+nothing in between was measured. The two points that bound it, on the 27B layer split with
+two pipeline groups, ``--kv-unified`` and ``--tensor-split 0.5,0.5``, both nodes at 1690 MHz
+(``MTP_DRAFT_N_MAX_X_ROWS_MEASUREMENT``):
+
+* 32 rows, where the best depth (n-max 2) is worth **+11.0 %** over the drafter off,
+  162.9 against 146.8 tok/s, so speculation stays ON there;
+* 64 rows, where the best depth (n-max 1) **costs 7.9 %**, 171.7 against 186.3 tok/s, and
+  every deeper draft costs more; at 128 rows the best depth costs 22.9 %.
+
+The constant is put at 64, the lower of the two measured points at which speculation loses,
+so no interpolated row count is ever served a rule that was not measured to help there.
+
+This is NOT ``GROUPS_X_MTP_CROSSOVER_ROWS`` (16), which answers a different question -- two
+pipeline groups against one context, both with the drafter on -- and does not move.
+"""
+
+
+def split_mtp_wins(users: Optional[int] = None) -> bool:
+    """Whether a two-Spark layer split at this many concurrent rows should run a drafter AT
+    ALL, at the depth ``mtp_draft_n_max`` returns. True below ``SPLIT_MTP_OFF_ROWS``, where
+    the best depth measured +11.0 percent at 32 rows; False at or above it, where the best
+    depth measured -7.9 percent at 64 rows and -22.9 percent at 128.
+
+    Layer split only. One Spark and two replicas are governed by the one-Spark MTP table,
+    where speculation is a 1.46x to 2.61x win at 1 to 8 users, and no cell of this matrix was
+    measured on either. ``users`` of None is a caller that does not know the row count, and it
+    keeps the drafter, which is what every topology did before this rule existed."""
+    if users is None:
+        return True
+    return max(1, int(users or 1)) < SPLIT_MTP_OFF_ROWS
+
+
+def split_mtp_note() -> str:
+    """Whether a layer split speculates at all, and at what depth, for reasons and the
+    ``spark plan`` text. Both sides of ``SPLIT_MTP_OFF_ROWS`` are stated with their numbers."""
+    lo, hi, top = 32, SPLIT_MTP_OFF_ROWS, max(MTP_DRAFT_N_MAX_X_ROWS_TOKS)
+    cells = MTP_DRAFT_N_MAX_X_ROWS_TOKS
+
+    def _best(rows: int) -> Tuple[int, float, float]:
+        drafting = {depth: toks for depth, toks in cells[rows].items() if depth}
+        depth = max(drafting, key = lambda d: drafting[d])
+        return depth, drafting[depth], SPLIT_MTP_BEST_DEPTH_VS_OFF_PCT[rows]
+
+    lo_depth, lo_toks, lo_pct = _best(lo)
+    hi_depth, hi_toks, hi_pct = _best(hi)
+    _top_depth, _top_toks, top_pct = _best(top)
+    return (
+        f"A layer split speculates only below {SPLIT_MTP_OFF_ROWS} concurrent rows. Swept on "
+        f"the pair at {lo} / {hi} / {top} rows against the same split with no drafter, the "
+        f"best draft depth is worth {lo_pct:+.1f} percent at {lo} rows "
+        f"({lo_toks:.1f} against {cells[lo][0]:.1f} tok/s at n-max {lo_depth}) but "
+        f"{hi_pct:+.1f} percent at {hi} ({hi_toks:.1f} against {cells[hi][0]:.1f} at n-max "
+        f"{hi_depth}) and {top_pct:+.1f} percent at {top}, because the draft tokens widen a "
+        f"batch that is already past the cheap point of the per-token curve. So below "
+        f"{SPLIT_MTP_OFF_ROWS} rows the split asks for --spec-type draft-mtp at the depth "
+        f"measured best for the row count (n-max {mtp_draft_n_max(1)} under {lo} rows, "
+        f"{mtp_draft_n_max(lo)} from {lo}) and at or above {SPLIT_MTP_OFF_ROWS} it asks for "
+        f"no drafter and no draft flags at all. Nothing between {lo + 1} and "
+        f"{SPLIT_MTP_OFF_ROWS - 1} rows was measured, so the boundary sits on the lower of "
+        f"the two measured points at which speculation loses. This is the split only: one "
+        f"Spark and two replicas keep MTP, which is a win at every user count measured there."
+    )
 
 
 # ── Pipeline groups AND speculative decoding on the same layer split ──────────────────
@@ -3400,7 +3483,10 @@ def mtp_note() -> str:
         f"users on the 27B and {b[1]:.2f}x / {b[4]:.2f}x / {b[8]:.2f}x on the 4B, on top of "
         f"what the topology gives; a no-op for a GGUF without the head. Draft models and "
         f"n-gram speculation are single-user tricks on this pair (about 2x at one user, a "
-        f"loss from 4) and stay off."
+        f"loss from 4) and stay off. Those figures are ONE Spark, and they govern the single "
+        f"and replicas topologies; a two-Spark layer split has its own swept table, runs the "
+        f"depth measured best for its row count and turns the drafter off entirely from "
+        f"{SPLIT_MTP_OFF_ROWS} rows up (split_mtp_note)."
     )
 
 
@@ -3411,6 +3497,11 @@ def groups_x_mtp_wins(users: int) -> bool:
     with MTP at 32 rows but 0.97x of it at 8, because two groups halve the rows per group.
     Below the crossover the two are within 3 percent of each other, so choosing wrong
     there costs little; above it the prize is large.
+
+    This answers GROUPS against ONE CONTEXT and nothing else. Whether the split runs a
+    drafter at all is ``split_mtp_wins`` and ``SPLIT_MTP_OFF_ROWS`` (64), a separate
+    measurement: at or above 64 rows the answer here is still "two groups", and the drafter
+    is off, which is the fastest arm measured at those rows.
     The serving side also needs a build that accepts the two flags together (PR #187); this
     function only carries the measured crossover."""
     return max(1, int(users or 1)) >= GROUPS_X_MTP_CROSSOVER_ROWS
@@ -3418,8 +3509,14 @@ def groups_x_mtp_wins(users: int) -> bool:
 
 def groups_x_mtp_note() -> str:
     """What a layer split gets from pipeline groups and speculative decoding together, for
-    reasons and the ``spark plan`` text. Both sides of the crossover are stated: below it the
-    groups are dropped and the split runs one context with the GGUF's MTP head."""
+    reasons and the ``spark plan`` text.
+
+    Two decisions are stated, separately, because they are two measurements. This one is
+    groups against one context: at or above ``GROUPS_X_MTP_CROSSOVER_ROWS`` (16) the split
+    takes the groups, below it it drops them and runs one context. The other is whether a
+    drafter runs at all (``SPLIT_MTP_OFF_ROWS``, 64, and ``split_mtp_note``): on at the
+    measured depth below 64 rows, off above. So a split at 8 rows is one context with MTP, at
+    32 rows two groups with MTP, and at 64 rows and up two groups with no drafter."""
     hi, lo = 32, 8
     both_hi = GROUPS_X_MTP_DECODE_TOKS[hi][3]
     mtp_hi = GROUPS_X_MTP_DECODE_TOKS[hi][1]
@@ -3434,8 +3531,11 @@ def groups_x_mtp_note() -> str:
         f"({GROUPS_X_MTP_OVER_MTP_ONLY[hi]:.2f}x and "
         f"{GROUPS_X_MTP_OVER_GROUPS_ONLY[hi]:.2f}x), but at {lo} rows {both_lo:.1f} against "
         f"{mtp_lo:.1f} ({GROUPS_X_MTP_OVER_MTP_ONLY[lo]:.2f}x), because two groups halve the "
-        f"rows per group. So from {GROUPS_X_MTP_CROSSOVER_ROWS} rows up a split asks for "
-        f"both and below that for one context with MTP. The combination is still refused "
+        f"rows per group. So from {GROUPS_X_MTP_CROSSOVER_ROWS} rows up a split asks for the "
+        f"groups and below that for one context; the speculation in that sentence is the "
+        f"drafter it runs below {SPLIT_MTP_OFF_ROWS} rows, since from {SPLIT_MTP_OFF_ROWS} "
+        f"rows up the split keeps the groups and drops the drafter entirely "
+        f"(split_mtp_note). The combination is still refused "
         f"with --mmproj, --control-vector and --sleep-idle-seconds, and --parallel stays a "
         f"multiple of the group count."
     )
@@ -3491,6 +3591,11 @@ def recommend_topology(
         # side checks the header); the planner states the single-Spark measurement.
         "mtp_speedup": mtp_speedup(users),
         "mtp_note": mtp_note(),
+        # Layer split only, and None on every other topology: the rows-against-drafter matrix
+        # was measured on the split alone, and one Spark and replicas keep MTP at every user
+        # count their own tables cover.
+        "split_mtp": None,
+        "split_mtp_note": None,
         "fits_one_node": fits_model,
         "users": users,
         "prompt_tokens": prompt_tokens,
@@ -3508,8 +3613,10 @@ def recommend_topology(
             reason = (
                 f"the model ({model_bytes / gib:.1f} GiB) does not fit in one node's "
                 f"{free / gib:.1f} GiB, so a layer split across both Sparks is the only way "
-                f"to run it. " + pipeline_groups_note()
+                f"to run it. " + pipeline_groups_note() + " " + split_mtp_note()
             ),
+            split_mtp = split_mtp_wins(users),
+            split_mtp_note = split_mtp_note(),
         )
         return out
     if single_need > free:
@@ -3535,8 +3642,13 @@ def recommend_topology(
                     f"({single_need / gib:.1f} GiB) exceeds one node even when halved "
                     f"across replicas ({replica_need / gib:.1f} GiB against "
                     f"{free / gib:.1f} GiB free), so only a layer split, which spreads the KV "
-                    f"with the layers, has the room. " + pipeline_groups_note()
+                    f"with the layers, has the room. "
+                    + pipeline_groups_note()
+                    + " "
+                    + split_mtp_note()
                 ),
+                split_mtp = split_mtp_wins(users),
+                split_mtp_note = split_mtp_note(),
             )
         return out
     if prefill_heavy and users < REPLICAS_MIN_USERS:
@@ -3551,8 +3663,11 @@ def recommend_topology(
                 f"reason to split a model that fits; its decode is "
                 f"{layer_split_decode_speedup(prompt_tokens, users):.2f}x, so time to first "
                 f"token improves and tokens per second do not. Chat-shaped traffic should "
-                f"stay on one node."
+                f"stay on one node. At {users} rows the split still speculates: the drafter "
+                f"only goes off from {SPLIT_MTP_OFF_ROWS} rows up."
             ),
+            split_mtp = split_mtp_wins(users),
+            split_mtp_note = split_mtp_note(),
         )
         return out
     fit_note = (
@@ -4394,6 +4509,8 @@ def _cmd_plan(
         print(f"              (measured on {serving['measured_on']})")
         if serving.get("mtp_note"):
             print(f"  MTP       : {serving['mtp_note']}")
+        if serving.get("split_mtp_note"):
+            print(f"  split MTP : {serving['split_mtp_note']}")
     exp = plan.get("expected") or {}
     if exp.get("note"):
         print("")

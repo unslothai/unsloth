@@ -38,16 +38,23 @@ this module decides between three layouts and runs whichever one the workload al
                model that does not exist, since the refusal is a load-time check), and
                below that crossover it keeps the speculation and drops the groups. See
                ``reconcile_split_speculation``; the status says which of the three ran.
+               A SPLIT also stops speculating entirely from ``SPLIT_MTP_OFF_ROWS`` (64)
+               concurrent rows up, where the drafter is a loss at every depth swept
+               (-7.9 percent at 64 rows, -22.9 at 128, against the same split with none);
+               it keeps its groups there. That boundary is a different question from the
+               16 above, and neither moves the other.
 
 In every topology a GGUF that ships its own MTP head (``<arch>.nextn_predict_layers`` in
 the header: Qwen3.5-4B-MTP, Qwen3.8-27B) self-speculates. The backend's own speculative
 path emits ``--spec-type draft-mtp`` for such a file; this module reads the header, checks
 the bundle's llama-server for ``--spec-type`` and asks for the Spark-measured draft depth
 (``--spec-draft-n-max 3``: 2.6x / 1.9x / 1.6x aggregate decode at 1 / 4 / 8 users on the
-27B, 2.0x / 1.7x / 1.5x on the 4B, against the backend's GPU default of 2). A caller's
+27B, 2.0x / 1.7x / 1.5x on the 4B, against the backend's GPU default of 2), shallower on a
+split at 32 rows and up. A caller's
 ``speculative_type``, ``spec_draft_n_max`` or ``--spec-type`` / draft flags are left
 alone, ``UNSLOTH_SPARK_MTP=0`` launches without speculation, and the status reports
-``mtp`` (enabled / no head / server too old / user override / disabled by env) from the
+``mtp`` (enabled / no head / server too old / user override / disabled by env / off for
+the split rows) from the
 argv that actually launched, beside ``split_config`` and ``split_config_reason``.
 
 The decision is ``studio/spark_cluster.recommend_topology`` (pure, measured); this
@@ -164,6 +171,24 @@ MTP_DRAFT_N_MAX = 3
 # Mirrored rather than imported: this module is loaded by the CLI and by tests that never
 # import spark_cluster. test_spark_serving asserts the two stay equal.
 MTP_DRAFT_N_MAX_BY_ROWS = {32: 2, 64: 1}  # spark_cluster.MTP_DRAFT_N_MAX_BY_ROWS
+# The same matrix answers a prior question the depth rule does not: whether a drafter pays on
+# a split at all. Against the drafter-off column, the BEST depth is +11.0 % at 32 rows, -7.9 %
+# at 64 and -22.9 % at 128, so from 64 rows up the split is fastest with no drafter at any
+# depth. --parallel is clamped to the offered concurrency in [8, 64] and a caller who wants
+# throughput over latency reaches 128, so both of those row counts are launches the product
+# actually makes. LAYER SPLIT ONLY: single and replicas are governed by the one-Spark table
+# above (2.61x / 1.87x / 1.59x at 1 / 4 / 8 users) and no cell of this matrix touched them.
+SPLIT_MTP_OFF_ROWS = 64  # spark_cluster.SPLIT_MTP_OFF_ROWS
+"""Concurrent rows at or above which a layer split launches with the drafter OFF.
+
+33 to 63 rows is INTERPOLATED; nothing in between was measured. The bounding points are 32
+rows, where the best depth (n-max 2) is worth +11.0 percent over the drafter off, 162.9
+against 146.8 tok/s, and 64 rows, where the best depth (n-max 1) costs 7.9 percent, 171.7
+against 186.3. The constant sits on 64, the lower of the two measured points at which
+speculation loses. NOT ``GROUPS_X_MTP_MIN_ROWS`` (16), which is groups against one context.
+"""
+# The mtp verdict when this boundary, and nothing of the caller's, took the drafter away.
+MTP_OFF_FOR_SPLIT_ROWS = "off for the split rows"
 SPEC_TYPE_FLAG = "--spec-type"
 SPEC_DRAFT_N_MAX_FLAG = "--spec-draft-n-max"
 # Pass-through flags that make the launch's speculative decoding the caller's: the backend's
@@ -1075,6 +1100,21 @@ def mtp_draft_n_max(users: Optional[int] = None) -> int:
     return depth
 
 
+def split_mtp_wins(users: Optional[int] = None) -> bool:
+    """Whether a LAYER SPLIT at this many concurrent rows should run a drafter at all.
+
+    True below ``SPLIT_MTP_OFF_ROWS``, where the best depth measured +11.0 percent over the
+    same split with no drafter at 32 rows; False at or above it, where the best depth measured
+    -7.9 percent at 64 rows and -22.9 percent at 128. ``users`` of None keeps the drafter.
+
+    Only ``reconcile_split_speculation`` calls this, so it cannot reach the single-node or
+    replicas launch: those keep the one-Spark answer, where MTP is a 1.46x to 2.61x win.
+    Mirrors ``spark_cluster.split_mtp_wins``."""
+    if users is None:
+        return True
+    return max(1, int(users or 1)) < SPLIT_MTP_OFF_ROWS
+
+
 def mtp_plan(
     gguf_path: Optional[str],
     extra_args: Optional[List[str]] = None,
@@ -1198,8 +1238,17 @@ def reconcile_split_speculation(
     so from ``GROUPS_X_MTP_MIN_ROWS`` (16) rows up the two together win, 1.36x of one context
     with MTP and 1.09x of the groups alone on the repeat means, and below it one context with
     MTP wins by 3 percent, because two groups halve the rows per group. Both sides of the
-    crossover carry --kv-unified, which is what the load actually launches with. The outcomes, recorded in ``split_config`` and
-    ``split_config_reason`` for the status surface:
+    crossover carry --kv-unified, which is what the load actually launches with.
+
+    Before any of that comes a separate question with its own measurement: whether a drafter
+    pays on a split at all. From ``SPLIT_MTP_OFF_ROWS`` (64) rows up it does not, at any depth
+    swept -- the best depth is 7.9 percent slower than no drafter at 64 rows and 22.9 percent
+    at 128 -- so this module's own speculation is dropped there, the groups are kept, and the
+    launch says ``speculative_type`` off with no depth, which is the fastest arm measured at
+    those rows. Below 64 rows the drafter stays, at ``mtp_draft_n_max``'s depth. That boundary
+    is not ``GROUPS_X_MTP_MIN_ROWS``: 16 still decides groups against one context. A drafter
+    the CALLER asked for is never taken away by it. The outcomes, recorded in
+    ``split_config`` and ``split_config_reason``:
 
     * at or above the crossover on a build that takes both: keep both;
     * below it, or on a build that refuses the combination (the old fork's
@@ -1221,13 +1270,35 @@ def reconcile_split_speculation(
     speculating = verdict == "enabled" or (
         callers and not caller_speculation_off(speculative_type, extra_args)
     )
+    rows = int(groups.get("requested_slots") or groups.get("slots") or 1)
+    if verdict == "enabled" and not split_mtp_wins(rows):
+        # Above the measured boundary the drafter is not a smaller win, it is a loss at every
+        # depth swept: 7.9 percent at 64 rows and 22.9 at 128 against the same split with no
+        # drafter. Whatever groups were planned stay (the drafter-off arm is the fastest thing
+        # measured at these rows), and the launch says off so the backend's own auto mode
+        # cannot put --spec-type draft-mtp back. The depth field goes with it, so no draft
+        # flag of any kind is emitted. Nothing here can reach single or replicas: only a
+        # layer split calls this function.
+        mtp["mtp"] = MTP_OFF_FOR_SPLIT_ROWS
+        mtp["reason"] = (
+            f"{rows} rows is at or above {SPLIT_MTP_OFF_ROWS}, where a split measured faster "
+            f"with NO drafter at every depth swept (best depth 171.7 against 186.3 tok/s at "
+            f"64 rows, -7.9 percent, and 164.1 against 212.7 at 128, -22.9 percent); below "
+            f"{SPLIT_MTP_OFF_ROWS} it speculates at the measured depth, worth +11.0 percent "
+            f"at 32 rows. Previously: {mtp.get('reason')}"
+        )
+        request = mtp.setdefault("request", {})
+        request.pop("spec_draft_n_max", None)
+        request["speculative_type"] = "off"
+        groups["split_config"] = SPLIT_CONFIG_GROUPS if planned > 1 else SPLIT_CONFIG_PLAIN
+        groups["split_config_reason"] = mtp["reason"]
+        return
     if planned <= 1:
         groups["split_config"] = SPLIT_CONFIG_SPEC if speculating else SPLIT_CONFIG_PLAIN
         groups["split_config_reason"] = str(
             groups.get("reason") or f"{PIPELINE_GROUPS_FLAG} not added"
         )
         return
-    rows = int(groups.get("requested_slots") or groups.get("slots") or 1)
     if speculating:
         combined = llama_server_accepts_groups_with_drafter(planned)
         if rows >= GROUPS_X_MTP_MIN_ROWS and combined:

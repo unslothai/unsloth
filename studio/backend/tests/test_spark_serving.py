@@ -1495,6 +1495,109 @@ def test_split_crossover_sits_at_the_measured_row_count(cluster, monkeypatch, tm
         run(ss.shutdown())
 
 
+def test_a_split_stops_speculating_at_the_row_count_where_the_drafter_starts_losing(
+    cluster, monkeypatch, tmp_path
+):
+    """From SPLIT_MTP_OFF_ROWS (64) rows up a layer split launches with NO drafter.
+
+    Measured on the split, best depth against the same split with no drafter: +11.0 percent at
+    32 rows, -7.9 at 64, -22.9 at 128. So the split keeps its groups above the boundary and
+    emits neither --spec-type draft-mtp nor any draft flag; below it nothing changes. This is
+    the split alone: single and replicas keep the drafter at the same row counts.
+    """
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    head = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    _patch_remote(monkeypatch)
+    cluster.topology = "layer_split"
+    # Below the boundary: the drafter is there, at the depth the rows measured best.
+    for rows in (8, 32):
+        out = run(ss.before_load(_FakeRequest(str(head)), rows))
+        status = ss.status()
+        assert status["mtp"] == "enabled", rows
+        assert out.spec_draft_n_max == ss.mtp_draft_n_max(rows), rows
+        assert out.speculative_type is None, rows
+        assert ss.launched_spec_flags(out.llama_extra_args or []) == (None, None), rows
+        run(ss.shutdown())
+    # At and above it: no drafter at all, and the groups stay, because the drafter-off arm
+    # with two groups is the fastest thing measured at these rows.
+    for rows in (64, 128):
+        out = run(ss.before_load(_FakeRequest(str(head)), rows))
+        assert out.speculative_type == "off", rows
+        assert out.spec_draft_n_max is None, rows
+        extras = out.llama_extra_args or []
+        assert ss.launched_spec_flags(extras) == (None, None), rows
+        assert not any(
+            str(a).partition("=")[0].startswith(("--spec", "--draft", "--model-draft"))
+            for a in extras
+        ), (rows, extras)
+        assert extras[-2:] == ["--pipeline-groups", "2"], rows
+        status = ss.status()
+        assert status["mtp"] == ss.MTP_OFF_FOR_SPLIT_ROWS == "off for the split rows", rows
+        assert f"{rows} rows is at or above 64" in status["mtp_reason"], rows
+        assert "-7.9 percent" in status["mtp_reason"] and "-22.9 percent" in status["mtp_reason"]
+        assert status["split_config"] == ss.SPLIT_CONFIG_GROUPS, rows
+        assert status["split_config_reason"] == status["mtp_reason"], rows
+        run(ss.shutdown())
+    # A drafter the CALLER asked for is never taken away by this boundary.
+    request = _FakeRequest(str(head), llama_extra_args = ["--model-draft", "/models/draft.gguf"])
+    out = run(ss.before_load(request, 64))
+    assert out.llama_extra_args[:2] == ["--model-draft", "/models/draft.gguf"]
+    assert out.speculative_type is None and out.spec_draft_n_max is None
+    assert ss.status()["mtp"] == "user override"
+    run(ss.shutdown())
+    # The single and replicas paths are NOT the split. The matrix behind the boundary was
+    # measured on the split alone; on one Spark MTP is a 1.46x to 2.61x win, and the drafter
+    # stays at the row counts that turn it off on a split.
+    for topology in ("single", "replicas"):
+        cluster.topology = topology
+        for rows in (8, 32, 64, 128):
+            out = run(ss.before_load(_FakeRequest(str(head)), rows))
+            assert out.speculative_type is None, (topology, rows)
+            assert out.spec_draft_n_max == ss.mtp_draft_n_max(rows), (topology, rows)
+            assert ss.status()["mtp"] == "enabled", (topology, rows)
+            run(ss.shutdown())
+    # The pure rule, and the mirror it is taken from.
+    sc = _load_spark_cluster()
+    assert ss.SPLIT_MTP_OFF_ROWS == sc.SPLIT_MTP_OFF_ROWS == 64
+    for rows in (None, 1, 8, 32, 63):
+        assert ss.split_mtp_wins(rows) and sc.split_mtp_wins(rows), rows
+    for rows in (64, 65, 128, 4096):
+        assert not ss.split_mtp_wins(rows) and not sc.split_mtp_wins(rows), rows
+    # 64 is a measured point where the best depth LOSES, and 32, the point below it, is a
+    # measured point where the best depth WINS. Nothing between the two was measured.
+    cells = sc.MTP_DRAFT_N_MAX_X_ROWS_TOKS
+    assert sorted(cells) == [32, 64, 128]
+    assert ss.SPLIT_MTP_OFF_ROWS in cells and 32 in cells
+
+    def _best_over_off(rows):
+        drafting = {depth: toks for depth, toks in cells[rows].items() if depth}
+        return max(drafting.values()) / cells[rows][0]
+
+    assert _best_over_off(32) > 1.0, "speculation is a win at the point below the boundary"
+    for rows in (64, 128):
+        assert _best_over_off(rows) < 1.0, rows
+    # The percentages the notes quote come from the unrounded leg means; the tok/s table is
+    # rounded to 0.1, so the two agree to a fifth of a point and cannot silently drift apart.
+    for rows, pct in sc.SPLIT_MTP_BEST_DEPTH_VS_OFF_PCT.items():
+        assert abs((_best_over_off(rows) - 1) * 100 - pct) < 0.2, rows
+    assert sc.SPLIT_MTP_BEST_DEPTH_VS_OFF_PCT == {32: 11.0, 64: -7.9, 128: -22.9}
+    # It is a different question from the groups crossover, which does not move, and it does
+    # not change any depth below the boundary.
+    assert sc.GROUPS_X_MTP_CROSSOVER_ROWS == ss.GROUPS_X_MTP_MIN_ROWS == 16
+    assert sc.SPLIT_MTP_OFF_ROWS != sc.GROUPS_X_MTP_CROSSOVER_ROWS
+    assert sc.MTP_DRAFT_N_MAX_BY_ROWS == ss.MTP_DRAFT_N_MAX_BY_ROWS == {32: 2, 64: 1}
+    for rows, want in ((None, 3), (1, 3), (8, 3), (31, 3), (32, 2), (63, 2)):
+        assert ss.mtp_draft_n_max(rows) == sc.mtp_draft_n_max(rows) == want, rows
+    # The note a user reads states both sides with their numbers, and says it is the split.
+    note = sc.split_mtp_note()
+    for text in ("64 concurrent rows", "+11.0 percent", "-7.9 percent", "-22.9 percent", "n-max 2"):
+        assert text in note, (text, note)
+    assert "one Spark and two replicas keep MTP" in note
+    # And the groups note now states the two decisions separately.
+    groups_note = sc.groups_x_mtp_note()
+    assert "16 rows up" in groups_note and "drops the drafter entirely" in groups_note
+
+
 def test_split_keeps_todays_behaviour_when_the_server_refuses_the_pair(
     cluster, monkeypatch, tmp_path
 ):
@@ -1716,6 +1819,13 @@ def test_the_draft_depth_follows_the_rows_and_the_crossover_does_not_move():
     # question with its own measurement, and it is unchanged.
     assert sc.GROUPS_X_MTP_CROSSOVER_ROWS == ss.GROUPS_X_MTP_MIN_ROWS == 16
     assert sc.groups_x_mtp_wins(16) and not sc.groups_x_mtp_wins(8)
+    # And whether a drafter runs on a split at all is a third question, with its own
+    # constant; the depth returned below that boundary is untouched by it.
+    assert sc.SPLIT_MTP_OFF_ROWS == ss.SPLIT_MTP_OFF_ROWS == 64
+    assert sc.SPLIT_MTP_OFF_ROWS not in (sc.GROUPS_X_MTP_CROSSOVER_ROWS,)
+    for rows in (1, 8, 16, 31, 32, 63):
+        assert sc.split_mtp_wins(rows), rows
+        assert sc.mtp_draft_n_max(rows) == ss.mtp_draft_n_max(rows), rows
 
 
 def test_the_layer_boundary_is_explicit_and_the_rows_table_is_consistent():

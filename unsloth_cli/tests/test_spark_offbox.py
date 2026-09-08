@@ -919,6 +919,28 @@ def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
     ):
         assert text in reason, (text, reason)
     assert "without them expect 0.85x to 1.01x on decode and 1.7x to 1.85x on prefill" in reason
+    # And it says the other half of the split's launch: below 64 rows the drafter is on at the
+    # depth measured best for the row count, at or above 64 it is off entirely.
+    for text in (
+        "speculates only below 64 concurrent rows",
+        "+11.0 percent at 32 rows",
+        "-7.9 percent at 64",
+        "-22.9 percent at 128",
+        "no drafter and no draft flags at all",
+    ):
+        assert text in reason, (text, reason)
+    assert out["split_mtp"] is sc.split_mtp_wins(32) is True
+    assert out["split_mtp_note"] == sc.split_mtp_note()
+    off = sc.recommend_topology(150 * _GIB, 0.5 * _GIB, 64, 512, 113 * _GIB)
+    assert off["topology"] == "layer_split" and off["split_mtp"] is False
+    # The boundary is the SPLIT's. A model that fits is single or replicas, and those answers
+    # carry no split-speculation verdict at all: the one-Spark MTP table governs them.
+    for users in (1, 8, 32, 64, 128):
+        fits = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, users, 512, 113 * _GIB)
+        assert fits["topology"] in ("single", "replicas"), users
+        assert fits["split_mtp"] is None and fits["split_mtp_note"] is None, users
+        assert "64 concurrent rows" not in fits["reason"], users
+        assert fits["mtp_speedup"] == sc.mtp_speedup(users) > 1.0, users
     # The KV-overflow split says the same.
     kv = sc.recommend_topology(100 * _GIB, 4 * _GIB, 16, 512, 120 * _GIB)
     assert kv["topology"] == "layer_split" and "pipeline groups" in kv["reason"]
