@@ -5065,8 +5065,13 @@ def _apply_current_date_prompt(
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
 
 
-# Servers that apply a prompt of their own and swap it for any request-level system turn.
-# Ollama's /v1/chat/completions uses the Modelfile SYSTEM only when the request sends none.
+# Servers that carry a prompt of their own and yield it to a *leading* request system turn.
+# Ollama's ChatHandler prepends the Modelfile SYSTEM only when `req.Messages[0].Role != "system"`
+# (server/routes.go), and /v1/chat/completions is routed through ChatMiddleware into that same
+# handler, so the OpenAI-compatible endpoint Studio talks to obeys the rule too. The test is on
+# the first message alone: a system turn further down the list does not displace the Modelfile
+# prompt, which is why only the synthesized turn below -- always prepended at index 0 -- has to
+# be withheld.
 _MODELFILE_SYSTEM_PROVIDERS = frozenset({"ollama"})
 
 
@@ -5124,8 +5129,13 @@ def _prepend_current_date_to_messages(
             msg["content"] = [{"type": "text", "text": date_line}, *copied_parts]
             return copied
     if provider_type in _MODELFILE_SYSTEM_PROVIDERS:
-        # Ollama serves the Modelfile SYSTEM only while the request carries no system turn;
-        # a date-only turn here would replace the user's prompt with a date (#10436).
+        # Nothing above matched, so the only place left for the date is a turn synthesized at
+        # index 0 -- the one shape that costs an Ollama caller their Modelfile SYSTEM (#10436).
+        # Dropping the date is the smaller loss. A Studio-composed system turn is still dated,
+        # above: choosing to write one is already choosing to override the Modelfile prompt.
+        # Narrow on purpose, and not a guarantee that the Modelfile prompt always survives --
+        # the Full access nudge can still synthesize a system turn after this point, via
+        # _append_to_system_message, exactly as it did before this guard existed.
         return messages
     return [{"role": "system", "content": date_line}, *copied]
 
