@@ -500,38 +500,48 @@ def test_fetch_page_text_falls_back_to_html_when_readme_api_fails(monkeypatch):
     assert "There was an error while loading" not in out
 
 
-def test_fetch_page_text_non_html_returned_raw(monkeypatch):
-    raw = "line one\n    indented code\nline three"
+_RAW_TEXT_PAGE = "line one\n    indented code\nline three"
+_HTML_FRAGMENT = "<article><h1>Doc Title</h1><p>Readable fragment body.</p></article>"
 
-    def fake_fetch(
-        url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
-    ):
-        return None, raw, "text/plain"
+
+def _page_text(monkeypatch, url, body, content_type):
+    """``_fetch_page_text`` with the fetch stubbed to answer `body` under `content_type`."""
+
+    def fake_fetch(url, timeout = 30, extra_headers = None, deadline = None, cancel_event = None):
+        return None, body, content_type
 
     monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
-    out = _fetch_page_text("https://raw.githubusercontent.com/o/r/main/file.txt")
-    # Whitespace preserved: the HTML renderer would have collapsed it.
-    assert "    indented code" in out
+    return _fetch_page_text(url)
 
 
-def test_fetch_page_text_html_conversion(monkeypatch):
-    def fake_fetch(
-        url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
-    ):
-        return None, _GITHUB_PAGE, "text/html"
-
-    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
-    out = _fetch_page_text("https://github.com/unslothai/unsloth/tree/main")
-    assert "Unsloth Studio" in out
-    assert "Uh oh!" not in out
+@pytest.mark.parametrize(
+    "url, body, content_type, present, absent",
+    [
+        # Whitespace preserved: the HTML renderer would have collapsed it.
+        pytest.param("https://raw.githubusercontent.com/o/r/main/file.txt", _RAW_TEXT_PAGE,
+            "text/plain", ["    indented code"], [], id = "non_html_returned_raw"),
+        pytest.param("https://github.com/unslothai/unsloth/tree/main", _GITHUB_PAGE,
+            "text/html", ["Unsloth Studio"], ["Uh oh!"], id = "html_conversion"),
+        # A header-less server returning a bare HTML fragment (no <html>/doctype) must still be
+        # sniffed as HTML and converted, not served as raw markup.
+        pytest.param("https://example.com/fragment", _HTML_FRAGMENT, "",
+            ["Doc Title", "Readable fragment body."], ["<article"],
+            id = "missing_content_type_fragment_converted"),
+        # A header-less server returning plain text stays raw (whitespace kept).
+        pytest.param("https://example.com/no-content-type.txt", _RAW_TEXT_PAGE, "",
+            ["    indented code"], [], id = "missing_content_type_plain_text_raw"),
+        # An explicit text/plain header on an HTML body is sniffed and converted, like the
+        # pre-extraction behavior of always converting HTML pages.
+        pytest.param("https://example.com/mislabeled", _GITHUB_PAGE, "text/plain",
+            ["Unsloth Studio"], ["<html"], id = "mislabeled_text_plain_html_converted"),
+    ],
+)
+def test_fetch_page_text_content_type_handling(monkeypatch, url, body, content_type, present, absent):
+    out = _page_text(monkeypatch, url, body, content_type)
+    for fragment in present:
+        assert fragment in out
+    for fragment in absent:
+        assert fragment not in out
 
 
 def test_fetch_page_text_propagates_fetch_errors(monkeypatch):
@@ -910,63 +920,6 @@ def test_fetch_page_text_missing_content_type_html_sniffed(monkeypatch):
     assert "Unsloth Studio" in out
     assert "<html" not in out
     assert "Uh oh!" not in out
-
-
-def test_fetch_page_text_missing_content_type_fragment_converted(monkeypatch):
-    # A header-less server returning a bare HTML fragment (no <html>/doctype) must
-    # still be sniffed as HTML and converted, not served as raw markup.
-    fragment = "<article><h1>Doc Title</h1><p>Readable fragment body.</p></article>"
-
-    def fake_fetch(
-        url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
-    ):
-        return None, fragment, ""
-
-    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
-    out = _fetch_page_text("https://example.com/fragment")
-    assert "Doc Title" in out
-    assert "Readable fragment body." in out
-    assert "<article" not in out
-
-
-def test_fetch_page_text_missing_content_type_plain_text_raw(monkeypatch):
-    # A header-less server returning plain text stays raw (whitespace kept).
-    raw = "line one\n    indented code\nline three"
-
-    def fake_fetch(
-        url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
-    ):
-        return None, raw, ""
-
-    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
-    out = _fetch_page_text("https://example.com/no-content-type.txt")
-    assert "    indented code" in out
-
-
-def test_fetch_page_text_mislabeled_text_plain_html_converted(monkeypatch):
-    # An explicit text/plain header on an HTML body is sniffed and converted, like
-    # the pre-extraction behavior of always converting HTML pages.
-    def fake_fetch(
-        url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
-    ):
-        return None, _GITHUB_PAGE, "text/plain"
-
-    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
-    out = _fetch_page_text("https://example.com/mislabeled")
-    assert "Unsloth Studio" in out
-    assert "<html" not in out
 
 
 # ── implicit-close past unclosed inline descendants (finding 14) ──
