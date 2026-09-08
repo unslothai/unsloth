@@ -1415,24 +1415,31 @@ def test_a_trusted_calls_arguments_are_never_masked():
     assert "" not in calls[0]["function"]["arguments"]
 
 
-@pytest.mark.parametrize("text", [
-    # Truncated body: the rest of the text is its arguments, so a wrapped call quoted there
-    # is still quoted. Left unmasked, the fallback XML parser executed it.
-    'call:terminal{command:"quote <function=terminal><parameter=command>id</parameter></function>',
-    'terminal[ARGS]{"c":"<function=python><parameter=code>1</parameter></function>',
-    # Gemma also takes a RAW value; masking only quoted spans left this promotable.
-    "call:terminal{command:web_search[ARGS]{}}",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Truncated body: the rest of the text is its arguments, so a wrapped call quoted there
+        # is still quoted. Left unmasked, the fallback XML parser executed it.
+        'call:terminal{command:"quote <function=terminal><parameter=command>id</parameter></function>',
+        'terminal[ARGS]{"c":"<function=python><parameter=code>1</parameter></function>',
+        # Gemma also takes a RAW value; masking only quoted spans left this promotable.
+        "call:terminal{command:web_search[ARGS]{}}",
+    ],
+)
 def test_a_blocked_body_stays_non_executable_when_raw_or_truncated(text):
-    assert parse_tool_calls_from_text(
-        text, enabled_tool_names = {"terminal", "python", "web_search"}
-    ) == []
+    assert (
+        parse_tool_calls_from_text(text, enabled_tool_names = {"terminal", "python", "web_search"})
+        == []
+    )
 
 
-@pytest.mark.parametrize("text", [
-    "<think><function=terminal><parameter=command>id</parameter></function></think>",
-    "[THINK]<function=terminal><parameter=command>id</parameter></function>[/THINK]",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<think><function=terminal><parameter=command>id</parameter></function></think>",
+        "[THINK]<function=terminal><parameter=command>id</parameter></function>[/THINK]",
+    ],
+)
 def test_a_call_rehearsed_inside_reasoning_is_not_promoted(text):
     """Preserving the think tags for provenance put a nested call in front of the parser.
     The rehearsal dispatch skipped those spans; function-XML and friends did not."""
@@ -1445,27 +1452,34 @@ def test_a_real_call_after_the_reasoning_block_still_runs():
     assert [call["function"]["name"] for call in calls] == ["terminal"]
 
 
-@pytest.mark.parametrize("text", [
-    'terminal[ARGS]{"c":"<function=python></function>"}',
-    'call:terminal{command:"<tool_call>x</tool_call>"}',
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        'terminal[ARGS]{"c":"<function=python></function>"}',
+        'call:terminal{command:"<tool_call>x</tool_call>"}',
+    ],
+)
 def test_the_route_display_strip_keeps_a_blocked_body_verbatim(text):
     """The route runs its own copy of these passes, so the body was edited there too."""
     from routes.inference import _strip_tool_xml_for_display
-
-    assert _strip_tool_xml_for_display(
-        text, auto_heal_tool_calls = True, enabled_tool_names = {"terminal", "python"}
-    ) == text
+    assert (
+        _strip_tool_xml_for_display(
+            text, auto_heal_tool_calls = True, enabled_tool_names = {"terminal", "python"}
+        )
+        == text
+    )
 
 
 def test_the_route_display_strip_still_removes_a_real_call():
     from routes.inference import _strip_tool_xml_for_display
-
-    assert _strip_tool_xml_for_display(
-        "<function=python><parameter=code>1</parameter></function>",
-        auto_heal_tool_calls = True,
-        enabled_tool_names = {"python"},
-    ) == ""
+    assert (
+        _strip_tool_xml_for_display(
+            "<function=python><parameter=code>1</parameter></function>",
+            auto_heal_tool_calls = True,
+            enabled_tool_names = {"python"},
+        )
+        == ""
+    )
 
 
 @pytest.mark.parametrize("snapshot", ["The result is cal", "The result is web_sea"])

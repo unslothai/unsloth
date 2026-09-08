@@ -746,9 +746,7 @@ def run_safetensors_tool_loop(
             )
             if not held:
                 return ""
-            cleaned = strip_tool_markup(
-                held, final = True, enabled_tool_names = _enabled_tool_names
-            )
+            cleaned = strip_tool_markup(held, final = True, enabled_tool_names = _enabled_tool_names)
             return cleaned if len(cleaned) > len(last_emitted) else ""
 
         detect_state = _state_buffering

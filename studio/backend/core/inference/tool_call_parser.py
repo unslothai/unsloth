@@ -791,7 +791,12 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
     return merged
 
 
-def _mask_blocked_bodies(text: str, enabled_tool_names, *, think: bool = False) -> tuple:
+def _mask_blocked_bodies(
+    text: str,
+    enabled_tool_names,
+    *,
+    think: bool = False,
+) -> tuple:
     """``(masked_text, bodies)``; ``bodies`` restores them in order.
 
     ``think`` also hides reasoning blocks, for the PARSE path only. A call rehearsed inside
