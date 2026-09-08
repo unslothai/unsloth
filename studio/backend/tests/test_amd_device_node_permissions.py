@@ -698,9 +698,11 @@ def test_the_group_derivation_reads_the_node(monkeypatch):
         },
         {44: "video", 39: "render"},
     )
-    assert amd._groups_that_own(
-        ["/dev/dri/renderD129", "/dev/kfd", "/dev/dri/renderD128"]
-    ) == (["render", "video"], [], [])
+    assert amd._groups_that_own(["/dev/dri/renderD129", "/dev/kfd", "/dev/dri/renderD128"]) == (
+        ["render", "video"],
+        [],
+        [],
+    )
 
 
 def test_a_gid_with_no_group_entry_is_reported_rather_than_prescribed(monkeypatch):
@@ -736,9 +738,7 @@ def test_a_node_that_cannot_be_stat_contributes_nothing(monkeypatch):
     are already wrong, so a node that vanished between the probe and the message drops
     out rather than taking the whole hint down."""
     _stat_nodes(monkeypatch, {"/dev/dri/renderD128": (44, 0o660)}, {44: "video"})
-    assert amd._groups_that_own(["/dev/kfd", "/dev/dri/renderD128"]) == (
-        ["video"], [], [],
-    )
+    assert amd._groups_that_own(["/dev/kfd", "/dev/dri/renderD128"]) == (["video"], [], [])
 
 
 def _install_sh_hint(closed_nodes: str, *, render_present: bool = True) -> str:
@@ -769,15 +769,17 @@ def _install_sh_hint(closed_nodes: str, *, render_present: bool = True) -> str:
             break
     helper = "\n".join(lines[fn_start : fn_end + 1])
 
-    script = "\n".join([
-        "substep() { echo \"$1\"; }",
-        'C_WARN=""',
-        # Stubbed rather than lifted: the real one reads /sys and /dev, so leaving it
-        # live would make every arm depend on the runner's own hardware.
-        f"_amd_render_node_present() {{ return {0 if render_present else 1}; }}",
-        helper,
-        block,
-    ])
+    script = "\n".join(
+        [
+            'substep() { echo "$1"; }',
+            'C_WARN=""',
+            # Stubbed rather than lifted: the real one reads /sys and /dev, so leaving it
+            # live would make every arm depend on the runner's own hardware.
+            f"_amd_render_node_present() {{ return {0 if render_present else 1}; }}",
+            helper,
+            block,
+        ]
+    )
     out = subprocess.run(
         ["bash", "-c", script],
         capture_output = True,
@@ -920,7 +922,9 @@ def test_a_joinable_group_beside_an_unnamed_gid_is_still_prescribed(monkeypatch,
     group and another in an unnamed one can still fix half of it by joining, so the
     command has to survive and name only the group that works."""
     _nodes(
-        monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set(),
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = set(),
     )
     monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [993], []))
     monkeypatch.setenv("USER", "ada")
@@ -952,7 +956,13 @@ def test_a_host_whose_nodes_could_not_be_read_still_gets_the_documented_pair(mon
     assert "usermod -a -G render,video ada" in amd.amd_node_permission_hint()
 
 
-def _unusable_message(monkeypatch, detail, *, rocm_expected = False, hip_runtime = False):
+def _unusable_message(
+    monkeypatch,
+    detail,
+    *,
+    rocm_expected = False,
+    hip_runtime = False,
+):
     """The capability message on an AMD-only host with a closed node, for a given wheel."""
     from utils.hardware import hardware
 
@@ -964,7 +974,8 @@ def _unusable_message(monkeypatch, detail, *, rocm_expected = False, hip_runtime
     monkeypatch.setattr(hardware, "_torch_reports_a_hip_runtime", lambda: hip_runtime)
     monkeypatch.setenv("USER", "ada")
     return hardware._gpu_present_but_unusable_message(
-        "video generation", verdict = ("torch_cuda_unavailable", detail),
+        "video generation",
+        verdict = ("torch_cuda_unavailable", detail),
     )
 
 
@@ -1002,15 +1013,10 @@ def _installer_index_summary(index_url: str, closed_nodes: str) -> str:
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     lines = install_sh.read_text(encoding = "utf-8").splitlines()
     start = max(i for i, line in enumerate(lines) if line == 'case "$TORCH_INDEX_URL" in')
-    anchor = next(
-        i for i in range(start, len(lines))
-        if "needs a recent kernel" in lines[i]
-    )
+    anchor = next(i for i in range(start, len(lines)) if "needs a recent kernel" in lines[i])
     # Through the closed-node block as well, so one run shows which of the two
     # diagnoses this index gets.
-    last = next(
-        i for i in range(anchor, len(lines)) if "membership opens it" in lines[i]
-    )
+    last = next(i for i in range(anchor, len(lines)) if "membership opens it" in lines[i])
     end = next(i for i in range(last, len(lines)) if lines[i] == "fi")
     fn_start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_repairs() {"))
     depth = 0
@@ -1018,21 +1024,25 @@ def _installer_index_summary(index_url: str, closed_nodes: str) -> str:
         depth += lines[fn_end].count("{") - lines[fn_end].count("}")
         if depth == 0:
             break
-    script = "\n".join([
-        *lines[fn_start : fn_end + 1],
-        'substep() { echo "$1"; }',
-        'C_WARN=""',
-        "_amd_gpu_radeon=false",
-        '_strip_index_url_credentials() { printf "%s\\n" "$1"; }',
-        "_has_amd_rocm_gpu() { return 1; }",  # ROCm cannot see the card
-        "_amd_gpu_present_via_pci() { return 0; }",  # but the PCI bus can
-        "SKIP_TORCH=false",
-        "OS=linux",
-        "_amd_render_node_present() { return 0; }",
-        *lines[start : end + 1],
-    ])
+    script = "\n".join(
+        [
+            *lines[fn_start : fn_end + 1],
+            'substep() { echo "$1"; }',
+            'C_WARN=""',
+            "_amd_gpu_radeon=false",
+            '_strip_index_url_credentials() { printf "%s\\n" "$1"; }',
+            "_has_amd_rocm_gpu() { return 1; }",  # ROCm cannot see the card
+            "_amd_gpu_present_via_pci() { return 0; }",  # but the PCI bus can
+            "SKIP_TORCH=false",
+            "OS=linux",
+            "_amd_render_node_present() { return 0; }",
+            *lines[start : end + 1],
+        ]
+    )
     out = subprocess.run(
-        ["bash", "-c", script], capture_output = True, text = True,
+        ["bash", "-c", script],
+        capture_output = True,
+        text = True,
         env = {
             **os.environ,
             "TORCH_INDEX_URL": index_url,
@@ -1065,7 +1075,8 @@ def test_a_closed_kfd_node_still_suppresses_it_after_the_case():
     the kernel stack is already loaded, so on a gfx index too the group advice is the
     repair and "install the ROCm kernel stack" is not."""
     out = _installer_index_summary(
-        "https://repo.radeon.com/rocm/manylinux/gfx1151", "/dev/kfd",
+        "https://repo.radeon.com/rocm/manylinux/gfx1151",
+        "/dev/kfd",
     )
     assert "ROCm cannot see it" not in out
     assert "cannot open its device nodes" in out
@@ -1176,7 +1187,9 @@ def test_a_host_that_has_a_render_node_is_not_told_to_map_one(monkeypatch, linux
     only cannot open it, so claiming the device mapping is wrong would send the user
     after a second repair that does not exist."""
     _nodes(
-        monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set(),
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = set(),
     )
     monkeypatch.setenv("USER", "ada")
     assert "No AMD render node" not in amd.amd_node_permission_hint()

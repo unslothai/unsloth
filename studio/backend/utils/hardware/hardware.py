@@ -2138,11 +2138,10 @@ def _gpu_present_but_unusable_message(
         f"This host has a GPU, but the installed PyTorch{installed} cannot initialise it, so "
         f"{feature} cannot use it. This is usually a driver or runtime mismatch; reinstalling "
         f"a matching PyTorch build fixes it. Use Repair installation in Settings in the "
-        f"desktop app, or re-run the Unsloth installer."
+        f"desktop app, or re-run the Unsloth installer." + (f" {node_hint}" if node_hint else "")
         # Appended, not substituted: a wheel built for another vendor is not repaired by
         # opening a node, but the node is still closed and the matching ROCm build will
         # need it. Same shape as the CPU-only arm above, for the same reason.
-        + (f" {node_hint}" if node_hint else "")
     )
 
 
