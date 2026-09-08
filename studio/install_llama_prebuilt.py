@@ -4244,14 +4244,27 @@ def blocked_replace_hint(winerror: object, path: Path) -> str:
     Printed, never run -- repairing permissions is the user's call.
     """
     if winerror == 5:
-        return (
+        lead = (
             "access is denied -- usually a scanner, indexer or running process still "
             "holding a handle, which clears on its own. If the retries do not clear it, "
-            "this tree's permissions are broken; in an elevated PowerShell, run each "
-            "command:\n"
+        )
+        antivirus = "Antivirus or Controlled folder access can deny it too"
+        if _is_link_or_junction(path):
+            # Same rule the copy paths follow: never dereference a linked install
+            # root. takeown /R walks through one, and icacls resolves it without /L
+            # (Microsoft: "/L performs the operation on a symbolic link instead of
+            # its destination"), so the recursive repair would rewrite permissions
+            # across a --with-llama-cpp-dir checkout this installer does not own.
+            return (
+                f"{lead}the permissions are broken on {path} or on what it links to. That "
+                f"tree is not managed here, so repair it at the source. {antivirus}"
+            )
+        return (
+            f"{lead}this tree's permissions are broken; in an elevated PowerShell, run "
+            "each command:\n"
             f'takeown /F "{path}" /R /D Y\n'
             f'icacls "{path}" /reset /T\n'
-            "Antivirus or Controlled folder access can deny it too"
+            f"{antivirus}"
         )
     if winerror == 145:
         return "the directory is not empty yet -- an earlier copy is still being removed"

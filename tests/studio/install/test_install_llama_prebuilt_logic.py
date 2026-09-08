@@ -1061,6 +1061,7 @@ def test_blocked_replace_hint_offers_the_acl_repair_only_for_access_denied(tmp_p
     send a user into takeown /R + icacls /reset /T over a transient Defender lock.
     """
     target = tmp_path / "llama.cpp"
+    target.mkdir()
 
     sharing_violation = blocked_replace_hint(32, target)
     assert "scanner" in sharing_violation
@@ -1081,6 +1082,29 @@ def test_blocked_replace_hint_offers_the_acl_repair_only_for_access_denied(tmp_p
     assert "scanner" not in not_empty
     assert "takeown" not in not_empty
     assert "not empty" in not_empty
+
+
+def test_blocked_replace_hint_does_not_send_acl_repair_through_a_linked_root(tmp_path: Path):
+    """A --with-llama-cpp-dir link must not be handed a recursive ACL reset.
+
+    takeown /R walks through a linked root and icacls resolves one without /L, so
+    the printed repair would rewrite permissions across a checkout this installer
+    does not own. The copy paths already refuse to dereference a linked root.
+    """
+    external = tmp_path / "external-llama.cpp"
+    external.mkdir()
+    linked_root = tmp_path / "llama.cpp"
+    try:
+        linked_root.symlink_to(external, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    denied = blocked_replace_hint(5, linked_root)
+    assert "access is denied" in denied
+    assert "scanner" in denied
+    assert "takeown" not in denied
+    assert "icacls" not in denied
+    assert str(linked_root) in denied
 
 
 def test_replace_with_busy_retry_reports_denied_access_as_permissions(
