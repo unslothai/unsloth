@@ -252,6 +252,13 @@ def _install_run_reexec(monkeypatch, events):
     )
     fake_bin = fake_venv / "bin" / "unsloth"
     real_is_file = Path.is_file
+    # The fixture describes a POSIX install ("bin/unsloth", "/fake/..." paths), so
+    # pin BOTH platform probes, not just sys.platform: the launcher name comes from
+    # platform.system(), which on a Windows runner looks for unsloth.exe, finds the
+    # fixture's POSIX name instead and exits with "venv missing 'unsloth' entry
+    # point" before any of these tests reaches what it is actually asserting. The
+    # Windows name has its own test below.
+    monkeypatch.setattr(studio_mod.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         Path,
         "is_file",
@@ -293,6 +300,38 @@ def _invoke_run(monkeypatch, events, args):
         context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
     return CliRunner().invoke(app, args, catch_exceptions = True)
+
+
+def test_run_reexecs_through_the_windows_console_script(monkeypatch):
+    # Windows ships the console script as unsloth.exe, so `studio run` looks for
+    # that name instead of the bare one. Runs on every platform: platform.system()
+    # is the only thing that decides, and the branch was previously exercised by
+    # nothing, which is how the POSIX-only fixture above went unnoticed.
+    import typer as _typer
+
+    studio_mod = _studio()
+    events = []
+    _install_run_reexec(monkeypatch, events)
+    monkeypatch.setattr(studio_mod.platform, "system", lambda: "Windows")
+    windows_bin = Path("/fake/studio/venv/unsloth_studio/bin/unsloth.exe")
+    real_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda self: True if str(self) == str(windows_bin) else real_is_file(self),
+    )
+    # The bare POSIX name is NOT a file here, so a launch that only got this far
+    # by ignoring platform.system() would exit instead of re-execing.
+    monkeypatch.setattr(studio_mod, "_managed_cli_package_present", lambda _python: False)
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+    )(studio_mod.run)
+    result = CliRunner().invoke(app, _BASE + ["--api-only"], catch_exceptions = True)
+
+    assert result.exit_code == 0, result.output
+    assert [kind for kind, _ in events] == ["exec"], events
 
 
 @pytest.mark.parametrize("command", ["default", "run"])
