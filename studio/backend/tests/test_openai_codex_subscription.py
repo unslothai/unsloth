@@ -56,6 +56,24 @@ from routes import inference as inf
 from routes import openai_codex_auth as codex_routes
 
 
+async def _is_disconnected():
+    return False
+
+
+class AlwaysRejecting:
+    async def get(
+        self,
+        _url,
+        headers = None,
+        params = None,
+    ):
+        return httpx.Response(401, json = {"detail": "expired"})
+
+    async def aclose(self):
+        return None
+
+
+
 def _jwt(payload: dict) -> str:
     encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
     return f"header.{encoded}.signature"
@@ -1510,9 +1528,6 @@ def _codex_chat_gate(
 
     monkeypatch.setattr(codex_auth, "resolve_access", resolve or _refuse)
 
-    async def _is_disconnected():
-        return False
-
     request = SimpleNamespace(
         headers = {},
         state = SimpleNamespace(skip_api_monitor = True),
@@ -1576,9 +1591,6 @@ def test_codex_chat_receives_the_current_date(monkeypatch):
         "current_date_prompt_line",
         lambda **_kwargs: "The current date is 2026-08-15.",
     )
-
-    async def _is_disconnected():
-        return False
 
     request = SimpleNamespace(
         headers = {},
@@ -1739,9 +1751,6 @@ def test_chat_reads_vision_support_from_the_plan_catalog(monkeypatch):
 
     monkeypatch.setattr(codex_auth, "resolve_access", _refuse)
 
-    async def _is_disconnected():
-        return False
-
     def call():
         request = SimpleNamespace(
             headers = {},
@@ -1855,9 +1864,6 @@ def test_chat_reports_reconnection_when_an_image_needs_the_catalog(monkeypatch):
         raise codex_auth.CodexAuthError("ChatGPT authorization expired. Reconnect.")
 
     monkeypatch.setattr(codex_auth, "resolve_access", _needs_reauth)
-
-    async def _is_disconnected():
-        return False
 
     payload = ChatCompletionRequest(
         messages = [
@@ -2142,18 +2148,6 @@ def test_a_catalog_401_spends_one_forced_refresh(monkeypatch):
 def test_a_second_catalog_401_asks_for_reconnection(monkeypatch):
     """A refresh that does not help is a real reauthorization, not an endless retry."""
     forget_subscription_models("provider-12")
-
-    class AlwaysRejecting:
-        async def get(
-            self,
-            _url,
-            headers = None,
-            params = None,
-        ):
-            return httpx.Response(401, json = {"detail": "expired"})
-
-        async def aclose(self):
-            return None
 
     async def _resolve(
         _provider_id,
@@ -2547,18 +2541,6 @@ def test_a_second_catalog_401_is_recorded_on_the_connection(monkeypatch):
     forget_subscription_models("provider-22")
     marked = []
 
-    class AlwaysRejecting:
-        async def get(
-            self,
-            _url,
-            headers = None,
-            params = None,
-        ):
-            return httpx.Response(401, json = {"detail": "expired"})
-
-        async def aclose(self):
-            return None
-
     async def _resolve(
         _provider_id,
         force_refresh = False,
@@ -2643,18 +2625,6 @@ def test_the_reauthorization_marker_is_written_under_the_guard(monkeypatch):
     """
     forget_subscription_models("provider-24")
     order = []
-
-    class AlwaysRejecting:
-        async def get(
-            self,
-            _url,
-            headers = None,
-            params = None,
-        ):
-            return httpx.Response(401, json = {"detail": "expired"})
-
-        async def aclose(self):
-            return None
 
     async def _resolve(
         _provider_id,

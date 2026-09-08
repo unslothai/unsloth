@@ -706,9 +706,6 @@ class TestChatCompletionRequestToolFields:
             self._make(n = 129)
 
     def test_n_rejected_for_external_provider_path(self, monkeypatch):
-        class _UnusedBackend:
-            is_loaded = False
-
         client = self._v1_client(monkeypatch, _UnusedBackend())
         resp = client.post(
             "/v1/chat/completions",
@@ -721,9 +718,6 @@ class TestChatCompletionRequestToolFields:
         self._assert_unsupported_n(resp)
 
     def test_confirm_tool_calls_rejected_for_provider_tools(self, monkeypatch):
-        class _UnusedBackend:
-            is_loaded = False
-
         client = self._v1_client(monkeypatch, _UnusedBackend())
         resp = client.post(
             "/v1/chat/completions",
@@ -744,9 +738,6 @@ class TestChatCompletionRequestToolFields:
 
     def test_confirm_tool_calls_allowed_for_codex_studio_tools(self, monkeypatch):
         from routes import inference as inference_route
-
-        class _UnusedBackend:
-            is_loaded = False
 
         client = self._v1_client(monkeypatch, _UnusedBackend())
 
@@ -772,9 +763,6 @@ class TestChatCompletionRequestToolFields:
         assert resp.json() == {"ok": True}
 
     def test_logprobs_rejected_until_supported(self, monkeypatch):
-        class _UnusedBackend:
-            is_loaded = False
-
         client = self._v1_client(monkeypatch, _UnusedBackend())
         resp = client.post(
             "/v1/chat/completions",
@@ -787,9 +775,6 @@ class TestChatCompletionRequestToolFields:
         self._assert_unsupported_param(resp, "logprobs")
 
     def test_top_logprobs_rejected_until_supported(self, monkeypatch):
-        class _UnusedBackend:
-            is_loaded = False
-
         client = self._v1_client(monkeypatch, _UnusedBackend())
         resp = client.post(
             "/v1/chat/completions",
@@ -948,12 +933,6 @@ class TestChatCompletionRequestToolFields:
         """The single-image refusal lands after the monitor row opens, so it must
         close it: a row left running keeps Studio reporting the backend as
         generating long after the request has been answered with a 400."""
-        class _LlamaOff:
-            is_loaded = False
-            supports_tools = False
-            is_vision = False
-            context_length = None
-
         class _VisionBackend:
             active_model_name = "vision-sf"
             models = {
@@ -1008,12 +987,6 @@ class TestChatCompletionRequestToolFields:
         is_vision = True,
     ):
         """A loaded safetensors backend on the standard path, recording generation."""
-        class _LlamaOff:
-            is_loaded = False
-            supports_tools = False
-            is_vision = False
-            context_length = None
-
         calls = []
 
         class _Backend:
@@ -1177,12 +1150,6 @@ class TestChatCompletionRequestToolFields:
         """The TTS auto-route returns before the standard image path and speaks the
         newest user text, so an attached image is discarded. It is also why the
         text-only rejection never sees such a request."""
-        class _LlamaOff:
-            is_loaded = False
-            supports_tools = False
-            is_vision = False
-            context_length = None
-
         spoken = []
 
         class _TtsBackend:
@@ -1458,12 +1425,6 @@ class TestChatCompletionRequestToolFields:
         """The audio-input branch returns before the standard image path and forwards
         only the flattened messages plus the audio, so an attached image is
         discarded. Any count: one is dropped here as silently as two."""
-        class _LlamaOff:
-            is_loaded = False
-            supports_tools = False
-            is_vision = False
-            context_length = None
-
         calls = []
 
         class _OmniBackend:
@@ -1531,12 +1492,6 @@ class TestChatCompletionRequestToolFields:
         """A client attaching its image through the top-level image_base64
         extension, with no image parts anywhere, means that image for THIS
         request. The audio branch cannot forward it, so refuse rather than drop."""
-        class _LlamaOff:
-            is_loaded = False
-            supports_tools = False
-            is_vision = False
-            context_length = None
-
         calls = []
 
         class _OmniBackend:
@@ -1592,12 +1547,6 @@ class TestChatCompletionRequestToolFields:
         """Studio fills image_base64 from anywhere in the thread, so it is not a
         per-turn signal. When an earlier turn carries the image the parts decide,
         and the voice follow-up must still be answered."""
-        class _LlamaOff:
-            is_loaded = False
-            supports_tools = False
-            is_vision = False
-            context_length = None
-
         calls = []
 
         class _OmniBackend:
@@ -1660,12 +1609,6 @@ class TestChatCompletionRequestToolFields:
         """A direct client can attach a NEW image through the legacy field while the
         newest turn stays text-only. Studio's own field is copied out of the thread
         and byte-matches a part; one matching nothing came with this request."""
-        class _LlamaOff:
-            is_loaded = False
-            supports_tools = False
-            is_vision = False
-            context_length = None
-
         calls = []
 
         class _OmniBackend:
@@ -1726,12 +1669,6 @@ class TestChatCompletionRequestToolFields:
         """findLatestUserImageBase64 derives the legacy field only from USER turns,
         so an image on an assistant turn is not something it could be an echo of.
         Matching any role let an explicitly attached image be discarded here."""
-        class _LlamaOff:
-            is_loaded = False
-            supports_tools = False
-            is_vision = False
-            context_length = None
-
         calls = []
 
         class _OmniBackend:
@@ -1794,12 +1731,6 @@ class TestChatCompletionRequestToolFields:
     def test_an_image_on_an_earlier_turn_still_allows_a_voice_follow_up(self, monkeypatch):
         """The count is scoped to the newest user turn, so asking by voice about a
         picture attached on an earlier turn keeps working."""
-        class _LlamaOff:
-            is_loaded = False
-            supports_tools = False
-            is_vision = False
-            context_length = None
-
         calls = []
 
         class _OmniBackend:
@@ -3440,6 +3371,48 @@ from routes.inference import (  # noqa: E402
 )
 
 
+class _UnusedBackend:
+    is_loaded = False
+
+
+class _LlamaOff:
+    is_loaded = False
+    supports_tools = False
+    is_vision = False
+    context_length = None
+
+
+async def fake_select_tools(*_args, **_kwargs):
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+
+async def fake_send(*_args, **_kwargs):
+    return httpx.Response(200, content = b"")
+
+
+class HangingCancelableClient:
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.closed = asyncio.Event()
+
+    async def post(self, *_args, **_kwargs):
+        self.started.set()
+        await self.closed.wait()
+        raise httpx.ReadError("client closed")
+
+    async def aclose(self):
+        self.closed.set()
+
+
+
 class _ConnectedRequest:
     """A request that never reports a disconnect, redefined inline by many tests below."""
 
@@ -4556,17 +4529,6 @@ class TestGgufVisionToolRouting:
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
 
-            async def fake_select_tools(*_args, **_kwargs):
-                return [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ]
-
             def _generate(**_kwargs):
                 raise AssertionError("GGUF tool loop must not start while queued")
 
@@ -4711,17 +4673,6 @@ class TestGgufVisionToolRouting:
 
     def test_gguf_tool_stream_task_cancel_after_first_chunk_finalizes_monitor(self, monkeypatch):
         async def _run():
-            async def fake_select_tools(*_args, **_kwargs):
-                return [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ]
-
             started = threading.Event()
             released = threading.Event()
 
@@ -5388,17 +5339,6 @@ class TestGgufVisionToolRouting:
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
 
-            async def fake_select_tools(*_args, **_kwargs):
-                return [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ]
-
             def _generate(**_kwargs):
                 raise AssertionError("GGUF tool loop must not start while queued")
 
@@ -5448,17 +5388,6 @@ class TestGgufVisionToolRouting:
 
     def test_gguf_tool_non_streaming_cancel_drains_worker_before_releasing_slot(self, monkeypatch):
         async def _run():
-            async def fake_select_tools(*_args, **_kwargs):
-                return [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ]
-
             started = threading.Event()
             released = threading.Event()
 
@@ -6683,9 +6612,6 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def is_disconnected(self):
                     return False
 
-            async def fake_send(*_args, **_kwargs):
-                return httpx.Response(200, content = b"")
-
             async def fake_items(*_args, **_kwargs):
                 yield b'data: {"choices":[{"text":"hello"}]}\n\n'
                 await asyncio.sleep(3600)
@@ -7715,9 +7641,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_task_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
-            async def fake_send(*_args, **_kwargs):
-                return httpx.Response(200, content = b"")
-
             async def fake_items(*_args, **_kwargs):
                 yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
                 await asyncio.sleep(3600)
@@ -8440,19 +8363,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_cancel_closes_blocked_upstream_post(self, monkeypatch):
         async def _run():
-            class HangingCancelableClient:
-                def __init__(self):
-                    self.started = asyncio.Event()
-                    self.closed = asyncio.Event()
-
-                async def post(self, *_args, **_kwargs):
-                    self.started.set()
-                    await self.closed.wait()
-                    raise httpx.ReadError("client closed")
-
-                async def aclose(self):
-                    self.closed.set()
-
             client = HangingCancelableClient()
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
@@ -8494,19 +8404,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_route_registers_cancel_id(self, monkeypatch):
         async def _run():
-            class HangingCancelableClient:
-                def __init__(self):
-                    self.started = asyncio.Event()
-                    self.closed = asyncio.Event()
-
-                async def post(self, *_args, **_kwargs):
-                    self.started.set()
-                    await self.closed.wait()
-                    raise httpx.ReadError("client closed")
-
-                async def aclose(self):
-                    self.closed.set()
-
             class Request:
                 state = SimpleNamespace()
                 url = SimpleNamespace(path = "/v1/chat/completions")
@@ -8571,19 +8468,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_disconnect_closes_blocked_upstream_post(self, monkeypatch):
         async def _run():
-            class HangingCancelableClient:
-                def __init__(self):
-                    self.started = asyncio.Event()
-                    self.closed = asyncio.Event()
-
-                async def post(self, *_args, **_kwargs):
-                    self.started.set()
-                    await self.closed.wait()
-                    raise httpx.ReadError("client closed")
-
-                async def aclose(self):
-                    self.closed.set()
-
             class Request:
                 def __init__(self):
                     self.disconnected = False
@@ -8770,9 +8654,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         # stream open without sending [DONE]; the terminal classifier must end
         # the client stream promptly instead of hanging on the open socket.
         async def _run():
-            async def fake_send(*_args, **_kwargs):
-                return httpx.Response(200, content = b"")
-
             async def fake_items(
                 *_args,
                 post_first_item_read_timeout_s = None,
@@ -8825,9 +8706,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         # the usage chunk; if that never arrives, the post-terminal grace path
         # must close with a clean [DONE], not an in-band error.
         async def _run():
-            async def fake_send(*_args, **_kwargs):
-                return httpx.Response(200, content = b"")
-
             async def fake_items(*_args, **_kwargs):
                 yield 'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}'
                 yield 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
@@ -8868,9 +8746,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_stall_after_data_emits_error(self, monkeypatch):
         async def _run():
-            async def fake_send(*_args, **_kwargs):
-                return httpx.Response(200, content = b"")
-
             async def fake_items(*_args, **_kwargs):
                 yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
                 raise httpx.ReadTimeout("upstream went silent")

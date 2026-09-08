@@ -26,6 +26,11 @@ from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
 
 
+class ResolverReached(Exception):
+    pass
+
+
+
 def _drive(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
@@ -163,9 +168,6 @@ def test_external_chat_route_resolves_saved_provider_key(monkeypatch):
     from routes import inference as inf_mod
     from models.inference import ChatCompletionRequest
 
-    class ResolverReached(Exception):
-        pass
-
     monkeypatch.setattr(
         inf_mod.providers_db,
         "get_provider",
@@ -195,9 +197,6 @@ def test_external_chat_route_resolves_saved_provider_key(monkeypatch):
 def test_external_chat_api_keys_cannot_use_saved_provider_key(monkeypatch):
     from routes import inference as inf_mod
     from models.inference import ChatCompletionRequest
-
-    class ResolverReached(Exception):
-        pass
 
     monkeypatch.setattr(
         inf_mod.providers_db,
@@ -347,9 +346,6 @@ def test_container_client_uses_saved_provider_key(monkeypatch):
 def test_container_route_blocks_saved_keys_for_internal_api_key(monkeypatch):
     from routes import inference as inf_mod
     from models.inference import OpenAIContainerRequest
-
-    class ResolverReached(Exception):
-        pass
 
     def fake_resolve(_body, *, allow_saved_key):
         raise ResolverReached(allow_saved_key)

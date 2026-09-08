@@ -26,6 +26,13 @@ import core.inference.llama_cpp as llama_mod
 import inspect
 import sys
 
+
+class _SmtHost:
+    @staticmethod
+    def cpu_count(logical = True):
+        return 16 if logical else 8
+
+
 # The planner's decision table is covered in test_offload_planner.py. HERE is the
 # seam: whether the launch path declines when it should, emits the tokens
 # llama-server actually parses, and takes the plan back out on every retry.
@@ -1753,11 +1760,6 @@ def test_thread_override_precedence_matches_the_launched_command(monkeypatch):
 def test_smt_workers_do_not_multiply_math_core_capacity(monkeypatch):
     monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: None)
 
-    class _SmtHost:
-        @staticmethod
-        def cpu_count(logical = True):
-            return 16 if logical else 8
-
     monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
     monkeypatch.setattr(
         llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)), raising = False
@@ -1779,11 +1781,6 @@ def test_smt_workers_do_not_multiply_math_core_capacity(monkeypatch):
 
 
 def test_default_thread_override_uses_native_logical_count(monkeypatch):
-    class _SmtHost:
-        @staticmethod
-        def cpu_count(logical = True):
-            return 16 if logical else 8
-
     monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
     monkeypatch.setattr(llama_mod.os, "cpu_count", lambda: 2)
     monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
@@ -1791,11 +1788,6 @@ def test_default_thread_override_uses_native_logical_count(monkeypatch):
 
 
 def test_inherited_linux_cpu_affinity_declines_spill_pricing(monkeypatch):
-    class _SmtHost:
-        @staticmethod
-        def cpu_count(logical = True):
-            return 16 if logical else 8
-
     monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
     monkeypatch.setattr(llama_mod.sys, "platform", "linux")
     monkeypatch.setattr(

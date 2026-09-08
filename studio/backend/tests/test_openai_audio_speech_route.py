@@ -24,6 +24,11 @@ from auth.authentication import get_current_subject
 from routes.inference import router
 from utils.api_errors import install_api_error_handlers
 
+
+async def _boom(text):
+    raise HTTPException(status_code = 400, detail = "No model loaded.")
+
+
 _WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-payload"
 
 
@@ -965,9 +970,6 @@ def test_speech_opens_a_monitor_row(monkeypatch):
 
 
 def test_tts_failure_records_an_error_row(monkeypatch):
-    async def _boom(text):
-        raise HTTPException(status_code = 400, detail = "No model loaded.")
-
     cli, calls, saved = _make_client(monkeypatch, generate = _boom)
     api_monitor.clear()
     assert cli.post("/v1/audio/speech", json = {"input": "hi"}).status_code == 400
@@ -1018,9 +1020,6 @@ def test_a_failure_before_the_relabel_does_not_leak_the_requested_path(
     overlay polls and serves. Windows and UNC forms are covered because redacting a host
     path is the whole point."""
 
-    async def _boom(text):
-        raise HTTPException(status_code = 400, detail = "No model loaded.")
-
     cli, calls, saved = _make_client(monkeypatch, generate = _boom)
     api_monitor.clear()
     resp = cli.post("/v1/audio/speech", json = {"input": "hi", "model": requested})
@@ -1033,9 +1032,6 @@ def test_a_failure_before_the_relabel_does_not_leak_the_requested_path(
 
 def test_an_ordinary_model_id_is_still_recorded_verbatim(monkeypatch):
     # The redaction must not rewrite the ids clients actually send.
-    async def _boom(text):
-        raise HTTPException(status_code = 400, detail = "No model loaded.")
-
     cli, calls, saved = _make_client(monkeypatch, generate = _boom)
     for requested in ("tts-1", "gpt-4o-mini-tts", "unsloth/orpheus-3b-0.1-ft"):
         api_monitor.clear()

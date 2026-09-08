@@ -37,6 +37,11 @@ from hub.services import download_lifecycle as dl
 from hub.utils import download_registry
 
 
+def _boom(**kw):
+    raise RuntimeError("no")
+
+
+
 # --------------------------------------------------------------------------------------------
 # Transport selection
 # --------------------------------------------------------------------------------------------
@@ -382,9 +387,6 @@ def test_capabilities_report_what_auto_resolves_to(monkeypatch):
 def test_capabilities_stay_optimistic_when_health_raises(monkeypatch):
     fake = _types.ModuleType("utils.hf_xet_fallback")
 
-    def _boom(**kw):
-        raise RuntimeError("no")
-
     fake.cached_xet_health = _boom
 
     fake.xet_health = _boom
@@ -702,9 +704,6 @@ def test_the_gate_runs_when_the_health_probe_raises(monkeypatch):
     """Same for a health module that blows up: the failure is evidence about health, not about RAM."""
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
 
-    def _boom(**kw):
-        raise RuntimeError("no")
-
     fake = _types.ModuleType("utils.hf_xet_fallback")
     fake.xet_health = _boom
     fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
@@ -716,9 +715,6 @@ def test_the_gate_runs_when_the_health_probe_raises(monkeypatch):
 def test_no_health_and_no_pressure_still_reads_as_xet(monkeypatch):
     """The optimistic default survives when neither probe objects, including its wording."""
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
-
-    def _boom(**kw):
-        raise RuntimeError("no")
 
     for health_fn, expected in (
         (lambda **kw: None, "Xet"),
@@ -734,9 +730,6 @@ def test_no_health_and_no_pressure_still_reads_as_xet(monkeypatch):
 def test_the_probe_reads_free_ram_even_when_health_raises(monkeypatch):
     """Registry mirror of the above: the RAM read sits outside the health try, so a raising health
     module cannot take the free-RAM verdict down with it."""
-
-    def _boom(**kw):
-        raise RuntimeError("no")
 
     fake = _types.ModuleType("utils.hf_xet_fallback")
     fake.cached_xet_health = _boom

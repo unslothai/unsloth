@@ -26,6 +26,18 @@ import routes.inference as ri
 import types
 
 
+class _Llama:
+    is_active = False
+    is_loaded = False
+    model_identifier = None
+
+
+class _Unsloth:
+    def get_loading_model(self):
+        return None  # no Unsloth load in flight -> Unsloth fast path skipped
+
+
+
 def _bare_orchestrator():
     """An orchestrator without the real __init__ subprocess/network."""
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
@@ -628,11 +640,6 @@ def test_unload_route_serializes_with_loads_via_lifecycle_gate(monkeypatch):
     from core.inference import llama_keepwarm as kw
     from models.inference import UnloadRequest
 
-    class _Llama:
-        is_active = False
-        is_loaded = False
-        model_identifier = None
-
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
     monkeypatch.setattr(inference_route, "is_registered_native_path_label", lambda *a: False)
 
@@ -728,11 +735,6 @@ def test_unload_route_cancels_in_flight_load_without_waiting_on_gate(monkeypatch
     from core.inference import llama_keepwarm as kw
     from models.inference import UnloadRequest
 
-    class _Llama:
-        is_active = False
-        is_loaded = False
-        model_identifier = None
-
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
     monkeypatch.setattr(inference_route, "is_registered_native_path_label", lambda *a: False)
 
@@ -778,11 +780,6 @@ def test_scoped_unload_cancels_only_its_running_standard_load(monkeypatch):
         def cancel_load(self, name):
             cancelled.append(name)
             return True
-
-    class _Llama:
-        is_active = False
-        is_loaded = False
-        model_identifier = None
 
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
@@ -873,11 +870,6 @@ def test_scoped_cancel_holds_load_ownership_until_backend_cancel_finishes(monkey
     class _Backend:
         def get_loading_model(self):
             return None
-
-    class _Llama:
-        is_active = False
-        is_loaded = False
-        model_identifier = None
 
     def _get_backend():
         backend_cancel_entered.set()
@@ -1603,10 +1595,6 @@ def test_unload_cancels_loading_gguf_off_gate(monkeypatch):
 
     llama = _LlamaBackend()
 
-    class _Unsloth:
-        def get_loading_model(self):
-            return None  # no Unsloth load in flight -> Unsloth fast path skipped
-
     monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: llama)
     monkeypatch.setattr(ri, "get_inference_backend", lambda: _Unsloth())
     monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", lambda: _Gate())
@@ -1646,10 +1634,6 @@ def test_unload_loaded_gguf_still_uses_gate(monkeypatch):
             self.unloaded = True
 
     llama = _LlamaBackend()
-
-    class _Unsloth:
-        def get_loading_model(self):
-            return None
 
     monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: llama)
     monkeypatch.setattr(ri, "get_inference_backend", lambda: _Unsloth())
@@ -1696,10 +1680,6 @@ def test_unload_of_mismatched_loading_gguf_skips_off_gate_fast_path(monkeypatch)
             self.unloaded = True
 
     llama = _LlamaBackend()
-
-    class _Unsloth:
-        def get_loading_model(self):
-            return None  # no Unsloth load in flight -> Unsloth fast path skipped
 
     monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: llama)
     monkeypatch.setattr(ri, "get_inference_backend", lambda: _Unsloth())

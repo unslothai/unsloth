@@ -136,6 +136,19 @@ import utils.transformers_version as tv
 import utils.utils as uu
 
 
+def fail_download(*_args, **_kwargs):
+    raise AssertionError("should reuse the cached GGUF instead of downloading")
+
+
+def boom(*a, **k):
+    raise OSError("network down")
+
+
+def boom_list(*a, **k):
+    raise OSError("offline")
+
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -340,9 +353,6 @@ class TestGgufVariantFileResolution:
         ):
             return [_types.SimpleNamespace(path = path, size = 4) for path in paths if path]
 
-        def fail_download(*_args, **_kwargs):
-            raise AssertionError("should reuse the cached GGUF instead of downloading")
-
         with (
             patch(
                 "huggingface_hub.list_repo_files",
@@ -400,9 +410,6 @@ class TestGgufVariantFileResolution:
             seen_repos.append(repo_id)
             return str(snap / filename) if repo_id == canonical_repo else None
 
-        def fail_download(*_args, **_kwargs):
-            raise AssertionError("should reuse the cached GGUF instead of downloading")
-
         with (
             patch("huggingface_hub.list_repo_files", fake_list_repo_files),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
@@ -454,9 +461,6 @@ class TestGgufVariantFileResolution:
             token = None,
         ):
             return [_types.SimpleNamespace(path = p, size = 4) for p in paths if p]
-
-        def fail_download(*_args, **_kwargs):
-            raise AssertionError("should reuse the cached GGUF instead of downloading")
 
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: ["model-UD-Q4_K_XL.gguf"]),
@@ -814,18 +818,12 @@ class TestListGgufVariantsOffline:
     def test_api_exception_falls_back_to_cache(self, hf_cache, clean_offline_env):
         _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
 
-        def boom(*a, **k):
-            raise OSError("network down")
-
         with patch("huggingface_hub.model_info", boom):
             variants, _has = list_gguf_variants("unsloth/a")
         assert len(variants) == 1
         assert variants[0].quant == "Q4_K_M"
 
     def test_api_exception_with_no_cache_reraises(self, hf_cache, clean_offline_env):
-        def boom(*a, **k):
-            raise OSError("network down")
-
         with patch("huggingface_hub.model_info", boom):
             with pytest.raises(OSError, match = "network down"):
                 list_gguf_variants("unsloth/never-cached")
@@ -2149,9 +2147,6 @@ class TestDownloadMmprojOfflineCacheFallback:
         )
         backend = LlamaCppBackend()
 
-        def boom_list(*a, **k):
-            raise OSError("offline")
-
         def fake_download(
             repo_id,
             filename,
@@ -2186,9 +2181,6 @@ class TestDownloadMmprojOfflineCacheFallback:
         )
         backend = LlamaCppBackend()
 
-        def boom_list(*a, **k):
-            raise OSError("offline")
-
         captured = {}
 
         def fake_download(
@@ -2220,9 +2212,6 @@ class TestDownloadMmprojOfflineCacheFallback:
             {"text-Q4_K_M.gguf": 1},
         )
         backend = LlamaCppBackend()
-
-        def boom_list(*a, **k):
-            raise OSError("offline")
 
         with patch("huggingface_hub.list_repo_files", boom_list):
             out = backend._download_mmproj(
@@ -2402,9 +2391,6 @@ class TestListGgufVariantsPermanentErrors:
 
     def test_transient_error_still_falls_back_to_cache(self, hf_cache, clean_offline_env):
         _build_cache(hf_cache, "u/transient-gguf", {"foo-Q4_K_M.gguf": 1})
-
-        def boom(*a, **k):
-            raise OSError("network down")
 
         with patch("huggingface_hub.model_info", boom):
             variants, _ = list_gguf_variants("u/transient-gguf")

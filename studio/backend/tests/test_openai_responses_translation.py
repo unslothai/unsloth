@@ -26,6 +26,24 @@ from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
 
 
+async def run():
+    client = _make_client()
+    lines = await _collect(
+        client._stream_openai_responses(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "gpt-5.5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = None,
+            enable_thinking = None,
+            reasoning_effort = None,
+        )
+    )
+    await client.close()
+    return lines
+
+
+
 def _drive(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
@@ -214,22 +232,6 @@ def test_responses_failed_without_details_has_actionable_fallback(monkeypatch):
 
     _mock_http_client(monkeypatch, handler)
 
-    async def run():
-        client = _make_client()
-        lines = await _collect(
-            client._stream_openai_responses(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = None,
-                enable_thinking = None,
-                reasoning_effort = None,
-            )
-        )
-        await client.close()
-        return lines
-
     lines = _drive(run())
     error_line = next(line for line in lines if '"error"' in line)
     error = json.loads(error_line[len("data:") :].strip())["error"]
@@ -299,22 +301,6 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
         )
 
     _mock_http_client(monkeypatch, handler)
-
-    async def run():
-        client = _make_client()
-        lines = await _collect(
-            client._stream_openai_responses(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = None,
-                enable_thinking = None,
-                reasoning_effort = None,
-            )
-        )
-        await client.close()
-        return lines
 
     lines = _drive(run())
 
@@ -839,22 +825,6 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
         )
 
     _mock_http_client(monkeypatch, handler)
-
-    async def run():
-        client = _make_client()
-        lines = await _collect(
-            client._stream_openai_responses(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = None,
-                enable_thinking = None,
-                reasoning_effort = None,
-            )
-        )
-        await client.close()
-        return lines
 
     lines = _drive(run())
     data_lines = [

@@ -15,6 +15,16 @@ from loggers import handlers as hmod
 from loggers.handlers import LoggingMiddleware
 
 
+async def app(scope, receive, send):
+    await send({"type": "http.response.start", "status": 200, "headers": []})
+    await send({"type": "http.response.body", "body": b"ok"})
+
+
+async def send(message):
+    pass
+
+
+
 class _LogCapture:
     def __init__(self):
         self.events = []
@@ -68,13 +78,6 @@ def test_success_logs_status_and_forwards_chunks(logs):
 
 
 def test_excluded_asset_success_skips_log(logs):
-    async def app(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"ok"})
-
-    async def send(message):
-        pass
-
     for path in ("/assets/index.css", "/icon.svg", "/font.woff2"):
         _run(LoggingMiddleware(app)(_http_scope(path), _noop_receive, send))
 
@@ -85,9 +88,6 @@ def test_exception_logs_real_status_and_reraises(logs):
     async def app(scope, receive, send):
         await send({"type": "http.response.start", "status": 418, "headers": []})
         raise RuntimeError("stream failed")
-
-    async def send(message):
-        pass
 
     with pytest.raises(RuntimeError, match = "stream failed"):
         _run(LoggingMiddleware(app)(_http_scope("/api/health"), _noop_receive, send))
@@ -102,9 +102,6 @@ def test_cancelled_error_propagates_without_error_log(logs):
     async def app(scope, receive, send):
         raise asyncio.CancelledError()
 
-    async def send(message):
-        pass
-
     with pytest.raises(asyncio.CancelledError):
         _run(LoggingMiddleware(app)(_http_scope("/api/health"), _noop_receive, send))
 
@@ -117,9 +114,6 @@ def test_non_http_scope_passes_through(logs):
     async def app(scope, receive, send):
         seen.append(scope["type"])
 
-    async def send(message):
-        pass
-
     _run(LoggingMiddleware(app)({"type": "websocket", "path": "/ws"}, _noop_receive, send))
 
     assert seen == ["websocket"]
@@ -128,13 +122,6 @@ def test_non_http_scope_passes_through(logs):
 
 def test_duplicate_get_within_window_deduped(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 1000)
-
-    async def app(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"ok"})
-
-    async def send(message):
-        pass
 
     mw = LoggingMiddleware(app)
     for _ in range(3):
@@ -156,9 +143,6 @@ def test_mutations_and_errors_are_never_deduped(logs, monkeypatch):
         await send({"type": "http.response.start", "status": 404, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
-    async def send(message):
-        pass
-
     mw = LoggingMiddleware(post_ok)
     for _ in range(2):
         _run(mw(_http_scope("/api/chat/threads", method = "POST"), _noop_receive, send))
@@ -174,13 +158,6 @@ def test_quiet_poll_paths_use_longer_heartbeat_window(logs, monkeypatch):
     # Burst dedup off, quiet-poll heartbeat on: only liveness paths collapse.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
-
-    async def app(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"ok"})
-
-    async def send(message):
-        pass
 
     mw = LoggingMiddleware(app)
     for _ in range(3):
@@ -199,13 +176,6 @@ def test_liveness_probe_heartbeats(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
     monkeypatch.setattr(hmod, "_WATCHDOG_POLL_DEDUP_MS", 1000)
-
-    async def app(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"ok"})
-
-    async def send(message):
-        pass
 
     mw = LoggingMiddleware(app)
     for _ in range(4):
@@ -260,9 +230,6 @@ def test_liveness_probe_errors_still_log(logs, monkeypatch):
         await send({"type": "http.response.start", "status": 503, "headers": []})
         await send({"type": "http.response.body", "body": b"down"})
 
-    async def send(message):
-        pass
-
     mw = LoggingMiddleware(app)
     for _ in range(3):
         _run(mw(_http_scope("/api/liveness"), _noop_receive, send))
@@ -277,13 +244,6 @@ def test_verbose_keeps_every_watchdog_probe(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_WATCHDOG_POLL_DEDUP_MS", 60000)
 
-    async def app(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"ok"})
-
-    async def send(message):
-        pass
-
     mw = LoggingMiddleware(app)
     for _ in range(3):
         _run(mw(_http_scope("/api/liveness"), _noop_receive, send))
@@ -294,13 +254,6 @@ def test_verbose_keeps_every_watchdog_probe(logs, monkeypatch):
 
 def test_distinct_query_strings_are_not_deduped(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 1000)
-
-    async def app(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"ok"})
-
-    async def send(message):
-        pass
 
     def scope(query):
         return {

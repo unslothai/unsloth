@@ -27,6 +27,13 @@ import inspect
 import types as _types
 
 
+class _Resp:
+    def __init__(self, text, tok):
+        self.text = text
+        self.token = tok
+
+
+
 class _DummyMetal:
     @staticmethod
     def is_available():
@@ -906,11 +913,6 @@ def test_mlx_text_normalizes_native_reasoning_and_close_releases_lock(monkeypatc
     mlx_lm_sample.make_sampler = lambda **_kw: object()
     mlx_lm_sample.make_logits_processors = lambda **_kw: None
 
-    class _Resp:
-        def __init__(self, text, tok):
-            self.text = text
-            self.token = tok
-
     def _stream_generate(_model, _tokenizer, **_kw):
         yield _Resp("<|channel>thought\n", 10)
         yield _Resp("r", 11)
@@ -975,11 +977,6 @@ def test_mlx_text_post_tool_prompt_opens_reasoning_channel(monkeypatch):
     mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
     mlx_lm_sample.make_sampler = lambda **_kw: object()
     mlx_lm_sample.make_logits_processors = lambda **_kw: None
-
-    class _Resp:
-        def __init__(self, text, tok):
-            self.text = text
-            self.token = tok
 
     def _stream_generate(_model, _tokenizer, **_kw):
         yield _Resp("The search says 18C.", 10)
@@ -1050,11 +1047,6 @@ def test_mlx_text_native_metadata_preserves_prefilled_think_snapshots(monkeypatc
     mlx_lm_sample.make_sampler = lambda **_kw: object()
     mlx_lm_sample.make_logits_processors = lambda **_kw: None
 
-    class _Resp:
-        def __init__(self, text, tok):
-            self.text = text
-            self.token = tok
-
     def _stream_generate(_model, _tokenizer, **_kw):
         yield _Resp("reason", 10)
         yield _Resp("</think>", 11)
@@ -1094,11 +1086,6 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
     )
 
     mlx_vlm_pkg = types.ModuleType("mlx_vlm")
-
-    class _Resp:
-        def __init__(self, text, tok):
-            self.text = text
-            self.token = tok
 
     def _stream_generate(_model, _processor, _prompt, _images, **_kw):
         yield _Resp("<|channel>thought\n", 10)
@@ -1144,11 +1131,6 @@ def test_mlx_vlm_post_tool_prompt_opens_reasoning_channel(monkeypatch):
     )
 
     mlx_vlm_pkg = types.ModuleType("mlx_vlm")
-
-    class _Resp:
-        def __init__(self, text, tok):
-            self.text = text
-            self.token = tok
 
     def _stream_generate(_model, _processor, _prompt, _images, **_kw):
         yield _Resp("looking at it", 10)

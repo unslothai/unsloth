@@ -37,6 +37,11 @@ from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as s
 import httpx
 
 
+def fake_execute_tool(name, arguments, **_kwargs):
+    raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+
+
 def _tool_call_sse(tool_name: str, arguments: dict, call_id: str, index: int = 0) -> str:
     """One tool-call delta frame: the twelve-line literal the streams below repeat."""
     return _sse(
@@ -1070,9 +1075,6 @@ def test_blank_reasoning_noop_turn_adds_no_empty_assistant_message(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
-
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     list(
@@ -1098,9 +1100,6 @@ def test_blank_reasoning_noop_turn_adds_no_empty_assistant_message(monkeypatch):
 
 def test_noop_reasoning_continuation_separates_partial_from_inlined_trace(monkeypatch):
     """A suppressed call must not weld inlined reasoning onto a resumed partial."""
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -1138,9 +1137,6 @@ def test_noop_reasoning_without_continuation_adds_clean_assistant_turn(monkeypat
     final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -1925,9 +1921,6 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [disabled_python, final_stream], payloads)
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
-
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = _run_tool_loop(
@@ -2026,9 +2019,6 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
     ]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -2362,9 +2352,6 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_pre_tool(monkeypatch
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
-
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     tools = [
@@ -2405,9 +2392,6 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
     ]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
@@ -2457,9 +2441,6 @@ def test_internal_reprompt_disabled_when_auto_heal_disabled(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
 
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
-
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     tools = [
@@ -2492,9 +2473,6 @@ def test_internal_reprompt_disabled_when_nudge_tool_calls_false(monkeypatch):
     streams = [[_sse({"content": "I will use render_html now."}), _done()]]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
-
-    def fake_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 

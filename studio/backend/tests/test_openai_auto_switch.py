@@ -46,6 +46,39 @@ import logging
 import routes.models as model_routes
 import state.tool_policy as _tp
 
+
+class _Reached(Exception):
+    pass
+
+
+class _CountBackend(LlamaCppBackend):
+    is_loaded = True
+    base_url = "http://127.0.0.1:1"
+    _auth_headers = None
+
+    def __init__(self):
+        pass
+
+
+async def _usable(ids, index_kind = "physical"):
+    return True
+
+
+class _Proc:
+    stderr = None
+
+    def wait(self):
+        return 0
+
+
+async def receive():
+    return {"type": "http.request", "body": b"", "more_body": False}
+
+
+async def send(_m):
+    pass
+
+
 # captured before the autouse fixture below pins it, so its own test can reach the real one.
 _REAL_HOST_HAS_NON_GGUF_BACKEND = resolver._host_has_a_non_gguf_backend
 
@@ -1521,12 +1554,6 @@ def test_keepwarm_tracks_inflight_when_enabled_even_if_idle_zero(monkeypatch):
         await send({"type": "http.response.body", "body": b"ok", "more_body": False})
 
     async def drive():
-        async def receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        async def send(_m):
-            pass
-
         scope = {"type": "http", "path": "/v1/chat/completions", "method": "POST", "headers": []}
         await kw.LlamaKeepWarmMiddleware(app)(scope, receive, send)
 
@@ -1638,12 +1665,6 @@ def test_keepwarm_tracks_inflight_even_when_auto_switch_off(monkeypatch):
         await send({"type": "http.response.body", "body": b"ok", "more_body": False})
 
     async def drive():
-        async def receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        async def send(_m):
-            pass
-
         scope = {"type": "http", "path": "/v1/chat/completions", "method": "POST", "headers": []}
         await kw.LlamaKeepWarmMiddleware(app)(scope, receive, send)
 
@@ -1748,12 +1769,6 @@ def test_middleware_ignores_non_post(monkeypatch):
         await send({"type": "http.response.body", "body": b"", "more_body": False})
 
     async def drive():
-        async def receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        async def send(_m):
-            pass
-
         scope = {"type": "http", "path": "/v1/chat/completions", "method": "OPTIONS", "headers": []}
         await kw.LlamaKeepWarmMiddleware(app)(scope, receive, send)
 
@@ -3873,9 +3888,6 @@ def test_responses_invalid_function_tool_rejected_before_switch(monkeypatch):
 def test_responses_valid_and_builtin_tools_pass_validation(monkeypatch):
     # A well-formed function tool and a built-in (non-function) tool must pass the
     # pre-switch check. Stub the hook so the test stops right after validation.
-    class _Reached(Exception):
-        pass
-
     async def _boom(*a, **k):
         raise _Reached()
 
@@ -3958,9 +3970,6 @@ def test_chat_confirm_without_stream_rejected_before_switch(monkeypatch):
 def test_chat_confirm_with_bypass_permissions_reaches_hook(monkeypatch):
     # bypass_permissions suppresses the confirm gate, so the pre-check must not fire;
     # the request should reach the switch hook (stubbed here to a sentinel).
-    class _Reached(Exception):
-        pass
-
     async def _boom(*a, **k):
         raise _Reached()
 
@@ -3984,9 +3993,6 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     # the projector alone: an audio model's projector carries no vision tower, so
     # requiring one would refuse the very models that serve the request. A
     # safetensors or MLX checkpoint declares audio apart, so that flag rides along.
-
-    class _Reached(Exception):
-        pass
 
     captured = {}
 
@@ -4321,9 +4327,6 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     # Codex P2: an image /v1/messages/count_tokens naming a text-only GGUF must
     # carry the same require_vision guard as /messages, so it can't evict a loaded
     # vision model for a swap that can't serve the request.
-    class _Reached(Exception):
-        pass
-
     captured = {}
 
     async def _capture(
@@ -4987,14 +4990,6 @@ def test_count_chat_tokens_stands_down_before_tokenizing(monkeypatch, abort, exp
                 return _FakeResponse({"prompt": "user hi"})
             return _FakeResponse({"tokens": [1, 2]})
 
-    class _CountBackend(LlamaCppBackend):
-        is_loaded = True
-        base_url = "http://127.0.0.1:1"
-        _auth_headers = None
-
-        def __init__(self):
-            pass
-
     monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
     call = lambda: _CountBackend().count_chat_tokens(
         [{"role": "user", "content": "hi"}],
@@ -5299,14 +5294,6 @@ def test_count_chat_tokens_renders_with_the_requested_template_kwargs(
             prefill = "" if kwargs.get("enable_thinking", True) else " <think> </think>"
             return _FakeResponse({"prompt": "user hi assistant" + prefill})
 
-    class _CountBackend(LlamaCppBackend):
-        is_loaded = True
-        base_url = "http://127.0.0.1:1"
-        _auth_headers = None
-
-        def __init__(self):
-            pass
-
     monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
     assert (
         _CountBackend().count_chat_tokens(
@@ -5365,14 +5352,6 @@ def test_strict_count_refuses_a_text_only_template_fallback(monkeypatch, failure
                 return _FakeResponse({"error": "template error"}, status_code = 500)
             return _FakeResponse({"tokens": str(body.get("content", "")).split()})
 
-    class _CountBackend(LlamaCppBackend):
-        is_loaded = True
-        base_url = "http://127.0.0.1:1"
-        _auth_headers = None
-
-        def __init__(self):
-            pass
-
     monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
     messages = [{"role": "user", "content": "hi there"}]
     tools = [{"type": "function", "function": {"name": "web_search"}}]
@@ -5429,14 +5408,6 @@ def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
                 return _FakeResponse({"prompt": "<start_of_turn>model\n"})
             return _FakeResponse({"tokens": str(body.get("content", "")).split()})
 
-    class _CountBackend(LlamaCppBackend):
-        is_loaded = True
-        base_url = "http://127.0.0.1:1"
-        _auth_headers = None
-
-        def __init__(self):
-            pass
-
     monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
     count = _CountBackend().count_chat_tokens([], None, None, strict = True)
     assert seen["messages"] == [], "the count must not invent a turn the caller never sent"
@@ -5480,9 +5451,6 @@ def test_a_count_never_spawns_mcp_servers():
 
 
 def _capture_audio_switch(monkeypatch):
-    class _Reached(Exception):
-        pass
-
     captured = {}
 
     async def _capture(model, request, subject, **kwargs):
@@ -5549,9 +5517,6 @@ def test_chat_rejects_malformed_tool_choice_before_switch(monkeypatch):
 
 def test_chat_valid_tool_choice_reaches_hook(monkeypatch):
     # A well-formed forcing object must pass the pre-check and reach the hook.
-    class _Reached(Exception):
-        pass
-
     async def _boom(*a, **k):
         raise _Reached()
 
@@ -7120,9 +7085,6 @@ def test_usable_gpu_ids_are_kept(monkeypatch):
     backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]})
 
-    async def _usable(ids, index_kind = "physical"):
-        return True
-
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
 
     _run_hook("unsloth/B-GGUF")
@@ -7406,9 +7368,6 @@ def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatc
         settings, "get_model_override", lambda mid: {"gpu_ids": [0], "max_seq_length": 4096}
     )
 
-    async def _usable(ids, index_kind = "physical"):
-        return True
-
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
 
     calls = {"n": 0}
@@ -7434,9 +7393,6 @@ def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatc
 def test_a_non_gpu_load_failure_is_not_retried(monkeypatch):
     backend, rec = _wired(monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"))
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0]})
-
-    async def _usable(ids, index_kind = "physical"):
-        return True
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
 
@@ -7582,12 +7538,6 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
     # Only the API auto-download watcher invalidated, so a GGUF fetched in the Hub UI
     # stayed absent to the cache-only request path and the resident model answered.
     # Every worker exits through here.
-
-    class _Proc:
-        stderr = None
-
-        def wait(self):
-            return 0
 
     class _Registry:
         def cancel_requested(self, key):
@@ -7798,12 +7748,6 @@ def test_a_just_downloaded_model_is_evidence_before_the_scan_indexes_it(monkeypa
     # The retained index covers what was known, but nothing covers the model that just
     # landed until the next scan: a bare request for it was answered by the resident one.
 
-    class _Proc:
-        stderr = None
-
-        def wait(self):
-            return 0
-
     class _Registry:
         def cancel_requested(self, key):
             return False
@@ -7843,12 +7787,6 @@ def test_a_finished_dataset_is_not_recorded_as_a_local_model(monkeypatch):
     # finalize_worker_exit is shared with dataset downloads. Noting one as a local model
     # would refuse a bare /v1 request naming that id instead of letting a foreign id
     # fall through, and would kick off a multi-directory scan for nothing.
-
-    class _Proc:
-        stderr = None
-
-        def wait(self):
-            return 0
 
     class _Registry:
         def cancel_requested(self, key):
@@ -8866,9 +8804,6 @@ def test_the_refusal_wording_is_unchanged_for_callers_that_pass_no_label(monkeyp
 def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
     """End to end through the handler: video joins require_vision, so the label
     has to follow or the user who attached a clip is told about image or audio."""
-
-    class _Reached(Exception):
-        pass
 
     captured = {}
 
