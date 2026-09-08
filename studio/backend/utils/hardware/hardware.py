@@ -5728,9 +5728,7 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
         stem, ext = os.path.splitext(name)
         if ext == ".safetensors":
             kind = "safetensors"
-        elif ext in (".bin", ".pt", ".pth") and not name.startswith(
-            _TORCH_BOOKKEEPING_PREFIXES
-        ):
+        elif ext in (".bin", ".pt", ".pth") and not name.startswith(_TORCH_BOOKKEEPING_PREFIXES):
             kind = "torch"
         else:
             continue
