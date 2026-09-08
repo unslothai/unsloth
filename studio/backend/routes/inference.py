@@ -13396,8 +13396,17 @@ async def _load_model_impl(
         reset. Absent (an internal call with no ASGI scope) means there is nothing to
         compare, so the caller is unaffected.
         """
-        _admitted = getattr(fastapi_request, "scope", {}).get("unsloth_process_generation")
-        if _admitted is None:
+        # Typed, not merely non-None. A caller can pass something whose attribute and
+        # item access answer anything at all -- a Mock request does exactly that -- and
+        # such a value compares unequal to every generation, which would refuse a load
+        # that has nothing wrong with it. Only a real stamp from a real scope decides.
+        from collections.abc import Mapping
+
+        _scope = getattr(fastapi_request, "scope", None)
+        if not isinstance(_scope, Mapping):
+            return
+        _admitted = _scope.get("unsloth_process_generation")
+        if not isinstance(_admitted, int) or isinstance(_admitted, bool):
             return
         from utils.process_lifetime import process_lifecycle_generation
 

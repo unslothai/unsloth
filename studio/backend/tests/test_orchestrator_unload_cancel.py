@@ -3514,3 +3514,58 @@ def test_the_admission_stamp_is_rechecked_immediately_before_each_backend():
             f"the {name} backend is invoked {call - preceding[-1]} lines after the last "
             "admission check, so a restart during the teardown in between goes unnoticed"
         )
+
+
+def test_a_request_without_a_real_stamp_is_not_refused():
+    """The stamp must be a real integer from a real scope.
+
+    An in-process or test caller can pass an object whose attribute and item access
+    answer anything -- a Mock does exactly that -- and such a value compares unequal to
+    every generation. Treating "not None" as "stamped" therefore refused loads that had
+    nothing wrong with them, turning genuine 500s into 409s across two unrelated test
+    files before this was caught.
+    """
+    import ast
+    import textwrap
+    from pathlib import Path
+    from types import SimpleNamespace
+    from unittest import mock
+
+    from fastapi import HTTPException
+
+    from utils import process_lifetime
+
+    src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    impl = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "_load_model_impl"
+    )
+    helper = next(
+        n
+        for n in impl.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_raise_if_admitted_by_a_previous_session"
+    )
+
+    def _check_with(request):
+        ns = {"HTTPException": HTTPException, "fastapi_request": request}
+        exec(textwrap.dedent(ast.get_source_segment(src, helper) or ""), ns)
+        return ns["_raise_if_admitted_by_a_previous_session"]
+
+    # The shapes that must NOT refuse.
+    _check_with(mock.Mock())()
+    _check_with(SimpleNamespace(scope = {}))()
+    _check_with(SimpleNamespace())()
+    _check_with(SimpleNamespace(scope = {"unsloth_process_generation": None}))()
+    _check_with(
+        SimpleNamespace(
+            scope = {"unsloth_process_generation": process_lifetime.process_lifecycle_generation()}
+        )
+    )()
+
+    # And the one that must.
+    with pytest.raises(HTTPException) as excinfo:
+        _check_with(SimpleNamespace(scope = {"unsloth_process_generation": -1}))()
+    assert excinfo.value.status_code == 409
