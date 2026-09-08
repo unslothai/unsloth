@@ -21,6 +21,13 @@ set -u
 HERE="$(CDPATH= cd -P -- "$(dirname "$0")" && pwd -P)"
 ROOT="$HERE/../.."
 INSTALL="$ROOT/install.sh"
+# The _restore_uv_cache_marker stub below is only correct while install.sh's cleanup handlers
+# still call that helper. It is defined outside every block lifted here, so without a stub the
+# handlers exit 127 and every assertion below reads as a product failure. If main ever drops
+# the call, drop the stub with it rather than leaving a no-op shadowing a real helper.
+grep -qE '^[[:space:]]*_restore_uv_cache_marker$' "$INSTALL" \
+    || { echo "FAIL: install.sh no longer calls _restore_uv_cache_marker; remove the stub"; exit 1; }
+
 BACKEND="$ROOT/studio/backend"
 RECORD=".unsloth-master-root"
 fails=0
@@ -69,6 +76,7 @@ SNIP='set -e
 C_WARN=""
 substep() { printf "  . %s\n" "$1"; }
 rollback_substep() { printf "  R %s\n" "$1"; }
+_restore_uv_cache_marker() { :; }  # main-side helper, defined outside every block lifted here
 '"$blockA"'
 '"$blockB"'
 _resolve_studio_destinations

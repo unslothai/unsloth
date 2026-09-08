@@ -24,6 +24,13 @@ set -e
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 INSTALL="$ROOT/install.sh"
+# The _restore_uv_cache_marker stub below is only correct while install.sh's cleanup handlers
+# still call that helper. It is defined outside every block lifted here, so without a stub the
+# handlers exit 127 and every assertion below reads as a product failure. If main ever drops
+# the call, drop the stub with it rather than leaving a no-op shadowing a real helper.
+grep -qE '^[[:space:]]*_restore_uv_cache_marker$' "$INSTALL" \
+    || { echo "FAIL: install.sh no longer calls _restore_uv_cache_marker; remove the stub"; exit 1; }
+
 fails=0
 check() { # name expected actual
     if [ "$2" = "$3" ]; then printf '  PASS  %s\n' "$1"
@@ -131,6 +138,7 @@ write_tail() { # dir, extra lines file
         printf '%s\n' 'set -e'
         printf '%s\n' 'substep() { :; }'
         printf '%s\n' 'rollback_substep() { printf "ROLLBACK %s\n" "$1"; }'
+        printf '%s\n' '_restore_uv_cache_marker() { :; }'
         printf '%s\n' 'step() { :; }'
         printf '%s\n' 'tauri_log() { :; }'
         printf '%s\n' 'tauri_clear_install_error() { :; }'
@@ -320,6 +328,7 @@ else
 set -e
 substep() { :; }
 rollback_substep() { printf "ROLLBACK %s\n" "$1"; }
+_restore_uv_cache_marker() { :; }  # main-side helper, defined outside every block lifted here
 C_WARN=""
 '"$blockT"'
 '"$blockB"'
