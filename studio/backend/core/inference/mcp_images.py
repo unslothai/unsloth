@@ -38,6 +38,10 @@ LOCAL_MAX_IMAGES_PER_TURN = 1
 # entries a decoder accepts is not known until it has tried. Mirrors
 # DECODE_FAILURE_ALLOWANCE in studio/frontend/src/features/chat/api/mcp-images.ts.
 DECODE_FAILURE_ALLOWANCE = 4
+# The entry's other field. A token subtype has no length bound, and an entry's
+# metadata must not be where megabytes hide from the byte budgets on both sides.
+# Mirrors MAX_MCP_IMAGE_MIME_CHARS in studio/frontend/src/features/chat/api/mcp-images.ts.
+MAX_MCP_IMAGE_MIME_CHARS = 256
 MAX_IMAGE_EDGE = 1024
 # A PNG stays small while its raster does not: 12 MB of encoded payload can hold
 # tens of gigapixels. Bounded off the header, before a pixel is allocated.
@@ -83,6 +87,13 @@ _UNDECODABLE_PREFIXES = (
 )
 
 
+def _mime_is_bounded(image: Any) -> bool:
+    """Metadata is not where megabytes may hide from the byte budgets on either side;
+    an entry whose mimeType runs past the bound is not a picture this path sends."""
+    mime = image.get("mimeType") if isinstance(image, dict) else None
+    return not (isinstance(mime, str) and len(mime) > MAX_MCP_IMAGE_MIME_CHARS)
+
+
 def probably_decodable(image: Any) -> bool:
     """Whether this entry could become a picture.
 
@@ -92,6 +103,8 @@ def probably_decodable(image: Any) -> bool:
     """
     data = image.get("data") if isinstance(image, dict) else None
     if not isinstance(data, str) or not data:
+        return False
+    if not _mime_is_bounded(image):
         return False
     try:
         head = base64.b64decode(data[:32], validate = False)
@@ -104,6 +117,15 @@ def probably_decodable(image: Any) -> bool:
 
 def count_probably_decodable(images: Sequence[dict]) -> int:
     return sum(1 for image in images if probably_decodable(image))
+
+
+def text_before_envelope(result: str) -> str:
+    """The text with a trailing envelope cut off, WITHOUT parsing it -- for display
+    only. split_images json-loads the whole array to decide whether the suffix is a
+    real envelope; a monitor row built on the event loop cannot afford that on 12 MB,
+    and showing a little less of a malformed suffix costs nothing."""
+    index = result.rfind("\n" + SENTINEL)
+    return result if index == -1 else result[:index]
 
 
 def has_images(result: str) -> bool:
@@ -144,6 +166,8 @@ def _decoded_urls(
         if len(urls) >= limit or own[0] <= 0:
             break
         own[0] -= 1
+        if not _mime_is_bounded(image):
+            continue
         data = image.get("data", "")
         # *cache* is one request's decodes, keyed by the payload: a route that
         # promotes the same history twice must not pay Pillow twice for it.

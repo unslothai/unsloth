@@ -9,6 +9,7 @@ import {
   DECODE_FAILURE_ALLOWANCE,
   MAX_MODEL_IMAGES,
   MAX_TOTAL_MCP_IMAGES,
+  MAX_MCP_IMAGE_MIME_CHARS,
   MAX_TOTAL_MCP_IMAGE_CHARS,
   MCP_IMAGES_MARKER,
   boundMcpImageEnvelopes,
@@ -454,7 +455,7 @@ test("both local paths read the model's vision flag, not just multimodal", () =>
   );
 });
 
-test("the byte budget charges the serialized entry, mimeType included", () => {
+test("an entry with an unbounded mimeType is dropped, not charged", () => {
   // A token subtype has no length bound, so a tiny picture can carry megabytes of
   // mimeType; charging data alone let that envelope through on every turn.
   const heavy = (n: number) => ({
@@ -462,14 +463,61 @@ test("the byte budget charges the serialized entry, mimeType included", () => {
     name: "mcp__fs__screenshot",
     content:
       "[1 image returned]" +
-      mcpImagesEnvelope([{ data: `A${n}`, mimeType: `image/${"x".repeat(5_000_000)}` }]),
+      mcpImagesEnvelope([
+        { data: `A${n}`, mimeType: `image/${"x".repeat(MAX_MCP_IMAGE_MIME_CHARS + 1)}` },
+        { data: `B${n}`, mimeType: "image/png" },
+      ]),
   });
-  const messages = [0, 1, 2, 3].map(heavy);
+  const bounded = boundMcpImageEnvelopes([0, 1].map(heavy));
+  for (const message of bounded) {
+    const kept = splitMcpImages(message.content).images;
+    assert.deepEqual(
+      kept.map((image) => image.mimeType),
+      ["image/png"],
+      "the bounded-mime entry stays, the unbounded one goes",
+    );
+  }
+});
+
+test("a picture the live turn accepted at the limit still fits its own replay", () => {
+  // The live limit is on data; charging the serialized entry pushed a picture of
+  // exactly that size over the identically sized replay budget, and the only
+  // picture in the conversation vanished from the next request.
+  const messages = [
+    {
+      role: "tool",
+      name: "mcp__fs__screenshot",
+      content:
+        "[1 image returned]" +
+        mcpImagesEnvelope([
+          { data: "A".repeat(MAX_TOTAL_MCP_IMAGE_CHARS), mimeType: "image/png" },
+        ]),
+    },
+  ];
+  const [bounded] = boundMcpImageEnvelopes(messages);
+  assert.equal(splitMcpImages(bounded.content).images.length, 1);
+});
+
+test("the byte filter scans past candidates that do not fit", () => {
+  // A newer result leaves about 1 MB. The older result's first eight candidates are
+  // 1.4 MB each; slicing to the allowance first inspected only those and dropped the
+  // small ninth, which fits and which the backend could have replayed.
+  const big = (tag: string, n: number, size: number) =>
+    Array.from({ length: n }, (_, i) => ({ data: tag.repeat(size / tag.length) + i, mimeType: "image/png" }));
+  const messages = [
+    {
+      role: "tool",
+      name: "mcp__fs__a",
+      content: "older" + mcpImagesEnvelope([...big("O", 8, 1_400_000), { data: "tiny", mimeType: "image/png" }]),
+    },
+    { role: "assistant", content: "next" },
+    {
+      role: "tool",
+      name: "mcp__fs__b",
+      content: "newer" + mcpImagesEnvelope(big("N", 1, 11_000_000)),
+    },
+  ];
   const bounded = boundMcpImageEnvelopes(messages);
-  const chars = bounded.reduce(
-    (n, m) => n + JSON.stringify(splitMcpImages(m.content).images).length,
-    0,
-  );
-  assert.ok(chars <= MAX_TOTAL_MCP_IMAGE_CHARS, `${chars} characters uploaded`);
-  assert.ok(chars > 0, "the newest entries still fit");
+  const older = splitMcpImages(bounded[0].content).images;
+  assert.deepEqual(older.map((image) => image.data), ["tiny"]);
 });

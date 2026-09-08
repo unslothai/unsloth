@@ -2197,6 +2197,36 @@ def _openai_llama_admission_tokens(
     return max(1, min(budget, prompt_tokens + output_tokens))
 
 
+def _openai_llama_admission_estimate(
+    *,
+    request: Optional[Request],
+    llama_backend,
+    payload,
+    tool_loop: bool = False,
+    injected_tools = None,
+    messages_override = None,
+):
+    """The token estimate a reservation is sized by. Split from the reservation so a
+    caller on the event loop can compute it in a worker: it strips every replayed
+    envelope, which json-loads a permitted 12 MB array per result."""
+    capacity = _openai_llama_admission_capacity(request, llama_backend)
+    budget = _openai_llama_admission_budget(llama_backend)
+    return _openai_llama_admission_tokens(
+        payload,
+        budget = budget,
+        capacity = capacity,
+        tool_loop = tool_loop,
+        image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+        injected_tools = injected_tools,
+        context_window = _openai_llama_admission_context_window(llama_backend),
+        vision = bool(getattr(llama_backend, "is_vision", False)),
+        messages_override = messages_override,
+    )
+
+
+_TOKENS_UNSET = object()
+
+
 def _openai_llama_admission_reserve(
     *,
     request: Optional[Request],
@@ -2205,30 +2235,69 @@ def _openai_llama_admission_reserve(
     tool_loop: bool = False,
     injected_tools = None,
     messages_override = None,
+    tokens = _TOKENS_UNSET,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
     key = str(getattr(llama_backend, "base_url", "llama-server"))
     budget = _openai_llama_admission_budget(llama_backend)
+    if tokens is _TOKENS_UNSET:
+        tokens = (
+            _openai_llama_admission_estimate(
+                request = request,
+                llama_backend = llama_backend,
+                payload = payload,
+                tool_loop = tool_loop,
+                injected_tools = injected_tools,
+                messages_override = messages_override,
+            )
+            if payload is not None
+            else None
+        )
+    # The reservation itself stays on the loop: reserve() binds a waiter to the
+    # running loop, so only the estimate above may be computed elsewhere.
     reservation = get_llama_admission_queue(key).reserve(
         capacity = capacity,
         config = config,
         budget = budget,
-        tokens = _openai_llama_admission_tokens(
-            payload,
-            budget = budget,
-            capacity = capacity,
-            tool_loop = tool_loop,
-            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
-            injected_tools = injected_tools,
-            context_window = _openai_llama_admission_context_window(llama_backend),
-            vision = bool(getattr(llama_backend, "is_vision", False)),
-            messages_override = messages_override,
-        )
-        if payload is not None
-        else None,
+        tokens = tokens,
     )
     return reservation, config
+
+
+async def _openai_llama_admission_reserve_async(
+    *,
+    request: Optional[Request],
+    llama_backend,
+    payload = None,
+    tool_loop: bool = False,
+    injected_tools = None,
+    messages_override = None,
+) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
+    """The same reservation, with the estimate off the loop when a replayed envelope
+    would make it parse one."""
+    tokens = _TOKENS_UNSET
+    if payload is not None and _messages_mention_mcp_images(
+        messages_override if messages_override is not None else payload.messages
+    ):
+        tokens = await asyncio.to_thread(
+            _openai_llama_admission_estimate,
+            request = request,
+            llama_backend = llama_backend,
+            payload = payload,
+            tool_loop = tool_loop,
+            injected_tools = injected_tools,
+            messages_override = messages_override,
+        )
+    return _openai_llama_admission_reserve(
+        request = request,
+        llama_backend = llama_backend,
+        payload = payload,
+        tool_loop = tool_loop,
+        injected_tools = injected_tools,
+        messages_override = messages_override,
+        tokens = tokens,
+    )
 
 
 def _openai_llama_admission_recost(
@@ -3287,6 +3356,7 @@ from core.inference.mcp_images import (
     MAX_TOTAL_MODEL_IMAGES as _MCP_MAX_TOTAL_MODEL_IMAGES,
     has_images as mcp_images_sentinel_in,
     mentions_images as mcp_images_mentioned_in,
+    text_before_envelope as mcp_text_before_envelope,
     mark_last_user_turn as mark_mcp_image_turn,
     promote_history as promote_mcp_history_images,
     promote_history_local as promote_mcp_history_images_local,
@@ -5685,8 +5755,8 @@ def _monitor_content_text(content) -> str:
         # A replayed envelope is megabytes of base64 in a plain string. Generation
         # and the search index both strip it; the monitor copied it into the prompt
         # entry, exposing image bytes in inspection and truncating away the later
-        # conversation behind them.
-        return split_mcp_images(content)[0]
+        # conversation behind them. Cut, not parsed: this runs on the event loop.
+        return mcp_text_before_envelope(content)
     if isinstance(content, list):
         parts: list[str] = []
         for part in content:
@@ -23091,7 +23161,7 @@ async def produce_openai_chat_completions(
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
             try:
-                reservation, admission_config = _openai_llama_admission_reserve(
+                reservation, admission_config = await _openai_llama_admission_reserve_async(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
@@ -23850,7 +23920,7 @@ async def produce_openai_chat_completions(
             _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
             _tracker.__enter__()
             try:
-                reservation, admission_config = _openai_llama_admission_reserve(
+                reservation, admission_config = await _openai_llama_admission_reserve_async(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
@@ -24194,7 +24264,7 @@ async def produce_openai_chat_completions(
             )
         else:
             try:
-                reservation, admission_config = _openai_llama_admission_reserve(
+                reservation, admission_config = await _openai_llama_admission_reserve_async(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
@@ -29050,7 +29120,7 @@ async def _responses_stream(
     cancel_event = threading.Event()
     _tracker = _TrackedCancel.for_payload(cancel_event, payload, resp_id)
     try:
-        reservation, admission_config = _openai_llama_admission_reserve(
+        reservation, admission_config = await _openai_llama_admission_reserve_async(
             request = request,
             llama_backend = llama_backend,
             # chat_req, not payload: a ResponsesRequest carries `input` and
@@ -31672,7 +31742,7 @@ async def anthropic_messages(
 
     async def _admitted_anthropic(coro, *, tool_loop: bool = False):
         try:
-            reservation, admission_config = _openai_llama_admission_reserve(
+            reservation, admission_config = await _openai_llama_admission_reserve_async(
                 request = request,
                 llama_backend = llama_backend,
                 payload = payload,
@@ -34161,7 +34231,7 @@ async def _openai_passthrough_stream(
     _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
     _tracker.__enter__()
     try:
-        reservation, admission_config = _openai_llama_admission_reserve(
+        reservation, admission_config = await _openai_llama_admission_reserve_async(
             request = request,
             llama_backend = llama_backend,
             payload = payload,
@@ -35215,7 +35285,7 @@ async def _openai_passthrough_non_streaming(
 ):
     """Non-streaming pass-through guarded by local llama-server admission."""
     try:
-        reservation, admission_config = _openai_llama_admission_reserve(
+        reservation, admission_config = await _openai_llama_admission_reserve_async(
             request = request,
             llama_backend = llama_backend,
             payload = payload,

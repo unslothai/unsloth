@@ -70,6 +70,12 @@ export const DECODE_FAILURE_ALLOWANCE = 4;
 // per-result ceiling, so a whole replayed history can never cost more to send than
 // the single tool result the backend already permits.
 export const MAX_TOTAL_MCP_IMAGE_CHARS = 12_000_000;
+// Data only, matching the backend's live limit (mcp_client.MAX_IMAGE_PAYLOAD_CHARS): a
+// picture the live turn accepted at that size must still fit its own replay. The entry's
+// other field is bounded instead, mirroring MAX_MCP_IMAGE_MIME_CHARS in mcp_images.py:
+// a token subtype has no length bound, and a megabyte of mimeType on a tiny picture
+// bypassed the budget and was re-uploaded every turn.
+export const MAX_MCP_IMAGE_MIME_CHARS = 256;
 
 const MCP_TOOL_PREFIX = "mcp__";
 
@@ -144,15 +150,16 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     // charge the full room, and the next result down then sees room 0 and loses its
     // envelope entirely -- so four valid PNGs are dropped while the allowance that
     // exists for exactly that case is still untouched.
-    const candidates = images.slice(0, allowance);
     // Newest first here too, so the pictures a request gives up under the byte
     // budget are the oldest ones -- the same ones every other cap here drops.
+    // Scanned until the allowance is actually MET, not sliced to it first: with a
+    // newer result holding most of the byte budget, the first candidates can all be
+    // too large while a later one fits, and slicing first dropped the whole envelope.
     const keep: McpImage[] = [];
-    for (const image of candidates) {
-      // The whole serialized entry, not the data alone: the envelope carries the
-      // object, and a token MIME subtype has no length bound, so a tiny picture
-      // with a megabyte of mimeType bypassed the budget and was re-uploaded every turn.
-      const cost = JSON.stringify(image).length;
+    for (const image of images) {
+      if (keep.length >= allowance) break;
+      if (image.mimeType.length > MAX_MCP_IMAGE_MIME_CHARS) continue;
+      const cost = image.data.length;
       // Skip the one that does not fit and keep looking: breaking here threw away
       // three 1MB pictures sitting behind a 5MB one, which the backend could have
       // replayed. The live-result budget already skips rather than stops.

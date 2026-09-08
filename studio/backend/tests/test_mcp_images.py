@@ -2398,3 +2398,49 @@ def test_live_image_extraction_is_gated_on_the_target_reading_them():
     count = inspect.getsource(inference_route.chat_count_tokens)
     assert "openai_messages = await _promote_mcp_history_images_async(" in count
     assert "openai_messages = promote_mcp_history_images(" not in count
+
+
+def test_an_entry_with_an_unbounded_mime_type_is_not_an_image():
+    """A token subtype has no length bound, and metadata is not where megabytes may
+    hide from the byte budgets. Mirrors the frontend's MAX_MCP_IMAGE_MIME_CHARS."""
+    long_mime = "image/" + "x" * mcp_images.MAX_MCP_IMAGE_MIME_CHARS
+    text, images = split_images(_envelope("[2]", _image(mime = long_mime), _image()))
+    # The envelope still splits -- or its megabytes would stay in the prompt as text.
+    assert len(images) == 2
+    assert mcp_images.count_probably_decodable(images) == 1
+    assert not mcp_images.probably_decodable(_image(mime = long_mime))
+    assert len(mcp_images.png_payloads(images)) == 1, "not decoded either"
+
+
+def test_the_monitor_prompt_never_parses_the_envelope(monkeypatch):
+    """The monitor row is built on the event loop from the raw messages; cutting at
+    the marker shows the same text as the parsed strip without json-loading 12 MB."""
+    import routes.inference as inference_route
+
+    content = _envelope("what the tool said", _image())
+    assert mcp_images.text_before_envelope(content) == split_images(content)[0]
+
+    def boom(_content):
+        raise AssertionError("parsed on the loop")
+
+    monkeypatch.setattr(inference_route, "split_mcp_images", boom)
+    prompt = inference_route._monitor_prompt_from_messages(
+        [{"role": "tool", "content": content}, {"role": "user", "content": "and?"}]
+    )
+    assert prompt == "tool: what the tool said\n\nuser: and?"
+
+
+def test_the_gguf_admission_estimate_parses_off_the_loop():
+    """reserve() binds a waiter to the running loop, so only the ESTIMATE can move: it
+    strips every replayed envelope. Every route reservation goes through the async
+    form, which hops on the marker."""
+    import inspect
+
+    import routes.inference as inference_route
+
+    routes_src = inspect.getsource(inference_route)
+    assert "reservation, admission_config = _openai_llama_admission_reserve(" not in routes_src
+    assert routes_src.count("await _openai_llama_admission_reserve_async(") >= 7
+    wrapper = inspect.getsource(inference_route._openai_llama_admission_reserve_async)
+    assert "await asyncio.to_thread(\n            _openai_llama_admission_estimate," in wrapper
+    assert "_messages_mention_mcp_images(" in wrapper
