@@ -1855,9 +1855,7 @@ class TestResolveInstallAttempts:
         )
         asset_name = "llama-b9000-bin-win-cpu-x64.zip"
         release = make_release(
-            [
-                make_cpu_artifact(asset_name, install_kind = "windows-cpu", bundle_profile = None)
-            ],
+            [make_cpu_artifact(asset_name, install_kind = "windows-cpu", bundle_profile = None)],
             release_tag = "llama-prebuilt-latest",
             upstream_tag = "b9000",
             assets = {asset_name: f"https://published.example/{asset_name}"},
@@ -2012,9 +2010,7 @@ class TestResolveInstallAttempts:
         )
         asset_name = "llama-b9000-bin-macos-arm64.tar.gz"
         release = make_release(
-            [
-                make_cpu_artifact(asset_name, install_kind = "macos-arm64", bundle_profile = None)
-            ],
+            [make_cpu_artifact(asset_name, install_kind = "macos-arm64", bundle_profile = None)],
             release_tag = "llama-prebuilt-latest",
             upstream_tag = "b9000",
             assets = {asset_name: f"https://published.example/{asset_name}"},
@@ -3807,7 +3803,13 @@ class TestCudaDriverToolkitMismatchMessage:
         )
         return proc.stdout + proc.stderr
 
-    def _run_cuda_script(self, body, path_dir = None, *, only_path_dir = False):
+    def _run_cuda_script(
+        self,
+        body,
+        path_dir = None,
+        *,
+        only_path_dir = False,
+    ):
         """Run `body` under setup.sh's CUDA driver/toolkit helpers, with the usual preamble.
 
         `only_path_dir` drops the inherited PATH, which is the only way a case that means

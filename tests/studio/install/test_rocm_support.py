@@ -784,8 +784,15 @@ def _named_arch_only():
     return (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower() or None
 
 
-def run_ensure_rocm_torch(probe: str = "", *, env = None, isdir = True, timeout = False,
-                         attrs = None, **stubs):
+def run_ensure_rocm_torch(
+    probe: str = "",
+    *,
+    env = None,
+    isdir = True,
+    timeout = False,
+    attrs = None,
+    **stubs,
+):
     """Run _ensure_rocm_torch() against a fully mocked host.
 
     `stubs` maps a stack_mod probe function to its return value, `attrs` replaces plain

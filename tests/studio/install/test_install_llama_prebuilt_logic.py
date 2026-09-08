@@ -53,8 +53,16 @@ ensure_diffusion_visual_server = INSTALL_LLAMA_PREBUILT.ensure_diffusion_visual_
 runtime_payload_health_groups = INSTALL_LLAMA_PREBUILT.runtime_payload_health_groups
 
 
-def write_metadata(install_dir, choice, approved_checksums, *, requested_tag = "latest",
-                   llama_tag = "b9001", release_tag = "release-1", prebuilt_fallback_used = False):
+def write_metadata(
+    install_dir,
+    choice,
+    approved_checksums,
+    *,
+    requested_tag = "latest",
+    llama_tag = "b9001",
+    release_tag = "release-1",
+    prebuilt_fallback_used = False,
+):
     write_prebuilt_metadata(
         install_dir,
         requested_tag = requested_tag,
@@ -66,8 +74,14 @@ def write_metadata(install_dir, choice, approved_checksums, *, requested_tag = "
     )
 
 
-def release_plan(attempts, approved_checksums, *, requested_tag = "latest",
-                 llama_tag = "b9001", release_tag = "release-1"):
+def release_plan(
+    attempts,
+    approved_checksums,
+    *,
+    requested_tag = "latest",
+    llama_tag = "b9001",
+    release_tag = "release-1",
+):
     return INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
         requested_tag = requested_tag,
         llama_tag = llama_tag,
@@ -3217,7 +3231,9 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
         source_commit = "beadfeed",
         source_sha256 = "d" * 64,
     )
-    fallback_checksums = release_checksums((fallback_choice.name, fallback_choice.expected_sha256, UPSTREAM))
+    fallback_checksums = release_checksums(
+        (fallback_choice.name, fallback_choice.expected_sha256, UPSTREAM)
+    )
     latest_plan = release_plan(
         [latest_choice],
         latest_checksums,
