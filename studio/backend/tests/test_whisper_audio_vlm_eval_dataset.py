@@ -24,7 +24,6 @@ _STUBBED: list[str] = []
 
 
 def _stub_if_missing(name, attrs):
-    """Stub dependencies missing from the backend test environment."""
     if name in sys.modules:
         return
     try:
@@ -76,12 +75,8 @@ def _texts(dataset):
     return list(dataset["text"])
 
 
-# ---------------------------------------------------------------------------- Whisper
-
-
 def test_whisper_uses_the_uploaded_eval_split(audio_trainer, tmp_path, monkeypatch):
-    """An uploaded eval file used to be dropped: eval_split is None for a local upload, so
-    the 6% carve-out never ran and the run trained with no evaluation at all."""
+    """eval_split is None for a local upload, so nothing used to reach Whisper."""
     audio_trainer._audio_type = "whisper"
     seen = {}
 
@@ -134,8 +129,6 @@ def test_whisper_without_an_eval_upload_is_unchanged(audio_trainer, tmp_path, mo
 
 
 class _FakeWhisperTokenizer:
-    """The two members _preprocess_whisper_dataset touches."""
-
     class _Features:
         def __init__(self, arrays):
             self.input_features = arrays
@@ -152,10 +145,7 @@ class _FakeWhisperTokenizer:
 
 
 class _FakeAudioDataset:
-    """A datasets.Dataset stand-in for the members _preprocess_whisper_dataset touches.
-
-    Real Audio() casting needs torchcodec, which the CPU test runners do not ship.
-    """
+    """Dataset stand-in: real Audio() casting needs torchcodec, absent on CPU runners."""
 
     def __init__(
         self,
@@ -172,12 +162,8 @@ class _FakeAudioDataset:
         return base + list(getattr(self, "_phantom_columns", []))
 
     def cast_column(self, column, feature):
-        """Mirrors datasets.Dataset.cast_column, including the part that surprises people.
-
-        cast_column only validates the column name for a feature without decode_example.
-        Audio has one, so casting a column the split does not have silently ADDS an all-null
-        column instead of raising, and every row is then skipped for a missing array.
-        """
+        """Like cast_column: for a decode_example feature (Audio) the name is not
+        validated, so a missing column is silently ADDED as all-null."""
         if column not in self.column_names:
             phantom = _FakeAudioDataset(self._texts, with_audio = False)
             phantom._phantom_columns = list(getattr(self, "_phantom_columns", [])) + [column]
@@ -212,8 +198,6 @@ def _audio_rows(texts):
 
 
 def test_whisper_preprocess_prefers_the_separate_split_over_the_carve_out(audio_trainer):
-    """With a separate split the train set must stay whole: the 6% carve-out is only the
-    fallback for when there is no separate eval source."""
     audio_trainer.tokenizer = _FakeWhisperTokenizer()
 
     train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
@@ -262,9 +246,6 @@ def test_whisper_eval_split_without_an_audio_column_warns(audio_trainer):
     assert len(train_data) == 2, "a bad eval split must not take the training data with it"
     assert eval_data is None
     assert any("no evaluation" in w for w in audio_trainer.training_progress.warnings)
-
-
-# ---------------------------------------------------------------------------- audio VLM
 
 
 def test_audio_vlm_uses_the_uploaded_eval_split(audio_trainer, tmp_path, monkeypatch):
@@ -334,8 +315,6 @@ def test_audio_vlm_unpreparable_eval_split_warns_instead_of_failing_the_run(
 
 
 def test_whisper_length_less_eval_split_warns_instead_of_crashing(audio_trainer):
-    """The row count in the log line must not be able to take the run down."""
-
     class _NoLen(_FakeAudioDataset):
         def __len__(self):
             raise TypeError("object of type 'IterableDataset' has no len()")
@@ -354,8 +333,6 @@ def test_whisper_length_less_eval_split_warns_instead_of_crashing(audio_trainer)
 
 
 def test_whisper_zero_row_eval_split_is_falsy(audio_trainer):
-    """An empty eval split must not configure evaluation: the Whisper trainer branch gates
-    on truthiness, so [] reads as no eval."""
     audio_trainer.tokenizer = _FakeWhisperTokenizer()
 
     train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
@@ -369,7 +346,6 @@ def test_whisper_zero_row_eval_split_is_falsy(audio_trainer):
 
 
 def test_whisper_cancel_during_eval_preprocessing_leaves_no_eval(audio_trainer):
-    """Stopping after the train split is processed must leave eval empty, not raise."""
     tokenizer = _FakeWhisperTokenizer()
     real_extractor = tokenizer.feature_extractor
     calls = {"n": 0}
@@ -396,9 +372,8 @@ def test_whisper_cancel_during_eval_preprocessing_leaves_no_eval(audio_trainer):
 def test_audio_vlm_eval_split_with_a_different_audio_column_is_refused(
     audio_trainer, tmp_path, monkeypatch
 ):
-    """_format_audio_vlm_dataset records the resolved audio column on the instance and
-    audio_vlm_collate_fn reads that one name for every batch, so an eval split that resolves
-    a different column would make the collator ask every train row for a missing column."""
+    """audio_vlm_collate_fn reads one recorded audio column for BOTH splits, so an eval split
+    must never redefine it."""
     audio_trainer._audio_type = None
     audio_trainer.is_audio_vlm = True
     columns = iter(["audio", "speech"])
@@ -447,11 +422,8 @@ def test_audio_vlm_matching_eval_split_leaves_the_column_alone(
 
 
 def _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, *, eval_rows):
-    """Run the real Whisper branch of _train_worker against a real Seq2SeqTrainer.
-
-    Only train() is stubbed, so the TrainingArguments and the eval dataset are the genuine
-    objects transformers ends up holding.
-    """
+    """Drive the real Whisper _train_worker branch; only train() is stubbed, so the asserted
+    args and eval dataset are genuine transformers objects."""
     transformers = pytest.importorskip("transformers")
     torch = pytest.importorskip("torch")
 
@@ -505,9 +477,7 @@ def _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, *, eval_rows):
 
 
 def test_whisper_trainer_branch_wires_eval(audio_trainer, tmp_path, monkeypatch):
-    """HF defaults per_device_eval_batch_size to 8, which can OOM an audio eval pass. The
-    codec branches already avoid it; Whisper never did, and it only stayed harmless while
-    the uploaded eval split was being dropped before it reached here."""
+    """HF defaults per_device_eval_batch_size to 8, which can OOM an audio eval pass."""
     eval_rows = [{"input_features": [0.0], "labels": [2]}] * 2
     trainer = _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, eval_rows = eval_rows)
 
@@ -530,7 +500,6 @@ def test_whisper_trainer_branch_omits_eval_when_there_is_none(audio_trainer, tmp
 
 
 def test_whisper_trainer_branch_omits_eval_for_an_empty_split(audio_trainer, tmp_path, monkeypatch):
-    """A cancel or an all-skipped eval split leaves an empty list, which must read as no eval."""
     trainer = _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, eval_rows = [])
 
     assert trainer is not None
@@ -539,9 +508,6 @@ def test_whisper_trainer_branch_omits_eval_for_an_empty_split(audio_trainer, tmp
 
 
 def test_whisper_eval_split_whose_rows_are_all_skipped_warns(audio_trainer):
-    """The split has the right columns but no usable rows, so eval_data comes back empty.
-    The trainer branch reads that as no evaluation, which on its own is silent."""
-
     class _EmptyRows(_FakeAudioDataset):
         def __getitem__(self, idx):
             return {"audio": None, "text": ""}
@@ -585,9 +551,8 @@ def test_whisper_cancel_does_not_warn_about_the_eval_file(audio_trainer):
 
 
 def test_cast_column_really_does_not_validate_the_column_name():
-    """Pins the datasets behaviour the explicit column check exists for, so the test double
-    above cannot drift away from the library: Audio defines decode_example, so cast_column
-    takes the branch that writes the feature without checking the name."""
+    """Pins the datasets behaviour the explicit column check exists for, so _FakeAudioDataset
+    cannot drift from it."""
     datasets = pytest.importorskip("datasets")
 
     ds = datasets.Dataset.from_dict({"path": ["/a.wav"], "text": ["x"]})

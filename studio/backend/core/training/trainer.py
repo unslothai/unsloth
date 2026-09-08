@@ -2376,14 +2376,8 @@ class UnslothTrainer:
             return None
 
     def _format_audio_vlm_eval_split(self, eval_dataset, custom_format_mapping):
-        """Format the audio VLM eval split without letting it redefine the train columns.
-
-        _format_audio_vlm_dataset records the resolved audio column on the instance, and
-        audio_vlm_collate_fn reads that one name for every batch it builds, train and eval
-        alike. A second call for an eval split whose audio column resolves differently would
-        leave the collator asking every train row for a column it does not have, so keep the
-        train answer and drop an eval split that disagrees.
-        """
+        """Format the audio VLM eval split, dropping it if it resolves a different audio
+        column: audio_vlm_collate_fn reads the one recorded name for BOTH splits."""
         if eval_dataset is None:
             return None
         train_audio_col = getattr(self, "_audio_vlm_audio_col", None)
@@ -2430,12 +2424,8 @@ class UnslothTrainer:
 
         Mirrors Whisper.ipynb: extract audio features with Whisper's feature
         extractor, tokenize text labels. Returns (train_data, eval_data),
-        each a list of dicts with 'input_features' and 'labels'.
-
-        ``eval_dataset`` is the separate split the caller already loaded, from an
-        uploaded eval file or a named HF split. When it is present it is used as
-        is; the 6% carve-out off the train set is only the fallback for when no
-        separate eval source exists.
+        each a list of dicts with 'input_features' and 'labels'. The 6% carve-out
+        is only the fallback for when ``eval_dataset`` is absent.
         """
         from datasets import Audio
 
@@ -2453,13 +2443,8 @@ class UnslothTrainer:
 
         eval_dataset_raw = None
         if eval_dataset is not None:
-            # A separate split can carry a different schema to the train one. Warn and drop it
-            # rather than failing a run whose training data is perfectly good.
-            #
-            # The column check has to be explicit: cast_column does not validate the name for a
-            # feature that defines decode_example, and Audio does, so casting a column the split
-            # does not have silently adds an all-null one instead of raising. Every row would
-            # then be skipped for a missing array and the split would vanish without a word.
+            # The name check must be explicit: cast_column does not validate it for a feature
+            # with decode_example (Audio has one), it silently adds an all-null column.
             eval_columns = list(getattr(eval_dataset, "column_names", None) or [])
             missing = [c for c in (audio_col, text_col) if c not in eval_columns]
             if missing:
@@ -2542,8 +2527,7 @@ class UnslothTrainer:
             raise ValueError("No valid examples after Whisper preprocessing")
 
         if eval_dataset_raw and not eval_data and not self.should_stop:
-            # Every eval row was skipped for a missing array or empty text. Say so: the trainer
-            # branch reads an empty list as "no evaluation", which on its own is silent.
+            # Every row was skipped; the trainer branch would silently read [] as "no eval".
             self._record_warning(
                 "No usable rows were left in the eval dataset after preprocessing, so this run "
                 "has no evaluation."
@@ -3881,9 +3865,7 @@ class UnslothTrainer:
                 if eval_dataset:
                     extra["eval_strategy"] = "steps"
                     extra["eval_steps"] = training_args.get("eval_steps", 5)
-                    # Avoid HF's default of 8, which can OOM audio runs. The codec branches
-                    # already do this; Whisper never did, and it only stayed harmless while
-                    # the uploaded eval split was being dropped before it got here.
+                    # HF's default of 8 can OOM audio runs, as the codec branches already note.
                     extra["per_device_eval_batch_size"] = training_args.get("batch_size") or 2
 
                 config = self._build_audio_training_args(
