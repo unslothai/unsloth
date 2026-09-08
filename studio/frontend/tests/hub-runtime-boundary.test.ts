@@ -317,11 +317,7 @@ test("the Run handoff opens configuration immediately and remains nonce-scoped",
   );
   assert.match(
     modelSelector,
-    /onRun=\{\(config, isDiffusion\) =>\s*onSelect\(visibleConfigTarget\.id, \{/,
-  );
-  assert.doesNotMatch(
-    modelSelector,
-    /onSelect\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,/,
+    /onRun=\{\(config, isDiffusion\) =>\s*onSelect\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,\s*\{/,
   );
   assert.match(
     modelSelector,
