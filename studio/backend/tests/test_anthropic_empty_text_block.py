@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An image-only user turn must not carry an empty text block to Anthropic."""
-
 import asyncio
 import json
 
@@ -118,9 +116,6 @@ def test_text_only_empty_block_drops_the_whole_message(monkeypatch):
     assert captured["body"]["messages"] == [{"role": "user", "content": "but THIS one is fine"}]
 
 
-# collectTextParts joins with "\n", so two empty caption parts serialise to "\n".
-
-
 def test_whitespace_only_caption_dropped_from_image_turn(monkeypatch):
     captured = _capture(
         monkeypatch,
@@ -157,7 +152,6 @@ def test_caption_keeps_its_own_surrounding_whitespace(monkeypatch):
 
 
 def test_empty_string_content_message_dropped(monkeypatch):
-    # Anthropic reads a plain string as one text block, so "" 400s the same way.
     captured = _capture(
         monkeypatch,
         [
@@ -207,8 +201,7 @@ def test_cached_image_only_turn_marks_the_image(monkeypatch):
 
 
 def test_whitespace_only_assistant_text_beside_a_tool_call(monkeypatch):
-    # A model that emits a newline before calling a tool: the whitespace block 400s
-    # and takes the tool_use with it.
+    # The whitespace block 400s and takes the tool_use down with it.
     captured = _capture(
         monkeypatch,
         [
