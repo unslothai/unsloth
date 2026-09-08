@@ -7115,6 +7115,45 @@ _LINKER_NAME_RE = re.compile(r"^.+\.so(?P<version>(?:\.\d+)*)$")
 _DYLIB_NAME_RE = re.compile(r"^.+?(?P<version>(?:\.\d+)*)\.dylib$")
 
 
+def _family_base(name: str) -> str | None:
+    """``libllama`` for every spelling of the libllama family, or None if not one."""
+    if name.endswith(".dylib"):
+        stem = name[: -len(".dylib")]
+        return re.sub(r"(?:\.\d+)+$", "", stem) or None
+    at = name.find(".so")
+    if at <= 0:
+        return None
+    if name[at + 3 :] and not re.fullmatch(r"(?:\.\d+)+", name[at + 3 :]):
+        return None
+    return name[:at]
+
+
+def _has_versioned_siblings(path: Path) -> bool:
+    """Whether a versionless library sits beside versioned copies of itself.
+
+    A family that only ever ships one unversioned file (``libggml-cpu-x64.so``) is
+    loadable under that name, and the versionless member of a versioned family is
+    not: the loader asks for the SONAME, one component deep. Reading the directory
+    is the only way to tell those apart, since both are the same name.
+    """
+    base = _family_base(path.name)
+    if base is None:
+        return False
+    try:
+        siblings = list(path.parent.iterdir())
+    except OSError:
+        # Unreadable directory: keep the older, more permissive answer rather than
+        # calling a tree broken over something that was never inspected.
+        return False
+    for sibling in siblings:
+        if sibling.name == path.name or _family_base(sibling.name) != base:
+            continue
+        match = _LINKER_NAME_RE.match(sibling.name) or _DYLIB_NAME_RE.match(sibling.name)
+        if match is not None and match.group("version"):
+            return True
+    return False
+
+
 def _payload_match_is_loadable(path: Path) -> bool:
     """Whether a glob match is a file the loader would actually resolve.
 
@@ -7143,7 +7182,29 @@ def _payload_match_is_loadable(path: Path) -> bool:
     match = _LINKER_NAME_RE.match(path.name) or _DYLIB_NAME_RE.match(path.name)
     if match is None:
         return True
-    return match.group("version").count(".") <= 1
+    depth = match.group("version").count(".")
+    if depth > 1:
+        # More components than a SONAME can carry, so this is the terminal file
+        # and never what a DT_NEEDED entry or an LC_LOAD_DYLIB names.
+        return False
+    if depth == 1:
+        return True
+    # Versionless. Whether that is the loadable name depends on the family around
+    # it, which is why this is not a decision the name alone can make: b10840
+    # ships libllama.so, libllama.so.0 and libllama.so.0.4.0, and copy_globs
+    # flattens all three into regular files because shutil.copy2 follows the
+    # links the tarball uses. Quarantining libllama.so.0 then left libllama.so
+    # standing, the group satisfied, and llama-server dying in the loader.
+    #
+    # Any versioned sibling is enough to disqualify it, not only a SONAME-shaped
+    # one. Asking for a SONAME specifically would read the family as versionless
+    # again the moment the SONAME is the file that went missing, which is the
+    # case this exists to catch. The cost is that a bundle shipping a versionless
+    # name beside a fully versioned one and no SONAME at all would be called
+    # broken; no release ships that, and the answer a directory listing can give
+    # ends here, since what the loader asks for lives in the dependent binary's
+    # DT_NEEDED rather than in any of these names.
+    return not _has_versioned_siblings(path)
 
 
 def _runtime_payload_has(install_dir: Path, host: HostInfo, groups: list[list[str]]) -> bool:

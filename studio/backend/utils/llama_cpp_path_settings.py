@@ -20,6 +20,24 @@ _settings_lock = threading.RLock()
 _path_revision = 0
 
 
+def expanded_user_path(value: Path | str) -> Path:
+    """``~`` and ``~name`` expanded, never raising on a name that does not resolve.
+
+    ``Path.expanduser()`` raises ``RuntimeError`` when the home cannot be
+    determined, which includes every unknown named user: ``~deleted-user/llama.cpp``
+    left in a service unit or a ``.env`` after an account rename took runtime
+    discovery down with it, so a model operation reported the expansion error
+    rather than falling through to another runtime or saying none was found.
+
+    ``os.path.expanduser`` is the reader that does not raise: it hands an
+    unresolvable name straight back, which is also what the desktop's pinning does
+    with one, so the two halves of a launch still agree about the value. An
+    unexpandable override then reaches the search as an ordinary path, finds
+    nothing, and the documented order continues.
+    """
+    return Path(os.path.expanduser(str(value)))
+
+
 def mark_managed_llama_cpp_path(directory: Path | str) -> bool:
     """Mark Unsloth's inherited install path without hiding a real env override."""
     configured = os.environ.get("UNSLOTH_LLAMA_CPP_PATH", "").strip()
@@ -27,8 +45,8 @@ def mark_managed_llama_cpp_path(directory: Path | str) -> bool:
         os.environ.pop(MANAGED_LLAMA_CPP_PATH_MARKER, None)
         return False
     try:
-        managed = Path(directory).expanduser().resolve(strict = False)
-        inherited = Path(configured).expanduser().resolve(strict = False)
+        managed = expanded_user_path(directory).resolve(strict = False)
+        inherited = expanded_user_path(configured).resolve(strict = False)
         is_managed = inherited == managed
     except (OSError, RuntimeError, ValueError):
         is_managed = False
@@ -104,7 +122,7 @@ def get_stored_custom_llama_cpp_path() -> Optional[Path]:
     value = value.strip()
     if not value or len(value) > MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH:
         return None
-    return Path(value).expanduser()
+    return expanded_user_path(value)
 
 
 def _environment_override() -> tuple[Optional[str], Optional[str], bool]:
@@ -135,7 +153,7 @@ def _canonical_directory(value: str) -> Path:
     if len(raw) > MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH:
         raise ValueError("The llama.cpp folder path is too long.")
     try:
-        directory = Path(raw).expanduser().resolve(strict = True)
+        directory = expanded_user_path(raw).resolve(strict = True)
     except (OSError, RuntimeError, ValueError) as exc:
         raise ValueError("The llama.cpp folder does not exist or cannot be accessed.") from exc
     if not directory.is_dir():
@@ -179,7 +197,7 @@ def custom_llama_cpp_path_status() -> dict:
 
     if env_path is not None:
         source = "environment"
-        path = Path(env_path).expanduser()
+        path = expanded_user_path(env_path)
         if direct_binary:
             binary = path if _usable_binary(path) else None
         else:

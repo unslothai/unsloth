@@ -198,7 +198,13 @@ def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
     """The tar payloads ship versioned chains (libggml.so -> libggml.so.0 -> libggml.so.0.9.8)
     and Path.glob does not follow links, so quarantining the versioned target left every
     pattern satisfied by links the loader cannot open. Fixed in _runtime_payload_has, which
-    this probe and the keep decision share, so the two tighten together."""
+    this probe and the keep decision share, so the two tighten together.
+
+    All three rungs, which is what a release ships and what the sentence above already said;
+    this used to build only the outer two. The middle rung is the SONAME, the name a
+    DT_NEEDED entry records, and _payload_match_is_loadable now needs to see whether the
+    family has one before it can say what the versionless name means.
+    """
     if os.name == "nt":
         pytest.skip("the shipped Windows payload has no symlink chains")
     root = _installed(tmp_path, binaries = True)
@@ -210,11 +216,13 @@ def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
         stem = group[0].replace("*", "")
         target = runtime_dir / f"{stem}.0.9.8"
         target.write_text("", encoding = "utf-8")
-        os.symlink(target.name, runtime_dir / stem)
+        soname = runtime_dir / f"{stem}.0"
+        os.symlink(target.name, soname)
+        os.symlink(soname.name, runtime_dir / stem)
         real.append(target)
     assert ILP._runtime_payload_has(root, host, groups) is True
 
-    # Quarantine takes the versioned target and leaves the link behind.
+    # Quarantine takes the versioned target and leaves both links behind.
     real[0].unlink()
     assert (runtime_dir / groups[0][0].replace("*", "")).is_symlink()
     assert ILP._runtime_payload_has(root, host, groups) is False

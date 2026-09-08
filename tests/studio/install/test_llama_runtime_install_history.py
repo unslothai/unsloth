@@ -631,3 +631,167 @@ def test_a_stripped_execute_bit_is_not_reused_as_an_exact_release_match(tmp_path
         assert ILP._entrypoint_is_runnable(server, host) is False
     finally:
         server.chmod(mode)
+
+
+# The bundle that changed the packaging. b10360 shipped two names per library and no
+# versionless one; b10840 ships libllama.so -> libllama.so.0 -> libllama.so.0.4.0 as
+# symlinks, and copy_globs flattens all three into regular files, because it selects
+# with is_file() and copies with shutil.copy2, which follows links.
+_TRIO_ASSET = "app-b10840-mix-d5c17a0-linux-x64-cpu.tar.gz"
+_TRIO_TAG = "b10840-mix-d5c17a0"
+
+
+def _installed_trio_bundle(tmp_path: Path) -> Path:
+    """The b10840 CPU bundle, installed the way install_prebuilt installs it.
+
+    Through ``copy_globs`` rather than by moving the extracted tree: moving preserves
+    the symlinks, and a tree of links behaves quite differently here, since removing
+    the SONAME makes the versionless link dangle and ``is_file()`` drops it on its own.
+    A real install has no links left to dangle, which is the whole point of this test.
+    """
+    archive = ASSET_DIR / _TRIO_ASSET
+    if not archive.is_file():
+        pytest.skip(f"{_TRIO_ASSET} is not present")
+    prebuilt_core = _load_prebuilt_core()
+    if prebuilt_core is None:
+        pytest.skip("prebuilt_core is not importable here")
+    host = ILP.platform_only_host()
+    if not host.is_linux:
+        pytest.skip("a linux bundle installs into the linux layout")
+
+    raw = tmp_path / "raw"
+    prebuilt_core.extract_archive(archive, raw)
+    root = tmp_path / "llama.cpp"
+    runtime_dir = ILP.install_runtime_dir(root, host)
+    ILP.copy_globs(
+        raw,
+        runtime_dir,
+        ["llama-server", "llama-quantize", "llama-diffusion-gemma-visual-server", "lib*.so*"],
+        required = True,
+    )
+    for name in ("llama-server", "llama-quantize"):
+        binary = runtime_dir / name
+        binary.chmod(0o755)
+        shutil.copy2(binary, root / name)
+        (root / name).chmod(0o755)
+    (root / "convert_hf_to_gguf.py").write_text("", encoding = "utf-8")
+    (root / "gguf-py").mkdir(exist_ok = True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps(
+            {
+                "release_tag": _TRIO_TAG,
+                "tag": _TRIO_TAG,
+                "source": "published",
+                "backend": "cpu",
+                "asset": _TRIO_ASSET,
+            }
+        )
+        + "\n",
+        encoding = "utf-8",
+    )
+    return root
+
+
+def _load_prebuilt_core():
+    module_path = PACKAGE_ROOT / "studio" / "prebuilt_core.py"
+    if not module_path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("studio_prebuilt_core_for_tests", module_path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_flattened_trio_installs_healthy(tmp_path):
+    """The shape itself must not read as broken, or every b10840 install repairs forever."""
+    root = _installed_trio_bundle(tmp_path)
+    host = ILP.platform_only_host()
+    runtime_dir = ILP.install_runtime_dir(root, host)
+    for name in ("libllama.so", "libllama.so.0", "libllama.so.0.4.0"):
+        path = runtime_dir / name
+        assert path.is_file() and not path.is_symlink(), (
+            f"{name} must be a flattened regular file, or this test is not measuring "
+            "what the installer produces"
+        )
+    assert ILP.installed_runtime_health(root, host = host) == (True, "")
+
+
+@pytest.mark.parametrize(
+    "victim",
+    ["libllama.so.0", "libggml.so.0", "libllama-common.so.0", "libggml-base.so.0", "libmtmd.so.0"],
+)
+def test_quarantining_a_soname_beside_a_versionless_copy_is_reported_broken(victim, tmp_path):
+    """Codex 3962583748, P1. The case my earlier rebuttal got wrong.
+
+    I checked the managed install on the machine, which is b10360: two names per
+    library, no versionless one, so removing the SONAME left nothing that could
+    satisfy the group. b10840 ships a third name, and after copy_globs it is a regular
+    file rather than a link onto the SONAME, so the group stayed satisfied by a file
+    the loader never asks for while llama-server died at exec.
+
+    Measured, before the fix, on this bundle: every one of these left
+    installed_runtime_health answering (True, "") with _existing_install_runs false.
+    """
+    root = _installed_trio_bundle(tmp_path)
+    host = ILP.platform_only_host()
+    runtime_dir = ILP.install_runtime_dir(root, host)
+    soname = runtime_dir / victim
+    if not soname.is_file():
+        pytest.skip(f"this bundle does not carry {victim}")
+    versionless = runtime_dir / f"{victim[: victim.index('.so')]}.so"
+    assert versionless.is_file(), "the versionless twin is what used to keep the group satisfied"
+
+    (tmp_path / "vault").mkdir(exist_ok = True)
+    shutil.move(str(soname), str(tmp_path / "vault" / victim))
+    verdict = ILP.installed_runtime_health(root, host = host)
+    assert verdict is not None and verdict[0] is False, (
+        f"a runtime missing {victim} cannot load, but the probe said {verdict}"
+    )
+    # The two answers still agree, which is what keeps repair from looping.
+    assert ILP._existing_install_runs(root, host) is False
+
+
+def test_a_family_that_only_ever_ships_one_name_is_still_loadable(tmp_path):
+    """The other half, and the one a blunter rule would break.
+
+    libggml-cpu-x64.so has no versioned copy anywhere, so the versionless name IS the
+    one the loader asks for. Requiring a SONAME of every library would call every
+    install broken and reinstall on each check forever. No artifact needed.
+    """
+    runtime_dir = tmp_path / "bin"
+    runtime_dir.mkdir()
+    lonely = runtime_dir / "libggml-cpu-x64.so"
+    lonely.write_bytes(b"ELF")
+    assert ILP._payload_match_is_loadable(lonely) is True
+
+    # Same name, now with a versioned sibling: it is the family that decides.
+    versioned = runtime_dir / "libggml-cpu-x64.so.0"
+    versioned.write_bytes(b"ELF")
+    assert ILP._payload_match_is_loadable(lonely) is False
+    assert ILP._payload_match_is_loadable(versioned) is True
+    assert ILP._family_base("libggml-cpu-x64.so.0.19.0") == "libggml-cpu-x64"
+    # A neighbour of a different family must not vote.
+    other = runtime_dir / "libggml-cpu-x64-extra.so"
+    other.write_bytes(b"ELF")
+    assert ILP._family_base(other.name) == "libggml-cpu-x64-extra"
+
+
+def test_the_macos_install_name_rule_matches_the_linux_one(tmp_path):
+    """dyld asks for libggml.0.dylib, the install name recorded in LC_ID_DYLIB, so the
+    versionless link is not a substitute there either, and a bundle that ships only
+    libggml.dylib still is."""
+    runtime_dir = tmp_path / "bin"
+    runtime_dir.mkdir()
+    versionless = runtime_dir / "libggml.dylib"
+    versionless.write_bytes(b"MACHO")
+    assert ILP._payload_match_is_loadable(versionless) is True
+    install_name = runtime_dir / "libggml.0.dylib"
+    install_name.write_bytes(b"MACHO")
+    terminal = runtime_dir / "libggml.0.23.0.dylib"
+    terminal.write_bytes(b"MACHO")
+    assert ILP._payload_match_is_loadable(versionless) is False
+    assert ILP._payload_match_is_loadable(install_name) is True
+    assert ILP._payload_match_is_loadable(terminal) is False
