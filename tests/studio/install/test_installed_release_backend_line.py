@@ -15,6 +15,7 @@ steps at load (as tests/studio_setup_ps1/Get-FunctionSource.ps1 and tests/sh/ do
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -30,8 +31,37 @@ GET_FUNCTION_SOURCE = PACKAGE_ROOT / "tests" / "studio_setup_ps1" / "Get-Functio
 requires_pwsh = pytest.mark.skipif(
     shutil.which("pwsh") is None, reason = "pwsh is required to run the setup.ps1 printer"
 )
+
+
+def _usable_bash():
+    """A bash that actually runs a command, or None.
+
+    shutil.which("bash") alone is wrong on Windows: C:\\Windows\\System32\\bash.exe is the
+    WSL launcher, so it is the first PATH hit even with no distro installed, and running it
+    writes "Windows Subsystem for Linux has no installed distributions." to stdout as UTF-16
+    -- which this file then compared against a printer line. setup.sh is never executed on
+    Windows anyway (_find_setup_script picks setup.ps1 there), so probe before trusting.
+    """
+    exe = shutil.which("bash")
+    if exe is None:
+        return None
+    try:
+        probe = subprocess.run(
+            [exe, "-c", "printf ok"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            errors = "replace",
+            timeout = 60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return exe if probe.stdout.strip() == "ok" else None
+
+
+BASH = _usable_bash()
 requires_bash = pytest.mark.skipif(
-    shutil.which("bash") is None, reason = "bash is required to run the setup.sh printer"
+    BASH is None, reason = "a working bash is required to run the setup.sh printer"
 )
 
 # 2.0 is where missing-property reads turn fatal; 3.0 and Latest keep that rule.
@@ -263,12 +293,10 @@ def _run_sh_printer(install_dir, tmp_path):
     shim = shim_dir / "python"
     shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding = "utf-8")
     shim.chmod(0o755)
-    import os
-
     env = dict(os.environ)
     env["PATH"] = f"{shim_dir}{os.pathsep}{env.get('PATH', '')}"
     proc = subprocess.run(
-        ["bash", str(script), str(func_file), str(install_dir)],
+        [BASH, str(script), str(func_file), str(install_dir)],
         stdout = subprocess.PIPE,
         stderr = subprocess.PIPE,
         text = True,
