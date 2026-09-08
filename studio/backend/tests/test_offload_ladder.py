@@ -956,3 +956,54 @@ def test_the_rung_order_is_projector_then_slots_then_draft_then_weights():
             opts = PlanOptions(**{**o.__dict__, **single}),
         )
         assert len(alone.spilled_blocks) > len(plan.spilled_blocks), single
+
+
+def test_a_cpu_pinned_projector_is_charged_to_host_ram():
+    """--no-mmproj-offload moves the projector, it does not delete it.
+
+    The flag clears ``mmproj_use_gpu`` and clip.cpp then allocates the whole
+    projector in a CPU backend buffer, so rung 0 turns VRAM bytes into HOST RAM
+    bytes. Both host-RAM decisions in ``_finish`` spend that RAM: the ``--cache-ram``
+    clamp hands the prompt cache whatever is left under the headroom, and the cost
+    gate refuses a spill the host cannot hold. Leaving the projector out of
+    ``host_bytes`` spends it twice -- the plan can enable ``--load-mode none``,
+    which is a no-mmap load that cannot page, on a host that does not have the
+    room.
+    """
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = graded_moe()
+    ctx, floor, mmproj = 4096, GIB, 3 * GIB
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor)
+    # Short by half a projector, so rung 0 alone closes the deficit and no weight
+    # is spilled: the only host bytes here are the embedding and the projector.
+    card = needed + GIB + mmproj // 2
+    o = opts(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        mmproj_bytes = mmproj,
+        mmproj_movable = True,
+    )
+    # Enough RAM for the embedding under the headroom, but not for the projector too.
+    ram = o.host_ram_headroom_bytes + layout.token_embd_bytes + mmproj // 2
+
+    plan = plan_placement(layout, [card], ram, ctx, kv_bytes_floor = floor, opts = o)
+    assert plan.mmproj_to_host and not plan.spilled_blocks, plan.reason
+    assert plan.host_bytes == layout.token_embd_bytes + mmproj, (
+        "a CPU-pinned projector is host RAM this plan has to pay for"
+    )
+    assert not plan.load_mode_none, (
+        "the host cannot hold the projector, so mmap has to stay and page it"
+    )
+    assert "--load-mode" not in plan_to_args(plan)
+
+    # With the room for it, nothing changes but the answer.
+    roomy = plan_placement(
+        layout,
+        [card],
+        ram + mmproj,
+        ctx,
+        kv_bytes_floor = floor,
+        opts = o,
+    )
+    assert roomy.mmproj_to_host and roomy.load_mode_none

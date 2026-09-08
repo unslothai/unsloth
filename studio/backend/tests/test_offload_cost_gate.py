@@ -686,3 +686,63 @@ def test_the_measured_moe_veto_still_applies_when_the_fallback_cannot_be_modelle
         opts = gated(host = HostProfile(threads = 12), moe_long_prompt_ctx = 0),
     )
     assert ungated.spills_anything and not ungated.declined_by_gate
+
+
+def mixed_quant_layout(n_blocks: int = 64) -> ModelLayout:
+    """A dense layout whose blocks are NOT all the same size.
+
+    Real GGUFs are like this: a dynamic/UD quant keeps the first blocks at a
+    denser type than the middle ones, and a dense recurrent hybrid interleaves
+    attention and SSM blocks that differ by several times. The uniform layouts
+    above cannot see which END of the block list a placement takes.
+    """
+    blocks = tuple(
+        BlockLayout(i, int((0.30 if i < 8 else 0.20) * GIB), int(0.045 * GIB))
+        for i in range(n_blocks)
+    )
+    return ModelLayout(
+        arch = "qwen3",
+        n_layers = n_blocks,
+        n_attention_layers = n_blocks,
+        blocks = blocks,
+        lm_head_bytes = int(1.0 * GIB),
+        token_embd_bytes = int(1.0 * GIB),
+        other_resident_bytes = int(0.01 * GIB),
+        kv_bytes_per_token_f16 = 2.0 * GIB / 32768,
+        n_ctx_train = 32768,
+        complete = True,
+    )
+
+
+def test_the_dense_fallback_moves_the_fitters_leading_block_prefix():
+    """llama.cpp offloads the LEADING blocks, so the model has to price those.
+
+    On a dense model the fitter only lowers ``n_gpu_layers``
+    (common/fit.cpp:551-559 sets it from the per-device layer counts, with
+    ``n_part`` 0), and llama-model.cpp then computes
+    ``i_gpu_start = max(n_layer_all + 1 - n_gpu_layers, 0)`` and hands every row
+    with ``il < i_gpu_start`` to the CPU device (llama-model.cpp:1479-1484). The
+    host therefore takes a PREFIX of the block list.
+
+    Walking from the other end is equivalent only when every block is the same
+    size, and the loop's terms are per-block BYTES. On a mixed-quant or hybrid
+    layout the two directions disagree on the host weights and on the layer
+    count, so the fitter arm of the cost gate gets scored on a placement
+    llama.cpp would not produce.
+    """
+    layout = mixed_quant_layout()
+    placement = _fit_fallback_placement(
+        layout, gated(), 12 * GIB, 32768, quantised = False, kv_bytes_floor = 0, kv_on_host = False
+    )
+    assert placement is not None
+    weights = sum(g.bytes_total for g in placement.host_groups if g.name in ("ffn", "layers"))
+
+    sizes = [b.spillable_bytes + b.resident_bytes for b in layout.blocks]
+    prefixes = {sum(sizes[:k]): k for k in range(1, len(sizes) + 1)}
+    assert weights in prefixes, "the moved weights are not a leading prefix of the block list"
+    moved = prefixes[weights]
+    assert moved < len(sizes), "a partial fit, or the two ends cannot be told apart"
+    assert weights != sum(sizes[-moved:]), (
+        "the trailing blocks of this layout weigh the same as the leading ones, "
+        "so the assertion above proves nothing"
+    )

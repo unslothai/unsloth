@@ -21651,6 +21651,11 @@ class LlamaCppBackend:
                         "kv_unified": bool(planned_kv_unified),
                         "min_parallel": _spill_min_parallel,
                         "kv_bytes_floor_by_parallel": _spill_floor_by_parallel,
+                        # The recurrent half of those figures, per slot.
+                        # _estimate_kv_cache_bytes returns ONE number for the whole
+                        # hybrid memory, and the planner prices the state itself from
+                        # the layout, so the seam has to be able to take it back out.
+                        "kv_recurrent_bytes_per_slot": int(self._rollback_state_bytes(1)),
                         # Rung 0: the projector, separable from extra_gpu_bytes so the
                         # planner can move it and get BOTH its file bytes and the
                         # runtime surcharge back. movable only under the same gate the
@@ -27370,6 +27375,34 @@ class LlamaCppBackend:
             )
             return None
 
+        # The floor is an ATTENTION cache, and ``kv_cache_bytes`` is not one.
+        # ``_estimate_kv_cache_bytes`` folds the recurrent state into what it
+        # returns -- ``_mamba_recurrent_state_bytes`` on the hybrid path,
+        # ``_recurrent_state_bytes`` on the MLA one -- while the planner charges
+        # ``layout.recurrent_bytes`` ONCE PER SLOT on top of whatever floor it is
+        # handed (``resident_floor_bytes``). Handing over the fused number counts
+        # the state twice in every VRAM figure the planner computes, so the deficit
+        # is too large by the whole state and blocks are spilled to cover memory
+        # nothing will allocate. ``_fit_fallback_placement`` then frees it twice per
+        # moved layer as well (its ``kv_per_layer`` comes from the floor and its
+        # ``recurrent_per_layer`` from the layout), and prices part of a
+        # context-independent state as LIVE cache through ``floor_scale``. Single-GPU
+        # hybrids reach all of that: the uneven-cache abstain returns early on one
+        # device.
+        #
+        # Capped by what the layout itself models, and zero when it models none: a
+        # KDA hybrid (Kimi-K3) carries a state ``_estimate_kv_cache_bytes`` prices and
+        # ``offload_layout`` does not, and subtracting a term the planner will not add
+        # back would UNDER-reserve the cache, which is the one direction that loses
+        # the load rather than merely over-spilling.
+        _recurrent_per_slot = min(
+            int(inputs.get("kv_recurrent_bytes_per_slot") or 0), max(0, layout.recurrent_bytes)
+        )
+
+        def _attention_floor(measured: int, slots: int) -> int:
+            """``measured`` less the recurrent state it carries at ``slots`` slots."""
+            return max(0, int(measured) - _recurrent_per_slot * max(1, slots))
+
         # Per-device VRAM the planner may credit. SHARED rows are dropped, not
         # summed: an APU or iGPU reports host RAM as VRAM, so crediting it and then
         # spilling into the same RAM counts one pool twice.
@@ -27600,7 +27633,10 @@ class LlamaCppBackend:
                 n_parallel = priced_parallel,
                 kv_unified = bool(inputs.get("kv_unified")),
                 min_parallel = max(1, min(priced_parallel, int(inputs.get("min_parallel") or 1))),
-                kv_bytes_floor_by_parallel = dict(inputs.get("kv_bytes_floor_by_parallel") or {}),
+                kv_bytes_floor_by_parallel = {
+                    int(_p): _attention_floor(_v, int(_p))
+                    for _p, _v in (inputs.get("kv_bytes_floor_by_parallel") or {}).items()
+                },
                 draft_bytes = draft_bytes,
                 draft_droppable = draft_droppable,
                 cache_ram_default_mib = int(inputs.get("cache_ram_default_mib") or 0),
@@ -27674,7 +27710,7 @@ class LlamaCppBackend:
             # bare f16 GQA product with none of those, so on an MLA or f32-cache
             # load it lands well UNDER the real cache. A floor, not a replacement,
             # so the layout still wins where it is the more conservative.
-            kv_bytes_floor = kv_cache_bytes,
+            kv_bytes_floor = _attention_floor(kv_cache_bytes, priced_parallel),
         )
 
     @staticmethod

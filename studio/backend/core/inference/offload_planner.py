@@ -1056,9 +1056,22 @@ def _fit_fallback_placement(
 
     # Dense, where the whole-layer model IS what happens: measured n_part=0 with
     # n_layer 54 of 65 and 38 of 65, no overrides at all, and the cache off the
-    # GPU with it. llama.cpp keeps the LAST n_gpu_layers on the device, so the
-    # host takes the leading ones; walking from the end is equivalent here
-    # because only the count enters the cost.
+    # GPU with it. llama.cpp keeps the LAST n_gpu_layers on the device -- the
+    # fitter only lowers n_gpu_layers (common/fit.cpp:551-559) and
+    # ``i_gpu_start = max(n_layer_all + 1 - n_gpu_layers, 0)`` sends every row
+    # BELOW it to the CPU (llama-model.cpp:1479-1484) -- so the host takes the
+    # LEADING blocks and this loop walks them in ascending index order.
+    #
+    # It used to walk from the end, on the grounds that only the COUNT enters the
+    # cost. That is true only for a layout whose blocks are all the same size, and
+    # the byte terms below are per block: a dense recurrent/hybrid interleaves
+    # attention and SSM blocks of materially different sizes, so a prefix and a
+    # suffix of the same length are different numbers of bytes. The loop could
+    # therefore stop at the wrong layer count and price the wrong host weights for
+    # the Falcon-H1 / Nemotron-H shapes this branch now serves, in either
+    # direction. The MoE branch above keeps ``reversed`` deliberately: there the
+    # fitter keeps every layer and overrides the TRAILING ones' experts
+    # (common/fit.cpp:563-577), which is the opposite end.
     #
     # The recurrent state follows its layer exactly as the cache does: for layer
     # ``i`` llama.cpp takes ``ggml_backend_dev_buffer_type(model.dev_layer(i))``
@@ -1102,7 +1115,7 @@ def _fit_fallback_placement(
     recurrent_per_layer = 0.0 if kv_on_host else layout.recurrent_bytes / len(blocks)
     host_weights = 0
     host_spillable = 0
-    for moved, block in enumerate(reversed(blocks), start = 1):
+    for moved, block in enumerate(blocks, start = 1):
         host_weights += block.spillable_bytes + block.resident_bytes
         host_spillable += block.spillable_bytes
         host_recurrent = int(recurrent_per_layer * moved)
@@ -2497,6 +2510,20 @@ def _finish(
     spilled_weight_bytes = sum(u.nbytes for u in units) + (
         layout.lm_head_bytes if spill_lm_head else 0
     )
+    # Rung 0 did not make the projector disappear, it moved it: --no-mmproj-offload
+    # clears mmproj_use_gpu and clip.cpp then allocates the projector in a CPU
+    # backend buffer, so those bytes are HOST RAM for the life of the server. They
+    # were charged to the card before the rung fired and to nothing after it, which
+    # is exactly the term the two host-RAM decisions below spend: the hard refusal
+    # that keeps a spill out of swap, and the --cache-ram clamp. A 1 GiB projector
+    # under a 2 GiB headroom is enough to turn a refusal into a --load-mode none
+    # that cannot be paged.
+    #
+    # The whole of ``mmproj_bytes``, file and runtime surcharge together: on the
+    # host the projector needs its weights AND the buffers its graph runs in, and
+    # the surcharge is the caller's measured allowance for the second
+    # (_MMPROJ_VRAM_SAFETY, ~1.3x runtime over file size).
+    mmproj_host_bytes = opts.mmproj_bytes if (knobs is not None and knobs.mmproj_to_host) else 0
 
     plan_ms = fit_ms = 0.0
     if opts.require_cost_win and budget is not None and (units or spill_lm_head):
@@ -2509,7 +2536,7 @@ def _finish(
             budget,
             quantised = quantised,
             kv_bytes_floor = kv_bytes_floor,
-            host_bytes = layout.token_embd_bytes + spilled_weight_bytes,
+            host_bytes = layout.token_embd_bytes + spilled_weight_bytes + mmproj_host_bytes,
             host_ram_bytes = host_ram_bytes,
             knobs = knobs,
         )
@@ -2524,7 +2551,7 @@ def _finish(
     spilled_bytes = spilled_weight_bytes
     # token_embd is host-resident on every launch, so it is host RAM this plan
     # has to be able to pay for even when nothing is spilled.
-    host_bytes = layout.token_embd_bytes + spilled_bytes
+    host_bytes = layout.token_embd_bytes + spilled_bytes + mmproj_host_bytes
     if kv_on_host:
         # -nkvo moved the cache and the recurrent state out of VRAM, not out of
         # existence: they are host RAM now, and the mmap decision below has to see

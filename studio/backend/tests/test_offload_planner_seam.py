@@ -2770,3 +2770,92 @@ def test_host_ram_the_launch_has_already_spent_is_taken_off_the_planner_pool():
     tight = _plan(_Stub(), free_mib = 14 * 1024, host_unpriced = 60 * GIB)
     assert tight is not None
     assert not tight.load_mode_none, tight.reason
+
+
+def test_the_recurrent_state_is_taken_out_of_the_measured_cache_floor(monkeypatch):
+    """``kv_cache_bytes`` is the whole hybrid memory; the floor is a CACHE.
+
+    ``_estimate_kv_cache_bytes`` adds ``_mamba_recurrent_state_bytes`` on the
+    hybrid path and ``_recurrent_state_bytes`` on the MLA one, so the number the
+    snapshot carries is cache PLUS state. The planner charges
+    ``layout.recurrent_bytes`` once per slot on top of the floor it is given, so
+    handing the fused number over counts the state twice in every VRAM figure it
+    computes -- a deficit too large by the whole state, blocks spilled to cover
+    memory nothing allocates, and a modelled fitter that frees the state twice per
+    moved layer on top. A dense hybrid on ONE card reaches all of it: the
+    uneven-cache abstain returns early on a single device.
+
+    Per-slot, and the rung-1 map is re-priced the same way: the state scales with
+    the slot count exactly as the cache does.
+    """
+    import dataclasses
+
+    from core.inference import offload_planner as planner
+
+    state, attention = 512 * MIB, 3 * GIB
+
+    class _Hybrid(_Stub):
+        def _tensor_spill_layout(
+            self,
+            model_path,
+            *,
+            all_shards = False,
+        ):
+            layout = _Stub._tensor_spill_layout(self, model_path, all_shards = all_shards)
+            if layout is None:
+                return None
+            return dataclasses.replace(layout, recurrent_bytes = state)
+
+    seen = {}
+    real = planner.plan_placement
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(planner, "plan_placement", spy)
+
+    inputs = {
+        **_inputs(kv = attention + 2 * state, n_parallel = 2, free_mib = 12 * 1024),
+        "kv_recurrent_bytes_per_slot": state,
+        "kv_bytes_floor_by_parallel": {
+            1: attention // 2 + state,
+            2: attention + 2 * state,
+        },
+    }
+    _Hybrid()._planned_tensor_spill(inputs, env = {"UNSLOTH_SMART_OFFLOAD": "1"})
+
+    assert seen["kv_bytes_floor"] == attention, "the state was left in the floor"
+    assert seen["opts"].kv_bytes_floor_by_parallel == {1: attention // 2, 2: attention}
+
+
+def test_a_state_the_layout_cannot_model_stays_in_the_floor(monkeypatch):
+    """A KDA hybrid's state is priced by the estimator and not by the layout.
+
+    ``offload_layout`` reads ``ssm.*``; Kimi-K3-shaped linear attention has none,
+    so ``recurrent_bytes`` is 0 and the planner will add nothing back. Subtracting
+    there would UNDER-reserve the cache, which loses the load rather than merely
+    over-spilling it, so the subtraction is capped by what the layout models.
+    """
+    from core.inference import offload_planner as planner
+
+    state, attention = 512 * MIB, 3 * GIB
+    seen = {}
+    real = planner.plan_placement
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(planner, "plan_placement", spy)
+
+    stub = _Stub()
+    assert stub._tensor_spill_layout("/models/stub.gguf").recurrent_bytes == 0
+    stub._planned_tensor_spill(
+        {
+            **_inputs(kv = attention + state, free_mib = 12 * 1024),
+            "kv_recurrent_bytes_per_slot": state,
+        },
+        env = {"UNSLOTH_SMART_OFFLOAD": "1"},
+    )
+    assert seen["kv_bytes_floor"] == attention + state
