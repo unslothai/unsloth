@@ -54,9 +54,8 @@ export function LoraParamsSection(): ReactElement | null {
   const [open, setOpen] = useState(true);
   const isCpt = store.trainingMethod === "cpt";
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
-  // MLX refuses DoRA once vision layers are in the run. `isVisionModel` is
-  // fetched metadata that can go stale, so this only stops the combination
-  // being newly selected; the loaded model still settles an existing one.
+  // `isVisionModel` can go stale, so this blocks only a NEW selection;
+  // the backend settles an existing one.
   const doraNeedsVisionOff =
     deviceType === "mac" && showVisionLora && store.finetuneVisionLayers;
 

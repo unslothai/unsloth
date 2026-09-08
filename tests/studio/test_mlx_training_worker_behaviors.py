@@ -36,27 +36,7 @@ def test_run_mlx_training_passes_token_to_from_pretrained():
 
 
 def test_mlx_dora_decided_before_load_and_merged_into_peft_kwargs():
-    """The DoRA decision must be wired to happen before the base model is
-    fetched, and to feed the wrap call.
-
-    Dropping the merge would accept a DoRA request and silently train plain
-    LoRA; deciding after the load would make an unsupported unsloth-zoo cost
-    a multi-gigabyte download first.
-
-    This checks WIRING, not runtime behavior: the decision precedes the load,
-    takes the run config, probes the same callable the wrap invokes, and its
-    result is merged into the mapping that wrap expands without being rebound
-    in between. It cannot see through code that keeps the shape and defeats
-    the effect -- burying the merge under a false condition, unsetting the key
-    afterwards -- because the test and the code it reads live together; the
-    real-model behavior is covered by the MLX backend's own tests.
-
-    This asserts one specific shape — a `peft_kwargs.update(...)` call and a
-    `**peft_kwargs` wrap call — rather than trying to recognize every
-    equivalent formulation. Rewriting that seam another way (a merge
-    operator, explicit unpacking) is expected to fail here and to be
-    re-expressed, not worked around.
-    """
+    """Wiring only: dropping the merge would silently train plain LoRA, and deciding after the load would make an unsupported unsloth-zoo cost a multi-gigabyte download first. One shape is asserted, so an equivalent rewrite is meant to fail here and be re-expressed."""
     tree = ast.parse(WORKER.read_text(encoding = "utf-8"))
     fn = _find_func(tree, "_run_mlx_training")
     assert fn is not None
@@ -72,8 +52,6 @@ def test_mlx_dora_decided_before_load_and_merged_into_peft_kwargs():
         ):
             decided_at = node.lineno
             decision_target = node.targets[0].id
-            # The run's own config and the same callable the wrap invokes --
-            # probing anything else answers for something else.
             passed = [ast.unparse(arg) for arg in node.value.args]
             assert passed == [
                 "config",
@@ -107,7 +85,6 @@ def test_mlx_dora_decided_before_load_and_merged_into_peft_kwargs():
     ]
     assert wraps, "FastMLXModel.get_peft_model is never called"
     for wrap in wraps:
-        # A real ** expansion, not a string that merely looks like one.
         assert any(
             kw.arg is None and ast.unparse(kw.value) == "peft_kwargs" for kw in wrap.keywords
         ), (
@@ -118,11 +95,8 @@ def test_mlx_dora_decided_before_load_and_merged_into_peft_kwargs():
     assert (
         min(merged_at) < first_wrap
     ), "peft_kwargs must be updated before get_peft_model is called"
-    # ...and not replaced in between, which would drop the merge again.
-    # A Store/Del context covers the rebinding forms a refactor realistically
-    # produces. This is a regression check over one function's line range, not
-    # a proof: string-bound names (import aliases, `case` captures) and
-    # anything sharing the merge's line are outside it.
+    # Store/Del only: string-bound names (import aliases, `case` captures)
+    # and the merge's own line are outside this check.
     rebound = [
         node.lineno
         for node in ast.walk(fn)

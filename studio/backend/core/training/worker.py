@@ -2432,11 +2432,7 @@ def _normalize_mlx_studio_optimizer(value):
 
 
 def _mlx_dora_peft_kwargs(config, get_peft_model):
-    """LoRA kwargs a DoRA request adds for MLX, or raise why it cannot run.
-
-    Only version skew is decided here; whether the selected modules can carry
-    DoRA depends on the loaded model, so the MLX backend refuses those itself.
-    """
+    """LoRA kwargs a DoRA request adds for MLX, or raise why it cannot run."""
     import inspect
 
     if not config.get("use_dora"):
@@ -2445,9 +2441,8 @@ def _mlx_dora_peft_kwargs(config, get_peft_model):
         parameter = inspect.signature(get_peft_model).parameters.get("use_dora")
     except (TypeError, ValueError):
         parameter = None
-    # The name alone is not support: `**use_dora` collects anything, which is
-    # what the unsupporting version already does, and the positional-only and
-    # `*use_dora` kinds cannot be bound by keyword at all.
+    # A **kwargs catch-all absorbs use_dora and trains plain LoRA, so the
+    # parameter must be named and bindable by keyword.
     named = parameter is not None and parameter.kind in (
         inspect.Parameter.POSITIONAL_OR_KEYWORD,
         inspect.Parameter.KEYWORD_ONLY,

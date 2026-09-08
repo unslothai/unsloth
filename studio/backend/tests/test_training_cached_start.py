@@ -1259,8 +1259,7 @@ def test_mlx_start_rejects_unsupported_training_config(request_overrides, expect
 
 
 def test_mlx_start_accepts_dora():
-    # MLX trains DoRA, so the platform gate must let it through. LoftQ is
-    # asserted alongside it so a gate that stopped refusing anything at all
+    # LoftQ is asserted alongside DoRA so a gate that stopped refusing anything at all
     # cannot pass this test.
     from utils.hardware import hardware
 
