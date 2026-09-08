@@ -139,9 +139,7 @@ def test_native_drop_leaves_the_event_loop_free(
     dropped = tmp_path / "dropped.txt"
     dropped.write_bytes(PAYLOAD)
     response, latency = asyncio.run(
-        _upload_then_ping(
-            "/api/rag/threads/T1/documents", data = {"nativePathLease": _sign(dropped)}
-        )
+        _upload_then_ping("/api/rag/threads/T1/documents", data = {"nativePathLease": _sign(dropped)})
     )
     assert response.status_code == 200
     assert latency < LATENCY_BUDGET, f"concurrent request waited {latency:.2f}s on the drop"
