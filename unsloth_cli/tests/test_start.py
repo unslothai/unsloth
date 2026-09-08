@@ -6450,6 +6450,51 @@ def test_agent_api_key_auto_started_accepted_key_is_honored(fake_studio, tmp_pat
     assert cached["servers"][BASE]["saved"] == ["sk-unsloth-deadbeefdeadbeef"]
 
 
+def test_startup_api_key_mints_once_and_the_agent_key_replays_it(fake_studio):
+    key = start._startup_api_key(BASE)
+
+    assert key == "sk-unsloth-feedfacefeedface"
+    assert start._agent_api_key(BASE, None, auto_started = True) == key
+    assert len([c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]) == 1
+
+
+def test_startup_api_key_replays_a_cached_minted_key(fake_studio, tmp_path):
+    start._remember_key(tmp_path / "agent_api_key.json", BASE, "sk-unsloth-cached", "minted")
+
+    assert start._startup_api_key(BASE) == "sk-unsloth-cached"
+    assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)
+
+
+def test_startup_api_key_is_silent_when_identity_fails(fake_studio, monkeypatch, capsys):
+    monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
+
+    assert start._startup_api_key(BASE) is None
+    assert fake_studio == []
+    assert capsys.readouterr().err == ""
+
+
+def test_startup_api_key_swallows_a_server_outage(fake_studio, tmp_path, monkeypatch, capsys):
+    start._remember_key(tmp_path / "agent_api_key.json", BASE, "sk-unsloth-cached", "minted")
+    inner = start._http_json
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/v1/models"):
+            raise urllib.error.HTTPError(url, 503, "Service Unavailable", None, None)
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    assert start._startup_api_key(BASE) is None
+    assert capsys.readouterr().err == ""
+
+
 def test_session_config_no_launch_preserves_existing_state(fake_studio, tmp_path):
     # A previously printed recipe may still be running an agent whose sessions
     # or sqlite state live in the stable home; a re-run must not wipe it.

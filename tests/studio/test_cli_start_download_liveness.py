@@ -89,6 +89,10 @@ class Harness:
         rebound = False,
         ready_at = None,
         tail = KEY_LINE,
+        healthy = False,
+        startup_key = None,
+        marker_at = None,
+        ready_tail = None,
     ):
         self.clock = FakeClock(STEP_S)
         self.log_path = None
@@ -106,6 +110,11 @@ class Harness:
         self.chunk_bytes = chunk_bytes
         self.ready_at = ready_at
         self.tail = tail
+        self.healthy = healthy
+        self.startup_key = startup_key
+        self.marker_at = marker_at
+        self.ready_tail = ready_tail or f"{KEY_LINE}Model loaded: {MODEL}\n"
+        self.mints = 0
         self.server = FakePopen()
         self.iterations = 0
         self.polls = 0
@@ -114,6 +123,7 @@ class Harness:
         monkeypatch.setattr(start_cli, "_http_json", self.http_json)
         monkeypatch.setattr(start_cli, "_log_tail", self.log_tail)
         monkeypatch.setattr(start_cli, "_studio_healthy", self.studio_healthy)
+        monkeypatch.setattr(start_cli, "_startup_api_key", self.startup_api_key)
         monkeypatch.setattr(start_cli, "_shutdown_server", self.shutdowns.append)
         monkeypatch.setattr(start_cli, "_auto_served_server", None)
         monkeypatch.setattr(start_cli.atexit, "register", lambda *a, **k: None)
@@ -211,10 +221,16 @@ class Harness:
         if self.chatter and self.log_path is not None:
             with open(self.log_path, "ab") as handle:
                 handle.write(self.chatter(self.iterations).encode())
+        if self.marker_at is not None and self.iterations >= self.marker_at:
+            self.tail = KEY_LINE
         if self.ready_at is not None and self.iterations >= self.ready_at:
-            self.tail = f"{KEY_LINE}Model loaded: {MODEL}\n"
+            self.tail = self.ready_tail
             return True
-        return False
+        return self.healthy
+
+    def startup_api_key(self, base):
+        self.mints += 1
+        return self.startup_key
 
     def start(self):
         return start_cli._start_studio_server(BASE, MODEL, start_cli.LoadOptions())
@@ -402,3 +418,68 @@ def test_a_vanished_cache_mount_is_not_progress(monkeypatch, capsys):
     assert harness.shutdowns == [harness.server]
     assert f"made no progress for {start_cli._SERVER_START_TIMEOUT_S}s" in capsys.readouterr().err
     assert harness.clock.elapsed < 2 * start_cli._SERVER_START_TIMEOUT_S
+
+
+def test_an_older_child_is_polled_with_a_minted_key(monkeypatch):
+    harness = Harness(
+        monkeypatch,
+        tail = "starting\n",
+        healthy = True,
+        startup_key = "sk-unsloth-minted",
+        chunk_bytes = 1024**3,
+        ready_at = 40,
+        ready_tail = f"API Key: sk-unsloth-old\nModel loaded: {MODEL}\n",
+    )
+
+    server = harness.start()
+
+    assert server is harness.server
+    assert harness.shutdowns == []
+    assert harness.mints == 1
+    assert harness.polls >= 40
+    assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
+
+
+def test_an_older_child_with_no_mintable_key_still_times_out(monkeypatch, capsys):
+    harness = Harness(monkeypatch, tail = "starting\n", healthy = True)
+
+    with pytest.raises(typer.Exit):
+        harness.start()
+
+    assert harness.mints > 0
+    assert harness.polls == 0
+    assert harness.shutdowns == [harness.server]
+    assert f"made no progress for {start_cli._SERVER_START_TIMEOUT_S}s" in capsys.readouterr().err
+
+
+def test_a_minted_key_does_not_retire_the_early_key_marker(monkeypatch):
+    harness = Harness(
+        monkeypatch,
+        tail = "starting\n",
+        healthy = True,
+        startup_key = "sk-unsloth-minted",
+        chunk_bytes = 1024**3,
+        marker_at = 3,
+        ready_at = 40,
+    )
+
+    server = harness.start()
+
+    assert server is harness.server
+    assert harness.mints == 1
+    assert harness.iterations >= 40
+
+
+def test_a_ready_banner_is_not_mistaken_for_a_child_that_needs_a_key(monkeypatch):
+    harness = Harness(
+        monkeypatch,
+        tail = f"API Key: sk-unsloth-old\nModel loaded: {MODEL}\n",
+        healthy = True,
+        startup_key = "sk-unsloth-minted",
+    )
+
+    server = harness.start()
+
+    assert server is harness.server
+    assert harness.mints == 0
+    assert harness.polls == 0
