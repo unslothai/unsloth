@@ -197,8 +197,7 @@ def load_config(path: Optional[Path]) -> Config:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    # utf-8-sig so a config saved by Notepad (which prepends a BOM) still loads; it is
-    # identical to utf-8 when no BOM is present.
+    # utf-8-sig: drops a Notepad BOM, identical to utf-8 when there is none.
     try:
         text = path.read_text(encoding = "utf-8-sig")
     except UnicodeDecodeError as error:

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth train --config` used to drop every key it did not recognise, so a
-config that put `learning_rate` at the top level (where the CLI flag lives) or
-spelled a key CLI-style inside a section trained on defaults and said nothing."""
+"""`unsloth train --config` used to drop unrecognised keys, so `learning_rate` at the
+top level, or a CLI-style spelling inside a section, trained on defaults in silence."""
 
 from __future__ import annotations
 
@@ -155,9 +154,7 @@ def test_an_empty_config_still_loads_defaults(tmp_path):
 
 
 def test_a_directory_reports_cleanly_instead_of_tracebacking(tmp_path):
-    """`path.read_text` sits outside the parse handlers, so a directory, an
-    unreadable file and a non-UTF-8 file used to escape as raw tracebacks even
-    after the parse step was wrapped."""
+    """read_text sits outside the parse handlers, so this escaped as a raw traceback."""
     directory = tmp_path / "config.yaml"
     directory.mkdir()
 
