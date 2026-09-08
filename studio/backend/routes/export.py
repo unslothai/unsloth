@@ -20,7 +20,8 @@ backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from auth.authentication import get_current_subject
+from auth.authentication import allow_ambient_hf_token, get_current_subject
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
 from utils.utils import safe_error_detail
 
@@ -74,9 +75,31 @@ async def _ensure_export_supported() -> None:
         )
 
 
+def _resolve_export_hf_token(
+    raw_token: Optional[str],
+    *,
+    push_to_hub: bool = False,
+    allow_ambient: bool = True,
+) -> HfTokenArg:
+    """The credential this export runs under, as the anonymous-aware sentinel.
+
+    ``None`` reads downstream as "go and find a credential" (``if token is None:
+    get_token()``), so a caller denied the ambient token is spelled ``False``.
+    """
+    token = raw_token.strip() if isinstance(raw_token, str) and raw_token.strip() else None
+    if push_to_hub and token is None and not allow_ambient:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Hugging Face token is required to push to Hub when authenticated via API key.",
+        )
+    return hf_token_arg(token, allow_ambient_token = allow_ambient)
+
+
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
-    request: LoadCheckpointRequest, current_subject: str = Depends(get_current_subject)
+    request: LoadCheckpointRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Load a checkpoint into the export backend (ExportBackend.load_checkpoint).
 
@@ -97,7 +120,9 @@ async def load_checkpoint(
             load_in_4bit = request.load_in_4bit,
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
-            hf_token = request.hf_token,
+            hf_token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient),
+            # A supplied token cannot say whether it came from a session or an API key.
+            allow_ambient = allow_ambient,
             subject = current_subject,
         )
 
@@ -179,7 +204,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
         # does, so the success banner shows an identical path on either route.
         last_op_output_path = None
         if last_op and last_op.get("output_path"):
-            details = _export_details(last_op["output_path"])
+            details = await asyncio.to_thread(_export_details, last_op["output_path"])
             last_op_output_path = (details or {}).get("output_path")
         return ExportStatusResponse(
             current_checkpoint = backend.current_checkpoint,
@@ -213,11 +238,10 @@ async def get_export_logs(
 
     The SSE endpoint (`/logs/stream`) is the low-latency path, but some reverse
     proxies -- notably Cloudflare quick tunnels (`*.trycloudflare.com`) used by
-    `--secure` mode -- buffer `text/event-stream` responses and only flush when
-    the stream closes, so over the tunnel the browser sees nothing for the whole
-    export ("connecting..." with no logs). This endpoint returns the same
-    ring-buffer lines as a short, complete JSON response that no proxy buffers,
-    so the frontend can poll it and still show logs in near real time.
+    `--secure` mode -- buffer streamed GET responses until the stream closes.
+    This endpoint returns the same ring-buffer lines as a short, complete JSON
+    response that no proxy buffers, so the frontend can poll it and still show
+    logs in near real time even where the stream itself does not arrive.
 
     Shares the orchestrator's monotonic `seq` cursor with the SSE stream, so the
     two transports can run together and the client de-dupes by seq.
@@ -254,18 +278,27 @@ async def get_export_logs(
         )
 
 
-def _try_register_external_export(path: Path) -> tuple[bool, Optional[str]]:
+def _try_register_external_export(
+    path: Path, *, refresh_index: bool = False
+) -> tuple[bool, Optional[str]]:
     """Best-effort registration so absolute exports show up in local scans."""
     try:
-        from storage.studio_db import add_scan_folder
-        folder = add_scan_folder(str(path))
+        from storage.studio_db import add_scan_folder_with_status
+
+        folder, inserted = add_scan_folder_with_status(str(path))
+        if inserted or refresh_index:
+            from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+            invalidate_index()
+            warm_index_soon()
         return True, str(folder.get("path") or path)
     except Exception as exc:
         logger.warning("Could not register export scan folder %s: %s", path, exc)
         return False, None
 
 
-def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
+def _export_details(
+    output_path: Optional[str], *, refresh_index: bool = False
+) -> Optional[Dict[str, Any]]:
     """Return relative export paths, keeping external absolute paths visible."""
     if not output_path:
         return None
@@ -279,7 +312,9 @@ def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
             try:
                 path.resolve().relative_to(exports_root().resolve())
             except ValueError:
-                registered, registered_path = _try_register_external_export(path)
+                registered, registered_path = _try_register_external_export(
+                    path, refresh_index = refresh_index
+                )
                 return {
                     "output_path": str(path),
                     "scan_folder_registered": registered,
@@ -293,7 +328,9 @@ def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
 
 @router.post("/export/merged", response_model = ExportOperationResponse)
 async def export_merged_model(
-    request: ExportMergedModelRequest, current_subject: str = Depends(get_current_subject)
+    request: ExportMergedModelRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Export a merged PEFT model (16-bit or 4-bit), optionally pushing to Hub.
 
@@ -308,7 +345,11 @@ async def export_merged_model(
             format_type = request.format_type,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = request.hf_token,
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             private = request.private,
             compressed_method = request.compressed_method,
         )
@@ -319,7 +360,7 @@ async def export_merged_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
@@ -338,7 +379,9 @@ async def export_merged_model(
 
 @router.post("/export/base", response_model = ExportOperationResponse)
 async def export_base_model(
-    request: ExportBaseModelRequest, current_subject: str = Depends(get_current_subject)
+    request: ExportBaseModelRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Export a non-PEFT base model, optionally pushing to Hub.
 
@@ -352,7 +395,11 @@ async def export_base_model(
             save_directory = request.save_directory,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = request.hf_token,
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             private = request.private,
             base_model_id = request.base_model_id,
         )
@@ -363,7 +410,7 @@ async def export_base_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
@@ -382,7 +429,9 @@ async def export_base_model(
 
 @router.post("/export/gguf", response_model = ExportOperationResponse)
 async def export_gguf(
-    request: ExportGGUFRequest, current_subject: str = Depends(get_current_subject)
+    request: ExportGGUFRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Export the current model to GGUF format, optionally pushing to Hub.
 
@@ -399,8 +448,14 @@ async def export_gguf(
             quantization_method = request.quantization_method,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = request.hf_token,
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             imatrix_file = imatrix_file,
+            private = request.private,
+            gguf_shard_size = request.gguf_shard_size,
         )
 
         if not success:
@@ -409,7 +464,7 @@ async def export_gguf(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
@@ -428,7 +483,9 @@ async def export_gguf(
 
 @router.post("/export/lora", response_model = ExportOperationResponse)
 async def export_lora_adapter(
-    request: ExportLoRAAdapterRequest, current_subject: str = Depends(get_current_subject)
+    request: ExportLoRAAdapterRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Export only the LoRA adapter (if the loaded model is PEFT).
 
@@ -442,7 +499,11 @@ async def export_lora_adapter(
             save_directory = request.save_directory,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = request.hf_token,
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             private = request.private,
             gguf = request.gguf,
             gguf_outtype = request.gguf_outtype,
@@ -454,7 +515,7 @@ async def export_lora_adapter(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
@@ -471,17 +532,10 @@ async def export_lora_adapter(
         )
 
 
-# Live export log stream (Server-Sent Events).
-#
-# The export worker's stdout/stderr is piped to the orchestrator as log
-# entries (core/export/worker.py, orchestrator.py); this endpoint streams
-# them to the browser for a live terminal panel during export operations.
-#
-# Shape follows routes/training.py::stream_training_progress: each event
-# carries id/event/data, the stream starts with a `retry:` directive, and
-# `Last-Event-ID` is honored on reconnect.
-
-
+# Live export log SSE. Same shape as stream_training_progress: id/event/data, a leading `retry:`, and Last-Event-ID
+# honoured on reconnect.
+# Worker stdout/stderr reaches the orchestrator as log entries (core/export/worker.py, orchestrator.py); shape follows
+# routes/training.py.
 def _format_sse(
     data: str,
     event: str,
@@ -498,7 +552,9 @@ def _format_sse(
     return "\n".join(lines)
 
 
-@router.get("/logs/stream")
+# POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
+@router.post("/logs/stream")
+@router.get("/logs/stream", include_in_schema = False)
 async def stream_export_logs(
     request: Request,
     since: Optional[int] = Query(

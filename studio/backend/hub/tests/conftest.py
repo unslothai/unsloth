@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import itertools
 import sys
 import types
 
@@ -73,7 +74,23 @@ class _DummyLogger:
         return lambda *args, **kwargs: None
 
 
-sys.modules.setdefault(
+def _stub_unless_installed(name: str, stub) -> None:
+    """Stub *name* only when it is genuinely not installed.
+
+    ``setdefault`` alone stubs whenever the module is merely not imported yet, and these stubs
+    carry a few symbols each. Since they are never removed, one such stub decides the rest of
+    the process: anything importing ``routes`` afterwards dies on a name the stub omits, which
+    is most of ``studio/backend/tests``.
+    """
+    if name in sys.modules:
+        return
+    try:
+        __import__(name)
+    except ImportError:
+        sys.modules[name] = stub
+
+
+_stub_unless_installed(
     "pydantic",
     types.SimpleNamespace(
         BaseModel = _BaseModel,
@@ -81,7 +98,7 @@ sys.modules.setdefault(
         model_validator = _model_validator,
     ),
 )
-sys.modules.setdefault(
+_stub_unless_installed(
     "fastapi",
     types.SimpleNamespace(
         APIRouter = _APIRouter,
@@ -104,3 +121,47 @@ sys.modules.setdefault(
         get_logger = lambda *args, **kwargs: _DummyLogger(),
     ),
 )
+
+
+import pytest
+
+
+@pytest.fixture(scope = "session")
+def _hub_studio_home_root(tmp_path_factory):
+    """One parent directory for every per-test studio home.
+
+    ``tmp_path_factory.mktemp`` scans the whole basetemp on every call to pick
+    the next number, so calling it once per test is quadratic in the number of
+    tests. Paid once per session here, the per-test cost below is a bare mkdir.
+    """
+    return tmp_path_factory.mktemp("hub_studio_homes")
+
+
+_studio_home_counter = itertools.count()
+
+
+@pytest.fixture(autouse = True)
+def _isolate_studio_home(_hub_studio_home_root, monkeypatch):
+    home = _hub_studio_home_root / f"home-{next(_studio_home_counter)}"
+    home.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    for name, module in tuple(sys.modules.items()):
+        if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
+            monkeypatch.setattr(module, "_schema_ready", False)
+
+
+@pytest.fixture(autouse = True)
+def _reset_optional_module_memo():
+    """Forget the shim's memoised optional-module results between tests.
+
+    ``_load_optional`` caches per module name including failures, so without this one test's fake
+    module would answer the next test's question.
+    """
+    try:
+        import utils.hf_xet_fallback as _shim
+    except Exception:  # noqa: BLE001 - hub tests run against stubbed modules
+        yield
+        return
+    _shim._reset_optional_module_cache()
+    yield
+    _shim._reset_optional_module_cache()

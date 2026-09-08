@@ -18,11 +18,13 @@ interface BackendTrainingDefaults {
   max_seq_length?: number;
   num_epochs?: number;
   learning_rate?: number | string;
+  embedding_learning_rate?: number | string | null;
   optim?: string;
   lr_scheduler_type?: string;
   batch_size?: number;
   gradient_accumulation_steps?: number;
   warmup_steps?: number;
+  warmup_ratio?: number;
   max_steps?: number;
   save_steps?: number;
   eval_steps?: number;
@@ -31,7 +33,8 @@ interface BackendTrainingDefaults {
   vision_image_size?: number | string | null;
   packing?: boolean;
   train_on_completions?: boolean;
-  gradient_checkpointing?: "none" | "true" | "unsloth";
+  // Shipped YAML may decode this value as a boolean.
+  gradient_checkpointing?: "none" | "true" | "unsloth" | boolean;
   trust_remote_code?: boolean;
 }
 
@@ -71,6 +74,9 @@ export interface ModelConfigResponse {
   is_vision: boolean;
   is_embedding?: boolean;
   is_audio: boolean;
+  // False when the repo's tokenizer_config.json was unreadable (gated, offline,
+  // upstream error), so is_audio false means unknown rather than "not audio".
+  audio_type_known?: boolean;
   is_lora: boolean;
   base_model?: string | null;
   model_type?: "text" | "vision" | "audio" | "embeddings" | null;
@@ -78,11 +84,16 @@ export interface ModelConfigResponse {
   model_size_bytes?: number | null;
 }
 
+export interface ModelConfigRequestOptions {
+  preferLocalCache?: boolean;
+  localPath?: string | null;
+}
+
 export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "custom";
   model_id?: string | null;
   updated_at?: number | null;
 }
@@ -104,8 +115,9 @@ export async function checkVisionModel(
     headers: hubTokenHeader(hfToken?.trim() || null),
   });
   if (!response.ok) {
-    // If the check fails (e.g. network error), default to non-vision
-    return false;
+    throw new Error(
+      `Failed to check model vision support (${response.status})`,
+    );
   }
   const data = (await response.json()) as VisionCheckResponse;
   return data.is_vision;
@@ -121,7 +133,7 @@ export async function checkEmbeddingModel(
     headers: hubTokenHeader(hfToken?.trim() || null),
   });
   if (!response.ok) {
-    // If the check fails (e.g. network error), default to non-embedding
+    // Check failure (e.g. network error): default to non-embedding.
     return false;
   }
   const data = (await response.json()) as EmbeddingCheckResponse;
@@ -132,12 +144,24 @@ export async function getModelConfig(
   modelName: string,
   signal?: AbortSignal,
   hfToken?: string,
+  options?: ModelConfigRequestOptions,
 ): Promise<ModelConfigResponse> {
   const encoded = encodeURIComponent(modelName);
-  const response = await authFetch(`/api/models/config/${encoded}`, {
-    headers: hubTokenHeader(hfToken?.trim() || null),
-    signal,
-  });
+  const params = new URLSearchParams();
+  if (options?.preferLocalCache) {
+    params.set("prefer_local_cache", "true");
+  }
+  if (options?.localPath) {
+    params.set("local_path", options.localPath);
+  }
+  const query = params.toString();
+  const response = await authFetch(
+    `/api/models/config/${encoded}${query ? `?${query}` : ""}`,
+    {
+      headers: hubTokenHeader(hfToken?.trim() || null),
+      signal,
+    },
+  );
   if (!response.ok) {
     throw new Error(`Failed to fetch model config (${response.status})`);
   }

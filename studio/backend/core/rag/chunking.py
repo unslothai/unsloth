@@ -36,7 +36,7 @@ def _split(text: str, seps: tuple[str, ...], max_tokens: int, count: TokenCounte
         parts = list(text) if sep == "" else text.split(sep)
         if len(parts) <= 1:
             continue
-        if sep:  # re-attach the separator
+        if sep:
             parts = [p + sep for p in parts[:-1]] + parts[-1:]
         out: list[str] = []
         for p in parts:
@@ -74,8 +74,8 @@ def _merge(
         pt = count(piece)
         if buf and buf_tok + pt > max_tokens:
             _flush()
-            # Bound the carry so carry + this piece fits max_tokens; else a full
-            # overlap before a near-max piece overflows the embedder.
+            # Bound the carry so carry + this piece fits max_tokens; else a full overlap before a near-max piece
+            # overflows the embedder.
             carry_budget = min(overlap, max(0, max_tokens - pt))
             carry, carry_starts, run = [], [], 0
             for prev, prev_start in zip(reversed(buf), reversed(buf_starts)):

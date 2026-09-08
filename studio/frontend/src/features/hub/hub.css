@@ -6,10 +6,9 @@
    Lives with the Hub feature module so the styling stays bundled with the
    Hub. Wired into the build via a single @import in studio/frontend/src/index.css.
 
-   Format/status color tokens are defined at :root and :root.dark so Tailwind
-   utilities like `bg-format-gguf` or `text-status-success` resolve everywhere
-   the Hub UI is rendered. Rule bodies are scoped to .hub-page or hub-prefixed
-   classes so they do not bleed into chat, train or settings surfaces. */
+   Format/status color tokens and shared picker controls resolve wherever those
+   components render. Hub-only rule bodies are scoped to .hub-page or
+   hub-prefixed classes. */
 
 :root {
   --format-gguf: #60a5fa;
@@ -49,6 +48,20 @@
 }
 
 @layer base {
+  /* Shared measure for every centered Hub column (top bar, catalog, detail).
+     Container-relative, so the column tracks the width actually
+     available instead of pinning to 1100px and leaving wide empty gutters.
+     The floor keeps the old measure on ~1280px laptops, the cap stops rows
+     stretching on ultrawides, and `max-width` never forces overflow, so the
+     floor stays safe on narrow viewports. */
+  .hub-page {
+    --hub-measure: clamp(1100px, 94%, 1760px);
+    /* Split mode's detail pane: tighter, the master list takes the left. */
+    --hub-measure-compact: clamp(860px, 94%, 1180px);
+    /* Model card readme. Fills the column, capped so prose stays readable. */
+    --hub-readme-measure: 1400px;
+  }
+
   /* Filled-control surface — Hub search, Hub filter triggers, picker
 	   search bars. Borderless soft fill matching the .hub-tab-toggle pills:
 	     - Resting: 5% bg, no border
@@ -73,7 +86,6 @@
 
   .field-soft:focus-visible {
     background-color: color-mix(in srgb, var(--foreground) 8%, transparent) !important;
-    box-shadow: none !important;
     outline: none;
   }
 
@@ -88,7 +100,6 @@
 
   .dark .field-soft:focus-visible {
     background-color: #1c1c1c !important;
-    box-shadow: none !important;
   }
 
   /* The Hub search field is `type="search"` (so the browser won't offer saved
@@ -482,14 +493,6 @@
     color: var(--foreground);
   }
 
-  .hub-page .page-title-halo {
-    text-shadow: 0 0 24px #e4e3df, 0 0 56px #ebeae6, 0 0 96px #efeeea;
-  }
-
-  html.dark .hub-page .page-title-halo {
-    text-shadow: none;
-  }
-
   html:not(.dark) .hub-page {
     background-color: var(--background);
   }
@@ -591,28 +594,15 @@
     box-shadow: none;
   }
 
-  /* On-device rows reuse the result-row card but carry selection/active state:
-     a neutral tint for the inspected row and a success tint with a matching
-     success edge for the model currently loaded. Discover rows never set these
-     attributes. */
+  /* On-device rows reuse the result-row card with a neutral tint for the
+     inspected row. */
   .hub-page .hub-result-row[data-selected="true"] {
     background-color: color-mix(in srgb, var(--foreground) 5%, var(--card));
-  }
-
-  .hub-page .hub-result-row[data-active="true"] {
-    background-color: color-mix(in srgb, var(--status-success) 7%, var(--card));
-    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16),
-      inset 2px 0 0 0 var(--status-success);
   }
 
   html.dark .hub-page .hub-result-row[data-selected="true"] {
     background-color: color-mix(in srgb, var(--foreground) 11%, var(--background));
     box-shadow: none;
-  }
-
-  html.dark .hub-page .hub-result-row[data-active="true"] {
-    background-color: color-mix(in srgb, var(--status-success) 14%, var(--background));
-    box-shadow: inset 2px 0 0 0 var(--status-success);
   }
 
   /* Recent-searches suggestion panel. The surface comes from
@@ -735,14 +725,6 @@
     background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
   }
 
-  /* Currently-loaded checkpoint: a brand-green left stripe plus a faint
-	   green wash, orthogonal to the neutral selected tint so a row that is
-	   both loaded and selected still reads as loaded. */
-  html:not(.dark) .hub-page .catalog-row[data-active="true"] {
-    background-color: color-mix(in srgb, var(--status-success) 7%, transparent);
-    box-shadow: inset 2px 0 0 0 var(--status-success);
-  }
-
   html.dark .hub-page .catalog-row {
     background-color: transparent;
     border-color: transparent;
@@ -756,11 +738,6 @@
 
   html.dark .hub-page .catalog-row[data-selected="true"] {
     background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
-  }
-
-  html.dark .hub-page .catalog-row[data-active="true"] {
-    background-color: color-mix(in srgb, var(--status-success) 12%, transparent);
-    box-shadow: inset 2px 0 0 0 var(--status-success);
   }
 }
 
@@ -1107,7 +1084,7 @@
     margin-block: 0;
   }
 
-  /* Inspector action pills (Download / Run / Train / Cancel) for the hub
+  /* Inspector action pills (Download / Update / Cancel) for the hub
 	   inspector card. Centralized so all three sections (GGUF, safetensors,
 	   datasets) stay in lock-step on type scale, padding, hover surface, and
 	   the 16px icon size — mirrors the pattern used for `.sidebar-nav-btn`.
@@ -1155,12 +1132,6 @@
     flex-shrink: 0;
   }
 
-  /* Primary "Run" action — confirms loading/running a model. Pill shape
-	   (rounded-full) so it reads as the unmistakable CTA in a row of
-	   ghost actions and matches the live-model status-success token used
-	   elsewhere in the app. Same h-9 geometry, 13px
-	   medium type, tracking-tight, and 16px icon slot as .hub-action-btn
-	   so the height aligns with adjacent ghost buttons. */
   .hub-run-action-btn {
     display: inline-flex;
     height: 2.25rem;
@@ -1179,8 +1150,9 @@
     letter-spacing: -0.025em;
     color: var(--status-success-foreground);
     transition: background-color 150ms, transform 150ms;
-    box-shadow: inset 0 1px 0
-      color-mix(in srgb, var(--status-success-foreground) 18%, transparent),
+    box-shadow:
+      inset 0 1px 0
+        color-mix(in srgb, var(--status-success-foreground) 18%, transparent),
       0 1px 2px color-mix(in srgb, var(--status-success) 22%, transparent);
   }
 
@@ -1193,8 +1165,13 @@
   }
 
   .hub-run-action-btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
+    cursor: wait;
+    opacity: 0.78;
+  }
+
+  .hub-run-action-btn:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
 
   .hub-run-action-btn svg {
@@ -1214,24 +1191,6 @@
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-  }
-
-  .hub-cta-indicator-spinner,
-  .hub-cta-indicator-cancel {
-    transition: opacity 150ms;
-  }
-
-  .hub-cta-indicator-cancel {
-    position: absolute;
-    opacity: 0;
-  }
-
-  .hub-action-btn:hover .hub-cta-indicator-spinner {
-    opacity: 0;
-  }
-
-  .hub-action-btn:hover .hub-cta-indicator-cancel {
-    opacity: 1;
   }
 
   /* Hover-revealed inline action overlay (used for the row-end trash on

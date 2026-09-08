@@ -4,6 +4,8 @@
 "use client";
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
@@ -12,12 +14,15 @@ import { CopyIcon, FileTextIcon, TerminalIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
+import { toolArgText } from "./tool-arg-text";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useToolAwaitingApproval } from "@/features/chat";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { useToolActivityOpen } from "./use-tool-activity-open";
 
 /**
  * Renders synthetic `_toolEvent` chunks from `_stream_anthropic` for the
@@ -36,8 +41,9 @@ import {
  */
 interface CodeExecutionArgs {
   kind?: "bash" | "text_editor";
-  command?: string;
-  path?: string;
+  // Straight off the wire: the model, not the schema, decides the JSON type.
+  command?: unknown;
+  path?: unknown;
 }
 
 const MAX_COMMAND_LABEL = 80;
@@ -98,16 +104,43 @@ function CopyBtn({ text }: { text: string }) {
     </button>
   );
 }
+export function CodeExecutionResultOutput({ result }: { result: unknown }) {
+  const resultText = useMemo(
+    () => (result == null ? "" : stringifyToolResult(result)),
+    [result],
+  );
+  const displayedResult = useMemo(
+    () => truncateResult(resultText),
+    [resultText],
+  );
+
+  if (!resultText) {
+    return null;
+  }
+  return (
+    <div>
+      <div className="flex justify-end">
+        <CopyBtn text={resultText} />
+      </div>
+      <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+        {displayedResult}
+      </pre>
+    </div>
+  );
+}
+
+
 
 const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
   status,
+  toolCallId,
 }) => {
   const parsedArgs = (args as CodeExecutionArgs) ?? {};
   const kind = parsedArgs.kind ?? "bash";
-  const command = parsedArgs.command ?? "";
-  const path = parsedArgs.path ?? "";
+  const command = toolArgText(parsedArgs.command);
+  const path = toolArgText(parsedArgs.path);
   const isRunning = status?.type === "running";
 
   const commandLabel = command ? truncateCommandLabel(command) : "";
@@ -145,31 +178,17 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
-  const [open, setOpen] = useState(isRunning);
-  useEffect(() => {
-    if (isRunning) {
-      setOpen(true);
-    } else if (hasText) {
-      setOpen(false);
-    }
-  }, [isRunning, hasText]);
-
-  const resultText = useMemo(
-    () =>
-      typeof result === "string"
-        ? result
-        : result != null
-          ? JSON.stringify(result, null, 2)
-          : "",
-    [result],
-  );
-  const displayedResult = useMemo(
-    () => truncateResult(resultText),
-    [resultText],
-  );
+  // Ask permission gates every local tool call, and what is being approved
+  // lives inside the content while Allow/Deny render outside it.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
+  const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
   return (
-    <ToolFallbackRoot open={open} onOpenChange={setOpen}>
+    <ToolFallbackRoot
+      open={open}
+      onOpenChange={setOpen}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={isRunning ? runningLabel : completedLabel}
         status={status}
@@ -181,16 +200,9 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
             <Spinner className="size-3.5" />
             <span>{runningLabel}</span>
           </div>
-        ) : resultText ? (
-          <div>
-            <div className="flex justify-end">
-              <CopyBtn text={resultText} />
-            </div>
-            <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-              {displayedResult}
-            </pre>
-          </div>
-        ) : null}
+        ) : (
+          <CodeExecutionResultOutput result={result} />
+        )}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );

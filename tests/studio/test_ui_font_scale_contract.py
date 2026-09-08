@@ -19,8 +19,8 @@ STORE = (SRC / "features/settings/stores/appearance-custom-store.ts").read_text(
 SELECT = (SRC / "components/ui/select.tsx").read_text(encoding = "utf-8")
 UTILS = (SRC / "lib/utils.ts").read_text(encoding = "utf-8")
 
-# Raw numeric fontSize props are only allowed where a scaled stylesheet rule
-# (.recharts-text) overrides the presentation attribute at render time.
+# Raw numeric fontSize props are only allowed where a scaled stylesheet rule (.recharts-text) overrides the presentation
+# attribute at render time.
 FONTSIZE_PROP_ALLOWED_DIRS = (
     "features/studio/sections/charts",
     "features/studio/sections/training-section.tsx",
@@ -56,6 +56,22 @@ def test_preference_writes_a_scale_not_the_root_font_size():
     # Older builds set an inline root font-size; the applier must clear it.
     assert 'style.removeProperty("font-size")' in STORE
     assert "style.fontSize" not in STORE
+
+
+def test_css_default_scale_matches_the_store_default():
+    """index.css carries the default as a scale, the store carries it as a px
+    size, and the applier only drops data-ui-font-size at the store's value.
+    Derive the scale so the two cannot drift: when they did, everything
+    rendered at one size while the preference control called it another."""
+    rng = re.search(r"UI_FONT_SIZE_RANGE = \{ min: (\d+), max: (\d+), default: (\d+) \}", STORE)
+    assert rng is not None
+    base = re.search(r"const UI_FONT_SIZE_CSS_BASE = (\d+);", STORE)
+    assert base is not None
+    assert "c.uiFontSize ?? UI_FONT_SIZE_RANGE.default" in STORE
+    assert "effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default" in STORE
+    assert "effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE" in STORE
+    scale = int(rng.group(3)) / int(base.group(1))
+    assert f"--ui-font-scale: {scale:g};" in INDEX_CSS
 
 
 def test_named_text_tokens_scale():
@@ -111,7 +127,7 @@ def test_cn_knows_the_ui_typography_tokens():
 
 def test_icons_follow_the_ui_font_size_itself():
     """Standard glyphs render at --ui-icon-size, which follows the UI font
-    size itself: matches it below the 16px default and grows at half the
+    size itself: matches it below the 16px CSS scale base and grows at half the
     change above it (setting 20 gives 18px icons), so icons track the text
     when shrinking and read slightly smaller than it when growing. Sub 16px
     glyphs keep their proportions through the same curve as a factor.
@@ -125,8 +141,7 @@ def test_icons_follow_the_ui_font_size_itself():
     assert "& svg.size-4 { width: var(--ui-icon-size); height: var(--ui-icon-size); }" in INDEX_CSS
     assert "font-size: calc(13px * var(--ui-font-scale, 1)) !important;" in INDEX_CSS
     assert "font-size: calc(12px * var(--ui-font-scale, 1)) !important;" in INDEX_CSS
-    # Menu rules that outrank the scoped block must carry the token too,
-    # without flattening the smaller thinking ticks.
+    # Menu rules that outrank the scoped block must carry the token too, without flattening the smaller thinking ticks.
     assert "width: var(--ui-icon-size) !important;" in INDEX_CSS
     assert "svg:not(.unsloth-tick) {" in INDEX_CSS
     # Oversized art glyphs stay proportional instead of uniform.

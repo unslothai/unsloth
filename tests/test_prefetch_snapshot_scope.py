@@ -1,19 +1,18 @@
-# Unsloth Zoo - Utilities for Unsloth
-# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published
-# by the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
+# http://www.apache.org/licenses/LICENSE-2.0
 """Pure-CPU, no-network unit tests for prefetch snapshot scoping in unsloth/models/_utils.py.
 
 maybe_prefetch_hf_snapshot warms the HF cache before the in-process load. The warm must cover at
@@ -64,8 +63,7 @@ def capture(monkeypatch):
     fake_module.DownloadStallError = type("DownloadStallError", (RuntimeError,), {})
     monkeypatch.setitem(sys.modules, "unsloth_zoo.hf_xet_fallback", fake_module)
 
-    # Neutralize the model_info network call by default; tests exercising format selection
-    # install their own.
+    # Neutralize the model_info network call by default; tests exercising format selection install their own.
     import huggingface_hub
 
     class _NoNetworkApi:
@@ -73,6 +71,13 @@ def capture(monkeypatch):
             raise RuntimeError("no network in test")
 
     monkeypatch.setattr(huggingface_hub, "HfApi", _NoNetworkApi)
+
+    # Same for the modules.json probe: unstubbed it reaches out for the fake repo, so every weights_at_root case in this
+    # no-network file made a live request.
+    def _no_network_download(*a, **k):
+        raise RuntimeError("no network in test")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _no_network_download)
 
     def run(**call_kwargs):
         state.clear()
@@ -82,7 +87,8 @@ def capture(monkeypatch):
     return run
 
 
-# Representative repo listing: root weights + aux, subdir, adapter, checkpoint, merged weights.
+# Representative repo listing: root weights (sharded safetensors + index + a .bin) and aux configs, subdir weights,
+# a checkpoint dir, and an adapter.
 _SAMPLE_FILES = [
     "config.json",
     "tokenizer.json",
@@ -451,7 +457,7 @@ def test_st_fallback_module_loads_resolve_env_cache():
             continue
         dumped = ast.dump(cache_dir_kw.value)
         if "cache_folder" not in dumped:
-            continue  # internal pass-through, not a resolution site
+            continue
         checked += 1
         assert (
             "SENTENCE_TRANSFORMERS_HOME" in dumped
@@ -521,7 +527,7 @@ def test_st_fallback_module_loads_forward_revision():
             continue
         cache_dir_kw = next((kw for kw in node.keywords if kw.arg == "cache_dir"), None)
         if cache_dir_kw is None or "cache_folder" not in ast.dump(cache_dir_kw.value):
-            continue  # internal pass-through, not a fallback site
+            continue
         checked += 1
         rev_kw = next((kw for kw in node.keywords if kw.arg == "revision"), None)
         assert rev_kw is not None and "revision" in ast.dump(

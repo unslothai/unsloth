@@ -3,41 +3,76 @@
 
 "use client";
 
-import { getAuthToken } from "@/features/auth/session";
+import { Spinner } from "@/components/ui/spinner";
+
+import { SandboxFiles } from "./sandbox-files-view";
+import { isSandboxFileList, type SandboxFile } from "./sandbox-files";
+import {
+  preferSanitizedFullToolOutput,
+  useChatRuntimeStore,
+  useChatPreferencesStore,
+  useToolAwaitingApproval,
+  useToolOutputFor,
+  useToolPaneScope,
+} from "@/features/chat";
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
 import { CodeIcon } from "lucide-react";
-import { Spinner } from "@/components/ui/spinner";
 import { memo } from "react";
+import { pythonToolImagePath } from "./python-tool-image-path";
+import { useSandboxImage } from "./use-sandbox-image";
+import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
+import { toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
-import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
 import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import {
-  preferFullToolOutput,
-  useToolAwaitingApproval,
-  useToolOutputFor,
-  useToolPaneScope,
-} from "@/features/chat";
 
 interface StructuredResult {
   text: string;
   images: string[];
   sessionId: string;
+  files?: SandboxFile[];
 }
 
 function isStructuredResult(val: unknown): val is StructuredResult {
+  if (typeof val !== "object" || val === null) return false;
+  const v = val as { files?: unknown };
   return (
-    typeof val === "object" &&
-    val !== null &&
     "text" in val &&
     "images" in val &&
-    "sessionId" in val
+    "sessionId" in val &&
+    // Persisted content can carry anything, and the card maps over this and
+    // reads name off each entry.
+    isSandboxFileList(v.files)
+  );
+}
+
+function PythonToolImage({
+  sessionId,
+  filename,
+}: {
+  sessionId: string;
+  filename: string;
+}) {
+  // The same hook assistant markdown uses for an on-disk image, so the authed fetch, the object URL
+  // and its revocation live in one place instead of two. A failed or cancelled image stays as its
+  // accessible alt text. Keyed by url inside the hook: a re-used element reads idle, not the
+  // previous file's blob, and a stale response cannot write state for a url it was not fetched for.
+  const { ref, state } = useSandboxImage(pythonToolImagePath(sessionId, filename));
+
+  return (
+    <img
+      ref={ref}
+      src={state.status === "loaded" ? state.url : undefined}
+      alt={filename}
+      loading="lazy"
+      className="max-w-full rounded border border-border"
+    />
   );
 }
 
@@ -47,7 +82,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
-  const code = (args as { code?: string })?.code ?? "";
+  const code = toolArgText((args as { code?: unknown })?.code);
   const firstLine = code.split("\n")[0]?.slice(0, 60) ?? "";
   const isRunning = status?.type === "running";
   // Args still streaming = the model is WRITING the code, not running it yet.
@@ -56,16 +91,16 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
 
   let output: string;
   let images: string[] = [];
+  let files: SandboxFile[] = [];
   let sessionId = "";
 
   if (isStructuredResult(result)) {
     output = result.text;
     images = result.images;
+    files = result.files ?? [];
     sessionId = result.sessionId;
-  } else if (typeof result === "string") {
-    output = result;
-  } else if (result) {
-    output = JSON.stringify(result, null, 2);
+  } else if (result != null) {
+    output = stringifyToolResult(result);
   } else {
     output = "";
   }
@@ -78,37 +113,46 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     paneScope,
     toolCallId,
   );
-  const displayOutput = preferFullToolOutput(fullOutput, output);
+  const displayOutput = preferSanitizedFullToolOutput(fullOutput, output);
 
-  const authToken = getAuthToken();
   // The gate only opens once the call parsed, so a pending approval means the script is
   // written even while the args status still reads as streaming.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const isWriting = isWritingCode && !awaitingApproval;
+  const collapseByDefault = useChatPreferencesStore(
+    (state) => state.collapseToolActivityByDefault,
+  );
+  const scriptCell = code ? (
+    <div className="mt-1 pl-5">
+      <ToolCodeCell
+        label="script"
+        code={code}
+        language="python"
+        downloadName="script.py"
+        streaming={isWriting}
+      />
+    </div>
+  ) : null;
 
   return (
     // Status, output and images collapse from history; the executed script
     // renders outside ToolFallbackContent so it stays visible on reopen
-    // (#7165). Terminal keeps its command inside the collapsible -- a one-line
-    // command is not the artifact a user comes back for, a script is.
-    <ToolFallbackRoot defaultOpen={isRunning}>
+    // (#7165) -- a script is an artifact, a one-line command is not.
+    // That holds only while collapseToolActivity is off; with it on the script
+    // moves inside the collapsible, behind one click. awaitingApproval is the
+    // exception: a decision about a script needs the script on screen.
+    <ToolFallbackRoot
+      defaultOpen={isRunning}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={firstLine ? `Python: ${firstLine}` : "Python"}
         status={status}
         icon={CodeIcon}
       />
-      {code && (
-        <div className="mt-1 pl-5">
-          <ToolCodeCell
-            label="script"
-            code={code}
-            language="python"
-            downloadName="script.py"
-            streaming={isWriting}
-          />
-        </div>
-      )}
+      {!collapseByDefault && scriptCell}
       <ToolFallbackContent>
+        {collapseByDefault && scriptCell}
         <div className="border-l-2 border-muted-foreground/20 pl-2">
           {/* Output */}
           {isRunning ? (
@@ -129,23 +173,26 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
           ) : displayOutput ? (
             <div className="mt-2 border-t border-dashed pt-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">output</span>
+                <span className="text-xs font-medium text-muted-foreground">
+                  output
+                </span>
                 <CopyBtn text={displayOutput} />
               </div>
               <ToolResultOutput text={displayOutput} />
             </div>
           ) : null}
 
+          {/* Anything the script wrote, as a real download */}
+          <SandboxFiles sessionId={sessionId} files={files} />
+
           {/* Images from Python tool execution */}
           {images.length > 0 && sessionId && (
             <div className="mt-2 flex flex-col gap-2">
               {images.map((filename) => (
-                <img
+                <PythonToolImage
                   key={filename}
-                  src={`/api/inference/sandbox/${encodeURIComponent(sessionId)}/${encodeURIComponent(filename)}${authToken ? `?token=${encodeURIComponent(authToken)}` : ""}`}
-                  alt={filename}
-                  loading="lazy"
-                  className="max-w-full rounded border border-border"
+                  sessionId={sessionId}
+                  filename={filename}
                 />
               ))}
             </div>

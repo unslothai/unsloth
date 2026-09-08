@@ -10,6 +10,19 @@ export interface SystemGpuDevice {
   memoryTotalGb: number;
   /** Free VRAM at fetch time, or total VRAM when usage is unavailable. */
   memoryFreeGb: number;
+  /** A Vulkan iGPU: memoryTotalGb is a capped view of system RAM rather than a
+   *  pool beside it. Per device, not per host: a mixed inventory pairs one of
+   *  these with a discrete card, and a pin naming only the discrete card can
+   *  still spill to host RAM. */
+  sharedMemory: boolean;
+  /** host-backed portion of memoryTotalGb when sharedMemory is true. */
+  sharedMemoryHostBackedGb?: number | null;
+  /** This device and the host are ONE pool (Apple Silicon, a ROCm APU), so its
+   *  VRAM is not memory beside system RAM. Per device for the same reason
+   *  sharedMemory is: a pin naming only a discrete card on a mixed machine does
+   *  not share anything, and judging it against a host-wide flag threw away the
+   *  system RAM that pin can really spill into. */
+  unifiedMemory?: boolean;
   /** Whether `index` is safe to send as gpu_ids. */
   pinnable: boolean;
   /** Whether the separate DiffusionGemma runner can use this physical ID. */
@@ -118,4 +131,27 @@ export function reconcileGpuSelection(
   return kept.length > 0
     ? { ids: kept, indexKind: currentIndexKind }
     : { ids: null, indexKind: null };
+}
+
+/** The device a bare "cuda" load lands on: visible ordinal 0, i.e. torch's current device.
+ * `index` stays PHYSICAL on the nvidia-smi path (index_kind "physical"), and a reordering
+ * CUDA_VISIBLE_DEVICES such as "3,1" maps ordinal 0 to physical GPU 3 while the minimum
+ * physical index is GPU 1, so ranking by `index` sizes the pick against the wrong card on a
+ * heterogeneous host. Only an older backend that omits visible_ordinal falls back to `index`. */
+export function pickLoadDevice<
+  T extends { index?: number; visible_ordinal?: number },
+>(devices: T[]): T | undefined {
+  const ordered = devices.filter((d) => typeof d.visible_ordinal === "number");
+  if (ordered.length > 0) {
+    return ordered.reduce((pick, d) =>
+      (d.visible_ordinal as number) < (pick.visible_ordinal as number)
+        ? d
+        : pick,
+    );
+  }
+  if (devices.length === 0) return undefined;
+  return devices.reduce(
+    (pick, d) => ((d.index ?? 0) < (pick.index ?? 0) ? d : pick),
+    devices[0],
+  );
 }

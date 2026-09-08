@@ -58,7 +58,7 @@ function CommandDialog({
       </DialogHeader>
       <DialogContent
         className={cn(
-          "rounded-4xl! top-1/3 translate-y-0 overflow-hidden p-0",
+          "rounded-4xl! max-sm:rounded-none! top-1/3 translate-y-0 overflow-hidden p-0",
           className,
         )}
         overlayClassName={overlayClassName}

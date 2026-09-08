@@ -6,23 +6,111 @@ Audio codec loading and decoding for TTS inference.
 Supports: SNAC (Orpheus), CSM (Sesame), BiCodec (Spark), DAC (OuteTTS)
 """
 
+from __future__ import annotations
+
 import io
+import json
+import os
 import re
-import subprocess
 import wave
 import structlog
 from loggers import get_logger
+from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
 import torch
 
-from utils.native_path_leases import child_env_without_native_path_secret
-from utils.subprocess_compat import (
-    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+from utils.third_party_source import (
+    deactivate_pinned_package,
+    ensure_dac_speech_weights,
+    ensure_outetts_source,
+    ensure_spark_tts_source,
+    import_outetts_module,
+    import_sparktts_module,
 )
 
 logger = get_logger(__name__)
+_SPARK_TTS_REPO = "unsloth/Spark-TTS-0.5B"
+_MAX_SPARK_EXPORT_METADATA_BYTES = 1_000_000
+
+
+def _bicodec_assets_complete(repo_path: Path) -> bool:
+    try:
+        config = repo_path / "BiCodec" / "config.yaml"
+        weights = repo_path / "BiCodec" / "model.safetensors"
+        return (
+            config.is_file()
+            and config.stat().st_size > 0
+            and weights.is_file()
+            and weights.stat().st_size > 0
+        )
+    except OSError:
+        return False
+
+
+def resolve_bicodec_repo_path(
+    model_repo_path: Optional[str] = None,
+    *,
+    hf_token: Optional[str] | bool = None,
+    local_files_only: Optional[bool] = None,
+    cache_dir: Optional[str] = None,
+) -> str:
+    from huggingface_hub import snapshot_download
+    from utils.hf_cache_settings import active_hf_hub_cache
+    from utils.utils import canonical_model_repo_id, hf_env_offline
+
+    source = str(model_repo_path or _SPARK_TTS_REPO).strip()
+    local = Path(source).expanduser()
+    if local.is_dir():
+        root = local.parent if local.name.lower() == "llm" else local
+        if _bicodec_assets_complete(root):
+            ensure_spark_tts_source(root)
+            return os.path.abspath(root)
+
+        metadata = local / "export_metadata.json"
+        base_model = None
+        try:
+            if metadata.is_file() and metadata.stat().st_size <= _MAX_SPARK_EXPORT_METADATA_BYTES:
+                value = json.loads(metadata.read_text(encoding = "utf-8-sig"))
+                candidate = value.get("base_model") if isinstance(value, dict) else None
+                if isinstance(candidate, str) and candidate.strip():
+                    base_model = candidate.strip()
+        except (OSError, UnicodeError, TypeError, ValueError):
+            pass
+        if base_model is None:
+            raise RuntimeError("The local Spark-TTS model has no complete BiCodec assets")
+        source = base_model
+        local = Path(source).expanduser()
+        if local.is_dir():
+            root = local.parent if local.name.lower() == "llm" else local
+            if not _bicodec_assets_complete(root):
+                raise RuntimeError("The recorded Spark-TTS base has incomplete BiCodec assets")
+            ensure_spark_tts_source(root)
+            return os.path.abspath(root)
+
+    from utils.security import load_scan_target
+
+    repo_id, _load_subdirs = load_scan_target(canonical_model_repo_id(source), ())
+    repo_id = repo_id or source
+    root = Path(
+        snapshot_download(
+            repo_id,
+            token = (
+                False
+                if hf_token is False
+                else hf_token.strip()
+                if hf_token and hf_token.strip()
+                else None
+            ),
+            cache_dir = cache_dir or active_hf_hub_cache(),
+            local_files_only = hf_env_offline() if local_files_only is None else local_files_only,
+        )
+    )
+    if not _bicodec_assets_complete(root):
+        raise RuntimeError("The staged Spark-TTS repository has incomplete BiCodec assets")
+    ensure_spark_tts_source(root)
+    return os.path.abspath(root)
 
 
 def _numpy_to_wav_bytes(waveform: np.ndarray, sample_rate: int) -> bytes:
@@ -50,7 +138,12 @@ class AudioCodecManager:
         self._snac_model = None
         self._bicodec_tokenizer = None
         self._bicodec_repo_path = None
+        self._bicodec_code_dir = None
         self._dac_audio_codec = None
+        self._outetts_code_dir = None
+        # The loaders reuse a resident codec, so a later request gets the first
+        # placement rather than the one it asked for.
+        self._codec_devices: dict = {}
 
     def load_codec(
         self,
@@ -60,11 +153,11 @@ class AudioCodecManager:
     ) -> None:
         """Load the appropriate codec for the given audio type."""
         if audio_type == "snac":
-            self._load_snac(device)
+            self._load_snac(device, model_repo_path)
         elif audio_type == "bicodec":
             self._load_bicodec(device, model_repo_path)
         elif audio_type == "dac":
-            self._load_dac(device)
+            self._load_dac(device, model_repo_path)
         elif audio_type == "csm":
             pass  # CSM decoding is built into the model (output_audio=True)
         else:
@@ -72,7 +165,11 @@ class AudioCodecManager:
 
     # ── Lazy loaders ─────────────────────────────────────────────
 
-    def _load_snac(self, device: str) -> None:
+    def _load_snac(
+        self,
+        device: str,
+        model_repo_path: Optional[str] = None,
+    ) -> None:
         if self._snac_model is not None:
             return
         from snac import SNAC
@@ -80,10 +177,14 @@ class AudioCodecManager:
 
         # Route weights to the selected cache; this can run in the main process.
         self._snac_model = (
-            SNAC.from_pretrained("hubertsiuzdak/snac_24khz", cache_dir = active_hf_hub_cache())
+            SNAC.from_pretrained(
+                model_repo_path or "hubertsiuzdak/snac_24khz",
+                cache_dir = active_hf_hub_cache(),
+            )
             .to(device)
             .eval()
         )
+        self._codec_devices["snac"] = device
         logger.info("Loaded SNAC codec (24kHz)")
 
     def _load_bicodec(
@@ -93,90 +194,47 @@ class AudioCodecManager:
     ) -> None:
         if self._bicodec_tokenizer is not None:
             return
-        import os
-        import sys
-
-        # Clone SparkAudio/Spark-TTS for the sparktts package (HF model repos
-        # don't contain it)
-        spark_code_dir = os.path.join(os.path.dirname(model_repo_path or "."), "Spark-TTS")
-        sparktts_pkg = os.path.join(spark_code_dir, "sparktts")
-        if not os.path.isdir(sparktts_pkg):
-            logger.info(f"Cloning SparkAudio/Spark-TTS to {spark_code_dir}...")
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "https://github.com/SparkAudio/Spark-TTS",
-                    spark_code_dir,
-                ],
-                check = True,
-                env = child_env_without_native_path_secret(),
-                **_windows_hidden_subprocess_kwargs(),
-            )
-
-        if spark_code_dir not in sys.path:
-            sys.path.insert(0, spark_code_dir)
-
-        from sparktts.models.audio_tokenizer import BiCodecTokenizer
+        spark_code_dir = ensure_spark_tts_source(model_repo_path)
+        self._bicodec_code_dir = spark_code_dir
+        BiCodecTokenizer = import_sparktts_module(
+            "sparktts.models.audio_tokenizer",
+            spark_code_dir,
+        ).BiCodecTokenizer
 
         # BiCodecTokenizer needs the MODEL repo path (has BiCodec/ weights)
         tokenizer_path = model_repo_path or spark_code_dir
         self._bicodec_repo_path = tokenizer_path
         self._bicodec_tokenizer = BiCodecTokenizer(tokenizer_path, device)
+        self._codec_devices["bicodec"] = device
         logger.info(f"Loaded BiCodec tokenizer from {tokenizer_path}")
 
-    def _load_dac(self, device: str) -> None:
+    def _load_dac(
+        self,
+        device: str,
+        audio_codec_path: Optional[str] = None,
+    ) -> None:
         if self._dac_audio_codec is not None:
             return
-        import os
-        import sys
-
-        # Clone OuteTTS (the pip package has problematic deps; we remove
-        # gguf_model.py, interface.py, __init__.py before importing).
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        outetts_code_dir = os.path.join(base_dir, "OuteTTS")
-        outetts_pkg = os.path.join(outetts_code_dir, "outetts")
-        if not os.path.isdir(outetts_pkg):
-            logger.info(f"Cloning edwko/OuteTTS to {outetts_code_dir}...")
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "https://github.com/edwko/OuteTTS",
-                    outetts_code_dir,
-                ],
-                check = True,
-                env = child_env_without_native_path_secret(),
-                **_windows_hidden_subprocess_kwargs(),
-            )
-            # Remove files pulling in heavy / incompatible deps
-            remove_paths = [
-                os.path.join(outetts_pkg, "models", "gguf_model.py"),
-                os.path.join(outetts_pkg, "interface.py"),
-                os.path.join(outetts_pkg, "__init__.py"),
-            ]
-            for fpath in remove_paths:
-                if os.path.exists(fpath):
-                    os.remove(fpath)
-                    logger.info(f"Removed {fpath}")
-
-        if outetts_code_dir not in sys.path:
-            sys.path.insert(0, outetts_code_dir)
-
-        from outetts.version.v3.audio_processor import AudioProcessor
-        from outetts.models.config import ModelConfig as OuteTTSModelConfig
+        outetts_code_dir = ensure_outetts_source()
+        self._outetts_code_dir = outetts_code_dir
+        AudioProcessor = import_outetts_module(
+            "outetts.version.v3.audio_processor",
+            outetts_code_dir,
+        ).AudioProcessor
+        OuteTTSModelConfig = import_outetts_module(
+            "outetts.models.config",
+            outetts_code_dir,
+        ).ModelConfig
+        resolved_audio_codec_path = audio_codec_path or ensure_dac_speech_weights()
 
         dummy_config = OuteTTSModelConfig(
-            tokenizer_path = "OuteAI/Llama-OuteTTS-1.0-1B",
+            tokenizer_path = None,
             device = device,
-            audio_codec_path = None,
+            audio_codec_path = str(resolved_audio_codec_path),
         )
         processor = AudioProcessor(config = dummy_config)
         self._dac_audio_codec = processor.audio_codec
+        self._codec_devices["dac"] = device
         logger.info("Loaded DAC audio codec")
 
     # ── Decoders ─────────────────────────────────────────────────
@@ -188,7 +246,6 @@ class AudioCodecManager:
         strips EOS (128258), redistributes 7-per-frame codes into 3 SNAC layers.
         Returns (wav_bytes, 24000).
         """
-        # Find START_OF_SPEECH token (128257)
         token_indices = (generated_ids == 128257).nonzero(as_tuple = True)
         if len(token_indices[1]) > 0:
             cropped = generated_ids[:, token_indices[1][-1] + 1 :]
@@ -198,10 +255,8 @@ class AudioCodecManager:
             cropped = generated_ids
         row = cropped[0]
 
-        # Remove EOS tokens (128258)
         row = row[row != 128258]
 
-        # Trim to multiple of 7
         row = row[: (len(row) // 7) * 7]
         if len(row) == 0:
             raise ValueError("No valid audio codes found after START_OF_SPEECH token")
@@ -254,8 +309,7 @@ class AudioCodecManager:
 
         semantic_ids = torch.tensor([int(t) for t in semantic_matches]).long().unsqueeze(0)
 
-        # Speaker encoder expects exactly 32 global tokens (token_num=32);
-        # pad with zeros or truncate.
+        # Speaker encoder expects exactly 32 global tokens (token_num=32); pad with zeros or truncate.
         GLOBAL_TOKEN_NUM = 32
         if global_matches:
             raw = [int(t) for t in global_matches]
@@ -264,7 +318,7 @@ class AudioCodecManager:
         if len(raw) < GLOBAL_TOKEN_NUM:
             raw = raw + [0] * (GLOBAL_TOKEN_NUM - len(raw))
         raw = raw[:GLOBAL_TOKEN_NUM]
-        global_ids = torch.tensor(raw).long().unsqueeze(0)  # (1, 32)
+        global_ids = torch.tensor(raw).long().unsqueeze(0)
 
         self._bicodec_tokenizer.device = device
         self._bicodec_tokenizer.model.to(device)
@@ -306,7 +360,14 @@ class AudioCodecManager:
         token_ids: Optional[list] = None,
         text: Optional[str] = None,
     ) -> Tuple[bytes, int]:
-        """Unified decode — dispatches to the right codec decoder."""
+        """Unified decode — dispatches to the right codec decoder.
+
+        ``device`` is what the caller would like. Where the codec is actually
+        resident wins: input tensors built on another device fail outright for SNAC
+        and DAC, and BiCodec would move a CPU-resident codec onto the card, taking
+        the VRAM a CPU RAM load promised not to take.
+        """
+        device = self._codec_devices.get(audio_type, device)
         if audio_type == "snac":
             if not token_ids:
                 raise ValueError("SNAC decoding requires token_ids")
@@ -332,7 +393,14 @@ class AudioCodecManager:
             del self._bicodec_tokenizer
             self._bicodec_tokenizer = None
             self._bicodec_repo_path = None
+        if self._bicodec_code_dir is not None:
+            deactivate_pinned_package("sparktts", self._bicodec_code_dir)
+            self._bicodec_code_dir = None
         if self._dac_audio_codec is not None:
             del self._dac_audio_codec
             self._dac_audio_codec = None
+        if self._outetts_code_dir is not None:
+            deactivate_pinned_package("outetts", self._outetts_code_dir)
+            self._outetts_code_dir = None
+        self._codec_devices.clear()
         logger.info("Unloaded all audio codecs")

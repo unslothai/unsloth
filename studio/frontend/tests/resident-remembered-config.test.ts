@@ -37,7 +37,10 @@ function config(nParallel: number | null, maxSeqLength: number | null = null) {
     nParallel,
     reasoningBudget: -1,
     reasoningBudgetMessage: "",
+    nBatch: null,
+    nUbatch: null,
     tensorParallel: false,
+    disableVision: false,
     chatTemplateOverride: null,
   };
 }

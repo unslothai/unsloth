@@ -15,45 +15,60 @@ import { StatMeter, StatRow, StatsCard } from "./stat-primitives";
 /** Left column: the "how you use Unsloth" numbers. */
 export function ActivityInsightsCard({ stats }: { stats: ProfileStats }) {
   const t = useT();
+  const locale = useLocale();
   const { totals, speed } = stats;
   const averageTokensPerChat =
-    totals.threads > 0 ? totals.totalTokens / totals.threads : 0;
+    totals.threads > 0 ? totals.chatTokens / totals.threads : 0;
   const cacheShare =
-    totals.promptTokens > 0 ? totals.cachedTokens / totals.promptTokens : 0;
+    totals.chatPromptTokens > 0
+      ? totals.cachedTokens / totals.chatPromptTokens
+      : 0;
 
   return (
     <StatsCard title={t("settings.profile.stats.insightsTitle")}>
       <div className="flex flex-col divide-y divide-border/60">
         <StatRow
           label={t("settings.profile.stats.totalChats")}
-          value={formatFullNumber(totals.threads)}
+          value={formatFullNumber(totals.threads, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.totalMessages")}
-          value={formatFullNumber(totals.messages)}
+          value={formatFullNumber(totals.messages, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.tokensIn")}
-          value={formatCompactNumber(totals.promptTokens)}
+          value={formatCompactNumber(totals.promptTokens, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.tokensOut")}
-          value={formatCompactNumber(totals.completionTokens)}
+          value={formatCompactNumber(totals.completionTokens, locale)}
+        />
+        <StatRow
+          label={t("settings.profile.stats.totalTokens")}
+          value={formatCompactNumber(totals.totalTokens, locale)}
+        />
+        <StatRow
+          label={t("settings.profile.stats.studioChatTokens")}
+          value={formatCompactNumber(totals.chatTokens, locale)}
+        />
+        <StatRow
+          label={t("settings.profile.stats.apiTokens")}
+          value={formatCompactNumber(totals.apiTokens, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.cachedTokens")}
           value={
             cacheShare > 0
               ? t("settings.profile.stats.cachedValue", {
-                  tokens: formatCompactNumber(totals.cachedTokens),
+                  tokens: formatCompactNumber(totals.cachedTokens, locale),
                   percent: Math.round(cacheShare * 100),
                 })
-              : formatCompactNumber(totals.cachedTokens)
+              : formatCompactNumber(totals.cachedTokens, locale)
           }
         />
         <StatRow
           label={t("settings.profile.stats.avgTokensPerChat")}
-          value={formatCompactNumber(averageTokensPerChat)}
+          value={formatCompactNumber(averageTokensPerChat, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.timeInChat")}
@@ -61,15 +76,15 @@ export function ActivityInsightsCard({ stats }: { stats: ProfileStats }) {
         />
         <StatRow
           label={t("settings.profile.stats.activeDays")}
-          value={formatFullNumber(totals.activeDays)}
+          value={formatFullNumber(totals.activeDays, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.toolCalls")}
-          value={formatFullNumber(totals.toolCalls)}
+          value={formatFullNumber(totals.toolCalls, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.attachments")}
-          value={formatFullNumber(totals.attachments)}
+          value={formatFullNumber(totals.attachments, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.avgSpeed")}
@@ -142,7 +157,7 @@ export function TopModelsCard({ stats }: { stats: ProfileStats }) {
                       model.tokens,
                       "token",
                       locale,
-                      formatCompactNumber(model.tokens),
+                      formatCompactNumber(model.tokens, locale),
                     ),
                     messages: formatProfileCount(
                       model.messages,

@@ -25,9 +25,31 @@ function encodeNativeFilename(filename: string): string {
   return btoa(binary);
 }
 
-export interface NativeChatImport {
+export interface NativeImportedTextFile {
   name: string;
   content: string;
+}
+
+/** Handle for a native chat import read in bounded ranges. */
+export interface NativeChatImport {
+  name: string;
+  size: number;
+  token: string;
+}
+
+export async function readNativeChatImportChunk(
+  token: string,
+  offset: number,
+  length: number,
+): Promise<Uint8Array> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const bytes = await invoke<ArrayBuffer | number[]>(
+    "read_native_chat_import_chunk",
+    { token, offset, length },
+  );
+  return bytes instanceof ArrayBuffer
+    ? new Uint8Array(bytes)
+    : new Uint8Array(bytes);
 }
 
 function browserDownload(blob: Blob, filename: string): void {
@@ -103,6 +125,29 @@ export async function urlToBlob(url: string): Promise<Blob> {
   return (await fetchDownload(url)).blob();
 }
 
+/**
+ * Save a local backend URL without holding it in memory. `downloadUrl` buffers the body
+ * to cross the IPC boundary, which is the wrong shape for a gallery clip: here the
+ * chooser opens first and Rust streams to the chosen path. The browser keeps its anchor.
+ */
+export async function downloadUrlStreaming(
+  url: string,
+  filename: string,
+): Promise<void> {
+  if (!isTauri) {
+    browserUrlDownload(url, filename);
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  const savedPath = await invoke<string | null>("save_native_file_from_url", {
+    url,
+    fileName: filename,
+  });
+  if (savedPath === null) {
+    throw new DownloadCancelledError();
+  }
+}
+
 /** Resolve media before crossing the native save boundary. */
 export async function downloadUrl(
   url: string,
@@ -133,4 +178,12 @@ export async function pickNativeChatImport(): Promise<NativeChatImport | null> {
   }
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<NativeChatImport | null>("pick_native_chat_import");
+}
+
+export async function pickNativeTrainingConfig(): Promise<NativeImportedTextFile | null> {
+  if (!isTauri) {
+    return null;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<NativeImportedTextFile | null>("pick_native_training_config");
 }

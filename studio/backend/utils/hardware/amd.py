@@ -42,8 +42,8 @@ def _path_inside_venv(path: str) -> bool:
     try:
         # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
         root = os.path.normcase(os.path.realpath(sys.prefix))
-        # Guard a root-dir prefix (C:\ or /): commonpath would match every path on
-        # it. A venv is never at root, so treat that as outside.
+        # Guard a root-dir prefix (C:\ or /): commonpath would match every path on it. A venv is never at root, so treat
+        # that as outside.
         if os.path.dirname(root) == root:
             return False
         return os.path.normcase(os.path.commonpath([os.path.realpath(path), root])) == root
@@ -103,16 +103,24 @@ def _amd_smi_allowed() -> bool:
     return _hip_sdk_present()
 
 
-def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optional[Any]:
-    """Run amd-smi with the given args and return parsed JSON, or None."""
+def _run_amd_smi(
+    *args: str,
+    timeout: int = _AMD_SMI_DEFAULT_TIMEOUT,
+    count_failures: bool = True,
+) -> Optional[Any]:
+    """Run amd-smi with the given args and return parsed JSON, or None.
+
+    ``count_failures = False`` keeps a failure out of the circuit breaker, for a
+    subcommand an older amd-smi rejects outright: that exit code says the CLI is old,
+    not that the tool is broken, and three of them must not disable VRAM and
+    utilization polling for the life of the process.
+    """
     global _amd_smi_consecutive_failures, _amd_smi_disabled
     if _amd_smi_disabled:
         return None
     if not _amd_smi_allowed():
-        # Permanently skip amd-smi on Windows w/o a HIP SDK: every call would
-        # pop a UAC/DiskPart prompt (see _amd_smi_allowed). VRAM polling is then
-        # unavailable, but that beats the prompt. Opt back in with
-        # UNSLOTH_ENABLE_AMD_SMI=1.
+        # Permanently skip amd-smi on Windows without a HIP SDK: every call pops a UAC/DiskPart prompt. VRAM polling is
+        # then unavailable, which beats the prompt (UNSLOTH_ENABLE_AMD_SMI=1 opts back in).
         if not _amd_smi_disabled:
             logger.info(
                 "amd-smi disabled on Windows (no HIP SDK detected) to avoid a "
@@ -122,11 +130,9 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
             _amd_smi_disabled = True
         return None
     if shutil.which("amd-smi") is None:
-        # amd-smi does not exist on Windows (neither Adrenalin nor the HIP SDK
-        # ship a CLI) and can be absent on minimal Linux installs. Disable the
-        # poller in one step instead of burning the 3-strike circuit breaker
-        # on guaranteed FileNotFoundError spawns. Unsloth's VRAM display falls
-        # back to torch mem_get_info.
+        # amd-smi does not exist on Windows and can be absent on minimal Linux, so disable the poller in one step
+        # instead of burning the 3-strike breaker on guaranteed FileNotFoundError spawns.
+        # Unsloth's VRAM display falls back to torch mem_get_info.
         if not _amd_smi_disabled:
             logger.info(
                 "amd-smi not found on PATH; GPU utilization polling via "
@@ -157,6 +163,8 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
             logger.debug("amd-smi not found (not in PATH): %s", e)
         else:
             logger.warning("amd-smi query failed: %s", e)
+        if not count_failures:
+            return None
         _amd_smi_consecutive_failures += 1
         if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
             logger.info(
@@ -167,6 +175,8 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
         return None
     if result.returncode != 0:
         logger.warning("amd-smi returned code %d", result.returncode)
+        if not count_failures:
+            return None
         _amd_smi_consecutive_failures += 1
         if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
             logger.info(
@@ -176,11 +186,10 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
             _amd_smi_disabled = True
         return None
     if not result.stdout.strip():
-        # Exit 0 with no output (no GPUs visible, or a version emitting nothing
-        # for --json). Not a tool failure, so don't trip the circuit breaker.
+        # Exit 0 with no output
         logger.debug("amd-smi exited 0 but returned no output")
         return None
-    _amd_smi_consecutive_failures = 0  # reset on success
+    _amd_smi_consecutive_failures = 0
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -246,9 +255,31 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
         return num / (1024 * 1024)
 
     # No explicit unit: default to MB (the amd-smi convention for bare numbers).
-    # A bytes-above-~10M heuristic was dropped because it misclassified small
-    # VRAM allocations; modern amd-smi always ships explicit units.
+    # A bytes-above-~10M heuristic was dropped because it misclassified small VRAM allocations; modern amd-smi always
+    # ships explicit units.
     return num
+
+
+def _vram_used_total_mb(gpu_data: dict) -> tuple[Optional[float], Optional[float]]:
+    """(used, total) VRAM in MB, unit-aware across amd-smi formats.
+
+    Newer versions use "mem_usage" with "total_vram"/"used_vram"; older use
+    "vram" or "fb_memory_usage" with "used"/"total". Shared with the VRAM probe
+    so both read the same keys.
+    """
+    vram_data = gpu_data.get(
+        "mem_usage",
+        gpu_data.get("vram", gpu_data.get("fb_memory_usage", {})),
+    )
+    if not isinstance(vram_data, dict):
+        return None, None
+    used = _parse_memory_mb(
+        vram_data.get("used_vram", vram_data.get("vram_used", vram_data.get("used")))
+    )
+    total = _parse_memory_mb(
+        vram_data.get("total_vram", vram_data.get("vram_total", vram_data.get("total")))
+    )
+    return used, total
 
 
 def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
@@ -286,23 +317,7 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
         power_draw = None
         power_limit = None
 
-    # VRAM: unit-aware parsing across amd-smi formats. Newer versions use
-    # "mem_usage" with "total_vram"/"used_vram"; older use "vram" or
-    # "fb_memory_usage" with "used"/"total".
-    vram_data = gpu_data.get(
-        "mem_usage",
-        gpu_data.get("vram", gpu_data.get("fb_memory_usage", {})),
-    )
-    if isinstance(vram_data, dict):
-        vram_used_mb = _parse_memory_mb(
-            vram_data.get("used_vram", vram_data.get("vram_used", vram_data.get("used")))
-        )
-        vram_total_mb = _parse_memory_mb(
-            vram_data.get("total_vram", vram_data.get("vram_total", vram_data.get("total")))
-        )
-    else:
-        vram_used_mb = None
-        vram_total_mb = None
+    vram_used_mb, vram_total_mb = _vram_used_total_mb(gpu_data)
 
     # Build the standardized dict (same shape as nvidia._build_gpu_metrics)
     vram_used_gb = round(vram_used_mb / 1024, 2) if vram_used_mb is not None else None
@@ -357,6 +372,133 @@ def get_physical_gpu_count() -> Optional[int]:
     return None
 
 
+def _gpu_entries(data: Any) -> list[tuple[int, dict]]:
+    """(physical gpu id, gpu dict) pairs from any amd-smi envelope shape.
+
+    A JSON array, a dict under "gpu_data"/"gpus"/"gpu", or a guarded
+    scalar/string fallback. The id is amd-smi's own, falling back to the
+    enumeration index when it is missing or unparseable.
+
+    An envelope key only counts when its value is really a list. A single-GPU
+    response is a bare dict carrying its own numeric ``"gpu"`` id (the shape
+    ``get_primary_gpu_utilization`` also handles); reading that key as the
+    envelope yields the id itself, and enumerating an int raises TypeError
+    instead of falling back to treating the dict as the one entry.
+    """
+    if isinstance(data, dict):
+        gpu_list: Any = [data]
+        for _key in ("gpu_data", "gpus", "gpu"):
+            _value = data.get(_key)
+            if isinstance(_value, list):
+                gpu_list = _value
+                break
+    elif isinstance(data, list):
+        gpu_list = data
+    else:
+        gpu_list = [data]
+
+    entries: list[tuple[int, dict]] = []
+    for fallback_idx, gpu_data in enumerate(gpu_list):
+        # Skip non-dict entries (a scalar in the array would raise AttributeError).
+        if not isinstance(gpu_data, dict):
+            continue
+        # Use the AMD-reported GPU ID, else the enumeration index. _parse_numeric
+        # handles bare ints/floats/strings and the {"value", "unit"} dict shape.
+        raw_id = gpu_data.get("gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx)))
+        parsed_id = _parse_numeric(raw_id)
+        if parsed_id is None:
+            logger.warning(
+                "amd-smi GPU id %r could not be parsed; falling back to enumeration index %d",
+                raw_id,
+                fallback_idx,
+            )
+            idx = fallback_idx
+        else:
+            rounded = round(parsed_id)
+            if rounded != parsed_id:
+                logger.warning(
+                    "amd-smi GPU id %r parsed as non-integer %r; truncating to %d",
+                    raw_id,
+                    parsed_id,
+                    rounded,
+                )
+            idx = int(rounded)
+        entries.append((idx, gpu_data))
+    return entries
+
+
+def get_gpu_vram_report() -> tuple[dict[int, tuple[int, int]], list[int]]:
+    """(``get_gpu_vram_mib()``, every amd-smi gpu id the same call enumerated).
+
+    The ids are amd-smi's own, which are NOT HIP's (see
+    ``get_hip_id_by_gpu_index``). The second element is what tells a partial answer
+    from a complete one: a device whose VRAM does not parse (a shared pool reporting
+    total 0) is missing from the dict but present here, and a caller that ranks GPUs
+    has to see the whole set or none of it -- what is left of a dropped row is a
+    non-empty dict, indistinguishable from a host that really has one card.
+    """
+    data = _run_amd_smi("metric")
+    if data is None:
+        return {}, []
+    out: dict[int, tuple[int, int]] = {}
+    enumerated: list[int] = []
+    for idx, gpu_data in _gpu_entries(data):
+        enumerated.append(idx)
+        used_mb, total_mb = _vram_used_total_mb(gpu_data)
+        if used_mb is None or total_mb is None or total_mb <= 0:
+            continue
+        # Clamp: a used reading above total
+        out[idx] = (int(max(0.0, total_mb - used_mb)), int(total_mb))
+    return out, enumerated
+
+
+def get_gpu_vram_mib() -> dict[int, tuple[int, int]]:
+    """{amd-smi gpu id: (free MiB, total MiB)} for every AMD GPU amd-smi sees.
+
+    The out-of-process answer to the question ``torch.cuda.mem_get_info`` answers
+    in-process. That call creates a HIP primary context the process never gives
+    back (~700 MiB measured), which is pure loss in a backend whose GGUF models
+    run in a llama-server child. amd-smi reports used rather than free, so free is
+    derived; MiB and MB agree here because ``_parse_memory_mb`` normalises the
+    binary units amd-smi reports.
+
+    Empty when amd-smi is missing, disabled, or reports no usable VRAM, so callers
+    keep whatever fallback they had.
+    """
+    return get_gpu_vram_report()[0]
+
+
+def get_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
+    """{amd-smi gpu id: HIP device id}, or None when the mapping is not readable.
+
+    Two index spaces, one number. amd-smi's gpu id is an enumeration index in
+    discovery order over its KFD/sysfs view; HIP's is what ``HIP_VISIBLE_DEVICES``
+    names and what torch reports as ``cuda:N``, and the library derives it from the
+    KFD node id instead (``hip_id = node_id - smallest_node_id``). They coincide on
+    most hosts and not on all of them, so the number cannot be carried from one
+    space to the other without this call.
+
+    ``amd-smi list -e`` is the mapping AMD publishes for exactly this ("mapping
+    physical-to-logical GPU IDs"), added in ROCm 6.4.0. None when any device lacks a
+    usable id -- an older CLI rejects ``-e`` outright, and ``hip_id`` reads "N/A"
+    when the library cannot reach the device's KFD node -- so callers decline rather
+    than assume the identity mapping.
+    """
+    data = _run_amd_smi("list", "-e", count_failures = False)
+    if data is None:
+        return None
+    mapping: dict[int, int] = {}
+    for idx, gpu_data in _gpu_entries(data):
+        hip_id = _parse_numeric(gpu_data.get("hip_id"))
+        if hip_id is None or hip_id < 0 or hip_id != int(hip_id):
+            return None
+        mapping[idx] = int(hip_id)
+    # A collision means the ids describe something other than a 1:1 device mapping.
+    if not mapping or len(set(mapping.values())) != len(mapping):
+        return None
+    return mapping
+
+
 def _first_visible_amd_gpu_id() -> Optional[str]:
     """Return the physical AMD GPU id treated as 'primary'.
 
@@ -393,10 +535,7 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
     if data is None:
         return {"available": False}
 
-    # amd-smi may return:
-    #   - a list of GPU dicts (older versions)
-    #   - a dict with a "gpu_data" key wrapping a list (newer versions)
-    #   - a single GPU dict (rare)
+    # amd-smi may return a list of GPU dicts, a dict wrapping one under "gpu_data", or a single GPU dict.
     if isinstance(data, dict) and "gpu_data" in data:
         data = data["gpu_data"]
     if isinstance(data, list):
@@ -438,43 +577,11 @@ def get_visible_gpu_utilization(
             "index_kind": "physical",
         }
 
-    # Extract a device list across envelope shapes: a JSON array, a dict under
-    # "gpu_data"/"gpus"/"gpu", or a guarded scalar/string fallback.
-    if isinstance(data, list):
-        gpu_list = data
-    elif isinstance(data, dict):
-        gpu_list = data.get("gpu_data", data.get("gpus", data.get("gpu", [data])))
-    else:
-        gpu_list = [data]
     visible_set = set(parent_visible_ids)
     ordinal_map = {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
 
     devices = []
-    for fallback_idx, gpu_data in enumerate(gpu_list):
-        # Skip non-dict entries (a scalar in the array would raise AttributeError).
-        if not isinstance(gpu_data, dict):
-            continue
-        # Use the AMD-reported GPU ID, else the enumeration index. _parse_numeric
-        # handles bare ints/floats/strings and the {"value", "unit"} dict shape.
-        raw_id = gpu_data.get("gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx)))
-        parsed_id = _parse_numeric(raw_id)
-        if parsed_id is None:
-            logger.warning(
-                "amd-smi GPU id %r could not be parsed; falling back to enumeration index %d",
-                raw_id,
-                fallback_idx,
-            )
-            idx = fallback_idx
-        else:
-            rounded = round(parsed_id)
-            if rounded != parsed_id:
-                logger.warning(
-                    "amd-smi GPU id %r parsed as non-integer %r; truncating to %d",
-                    raw_id,
-                    parsed_id,
-                    rounded,
-                )
-            idx = int(rounded)
+    for idx, gpu_data in _gpu_entries(data):
         if idx not in visible_set:
             continue
         metrics = _extract_gpu_metrics(gpu_data)

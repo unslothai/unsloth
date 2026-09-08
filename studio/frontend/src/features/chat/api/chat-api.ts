@@ -3,13 +3,23 @@
 
 import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
-// These helpers are deliberately API-layer-only and are not part of their
-// features' React-facing public barrels.
+// These helpers are deliberately API-layer-only, not part of their features' public barrels.
+// eslint-disable-next-line no-restricted-imports
+import {
+  combineAbortSignals,
+  disposableTimeoutSignal,
+} from "@/features/hub/lib/abort-signals";
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
+import { isHuggingFaceOffline } from "@/features/hub/lib/network";
+// eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
-import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
+import {
+  type ModelRuntime,
+  withModelLoadNotice,
+} from "@/lib/model-lifecycle-events";
 import type {
   MessageRecord,
   ModelType,
@@ -31,16 +41,59 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import { publishChatHistoryRevision } from "../utils/chat-history-revision";
+import {
+  type GgufVariantsRequestOptions,
+  ggufVariantsQuery,
+  runBoundedVariantsRequest,
+} from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
+import { maxTokensIsTheLimit } from "./generation-length.ts";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
+// Bumped alongside that event so other tabs, which never receive it, can drop caches they built
+// from a history this one has just changed.
+export { CHAT_HISTORY_REVISION_KEY } from "../utils/chat-history-revision";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
-/**
- * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a
- * finish_reason chunk): the connection dropped mid-generation. The adapter
- * surfaces it as an explicit interrupted state instead of ending the turn.
- */
+export type ChatHistoryUpdatedDetail = {
+  thread?: ThreadRecord;
+  coalesce?: boolean;
+};
+
+// bounds the request itself so a wedged socket cannot stall every reader waiting on the write
+const THREAD_WRITE_TIMEOUT_MS = 30_000;
+
+/** authFetch under a disposed timeout, so the ponyfill path leaves no timer behind. */
+async function threadWriteFetch(
+  input: string,
+  init: RequestInit,
+  caller?: AbortSignal,
+): Promise<Response> {
+  const timeout = disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS);
+  if (caller === undefined) {
+    try {
+      return await authFetch(input, { ...init, signal: timeout.signal });
+    } finally {
+      timeout.dispose();
+    }
+  }
+  // Either reason ends the request. Linked by hand rather than with AbortSignal.any, which Safari only got in 17.4.
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (caller.aborted) abort();
+  caller.addEventListener("abort", abort);
+  timeout.signal.addEventListener("abort", abort);
+  try {
+    return await authFetch(input, { ...init, signal: controller.signal });
+  } finally {
+    caller.removeEventListener("abort", abort);
+    timeout.dispose();
+  }
+}
+
+/** Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a finish_reason
+ *  chunk): the connection dropped mid-generation, surfaced as an interrupted state. */
 export class StreamInterruptedError extends Error {
   constructor() {
     super(
@@ -51,24 +104,43 @@ export class StreamInterruptedError extends Error {
   }
 }
 
-/**
- * Thrown when a reasoning model consumes its output budget before emitting any
- * standard content. Keeping this distinct from a dropped connection lets the
- * chat UI explain why a completed stream contains only a thinking panel.
- */
+/** Thrown when a reasoning model consumes its output budget before emitting any standard content,
+ *  so the chat UI can explain a completed stream holding only a thinking panel. */
 export class GenerationLengthError extends Error {
-  constructor() {
+  /** @param maxTokensWasSet whether the user actually configured a Max Tokens value. With Max Tokens
+   *  on "Max" the backend already requests the whole context length, so generation stops at the
+   *  context wall and "Increase Max Tokens" cannot be followed. The false branch also covers a
+   *  finite cap the prompt left no room for, hence the wording about raising the cap. */
+  constructor(maxTokensWasSet = true) {
     super(
-      "The model reached the Max Tokens limit before producing a final answer. " +
-        "Increase Max Tokens or disable thinking, then retry.",
+      maxTokensWasSet
+        ? "The model reached the Max Tokens limit before producing a final answer. " +
+            "Increase Max Tokens or disable thinking, then retry."
+        : "The model ran out of room to answer: thinking used what the context window " +
+            "had left after the prompt, before any answer was written. Raising Max " +
+            "Tokens cannot create room the window does not have -- increase the " +
+            "Context Length in Model settings, or disable thinking, then retry.",
     );
     this.name = "GenerationLengthError";
   }
 }
 
-export function notifyChatHistoryUpdated(): void {
+/** Announces a history change to this document and, through localStorage, to the others.
+ *  `coalesce` is for the per-chunk streaming path alone: it holds the cross-tab write until
+ *  the writes stop. Structural changes must not use it. */
+export function notifyChatHistoryUpdated(
+  detail: ChatHistoryUpdatedDetail = {},
+): void {
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+    const coalesce = detail.coalesce === true;
+    // detail lets a listener tell a chunk save from a structural change (isCoalescedHistoryEvent)
+    window.dispatchEvent(
+      new CustomEvent<ChatHistoryUpdatedDetail>(CHAT_HISTORY_UPDATED_EVENT, {
+        detail: { ...detail, coalesce },
+      }),
+    );
+    // The event above is same-document; a storage write is what crosses.
+    publishChatHistoryRevision(coalesce);
   }
 }
 
@@ -80,37 +152,33 @@ function notifyChatProjectsUpdated(): void {
 }
 
 function parseErrorText(status: number, body: unknown): string {
-  if (body && typeof body === "object") {
-    const detail = (body as { detail?: unknown }).detail;
-    const formatted = formatFastApiDetail(detail);
-    if (formatted) return formatted;
-    const message = (body as { message?: unknown }).message;
-    if (typeof message === "string" && message) return message;
-  }
-  return `Request failed (${status})`;
+  return formatApiErrorBody(body) ?? `Request failed (${status})`;
 }
 
-/**
- * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the
- * request out, which commits the status before the work finishes: a failure found
- * after that can only arrive in-band, under a 200, as `_deferred_error`.
- */
-function deferredError(body: unknown): { status: number; message: string } | null {
+/** `/api/inference/load` and `/unload` pad their body so a proxy cannot time the request out,
+ *  which commits the status early: a later failure can only arrive as `_deferred_error`. */
+function deferredError(
+  body: unknown,
+): { status: number; message: string } | null {
   const deferred =
     body && typeof body === "object"
-      ? (body as { _deferred_error?: { status_code?: unknown; detail?: unknown } })
-          ._deferred_error
+      ? (
+          body as {
+            _deferred_error?: { status_code?: unknown; detail?: unknown };
+          }
+        )._deferred_error
       : undefined;
   if (!deferred || typeof deferred !== "object") return null;
   const status =
     typeof deferred.status_code === "number" ? deferred.status_code : 500;
-  return { status, message: parseErrorText(status, { detail: deferred.detail }) };
+  return {
+    status,
+    message: parseErrorText(status, { detail: deferred.detail }),
+  };
 }
 
-/**
- * `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded
- * routes may, since a truncated body means unfinished there but is legitimate elsewhere.
- */
+/** `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded routes may,
+ *  since a truncated body means unfinished there but is legitimate elsewhere. */
 async function parseJsonOrThrow<T>(
   response: Response,
   paddedLabel?: string,
@@ -144,8 +212,10 @@ export async function listLoras(
   return parseJsonOrThrow<ListLorasResponse>(response);
 }
 
-export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
-  const response = await authFetch("/api/inference/status");
+export async function getInferenceStatus(
+  signal?: AbortSignal,
+): Promise<InferenceStatusResponse> {
+  const response = await authFetch("/api/inference/status", { signal });
   return parseJsonOrThrow<InferenceStatusResponse>(response);
 }
 
@@ -170,20 +240,17 @@ export async function clearApiMonitor(): Promise<void> {
 
 export interface ActiveGenerationsResponse {
   count: number;
-  /** Conversations with a generation in flight. Shorter than `count` when a
-   *  first turn started before its thread id was persisted. */
+  /** Conversations with a generation in flight. Shorter than `count` when a first turn started
+   *  before its thread id was persisted. */
   thread_ids: string[];
-  /** One entry per in-flight request. `kind` is "chat" unless it is an
-   *  embeddings / completions / audio call, which has no conversation. */
+  /** One entry per in-flight request. `kind` is "chat" unless it is an embeddings / completions /
+   *  audio call, which has no conversation. */
   active?: { thread_id: string | null; kind?: string }[];
   parallel_slots: number;
 }
 
-/**
- * Chats generating on the backend right now. Authoritative where `runningByThreadId` is not:
- * that map is per-tab, empty after a reload and blind to a second tab, and /load and /unload
- * 409 on these.
- */
+/** Chats generating on the backend right now. Authoritative where `runningByThreadId` is not: that
+ *  map is per-tab, empty after a reload and blind to a second tab, and /load 409s on these. */
 export async function getActiveGenerations(): Promise<ActiveGenerationsResponse> {
   const response = await authFetch("/api/inference/active-generations");
   return parseJsonOrThrow<ActiveGenerationsResponse>(response);
@@ -191,6 +258,13 @@ export async function getActiveGenerations(): Promise<ActiveGenerationsResponse>
 
 export async function loadModel(
   payload: LoadModelRequest,
+  options?: {
+    signal?: AbortSignal;
+    onRequestStart?: () => void;
+    /** What is taking the slot. Chat ignores its own loads when reconciling, so an Audio load
+     *  announced as "chat" left chat naming a model it had evicted. */
+    runtime?: ModelRuntime;
+  },
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
   // Tagged so auto-load can tell a user cancellation from a backend rejection.
@@ -198,17 +272,53 @@ export async function loadModel(
     throw Object.assign(new Error("Model load cancelled."), {
       unslothUserCancelled: true,
     });
-  const response = await authFetch("/api/inference/load", {
+  if (options?.signal?.aborted)
+    throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
+  options?.onRequestStart?.();
+  // Announced after the token prompt, so a cancelled load never shows a row. The indicator
+  // otherwise had nothing to show until its next 5s poll.
+  return withModelLoadNotice(
+    options?.runtime ?? "chat",
+    payload.model_path ?? null,
+    async () => {
+      const response = await authFetch("/api/inference/load", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...payload,
+          hf_token: preparedToken.token,
+          native_path_lease: payload.nativePathLease ?? null,
+          nativePathLease: undefined,
+        }),
+        signal: options?.signal,
+      });
+      return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+    },
+  );
+}
+
+export async function countChatInputTokens(payload: {
+  model: string;
+  messages: OpenAIChatCompletionsRequest["messages"];
+  enable_thinking?: boolean;
+  reasoning_effort?: OpenAIChatCompletionsRequest["reasoning_effort"];
+  preserve_thinking?: boolean;
+  enable_tools?: boolean;
+  enabled_tools?: string[];
+  mcp_enabled?: boolean;
+  rag_scope?: Record<string, unknown>;
+  auto_heal_tool_calls?: boolean;
+  studio_tool_history?: boolean;
+  /** Run the selected tools here rather than as the provider's hosted builtins. */
+  run_tools_locally?: boolean;
+  // `model` is informational: the endpoint counts with whatever is resident and reports which.
+}): Promise<{ input_tokens: number; model?: string }> {
+  const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...payload,
-      hf_token: preparedToken.token,
-      native_path_lease: payload.nativePathLease ?? null,
-      nativePathLease: undefined,
-    }),
+    body: JSON.stringify(payload),
   });
-  return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+  return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
 }
 
 export async function validateModel(
@@ -227,37 +337,45 @@ export async function validateModel(
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: preparedToken.token,
       gguf_variant: payload.gguf_variant ?? null,
-      // Intended load settings so validate's preflight matches the follow-up
-      // /load. Default placement is sized against the selected GPUs.
+      // Intended load settings so validate's preflight matches the follow-up /load.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
       cache_type_kv: payload.cache_type_kv ?? null,
       tensor_parallel: payload.tensor_parallel ?? false,
+      disable_vision: payload.disable_vision ?? false,
       gpu_ids: payload.gpu_ids,
-      // Manual placement is an explicit override: Auto layers use llama.cpp
-      // --fit, while a pinned layer count is owned by the user. Tell validate
-      // so it applies the same training-guard policy as /load.
+      // Takes no VRAM, so validate must not preflight it and refuse what /load takes.
+      audio_device: payload.audio_device ?? null,
+      // Manual placement is an explicit override: Auto layers use llama.cpp --fit, a pinned
+      // layer count is owned by the user. Tell validate so it applies the same policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
-      // Only 0 changes the verdict: a zero-layer DiffusionGemma split places
-      // no layers, so validate must not refuse what /load would accept.
+      // Only 0 changes the verdict: a zero-layer DiffusionGemma split places no layers.
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
       reasoning_budget: payload.reasoning_budget ?? -1,
       reasoning_budget_message: payload.reasoning_budget_message ?? "",
+      // A --ctx-size or cache override in here changes the estimate, so a preflight that dropped them
+      // would approve a different command from the one that runs.
+      ...(payload.llama_extra_args !== undefined
+        ? // biome-ignore lint/style/useNamingConvention: API schema
+          { llama_extra_args: payload.llama_extra_args }
+        : {}),
+      // batch sizes scale the same estimate; omitted when blank so they never read as set
+      ...(payload.n_batch != null ? { n_batch: payload.n_batch } : {}),
+      ...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {}),
+      // The estimate charges a drafter whose size differs by kind (a DSpark sidecar is ~11 GB), so
+      // omitting the mode makes this preflight disagree with /load in both directions.
+      speculative_type: payload.speculative_type ?? null,
+      spec_draft_n_max: payload.spec_draft_n_max ?? null,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
 }
 
-/**
- * Read a GGUF's header dims (native context length, total layer count, MoE
- * expert-layer count) from its local file (no GPU load, no download). All are
- * null when the file isn't downloaded yet, the model isn't a GGUF, or it's
- * gated. For a native (drag-drop / picked) file, pass `nativePathToken` so the
- * backend reads the granted local path. Used by the deferred-load staging flow
- * to size the context, GPU-layers and MoE sliders before the single load.
- */
+/** Read a GGUF's header dims (native context length, layer count, MoE expert-layer count) from its
+ *  local file, with no GPU load or download. All null when the file is not downloaded, is not
+ *  a GGUF, or is gated. For a native drag-drop file, pass `nativePathToken`. */
 export async function fetchGgufStagedMetadata(payload: {
   model_path: string;
   gguf_variant?: string | null;
@@ -268,8 +386,8 @@ export async function fetchGgufStagedMetadata(payload: {
   layerCount: number | null;
   moeLayerCount: number | null;
   isDiffusion: boolean;
-  /** Unclassifiable, so `isDiffusion: false` above means "not known to be diffusion":
-   *  callers picking a GPU split must assume possibly-diffusion. */
+  /** Unclassifiable, so `isDiffusion: false` above means "not known to be diffusion": callers
+   *  picking a GPU split must assume possibly-diffusion. */
   diffusionUnknown: boolean;
 }> {
   let nativePathLease: string | null = null;
@@ -279,8 +397,8 @@ export async function fetchGgufStagedMetadata(payload: {
         await consumeNativePathToken(payload.nativePathToken, "validate-model")
       ).nativePathLease;
     } catch {
-      // Lease expired / revoked: degrade to no metadata (the load can re-mint).
-      // Nothing was read, so the diffusion answer is unknown rather than false.
+      // Lease expired or revoked: degrade to no metadata (the load can re-mint). Nothing was read, so
+      // diffusion is unknown, not false.
       return {
         contextLength: null,
         layerCount: null,
@@ -321,13 +439,9 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
   await parseJsonOrThrow<unknown>(response, "Model unload");
 }
 
-/**
- * Allow or deny a tool call that is paused awaiting user confirmation
- * (when the "Confirm tool calls" toggle is on). The call is identified by
- * the backend ``approvalId`` echoed in the tool_start event; ``sessionId``
- * is a scope check. Resolves to ``true`` only when the backend matched a
- * pending call, so the caller can surface a retry on a stale/failed post.
- */
+/** Allow or deny a tool call paused awaiting user confirmation, identified by the backend
+ *  `approvalId` echoed in the tool_start event, with `sessionId` as a scope check. Resolves to
+ *  true only when the backend matched a pending call. */
 export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
@@ -351,16 +465,20 @@ export interface CachedGgufRepo {
   load_id?: string | null;
   size_bytes: number;
   cache_path: string;
-  /** Epoch seconds of the newest downloaded quant; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** epoch seconds of the newest downloaded quant; optional for older backends. */
   last_modified?: number;
-  /** True when the repo ships an mmproj adapter (image inputs). Optional for
-   * older-backend compatibility. */
+  /** True when the repo ships an mmproj adapter (image inputs). Optional for older-backend compatibility. */
   has_vision?: boolean;
-  /** True when some quant has a download manifest or cancel marker. Optional
-   * for older-backend compatibility. */
+  /** HF pipeline task inferred from the GGUF architecture ("text-to-image" for diffusion), so the
+   *  Images picker can show only diffusion GGUFs. */
+  task?: string | null;
+  audio_type?: string | null;
+  /** True when some quant has a download manifest or cancel marker. Optional for older-backend compatibility. */
   has_variant_state?: boolean;
   partial?: boolean;
+  /** Whether that partial can be continued byte for byte. False on a GGUF repo row by design:
+   *  transport is per quant, so the repo cannot answer for all of them. */
+  partial_resumable?: boolean;
   capabilities?: CachedRepoCapabilities | null;
 }
 
@@ -373,6 +491,7 @@ export async function getGgufDownloadProgress(
   repoId: string,
   variant: string,
   expectedBytes: number,
+  hfToken?: string | null,
 ): Promise<{
   downloaded_bytes: number;
   expected_bytes: number;
@@ -385,57 +504,63 @@ export async function getGgufDownloadProgress(
   });
   const response = await authFetch(
     `/api/models/gguf-download-progress?${params}`,
+    { headers: hubTokenHeader(hfToken) },
   );
   return parseJsonOrThrow(response);
 }
 
 export interface DownloadProgressResponse {
   downloaded_bytes: number;
+  /** Finalized-blob bytes only. Bytes still landing in a `.incomplete` blob count toward
+   *  `downloaded_bytes` but not here, so the two are equal exactly when nothing is in flight. */
+  completed_bytes: number;
+  /** True once the backend verified a usable snapshot on disk; `progress` is capped at 0.99 until then. */
+  complete_on_disk: boolean;
   expected_bytes: number;
   progress: number;
-  /**
-   * On-disk path of the snapshot dir (or cache repo root if no snapshot yet).
-   * Null when nothing has been written to the cache for this repo.
-   */
+  /** On-disk path of the snapshot dir (or the cache repo root if there is no snapshot yet); null
+   *  when nothing has been written to the cache for this repo. */
   cache_path: string | null;
 }
 
 export async function getDownloadProgress(
   repoId: string,
+  hfToken?: string | null,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/models/download-progress?${params}`);
+  const response = await authFetch(`/api/models/download-progress?${params}`, {
+    headers: hubTokenHeader(hfToken),
+  });
   return parseJsonOrThrow(response);
 }
 
 export async function getDatasetDownloadProgress(
   repoId: string,
+  hfToken?: string | null,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/datasets/download-progress?${params}`);
+  const response = await authFetch(
+    `/api/hub/datasets/download-progress?${params}`,
+    { headers: hubTokenHeader(hfToken) },
+  );
   return parseJsonOrThrow(response);
 }
 
 export type ModelLoadPhase = "mmap" | "ready" | null;
 
 export interface LoadProgressResponse {
-  /**
-   * Load phase: "mmap" while llama-server pages weight shards into RAM,
-   * "ready" once healthy, or null when no load is in flight.
-   */
+  /** Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once healthy, or
+   *  null when no load is in flight. */
   phase: ModelLoadPhase;
   bytes_loaded: number;
   bytes_total: number;
   fraction: number;
 }
 
-/**
- * Fetch the active GGUF load's mmap/upload progress. Complements the download
- * progress endpoints for the "download complete" -> "chat ready" window, which
- * for large MoE models can be several minutes of otherwise-opaque spinning.
- */
+/** Fetch the active GGUF load's mmap/upload progress. Complements the download progress endpoints
+ *  for the "download complete" to "chat ready" window, minutes for large MoE models. */
 export async function getLoadProgress(): Promise<LoadProgressResponse> {
-  const response = await authFetch(`/api/inference/load-progress`);
+  const response = await authFetch("/api/inference/load-progress");
   return parseJsonOrThrow(response);
 }
 
@@ -443,15 +568,17 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "custom";
   model_id?: string | null;
-  // Backend-detected weights format ("gguf" when known), so the UI can
-  // classify scanned folders whose name lacks a -GGUF suffix.
+  // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
-  // Set when a cached snapshot holds an incomplete download, so consumers can skip
-  // weights that cannot load yet.
+  // Set when a cached snapshot holds an incomplete download, so consumers skip unloadable weights.
   partial?: boolean;
   updated_at?: number | null;
+  // HF pipeline task inferred from the GGUF architecture, so the Images picker can filter to diffusion.
+  task?: string | null;
+  /** Detected output-audio architecture or codec used by Audio runtime policy. */
+  audio_type?: string | null;
 }
 
 interface LocalModelListResponse {
@@ -480,14 +607,30 @@ export interface CachedModelRepo {
   repo_id: string;
   load_id?: string | null;
   size_bytes: number;
-  /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** Weights format; "adapter" is a LoRA with no base weights of its own. Optional for older-backend compatibility. */
+  model_format?: string | null;
+  /** epoch seconds of the newest downloaded weight; optional for older backends. */
   last_modified?: number;
-  /** Owning cache dir; sent so a delete targets this copy, not the active
-   * cache. Optional for older-backend compatibility. */
-  cache_path?: string | null;
+  /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo, so the chat picker can
+   *  hide it. Absent = chat. */
+  task?: string | null;
+  /** Detected output-audio architecture or codec used by Audio runtime policy. */
+  audio_type?: string | null;
+  /** True when the snapshot is incomplete: such a repo must not count as downloaded, or a click
+   *  re-downloads the full weights. */
   partial?: boolean;
+  /** Whether that partial can be continued byte for byte, rather than restarting its file. */
+  partial_resumable?: boolean;
+  /** True for a diffusion repo with no model_index.json: a single-file checkpoint loadable only via from_single_file, so task pickers must not offer it as a pipeline load unless the curated catalog carries its artifact. */
+  single_file?: boolean;
+  /** True for an sd.cpp companion mirror (VAE / text encoders, no denoiser): listed so it can be
+   *  seen and deleted, never offered as a load. */
+  companion?: boolean;
+  /** Owning cache dir; sent so a delete targets this copy, not the active cache. */
+  cache_path?: string | null;
   capabilities?: CachedRepoCapabilities | null;
+  tags?: string[];
+  library_name?: string | null;
 }
 
 export async function listCachedModels(
@@ -558,6 +701,8 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  /** Result of the last scan. Absent on older backends, which means "ok". */
+  status?: "ok" | "permission_denied" | "missing" | "unreadable" | "partial";
 }
 
 export async function listScanFolders(): Promise<ScanFolderInfo[]> {
@@ -600,8 +745,7 @@ export async function listChatThreads(
   const qs = params.toString();
   const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
-  // Always hand back an array: an older or misbehaving backend may omit the
-  // field or send a non-array, which would crash list consumers.
+  // Always hand back an array: an older or misbehaving backend may omit it or send a non-array.
   return Array.isArray(data.threads) ? data.threads : [];
 }
 
@@ -674,41 +818,103 @@ export async function deleteChatAttachment(
 
 export async function getChatThread(
   threadId: string,
+  options: { bounded?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | null> {
-  const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}`,
-  );
-  if (response.status === 404) return null;
-  return parseJsonOrThrow<ThreadRecord>(response);
+  // Bounded for the delete reconciliation: an unbounded read there would hang the delete the write
+  // timeout exists to keep moving. `timeoutMs` is for a caller with a deadline of its own,
+  // since the settings pairing gives up long before the write timeout and each retry otherwise
+  // left the previous attempt running. `signal` ends it earlier still.
+  const timeout =
+    options.bounded || options.timeoutMs !== undefined
+      ? disposableTimeoutSignal(options.timeoutMs ?? THREAD_WRITE_TIMEOUT_MS)
+      : null;
+  const combined =
+    timeout && options.signal
+      ? combineAbortSignals([timeout.signal, options.signal])
+      : null;
+  const signal = combined?.signal ?? timeout?.signal ?? options.signal;
+  try {
+    const response = await authFetch(
+      `/api/chat/threads/${encodeURIComponent(threadId)}`,
+      signal ? { signal } : undefined,
+    );
+    if (response.status === 404) return null;
+    return parseJsonOrThrow<ThreadRecord>(response);
+  } finally {
+    combined?.dispose();
+    timeout?.dispose();
+  }
+}
+
+export class ChatThreadDeletedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatThreadDeletedError";
+  }
 }
 
 export async function saveChatThread(
   thread: ThreadRecord,
 ): Promise<ThreadRecord> {
-  const response = await authFetch("/api/chat/threads", {
+  const response = await threadWriteFetch("/api/chat/threads", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(thread),
   });
+  if (response.status === 410) {
+    const body = await response.json().catch(() => null);
+    throw new ChatThreadDeletedError(parseErrorText(response.status, body));
+  }
   const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
-  notifyChatHistoryUpdated();
+  notifyChatHistoryUpdated({ thread: savedThread });
   return savedThread;
 }
 
+export interface UpdateChatThreadOptions {
+  /** Apply only while the row still holds this title, else 409. */
+  expectedTitle?: string;
+  /** And only while this is still the thread's opening user message. */
+  expectedOpeningMessageId?: string;
+  /** Off for one update inside a bulk action, which announces itself once at the end. Every
+   *  notification is a synchronous localStorage write that wakes the other tabs, so Archive All
+   *  would otherwise send one per thread. */
+  notify?: boolean;
+  /** Give up on the write; used to stand a superseded settings PATCH down. */
+  signal?: AbortSignal;
+}
+
+/** `settings` replaces the chat's whole snapshot; `settingsPatch` applies only the fields it
+ *  names, for a writer that knows what changed but not what else the row holds. */
+export type ChatThreadWritePatch = Partial<ThreadRecord> & {
+  settingsPatch?: ThreadRecord["settings"];
+  /** Orders a writer's snapshot writes against its own earlier ones, never across tabs. */
+  settingsSeq?: number;
+  settingsWriter?: string;
+};
+
 export async function updateChatThread(
   threadId: string,
-  patch: Partial<ThreadRecord>,
+  patch: ChatThreadWritePatch,
+  options: UpdateChatThreadOptions = {},
 ): Promise<ThreadRecord> {
-  const response = await authFetch(
+  const body: Record<string, unknown> = { ...patch };
+  if (options.expectedTitle !== undefined) {
+    body.expectedTitle = options.expectedTitle;
+  }
+  if (options.expectedOpeningMessageId !== undefined) {
+    body.expectedOpeningMessageId = options.expectedOpeningMessageId;
+  }
+  const response = await threadWriteFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
+      body: JSON.stringify(body),
     },
+    options.signal,
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
-  notifyChatHistoryUpdated();
+  if (options.notify !== false) notifyChatHistoryUpdated({ thread });
   return thread;
 }
 
@@ -735,31 +941,38 @@ export async function forkChatThread(
     messages: MessageRecord[];
     containerSnapshotWarning: string | null;
   }>(response);
-  notifyChatHistoryUpdated();
+  notifyChatHistoryUpdated({ thread: data.thread });
   return data;
 }
 
-export async function getForkCount(
+/** Fork counts for a whole thread, keyed by message id. One request per thread, not per message. */
+export async function getThreadForkCounts(
   threadId: string,
-  messageId: string,
-): Promise<number> {
+): Promise<ReadonlyMap<string, number>> {
   const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/forks`,
+    `/api/chat/threads/${encodeURIComponent(threadId)}/forks`,
   );
-  if (response.status === 404) return 0;
-  const data = await parseJsonOrThrow<{ count: number }>(response);
-  return data.count;
+  if (response.status === 404) return new Map();
+  const data = await parseJsonOrThrow<{ counts?: Record<string, number> }>(
+    response,
+  );
+  return new Map(Object.entries(data.counts ?? {}));
 }
 
-export async function deleteChatThreads(threadIds: string[]): Promise<void> {
-  if (threadIds.length === 0) return;
-  const response = await authFetch("/api/chat/threads", {
+/** Thread ids whose sandbox still holds files, for a caller that never asked. */
+export async function deleteChatThreads(
+  threadIds: string[],
+  args: { deleteFiles?: boolean } = {},
+): Promise<string[]> {
+  if (threadIds.length === 0) return [];
+  const response = await threadWriteFetch("/api/chat/threads", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids: threadIds }),
+    body: JSON.stringify({ ids: threadIds, delete_files: !!args.deleteFiles }),
   });
-  await parseJsonOrThrow<unknown>(response);
+  const data = await parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response);
   notifyChatHistoryUpdated();
+  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
 export async function listChatProjects(
@@ -772,8 +985,7 @@ export async function listChatProjects(
   const qs = params.toString();
   const response = await authFetch(`/api/chat/projects${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ projects: ProjectRecord[] }>(response);
-  // Always hand back an array: an older or misbehaving backend may omit the
-  // field or send a non-array, which would crash list consumers.
+  // Always hand back an array: an older or misbehaving backend may omit it or send a non-array.
   return Array.isArray(data.projects) ? data.projects : [];
 }
 
@@ -817,10 +1029,11 @@ export async function updateChatProject(
   return project;
 }
 
+/** Member thread ids whose sandbox still holds files, from the route. */
 export async function deleteChatProject(
   projectId: string,
   args: { deleteFiles?: boolean } = {},
-): Promise<void> {
+): Promise<string[]> {
   const params = new URLSearchParams();
   if (args.deleteFiles) params.set("delete_files", "true");
   const qs = params.toString();
@@ -828,8 +1041,11 @@ export async function deleteChatProject(
     `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
     { method: "DELETE" },
   );
-  await parseJsonOrThrow<ProjectRecord>(response);
+  const data = await parseJsonOrThrow<
+    ProjectRecord & { sandboxes_kept?: string[] }
+  >(response);
   notifyChatProjectsUpdated();
+  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
 export async function listChatMessages(
@@ -843,11 +1059,8 @@ export async function listChatMessages(
   return data.messages;
 }
 
-/**
- * Fetch messages for many threads in one HTTP call. Falls back to
- * per-thread listChatMessages on 404/405 (older servers without the
- * batch route).
- */
+/** Fetch messages for many threads in one HTTP call. Falls back to per-thread listChatMessages on
+ *  404/405 (older servers without the batch route). */
 export async function batchListChatMessages(
   threadIds: string[],
 ): Promise<Map<string, MessageRecord[]>> {
@@ -886,28 +1099,68 @@ export async function getChatMessage(
   return parseJsonOrThrow<MessageRecord>(response);
 }
 
+/** The server owns this message and will reject every save of it. Distinct from a transient
+ *  failure: retrying can never succeed, so callers must stop rather than back off. Without
+ *  this the per-chunk autosave re-sent on every chunk for the whole generation. */
+/** Set by routes/chat_history.py; exposed through the CORS middleware in main.py. */
+const CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind";
+const CONFLICT_KIND_PROTECTED = "protected";
+
+export class ChatMessageProtectedError extends Error {
+  readonly messageId: string;
+  readonly threadId: string;
+
+  constructor(threadId: string, messageId: string, detail?: string) {
+    // Keep the server's wording: a manual edit surfaces this text to the user.
+    super(detail || `Message ${messageId} is server-managed and cannot be edited`);
+    this.name = "ChatMessageProtectedError";
+    this.threadId = threadId;
+    this.messageId = messageId;
+  }
+}
+
 export async function saveChatMessage(
   message: MessageRecord,
+  options: { allowGenerationEdit?: boolean; coalesce?: boolean } = {},
 ): Promise<MessageRecord> {
+  const editQuery = options.allowGenerationEdit
+    ? "?allowGenerationEdit=true"
+    : "";
   const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}`,
+    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(message),
     },
   );
+  // Two failures share this status: a protected message, where the autosave must stop, and a
+  // thread-id collision, which the caller must see. Only the header separates them.
+  if (
+    response.status === 409 &&
+    response.headers?.get(CONFLICT_KIND_HEADER) === CONFLICT_KIND_PROTECTED
+  ) {
+    // Read here, not in parseJsonOrThrow: a body is single-use.
+    const body = await response.json().catch(() => null);
+    throw new ChatMessageProtectedError(
+      message.threadId,
+      message.id,
+      formatApiErrorBody(body) ?? undefined,
+    );
+  }
   const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
-  notifyChatHistoryUpdated();
+  // Coalescing is the streaming autosave's alone, since it lands here per chunk. A manual edit is
+  // one deliberate change and publishes at once.
+  notifyChatHistoryUpdated({ coalesce: options.coalesce === true });
   return savedMessage;
 }
 
 export async function syncChatMessages(
   threadId: string,
   messages: MessageRecord[],
-  options: { pruneMissing?: boolean } = {},
+  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
 ): Promise<MessageRecord[]> {
-  const response = await authFetch(
+  const response = await threadWriteFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
     {
       method: "PUT",
@@ -915,11 +1168,14 @@ export async function syncChatMessages(
       body: JSON.stringify({
         messages,
         pruneMissing: options.pruneMissing ?? false,
+        deletedMessageIds: options.deletedMessageIds ?? [],
       }),
     },
   );
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
-  notifyChatHistoryUpdated();
+  // Pruning is how a message is deleted, which no other tab should keep matching for a whole
+  // unrelated generation. Without it this is the batched streaming autosave.
+  notifyChatHistoryUpdated({ coalesce: options.pruneMissing !== true });
   return data.messages;
 }
 
@@ -929,14 +1185,41 @@ export async function countBackendChats(): Promise<number> {
   return data.count;
 }
 
+/** Thread ids whose sandbox still holds files, passed through from the route. */
 export async function clearBackendChats(
-  options: { notify?: boolean } = {},
-): Promise<void> {
-  const response = await authFetch("/api/chat", { method: "DELETE" });
-  await parseJsonOrThrow<unknown>(response);
+  options: {
+    notify?: boolean;
+    operationId?: string;
+    tombstoneThreadIds?: string[];
+    deleteFiles?: boolean;
+  } = {},
+): Promise<{ deletedThreadIds: string[]; sandboxesKept: string[] }> {
+  const response = await threadWriteFetch(
+    `/api/chat${options.deleteFiles ? "?delete_files=true" : ""}`,
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ids: options.tombstoneThreadIds ?? [],
+        operationId: options.operationId,
+      }),
+    },
+  );
+  const data = await parseJsonOrThrow<{
+    deletedThreadIds?: string[];
+    sandboxes_kept?: string[];
+  }>(response);
   if (options.notify !== false) {
     notifyChatHistoryUpdated();
   }
+  return {
+    deletedThreadIds: Array.isArray(data?.deletedThreadIds)
+      ? data.deletedThreadIds
+      : [],
+    sandboxesKept: Array.isArray(data?.sandboxes_kept)
+      ? data.sandboxes_kept
+      : [],
+  };
 }
 
 export async function buildBackendChatExport(): Promise<{
@@ -951,14 +1234,12 @@ export async function buildBackendChatExport(): Promise<{
   return parseJsonOrThrow(response);
 }
 
-// Legacy-Dexie import ledger: server-side source of truth replacing the
-// boolean localStorage sentinel, so a studio.db wipe keeps the import
-// recoverable.
+// Legacy-Dexie import ledger: a server-side source of truth replacing the localStorage sentinel,
+// so a studio.db wipe keeps the import recoverable.
 export async function listChatImportLedger(): Promise<Set<string>> {
   const response = await authFetch("/api/chat/import-ledger");
-  // Backends without this endpoint behave like an empty ledger -- caller
-  // re-imports every legacy thread. syncChatMessages UPSERTs prevent
-  // duplicates, so this fallback is safe.
+  // Backends without this endpoint behave like an empty ledger: the caller re-imports every legacy
+  // thread, and syncChatMessages UPSERTs prevent duplicates.
   if (response.status === 404 || response.status === 405) return new Set();
   const data = await parseJsonOrThrow<{ threadIds: string[] }>(response);
   return new Set(data.threadIds);
@@ -967,9 +1248,8 @@ export async function listChatImportLedger(): Promise<Set<string>> {
 export interface RecordChatImportLedgerResult {
   accepted: number;
   inserted: number;
-  // false when the backend predates /api/chat/import-ledger (404/405/501) so
-  // the caller avoids poisoning the localStorage perf hint; next launch
-  // retries the (idempotent) import.
+  // false when the backend predates /api/chat/import-ledger, so the caller does not poison the
+  // localStorage perf hint; the next launch retries the idempotent import.
   supported: boolean;
 }
 
@@ -1031,10 +1311,8 @@ export async function browseFolders(
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
   const qs = params.toString();
-  // Forward the AbortSignal through authFetch -> fetch so a cancelled
-  // FolderBrowser navigation actually cancels the in-flight request
-  // server-side, instead of just dropping the response while the backend
-  // keeps walking large directory trees.
+  // Forward the AbortSignal through authFetch so a cancelled FolderBrowser navigation also cancels
+  // the server-side walk.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
     signal ? { signal } : undefined,
@@ -1045,46 +1323,119 @@ export async function browseFolders(
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
-  options?: {
-    preferLocalCache?: boolean;
-    localPath?: string | null;
-  },
+  options?: GgufVariantsRequestOptions,
 ): Promise<GgufVariantsResponse> {
-  const params = new URLSearchParams({ repo_id: repoId });
-  if (options?.preferLocalCache) {
-    params.set("prefer_local_cache", "true");
-  }
-  const localPath = options?.localPath?.trim();
-  if (localPath) {
-    params.set("local_path", localPath);
-  }
-  const response = await authFetch(`/api/models/gguf-variants?${params}`, {
-    headers: hubTokenHeader(hfToken),
+  const params = ggufVariantsQuery(repoId, options, isHuggingFaceOffline());
+  return runBoundedVariantsRequest(options?.signal, async (signal) => {
+    const response = await authFetch(`/api/models/gguf-variants?${params}`, {
+      headers: hubTokenHeader(hfToken),
+      signal,
+    });
+    return parseJsonOrThrow<GgufVariantsResponse>(response);
   });
-  return parseJsonOrThrow<GgufVariantsResponse>(response);
 }
 
 export interface KvCacheEstimate {
   kv_bytes: number | null;
   weights_bytes: number | null;
   native_context: number | null;
+  /** Extra MTP draft reserve; null for ngram or a model with no MTP head. */
+  spec_bytes: number | null;
+  /** Context the estimate was computed at, which is the native length when the request omitted one. */
+  n_ctx: number | null;
+  /** Vision projector footprint, at its worst-case VRAM multiple. Null when the model ships none or
+   *  vision is disabled. */
+  projector_bytes: number | null;
+  /** True when the configured speculative mode attaches a drafter the route did not price (dspark/
+   *  dflash, and Auto where it promotes to one). The total is then a floor, not an answer. */
+  spec_unpriced: boolean;
+  /** The share of kv_bytes llama.cpp keeps in HOST heap rather than on the card: the SWA checkpoint
+   *  snapshots. Included in kv_bytes, so a VRAM figure has to subtract it. */
+  kv_checkpoint_bytes: number | null;
+  /** The share of spec_bytes no shorter context can reduce, being the separate drafter's resident
+   *  weights. Auto-fit softening must not cover it. */
+  spec_fixed_bytes: number | null;
+  /** The load planner's compute buffers, which every launch reserves on top of weights and cache.
+   *  Scales with slots and micro-batch. */
+  compute_bytes: number | null;
+  /** The planner's complete GPU-resident figure, and its everything-total. */
+  gpu_bytes: number | null;
+  total_bytes: number | null;
+  /** What still lands on the card at the shortest context: the share no context reduction can recover. */
+  gpu_floor_bytes: number | null;
+  /** False only when the loader is free to shrink the context to fit. An inherited
+   *  LLAMA_ARG_CTX_SIZE is kept, not fitted. */
+  context_is_pinned: boolean | null;
+  /** An inherited LLAMA_ARG_DEVICE confines the launch to the cards it names, so an aggregate VRAM
+   *  budget describes a pool it will not open. */
+  inherited_device_pin: boolean | null;
 }
 
-/** Estimate KV cache + weight bytes for a downloaded quant at a context length,
- * for the load dialog's memory warning. */
+export interface KvCacheEstimateOptions {
+  cacheTypeKv?: string | null;
+  /** --parallel slots; scales per-slot KV stream padding. */
+  nParallel?: number | null;
+  /** Speculative mode, so an MTP draft reserve is priced into the estimate. */
+  speculativeType?: string | null;
+  /** --spec-draft-n-max; a Hybrid Mamba target keeps one rollback state per drafted token, which
+   *  dominates its reserve. */
+  specDraftNMax?: number | null;
+  /** Draft KV dtype, quantized independently of the main cache. */
+  specDraftCacheType?: string | null;
+  /** --ctx-checkpoints; each adds an SWA snapshot per slot. */
+  ctxCheckpoints?: number | null;
+  /** Batch and micro-batch size the compute buffers scale with. */
+  nBatch?: number | null;
+  nUbatch?: number | null;
+  /** Tensor mode replicates buffers on every device in the pool. */
+  tensorParallel?: boolean | null;
+  /** Vision off frees the projector, so it is not charged. */
+  disableVision?: boolean;
+  signal?: AbortSignal;
+}
+
+/** Estimate KV cache + weight + speculative bytes for a downloaded quant, for the load dialog's
+ *  memory warning and the picker's memory bar. Omit `nCtx` to size against the model's own
+ *  context length; the response says which was used. */
 export async function estimateKvCache(
   repoId: string,
   quant: string,
-  nCtx: number,
-  cacheTypeKv?: string | null,
-  signal?: AbortSignal,
+  nCtx?: number,
+  options: KvCacheEstimateOptions = {},
 ): Promise<KvCacheEstimate> {
-  const params = new URLSearchParams({
-    repo_id: repoId,
-    quant,
-    n_ctx: String(nCtx),
-  });
+  const {
+    cacheTypeKv,
+    nParallel,
+    speculativeType,
+    specDraftNMax,
+    specDraftCacheType,
+    ctxCheckpoints,
+    nBatch,
+    nUbatch,
+    tensorParallel,
+    disableVision,
+    signal,
+  } = options;
+  const params = new URLSearchParams({ repo_id: repoId, quant });
+  if (nCtx && nCtx > 0) params.set("n_ctx", String(nCtx));
   if (cacheTypeKv) params.set("cache_type_kv", cacheTypeKv);
+  // Any positive override goes, including 1: omitting it means "use the server's slot count", which
+  // now defaults to more than one.
+  if (nParallel && nParallel > 0) params.set("n_parallel", String(nParallel));
+  if (speculativeType) params.set("speculative_type", speculativeType);
+  // Zero is a real choice for both of these, so they are sent whenever set rather than when truthy.
+  if (specDraftNMax != null && specDraftNMax >= 0)
+    params.set("spec_draft_n_max", String(specDraftNMax));
+  if (specDraftCacheType)
+    params.set("spec_draft_cache_type", specDraftCacheType);
+  if (ctxCheckpoints != null && ctxCheckpoints >= 0)
+    params.set("ctx_checkpoints", String(ctxCheckpoints));
+  // The compute buffers scale with these, and the planner defaults them when absent, which
+  // underprices a config that raised either.
+  if (nBatch && nBatch > 0) params.set("n_batch", String(nBatch));
+  if (nUbatch && nUbatch > 0) params.set("n_ubatch", String(nUbatch));
+  if (tensorParallel) params.set("tensor_parallel", "true");
+  if (disableVision) params.set("disable_vision", "true");
   const response = await authFetch(
     `/api/models/kv-cache-estimate?${params}`,
     signal ? { signal } : undefined,
@@ -1160,10 +1511,18 @@ function classifyStructuredDeltaContent(content: unknown): {
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
+  /** The window this request is served by, when the caller knows it. Used only to tell a user-chosen
+   *  Max Tokens apart from the backend's stand-in for "Max", which is the whole context length. */
+  loadedContextLength?: number | null,
 ): AsyncGenerator<OpenAIChatChunk> {
   const response = await authFetch("/v1/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      // Opt into Unsloth's UI control frames (tool cards, statuses, reasoning timing). The
+      // endpoint defaults to a clean OpenAI stream for external clients.
+      "X-Unsloth-Events": "1",
+    },
     body: JSON.stringify(payload),
     signal,
   });
@@ -1181,12 +1540,14 @@ export async function* streamChatCompletions(
   const decoder = new TextDecoder();
   let buffer = "";
   let completed = false;
-  // EOF without `[DONE]` or a finish_reason chunk means the stream was cut
-  // mid-generation: surface as interrupted, not silent success.
+  // EOF without `[DONE]` or a finish_reason chunk means the stream was cut mid-generation.
   let sawTerminalSignal = false;
   let terminalFinishReason: string | null = null;
   let sawAssistantContent = false;
   let sawReasoningContent = false;
+  // Reported by the server on the final chunk. Needed to tell the two walls apart: a finite Max
+  // Tokens below the context length does not mean Max Tokens stopped the generation.
+  let promptTokens: number | null = null;
 
   const throwIfReasoningOnlyLength = () => {
     if (
@@ -1194,7 +1555,16 @@ export async function* streamChatCompletions(
       sawReasoningContent &&
       !sawAssistantContent
     ) {
-      throw new GenerationLengthError();
+      // The backend substitutes the full context length when the user left Max Tokens on "Max", so a
+      // payload value equal to it is indistinguishable from unset, and both mean the setting is
+      // not the lever.
+      throw new GenerationLengthError(
+        maxTokensIsTheLimit({
+          cap: payload.max_tokens ?? null,
+          contextLength: loadedContextLength ?? null,
+          promptTokens,
+        }),
+      );
     }
   };
 
@@ -1246,8 +1616,8 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        // Diffusion frame: a per-step canvas snapshot. Custom SSE payload (not an OpenAI chunk) with
-        // no assistant text, surfaced as a transient marker for the in-place renderer, never the transcript.
+        // Diffusion frame: a per-step canvas snapshot, surfaced as a transient marker for the in-place
+        // renderer and never the transcript.
         if ("type" in parsed && parsed.type === "diffusion_frame") {
           yield {
             _diffusionFrame: parsed,
@@ -1255,8 +1625,8 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        // tool_start/end carry full input/output; tool_output streams
-        // incremental stdout and tool_args streams the call arguments live.
+        // tool_start/end carry full input/output; tool_output streams incremental stdout and tool_args
+        // streams the call arguments live.
         if (
           "type" in parsed &&
           (parsed.type === "tool_start" ||
@@ -1282,8 +1652,11 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        // finish_reason is a valid terminal signal for providers that close
-        // the stream without an explicit [DONE] sentinel.
+        const parsedUsage = (parsed as { usage?: { prompt_tokens?: number } }).usage;
+        if (typeof parsedUsage?.prompt_tokens === "number") {
+          promptTokens = parsedUsage.prompt_tokens;
+        }
+        // finish_reason is a valid terminal signal for providers that close without a [DONE] sentinel.
         const parsedChoices = (
           parsed as {
             choices?: Array<{
@@ -1317,10 +1690,9 @@ export async function* streamChatCompletions(
       }
     }
   } finally {
-    // Only abort on an early/abnormal exit. After a natural [DONE] (or server
-    // EOF) the request is logically complete and the backend finalizes its
-    // api-monitor entry right after the sentinel; cancelling here can be seen as
-    // a disconnect and mark a successful request as cancelled.
+    // Only abort on an early/abnormal exit: after a natural [DONE] the request is logically complete
+    // and the backend finalizes its api-monitor entry, so cancelling here can mark a successful
+    // request as cancelled.
     if (!completed) {
       try {
         await reader.cancel();

@@ -27,6 +27,11 @@ from typing import Any
 
 logger = get_logger(__name__)
 
+# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
+
 
 # Gate controlling whether captured stdout/stderr lines are forwarded to the
 # parent's resp_queue (and on to the export-dialog SSE stream). Closed by default
@@ -233,14 +238,21 @@ def _send_response(resp_queue: Any, response: dict) -> None:
 
 def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     """Handle a load_checkpoint command."""
+    from hub.utils.hf_tokens import hf_token_arg
+
     checkpoint_path = cmd["checkpoint_path"]
+    # The preflight helpers read the policy off the token, so rebuild it once here.
+    hf_token = hf_token_arg(cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True))
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
     # Latest-sidecar checkpoints load 16-bit here too: bnb 4-bit feeds quantized
     # expert weights into unvalidated paths (same flip as the chat worker).
     if load_in_4bit:
         from utils.transformers_version import latest_tier_active_for
-        if latest_tier_active_for(checkpoint_path, cmd.get("hf_token")):
+
+        # Plain token, like the activation below: the sentinel reads no cache offline,
+        # misses the sidecar and leaves 4-bit on.
+        if latest_tier_active_for(checkpoint_path, hf_token or None):
             load_in_4bit = False
             logger.info(
                 "Latest-transformers sidecar active for %s - forcing a 16-bit "
@@ -260,7 +272,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             and (_cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/"))
             # Genuine first-party Hub repo only (not a local/spoof name starting
             # with "unsloth/"); authenticated so private repos resolve.
-            and is_trusted_org_repo(checkpoint_path, hf_token = cmd.get("hf_token"))
+            and is_trusted_org_repo(checkpoint_path, hf_token = hf_token)
         ):
             trust_remote_code = True
             logger.info(
@@ -272,22 +284,35 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     # trust_remote_code False, so check HF's security scan (metadata-only) every
     # load. Local checkpoints have no Hub scan and are skipped in the helper; a
     # LoRA merges its base weights, so gate that repo too.
-    from utils.security import evaluate_file_security, security_load_subdirs
+    from utils.security import evaluate_file_security, load_scan_target, security_load_subdirs
 
-    malware_targets = [checkpoint_path]
+    requested_security_targets = [checkpoint_path]
     try:
         from utils.models.model_config import get_base_model_from_lora_identifier
 
         # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-        _base = get_base_model_from_lora_identifier(checkpoint_path, cmd.get("hf_token"))
+        _base = get_base_model_from_lora_identifier(checkpoint_path, hf_token)
         if _base:
-            malware_targets.append(_base)
+            requested_security_targets.append(_base)
     except Exception as exc:
         logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
-    _hf_token = cmd.get("hf_token")
-    for target in dict.fromkeys(malware_targets):
+    security_targets: list[str] = []
+    consent_load_subdirs: dict[str, tuple] = {}
+    for requested_target in dict.fromkeys(requested_security_targets):
+        load_subdirs = security_load_subdirs(requested_target, hf_token)
+        target, load_subdirs = load_scan_target(requested_target, load_subdirs)
+        if target not in consent_load_subdirs:
+            security_targets.append(target)
+            consent_load_subdirs[target] = ()
+        consent_load_subdirs[target] = tuple(
+            dict.fromkeys((*consent_load_subdirs[target], *load_subdirs))
+        )
+
+    for target in security_targets:
         _fs = evaluate_file_security(
-            target, hf_token = _hf_token, load_subdirs = security_load_subdirs(target, _hf_token)
+            target,
+            hf_token = hf_token,
+            load_subdirs = consent_load_subdirs[target],
         )
         if _fs.blocked:
             _send_response(
@@ -308,23 +333,14 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     if trust_remote_code:
         from utils.security import evaluate_remote_code_consent_for_targets
 
-        consent_targets = [checkpoint_path]
-        try:
-            from utils.models.model_config import get_base_model_from_lora_identifier
-
-            # Resolve a local or remote adapter's base so its base repo is gated too.
-            base_model = get_base_model_from_lora_identifier(checkpoint_path, cmd.get("hf_token"))
-            if base_model:
-                consent_targets.append(base_model)
-        except Exception as exc:
-            logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
         # Scan adapter + base as one combined unit, pinned by a single fingerprint.
         _rc = evaluate_remote_code_consent_for_targets(
-            consent_targets,
-            hf_token = cmd.get("hf_token"),
+            security_targets,
+            hf_token = hf_token,
             trust_remote_code = True,
             approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
             subject = cmd.get("subject"),
+            load_subdirs_by_target = consent_load_subdirs,
         )
         if _rc.blocked:
             _send_response(
@@ -359,7 +375,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
-            hf_token = cmd.get("hf_token"),
+            hf_token = hf_token,
         )
 
         _send_response(
@@ -440,6 +456,8 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),
                 imatrix_file = cmd.get("imatrix_file"),
+                private = cmd.get("private", False),
+                gguf_shard_size = cmd.get("gguf_shard_size"),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(
@@ -531,16 +549,35 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
         warnings.filterwarnings("ignore")
 
+    # This worker's stdout is forwarded to the export dialog once the log gate opens,
+    # and the Hub upload bar is the only live byte progress a long push_to_hub has, so
+    # it keeps its progress bars even though the server turned its own off.
+    from loggers.config import allow_progress_bars
+
+    allow_progress_bars()
     LogConfig.setup_logging(
         service_name = "unsloth-studio-export-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
+        quiet_progress_bars = False,
     )
 
     checkpoint_path = config["checkpoint_path"]
 
+    # Before the huggingface_hub import: it latches HF_HUB_DISABLE_IMPLICIT_TOKEN into a
+    # module constant. So an export runs under the identity that loaded the checkpoint.
+    from hub.utils.hf_tokens import apply_token_to_child_env
+
+    if not config.get("allow_ambient", True):
+        # The sentinel, not the caller's token: this worker outlives the load and serves
+        # whoever exports next. The caller's own travels as an argument instead.
+        apply_token_to_child_env(os.environ, False)
+
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
         try:
+            # Plain token: _load_config_json refuses the hub cache for the sentinel, so
+            # offline a cached model falls to the default sidecar. Anonymity here is the
+            # scrubbed environment, not the argument.
             _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
         except Exception as exc:
             _send_response(
@@ -555,16 +592,10 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             return
 
     # ── 1b. Check Triton on Windows (must precede import torch) ──
+    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
+        from core._msvc_env import gate_torch_compile_on_windows
+        gate_torch_compile_on_windows(logger)
 
     # ── 1c. Stub torchao on Windows ROCm ──
     # See core/_torchao_stub.py: torchao crashes on Windows ROCm (RCCL absent).
@@ -632,6 +663,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         )
         return
 
+    # ── 4. Command loop - process commands until shutdown ──
     # ── 4. Command loop — process commands until shutdown ──
     logger.info("Export subprocess ready, entering command loop")
 

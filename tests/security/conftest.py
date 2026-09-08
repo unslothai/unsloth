@@ -59,9 +59,21 @@ class _BlockedSocket(socket.socket):
         return super().connect_ex(address)
 
 
-@pytest.fixture(scope = "session", autouse = True)
+@pytest.fixture(autouse = True)
 def network_blocker():
-    """Swap socket.socket for the blocker, restored at teardown."""
+    """Swap socket.socket for the blocker, restored after each test.
+
+    Per test, not per session. A session-scoped fixture in a directory conftest
+    applies only to this directory, but it tears down when the SESSION ends, so
+    the patch outlived the suite that wanted it and every later test that
+    reaches the network died on a socket this file replaced. `security` sorts
+    before `version_compat` and `vllm_compat`, whose pinned-symbol checks fetch
+    upstream sources, so a full run lost about 1300 of them:
+
+        RuntimeError: network access blocked by tests/security/conftest.py
+
+    They passed alone and failed together, in that order only.
+    """
     original = socket.socket
     socket.socket = _BlockedSocket  # type: ignore[assignment]
     try:

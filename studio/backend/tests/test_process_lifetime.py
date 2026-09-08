@@ -9,6 +9,7 @@ Windows Job Object path is exercised with a mocked kernel32 so it runs on CI.
 
 from __future__ import annotations
 
+import multiprocessing.process
 import os
 import signal
 import subprocess
@@ -98,9 +99,9 @@ def test_child_popen_kwargs_linux_vs_other(monkeypatch):
 def test_compose_preexec_runs_pdeathsig_then_existing(monkeypatch):
     calls = []
     monkeypatch.setattr(pl, "_is_linux", lambda: True)
-    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda: calls.append("death"))
-    pl.compose_preexec(lambda: calls.append("existing"))()
-    assert calls == ["death", "existing"]  # ordering matters for sandbox hooks
+    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda owner: calls.append(("death", owner)))
+    pl.compose_preexec(lambda: calls.append("existing"), 4242)()
+    assert calls == [("death", 4242), "existing"]  # ordering matters for sandbox hooks
 
 
 def test_compose_preexec_passthrough_off_linux(monkeypatch):
@@ -108,6 +109,110 @@ def test_compose_preexec_passthrough_off_linux(monkeypatch):
     sentinel = lambda: None  # noqa: E731
     assert pl.compose_preexec(sentinel) is sentinel
     assert pl.compose_preexec(None) is None
+
+
+def test_child_popen_kwargs_binds_the_spawning_pid(monkeypatch):
+    # Compare against the forking pid, so a healthy child of a pid-1 parent is
+    # not mistaken for an orphan (#7886).
+    seen = []
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda owner: seen.append(owner))
+    pl.child_popen_kwargs()["preexec_fn"]()
+    assert seen == [os.getpid()]
+
+
+# ── Orphan decision inside the preexec hook ──
+
+
+class _ExitCalled(BaseException):
+    """Stands in for os._exit, which a test cannot survive. A BaseException so
+    the hook's own `except Exception` does not swallow it."""
+
+
+def _run_preexec(monkeypatch, *, owner_pid, getppid):
+    # prctl is stubbed so the decision runs on any platform.
+    import ctypes
+
+    class _Libc:
+        def prctl(self, *args):
+            return 0
+
+    def _no_exit(code):
+        raise _ExitCalled(code)
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: _Libc())
+    monkeypatch.setattr(pl.os, "getppid", lambda: getppid)
+    monkeypatch.setattr(pl.os, "_exit", _no_exit)
+    pl._pdeathsig_preexec(owner_pid)
+
+
+def test_pdeathsig_keeps_child_whose_parent_is_pid_1(monkeypatch):
+    # Unsloth as a container entrypoint runs as pid 1, so a healthy child sees
+    # getppid() == 1; killing it took down every llama-server spawn (#7886).
+    _run_preexec(monkeypatch, owner_pid = 1, getppid = 1)
+
+
+def test_pdeathsig_exits_when_reparented_away_from_the_owner(monkeypatch):
+    with pytest.raises(_ExitCalled):
+        _run_preexec(monkeypatch, owner_pid = 4242, getppid = 1)
+
+
+def _bind_with_parent(monkeypatch, parent):
+    import multiprocessing
+
+    seen, exited = [], []
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda owner: seen.append(owner))
+    monkeypatch.setattr(pl.os, "_exit", lambda code: exited.append(code))
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: parent)
+    pl.bind_current_process_to_parent_lifetime()
+    return seen, exited
+
+
+def test_bind_keeps_a_worker_whose_creator_is_alive(monkeypatch):
+    # The decision comes from the creator's sentinel, not a pid compare: under
+    # forkserver the kernel parent is the fork server, so pids would read every
+    # healthy worker as orphaned.
+    seen, exited = _bind_with_parent(monkeypatch, _FakeParent(4242, alive = True))
+    assert seen == [os.getppid()]  # PDEATHSIG still bound to the kernel parent
+    assert exited == []
+
+
+def test_bind_exits_when_the_creator_is_already_gone(monkeypatch):
+    seen, exited = _bind_with_parent(monkeypatch, _FakeParent(4242, alive = False))
+    assert seen == [os.getppid()]
+    assert exited == [1]
+
+
+def test_bind_only_arms_pdeathsig_outside_a_multiprocessing_worker(monkeypatch):
+    # No creator to consult and nothing orphaned: arm PDEATHSIG, decide nothing.
+    seen, exited = _bind_with_parent(monkeypatch, None)
+    assert seen == [os.getppid()]
+    assert exited == []
+
+
+def test_bind_keeps_a_non_worker_whose_parent_is_pid_1(monkeypatch):
+    # Runs the REAL hook: a non-worker under a container init sees getppid() == 1,
+    # which the bare fallback killed outright.
+    import ctypes
+    import multiprocessing
+
+    exited = []
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: type("L", (), {"prctl": lambda *_: 0})())
+    monkeypatch.setattr(pl.os, "getppid", lambda: 1)
+    monkeypatch.setattr(pl.os, "_exit", lambda code: exited.append(code))
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+    pl.bind_current_process_to_parent_lifetime()
+    assert exited == []
+
+
+class _FakeParent:
+    def __init__(self, pid, alive):
+        self.pid, self._alive = pid, alive
+
+    def is_alive(self):
+        return self._alive
 
 
 # ── Real Linux PDEATHSIG: child dies when the parent dies abnormally ──
@@ -317,3 +422,114 @@ def test_windows_job_install_degrades_on_assign_failure(monkeypatch):
     pl._install_windows_job()
     assert pl._win_job_handle is None  # not retained when assignment fails
     assert "close" in log  # the orphaned job handle is closed
+
+
+# Daemonic workers spawning children (#9094)
+
+
+_NESTED_CHILD_SCRIPT = """
+import multiprocessing as mp
+import sys
+
+sys.path.insert(0, {backend!r})
+
+CTX = mp.get_context("spawn")
+
+
+def _grandchild(marker):
+    with open(marker, "w") as handle:
+        handle.write("ran")
+
+
+def _worker(queue, marker):
+    try:
+        proc = CTX.Process(target = _grandchild, args = (marker,), daemon = True)
+        proc.start()
+        proc.join(30)
+        queue.put("started exit={{}}".format(proc.exitcode))
+    except Exception as exc:
+        queue.put("refused {{}}: {{}}".format(type(exc).__name__, exc))
+
+
+def _no_shim(target, *args, **kwargs):
+    return target(*args, **kwargs)
+
+
+if __name__ == "__main__":
+    from utils.native_path_leases import run_without_native_path_secret
+
+    arm, marker = sys.argv[1], sys.argv[2]
+    entry = run_without_native_path_secret if arm == "shim" else _no_shim
+    queue = CTX.Queue()
+    worker = CTX.Process(target = entry, args = (_worker, queue, marker), daemon = True)
+    worker.start()
+    print("parent-sees-daemon", worker.daemon, flush = True)
+    print("worker", queue.get(timeout = 60), flush = True)
+    worker.join(30)
+"""
+
+
+def _run_nested_child_arm(tmp_path, arm: str) -> tuple[str, bool]:
+    script = tmp_path / f"nested_{arm}.py"
+    script.write_text(_NESTED_CHILD_SCRIPT.format(backend = str(_BACKEND)))
+    marker = tmp_path / f"grandchild_{arm}.txt"
+    proc = subprocess.run(
+        [sys.executable, str(script), arm, str(marker)],
+        capture_output = True,
+        text = True,
+        timeout = 180,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout, marker.exists()
+
+
+@pytest.mark.skipif(
+    not __debug__,
+    reason = "CPython's daemonic-children guard is an assert, so -O strips it and a "
+    "daemonic worker spawns freely -- this arm would assert the opposite of "
+    "what it means",
+)
+def test_daemonic_worker_cannot_spawn_children_without_the_shim(tmp_path):
+    stdout, grandchild_ran = _run_nested_child_arm(tmp_path, "plain")
+    assert "refused AssertionError: daemonic processes are not allowed to have children" in stdout
+    assert not grandchild_ran
+
+
+def test_daemonic_worker_spawns_children_through_the_shim(tmp_path):
+    stdout, grandchild_ran = _run_nested_child_arm(tmp_path, "shim")
+    assert "worker started exit=0" in stdout
+    assert grandchild_ran
+    # The parent still sees the worker as daemonic.
+    assert "parent-sees-daemon True" in stdout
+
+
+def test_allow_child_processes_clears_only_the_daemon_bit(monkeypatch):
+    # Do not mutate the pytest process's real multiprocessing config.
+    config = {"daemon": True, "authkey": b"secret", "semprefix": "/mp"}
+    monkeypatch.setattr(
+        multiprocessing.process, "current_process", lambda: type("P", (), {"_config": config})()
+    )
+    pl.allow_child_processes()
+    assert config == {"daemon": False, "authkey": b"secret", "semprefix": "/mp"}
+
+
+def test_allow_child_processes_survives_a_missing_config(monkeypatch):
+    monkeypatch.setattr(multiprocessing.process, "current_process", lambda: type("P", (), {})())
+    pl.allow_child_processes()
+
+
+def test_an_older_process_lifetime_still_gets_the_parent_death_binding(monkeypatch):
+    """A tree without `allow_child_processes` must keep the binding that predates it.
+
+    Importing both names in one statement would raise ImportError for the whole
+    block, costing the worker its parent-death binding as well.
+    """
+    from utils import native_path_leases
+
+    calls = []
+    monkeypatch.setattr(pl, "bind_current_process_to_parent_lifetime", lambda: calls.append("bind"))
+    monkeypatch.delattr(pl, "allow_child_processes")
+
+    native_path_leases.run_without_native_path_secret(lambda: None)
+
+    assert calls == ["bind"]

@@ -8,6 +8,7 @@ without a cache_dir, so they follow HF_HUB_CACHE; getting it right here fixes
 detection and both transports at once.
 """
 
+import contextlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -25,6 +26,29 @@ _STORAGE_ROOTS_PATH = Path(__file__).resolve().parent.parent / "utils/paths/stor
 def _isolate_studio_home(monkeypatch, tmp_path):
     # Keep _setup_cache_env's UV/VLLM mkdirs out of the real ~/.unsloth/studio.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+
+
+@pytest.fixture(autouse = True)
+def _restore_hf_cache_settings_module():
+    # _load_storage_roots pops utils.hf_cache_settings so each test gets a fresh resolver. Left popped, the next import builds a SECOND module object
+    # and rebinds it on the utils package, so a later test writes its setting into one object while the code under test reads the other. Restore both.
+    import utils
+
+    name = "utils.hf_cache_settings"
+    saved = sys.modules.get(name)
+    saved_attr = getattr(utils, "hf_cache_settings", None)
+    try:
+        yield
+    finally:
+        if saved is not None:
+            sys.modules[name] = saved
+        else:
+            sys.modules.pop(name, None)
+        if saved_attr is not None:
+            utils.hf_cache_settings = saved_attr
+        else:
+            with contextlib.suppress(AttributeError):
+                del utils.hf_cache_settings
 
 
 def _load_storage_roots():

@@ -1,0 +1,198 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# The POSIX `install.sh --local --no-torch` bootstrap, which 13 jobs across 8
+# workflows ran with a byte-identical body. Extracted so the invocation has one
+# definition: the `set -o pipefail` + `tee` idiom is easy to get subtly wrong
+# (without pipefail the step reports the exit status of `tee`, not of
+# install.sh, and a failed install passes), and a flag or log-path change
+# previously had to be applied to 13 places consistently.
+#
+# Deliberately NOT parameterised beyond the two tokens. This action is "the
+# standard local no-torch install", not a general installer wrapper: giving it
+# an `args` input would let call sites drift apart again, which is the thing it
+# exists to prevent. The Windows `install.ps1` path is a different script with a
+# different body and stays separate.
+#
+# Composite actions cannot read the `secrets` context, so both tokens are
+# explicit inputs that each caller passes. That is not boilerplate for its own
+# sake: it keeps the PR-withholding decision visible at the call site, where it
+# belongs, rather than hidden behind a default.
+#
+# Keep `id`, `if`, `timeout-minutes` and `continue-on-error` on the CALLER's
+# step. They are step-level keys on the `uses:` step, so `steps.<id>.outcome`
+# gating in the caller keeps working unchanged; the caller sees this action as a
+# single step and cannot inspect the steps inside it.
+
+name: Install Unsloth (--local, --no-torch)
+description: >-
+  Run the checked-out install.sh in --local --no-torch mode, teeing the
+  installer output to logs/install.log. Requires actions/checkout to have run.
+
+inputs:
+  gh-token:
+    description: >-
+      Token for installer calls that hit the GitHub API (release lookups for the
+      llama.cpp prebuilt). Normally secrets.GITHUB_TOKEN.
+    required: true
+  hf-token:
+    description: >-
+      Hugging Face token, or the empty string to run unauthenticated. Callers
+      that can reach this step on a pull_request event should withhold it,
+      because this step executes checked-out PR code; public models still
+      download without it. The idiom every such caller uses is a conditional on
+      github.event_name that yields secrets.HF_TOKEN off pull_request and an
+      empty string on it (see any call site). Callers whose job cannot run on
+      pull_request, such as a workflow_dispatch-only job, may pass it
+      unconditionally.
+
+      Do not write that conditional out as a literal template expression here.
+      GitHub evaluates expression syntax inside an action manifest, including
+      inside these description strings, and neither the github nor the secrets
+      context exists at manifest-parse time, so an example written out in full
+      fails the whole action with "Unrecognized named-value: 'github'".
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # This step is the single largest cost in CI: 92s median across 39 job runs
+    # in one sample, which is more total time than any test. All of it is uv
+    # resolving and DOWNLOADING the same wheels, in every job, every run, because
+    # uv's cache is per-runner and nothing carried it between them.
+    #
+    # A download cache is the safest kind there is. uv's is content-addressed by
+    # URL and hash, so a stale entry cannot serve wrong content -- the worst it can
+    # do is miss. Nothing about which packages get installed changes; they just are
+    # not fetched twice. That is the difference between this and caching the venv,
+    # which would have to reason about an editable overlay, a moving
+    # `unsloth-zoo @ git+main`, and absolute paths baked into console scripts.
+    #
+    # UV_CACHE_DIR is set explicitly rather than relying on ~/.cache/uv, so the
+    # path is the same on Linux and macOS and one cache config covers both. It is
+    # exported into the environment so install.sh, studio/setup.sh and every uv
+    # call underneath inherit it.
+    - name: Point uv's cache somewhere cacheable
+      shell: bash
+      run: |
+        echo "UV_CACHE_DIR=${{ github.workspace }}/.uv-cache" >> "$GITHUB_ENV"
+        mkdir -p "${{ github.workspace }}/.uv-cache"
+
+    # Keyed on what decides the resolution, with a prefix fallback: a near-miss
+    # still supplies almost every wheel, which is most of the win. A download cache
+    # wants restore-keys for exactly this reason, where a venv cache must not have
+    # them.
+    - name: Restore the uv download cache
+      id: uv-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      continue-on-error: true
+      with:
+        path: ${{ github.workspace }}/.uv-cache
+        key: uv-${{ runner.os }}-${{ hashFiles('studio/backend/requirements/**', 'pyproject.toml') }}
+        restore-keys: |
+          uv-${{ runner.os }}-
+
+    # The frontend build is the other half of this step, and unlike the wheels it is
+    # not a download at all. Measured over 13 distinct Linux jobs on main, using the
+    # elapsed-second prefix below: a median 36s of a 74s install, 49% of it, and
+    # 468s per commit spent producing byte-identical output. The uv cache above
+    # already hits exactly (`Cache hit for: uv-Linux-<hash>`, one 31 kB straggler),
+    # so what is left is compute, and the only way to stop paying it 13 times is to
+    # not do it 13 times.
+    #
+    # Delegated rather than written out here, since #9375, because the Windows jobs
+    # need the identical cache and do not go through this action: they run
+    # `install.ps1` from a hand-written `shell: pwsh` step. Two copies of a key whose
+    # drift is SILENT will drift -- the cache keeps hitting and starts serving a dist
+    # built from inputs the key no longer covers -- so the key has exactly one
+    # definition, in frontend-dist-restore, and that is where its reasoning lives.
+    #
+    # This action is therefore ROOT-CHECKOUT ONLY, and more explicitly than before.
+    # `uses: ./...` resolves from GITHUB_WORKSPACE and does not accept expressions,
+    # so the two references below cannot be prefixed for a job that checks this repo
+    # out into a subdirectory; such a job fails outright with "Can't find
+    # 'action.yml'". No caller does that today -- every call site is
+    # `./.github/actions/install-unsloth-local` -- and
+    # tests/studio/test_frontend_dist_cache.py asserts it stays true, so the next
+    # person meets a named rule instead of that error message. A nested-checkout job
+    # that wants the dist cache calls frontend-dist-restore/-save directly and passes
+    # their `path-prefix`, which is exactly what the Windows call sites do.
+    #
+    # (The runner resolves `./X` as `$GITHUB_WORKSPACE/X` unconditionally -- there is
+    # no branch that consults the referencing action's own directory, and `uses:`
+    # takes no expressions, so this cannot be parameterised. actions/runner#1348 is
+    # the open bug. If the constraint ever needs lifting, the fix is the
+    # self-repository `uses:` syntax that went GA on 2026-07-30, which resolves
+    # against the repo at the running commit rather than the workspace; it needs
+    # runner >= 2.336.0, is unavailable on GHES, and nothing in this repo uses it
+    # yet, so adopting it is a separate decision from this one.)
+    - name: Restore the built frontend
+      id: fe-dist
+      uses: ./.github/actions/frontend-dist-restore
+
+    - name: Install Unsloth (--local, --no-torch)
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+        HF_TOKEN: ${{ inputs.hf-token }}
+      run: |
+        mkdir -p logs
+        set -o pipefail
+        # Elapsed-seconds prefix, added to the STEP LOG only.
+        #
+        # This is the largest step in most jobs that run it -- ~90s median on Linux,
+        # 268-292s on Windows, ~118s on macOS, across 40 jobs -- and its output carries
+        # no timestamps anywhere, so which phase spends that time cannot be read off a
+        # CI log. Guessing has already been misleading: a no-op `unsloth studio update`
+        # over a complete install costs MORE than the full install it follows, which is
+        # the opposite of what a download-bound install does.
+        #
+        # Done here rather than in install.sh on purpose. install.sh, install.ps1 and
+        # studio/setup.* are user-facing scripts and stay untouched; this is a display
+        # filter over a stream CI already pipes, so it adds no switch to maintain, no
+        # environment variable for the installers to interpret, and nothing that can
+        # behave differently for a real user than it does here.
+        #
+        # Downstream of `tee` deliberately: logs/install.log keeps byte-for-byte what
+        # install.sh wrote, so the ~30 places that read or grep that artifact see no
+        # change at all. $SECONDS is the step's own clock and survives into the pipeline
+        # subshell. The `|| [ -n "$line" ]` tail emits a final unterminated line, which
+        # a bare `read` loop would swallow.
+        bash install.sh --local --no-torch 2>&1 \
+          | tee logs/install.log \
+          | while IFS= read -r line || [ -n "$line" ]; do
+              printf '[%4ds] %s\n' "$SECONDS" "$line"
+            done
+
+    # Same pair as the restore above, and the other half of the reason to delegate:
+    # this action gets the post-install reuse assertion (a hit followed by a
+    # `building frontend` line fails the job) for free, in the same place the eight
+    # five Windows job-legs get it.
+    #
+    # `uv cache prune --ci` further down: uv keeps built wheels AND unpacked source
+    # artifacts, and only the former are worth carrying between runners. Without it
+    # that key grows without bound across 39 jobs and re-opens the eviction thrash
+    # the GGUF caches were fixed for.
+    - name: Save the built frontend
+      uses: ./.github/actions/frontend-dist-save
+      with:
+        cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
+        key: ${{ steps.fe-dist.outputs.key }}
+
+    - name: Save the uv download cache
+      if: always() && github.ref == 'refs/heads/main' && steps.uv-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        # Best effort: an older uv without `prune --ci` must not fail the install
+        # that has already succeeded.
+        uv cache prune --ci 2> /dev/null || true
+        du -sh "${{ github.workspace }}/.uv-cache" 2> /dev/null || true
+
+    - name: Save the uv download cache (upload)
+      if: always() && github.ref == 'refs/heads/main' && steps.uv-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      continue-on-error: true
+      with:
+        path: ${{ github.workspace }}/.uv-cache
+        key: uv-${{ runner.os }}-${{ hashFiles('studio/backend/requirements/**', 'pyproject.toml') }}

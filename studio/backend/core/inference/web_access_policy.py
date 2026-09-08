@@ -8,11 +8,15 @@ from __future__ import annotations
 import ipaddress
 import re
 import zlib
+from functools import lru_cache
 from typing import Any
 from urllib.parse import urlsplit
 
 _DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _MAX_DOMAINS_PER_LIST = 100
+# A cache key holds the caller's raw strings for the life of the process, so only an entry short enough to be a real
+# domain is eligible; see normalize_website_policy.
+_MAX_CACHEABLE_DOMAIN_LEN = 253
 # Most search engines stop honouring site: past a handful of OR terms.
 _SITE_FILTER_LIMIT = 8
 
@@ -51,6 +55,27 @@ def normalize_domain(value: Any) -> str:
     return ascii_domain
 
 
+@lru_cache(maxsize = 256)
+def _normalized_domain_tuple(raw_domains: tuple) -> tuple:
+    """``normalize_domain`` over an all-``str`` list, deduplicated, order preserved.
+
+    ``normalize_domain`` is a pure function of its argument (lowercase, IDNA encode,
+    validate), so the result for a given tuple of exact ``str`` domains is invariant and
+    safe to memoise. One restricted web search checks the same policy against every
+    candidate URL, which re-normalised both lists (up to 100 domains each) every time.
+    An invalid domain still raises from inside here, and ``lru_cache`` does not memoise
+    exceptions, so the same ``ValueError`` is raised on every call as before.
+    """
+    domains: list = []
+    seen: set = set()
+    for raw_domain in raw_domains:
+        domain = normalize_domain(raw_domain)
+        if domain not in seen:
+            seen.add(domain)
+            domains.append(domain)
+    return tuple(domains)
+
+
 def normalize_website_policy(value: Any) -> dict[str, list[str]]:
     if value is None:
         return {"allowedDomains": [], "blockedDomains": []}
@@ -67,6 +92,16 @@ def normalize_website_policy(value: Any) -> dict[str, list[str]]:
             raise ValueError(f"{key} must be a list")
         if len(raw_domains) > _MAX_DOMAINS_PER_LIST:
             raise ValueError(f"{key} supports at most {_MAX_DOMAINS_PER_LIST} domains")
+        # exact str only (others can be unhashable); over-long raws stay uncached since nameprep can still shrink them
+        # Exact ``str`` only: anything else can be unhashable and its error message carries the original repr. Over-long
+        # entries stay off the cached path too -- nameprep deletes characters such as U+00AD, so an arbitrarily long raw
+        # string can still normalise, and caching would pin a caller-sized string. Both paths agree.
+        if all(
+            type(raw_domain) is str and len(raw_domain) <= _MAX_CACHEABLE_DOMAIN_LEN
+            for raw_domain in raw_domains
+        ):
+            normalized[key] = list(_normalized_domain_tuple(tuple(raw_domains)))
+            continue
         domains: list[str] = []
         for raw_domain in raw_domains:
             domain = normalize_domain(raw_domain)
@@ -140,11 +175,11 @@ def scope_search_query(query: str, policy: dict[str, Any] | None) -> str:
     allowed = normalize_website_policy(policy)["allowedDomains"]
     if not allowed:
         return query
-    # Cap the site: filter (search engines limit OR operators) instead of dropping scoping for
-    # large allow lists, which returned unrelated results that all got filtered out. Rotate the
-    # window by query so every allowed domain stays reachable across a multi-step run (a fixed
-    # head made domains past the cap permanently undiscoverable) and one query always scopes
-    # the same way.
+    # cap the site: filter and rotate the window by query, else domains past the cap are permanently undiscoverable
+    # Cap the site: filter (search engines limit OR operators) instead of dropping scoping for large allow lists, which
+    # returned unrelated results that all got filtered out. Rotate the window by query so every allowed domain stays
+    # reachable across a multi-step run (a fixed head made domains past the cap permanently undiscoverable) and one
+    # query always scopes the same way.
     window = allowed
     if len(allowed) > _SITE_FILTER_LIMIT:
         offset = zlib.crc32(query.encode("utf-8")) % len(allowed)

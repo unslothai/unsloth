@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/empty";
 import { ShineBorder } from "@/components/ui/shine-border";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY } from "@/lib/navigation-intents";
 import { toastError } from "@/shared/toast";
 import {
   Album02Icon,
@@ -42,7 +43,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   createRecipeDraft,
   createRecipeFromLearningRecipe,
@@ -51,9 +52,6 @@ import {
   useRecipes,
 } from "../data/recipes-db";
 import { LEARNING_RECIPES } from "../learning-recipes";
-
-const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
-  "data-recipes:open-learning-recipes";
 
 type TemplateCard = {
   title: string;
@@ -320,6 +318,15 @@ export function DataRecipesPage(): ReactElement {
   const [loadingTemplateId, setLoadingTemplateId] = useState<string | null>(
     null,
   );
+  const reloadReadySent = useRef(false);
+
+  useEffect(() => {
+    if (!ready || reloadReadySent.current) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [ready]);
 
   useEffect(() => {
     if (sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) !== "1") {

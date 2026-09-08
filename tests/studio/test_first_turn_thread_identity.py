@@ -46,8 +46,8 @@ def test_wait_for_run_start_returns_the_id():
 
 
 def test_the_run_is_given_its_real_thread_id():
-    # The whole point: the adapter must not start under the unresolved key when the id is
-    # already known by the time the await above resolves.
+    # The whole point: the adapter must not start under the unresolved key when the id is already known by the
+    # time the await above resolves.
     block = re.search(
         r"async \*run\(options\) \{.*?const result = adapter\.run\(.*?\);",
         PROVIDER,
@@ -55,7 +55,11 @@ def test_the_run_is_given_its_real_thread_id():
     )
     assert block, "createPersistedRunAdapter's run wrapper not found"
     body = block.group(0)
-    assert "const adoptedThreadId = await waitForRunStartHistoryAppend(" in body
+    assert "let adoptedThreadId: string | undefined;" in body
+    assert re.search(
+        r"adoptedThreadId\s*=\s*await waitForRunStartHistoryAppend\(",
+        body,
+    ), "the persisted-run preflight must retain the assigned thread id"
     assert (
         "!options.unstable_threadId && adoptedThreadId" in body
     ), "only fill in the id when assistant-ui had none"
@@ -63,8 +67,8 @@ def test_the_run_is_given_its_real_thread_id():
 
 
 def test_an_existing_thread_id_is_never_overwritten():
-    # A resolved thread already streams under its own id; replacing it would move a running
-    # chat's handles out from under the sidebar row watching them.
+    # A resolved thread already streams under its own id; replacing it would move a running chat's handles out from
+    # under the sidebar row watching them.
     block = re.search(
         r"const result = adapter\.run\((.*?)\);",
         PROVIDER,

@@ -17,6 +17,7 @@ import contextlib
 import os
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -116,10 +117,11 @@ class _Harness:
 def _run(tmp_path, methods, **kwargs):
     model_dir = tmp_path / "model_dir"
     model_dir.mkdir(exist_ok = True)
+    model_dtype = kwargs.pop("model_dtype", "float16")
     return save_mod.save_to_gguf(
         model_name = "testmodel",
         model_type = "llama",
-        model_dtype = "float16",
+        model_dtype = model_dtype,
         model_directory = str(model_dir),
         quantization_method = methods,
         **kwargs,
@@ -145,6 +147,21 @@ def test_fast_quantized_alias_is_single_pass(monkeypatch, tmp_path):
     assert h.quantize_calls == []
 
 
+def test_explicit_gguf_directory_does_not_reuse_model_sibling(monkeypatch, tmp_path):
+    h = _Harness(monkeypatch, tmp_path)
+    model_sibling = tmp_path / "model_dir_gguf"
+    model_sibling.mkdir()
+    notes = model_sibling / "notes.txt"
+    notes.write_text("keep", encoding = "utf-8")
+    output_dir = tmp_path / "owned_output"
+
+    locations, _, _ = _run(tmp_path, ["q8_0"], gguf_directory = output_dir)
+
+    assert [os.path.dirname(path) for path in locations] == [str(output_dir)]
+    assert notes.read_text(encoding = "utf-8") == "keep"
+    assert list(model_sibling.glob("*.gguf")) == []
+
+
 def test_k_quant_keeps_two_pass(monkeypatch, tmp_path):
     h = _Harness(monkeypatch, tmp_path)
     locations, want_full_precision, _ = _run(tmp_path, ["q4_k_m"])
@@ -154,6 +171,39 @@ def test_k_quant_keeps_two_pass(monkeypatch, tmp_path):
     assert want_full_precision is False
     # The 16-bit intermediate must be cleaned up.
     assert len(locations) == 1 and locations[0].endswith("testmodel.Q4_K_M.gguf")
+
+
+def test_bf16_fallback_shards_the_final_output(monkeypatch, tmp_path):
+    h = _Harness(monkeypatch, tmp_path)
+    monkeypatch.setattr(save_mod.torch.cuda, "is_bf16_supported", lambda: False)
+    split_calls = []
+
+    def split(files, shard_size, quantizer_location):
+        split_calls.append((files, shard_size, quantizer_location))
+        return [files[0].replace(".gguf", f"-0000{i}-of-00002.gguf") for i in (1, 2)]
+
+    monkeypatch.setattr(save_mod, "_split_main_gguf", split)
+    locations, _, _ = _run(
+        tmp_path,
+        ["bf16"],
+        model_dtype = "bfloat16",
+        gguf_shard_size = "256MB",
+    )
+
+    assert h.convert_calls[0]["quantization_type"] == "f16"
+    assert h.convert_calls[0]["max_shard_size"] == "0"
+    assert [call["quant_type"] for call in h.quantize_calls] == ["bf16"]
+    assert split_calls == [
+        (
+            [str(tmp_path / "model_dir_gguf" / "testmodel.BF16.gguf")],
+            "256MB",
+            "llama-quantize",
+        )
+    ]
+    assert [Path(path).name for path in locations] == [
+        "testmodel.BF16-00001-of-00002.gguf",
+        "testmodel.BF16-00002-of-00002.gguf",
+    ]
 
 
 def test_mixed_methods_share_16bit_base(monkeypatch, tmp_path):
@@ -199,3 +249,73 @@ def test_quantize_failure_raises_actionable_error(monkeypatch, tmp_path):
     h = _Harness(monkeypatch, tmp_path, quantize_error = OSError("disk full"))
     with pytest.raises(RuntimeError, match = "Quantization failed"):
         _run(tmp_path, ["q4_k_m", "q5_k_m"])
+
+
+# -- reclaiming the 16-bit merge on a tight disk (see tests/test_gguf_disk_headroom.py) -----
+
+
+def _tight_disk(monkeypatch, free_gb = 1):
+    import types
+    usage = types.SimpleNamespace(total = 0, used = 0, free = free_gb * 1024**3)
+    monkeypatch.setattr(save_mod.shutil, "disk_usage", lambda *_a, **_k: usage)
+
+
+def _merge_weights(tmp_path):
+    model_dir = tmp_path / "model_dir"
+    model_dir.mkdir(exist_ok = True)
+    weights = model_dir / "model.safetensors"
+    weights.write_bytes(b"\0" * 4096)
+    return weights
+
+
+def test_a_disposable_merge_is_reclaimed_when_the_disk_is_tight(monkeypatch, tmp_path):
+    """End to end: the flag has to survive the trip from save_to_gguf down to the
+    reclamation, not just exist at both ends."""
+    _Harness(monkeypatch, tmp_path)
+    weights = _merge_weights(tmp_path)
+    _tight_disk(monkeypatch)
+    _run(
+        tmp_path,
+        ["q4_k_m"],
+        merge_is_disposable = True,
+        preexisting_weights = frozenset(),
+    )
+    assert not weights.exists()
+
+
+def test_the_ownership_record_survives_the_same_trip(monkeypatch, tmp_path):
+    """The second half of the safety story has to arrive too.
+
+    A file named in `preexisting_weights` is the caller's, so the same tight-disk
+    export that reclaims the merge must leave it alone. Testing this at the
+    bottom only would not show that `save_to_gguf` still carries it down.
+    """
+    _Harness(monkeypatch, tmp_path)
+    weights = _merge_weights(tmp_path)
+    _tight_disk(monkeypatch)
+    _run(
+        tmp_path,
+        ["q4_k_m"],
+        merge_is_disposable = True,
+        preexisting_weights = frozenset([weights.name]),
+    )
+    assert weights.exists(), "a file the caller owned was reclaimed"
+
+
+def test_an_export_that_cannot_say_what_it_owns_reclaims_nothing(monkeypatch, tmp_path):
+    """No ownership record is not an empty one, all the way up."""
+    _Harness(monkeypatch, tmp_path)
+    weights = _merge_weights(tmp_path)
+    _tight_disk(monkeypatch)
+    _run(tmp_path, ["q4_k_m"], merge_is_disposable = True)
+    assert weights.exists()
+
+
+def test_a_merge_the_caller_owns_survives_the_same_export(monkeypatch, tmp_path):
+    """Same tight disk, default flag: nothing is deleted, which is what every
+    existing caller of save_to_gguf gets."""
+    _Harness(monkeypatch, tmp_path)
+    weights = _merge_weights(tmp_path)
+    _tight_disk(monkeypatch)
+    _run(tmp_path, ["q4_k_m"])
+    assert weights.exists()

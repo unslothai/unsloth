@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-const LOCAL_PATH_PREFIX_RE =
-  /^(?:\/|\.{1,2}(?:$|[\\/])|~(?:$|[\\/])|~[^\\/]+[\\/]|[A-Za-z]:[\\/]|\\\\)/;
+export { looksLikeLocalPath } from "../../../lib/local-path.ts";
+
 const WINDOWS_PATH_SEPARATOR_RE = /\\/g;
 const TRAILING_PATH_SEPARATOR_RE = /\/+$/;
-
-export function looksLikeLocalPath(input: string): boolean {
-  const value = input.trim();
-  return value.length > 0 && LOCAL_PATH_PREFIX_RE.test(value);
-}
 
 export function localPathCacheKey(path: string | null | undefined): string {
   return (
@@ -17,4 +12,15 @@ export function localPathCacheKey(path: string | null | undefined): string {
       ?.replace(WINDOWS_PATH_SEPARATOR_RE, "/")
       .replace(TRAILING_PATH_SEPARATOR_RE, "") ?? ""
   );
+}
+
+/** Whether a selected row can be routed to the Images / Video pages, which resolve a routed
+ * `model` as a Hub id. Only a FILESYSTEM row cannot: an HF-cache row is a complete Hub
+ * snapshot carrying the repo id, and inventory dedup can leave it as the only row for that
+ * repo, so excluding it by kind alone dropped it into a chat the backend then refuses. */
+export function routableToMediaPage(
+  kind: "discover" | "cache" | "local",
+  localSource: string | null | undefined,
+): boolean {
+  return kind !== "local" || localSource === "hf_cache";
 }

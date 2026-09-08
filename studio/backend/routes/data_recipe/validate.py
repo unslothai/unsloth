@@ -5,13 +5,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from auth.authentication import (
+    authenticated_via_api_key,
+    require_ui_session_for_local_commands,
+)
 from core.data_recipe.service import (
     build_config_builder,
     create_data_designer,
+    recipe_has_stdio_mcp,
     validate_recipe,
 )
 from loggers import get_logger
@@ -20,6 +25,10 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+# A stdio provider is a command this host would run, so only a UI session may
+# supply one. Annotated, not a Depends default, so a direct call gets False.
+ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 _GITHUB_VALIDATE_NOTE = (
     "Recipe shape is valid. GitHub access and rate limits are checked when the run starts."
@@ -132,13 +141,15 @@ def _patch_local_providers(recipe: dict[str, Any]) -> None:
 
 
 @router.post("/validate", response_model = ValidateResponse)
-def validate(payload: RecipePayload) -> ValidateResponse:
+def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> ValidateResponse:
     recipe = payload.recipe
     if not recipe.get("columns"):
         return ValidateResponse(
             valid = False,
             errors = [ValidateError(message = "Recipe must include columns.")],
         )
+    if recipe_has_stdio_mcp(recipe):
+        require_ui_session_for_local_commands(via_api_key)
 
     _patch_local_providers(recipe)
 
@@ -150,10 +161,8 @@ def validate(payload: RecipePayload) -> ValidateResponse:
         try:
             build_config_builder(recipe)
         except ModuleNotFoundError as exc:
-            # data_designer is an optional runtime dep; static validation passed
-            # and full validation is deferred to run start, so a missing import
-            # shouldn't block the recipe. Restrict the bypass to data_designer so
-            # other ImportErrors still surface as failures.
+            # data_designer is an optional runtime dep and full validation is deferred to run start, so only ITS
+            # ImportError is bypassed; others still fail.
             if not (exc.name or "").startswith("data_designer"):
                 raise
             logger.debug(

@@ -3,6 +3,7 @@
 
 """Regression coverage for Colab iframe embedding (#7344)."""
 
+import inspect
 import sys
 import types
 from types import SimpleNamespace
@@ -80,6 +81,28 @@ def test_warn_colab_cloudflare_missing_skips_when_tunnel_ready(monkeypatch, capl
             cloudflare_url = "https://share.trycloudflare.com",
         )
     assert "Cloudflare tunnel unavailable" not in caplog.text
+
+
+def test_start_cloudflare_tunnel_marks_colab_owner(monkeypatch):
+    calls = []
+    tunnel = types.ModuleType("cloudflare_tunnel")
+    tunnel.set_studio_tunnel_url_callback = lambda callback: calls.append(("callback", callback))
+    tunnel.start_studio_tunnel = lambda port, **kwargs: (
+        calls.append((port, kwargs)) or "https://share.trycloudflare.com"
+    )
+    monkeypatch.setitem(sys.modules, "cloudflare_tunnel", tunnel)
+    monkeypatch.setattr(colab, "_bootstrap_password_pending", lambda: False)
+
+    assert colab.start_cloudflare_tunnel(8891) == "https://share.trycloudflare.com"
+    assert calls == [
+        ("callback", colab._publish_cloudflare_url),
+        (8891, {"managed_by": "colab"}),
+    ]
+
+
+def test_colab_start_does_not_republish_returned_url():
+    assert "_publish_cloudflare_url(cf_url)" not in inspect.getsource(colab.start)
+    assert "cloudflare_url = None" not in inspect.getsource(colab._stop_cloudflare_tunnel)
 
 
 def test_is_colab_runtime_uses_backend_colab_detector(monkeypatch):

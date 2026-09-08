@@ -24,7 +24,12 @@ const {
 );
 
 test("reasoning budget fields normalize to the backend defaults", () => {
-  assert.deepEqual(normalizePerModelConfig({}), DEFAULT_PER_MODEL_CONFIG);
+  const normalized = normalizePerModelConfig({});
+  assert.equal(normalized.reasoningBudget, DEFAULT_PER_MODEL_CONFIG.reasoningBudget);
+  assert.equal(
+    normalized.reasoningBudgetMessage,
+    DEFAULT_PER_MODEL_CONFIG.reasoningBudgetMessage,
+  );
   assert.equal(
     normalizePerModelConfig({ reasoningBudget: -10 }).reasoningBudget,
     -1,
@@ -73,4 +78,33 @@ test("reasoning budget and message round-trip through per-model storage", () => 
     resolved.config.reasoningBudgetMessage,
     "Reasoning budget exhausted",
   );
+});
+
+test("a record only claims v6 when it carries a reasoning setting", () => {
+  // toStoredConfig stamps the oldest version that understands every field present,
+  // so a v5 client can still rewrite a record that pins nothing newer than its own.
+  const storedVersion = () =>
+    (
+      Object.values(
+        JSON.parse(store.get("unsloth_model_configs") ?? "{}"),
+      ) as { version: number }[]
+    )[0]?.version;
+  store.clear();
+  assert.equal(
+    savePerModelConfig("unsloth/Test-GGUF", "Q4_K_M", {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      nBatch: 512,
+    }),
+    true,
+  );
+  assert.equal(storedVersion(), 2);
+  store.clear();
+  assert.equal(
+    savePerModelConfig("unsloth/Test-GGUF", "Q4_K_M", {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      reasoningBudget: 2048,
+    }),
+    true,
+  );
+  assert.equal(storedVersion(), 6);
 });

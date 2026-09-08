@@ -462,7 +462,7 @@ def test_visible_utilization_rocm_fallback_overlays(monkeypatch):
     # No AMD adapter data on this host. On Windows this branch runs ahead of the torch
     # fallback under test, and probing it imports torch, which the CI runner does not
     # install. Off Windows the real function is never reached, so this changes nothing.
-    monkeypatch.setattr(hw, "_rocm_windows_per_device_vram", lambda ids: [])
+    monkeypatch.setattr(hw, "_rocm_windows_per_device_vram", lambda ids: ([], None))
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)  # amd-smi unavailable
     monkeypatch.setattr(
@@ -494,7 +494,7 @@ def test_visible_utilization_relative_index_skips_overlay(monkeypatch):
     # No AMD adapter data on this host. On Windows this branch runs ahead of the torch
     # fallback under test, and probing it imports torch, which the CI runner does not
     # install. Off Windows the real function is never reached, so this changes nothing.
-    monkeypatch.setattr(hw, "_rocm_windows_per_device_vram", lambda ids: [])
+    monkeypatch.setattr(hw, "_rocm_windows_per_device_vram", lambda ids: ([], None))
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)
     monkeypatch.setattr(

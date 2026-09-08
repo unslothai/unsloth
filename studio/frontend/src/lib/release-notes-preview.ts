@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Top changelog bullets, shown in the collapsed update popup.
+// Top release-note bullets, shown in the collapsed update popup.
 import { codeSpans, parkCodeSpans } from "@/lib/markdown-code-spans";
 import { commentClosesBelow } from "@/lib/markdown-inline-comments";
 import {
@@ -776,7 +776,7 @@ function contentLines(markdown: string): ContentLine[] {
 
 /**
  * Split a bullet at its first sentence boundary. Conservative: the next
- * sentence must start like one, so "CHANGELOG.md in the repo" is not a break.
+ * sentence must start like one, so "unsloth.ai in the docs" is not a break.
  */
 function splitLeadSentence(text: string): ReleaseNotesPreviewItem {
   SENTENCE_BREAK.lastIndex = 0;
@@ -794,7 +794,7 @@ function splitLeadSentence(text: string): ReleaseNotesPreviewItem {
   return { lead: text, rest: "" };
 }
 
-/** Bullets in document order, plus prose for changelogs written as paragraphs. */
+/** Bullets in document order, plus prose for notes written as paragraphs. */
 interface Collector {
   bullets: Bullet[];
   prose: string[];
@@ -954,7 +954,7 @@ function collectBullets(markdown: string): {
     }
     const bullet = BULLET.exec(line.text);
     // Only an ordered list starting at 1 may interrupt a paragraph, so "2. Restart
-    // Studio" under prose is prose. A list item is not a paragraph.
+    // Unsloth" under prose is prose. A list item is not a paragraph.
     const interrupts =
       collector.current === null &&
       collector.paragraph !== "" &&

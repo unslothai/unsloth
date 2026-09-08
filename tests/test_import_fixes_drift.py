@@ -21,6 +21,7 @@ import importlib
 import importlib.util
 import inspect
 import os
+import platform
 import re
 import sys
 from pathlib import Path
@@ -45,9 +46,6 @@ def _safe_version(raw):
         return _PkgVersion(match.group(0))
 
 
-# protobuf
-
-
 def test_protobuf_message_factory_get_prototype_or_get_message_class_present():
     """``fix_message_factory_issue``."""
     mf = pytest.importorskip("google.protobuf.message_factory")
@@ -68,9 +66,6 @@ def test_protobuf_message_factory_get_prototype_or_get_message_class_present():
     assert has_get_prototype or has_get_message_class
 
 
-# datasets
-
-
 def test_datasets_version_not_in_broken_recursion_range():
     """``patch_datasets``: datasets 4.4.0-4.5.0 hit RLock recursion in the Arrow loader."""
     pytest.importorskip("datasets")
@@ -82,9 +77,6 @@ def test_datasets_version_not_in_broken_recursion_range():
         f"range that patch_datasets explicitly forbids. Downgrade to "
         f"datasets==4.3.0 or upgrade past 4.5.0."
     )
-
-
-# trl
 
 
 def test_trl_is_x_available_returns_bool_not_tuple():
@@ -153,9 +145,6 @@ def test_trl_cached_available_flags_are_not_tuples():
         )
 
 
-# transformers
-
-
 def test_pretrained_model_enable_input_require_grads_uses_old_pattern():
     """``patch_enable_input_require_grads``: HF PR #41993 made
     enable_input_require_grads iterate ``self.modules()``, so vision submodules
@@ -214,9 +203,6 @@ def test_transformers_is_causal_conv1d_available_symbol_present():
         )
 
 
-# transformers + accelerate (wandb checkers)
-
-
 def test_transformers_and_accelerate_is_wandb_available_callable():
     """``disable_broken_wandb``: patches is_wandb_available in three modules
     (transformers integration_utils + accelerate imports/utils); all must exist."""
@@ -240,9 +226,6 @@ def test_transformers_and_accelerate_is_wandb_available_callable():
         "disable_broken_wandb cannot patch the re-export namespace "
         "consulted by trl/trainer/callbacks.py."
     )
-
-
-# peft
 
 
 def test_peft_transformers_weight_conversion_importable_and_signature():
@@ -270,9 +253,6 @@ def test_peft_transformers_weight_conversion_importable_and_signature():
     )
 
 
-# triton
-
-
 def test_triton_compiled_kernel_has_num_ctas_and_cluster_dims():
     """``fix_triton_compiled_kernel_missing_attrs``: triton 3.6+ dropped
     num_ctas/cluster_dims on CompiledKernel, but Inductor's make_launcher needs them."""
@@ -281,8 +261,8 @@ def test_triton_compiled_kernel_has_num_ctas_and_cluster_dims():
     tc = pytest.importorskip("triton.compiler.compiler")
 
     ck_cls = tc.CompiledKernel
-    # Healthy if pre-3.6 class attr present, or __init__ wrapped to install
-    # num_ctas + cluster_dims per instance (the post-3.6 fix).
+    # Healthy if the pre-3.6 class attr is present, or __init__ is wrapped to install num_ctas + cluster_dims per
+    # instance (the post-3.6 fix).
     if hasattr(ck_cls, "num_ctas"):
         return
     init = getattr(ck_cls, "__init__", None)
@@ -301,9 +281,6 @@ def test_triton_compiled_kernel_has_num_ctas_and_cluster_dims():
         "``binary.metadata.num_ctas, *binary.metadata.cluster_dims`` "
         "unpack under torch.compile."
     )
-
-
-# torch + torchvision pairing table
 
 
 # Mirrors TORCH_TORCHVISION_COMPAT in torchvision_compatibility_check.
@@ -365,9 +342,6 @@ def test_installed_torch_torchvision_pair_is_compatible():
     )
 
 
-# vllm
-
-
 def test_vllm_guided_decoding_params_or_structured_outputs_present():
     """``fix_vllm_guided_decoding_params``: vLLM PR #22772 renamed
     GuidedDecodingParams -> StructuredOutputsParams; the fix re-aliases for trl."""
@@ -407,9 +381,6 @@ def test_vllm_aimv2_ovis_config_is_past_fix_version():
         )
 
 
-# huggingface_hub
-
-
 def test_huggingface_hub_is_offline_mode_or_hf_hub_offline_present():
     """``fix_huggingface_hub``: re-injects top-level ``is_offline_mode`` from
     ``constants.HF_HUB_OFFLINE`` after huggingface_hub dropped it."""
@@ -434,9 +405,6 @@ def test_huggingface_hub_is_offline_mode_or_hf_hub_offline_present():
     )
 
 
-# torch
-
-
 def test_torch_nn_init_trunc_normal_exists():
     """``patch_trunc_normal_precision_issue``: fp16/bf16 wrapper monkey-patches
     torch.nn.init.trunc_normal_, which must still exist."""
@@ -447,9 +415,6 @@ def test_torch_nn_init_trunc_normal_exists():
         "torch.nn.init.trunc_normal_ removed/renamed; "
         "patch_trunc_normal_precision_issue cannot wrap it."
     )
-
-
-# xformers
 
 
 def test_xformers_is_post_num_splits_key_fix_or_not_installed():
@@ -467,9 +432,6 @@ def test_xformers_is_post_num_splits_key_fix_or_not_installed():
         )
 
 
-# transformers (PreTrainedModel base import sanity)
-
-
 def test_transformers_pretrained_model_has_get_input_embeddings():
     """``patch_enable_input_require_grads``: its replacement calls
     ``get_input_embeddings`` per submodule, so the accessor must still exist."""
@@ -482,15 +444,9 @@ def test_transformers_pretrained_model_has_get_input_embeddings():
     )
 
 
-# accelerate -- ``is_X_available`` API stability used across the fixes
-
-
-# Regression for https://github.com/unslothai/unsloth/issues/4188:
-# Qwen3_5ForConditionalGeneration uses loss_type='ForConditionalGeneration', a
-# separate LOSS_MAPPING key left unpatched, falling back to stock ForCausalLMLoss
-# whose logits.float() OOMs on <=24 GB GPUs.
-
-
+# Regression for https://github.com/unslothai/unsloth/issues/4188: Qwen3_5ForConditionalGeneration uses
+# loss_type='ForConditionalGeneration', a separate LOSS_MAPPING key left unpatched, falling back to stock
+# ForCausalLMLoss whose logits.float() OOMs on <=24 GB GPUs.
 def _reset_loss_mapping(mapping, saved):
     mapping.clear()
     mapping.update(saved)
@@ -589,7 +545,6 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
     e = EmptyLogits()
     patch_accelerate_recursively_apply()
 
-    # Enable debug mode and mock a 2-process distributed state
     state = PartialState()
     orig_debug = state.debug
     orig_dist_type = state.distributed_type
@@ -628,11 +583,9 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
         ):
             state.device = torch.device("cpu")
 
-            # Top-level EmptyLogits gathers to itself
             res = acc_ops.gather(e)
             assert res is e
 
-            # Nested EmptyLogits
             res_nested = acc_ops.gather([e])
             assert isinstance(res_nested, list) and res_nested[0] is e
 
@@ -647,11 +600,9 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
             # num_processes = 2 -> gathered to [42, 42]
             assert torch.equal(res_mixed["labels"], torch.tensor([42, 42], device = state.device))
 
-            # Broadcast with EmptyLogits
             res_broadcast = acc_ops.broadcast(e)
             assert res_broadcast is e
 
-            # Mixed payload broadcast
             res_broadcast_mixed = acc_ops.broadcast(payload)
             assert isinstance(res_broadcast_mixed, dict)
             assert res_broadcast_mixed["logits"] is e
@@ -696,8 +647,8 @@ def test_accelerate_find_device_skips_empty_logits():
     assert acc_ops.find_device({"logits": EmptyLogits(), "labels": tensor}) == tensor.device
     # Tensor-free payloads keep returning None (AlignDevicesHook needs it to skip moves)
     assert acc_ops.find_device({"a": 1}) is None
-    # Sentinel-only payloads fall back to current device so debug-mode
-    # find_device(...).type doesn't raise AttributeError
+    # Sentinel-only payloads fall back to current device so debug-mode find_device(...).type doesn't raise
+    # AttributeError
     assert acc_ops.find_device(EmptyLogits()) == PartialState().device
 
 
@@ -758,3 +709,49 @@ def test_bitsandbytes_rocm_detection_helpers_recognizable():
                 "decline to patch it and Windows ROCm import-time noise / "
                 "wrong ROCM_GPU_ARCH may return."
             )
+
+
+# ===========================================================================
+# psutil -- cpu_freq shape the Apple Silicon M4+ unit fix relies on
+# ===========================================================================
+
+
+def test_psutil_cpu_freq_shape_and_wiring():
+    """``patch_psutil_cpu_freq``: the wrapper rebuilds psutil's scpufreq
+    namedtuple, so fail if that surface moves or the patch is never called."""
+    psutil = pytest.importorskip("psutil")
+
+    if getattr(psutil, "cpu_freq", None) is None:
+        # On macOS psutil decides at runtime whether to expose cpu_freq at all (an absent one is normal on virtualised
+        # Apple Silicon), so its absence is only drift off that platform.
+        if platform.system() == "Darwin" and platform.machine() == "arm64":
+            pytest.skip("this Apple Silicon host exposes no psutil.cpu_freq")
+        pytest.fail(
+            "DRIFT DETECTED: psutil.cpu_freq is gone -- patch_psutil_cpu_freq "
+            "would silently stop correcting Apple Silicon M4+ readings."
+        )
+    assert callable(psutil.cpu_freq)
+    namedtuple_type = None
+    for module_name in ("_ntuples", "_common"):
+        namedtuple_type = getattr(getattr(psutil, module_name, None), "scpufreq", None)
+        if namedtuple_type is not None:
+            break
+    if namedtuple_type is None:
+        pytest.fail(
+            "DRIFT DETECTED: psutil no longer exposes scpufreq in _ntuples or "
+            "_common, so the M5 fallback cannot build a return value."
+        )
+    assert hasattr(namedtuple_type, "_replace") and namedtuple_type._fields[:3] == (
+        "current",
+        "min",
+        "max",
+    ), (
+        "DRIFT DETECTED: psutil.scpufreq changed shape; the Apple Silicon "
+        "rescale in patch_psutil_cpu_freq assumes (current, min, max)."
+    )
+
+    source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
+    assert "patch_psutil_cpu_freq()" in source.read_text(encoding = "utf-8"), (
+        "DRIFT DETECTED: patch_psutil_cpu_freq is defined but never called in "
+        "_gpu_init.py, so real imports never install it."
+    )

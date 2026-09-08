@@ -33,7 +33,15 @@ import {
   listLocalModels,
   listModels,
 } from "@/features/chat";
-import { useHfTokenStore } from "@/features/hub";
+import {
+  EMBEDDING_TAGS,
+  type HfModelResult,
+  ggufVariantDisplayLabel,
+  hfApiToken,
+  useHfTokenStore,
+  useHubModelSearch,
+  useOnlineStatus,
+} from "@/features/hub";
 import type { TranslationKey } from "@/i18n";
 import { useT } from "@/i18n";
 import { getApiBase, isTauri } from "@/lib/api-base";
@@ -47,21 +55,31 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiProviderLogo } from "../../chat/api-provider-logo";
 import { loadCodingAgents } from "../api/coding-agents";
 import {
-  buildAgentCommand,
+  buildAgentShellCommands,
   isLoopbackHost,
   normalizeHost,
+  quoteShellArg,
 } from "../components/agent-command";
 import { SettingsSection } from "../components/settings-section";
-import { psSingle, shSingle } from "../components/usage-examples";
+import {
+  isChatGenerativeHubModel,
+  isClassifierOrRerankerHubModel,
+  isSpeechOnlyHubModel,
+} from "../lib/agent-hub-model.ts";
+import {
+  type ExampleOs,
+  useSettingsPanelPrefsStore,
+} from "../stores/settings-panel-prefs-store";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
-const EXAMPLE_MODEL_REPO = "unsloth/gemma-4-E4B-it-GGUF";
+const FLAGS_DOCS_URL = `${DOCS_URL}#flags--options`;
+const EXAMPLE_MODEL_REPO = "unsloth/Qwen3.8-27B-GGUF";
 const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";
+const EXAMPLE_MODEL_FLAGS = "--reasoning-effort medium";
 const MODEL_RESULT_LIMIT = 7;
 const STATUS_POLL_MS = 5000;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
-const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode"]);
 
 function isLoopbackBase(base: string): boolean {
@@ -77,24 +95,30 @@ function canUseLocalAgentDetection(base: string): boolean {
   return isTauri && isLoopbackBase(base);
 }
 
-// One timeout, reset on re-click and cleared on unmount, so the tick never leaks.
+// bind feedback to the copied text so command changes cannot retain a stale tick.
 function useCopyButton(text: string) {
-  const [copied, setCopied] = useState(false);
+  const textVersion = useMemo(() => Symbol(text), [text]);
+  const [copiedVersion, setCopiedVersion] = useState<symbol | null>(null);
   const timeoutRef = useRef<number | null>(null);
+  const currentVersionRef = useRef(textVersion);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    currentVersionRef.current = textVersion;
+    return () => {
       if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
-    },
-    [],
-  );
+      timeoutRef.current = null;
+    };
+  }, [textVersion]);
 
   const copy = async () => {
-    if (!(await copyToClipboard(text))) return;
-    setCopied(true);
+    const requestedText = text;
+    const requestedVersion = textVersion;
+    if (!(await copyToClipboard(requestedText))) return;
+    if (currentVersionRef.current !== requestedVersion) return;
+    setCopiedVersion(requestedVersion);
     if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
     timeoutRef.current = window.setTimeout(() => {
-      setCopied(false);
+      setCopiedVersion(null);
       timeoutRef.current = null;
     }, 1600);
   };
@@ -104,10 +128,10 @@ function useCopyButton(text: string) {
       window.clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
-    setCopied(false);
+    setCopiedVersion(null);
   };
 
-  return { copied, copy, reset };
+  return { copied: copiedVersion === textVersion, copy, reset };
 }
 
 type AgentDetails = {
@@ -117,7 +141,6 @@ type AgentDetails = {
   logo?: string;
   icon?: string;
   darkIcon?: string;
-  invertIconInDark?: boolean;
   color?: string;
   mark?: string;
 };
@@ -145,8 +168,8 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     id: "hermes",
     name: "Hermes Agent",
     docsUrl: "https://unsloth.ai/docs/integrations/hermes-agent",
-    icon: "hermes.svg",
-    invertIconInDark: true,
+    // hermes.png is the desktop app icon from NousResearch/hermes-agent (apps/desktop/assets/icon.png)
+    icon: "hermes.png",
   },
   {
     id: "openclaw",
@@ -160,6 +183,12 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     docsUrl: "https://unsloth.ai/docs/integrations/opencode",
     icon: "opencode-light.svg",
     darkIcon: "opencode-dark.svg",
+  },
+  {
+    id: "dsh",
+    name: "DeepSeek Harness",
+    docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
+    logo: "deepseek",
   },
 ];
 
@@ -214,8 +243,35 @@ function looksLikePath(value: string): boolean {
   );
 }
 
+// hugging face ids fold case; a path does not, since Linux paths are sensitive.
+function modelKey(model: string): string {
+  return looksLikePath(model) ? model : model.toLowerCase();
+}
+
+function mergeModelOrder(primary: string[], fallback: string[]): string[] {
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  for (const model of [...primary, ...fallback]) {
+    const key = modelKey(model);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    ordered.push(model);
+  }
+  return ordered;
+}
+
 function isHuggingFaceRepo(model: string): boolean {
   return HUGGING_FACE_REPO_PATTERN.test(model);
+}
+
+function isEmbeddingHubModel(
+  model: Pick<HfModelResult, "pipelineTag" | "tags">,
+): boolean {
+  return [model.pipelineTag, ...(model.tags ?? [])].some(
+    (tag) => tag != null && EMBEDDING_TAGS.has(tag.toLowerCase()),
+  );
 }
 
 function formatBytes(bytes: number): string {
@@ -242,11 +298,9 @@ function discoverGgufModels(
   const variants: Record<string, string> = {};
   // Hugging Face ids are case-insensitive, and the catalog and cache endpoints can
   // disagree on spelling; two rows for one repo would leave the load id on only one.
-  const seen = new Set(models.map((model) => model.toLowerCase()));
+  const seen = new Set(models.map(modelKey));
   const add = (model: string) => {
-    // Local entries arrive here as absolute paths, and a path is case-sensitive on
-    // Linux: folding those would collapse two distinct models into one.
-    const key = looksLikePath(model) ? model : model.toLowerCase();
+    const key = modelKey(model);
     if (seen.has(key)) {
       return;
     }
@@ -359,14 +413,12 @@ function AgentIcon({
   logo,
   icon,
   darkIcon,
-  invertIconInDark,
   color,
   mark,
 }: {
   logo?: string;
   icon?: string;
   darkIcon?: string;
-  invertIconInDark?: boolean;
   color?: string;
   mark?: string;
 }) {
@@ -388,11 +440,7 @@ function AgentIcon({
           src={iconSrc}
           alt=""
           aria-hidden={true}
-          className={cn(
-            "size-5 object-contain",
-            darkIconSrc && "dark:hidden",
-            invertIconInDark && "dark:invert",
-          )}
+          className={cn("size-5 object-contain", darkIconSrc && "dark:hidden")}
         />
         {darkIconSrc ? (
           <img
@@ -433,6 +481,11 @@ const OPTION_ROWS: { flag: string; descKey: TranslationKey }[] = [
     descKey: "settings.agents.options.tensorParallel",
   },
   { flag: "--serve / --no-serve", descKey: "settings.agents.options.serve" },
+  { flag: "--reasoning", descKey: "settings.agents.options.reasoning" },
+  {
+    flag: "--reasoning-effort",
+    descKey: "settings.agents.options.reasoningEffort",
+  },
   {
     flag: "--launch / --no-launch",
     descKey: "settings.agents.options.launch",
@@ -445,23 +498,6 @@ const OPTION_ROWS: { flag: string; descKey: TranslationKey }[] = [
   { flag: "--api-key", descKey: "settings.agents.options.apiKey" },
   { flag: "--yolo", descKey: "settings.agents.options.yolo" },
 ];
-
-const REMOTE_CMD_UNIX = `export UNSLOTH_STUDIO_URL=https://studio.example.com
-export UNSLOTH_API_KEY=sk-unsloth-...
-unsloth start claude`;
-
-// PowerShell uses $env: assignments; export is POSIX-only.
-const REMOTE_CMD_WINDOWS = `$env:UNSLOTH_STUDIO_URL = "https://studio.example.com"
-$env:UNSLOTH_API_KEY = "sk-unsloth-..."
-unsloth start claude`;
-
-// Independent alternatives, each with its own copy button (not one script).
-const PASSTHROUGH_EXAMPLES = [
-  { agent: "claude", flags: "--continue" },
-  { agent: "codex", flags: "--persist resume --last" },
-];
-
-const DRY_RUN_FLAGS = "--no-launch";
 
 /** Code box with the copy control inside it, top-right. Presentational: the
  *  copy state stays with the caller so existing resets still apply. */
@@ -539,26 +575,14 @@ function CommandBlock({ command }: { command: string }) {
   );
 }
 
-// Quote only values with shell metacharacters, e.g. a local path with spaces.
-function quoteShellArg(value: string, windows: boolean): string {
-  if (SAFE_SHELL_ARG_PATTERN.test(value)) {
-    return value;
-  }
-  return windows ? `'${psSingle(value)}'` : `'${shSingle(value)}'`;
-}
-
 function SubagentSection({
   agent,
-  baseCommand,
-  modelArgs,
+  command,
 }: {
   agent: AgentDetails;
-  baseCommand: string;
-  modelArgs: string;
+  command: string;
 }) {
   const t = useT();
-  // modelArgs is empty when attaching to a resident model that has no id to name.
-  const command = `${baseCommand} --as-subagent${modelArgs ? ` ${modelArgs}` : ""}`;
   const prompt =
     agent.id === "opencode"
       ? t("settings.agents.subagent.opencodePrompt")
@@ -616,8 +640,19 @@ export function AgentsTab() {
   const t = useT();
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const hfToken = useHfTokenStore((s) => s.token);
+  const hfAccessToken = hfApiToken(hfToken);
+  const online = useOnlineStatus();
   const deviceType = usePlatformStore((s) => s.deviceType);
-  // The remote snippet runs on the client, so use the client platform, not deviceType.
+  const { results: trendingGgufs } = useHubModelSearch("", {
+    channel: { owner: "unsloth", tags: ["gguf"] },
+    sortBy: "trendingScore",
+    sortDirection: "desc",
+    accessToken: hfAccessToken,
+    keepUnsupportedTags: false,
+    enabled: online,
+  });
+  // Seed a remote command from the client platform; the shell picker below can
+  // override it for SSH, WSL, containers, or any other paste destination.
   // Anchor the match: a bare includes("win") would also match "darwin".
   const [isWindowsClient] = useState(() => {
     const p = getClientPlatform();
@@ -626,23 +661,48 @@ export function AgentsTab() {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   // Browser commands target the viewed origin; a desktop window origin is a Tauri URL
   // the CLI cannot reach, so use the backend URL from /api/health (getApiBase until it
-  // lands). The command then runs wherever that CLI is: a loopback base is this Studio's
+  // lands). The command then runs wherever that CLI is: a loopback base is this Unsloth's
   // own host, so deviceType decides, and it reports wsl where the browser would claim
-  // Windows; any other base is reached from the viewer's machine, so only the client
-  // platform describes that shell.
+  // Windows. For any other base the client platform is only the initial guess.
   const studioBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
-  const isWindowsShell = isLoopbackBase(studioBase)
-    ? deviceType === "windows"
-    : isWindowsClient;
+  const inferredCommandOs: ExampleOs = (
+    isLoopbackBase(studioBase)
+      ? deviceType === "windows"
+      : isWindowsClient
+  )
+    ? "windows"
+    : "unix";
   const localDetection = canUseLocalAgentDetection(serverUrl ?? origin);
+  const setStoredAgent = useSettingsPanelPrefsStore((s) => s.setAgentsAgent);
+  const setStoredModel = useSettingsPanelPrefsStore((s) => s.setAgentsModel);
+  const setStoredOs = useSettingsPanelPrefsStore((s) => s.setAgentsOs);
+  const setStoredVariant = useSettingsPanelPrefsStore(
+    (s) => s.setAgentsVariant,
+  );
+  // read once: these seed the controls, which write back through the handlers.
+  const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
+  // Detection is only a default: a remote Studio cannot know whether its command
+  // will be pasted into the viewer's local shell, SSH, WSL, or a container.
+  const [commandOsOverride, setCommandOsOverride] = useState<ExampleOs | null>(
+    storedPrefs.agentsOs,
+  );
+  const commandOs = commandOsOverride ?? inferredCommandOs;
   const [agents, setAgents] = useState<string[]>(
     SUPPORTED_AGENTS.map((agent) => agent.id),
   );
-  const [selectedAgent, setSelectedAgent] = useState(FALLBACK_AGENT.id);
-  const agentSelectionChanged = useRef(false);
+  const [selectedAgent, setSelectedAgent] = useState(
+    storedPrefs.agentsAgent ?? FALLBACK_AGENT.id,
+  );
+  // a restored pick counts as explicit, or detection would overwrite it.
+  const agentSelectionChanged = useRef(storedPrefs.agentsAgent != null);
   const [detectedAgents, setDetectedAgents] = useState<Set<string>>(new Set());
   const [loaded, setLoaded] = useState(false);
-  const [models, setModels] = useState<string[]>([EXAMPLE_MODEL_REPO]);
+  // list the restored model until the discovery scan confirms or retires it.
+  const [models, setModels] = useState<string[]>(
+    storedPrefs.agentsModel && storedPrefs.agentsModel !== EXAMPLE_MODEL_REPO
+      ? [storedPrefs.agentsModel, EXAMPLE_MODEL_REPO]
+      : [EXAMPLE_MODEL_REPO],
+  );
   const [cachedLoadIds, setCachedLoadIds] = useState<Record<string, string>>(
     {},
   );
@@ -658,25 +718,66 @@ export function AgentsTab() {
   const [knownVariants, setKnownVariants] = useState<Record<string, string>>({
     [EXAMPLE_MODEL_REPO]: EXAMPLE_MODEL_VARIANT,
   });
-  const [selectedModel, setSelectedModel] = useState(EXAMPLE_MODEL_REPO);
-  const modelSelectionChanged = useRef(false);
+  const initialModel = storedPrefs.agentsModel ?? EXAMPLE_MODEL_REPO;
+  const [selectedModel, setSelectedModel] = useState(initialModel);
+  const modelSelectionChanged = useRef(storedPrefs.agentsModel != null);
+  // held until discovery and the first status can confirm the restored model.
+  const restoredModel = useRef<string | null>(storedPrefs.agentsModel);
+  const [discoveredKeys, setDiscoveredKeys] = useState<Set<string> | null>(
+    null,
+  );
+  const [statusSettled, setStatusSettled] = useState(false);
   // The model status last reported, for the discovery scan to preserve.
-  const activeModelRef = useRef<string | null>(null);
+  const activeModelRef = useRef<{
+    model: string;
+    variant: string | null;
+  } | null>(null);
   // Only the newest status request may apply; a slow earlier one must not win.
   const statusSeq = useRef(0);
   // A quant picked by hand, scoped to its repo: polling and refetches must not
   // overwrite it, but it must not follow the selection onto a different repo.
-  const chosenVariant = useRef<{ model: string; variant: string } | null>(null);
+  // a restored quant is scoped the same way, so it applies when its model does.
+  const chosenVariant = useRef<{ model: string; variant: string } | null>(
+    storedPrefs.agentsVariantModel && storedPrefs.agentsVariant
+      ? {
+          model: storedPrefs.agentsVariantModel,
+          variant: storedPrefs.agentsVariant,
+        }
+      : null,
+  );
   const [modelSearch, setModelSearch] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [variants, setVariants] = useState<GgufVariantDetail[]>([]);
   const [selectedVariant, setSelectedVariant] = useState<string | null>(
-    EXAMPLE_MODEL_VARIANT,
+    chosenVariant.current &&
+    modelKey(chosenVariant.current.model) === modelKey(initialModel)
+      ? chosenVariant.current.variant
+      : initialModel === EXAMPLE_MODEL_REPO
+        ? EXAMPLE_MODEL_VARIANT
+        : null,
   );
   const [variantsLoading, setVariantsLoading] = useState(true);
   const [variantsFailed, setVariantsFailed] = useState(false);
 
   const labelFor = (model: string) => modelLabels[model] ?? model;
+  const trendingModels = useMemo(
+    () =>
+      trendingGgufs
+        .filter(
+          (model) =>
+            model.isGguf &&
+            isChatGenerativeHubModel(model) &&
+            !isEmbeddingHubModel(model) &&
+            !isSpeechOnlyHubModel(model) &&
+            !isClassifierOrRerankerHubModel(model),
+        )
+        .map((model) => model.id),
+    [trendingGgufs],
+  );
+  const orderedModels = useMemo(
+    () => mergeModelOrder(trendingModels, models),
+    [models, trendingModels],
+  );
   const matchingModels = useMemo(() => {
     const tokens = modelSearch
       .trim()
@@ -685,22 +786,28 @@ export function AgentsTab() {
       .filter(Boolean);
     const matches =
       tokens.length === 0
-        ? models
-        : models.filter((model) => {
+        ? orderedModels
+        : orderedModels.filter((model) => {
             // Search both, so a scanned model is findable by name and by path.
             const haystack =
               `${model} ${modelLabels[model] ?? ""}`.toLowerCase();
             return tokens.every((token) => haystack.includes(token));
           });
 
-    if (tokens.length === 0 && matches.includes(selectedModel)) {
-      return [
-        selectedModel,
-        ...matches.filter((model) => model !== selectedModel),
-      ];
+    if (tokens.length === 0) {
+      const selectedKey = modelKey(selectedModel);
+      const selectedIndex = matches.findIndex(
+        (model) => modelKey(model) === selectedKey,
+      );
+      if (selectedIndex > 0) {
+        return [
+          matches[selectedIndex],
+          ...matches.filter((_, index) => index !== selectedIndex),
+        ];
+      }
     }
     return matches;
-  }, [modelLabels, modelSearch, models, selectedModel]);
+  }, [modelLabels, modelSearch, orderedModels, selectedModel]);
 
   const visibleModels = matchingModels.slice(0, MODEL_RESULT_LIMIT);
   const preferredVariant = knownVariants[selectedModel] ?? null;
@@ -710,46 +817,49 @@ export function AgentsTab() {
   // /v1/models advertises for it. The resident model is exempt: it already
   // loaded by id, and cached-gguf keeps the largest copy across caches, whose
   // snapshot could switch cache or quant under it.
-  const cachedLoadId =
-    selectedModel === activeStatusModel
-      ? null
-      : (cachedLoadIds[selectedModel] ??
-        cachedLoadIds[selectedModel.toLowerCase()] ??
-        null);
+  const selectedModelIsActive =
+    activeStatusModel != null &&
+    modelKey(selectedModel) === modelKey(activeStatusModel);
+  const cachedLoadId = selectedModelIsActive
+    ? null
+    : (cachedLoadIds[selectedModel] ??
+      cachedLoadIds[selectedModel.toLowerCase()] ??
+      null);
   const modelId = cachedLoadId ?? selectedModel;
   const suffixVariant = isHuggingFaceRepo(modelId);
   const commandModel =
     selectedVariant && suffixVariant
       ? `${modelId}:${selectedVariant}`
       : modelId;
-  const commandModelArg = quoteShellArg(commandModel, isWindowsShell);
+  const commandModelArg = quoteShellArg(commandModel, commandOs);
   // A bare `unsloth start` attaches to whatever is loaded, which is the only way
   // to reach a native-grant GGUF: naming it would switch the server to another model.
   const attachOnly = selectedModel === attachOnlyModel;
+  const selectedModelArgs =
+    selectedVariant && !suffixVariant
+      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, commandOs)}`
+      : `--model ${commandModelArg}`;
+  const selectedModelFlags =
+    modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)
+      ? EXAMPLE_MODEL_FLAGS
+      : "";
   const modelArgs = attachOnly
     ? ""
-    : selectedVariant && !suffixVariant
-      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsShell)}`
-      : `--model ${commandModelArg}`;
+    : [selectedModelArgs, selectedModelFlags].filter(Boolean).join(" ");
   // No key is passed: the CLI caches an explicit one per base, overwriting a working
   // saved key. Omitting it replays the saved key; the remote section covers first setup.
-  const commandOs = isWindowsShell ? "windows" : "unix";
-  const commandBase = buildAgentCommand(
+  const shellCommands = buildAgentShellCommands(
     studioBase,
-    null,
     commandOs,
     selectedAgent,
+    modelArgs,
   );
-  const command = attachOnly ? commandBase : `${commandBase} ${modelArgs}`;
-  // The fixed examples below target the same Studio, not a bare 127.0.0.1:8888.
-  const example = (agentId: string, flags: string) =>
-    `${buildAgentCommand(studioBase, null, commandOs, agentId)} ${flags}`;
+  const command = shellCommands.primary;
   const {
     copied,
     copy: handleCopy,
     reset: resetCopied,
   } = useCopyButton(command);
-  const remoteCommand = isWindowsClient ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
 
   useEffect(() => {
     void fetchDeviceType({ force: true });
@@ -796,12 +906,40 @@ export function AgentsTab() {
     };
   }, [localDetection]);
 
+  // a restored agent the backend no longer lists cannot build a command.
+  useEffect(() => {
+    if (!agentSelectionChanged.current) return;
+    if (localDetection && !loaded) return;
+    if (agents.includes(selectedAgent)) return;
+    agentSelectionChanged.current = false;
+    setStoredAgent(null);
+    setSelectedAgent(
+      agents.find((agent) => detectedAgents.has(agent)) ??
+        agents[0] ??
+        FALLBACK_AGENT.id,
+    );
+  }, [
+    agents,
+    detectedAgents,
+    loaded,
+    localDetection,
+    selectedAgent,
+    setStoredAgent,
+  ]);
+
   useEffect(() => {
     let cancelled = false;
+    // An endpoint that could not answer has not proved a model absent, and the
+    // retire treats discoveredKeys as exactly that proof.
+    let discoveryComplete = true;
+    const note = <T,>(fallback: T) => (): T => {
+      discoveryComplete = false;
+      return fallback;
+    };
     Promise.all([
-      listModels().catch(() => null),
-      listCachedGguf().catch(() => []),
-      listLocalModels().catch(() => null),
+      listModels().catch(note(null)),
+      listCachedGguf().catch(note([])),
+      listLocalModels().catch(note(null)),
     ])
       .then(([info, cachedGgufs, local]) => {
         if (cancelled) {
@@ -828,10 +966,14 @@ export function AgentsTab() {
             labels[entry.id] = entry.label;
           }
         }
+        // Left null when a source failed; null already means "cannot retire".
+        if (discoveryComplete) {
+          setDiscoveredKeys(new Set(discovered.models.map(modelKey)));
+        }
         // Status is applied on its own schedule now, so keep whatever model it has
         // already adopted rather than dropping it when this slower scan lands.
         setModels(() => {
-          const active = activeModelRef.current;
+          const active = activeModelRef.current?.model;
           return active && !discovered.models.includes(active)
             ? [active, ...discovered.models]
             : discovered.models;
@@ -851,6 +993,16 @@ export function AgentsTab() {
     };
   }, []);
 
+  // The remembered quant for `model`, matched through modelKey: the catalog,
+  // cache and status endpoints can disagree on repo-id casing, and an exact
+  // compare would silently drop the user's quant.
+  const rememberedVariant = useCallback((model: string): string | null => {
+    const chosen = chosenVariant.current;
+    return chosen && modelKey(chosen.model) === modelKey(model)
+      ? chosen.variant
+      : null;
+  }, []);
+
   // List the resident model and follow it, unless the user picked one explicitly.
   const adoptActiveModel = useCallback(
     (active: { model: string; variant: string | null }) => {
@@ -865,12 +1017,12 @@ export function AgentsTab() {
       }
       if (!modelSelectionChanged.current) {
         setSelectedModel(active.model);
-        if (chosenVariant.current?.model !== active.model) {
-          setSelectedVariant(active.variant);
-        }
+        // a remembered quant for this model wins, since it may be adopted here
+        // before the variants fetch below has had a chance to apply it.
+        setSelectedVariant(rememberedVariant(active.model) ?? active.variant);
       }
     },
-    [],
+    [rememberedVariant],
   );
 
   // A native-grant label only stands for whatever was resident at the time, so once
@@ -920,7 +1072,9 @@ export function AgentsTab() {
   const applyStatus = useCallback(
     (status: InferenceStatusResponse) => {
       const active = activeGgufSelection(status);
-      activeModelRef.current = active?.model ?? null;
+      activeModelRef.current = active
+        ? { model: active.model, variant: active.variant }
+        : null;
       const wasAttachOnly = attachOnlyModel;
       setActiveStatusModel(active?.model ?? null);
       setAttachOnlyModel(active && !active.named ? active.model : null);
@@ -954,10 +1108,14 @@ export function AgentsTab() {
         .then((status) => {
           if (!cancelled && seq === statusSeq.current) {
             applyStatus(status);
+            // Only a current, answered poll is evidence: settling a superseded
+            // one would let the retire run with activeModelRef unset.
+            setStatusSettled(true);
           }
         })
         .catch(() => {
-          // A failed poll just leaves the last known selection in place.
+          // Not settled: a request that never answered proves nothing about
+          // what is resident, so the retire below must keep waiting.
         });
     };
     sync();
@@ -967,6 +1125,41 @@ export function AgentsTab() {
       window.clearInterval(timer);
     };
   }, [applyStatus]);
+
+  // retiring a restored pick needs both reads: either alone can miss a model
+  // the other knows about, and a wrong retire drops the user's choice.
+  useEffect(() => {
+    const restored = restoredModel.current;
+    if (!(restored && discoveredKeys && statusSettled)) return;
+    const active = activeModelRef.current;
+    restoredModel.current = null;
+    // modelKey both sides: discovery folds repo-id case, so an exact match
+    // would retire a valid pick just for a different spelling.
+    // A path is never in discoveredKeys (the catalog drops path ids and a scan
+    // root may not cover it), but `unsloth start --model <path>` is valid, so
+    // absence there is not evidence.
+    if (
+      looksLikePath(restored) ||
+      isHuggingFaceRepo(restored) ||
+      discoveredKeys.has(modelKey(restored)) ||
+      (active && modelKey(active.model) === modelKey(restored))
+    ) {
+      return;
+    }
+    // an uncached pick would pin the builder to a model the CLI cannot load.
+    modelSelectionChanged.current = false;
+    chosenVariant.current = null;
+    setStoredModel(null, null);
+    // adopt straight away rather than parking on the example model: the next
+    // poll is STATUS_POLL_MS away, and a command copied meanwhile would switch
+    // a shared server off whatever is loaded.
+    if (active) {
+      adoptActiveModel(active);
+      return;
+    }
+    setSelectedModel(EXAMPLE_MODEL_REPO);
+    setSelectedVariant(EXAMPLE_MODEL_VARIANT);
+  }, [adoptActiveModel, discoveredKeys, statusSettled, setStoredModel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1028,11 +1221,19 @@ export function AgentsTab() {
         const available = new Set(
           uniqueVariants.map((variant) => variant.quant),
         );
+        // Authoritative for this repo: drop a remembered quant it no longer
+        // offers, or adoptActiveModel re-imposes it on the next poll.
+        // Stop adoptActiveModel re-imposing a quant this repo will not serve.
+        // In-memory only: `partial` here means "still downloading", and an
+        // offline reply lists just the cache, so neither is grounds to delete
+        // the user's saved quant. Dropping the ref re-runs this next mount.
+        const remembered = rememberedVariant(selectedModel);
+        if (remembered && !available.has(remembered)) {
+          chosenVariant.current = null;
+        }
         const nextVariant =
           pickVariant(available, [
-            chosenVariant.current?.model === selectedModel
-              ? chosenVariant.current.variant
-              : null,
+            rememberedVariant(selectedModel),
             preferredVariant,
             info.default_variant,
           ]) ??
@@ -1067,10 +1268,16 @@ export function AgentsTab() {
     return () => {
       cancelled = true;
     };
-  }, [cachedLoadId, hfToken, preferredVariant, selectedModel]);
+  }, [
+    cachedLoadId,
+    hfToken,
+    preferredVariant,
+    rememberedVariant,
+    selectedModel,
+  ]);
 
-  // No GGUF warning for `codex` (unsloth_cli's _require_gguf_for_codex): the
-  // picker only ever offers GGUF models.
+  // No GGUF warning for `codex` or `claude` (unsloth_cli's
+  // _require_gguf_for_agent): the picker only ever offers GGUF models.
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-8">
@@ -1146,6 +1353,7 @@ export function AgentsTab() {
                 onValueChange={(agent) => {
                   agentSelectionChanged.current = true;
                   setSelectedAgent(agent);
+                  setStoredAgent(agent);
                   resetCopied();
                 }}
               >
@@ -1159,7 +1367,6 @@ export function AgentsTab() {
                         logo={selectedAgentDetails.logo}
                         icon={selectedAgentDetails.icon}
                         darkIcon={selectedAgentDetails.darkIcon}
-                        invertIconInDark={selectedAgentDetails.invertIconInDark}
                         color={selectedAgentDetails.color}
                         mark={selectedAgentDetails.mark}
                       />
@@ -1179,7 +1386,6 @@ export function AgentsTab() {
                             logo={agent.logo}
                             icon={agent.icon}
                             darkIcon={agent.darkIcon}
-                            invertIconInDark={agent.invertIconInDark}
                             color={agent.color}
                             mark={agent.mark}
                           />
@@ -1259,11 +1465,21 @@ export function AgentsTab() {
                         <CommandItem
                           key={model}
                           value={model}
-                          data-checked={model === selectedModel}
+                          data-checked={
+                            modelKey(model) === modelKey(selectedModel)
+                          }
                           onSelect={() => {
                             modelSelectionChanged.current = true;
+                            restoredModel.current = null;
+                            const variant =
+                              rememberedVariant(model) ?? knownVariants[model] ?? null;
                             setSelectedModel(model);
-                            setSelectedVariant(knownVariants[model] ?? null);
+                            setSelectedVariant(variant);
+                            // a native-grant label names no path to reuse.
+                            setStoredModel(
+                              model === attachOnlyModel ? null : model,
+                              model === attachOnlyModel ? null : variant,
+                            );
                             setVariants([]);
                             setVariantsFailed(false);
                             setVariantsLoading(isHuggingFaceRepo(model));
@@ -1306,6 +1522,11 @@ export function AgentsTab() {
                 onValueChange={(variant) => {
                   chosenVariant.current = { model: selectedModel, variant };
                   setSelectedVariant(variant);
+                  // stored against its model, so a quant picked while following
+                  // the resident model is remembered without pinning it.
+                  if (selectedModel !== attachOnlyModel) {
+                    setStoredVariant(selectedModel, variant);
+                  }
                   resetCopied();
                 }}
                 disabled={variantsLoading || variants.length === 0}
@@ -1321,7 +1542,14 @@ export function AgentsTab() {
                         : t("settings.agents.noQuantizations")
                     }
                   >
-                    {selectedVariant}
+                    {/* The closed trigger is where the choice is READ, so it shows the label
+                        too; SelectValue renders this instead of the raw item text. The value
+                        bound to the Select is still the key. */}
+                    {ggufVariantDisplayLabel(
+                      variants.find((v) => v.quant === selectedVariant) ?? {
+                        quant: selectedVariant ?? "",
+                      },
+                    )}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent align="start" className="min-w-[16rem]">
@@ -1340,7 +1568,9 @@ export function AgentsTab() {
                         className="[&>span:last-child]:w-full [&>span:last-child]:justify-between"
                       >
                         <span className="font-mono text-xs whitespace-nowrap">
-                          {variant.quant}
+                          {/* The key is the selection identity and can be path-qualified; the
+                              label is what it reads as. The SelectItem value stays the key. */}
+                          {ggufVariantDisplayLabel(variant)}
                         </span>
                         {size ? (
                           <span className="text-ui-10 whitespace-nowrap text-muted-foreground">
@@ -1363,21 +1593,76 @@ export function AgentsTab() {
         ) : null}
 
         <div className="flex min-w-0 flex-col gap-2.5">
-          <span className="text-xs font-medium text-foreground">
-            {t("settings.agents.generatedCommand")}
-          </span>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-medium text-foreground">
+              {t("settings.agents.generatedCommand")}
+            </span>
+            <fieldset className="flex min-w-0 items-center gap-0.5">
+              <legend className="sr-only">
+                {t("settings.agents.generatedCommand")}
+              </legend>
+              <button
+                type="button"
+                onClick={() => {
+                  setCommandOsOverride("unix");
+                  setStoredOs("unix");
+                  resetCopied();
+                }}
+                aria-pressed={commandOs === "unix"}
+                className={cn(
+                  "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  commandOs === "unix"
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t("settings.apiKeys.osUnix")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCommandOsOverride("windows");
+                  setStoredOs("windows");
+                  resetCopied();
+                }}
+                aria-pressed={commandOs === "windows"}
+                className={cn(
+                  "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  commandOs === "windows"
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t("settings.apiKeys.osWindows")}
+              </button>
+            </fieldset>
+          </div>
+          <p className="text-ui-11 leading-relaxed text-muted-foreground">
+            {t("settings.agents.automaticSettingsNote")}
+          </p>
           <CopyableCode
             value={command}
             copyLabel={t("settings.agents.copyGeneratedCommand")}
             copied={copied}
             onCopy={handleCopy}
           />
+          <p className="text-ui-11 leading-relaxed text-muted-foreground">
+            {t("settings.agents.configurationNote")}{" "}
+            <a
+              href={FLAGS_DOCS_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              {t("settings.agents.configurationDocs")}
+            </a>{" "}
+            {t("settings.agents.configurationFlagsSuffix")}
+          </p>
         </div>
 
         <SubagentSection
           key={`${selectedAgent}:${commandModel}`}
-          baseCommand={commandBase}
-          modelArgs={modelArgs}
+          command={shellCommands.subagent}
           agent={selectedAgentDetails}
         />
 
@@ -1412,7 +1697,7 @@ export function AgentsTab() {
         description={t("settings.agents.remote.description")}
       >
         <div className="pt-3">
-          <CommandBlock command={remoteCommand} />
+          <CommandBlock command={shellCommands.remoteSetup} />
         </div>
       </SettingsSection>
 
@@ -1421,8 +1706,11 @@ export function AgentsTab() {
         description={t("settings.agents.passthrough.description")}
       >
         <div className="flex flex-col gap-3 pt-3">
-          {PASSTHROUGH_EXAMPLES.map(({ agent, flags }) => (
-            <CommandBlock key={flags} command={example(agent, flags)} />
+          {shellCommands.passThrough.map((passThroughCommand) => (
+            <CommandBlock
+              key={passThroughCommand}
+              command={passThroughCommand}
+            />
           ))}
         </div>
       </SettingsSection>
@@ -1432,7 +1720,7 @@ export function AgentsTab() {
         description={t("settings.agents.dryRun.description")}
       >
         <div className="pt-3">
-          <CommandBlock command={example("claude", DRY_RUN_FLAGS)} />
+          <CommandBlock command={shellCommands.dryRun} />
         </div>
       </SettingsSection>
     </div>

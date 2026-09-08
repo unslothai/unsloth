@@ -22,6 +22,7 @@ from unsloth.utils.packing import (
     configure_sample_packing,
     enable_padding_free_metadata,
     enable_sample_packing,
+    mask_packed_boundary_labels,
     mask_packed_sequence_boundaries,
     patch_hybrid_linear_attention_varlen,
 )
@@ -202,7 +203,7 @@ class _FakeGatedDeltaNet(torch.nn.Module):
         self.conv1d = torch.nn.Conv1d(4, 4, 3, groups = 4)
         self.A_log = torch.nn.Parameter(torch.zeros(4))
 
-    def forward(self, hidden_states, **kwargs):  # dispatch through self.<kernel>
+    def forward(self, hidden_states, **kwargs):
         return self.chunk_gated_delta_rule(self.causal_conv1d_fn(hidden_states))
 
 
@@ -352,7 +353,7 @@ def test_patch_hybrid_varlen_active_and_idempotent(monkeypatch):
     assert patch_hybrid_linear_attention_varlen(model) is True
     assert model._unsloth_varlen_forward_wrapped is True
     assert model.linear_attn._unsloth_varlen_wrapped is True
-    assert patch_hybrid_linear_attention_varlen(model) is True  # idempotent, no double-wrap
+    assert patch_hybrid_linear_attention_varlen(model) is True
 
     conv_orig.calls.clear()
     scan_orig.calls.clear()
@@ -432,12 +433,11 @@ def _hybrid_model_with_gdn(gdn_forward):
 
 
 def test_patch_hybrid_varlen_no_dispatch_aborts(monkeypatch):
-    # Dispatch is verified at runtime, not statically. A mixer that never calls
-    # self.<kernel> installs the shim, but the first packed forward aborts (both
-    # boundary kernels are load-bearing).
+    # Dispatch is verified at runtime, not statically. A mixer that never calls self.<kernel> installs the shim, but
+    # the first packed forward aborts (both boundary kernels are load-bearing).
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     model = _hybrid_model_with_gdn(lambda self, hidden_states, **kw: hidden_states)
-    assert patch_hybrid_linear_attention_varlen(model) is True  # kernels valid -> installs
+    assert patch_hybrid_linear_attention_varlen(model) is True
     with pytest.raises(RuntimeError, match = "both invoked"):
         model(
             input_ids = torch.zeros(1, 6),
@@ -579,8 +579,8 @@ def test_vlm_without_processing_class_still_disables_packing():
     ),
 )
 def test_encoder_decoder_disables_packing(model_type, architecture):
-    # Text-only encoder-decoder models are not VLMs, but their bidirectional encoder
-    # attends across concatenated samples once padding-free drops attention_mask.
+    # Text-only encoder-decoder models are not VLMs, but their bidirectional encoder attends across concatenated samples
+    # once padding-free drops attention_mask.
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
     model = SimpleNamespace(
@@ -928,7 +928,6 @@ def _build_trl_language_modeling_collator():
     collator = DataCollatorForLanguageModeling(
         **{key: value for key, value in wanted.items() if key in accepted}
     )
-    # Ensure attributes exist even when this TRL has no such field.
     if not hasattr(collator, "padding_free"):
         collator.padding_free = True
     if not hasattr(collator, "return_position_ids"):
@@ -962,7 +961,6 @@ def test_enable_sample_packing():
 
     enable_sample_packing(model, trainer)
 
-    # model hierarchy now allows packed overlength inputs
     assert getattr(model, "_unsloth_allow_packed_overlength") is True
     assert getattr(model.child, "_unsloth_allow_packed_overlength") is True
 
@@ -984,7 +982,6 @@ def test_enable_sample_packing():
     ]
     batch = collator.torch_call(examples)
 
-    # packed lengths aggregated into one tensor
     assert "packed_seq_lengths" in batch
     assert torch.equal(batch["packed_seq_lengths"], torch.tensor([2, 1, 3], dtype = torch.int32))
 
@@ -1184,14 +1181,15 @@ def test_packing_sdpa(tmp_path):
 
 
 # fmt: off
-# Named to match the unsloth_zoo helper (sourced by name, "def sft_prepare_dataset" ->
-# "def _prepare_dataset"). Deliberately OMITS the "licensed under LGPLv3" header to
-# emulate a newer Zoo whose header moved (dependency is only lower-bounded). Source only.
+# Named to match the unsloth_zoo helper (sourced by name, "def sft_prepare_dataset" -> "def _prepare_dataset").
+# Deliberately OMITS the "licensed under LGPLv3" header to emulate a newer Zoo whose header moved (dependency is only
+# lower-bounded). Source only.
 def sft_prepare_dataset(
     self, dataset, processing_class, args, packing, formatting_func, dataset_text_field
 ):
     do_truncation = True
-    max_seq_length = 4
+    max_seq_length = getattr(args, "max_length", 0)
+    if max_seq_length == 0: max_seq_length = getattr(args, "max_seq_length", 0)
     used_column_names = ["text"]
     map_kwargs = {}
     dataset = processing_class(dataset, truncation = do_truncation,)
@@ -1209,11 +1207,10 @@ def sft_prepare_dataset(
 
 
 def test_wrapped_packing_injection_is_drift_resistant(monkeypatch):
-    # Regression: the setup used to anchor on the Zoo license comment, so a header
-    # change silently no-op'd it while the truncation/pack edits still referenced its
-    # variables -> NameError on every SFT prep. It must now install via the signature
-    # before those references, and the pack edit must reuse the guarded
-    # _unsloth_pack_has_strategy instead of re-calling _inspect.signature(pack_dataset).
+    # Regression: the setup used to anchor on the Zoo license comment, so a header change silently no-op'd it while
+    # the truncation/pack edits still referenced its variables -> NameError on every SFT prep. It must now install via
+    # the signature before those references, and the pack edit must reuse the guarded _unsloth_pack_has_strategy
+    # instead of re-calling _inspect.signature(pack_dataset).
     import ast
     import textwrap
     import unsloth.models.rl_replacements as rlr
@@ -1232,6 +1229,8 @@ def test_wrapped_packing_injection_is_drift_resistant(monkeypatch):
     assert patched.index("_unsloth_wrapped_packing = packing") < patched.index(
         "truncation = do_truncation and not _unsloth_wrapped_packing"
     )
+    # the max_length seed is normalised, or a padding-free None stops raw truncation
+    assert 'max_seq_length = getattr(args, "max_length", 0) or 0' in patched
     # the pack edit reuses the guarded flag (signature inspected exactly once, in setup)
     assert "if _unsloth_pack_has_strategy:" in patched
     assert patched.count("_inspect.signature(pack_dataset)") == 1
@@ -1313,9 +1312,9 @@ def _warn_text_model():
 
 
 def test_packing_skip_warning_is_accurate(monkeypatch, caplog):
-    # Two things the message used to get wrong: it blamed a "custom data collator" for
-    # UNSLOTH_RETURN_LOGITS (which unsloth sets itself for compute_metrics), and it quoted a
-    # token limit read before max_seq_length / max_length / the model limit are reconciled.
+    # Two things the message used to get wrong: it blamed a "custom data collator" for UNSLOTH_RETURN_LOGITS (which
+    # unsloth sets itself for compute_metrics), and it quoted a token limit read before max_seq_length / max_length /
+    # the model limit are reconciled.
     monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(
@@ -1343,8 +1342,8 @@ def test_packing_skip_warning_is_accurate(monkeypatch, caplog):
 
 
 def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
-    # A passed collator must still be named as the cause; the env-var fallback is only for
-    # the case where nothing else blocks packing.
+    # A passed collator must still be named as the cause; the env-var fallback is only for the case where nothing else
+    # blocks packing.
     monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
@@ -1361,3 +1360,214 @@ def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
     assert len(messages) == 1
     assert "custom data collator" in messages[0]
     assert "UNSLOTH_RETURN_LOGITS" not in messages[0]
+
+
+# --- packed-boundary guard on the fused-CE path ---------------------------------------
+# mask_packed_sequence_boundaries needs shifted labels, so fused-CE paths (which shift
+# internally) call mask_packed_boundary_labels, the pre-shift equivalent.
+def test_mask_packed_boundary_labels_masks_next_document_first_token():
+    labels = torch.arange(6, dtype = torch.long).view(1, 6)
+    out = mask_packed_boundary_labels(labels, torch.tensor([2, 1, 3], dtype = torch.int32))
+    # Docs start at 0, 2, 3; masking their first token stops the previous doc predicting it. Slot 0 is the
+    # out-of-range redirect: harmless, the shift discards labels[0].
+    assert out.reshape(-1).tolist() == [-100, 1, -100, -100, 4, 5]
+    assert labels.reshape(-1).tolist() == [0, 1, 2, 3, 4, 5]
+    assert out.shape == labels.shape
+    assert out.dtype == labels.dtype
+
+
+def test_mask_packed_boundary_labels_matches_the_shifted_guard():
+    """The two entry points must mask exactly the same CE targets."""
+    labels = torch.arange(100, 112, dtype = torch.long).view(1, 12)
+    lengths = torch.tensor([5, 4, 3], dtype = torch.int32)
+
+    # Route A: shift, then the in-place guard.
+    shift_a = torch.empty_like(labels)
+    shift_a[..., :-1] = labels[..., 1:]
+    shift_a[..., -1] = -100
+    mask_packed_sequence_boundaries(shift_a, lengths)
+
+    # Route B: the raw-label guard, then shift (what fused CE does).
+    masked = mask_packed_boundary_labels(labels, lengths)
+    shift_b = torch.empty_like(masked)
+    shift_b[..., :-1] = masked[..., 1:]
+    shift_b[..., -1] = -100
+
+    assert torch.equal(shift_a, shift_b)
+
+
+def test_mask_packed_boundary_labels_is_idempotent_on_trl_masked_labels():
+    """TRL already sets labels[position_ids == 0] = -100, so the guard is a no-op on it."""
+    lengths = torch.tensor([2, 1, 3], dtype = torch.int32)
+    labels = torch.arange(6, dtype = torch.long).view(1, 6)
+    position_ids = torch.tensor([[0, 1, 0, 0, 1, 2]], dtype = torch.long)
+    trl_labels = labels.clone()
+    trl_labels[position_ids == 0] = -100
+
+    once = mask_packed_boundary_labels(trl_labels, lengths)
+    twice = mask_packed_boundary_labels(once, lengths)
+    assert torch.equal(once, trl_labels)
+    assert torch.equal(twice, once)
+
+
+def test_mask_packed_boundary_labels_is_a_noop_without_packing():
+    labels = torch.arange(6, dtype = torch.long).view(1, 6)
+    assert mask_packed_boundary_labels(labels, None) is labels
+    assert mask_packed_boundary_labels(labels, torch.tensor([], dtype = torch.int32)) is labels
+    assert mask_packed_boundary_labels(None, torch.tensor([2, 4])) is None
+
+
+def test_mask_packed_boundary_labels_tolerates_pad_to_multiple_of():
+    # Trailing pad beyond sum(seq_lengths) stays -100, and no index goes OOB.
+    labels = torch.tensor([[10, 11, 12, 13, -100, -100]], dtype = torch.long)
+    out = mask_packed_boundary_labels(labels, torch.tensor([2, 2], dtype = torch.int32))
+    assert out.reshape(-1).tolist() == [10, 11, -100, 13, -100, -100]
+
+
+def test_mask_packed_boundary_labels_lengths_covering_whole_row():
+    # cumsum == numel: the redirect must not corrupt a real target.
+    labels = torch.arange(4, dtype = torch.long).view(1, 4)
+    out = mask_packed_boundary_labels(labels, [2, 2])
+    assert out.reshape(-1).tolist() == [-100, 1, -100, 3]
+
+
+# ==========================================================================
+# Each test below fails when its production hunk is reverted.
+# 1 + 2. the fused-CE call sites (llama.py / mistral.py)
+# ==========================================================================
+class _StubInner(torch.nn.Module):
+    def __init__(self, hidden):
+        super().__init__()
+        self.hidden = hidden
+
+    def forward(self, **kwargs):
+        from transformers.modeling_outputs import BaseModelOutputWithPast
+        return BaseModelOutputWithPast(
+            last_hidden_state = self.hidden,
+            past_key_values = None,
+            hidden_states = None,
+            attentions = None,
+        )
+
+
+def _make_stub_causal_lm(
+    hidden_size = 8,
+    vocab = 16,
+    seq = 8,
+):
+    hidden = torch.zeros(1, seq, hidden_size)
+    model = _StubInner(hidden)
+    lm_head = torch.nn.Linear(hidden_size, vocab, bias = False)
+    stub = SimpleNamespace(
+        model = model,
+        lm_head = lm_head,
+        # Mistral's `elif self.training:` mask branch is only reached without xformers, so omitting this passes locally
+        # but AttributeErrors on CI.
+        training = True,
+        config = SimpleNamespace(
+            output_attentions = False,
+            output_hidden_states = False,
+            use_return_dict = True,
+            model_type = "llama",
+            final_logit_softcapping = 0,
+            logit_scale = 0,
+            torch_dtype = torch.float32,
+        ),
+    )
+    return stub
+
+
+@pytest.mark.parametrize("module_name", ["llama", "mistral"])
+def test_fused_ce_branch_masks_packed_boundaries(monkeypatch, module_name):
+    """The fused-CE branch must hand boundary-masked labels to the kernel."""
+    import importlib
+
+    mod = importlib.import_module(f"unsloth.models.{module_name}")
+    seq = 8
+    stub = _make_stub_causal_lm(seq = seq)
+
+    seen = {}
+
+    def _fake_fused(**kwargs):
+        seen["labels"] = kwargs["labels"].clone()
+        return torch.zeros((), requires_grad = False)
+
+    monkeypatch.setattr(mod, "unsloth_fused_ce_loss", _fake_fused)
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    monkeypatch.delenv("UNSLOTH_RETURN_HIDDEN_STATES", raising = False)
+
+    if module_name == "llama":
+        forward = mod.CausalLM_fast_forward(lambda *a, **k: None)
+    else:
+        forward = mod.MistralForCausalLM_fast_forward
+
+    labels = torch.arange(seq, dtype = torch.long).view(1, seq)
+    forward(
+        stub,
+        input_ids = torch.zeros(1, seq, dtype = torch.long),
+        labels = labels,
+        packed_seq_lengths = torch.tensor([3, 5], dtype = torch.int32),
+    )
+
+    got = seen["labels"].reshape(-1).tolist()
+    # slot 3 (first token of doc 2) is dropped; slot 0 is the harmless redirect.
+    assert got == [-100, 1, 2, -100, 4, 5, 6, 7], got
+    assert labels.reshape(-1).tolist() == list(range(seq))
+
+
+# 3. the collator wrappers must leave boundary targets in place: unsloth_zoo counts num_items_in_batch off this
+#    batch and already deducts them
+class _UnmaskedPackingCollator:
+    """Padding-free collator that does NOT pre-mask boundaries, like TRL < 0.24 - a test
+    built on TRL 0.24+ output would pass either way."""
+
+    def __init__(self):
+        self.padding_free = True
+        self.return_position_ids = False
+
+    def torch_call(self, examples):
+        ids = [i for ex in examples for i in ex["input_ids"]]
+        return {
+            "input_ids": torch.tensor([ids], dtype = torch.long),
+            "labels": torch.tensor([ids], dtype = torch.long),
+        }
+
+
+def _zoo_num_items_in_batch(batch):
+    """The count unsloth_zoo._unsloth_get_batch_samples derives from a batch."""
+    count = int((batch["labels"][..., 1:] != -100).sum())
+    lengths = batch.get("packed_seq_lengths")
+    if lengths is not None:
+        count -= int(torch.count_nonzero(lengths > 0)) - 1
+    return count
+
+
+@pytest.mark.parametrize("wrapper", [enable_sample_packing, enable_padding_free_metadata])
+def test_collator_keeps_boundary_targets_for_the_num_items_deduction(wrapper):
+    model = SimpleNamespace(max_seq_length = 16, children = lambda: [])
+    trainer = SimpleNamespace(
+        args = SimpleNamespace(remove_unused_columns = True),
+        data_collator = _UnmaskedPackingCollator(),
+    )
+    wrapper(model, trainer)
+
+    batch = trainer.data_collator.torch_call(
+        [
+            {"input_ids": [10, 11, 12], "seq_lengths": [2, 1]},
+            {"input_ids": [13, 14, 15], "seq_lengths": [3]},
+        ]
+    )
+    assert batch["labels"].reshape(-1).tolist() == [10, 11, 12, 13, 14, 15]
+    # docs [10,11] [12] [13,14,15] -> 1 + 0 + 2 real CE targets
+    assert _zoo_num_items_in_batch(batch) == 3
+
+
+# 4. idempotence, discriminating (an identity helper must not pass)
+def test_guard_is_idempotent_and_actually_masks():
+    lengths = torch.tensor([2, 1, 3], dtype = torch.int32)
+    labels = torch.arange(6, dtype = torch.long).view(1, 6)
+    once = mask_packed_boundary_labels(labels, lengths)
+    twice = mask_packed_boundary_labels(once, lengths)
+    assert torch.equal(twice, once)
+    # idempotence alone is trivial for an identity helper, so pin the values
+    assert once.reshape(-1).tolist() == [-100, 1, -100, -100, 4, 5]

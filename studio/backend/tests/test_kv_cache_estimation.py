@@ -31,8 +31,13 @@ _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog
+# structlog. Carries get_logger because this stub is process-wide: whichever test
+# module is imported first wins the setdefault, and utils/prebuilt/freshness_flow
+# calls structlog.get_logger at import time. A bare module here fails that import
+# for every later module on a runner without the real package, which is how this
+# file's stub was breaking test_llama_cpp_mtp_detection in the same pytest run.
 _structlog_stub = _types.ModuleType("structlog")
+_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
 # httpx -- only stub when the real library is missing. Unconditional stubbing
@@ -71,7 +76,7 @@ except ImportError:
     )
     sys.modules["httpx"] = _httpx_stub
 
-from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, LlamaCppBackend
+from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, _FIT_MIN_CTX, LlamaCppBackend
 
 # Helpers
 
@@ -199,6 +204,8 @@ class TestGGUFParserNewFields:
             ("_key_length_mla", "attention.key_length_mla", 256),
             ("_ssm_inner_size", "ssm.inner_size", 6144),
             ("_ssm_state_size", "ssm.state_size", 128),
+            ("_ssm_group_count", "ssm.group_count", 16),
+            ("_ssm_conv_kernel", "ssm.conv_kernel", 4),
         ],
     )
     def test_field_parsed(self, field, gguf_key, value):
@@ -219,6 +226,8 @@ class TestGGUFParserNewFields:
             "_kv_value_length_swa",
             "_ssm_inner_size",
             "_ssm_state_size",
+            "_ssm_group_count",
+            "_ssm_conv_kernel",
         ]:
             assert getattr(b, attr) is None
 
@@ -410,6 +419,8 @@ class TestArchSwaPatternDefaults:
             "attention.value_length_swa": 64,
             "ssm.inner_size": 4096,
             "ssm.state_size": 128,
+            "ssm.group_count": 16,
+            "ssm.conv_kernel": 4,
         }
         b = _backend_from_gguf("testarch", fields)
         assert b._context_length == 131072
@@ -428,6 +439,8 @@ class TestArchSwaPatternDefaults:
         assert b._kv_value_length_swa == 64
         assert b._ssm_inner_size == 4096
         assert b._ssm_state_size == 128
+        assert b._ssm_group_count == 16
+        assert b._ssm_conv_kernel == 4
 
 
 _SWA_FIELDS = {
@@ -954,6 +967,22 @@ class TestHybridMambaEstimation:
         # fai=0 -> n_attn = n_layers (all layers)
         expected = 64 * 4096 * 4 * (256 + 256) * 2
         assert result == expected
+
+    def test_qwen_recurrent_state_and_mtp_rollback_copies(self):
+        b = self._hybrid_backend(
+            _n_layers = 65,
+            _nextn_predict_layers = 1,
+            _ssm_group_count = 16,
+            _ssm_conv_kernel = 4,
+        )
+        per_slot = 48 * ((4 - 1) * (6144 + 2 * 16 * 128) + 128 * 6144) * 4
+        assert b._mamba_recurrent_state_bytes() == per_slot
+        assert per_slot / (1024 * 1024) == pytest.approx(149.625)
+        assert b._mamba_recurrent_state_bytes(n_parallel = 4) == 4 * per_slot
+        assert b._mamba_recurrent_state_bytes(n_parallel = 4, n_rs_seq = 2) == 12 * per_slot
+
+        kv_only = 16 * _runtime_kv_cells(4096, slots = 4) * 4 * (256 + 256) * 2
+        assert b._estimate_kv_cache_bytes(4096, "f16", n_parallel = 4) == (kv_only + 4 * per_slot)
 
 
 # E. Path 3: Sliding Window Estimation
@@ -1639,7 +1668,11 @@ class TestServerFlags:
     def test_fit_threads_swa_full_through_estimator(self):
         # SWA model, generous budget; both should fit but cache size differs.
         b = self._swa_backend()
-        ctx = 8192
+        # Above the fit floor, so the search has somewhere to shrink TO. Spelled
+        # 8192 this sat exactly on the floor once it moved there, and the assert
+        # below stopped testing that swa_full costs more: the fit could not return
+        # anything smaller than the request, whatever the estimator said.
+        ctx = 2 * _FIT_MIN_CTX
         kv_default = b._estimate_kv_cache_bytes(ctx, "f16")
         kv_full = b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True)
         assert kv_full > kv_default

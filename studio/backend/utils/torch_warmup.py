@@ -15,10 +15,10 @@ Contract:
   * idempotent -- one thread per process, repeat calls are no-ops
   * never fatal -- a failed stage is logged and left cold, retried by whoever needs it
   * no half-initialised state -- stages delegate to the module owning the cache
-    (utils.hardware, model_config, hf_xet_fallback), which caches under a lock and
-    only on success, so a racing request waits rather than sees a partial
-  * same end state -- same imports, order and call sites as `import main`. A stage
-    shortcutting to a bare `import x` can behave differently; see _warm_unsloth_zoo.
+    (utils.hardware, model_config), which caches under a lock and only on success,
+    so a racing request waits rather than sees a partial
+  * optional GPU consumers stay cold -- Hub downloads load the Xet/Unsloth Zoo
+    integration on demand, and RAG operations load their embedding backend on demand
 
 This does NOT make torch-dependent endpoints cheap while it runs: anything reaching
 get_device() blocks until the hardware stage finishes, so `async def` handlers on
@@ -29,13 +29,13 @@ from __future__ import annotations
 
 import importlib
 import importlib.machinery
-import importlib.util
 import os
 import sys
 import threading
 import time
 from contextlib import contextmanager
-from functools import partial
+from functools import partial, wraps
+from importlib._bootstrap import _ModuleLockManager
 from typing import Optional
 
 from loggers import get_logger
@@ -51,15 +51,6 @@ _thread_epoch: Optional[int] = None
 _status: dict = {"started": False, "finished": False, "stages": {}}
 
 
-def _torch_installed() -> bool:
-    """True if torch is importable without importing it, so torch-requiring stages are
-    skipped on a --no-torch install rather than logging an error for a missing-on-purpose dep."""
-    try:
-        return importlib.util.find_spec("torch") is not None
-    except (ImportError, ValueError):
-        return False
-
-
 def _is_extension_module(name: str) -> bool:
     """True if sys.modules[name] is a compiled extension, not Python source."""
     module = sys.modules.get(name)
@@ -71,6 +62,48 @@ def _is_extension_module(name: str) -> bool:
     return origin.endswith(tuple(importlib.machinery.EXTENSION_SUFFIXES))
 
 
+_DATASETS_ARROW_EXTENSION_TYPES = tuple(
+    f"datasets.features.features.Array{dimensions}DExtensionType" for dimensions in range(2, 6)
+)
+
+
+def _clear_external_import_state(package: str) -> list[str]:
+    """Undo native registrations made by a pure-Python module before it failed."""
+    if package != "datasets":
+        return []
+    pyarrow = sys.modules.get("pyarrow")
+    unregister = getattr(pyarrow, "unregister_extension_type", None)
+    if unregister is None:
+        return []
+    cleared: list[str] = []
+    for type_name in _DATASETS_ARROW_EXTENSION_TYPES:
+        try:
+            unregister(type_name)
+        except KeyError:
+            continue
+        cleared.append(type_name)
+    if cleared:
+        logger.warning(
+            "unregistered %d PyArrow extension type(s) left by the failed %s "
+            "import so its modules can be executed again",
+            len(cleared),
+            package,
+        )
+    return cleared
+
+
+def _synchronize_with_imports(fn):
+    """Run cleanup under the same per-module lock used by CPython imports."""
+
+    @wraps(fn)
+    def synchronized(package: str):
+        with _ModuleLockManager(package):
+            return fn(package)
+
+    return synchronized
+
+
+@_synchronize_with_imports
 def purge_partial_import(package: str) -> list:
     """Drop the submodules a failed package import left behind in sys.modules.
 
@@ -87,14 +120,13 @@ def purge_partial_import(package: str) -> list:
     Declines when any submodule is a loaded C extension: evicting one re-runs its
     module init, and pybind11 answers a duplicate type registration with
     std::terminate. A torch missing attributes is bad; SIGABRT mid-serve is worse.
+    Known native registries populated by pure-Python modules are reset only after
+    every stale module has been removed and no importer has republished the parent.
     """
     if package in sys.modules:
         return []
     prefix = package + "."
     stale = [name for name in list(sys.modules) if name.startswith(prefix)]
-    # Re-check before touching anything: a retrying importer publishes the parent as soon
-    # as its __init__ begins, and popping submodules out from under it produces the very
-    # half-initialised package this prevents. Narrows the window; CPython's lock is private.
     if package in sys.modules:
         logger.info(
             "not purging %s: another importer republished it while collecting its "
@@ -126,6 +158,9 @@ def purge_partial_import(package: str) -> list:
             break
         if sys.modules.pop(name, None) is not None:
             removed.append(name)
+    fully_purged = package not in sys.modules and not any(name in sys.modules for name in stale)
+    if fully_purged:
+        _clear_external_import_state(package)
     if removed:
         logger.warning(
             "purged %d half-imported %s submodule(s) so the next import re-runs clean: %s",
@@ -141,38 +176,49 @@ _STAGE_PACKAGE = {
     "hardware": "torch",
     "transformers": "transformers",
     "datasets": "datasets",
-    "unsloth_zoo": "unsloth_zoo",
 }
+
+# Hold the import lock across a bare import AND its failure cleanup: locking only the purge leaves a window where a
+# queued importer reuses stale submodules.
+_BARE_IMPORT_STAGES = frozenset({"datasets"})
+
+
+@contextmanager
+def _held_import_lock(name: str, package: Optional[str]):
+    """Hold ``package``'s import lock for a bare-import stage; a no-op for the rest."""
+    if package is None or name not in _BARE_IMPORT_STAGES:
+        yield
+        return
+    with _ModuleLockManager(package):
+        yield
 
 
 def _run_stage(name: str, fn) -> None:
+    package = _STAGE_PACKAGE.get(name)
     started = time.perf_counter()
-    try:
-        fn()
-    except BaseException as exc:  # noqa: BLE001 - a warm failure must be visible, not fatal
-        _status["stages"][name] = {"ok": False, "error": repr(exc)}
-        # warning, not debug: the stage stays cold and the first request pays for it.
-        logger.warning("torch warm stage %r failed: %r", name, exc)
-        package = _STAGE_PACKAGE.get(name)
-        if package:
-            purge_partial_import(package)
-    else:
-        _status["stages"][name] = {
-            "ok": True,
-            "seconds": round(time.perf_counter() - started, 3),
-        }
+    with _held_import_lock(name, package):
+        try:
+            fn()
+        except BaseException as exc:  # noqa: BLE001 - a warm failure must be visible, not fatal
+            _status["stages"][name] = {"ok": False, "error": repr(exc)}
+            # warning, not debug: the stage stays cold and the first request pays for it.
+            logger.warning("torch warm stage %r failed: %r", name, exc)
+            if package:
+                purge_partial_import(package)
+        else:
+            _status["stages"][name] = {
+                "ok": True,
+                "seconds": round(time.perf_counter() - started, 3),
+            }
 
 
 def _warm_hardware(epoch: Optional[int] = None) -> None:
-    # Requests hit the same call, so they reuse the cache or block on this thread's lock,
-    # never race a second detection. The epoch rides along: a shutdown landing between
-    # _warm()'s check and _DETECT_LOCK would else publish for the lifespan that just ended.
+    # Requests hit the same call.
     from utils.hardware import ensure_hardware_detected
     ensure_hardware_detected(epoch)
 
 
 def _warm_transformers() -> None:
-    # Ahead of unsloth_zoo: that is the eager order, and unsloth_zoo patches it on import.
     from utils.models.model_config import _detection_sets
     _detection_sets()
 
@@ -182,35 +228,8 @@ def _warm_datasets() -> None:
     importlib.import_module("datasets")
 
 
-def _warm_unsloth_zoo() -> None:
-    """Prime the download stall watchdog, the way the eager import primed it.
-
-    Through utils.hf_xet_fallback, not a bare ``import unsloth_zoo``: the edge this
-    replaces was orchestrator.py's ``from utils.hf_xet_fallback import
-    DownloadStallError``, and the shim does more. When unsloth_zoo's GPU init raises it
-    retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1 and injects triton/bitsandbytes stubs;
-    a bare import skips that retry, so a host whose bitsandbytes cannot find libcudart
-    would fail a stage startup used to complete.
-
-    Skipped without torch: unsloth_zoo hard-requires it and the shim degrades to stubs.
-    """
-    if not _torch_installed():
-        return
-    # Private deliberately: the exact function the eager import drove. The public names
-    # reach it only via an attribute whose degraded fallback looks like success.
-    from utils.hf_xet_fallback import _load_shared
-
-    if not _load_shared():
-        # Downloads still work on the degraded stubs, but the stage is cold and
-        # warm_status() must say so. Purge so the next importer re-runs __init__ clean;
-        # the shim's negative cache stays pinned, as the raise site and `except` must
-        # resolve to one DownloadStallError class or the stall handler is bypassed.
-        purge_partial_import("unsloth_zoo")
-        raise RuntimeError("unsloth_zoo unavailable; the download stall watchdog stays degraded")
-
-
-# _STAGES follows the eager import order: transformers before unsloth_zoo (which patches
-# it on import), datasets between them because that is where `import main` reached it.
+# Keep metadata and framework registries ready without importing optional GPU consumers.
+# Unsloth Zoo is loaded by utils.hf_xet_fallback only when a Hub operation needs it.
 def _warm_inference_backend() -> None:
     # Its constructor reaches hw.get_device(), so whoever builds it first pays for detection
     # -- lazily that is some request, and sync helpers call the getter inline from async
@@ -224,7 +243,6 @@ _STAGES = (
     ("inference_backend", _warm_inference_backend),
     ("transformers", _warm_transformers),
     ("datasets", _warm_datasets),
-    ("unsloth_zoo", _warm_unsloth_zoo),
 )
 
 

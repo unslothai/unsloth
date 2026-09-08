@@ -60,23 +60,22 @@ from torch.nn.attention.flex_attention import (
     flex_attention,
 )
 
-# GRPO feeds many distinct segment lengths; at dynamo's default recompile_limit (8) the
-# compiled kernel silently reuses a mismatched specialisation (wrong results). Raise it.
+# GRPO feeds many distinct segment lengths, and at dynamo's default recompile_limit (8) the compiled
+# kernel silently reuses a mismatched specialisation, giving wrong results.
 torch._dynamo.config.recompile_limit = max(getattr(torch._dynamo.config, "recompile_limit", 8), 256)
 torch._dynamo.config.accumulated_recompile_limit = max(
     getattr(torch._dynamo.config, "accumulated_recompile_limit", 256), 2048
 )
 
 
-# Compiled kernels: torch.compile fuses the sparse mask into one kernel. dynamic=True is
-# required: T changes almost every GRPO batch and dynamic=False recompiles per T (~14s
-# each). T is still padded to a multiple of 128 (_pad_len) for the backward kernel.
+# Compiled kernels: torch.compile fuses the sparse mask into one kernel, and dynamic=True is
+# required, since T changes almost every GRPO batch and dynamic=False recompiles per T (~14s each).
 _flex_attention_compiled = torch.compile(flex_attention, dynamic = True)
 _create_block_mask_compiled = torch.compile(create_block_mask, dynamic = True)
 
-# Flash block sizes by Q dtype (env-overridable). The two disjoint key runs (prefix +
-# own-suffix) stress online-softmax accumulation: fp32 needs 32/32 for a ~1e-6 floor;
-# bf16 passes parity at 128/64 and is ~5x faster (128/128 OOMs Triton on B200).
+# Flash block sizes by Q dtype (env-overridable): the two disjoint key runs stress online-softmax
+# accumulation, so fp32 needs 32/32 for a ~1e-6 floor, while bf16 passes parity at 128/64 and is
+# ~5x faster (128/128 OOMs Triton on B200).
 _FP32_BLOCK_M = int(os.environ.get("PG_FLEX_BLOCK_M", "32"))
 _FP32_BLOCK_N = int(os.environ.get("PG_FLEX_BLOCK_N", "32"))
 _BF16_BLOCK_M = int(os.environ.get("PG_FLEX_BF16_BLOCK_M", "128"))
@@ -93,9 +92,9 @@ def _kernel_options_for_dtype(dtype):
 # Backward-compat constant (fp32 default).
 _FLEX_KERNEL_OPTIONS = {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
 
-# The compiled backward trips an Inductor assertion when T is not a multiple of 128, so
-# pad the flat sequence. Pad tokens form a group that attends to / is attended by nothing
-# (all-masked rows return 0, not NaN) and are sliced off the output.
+# The compiled backward trips an Inductor assertion when T is not a multiple of 128, so pad the
+# flat sequence: pad tokens attend to and are attended by nothing (all-masked rows return 0) and
+# are sliced off the output.
 _PAD_MULTIPLE = 128
 _PAD_GROUP = -99  # sentinel group id / suffix id for pad tokens
 
@@ -104,8 +103,6 @@ def _pad_len(T: int) -> int:
     return ((T + _PAD_MULTIPLE - 1) // _PAD_MULTIPLE) * _PAD_MULTIPLE
 
 
-# ---------------------------------------------------------------------------
-# Segment metadata
 # ---------------------------------------------------------------------------
 
 
@@ -213,7 +210,7 @@ def build_seg_info_multigroup(
     suffix_counter = 0
     sig_parts = []
     for gid, (P, R_list) in enumerate(group_specs):
-        # prefix
+        # Prefix.
         group_of_list.append(torch.full((P,), gid, dtype = torch.long, device = device))
         is_prefix_list.append(torch.ones(P, dtype = torch.bool, device = device))
         suffix_of_list.append(torch.full((P,), -1, dtype = torch.long, device = device))
@@ -256,9 +253,10 @@ def build_seg_info_multigroup(
     return seg, group_meta
 
 
+# Block-mask builder and cache, keyed on (signature, device): the mask depends only on the per-token
+# labels and T, so it is reused across layers and steps.
+
 # ---------------------------------------------------------------------------
-# Block-mask builder + cache, keyed on (signature, device): the mask depends only on the
-# per-token labels and T, so it is reused across layers and steps.
 
 _BLOCK_MASK_CACHE: Dict[Tuple, BlockMask] = {}
 
@@ -309,12 +307,9 @@ def get_block_mask(
         return bm
 
     # Move labels to the consumer (Q) device: with a sharded model the seg tensors live on
-    # input_ids.device and would index cross-device. Copies once per (signature, device).
-    # These copies must also run with inference mode DISABLED (same reason as the mask build):
-    # when this entry is first built under the no-grad old/ref forward's inference_mode and
-    # device != seg.device, a .to(device) copy would be an inference tensor that mask_mod
-    # captures, which then cannot be saved for backward when the grad training forward reuses
-    # the cached mask.
+    # input_ids.device and would index cross-device. These copies must also run with inference mode
+    # DISABLED, like the mask build: built under the no-grad forward's inference_mode, a .to(device)
+    # copy would be an inference tensor that mask_mod captures and could not be saved for backward.
     builder = _create_block_mask_compiled if compile_mask else create_block_mask
     with torch.inference_mode(False):
         mask_mod = _make_mask_mod(
@@ -364,7 +359,7 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
             kernel_options = _kernel_options_for_dtype(qp.dtype),
         )
     else:
-        # eager path (fp64 parity): dense scores, no kernel_options.
+        # Eager path (fp64 parity): dense scores, no kernel_options.
         out = flex_attention(
             qp,
             kp,
@@ -376,8 +371,6 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
     return out[:, :, :T, :]
 
 
-# ---------------------------------------------------------------------------
-# The kernel entry point
 # ---------------------------------------------------------------------------
 
 
@@ -422,7 +415,7 @@ def flex_shared_prefix_attention(
         block_mask = get_block_mask(prefix_seg_info, device, compile_mask = compiled)
 
     out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad)
-    # back to [1, T, n_heads, D]
+    # Back to [1, T, n_heads, D].
     return out.transpose(1, 2).contiguous()
 
 

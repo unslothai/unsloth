@@ -33,6 +33,7 @@ _INSTALL_MARKER_NAME = "UNSLOTH_PREBUILT_INFO.json"
 
 _marker_cache: dict[str, Optional[dict]] = {}
 _release_memo: dict[str, tuple[float, Optional[str]]] = {}
+_release_failed_at: dict[str, float] = {}
 # Newest-release asset sizes (name -> bytes), memoized like the tag (24h TTL).
 _assets_memo: dict[str, tuple[float, dict[str, int]]] = {}
 
@@ -74,12 +75,12 @@ def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
 
 
 def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optional[str]:
-    """Latest release tag for `repo`. Memo + disk-cached (24h TTL).
-    None when offline and never previously cached."""
+    """Latest release tag with 24h success and 60s failure caches."""
     return _flow.latest_published_release(
         repo,
         force_refresh = force_refresh,
         memo = _release_memo,
+        failed_at = _release_failed_at,
         cache_dir = lambda: _cache_dir(),
         fetch = lambda r: _fetch_latest_release_tag(r),
         save = lambda r, tag: _save_disk_cache(r, tag),
@@ -120,14 +121,13 @@ def update_download_size_bytes(
     installed_asset = marker.get("asset")
     if not isinstance(installed_asset, str):
         return None
-    # Tag-independent platform suffix: accept the fork's "app-*" bundles and the
-    # upstream ggml-org "ubuntu-*"/"win-*" prebuilts ("windows" before "win").
+    # Tag-independent platform suffix: accept the fork's "app-*" bundles and the upstream ggml-org "ubuntu-*"/"win-*"
+    # prebuilts ("windows" before "win").
     m = re.search(r"-((?:linux|ubuntu|windows|win|macos|darwin)-.*)$", installed_asset)
     if not m:
         return None
     suffix = m.group(1)
-    # Upstream ubuntu/win assets live in the marker's binary_repo, not the fork
-    # publish repo; try the publish repo first, then it.
+    # Upstream ubuntu/win assets live in the marker's binary_repo.
     repos = [repo]
     binary_repo = marker.get("binary_repo")
     if isinstance(binary_repo, str) and binary_repo and binary_repo != repo:
@@ -182,8 +182,8 @@ def is_behind(installed: Optional[str], latest: Optional[str]) -> bool:
         return True
     if lb != ib:
         return lb > ib
-    # Same base build, different tags: offer a mix (latest carries a suffix), but
-    # never offer a bare base over a mix install at the same base.
+    # Same base build, different tags: offer a mix (latest carries a suffix), but never offer a bare base
+    # over a mix install at the same base.
     return latest != f"b{lb}"
 
 
@@ -198,12 +198,10 @@ def check_prebuilt_freshness(
     behind = installed genuinely older than latest (see is_behind).
     stale = behind AND age >= threshold.
     Fails open on missing data (behind/stale stay False)."""
-    # The marker records both a normalized base tag ("tag", e.g. b9596) and the
-    # full release tag ("release_tag", e.g. b9596-mix-<sha>). Display prefers the
-    # normalized base; comparison uses the FULL identity, since GitHub
-    # /releases/latest returns the full tag_name -- comparing the normalized base
-    # against the full latest is what produced the permanent "downgrade" banner
-    # on every mix release. Deliberately opposite fallbacks.
+    # Display prefers the normalized base tag, comparison uses the FULL identity, since /releases/latest returns the
+    # full tag_name: comparing the two produced a permanent "downgrade" banner.
+    # The marker records a normalized base tag ("tag", e.g. b9596) and the full "release_tag" (b9596-mix-<sha>), with
+    # deliberately opposite fallbacks.
     return _flow.check_freshness(
         binary_path,
         threshold_days = threshold_days,
@@ -232,7 +230,7 @@ def reset_caches(*, drop_disk: bool = False) -> None:
     cache makes latest read as None in that offline case, so the banner fails
     open (off) instead of pointing at the just-replaced build."""
     _flow.reset_caches(
-        (_marker_cache, _release_memo, _assets_memo),
+        (_marker_cache, _release_memo, _release_failed_at, _assets_memo),
         drop_disk = drop_disk,
         cache_dir = lambda: _cache_dir(),
     )

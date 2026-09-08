@@ -1678,6 +1678,30 @@ def test_high_risk_dispatcher_non_terminal():
         ("from builtins import open as w\nw('x', 'w')", True),
         ("globals()['open']('x', 'w')", True),  # dynamic open lookup
         ("import pickle\npickle.loads(b'')", True),  # code exec on load
+        # PyYAML's non-safe loaders build arbitrary Python objects from tags
+        # (!!python/object/apply:os.system), so the command lives in the data.
+        ("import yaml\nyaml.load(s, Loader=yaml.Loader)", True),
+        ("import yaml\nyaml.unsafe_load(s)", True),
+        ("from yaml import unsafe_load\nunsafe_load(s)", True),
+        ("import yaml\nyaml.full_load(s)", True),
+        ("import yaml\nyaml.Loader(s).get_data()", True),  # the loader class itself
+        ("import yaml.loader\nyaml.loader.Loader(s).get_data()", True),  # through a submodule
+        ("from yaml import loader as yl\nyl.Loader(s).get_data()", True),  # submodule alias
+        ("import yaml\nclass L(yaml.Loader): pass\nL(s).get_data()", True),  # a subclass
+        # Naming one is enough, so the ways of moving it around need no tracking.
+        ("import yaml\nld = yaml.unsafe_load\nld(s)", True),
+        ("import yaml\nh.loader = yaml.unsafe_load\nh.loader(s)", True),
+        ("import yaml\nfor fn in [yaml.unsafe_load]: fn(s)", True),
+        ("import yaml\ndef choose(): return yaml.unsafe_load\nchoose()(s)", True),
+        ("import yaml\ndef get(): return yaml\nget().unsafe_load(s)", True),  # the module
+        # The safe readers name none of those, so they still run unprompted.
+        ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),
+        ("import yaml\nfor d in yaml.safe_load_all(open('c.yml')): print(d)", False),
+        ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),
+        ("import yaml\ncfg = yaml.safe_load(open('c.yml'))\nprint(cfg['lr'])", False),
+        ("import yaml\ndef read(q): return yaml.safe_load(open(q))\nprint(read('a.yml'))", False),
+        ("import yaml\nprint(yaml.dump({'a': 1}))", True),  # dump is a writer, as before
+        ("import json\nprint(json.load(open('a.json')))", False),  # json.load is data
         ("import io\nio.FileIO('out', 'w')", True),  # raw write handle
         (
             "import zipfile\nprint(zipfile.ZipFile('a').open('n.txt', 'r'))",
@@ -2275,6 +2299,25 @@ def test_builtin_readonly_tools_are_safe():
     assert is_potentially_unsafe_tool_call("web_search", {"query": "hi"}) is False
     assert is_potentially_unsafe_tool_call("search_knowledge_base", {}) is False
     assert is_potentially_unsafe_tool_call("render_html", {}) is False
+
+
+def test_web_search_gated_only_when_it_fetches_a_url():
+    # Searching stays always-safe; a ``url`` fetches that named host, so it asks in auto too.
+    for gate in (is_potentially_unsafe_tool_call, is_high_risk_tool_call):
+        assert gate("web_search", {"query": "hi"}) is False
+        assert gate("web_search", {}) is False
+        assert gate("web_search", {"url": ""}) is False
+        assert gate("web_search", {"url": None}) is False
+        assert gate("web_search", {"url": "   "}) is False
+        assert gate("web_search", {"url": "https://example.com/page"}) is True
+        assert gate("web_search", {"query": "hi", "url": "https://example.com"}) is True
+
+
+def test_web_search_name_only_gate_is_unchanged():
+    # Runs before arguments exist (provisional card, stream requirement), so a query-only
+    # search must not start prompting.
+    from core.inference.tools import is_always_safe_tool
+    assert is_always_safe_tool("web_search") is True
 
 
 def test_render_html_gated_only_when_networked():
@@ -2934,10 +2977,23 @@ def test_confirm_gate_needs_stream():
 
     safe = ["web_search", "search_knowledge_base"]
     # auto + a safe-only selection never prompts -> no stream needed.
-    assert _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = safe)) is False
+    assert (
+        _confirm_gate_needs_stream(
+            req(permission_mode = "auto", enabled_tools = ["search_knowledge_base"])
+        )
+        is False
+    )
+    # web_search prompts once the model supplies a ``url``, so it needs a stream to deliver
+    # that prompt, else the request is admitted then blocks out the decision timeout.
     assert (
         _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["web_search"]))
-        is False
+        is True
+    )
+    assert (
+        _confirm_gate_needs_stream(
+            req(permission_mode = "auto", enabled_tools = ["web_search", "search_knowledge_base"])
+        )
+        is True
     )
     # render_html can prompt when its canvas reaches the network, so a selection
     # that includes it needs a stream to deliver that prompt.

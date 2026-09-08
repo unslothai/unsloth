@@ -99,9 +99,16 @@ class _FakeResponse:
         return self._body
 
 
-def _make_backend(effective_ctx = 98304, port = 51234):
+def _make_backend(
+    effective_ctx = 98304,
+    port = 51234,
+    api_key = None,
+):
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._port = port
+    # __init__ always sets this; __new__ skips it, and the readback reads it via
+    # _auth_headers to authenticate against a --api-key child server.
+    inst._api_key = api_key
     inst._effective_context_length = effective_ctx
     inst._context_length = 262144
     inst._effective_parallel_slots = 1
@@ -118,12 +125,17 @@ def _stub_props(
 ):
     def fake_get(
         url,
+        headers = None,
         timeout = None,
         trust_env = None,
     ):
         assert url.endswith("/props")
 
         assert trust_env is False
+        # /props sits behind llama-server's api-key middleware, so a direct-stream
+        # child must be addressed with the bearer token; without one the header
+        # stays absent rather than becoming a bogus "Bearer None".
+        assert headers is None or headers == {"Authorization": "Bearer test-key"}
         if exc is not None:
             raise exc
         return _FakeResponse(status_code, body)
@@ -218,8 +230,47 @@ def test_larger_server_ctx_does_not_inflate_advertised_value(monkeypatch):
         monkeypatch,
         body = {"default_generation_settings": {"n_ctx": 65536}},
     )
-    inst._reconcile_effective_ctx_with_server()
+    inst._reconcile_effective_ctx_with_server(requested_n_ctx = 32768)
     assert inst._effective_context_length == 32768
+
+
+def test_explicit_extra_arg_ctx_adopts_larger_confirmed_server_value(monkeypatch):
+    """A trailing --ctx-size can override Studio's earlier VRAM-fit ``-c``.
+
+    The resolved explicit request is 100352, Studio's pre-launch estimate is
+    65983, and /props confirms that llama-server actually allocated 100352.
+    Publish the real window while retaining the VRAM warning threshold.
+    """
+    inst = _make_backend(effective_ctx = 65983)
+    inst._max_context_length = 65983
+    _stub_props(
+        monkeypatch,
+        body = {"default_generation_settings": {"n_ctx": 100352}},
+    )
+
+    inst._reconcile_effective_ctx_with_server(requested_n_ctx = 100352)
+
+    assert inst._effective_context_length == 100352
+    assert inst.context_length == 100352
+    assert inst.max_context_length == 65983
+
+
+def test_no_explicit_flag_never_adopts_a_larger_server_value(monkeypatch):
+    """The ceiling is the pass-through flag, not the first-class field.
+
+    Only a --ctx-size emitted after Studio's own -c can make the child allocate
+    past the fit, so a load with no flag passes 0 and llama.cpp's own context
+    padding cannot be reported as an override the user never wrote.
+    """
+    inst = _make_backend(effective_ctx = 65983)
+    _stub_props(
+        monkeypatch,
+        body = {"default_generation_settings": {"n_ctx": 66048}},
+    )
+
+    inst._reconcile_effective_ctx_with_server(requested_n_ctx = 0)
+
+    assert inst._effective_context_length == 65983
 
 
 def test_unset_effective_ctx_adopts_server_value(monkeypatch):
@@ -231,6 +282,20 @@ def test_unset_effective_ctx_adopts_server_value(monkeypatch):
     )
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 40960
+
+
+def test_unset_effective_ctx_still_honours_the_explicit_ceiling(monkeypatch):
+    """The unset arm publishes too, so the same ceiling has to bind there."""
+    inst = _make_backend(effective_ctx = None)
+    inst._context_length = None
+    _stub_props(
+        monkeypatch,
+        body = {"default_generation_settings": {"n_ctx": 8192}},
+    )
+
+    inst._reconcile_effective_ctx_with_server(requested_n_ctx = 4096)
+
+    assert inst._effective_context_length == 4096
 
 
 def test_props_failure_keeps_studio_value(monkeypatch):
