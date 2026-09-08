@@ -320,11 +320,11 @@ _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
 # Unknown/older torch keeps the conservative default.
 #
 # The pin alone is not enough: torchao publishes a wheel per accelerator under
-# download.pytorch.org/whl/<tag> and PyPI's default is the CUDA-12 one, so the caller pins
-# the index to the resident torch's build. Without that, taking 0.18.0 on a torch 2.13 host
-# would LOAD its cpp (built for 2.13) and then fail on libcudart.so.12 wherever torch is
-# CUDA 13 -- the same crash the 2.10 CUDA-13 row above exists to dodge by picking a build
-# whose cpp is skipped instead.
+# download.pytorch.org/whl/<tag>, while PyPI carries ONE default whose CUDA major is whatever
+# PyTorch currently ships by default -- 13 as of 0.18.0, which links libcudart.so.13, not 12.
+# So the default index is not a fixed fallback major and cannot be reasoned about as one; the
+# caller pins the index to the resident torch's build instead. Taking the default beside a
+# torch of another major costs the cpp kernels (see above), not the install.
 _TORCHAO_DEFAULT_SPEC = "torchao==0.14.0"
 _TORCHAO_TORCH_210_SPEC = "torchao==0.16.0"
 _TORCHAO_TORCH_210_CUDA13_SPEC = "torchao==0.17.0"
@@ -511,6 +511,46 @@ def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
     return match.group(1)[:2] if match else ""
 
 
+def _torchcodec_distribution_for_probe():
+    """The installed torchcodec distribution, or None when it cannot be read."""
+    try:
+        from importlib.metadata import PackageNotFoundError, distribution
+        return distribution("torchcodec")
+    except (PackageNotFoundError, ValueError, OSError):
+        return None
+
+
+def _installed_torchcodec_cuda_major() -> "str | None":
+    """The CUDA major the INSTALLED torchcodec links, or "" when it links none.
+
+    None when it cannot be read, which means "keep whatever the caller already decided".
+    Only the unpinned fallback needs this: a pinned index guarantees the major, but the
+    default index carries whichever major PyTorch currently defaults to, which is not
+    necessarily the resident torch's. Read from the wheel's own shared objects rather than
+    inferred, since that default moves (torchcodec 0.16.0 on PyPI links libcudart.so.13
+    while a +cu129 host's tag says 12).
+    """
+    dist = _torchcodec_distribution_for_probe()
+    files = list(getattr(dist, "files", None) or []) if dist is not None else []
+    if dist is None:
+        return None
+    majors = set()
+    for entry in files:
+        name = str(entry)
+        if not (name.endswith(".so") or ".so." in name):
+            continue
+        try:
+            blob = Path(entry.locate()).read_bytes()
+        except OSError:
+            continue
+        majors |= {m.decode()[-2:] for m in re.findall(rb"libcudart\.so\.\d+", blob)}
+    if not majors:
+        # Distinguish "a cpu build, needs no NPP" from "could not look": a torchcodec whose
+        # files we did read and which links no CUDA runtime is genuinely NPP-free.
+        return "" if files else None
+    return sorted(majors)[-1]
+
+
 # The local tags download.pytorch.org serves a companion wheel under. cpu and cuNNN have
 # always been here; xpu and rocmX.Y are listed because the indexes really do carry per-
 # accelerator builds of the companions (torchao on rocm6.4/7.0/7.1/7.2 and xpu, torchcodec
@@ -536,17 +576,23 @@ def _torch_accelerator_index_url(
     if not torch_version:
         return None
     substitutions = substitutions or {}
-    local = str(torch_version).partition("+")[2].strip().lower()
-    if not _TORCH_ACCELERATOR_TAG_RE.fullmatch(local):
-        return None
     # An explicit URL wins, as it does for the torch repair helpers: synthesising the public
     # URL from the local tag sent authenticated, corporate and air-gapped mirrors to
     # download.pytorch.org, and the --index-url also makes _install_env_for_cmd drop the
     # inherited index config, so the install fails outright there. It is taken verbatim: its
     # path belongs to whoever configured it and rewriting a leaf inside it would be a guess.
+    #
+    # Read BEFORE the tag check, because a private index is exactly where an UNTAGGED GPU
+    # build comes from: only download.pytorch.org stamps +cuNNN, so a corporate mirror that
+    # rebuilds torch ships it bare. _ensure_expected_torch_flavor already supports that host
+    # through its runtime markers. Requiring a tag first sent it to PyPI for both companions,
+    # which on an air-gapped box fails the fatal torchao step outright.
     url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
     if url:
         return _trim_index_path_slashes(url)
+    local = str(torch_version).partition("+")[2].strip().lower()
+    if not _TORCH_ACCELERATOR_TAG_RE.fullmatch(local):
+        return None
     # A FAMILY override names a leaf under our own base, so a per-package substitution still
     # applies to it -- otherwise UNSLOTH_TORCH_INDEX_FAMILY=xpu would send torchcodec to the
     # xpu leaf, which publishes no codec below 0.13.
@@ -801,11 +847,7 @@ def _exact_distribution_spec_is_installed(spec: str) -> bool:
     return installed is not None and installed == match.group(2)
 
 
-# "no index is being pinned", which is not the same as "the index is opaque" (None).
-_NO_INDEX_PINNED = object()
-
-
-def _pin_needs_reinstall(spec: str, want_tag: object = _NO_INDEX_PINNED) -> bool:
+def _pin_needs_reinstall(spec: str, want_tag: "str | None" = "") -> bool:
     """Whether a ``name==version`` pin has to be forced over what is already installed.
 
     Two reasons, and the second only exists once an index is pinned. The version can be
@@ -816,10 +858,12 @@ def _pin_needs_reinstall(spec: str, want_tag: object = _NO_INDEX_PINNED) -> bool
     replace stays put.
 
     want_tag is the tag the pin will FETCH, from _torch_index_tag -- not the resident
-    torch's own tag, which a FAMILY override or a substitution can differ from. Leave it
-    unset when no index is pinned: the tag then carries no requirement and a matching
-    release must not be reinstalled on every run. None means the index is an opaque mirror,
-    where nothing can prove the installed wheel came from it, so it is replaced.
+    torch's own tag, which a FAMILY override or a substitution can differ from. The default
+    "" is the no-index-pinned case rather than an absent argument: the wheel then comes from
+    the default index, which stamps no local tag, so a TAGGED wheel sitting there is still a
+    build from somewhere else and is still replaced. That settles after one reinstall, since
+    what lands is bare and matches "". None means the index is an opaque mirror, where
+    nothing can prove the installed wheel came from it, so it is replaced every time.
     """
     match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s]+)", spec)
     if match is None:
@@ -829,8 +873,6 @@ def _pin_needs_reinstall(spec: str, want_tag: object = _NO_INDEX_PINNED) -> bool
         return True  # absent; kept True so the flag matches what this step passed before
     if installed.partition("+")[0] != match.group(2).partition("+")[0]:
         return True
-    if want_tag is _NO_INDEX_PINNED:
-        return False
     return installed.partition("+")[2].strip().lower() != want_tag
 
 
@@ -4322,9 +4364,9 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
     """
     spec = _select_torchao_spec(torch_version)
     # Pin the index to the resident torch's build, for the reason spelled out beside
-    # _TORCHAO_DEFAULT_SPEC: PyPI's torchao is the CUDA-12 wheel, and the accelerator
-    # indexes carry a build per tag. rocm is included here, unlike torchcodec -- the rocm
-    # leaves really do publish torchao.
+    # _TORCHAO_DEFAULT_SPEC: PyPI carries one torchao built for whichever CUDA major
+    # PyTorch defaults to (13 today), and the accelerator indexes carry a build per tag.
+    # rocm is included here, unlike torchcodec -- the rocm leaves really do publish torchao.
     index = _torch_accelerator_index_url(torch_version)
     # --no-deps matches the resync call site. No torchao release declares a runtime torch
     # dependency (checked on PyPI and on the cpu/cu126/cu130/cu132/xpu/rocm7.2 leaves, every
@@ -4332,7 +4374,7 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
     # It is here because the second caller runs immediately after the torch repair, where a
     # torchao that ever gained a torch pin would resolve it and undo that repair.
     args = ["--no-deps", "--no-cache-dir"]
-    if _pin_needs_reinstall(spec, _torch_index_tag(torch_version) if index else _NO_INDEX_PINNED):
+    if _pin_needs_reinstall(spec, _torch_index_tag(torch_version) if index else ""):
         args.insert(0, "--force-reinstall")
     _note(
         f"torch {torch_version or 'unknown'} detected -- installing {spec}"
@@ -4348,7 +4390,7 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
     # serving torch up to 2.13, cu118 stops at 0.11.0, rocm7.0 publishes 0.16.0 alone, and
     # a private mirror or a leaf added upstream after this shipped can lag by a release. The
     # default index is where this step went before it pinned anything, so falling back is a
-    # working install rather than a failed one, and PyPI's CUDA-12 build beside another
+    # working install rather than a failed one, and the default build beside another
     # accelerator costs the cpp kernels and nothing else (see _TORCHAO_DEFAULT_SPEC). Still
     # fatal if that fails too: torchao is not optional the way audio is, and this step was
     # fatal before.
@@ -4395,7 +4437,7 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
             _ao_index = _torch_accelerator_index_url(_label_after)
             _ao_args = ["--force-reinstall", "--no-deps", "--no-cache-dir"]
             if _pin_needs_reinstall(
-                _spec, _torch_index_tag(_label_after) if _ao_index else _NO_INDEX_PINNED
+                _spec, _torch_index_tag(_label_after) if _ao_index else ""
             ):
                 _note(f"torch {_label_after} after repair -- reinstalling {_spec}")
                 _touched_torch = True
@@ -8038,6 +8080,7 @@ def install_python_stack() -> int:
         # the index can refuse for reasons no local table predicts -- a yanked release, an
         # offline mirror, a platform tag added or dropped upstream after this shipped.
         _codec_ok = pip_install_try("Installing torchcodec", *_codec_args, _codec_spec)
+        _codec_fellback = False
         if not _codec_ok and _codec_index:
             # The pinned index may not carry this window at all: cu129 publishes 0.6, 0.7
             # and 0.10 upward but neither 0.8 nor 0.9, while serving torch 2.8 to 2.13, so
@@ -8063,6 +8106,7 @@ def install_python_stack() -> int:
             # _codec_index stays set on purpose: the wheel PyPI serves for a cuNNN host is
             # still a CUDA build, so it still dlopens NPP and the step below still applies.
             _codec_ok = pip_install_try("Installing torchcodec", *_codec_retry_args, _codec_spec)
+            _codec_fellback = _codec_ok
         if not _codec_ok:
             _note(
                 f"could not install {_codec_spec} -- audio decoding stays disabled, "
@@ -8075,7 +8119,24 @@ def install_python_stack() -> int:
             # would otherwise name. docker/Dockerfile installs nvidia-npp-cu12 beside the
             # same wheel for exactly this. cu13x wheels want nvidia-npp-cu13.
             _npp_major = _cuda_major_for_npp(_codec_torch_ver, _codec_index)
-            if not pip_install_try(
+            if _codec_fellback:
+                # The retry dropped the pin, so the resident torch's tag no longer describes
+                # where this wheel came from. The default index carries one build per
+                # release, at whatever CUDA major PyTorch currently defaults to, so a cu129
+                # host lands a libcudart.so.13 codec and the tag would have asked for
+                # nvidia-npp-cu12 -- the wrong runtime, and audio stays broken on a host
+                # with no system toolkit, which is the case this whole step exists for.
+                _npp_probed = _installed_torchcodec_cuda_major()
+                if _npp_probed is not None and _npp_probed != _npp_major:
+                    _note(
+                        f"the unpinned torchcodec links CUDA {_npp_probed or 'nothing'} "
+                        f"rather than the CUDA {_npp_major} its torch tag implies "
+                        "-- matching NPP to the wheel"
+                    )
+                    _npp_major = _npp_probed
+            # _npp_major is "" when the probe found a build linking no CUDA runtime at
+            # all, which needs no NPP.
+            if _npp_major and not pip_install_try(
                 "Installing torchcodec CUDA runtime (NPP)",
                 "--no-cache-dir",
                 f"nvidia-npp-cu{_npp_major}",

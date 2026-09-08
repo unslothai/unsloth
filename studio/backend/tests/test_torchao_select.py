@@ -224,10 +224,12 @@ def test_the_fallback_is_never_conditioned_on_the_accelerator(monkeypatch):
 @pytest.mark.parametrize(
     "installed, spec, want_tag, expected",
     [
-        # No index pinned: only the release matters, and a local tag on what is installed
-        # must not force a reinstall on every single run.
+        # No index pinned: the wheel comes from the default index, which stamps no tag.
         ("0.18.0", "torchao==0.18.0", "<none>", False),
-        ("0.18.0+cu130", "torchao==0.18.0", "<none>", False),
+        # No index pinned means the DEFAULT index, whose wheels carry no local tag, so a
+        # tagged wheel sitting there came from somewhere else and is replaced. It settles
+        # after one pass: what lands is bare and matches on the next run.
+        ("0.18.0+cu130", "torchao==0.18.0", "<none>", True),
         ("0.17.0", "torchao==0.18.0", "<none>", True),
         (None, "torchao==0.18.0", "<none>", True),
         # Index pinned: the release can be right while the BUILD is wrong. pip counts an
@@ -248,7 +250,7 @@ def test_the_fallback_is_never_conditioned_on_the_accelerator(monkeypatch):
 def test_pin_needs_reinstall(monkeypatch, installed, spec, want_tag, expected):
     mod = _load_module(monkeypatch)
     monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: installed)
-    tag = mod._NO_INDEX_PINNED if want_tag == "<none>" else want_tag
+    tag = "" if want_tag == "<none>" else want_tag
     assert mod._pin_needs_reinstall(spec, tag) is expected
 
 
@@ -283,8 +285,8 @@ def test_every_torchao_call_site_asks_for_the_pinned_tag():
     helper exists to remove, so no call site may spell it any other way."""
     source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
     assert source.count("_pin_needs_reinstall(") == 3  # the def plus both call sites
-    assert "_torch_index_tag(torch_version) if index else _NO_INDEX_PINNED" in source
-    assert "_torch_index_tag(_label_after) if _ao_index else _NO_INDEX_PINNED" in source
+    assert '_torch_index_tag(torch_version) if index else ""' in source
+    assert '_torch_index_tag(_label_after) if _ao_index else ""' in source
 
 
 def test_no_torchao_install_can_resolve_a_dependency():

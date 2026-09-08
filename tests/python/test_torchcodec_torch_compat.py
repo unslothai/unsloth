@@ -1000,7 +1000,7 @@ def test_the_runtime_remedy_honours_a_configured_torch_index(monkeypatch):
         "UNSLOTH_TORCH_INDEX_URL", "https://user:secret@mirror.corp.example/pytorch/cu128/"
     )
     hint = fixes._torchcodec_version_mismatch_hint()
-    assert '--index-url "$UNSLOTH_TORCH_INDEX_URL" ' in hint
+    assert f'--index-url {fixes._shell_env_ref("UNSLOTH_TORCH_INDEX_URL")} ' in hint
     assert "secret" not in hint
     assert "mirror.corp.example" not in hint
     assert "download.pytorch.org" not in hint
@@ -1099,13 +1099,13 @@ def test_the_runtime_remedy_follows_a_configured_pytorch_mirror(monkeypatch):
 
     monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://user:secret@mirror.corp.example/whl")
     hint = fixes._torchcodec_version_mismatch_hint()
-    assert '--index-url "$UNSLOTH_PYTORCH_MIRROR"/cu128' in hint
+    assert f'--index-url {fixes._shell_env_ref("UNSLOTH_PYTORCH_MIRROR")}/cu128' in hint
     assert "secret" not in hint
     assert "download.pytorch.org" not in hint
 
     # The family names the leaf under the same mirror.
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
-    assert '--index-url "$UNSLOTH_PYTORCH_MIRROR"/cu126' in (
+    assert f'--index-url {fixes._shell_env_ref("UNSLOTH_PYTORCH_MIRROR")}/cu126' in (
         fixes._torchcodec_version_mismatch_hint() or ""
     )
 
@@ -1148,7 +1148,7 @@ def test_the_remedy_uses_the_shell_of_the_host_it_prints_on(monkeypatch):
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://user:secret@mirror.corp.example/cu128")
 
     monkeypatch.setattr(fixes.sys, "platform", "linux")
-    assert '--index-url "$UNSLOTH_TORCH_INDEX_URL"' in (
+    assert f'--index-url {fixes._shell_env_ref("UNSLOTH_TORCH_INDEX_URL")}' in (
         fixes._torchcodec_version_mismatch_hint() or ""
     )
 
@@ -1273,3 +1273,82 @@ def test_the_provenance_hint_reads_a_codec_it_cannot_import(monkeypatch):
 
     monkeypatch.setattr(importlib.metadata, "version", _absent)
     assert fixes._torchcodec_provenance_hint() is None
+
+
+def test_an_explicit_index_wins_even_when_torch_carries_no_tag(monkeypatch):
+    """Only download.pytorch.org stamps +cuNNN, so a corporate or air-gapped mirror that
+    rebuilds torch ships it BARE. Requiring a recognised local tag before reading
+    UNSLOTH_TORCH_INDEX_URL sent exactly that host to PyPI for both companions, which on an
+    air-gapped box fails the fatal torchao step outright. _ensure_expected_torch_flavor
+    already supports the untagged private GPU build through its runtime markers."""
+    mod = _load_install_python_stack()
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp/simple?token=abc")
+    for version in ("2.14.0", "2.13.0+cu130", "2.11.0+rocm7.2", "2.10.0+weird"):
+        assert mod._torch_accelerator_index_url(version) == "https://mirror.corp/simple?token=abc"
+    # torchcodec keeps its own two refusals, which are about the WHEEL not existing rather
+    # than about where to look: rocm publishes no torchcodec under any index.
+    assert mod._torchcodec_index_url("2.11.0+rocm7.2") is None
+    assert mod._torchcodec_index_url("2.14.0") == "https://mirror.corp/simple?token=abc"
+    # No torch at all still means no companion pin.
+    assert mod._torch_accelerator_index_url(None) is None
+    assert mod._torch_accelerator_index_url("") is None
+    # And provenance stays unknowable through an opaque mirror, so the wheel is replaced.
+    assert mod._torch_index_tag("2.14.0") is None
+
+
+def test_an_untagged_torch_without_an_explicit_index_stays_unpinned(monkeypatch):
+    """The other half of the rule above: with no override, an untagged torch is PyPI's own
+    build and PyPI's default companion is already the right pairing."""
+    mod = _load_install_python_stack()
+    assert mod._torch_accelerator_index_url("2.14.0") is None
+    assert mod._torchcodec_index_url("2.14.0") is None
+    assert mod._torch_index_tag("2.14.0") == ""
+
+
+def test_the_installed_codec_reports_the_cuda_major_it_actually_links(monkeypatch, tmp_path):
+    """The unpinned fallback takes whatever CUDA major PyTorch currently defaults to, which
+    need not be the resident torch's tag: torchcodec 0.16.0 links libcudart.so.13 on PyPI and
+    libcudart.so.12 on the cu126 leaf, both verified by installing them into a venv. So the
+    NPP choice reads the wheel rather than the tag, and this pins the reading."""
+    mod = _load_install_python_stack()
+
+    class _Dist:
+        def __init__(self, files):
+            self.files = files
+
+    def _probe(blobs):
+        files = []
+        for name, payload in blobs.items():
+            target = tmp_path / name
+            target.write_bytes(payload)
+
+            class _Entry(str):
+                def locate(self, _t = target):
+                    return str(_t)
+
+            files.append(_Entry(f"torchcodec/{name}"))
+        monkeypatch.setattr(mod, "_torchcodec_distribution_for_probe", lambda: _Dist(files))
+        return mod._installed_torchcodec_cuda_major()
+
+    assert _probe({"libtorchcodec_cuda.so": b"\x00pad\x00libcudart.so.13\x00more"}) == "13"
+    assert _probe({"libtorchcodec_cuda.so": b"\x00libcudart.so.12\x00"}) == "12"
+    # A cpu build links no CUDA runtime at all: "" means "needs no NPP", not "unknown".
+    assert _probe({"libtorchcodec_core.so": b"nothing interesting here"}) == ""
+    # Non-.so payloads are never read, so a stray text file cannot fake a major.
+    assert _probe({"version.txt": b"libcudart.so.12"}) == ""
+    # Absent entirely: None, which the caller reads as "keep the tag-derived answer".
+    monkeypatch.setattr(mod, "_torchcodec_distribution_for_probe", lambda: None)
+    assert mod._installed_torchcodec_cuda_major() is None
+
+
+def test_the_remedy_spells_the_variable_for_the_shell_it_will_be_pasted_into(monkeypatch):
+    """PowerShell is Studio's supported Windows shell and does not expand $NAME, so the
+    POSIX spelling silently produced an empty --index-url there. The tests above compare
+    against _shell_env_ref for that reason; this one pins the rule itself, so asking the
+    helper cannot degrade into asserting whatever the helper happens to return."""
+    fixes = _load_import_fixes_module()
+    monkeypatch.setattr(fixes.sys, "platform", "win32")
+    assert fixes._shell_env_ref("UNSLOTH_TORCH_INDEX_URL") == "$env:UNSLOTH_TORCH_INDEX_URL"
+    for platform in ("linux", "darwin"):
+        monkeypatch.setattr(fixes.sys, "platform", platform)
+        assert fixes._shell_env_ref("UNSLOTH_TORCH_INDEX_URL") == '"$UNSLOTH_TORCH_INDEX_URL"'
