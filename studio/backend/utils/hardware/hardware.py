@@ -1259,11 +1259,20 @@ def _torch_reports_another_vendors_runtime() -> bool:
     AMD" -- on a host whose real repair is reinstalling ROCm torch. torch.version.cuda is
     written by the build itself and settles it.
 
-    False when torch cannot be imported: there is no live runtime to ask, and the label and
-    the recorded intent decide as they did before.
+    An import failure is answered from disk, exactly as _torch_reports_a_hip_runtime and
+    _torch_reports_an_xpu_runtime already answer it: torch/version.py records the runtime
+    whether or not the package imports, and returning False there made the untagged-CUDA
+    clearing above inert on the very path it exists for -- a stale recorded ROCm flavor then
+    spoke for a CUDA or XPU wheel, and a closed AMD node replaced the reinstall guidance
+    with group membership that cannot make that wheel use the card.
     """
     if TORCH_IMPORT_ERROR is not None:
-        return False
+        # A ROCm build records hip and may record cuda besides, so that reading leads here
+        # for the same reason it leads in the live branch below.
+        if _torch_reports_a_hip_runtime():
+            return False
+        _markers = _installed_torch_markers_on_disk()
+        return bool(_markers["cuda"]) or bool(_markers["xpu"])
     try:
         import torch
 

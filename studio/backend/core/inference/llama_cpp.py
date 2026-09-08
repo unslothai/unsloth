@@ -9941,8 +9941,27 @@ class LlamaCppBackend:
                 # so it is reported as unresolved rather than judged either way: calling it
                 # a blocker would invent a fault, and dropping it silently leaves the user
                 # with no mention of the one variable that may be hiding their card.
+                # Only the UUID form: every other non-index is Illegal to ROCr, which is a
+                # different answer and is decided by _is_an_illegal_rocr_selector.
                 first = value.split(",")[0].strip()
-                return bool(first) and not first.startswith("-") and not first.isdigit()
+                return first.lower().startswith("gpu-")
+
+            def _is_an_illegal_rocr_selector(value: str) -> bool:
+                # ROCr's filter (ROCR-Runtime, core/inc/amd_filter_device.h) calls a token
+                # Illegal when it "can't be evaluated into an instance of Device UUID or
+                # Enumeration Index", and an Illegal token terminates the list -- so an
+                # illegal FIRST token leaves zero survivors, exactly as an out-of-range
+                # ordinal does, and _post_rocr_device_count already counts it that way.
+                # Reported as a definite blocker rather than as something to check only if
+                # the group change fails, since no membership makes the runtime enumerate
+                # a device again.
+                first = value.split(",")[0].strip()
+                return (
+                    bool(first)
+                    and not first.startswith("-")
+                    and not first.isdigit()
+                    and not first.lower().startswith("gpu-")
+                )
 
             # Which of the four this host actually reads, per variable rather than one
             # rule applied to all of them alike. Reaching a node hint at all means an
@@ -9996,7 +10015,9 @@ class LlamaCppBackend:
                     continue
                 # ROCr indexes the physical list, the HIP layer indexes ROCr's survivors.
                 _bound = _amd_gpu_count if var == "ROCR_VISIBLE_DEVICES" else _post_rocr_count
-                if _hides_every_device(raw, _bound):
+                if _hides_every_device(raw, _bound) or (
+                    var == "ROCR_VISIBLE_DEVICES" and _is_an_illegal_rocr_selector(raw)
+                ):
                     blocking.append(phrase)
                 elif var == "ROCR_VISIBLE_DEVICES" and _cannot_be_resolved(raw):
                     unresolved.append(phrase)

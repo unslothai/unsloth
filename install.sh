@@ -5533,34 +5533,6 @@ esac
 # route the condition below is true for every hybrid box that also has an AMD card on
 # the bus -- and someone correctly installing CUDA wheels is not helped by being told to
 # install the ROCm kernel stack for a card this install does not use.
-case "$TORCH_INDEX_URL" in
-    */cpu|*/rocm*|*/gfx*) _amd_node_diag_route=true ;;
-    *)                    _amd_node_diag_route=false ;;
-esac
-# The two diagnoses are separate branches, not one branch with an inner test, because
-# they need DIFFERENT evidence. The mapping one below is gated on the KFD topology -- the
-# amdkfd driver's own sysfs -- so it must not sit behind _has_amd_rocm_gpu: that probe
-# answers from `amd-smi list`, which reads the driver over sysfs and libdrm and therefore
-# SUCCEEDS in a container given only --device /dev/dri, where HIP has no /dev/kfd to open.
-# llama_cpp.py's _rocm_hip_is_reachable records the same disagreement. Behind that probe
-# the mapping warning was suppressed on exactly the container shape it was written for,
-# and the two later diagnostics stay silent too: the render node is open, so nothing is
-# closed and nothing is missing.
-if [ "$_amd_node_diag_route" = true ] && \
-   [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ] && \
-   [ ! -e /dev/kfd ] && _kfd_topology_has_an_amd_gpu; then
-    substep "An AMD GPU is in the KFD topology but /dev/kfd is not present, so the" "$C_WARN"
-    substep "  driver is loaded and reinstalling ROCm changes nothing: the node itself"
-    substep "  is missing. Under Docker, recreate the container with --device /dev/kfd"
-    substep "  --device /dev/dri; on a bare host it is a udev or devtmpfs problem."
-elif [ "$_amd_node_diag_route" = true ] && \
-   [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ] && \
-   ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
-   ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
-        substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
-        substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
-        substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
-fi
 # The runtime half's needs_kfd, for the installer. /dev/kfd is opened by ROCm and by
 # nothing else, so a run that will install neither ROCm torch nor a ROCm llama.cpp bundle
 # has no use for it and must not be sent after a group for it. SKIP_TORCH alone is NOT
@@ -5575,6 +5547,48 @@ _run_may_open_kfd() {
     esac
     return 0
 }
+
+# One layer wider, for the diagnoses that are not about /dev/kfd. A Vulkan bundle opens a
+# render node, so those still apply to it; a CPU bundle beside --no-torch opens no GPU node
+# at all, and telling that install to join the render group or fix its device mapping
+# describes a card nothing in the run was going to touch.
+_run_may_open_a_gpu_node() {
+    [ "$SKIP_TORCH" = false ] && return 0
+    case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
+            | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+        cpu) return 1 ;;
+    esac
+    return 0
+}
+
+case "$TORCH_INDEX_URL" in
+    */cpu|*/rocm*|*/gfx*) _amd_node_diag_route=true ;;
+    *)                    _amd_node_diag_route=false ;;
+esac
+# The two diagnoses are separate branches, not one branch with an inner test, because
+# they need DIFFERENT evidence. The mapping one below is gated on the KFD topology -- the
+# amdkfd driver's own sysfs -- so it must not sit behind _has_amd_rocm_gpu: that probe
+# answers from `amd-smi list`, which reads the driver over sysfs and libdrm and therefore
+# SUCCEEDS in a container given only --device /dev/dri, where HIP has no /dev/kfd to open.
+# llama_cpp.py's _rocm_hip_is_reachable records the same disagreement. Behind that probe
+# the mapping warning was suppressed on exactly the container shape it was written for,
+# and the two later diagnostics stay silent too: the render node is open, so nothing is
+# closed and nothing is missing.
+if [ "$_amd_node_diag_route" = true ] && \
+   _run_may_open_kfd && [ "$OS" != "macos" ] && \
+   [ ! -e /dev/kfd ] && _kfd_topology_has_an_amd_gpu; then
+    substep "An AMD GPU is in the KFD topology but /dev/kfd is not present, so the" "$C_WARN"
+    substep "  driver is loaded and reinstalling ROCm changes nothing: the node itself"
+    substep "  is missing. Under Docker, recreate the container with --device /dev/kfd"
+    substep "  --device /dev/dri; on a bare host it is a udev or devtmpfs problem."
+elif [ "$_amd_node_diag_route" = true ] && \
+   _run_may_open_kfd && [ "$OS" != "macos" ] && \
+   ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
+   ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
+        substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
+        substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
+        substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
+fi
 if ! _run_may_open_kfd; then
     _closed_amd_nodes=$(printf '%s\n' "$_closed_amd_nodes" | grep -vx /dev/kfd || true)
 fi
@@ -5582,7 +5596,8 @@ fi
 # repairs this; only group membership does. Nothing else in this installer asks
 # whether the account can OPEN a node it just found (#10466). /dev/kfd alone stops
 # ROCm; a render node stops Vulkan as well, so the two are not claimed together.
-if [ "$_amd_node_diag_route" = true ] && [ -n "$_closed_amd_nodes" ]; then
+if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
+   [ -n "$_closed_amd_nodes" ]; then
     substep "An AMD GPU is present but this account cannot open its device nodes:" "$C_WARN"
     printf '%s\n' "$_closed_amd_nodes" | while IFS= read -r _n; do
         substep "  $_n"
@@ -5678,7 +5693,8 @@ if [ "$_amd_node_diag_route" = true ] && [ -n "$_closed_amd_nodes" ]; then
 # of it: --device /dev/kfd and no --device /dev/dri leaves one openable node, so the list
 # above is empty and this went unsaid. Gated on the KFD topology naming AMD rather than on
 # the glob being empty, since every vendor's render nodes live under it.
-elif [ "$_amd_node_diag_route" = true ] && [ "$OS" != "macos" ] && \
+elif [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
+     [ "$OS" != "macos" ] && \
      ! _amd_render_node_present && _kfd_topology_has_an_amd_gpu; then
     substep "An AMD GPU is in the KFD topology but no AMD render node" "$C_WARN"
     substep "  (/dev/dri/renderD*) is present, and ROCm and Vulkan both open one, so the"

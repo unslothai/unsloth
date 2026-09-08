@@ -459,6 +459,9 @@ def _kernel_stack_hint_runs(closed_nodes: str, *, route: bool = True) -> bool:
             # the closed-node reasoning.
             "SKIP_TORCH=false",
             "OS=linux",
+            # The run-scope predicate the guard now asks in place of a bare SKIP_TORCH
+            # test. Lifted, not stubbed, so this arm goes through the installer's own rule.
+            _shell_fn(lines, "_run_may_open_kfd"),
             # The route gate. True by default for the same reason the two probes are
             # stubbed: this harness asks about the closed-node reasoning, and the route
             # has its own tests below.
@@ -781,6 +784,39 @@ def test_a_node_that_cannot_be_stat_contributes_nothing(monkeypatch):
     )
 
 
+def _install_sh_if(lines: "list[str]", tail: str) -> int:
+    """The index of the `if` opening the block whose condition ENDS with ``tail``.
+
+    Anchored on the condition and walked back, as _install_sh_missing_kfd already does:
+    a multi-line condition puts the `if` and its last test on different lines, so requiring
+    both on one line stopped finding anything the moment a gate was added -- and a harness
+    that finds nothing raises here rather than silently testing a shorter script.
+    """
+    i = next(j for j, line in enumerate(lines) if line.rstrip().endswith(tail))
+    while not lines[i].lstrip().startswith("if "):
+        i -= 1
+    return i
+
+
+def _shell_fn(lines: "list[str]", name: str) -> str:
+    """One function definition lifted out of install.sh, by brace depth.
+
+    The harnesses below used to slice from a definition down to the block under test,
+    which worked only while the two were adjacent. A shell function has to be defined
+    before the line that calls it, so the run-scope predicates now sit above the diagnoses
+    they gate and each is lifted by name instead. A miss raises rather than returning an
+    empty string: an undefined function would leave the block under test failing for a
+    reason that has nothing to do with the case.
+    """
+    start = next(i for i, line in enumerate(lines) if line.startswith(f"{name}() {{"))
+    depth = 0
+    for end in range(start, len(lines)):
+        depth += lines[end].count("{") - lines[end].count("}")
+        if depth == 0:
+            return "\n".join(lines[start : end + 1])
+    raise AssertionError(f"unterminated {name}() in install.sh")
+
+
 def _install_sh_hint(
     closed_nodes: str,
     *,
@@ -802,11 +838,7 @@ def _install_sh_hint(
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     text = install_sh.read_text(encoding = "utf-8")
     lines = text.splitlines()
-    start = next(
-        i
-        for i, line in enumerate(lines)
-        if line.endswith('[ -n "$_closed_amd_nodes" ]; then') and line.startswith("if ")
-    )
+    start = _install_sh_if(lines, '[ -n "$_closed_amd_nodes" ]; then')
     end = next(i for i in range(start, len(lines)) if lines[i] == "fi")
     block = "\n".join(lines[start : end + 1])
 
@@ -833,6 +865,10 @@ def _install_sh_hint(
             # The route the diagnoses are gated on; the gate has its own tests below.
             "_amd_node_diag_route=true",
             "OS=linux",
+            # The run-scope predicate the block now asks. Lifted rather than stubbed, so
+            # the default arms below go through the same rule the installer applies.
+            "SKIP_TORCH=false",
+            _shell_fn(lines, "_run_may_open_a_gpu_node"),
             # The real derivation by default. An override stands in only where the case
             # cannot be built on disk -- a node whose GID has no entry in the group
             # database -- and _amd_node_repairs has its own tests either way.
@@ -1097,6 +1133,10 @@ def _installer_index_summary(index_url: str, closed_nodes: str) -> str:
             "SKIP_TORCH=false",
             "OS=linux",
             "_amd_render_node_present() { return 0; }",
+            # Defined above the case in install.sh, so the span lifted below calls them
+            # without carrying them; a shell function has to exist before the call.
+            _shell_fn(lines, "_run_may_open_kfd"),
+            _shell_fn(lines, "_run_may_open_a_gpu_node"),
             *lines[start : end + 1],
         ]
     )
@@ -1895,6 +1935,7 @@ def _kernel_stack_hint_text(*, topology: bool) -> str:
             "OS=linux",
             "C_WARN=",
             "_amd_node_diag_route=true",
+            _shell_fn(lines, "_run_may_open_kfd"),
             block,
         ]
     )
@@ -1941,7 +1982,13 @@ def test_a_container_missing_kfd_is_told_to_map_it_rather_than_reinstall(monkeyp
     assert "the kernel driver is loaded" in hint
 
 
-def _install_sh_missing_kfd(*, topology: bool, amd_smi_sees_it: bool) -> str:
+def _install_sh_missing_kfd(
+    *,
+    topology: bool,
+    amd_smi_sees_it: bool,
+    skip_torch: bool = False,
+    backend: "str | None" = None,
+) -> str:
     """What the installer says when /dev/kfd is absent, for a given pair of probes.
 
     Lifts the two branches together, through the closing `fi`, because which of them runs
@@ -1970,21 +2017,22 @@ def _install_sh_missing_kfd(*, topology: bool, amd_smi_sees_it: bool) -> str:
         [
             'substep() { echo "$1"; }',
             'C_WARN=""',
-            "SKIP_TORCH=false",
+            f"SKIP_TORCH={'true' if skip_torch else 'false'}",
             "OS=linux",
             "_amd_node_diag_route=true",
+            _shell_fn(lines, "_run_may_open_kfd"),
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if topology else 1}; }}",
             f"_has_amd_rocm_gpu() {{ return {0 if amd_smi_sees_it else 1}; }}",
             "_amd_gpu_present_via_pci() { return 0; }",
             "\n".join(lines[start : close + 1]),
         ]
     )
+    env = {**os.environ, "_closed_amd_nodes": ""}
+    env.pop("UNSLOTH_LLAMA_CPP_BACKEND", None)
+    if backend is not None:
+        env["UNSLOTH_LLAMA_CPP_BACKEND"] = backend
     out = subprocess.run(
-        ["bash", "-c", script],
-        capture_output = True,
-        text = True,
-        check = True,
-        env = {**os.environ, "_closed_amd_nodes": ""},
+        ["bash", "-c", script], capture_output = True, text = True, check = True, env = env
     )
     return out.stdout
 
@@ -2219,12 +2267,11 @@ def _install_sh_kfd_scope(closed_nodes: str, *, skip_torch: bool, backend: "str 
 
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     lines = install_sh.read_text(encoding = "utf-8").splitlines()
-    fn_start = next(i for i, line in enumerate(lines) if line.startswith("_run_may_open_kfd() {"))
-    block_start = next(
-        i
-        for i, line in enumerate(lines)
-        if line.endswith('[ -n "$_closed_amd_nodes" ]; then') and line.startswith("if ")
+    _filter_start = next(
+        i for i, line in enumerate(lines) if line == "if ! _run_may_open_kfd; then"
     )
+    _filter_end = next(i for i in range(_filter_start, len(lines)) if lines[i] == "fi")
+    block_start = _install_sh_if(lines, '[ -n "$_closed_amd_nodes" ]; then')
     end = next(i for i in range(block_start, len(lines)) if lines[i] == "fi")
     script = "\n".join(
         [
@@ -2236,7 +2283,10 @@ def _install_sh_kfd_scope(closed_nodes: str, *, skip_torch: bool, backend: "str 
             "OS=linux",
             f"SKIP_TORCH={'true' if skip_torch else 'false'}",
             "_amd_node_repairs() { printf '%s\\n' 'join:render'; }",
-            "\n".join(lines[fn_start : end + 1]),
+            _shell_fn(lines, "_run_may_open_kfd"),
+            _shell_fn(lines, "_run_may_open_a_gpu_node"),
+            "\n".join(lines[_filter_start : _filter_end + 1]),
+            "\n".join(lines[block_start : end + 1]),
         ]
     )
     env = {**os.environ, "_closed_amd_nodes": closed_nodes, "USER": "ada"}
@@ -2280,3 +2330,134 @@ def test_a_torch_install_is_unaffected_by_the_backend_request():
     bundle is, so an explicit Vulkan llama.cpp request must not scope the torch diagnosis."""
     out = _install_sh_kfd_scope("/dev/kfd", skip_torch = False, backend = "vulkan")
     assert "/dev/kfd" in out
+
+
+
+def test_a_no_torch_rocm_bundle_is_still_told_its_kfd_node_is_missing():
+    """The mirror of the closed-node scoping, on the branch that reports an ABSENT node.
+    It was gated on SKIP_TORCH=false, so a --no-torch run whose GGUF bundle is ROCm -- which
+    opens /dev/kfd exactly as torch would -- finished silently in a container mapping
+    /dev/dri and not /dev/kfd, with nothing closed, nothing missing said, and no account of
+    why the backend cannot initialise."""
+    out = _install_sh_missing_kfd(
+        topology = True, amd_smi_sees_it = True, skip_torch = True, backend = None
+    )
+    assert "/dev/kfd is not present" in out
+
+
+def test_a_no_torch_vulkan_run_is_not_told_about_a_missing_kfd_node():
+    """The control that keeps the rule the same one: Vulkan opens no /dev/kfd, so the node
+    being absent explains nothing about it and the run must stay silent."""
+    out = _install_sh_missing_kfd(
+        topology = True, amd_smi_sees_it = True, skip_torch = True, backend = "vulkan"
+    )
+    assert out.strip() == ""
+
+
+def test_a_torch_install_still_gets_the_missing_kfd_advice():
+    """The other control: the ordinary install is unchanged by the gate swap."""
+    out = _install_sh_missing_kfd(topology = True, amd_smi_sees_it = True)
+    assert "/dev/kfd is not present" in out
+
+
+def test_a_no_torch_cpu_run_is_not_sent_after_a_closed_render_node():
+    """An explicit CPU bundle beside --no-torch opens no GPU node at all, so the group and
+    udev repair below described a card nothing in the run was going to touch. Only /dev/kfd
+    was filtered, which is right for Vulkan and one node short for CPU."""
+    out = _install_sh_kfd_scope("/dev/dri/renderD128", skip_torch = True, backend = "cpu")
+    assert out.strip() == ""
+
+
+def test_a_no_torch_cpu_run_is_silent_about_the_kfd_node_too():
+    """The same run, the other node. Both were already suppressed for /dev/kfd; this pins
+    that the wider rule did not lose the narrower one."""
+    out = _install_sh_kfd_scope("/dev/kfd", skip_torch = True, backend = "cpu")
+    assert out.strip() == ""
+
+
+def test_a_torch_install_asking_for_cpu_llama_still_reports_its_nodes():
+    """The control, and the reason the predicate reads BOTH: a CPU llama.cpp bundle beside a
+    ROCm torch install still has torch opening the nodes, so the backend request alone
+    cannot silence the diagnosis."""
+    out = _install_sh_kfd_scope("/dev/dri/renderD128", skip_torch = False, backend = "cpu")
+    assert "cannot open its device nodes" in out
+
+
+def test_an_illegal_rocr_selector_is_reported_as_a_blocker(monkeypatch, linux):
+    """ROCr calls a token Illegal when it "can\'t be evaluated into an instance of Device
+    UUID or Enumeration Index" (ROCR-Runtime, core/inc/amd_filter_device.h), and an Illegal
+    token ends the list -- so an illegal FIRST token leaves zero survivors. _post_rocr_device_count
+    already counts it that way, while this predicate called every non-index merely unresolved:
+    the message then offered the mask as something to check if the group change fails, when it
+    is an independent blocker no membership clears."""
+    reason = _reason_with_masks(
+        monkeypatch, {"ROCR_VISIBLE_DEVICES": "garbage"}, {"hip"}, gpu_count = 2
+    )
+    assert "ROCR_VISIBLE_DEVICES" in reason
+    assert "cannot resolve" not in reason
+
+
+def test_a_uuid_selector_is_still_only_unresolved(monkeypatch, linux):
+    """The control that keeps the two apart: a UUID is a form ROCr accepts, so it may well
+    name a device, and this host has no way to match it against an ordinal count. Calling it
+    a blocker would invent a fault. Without this the rule reads as "any non-index blocks"."""
+    reason = _reason_with_masks(
+        monkeypatch,
+        {"ROCR_VISIBLE_DEVICES": "GPU-4b2c9f1e0a7d3b58"},
+        {"hip"},
+        gpu_count = 2,
+    )
+    assert "cannot resolve" in reason
+
+
+def test_an_untagged_cuda_wheel_that_will_not_import_is_still_another_vendors(
+    monkeypatch, linux
+):
+    """_torch_reports_a_hip_runtime answers an import failure from torch/version.py on disk;
+    its mirror returned False there instead, so the untagged-CUDA clearing was inert on the
+    one path it exists for. A stale recorded ROCm flavor then spoke for a CUDA wheel, and the
+    closed node replaced the reinstall guidance with group membership that cannot make that
+    wheel use the card."""
+    from utils.hardware import hardware
+
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
+    monkeypatch.setattr(hardware, "TORCH_IMPORT_ERROR", ImportError("libcudart.so.13"))
+    monkeypatch.setattr(hardware, "_expected_rocm_flavor_was_chosen", lambda: True)
+    monkeypatch.setattr(hardware, "_installed_torch_label_on_disk", lambda: "2.11.0")
+    monkeypatch.setattr(
+        hardware,
+        "_installed_torch_markers_on_disk",
+        lambda: {"cuda": "13.0", "hip": None, "xpu": None},
+    )
+    monkeypatch.setenv("USER", "ada")
+    message = hardware._gpu_present_but_unusable_message(
+        "video generation",
+        verdict = ("torch_cuda_unavailable", "2.11.0"),
+    )
+    assert "Repair installation" in message
+
+
+def test_an_unimportable_rocm_wheel_still_gets_the_node_hint_alone(monkeypatch, linux):
+    """The control, and the reason the hip reading leads: a ROCm build records hip and may
+    record cuda besides, so ordering the two the other way round would send every AMD host
+    whose torch fails to import after a reinstall it does not need."""
+    from utils.hardware import hardware
+
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
+    monkeypatch.setattr(hardware, "TORCH_IMPORT_ERROR", ImportError("libamdhip64.so"))
+    monkeypatch.setattr(hardware, "_expected_rocm_flavor_was_chosen", lambda: True)
+    monkeypatch.setattr(hardware, "_installed_torch_label_on_disk", lambda: "2.11.0")
+    monkeypatch.setattr(
+        hardware,
+        "_installed_torch_markers_on_disk",
+        lambda: {"cuda": "13.0", "hip": "6.4.0", "xpu": None},
+    )
+    monkeypatch.setenv("USER", "ada")
+    message = hardware._gpu_present_but_unusable_message(
+        "video generation",
+        verdict = ("torch_cuda_unavailable", "2.11.0"),
+    )
+    assert "Repair installation" not in message
+    assert "usermod -a -G render,video ada" in message
