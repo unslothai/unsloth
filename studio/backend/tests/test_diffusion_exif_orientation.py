@@ -90,14 +90,64 @@ def test_an_image_without_an_orientation_tag_is_untouched():
     assert img.getpixel((0, 0)) == (10, 200, 10)
 
 
-@pytest.mark.parametrize("orientation", [1, 2, 3, 4, 5, 6, 7, 8])
-def test_every_orientation_decides_the_size_guard_the_same_way(orientation):
-    # The guard reads the header size BEFORE the transpose swaps the axes, so it must be
-    # symmetric under the swap or a portrait photo would be refused at a size its landscape
-    # twin is accepted at.
+# What each EXIF Orientation means for a 300x100 photo stored red/green over blue/yellow:
+# the size the viewer shows it at, and which stored quadrant lands in each display corner.
+# Read off the tag definitions (2/4 mirror, 3 rotates 180, 5/7 flip about a diagonal, 6/8
+# rotate a quarter turn), not off Pillow -- a table copied from the implementation would
+# agree with a wrong implementation.
+_AS_DISPLAYED = {
+    1: ((300, 100), ["red", "green", "blue", "yellow"]),      # identity
+    2: ((300, 100), ["green", "red", "yellow", "blue"]),      # mirrored left-right
+    3: ((300, 100), ["yellow", "blue", "green", "red"]),      # rotated 180
+    4: ((300, 100), ["blue", "yellow", "red", "green"]),      # mirrored top-bottom
+    5: ((100, 300), ["red", "blue", "green", "yellow"]),      # flipped about the main diagonal
+    6: ((100, 300), ["blue", "red", "yellow", "green"]),      # quarter turn clockwise
+    7: ((100, 300), ["yellow", "green", "blue", "red"]),      # flipped about the anti-diagonal
+    8: ((100, 300), ["green", "yellow", "red", "blue"]),      # quarter turn anticlockwise
+}
+
+
+@pytest.mark.parametrize("orientation", sorted(_AS_DISPLAYED))
+def test_every_orientation_decodes_the_way_the_viewer_shows_it(orientation):
+    # All eight, not just the phone-photo one: four of them are mirrors, and a fix that
+    # rotated where it should flip would still satisfy an assertion on sizes alone.
+    size, quadrants = _AS_DISPLAYED[orientation]
+    img = decode_b64_image(_phone_photo_data_url(300, 100, orientation))
+    assert img.size == size
+    assert _quadrants(img) == quadrants
+
+
+@pytest.mark.parametrize("orientation", sorted(_AS_DISPLAYED))
+def test_the_orientation_tag_never_decides_whether_an_image_is_accepted(orientation):
+    # Both bounds read one symmetric quantity of the stored header -- the longer side and the
+    # pixel count -- so a tag that swaps the axes must not flip the verdict. Pins that against
+    # a later per-axis bound, which would refuse a portrait photo its landscape twin gets away
+    # with. It does NOT pin where the transpose sits relative to the guard: with symmetric
+    # bounds both orders decide alike, which is why the size/quadrant test above is the one
+    # that fails when the transpose is missing.
     data = _phone_photo_data_url(300, 100, orientation)
     with pytest.raises(ValueError, match = "too large"):
         decode_b64_image(data, max_side = 200)
     with pytest.raises(ValueError, match = "too large"):
         decode_b64_image(data, max_pixels = 20_000)
-    assert decode_b64_image(data, max_side = 4096).size in {(300, 100), (100, 300)}
+    assert decode_b64_image(data, max_side = 300, max_pixels = 30_000).size == \
+        _AS_DISPLAYED[orientation][0]
+
+
+def test_an_oversized_image_is_refused_before_its_pixels_are_read(monkeypatch):
+    # The guard sits above img.load() so a huge-dimension file is rejected from the header
+    # without ever spiking memory. The transpose needs the pixels, so putting it before the
+    # guard would quietly undo that -- and it cannot be caught by sizes, because both bounds
+    # are symmetric and decide the same either way. Refusing to load at all is the assertion
+    # that separates the two orders.
+    data = _phone_photo_data_url(300, 100, 6)  # built BEFORE the patch: save() loads too
+    loads: list[int] = []
+
+    def _no_load(self, *a, **kw):
+        loads.append(1)
+        raise AssertionError("pixels were read before the size guard refused the image")
+
+    monkeypatch.setattr(PIL.Image, "load", _no_load, raising = True)
+    with pytest.raises(ValueError, match = "too large"):
+        decode_b64_image(data, max_side = 200)
+    assert loads == []
