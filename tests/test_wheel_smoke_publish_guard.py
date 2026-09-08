@@ -23,6 +23,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github" / "workflows" / "wheel-smoke.yml"
+LINT = REPO / ".github" / "workflows" / "workflow-trigger-lint.yml"
 STEP_NAME = "Publishing path uploads the wheel only"
 
 
@@ -134,3 +135,56 @@ def test_build_sh_is_in_the_path_filters(event):
     """
     paths = _on_block(_workflow())[event]["paths"]
     assert "build.sh" in paths, f"{event} paths filter omits build.sh: {paths}"
+
+
+# --------------------------------------------------------------------------
+# The tests above only bite if something actually collects THIS module.
+#
+# `pyproject.toml` sets testpaths = ["tests/security"], and pytest uses that
+# list "when no specific directories, files or test ids are given in the
+# command line" -- so a bare `pytest` never reaches this file, and every
+# invocation that would has to name it. Meanwhile the change these tests exist
+# to reject (reintroducing the first-argument-only parser) edits
+# `wheel-smoke.yml` and nothing else, and GitHub only runs a `paths`-filtered
+# workflow when "at least one path matches a pattern in the paths filter".
+#
+# wheel-smoke.yml does trigger on its own YAML, but that run only executes the
+# guard against the current, single-target build.sh: a broken parser still says
+# PASS. So the regression is caught only by a job that both collects this
+# module and starts on a workflow-only diff. workflow-trigger-lint.yml is the
+# one job in the repo with no paths filter, which makes it the only candidate.
+# tests/studio/test_workflow_guards_run_unfiltered.py enforces this rule for
+# tests/studio; this module lives in tests/, so it asserts it for itself.
+# --------------------------------------------------------------------------
+
+
+def _lint_doc():
+    return yaml.safe_load(LINT.read_text(encoding = "utf-8"))
+
+
+def test_this_module_runs_in_the_unfiltered_guard_job():
+    """Named explicitly, because testpaths means nothing collects it by accident."""
+    runs = "\n".join(
+        str(step.get("run", ""))
+        for step in _lint_doc()["jobs"]["workflow-trigger-lint"]["steps"]
+    )
+    assert Path(__file__).name in runs, (
+        f"workflow-trigger-lint does not name {Path(__file__).name}. It is the only job "
+        f"with no paths filter, so on a PR that edits only wheel-smoke.yml -- exactly the "
+        f"change these tests exist to reject -- nothing else collects this module, and the "
+        f"regression merges green."
+    )
+
+
+def test_the_job_that_runs_this_module_has_no_paths_filter():
+    """The premise. A filter here and this module stops seeing workflow-only PRs."""
+    doc = _lint_doc()
+    on = _on_block(doc)
+    for trigger in ("pull_request", "push"):
+        config = on.get(trigger)
+        if not isinstance(config, dict):
+            continue
+        assert not config.get("paths") and not config.get("paths-ignore"), (
+            f"workflow-trigger-lint now filters its {trigger} trigger on paths, so it no "
+            f"longer runs on every workflow-only PR."
+        )
