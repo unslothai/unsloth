@@ -6517,7 +6517,6 @@ def _live_carveout_advice(llama_backend: LlamaCppBackend) -> Optional[dict]:
         return None
     try:
         from utils.igpu_carveout_notice_settings import notice_already_dismissed
-
         if notice_already_dismissed(advice.get("current_gb")):
             return None
     except Exception:

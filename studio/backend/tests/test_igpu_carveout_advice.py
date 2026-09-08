@@ -368,16 +368,20 @@ class TestThePlacementItAdvisesAbout:
     """
 
     @staticmethod
-    def _backend(monkeypatch, *, probes, rocm_gate = True, carve_bytes = 32 * _GB):
+    def _backend(
+        monkeypatch,
+        *,
+        probes,
+        rocm_gate = True,
+        carve_bytes = 32 * _GB,
+    ):
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
 
         def _read(_i = None):
             probes.append(_i)
             return carve_bytes
 
-        monkeypatch.setattr(
-            LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(_read)
-        )
+        monkeypatch.setattr(LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(_read))
         monkeypatch.setattr(
             LlamaCppBackend,
             "_amd_apu_wants_unified_memory",
@@ -396,8 +400,11 @@ class TestThePlacementItAdvisesAbout:
         probes = []
         backend = self._backend(monkeypatch, probes = probes)
         backend._record_carveout_advice(
-            [1], gb(42.90),
-            is_vulkan_backend = True, shared_gpu_ids = {0}, detected_gpus = [(0, 0), (1, 0)],
+            [1],
+            gb(42.90),
+            is_vulkan_backend = True,
+            shared_gpu_ids = {0},
+            detected_gpus = [(0, 0), (1, 0)],
         )
         assert backend.last_carveout_advice is None
         assert probes == [], "the allocation was read for a device that shares nothing"
@@ -408,8 +415,11 @@ class TestThePlacementItAdvisesAbout:
         # that applies, and it says this device shares system memory.
         backend = self._backend(monkeypatch, probes = [], rocm_gate = False)
         backend._record_carveout_advice(
-            [0], gb(42.90),
-            is_vulkan_backend = True, shared_gpu_ids = {0}, detected_gpus = [(0, 0)],
+            [0],
+            gb(42.90),
+            is_vulkan_backend = True,
+            shared_gpu_ids = {0},
+            detected_gpus = [(0, 0)],
         )
         advice = backend.last_carveout_advice
         assert advice is not None and advice["suggested_gb"] == 48
@@ -419,7 +429,11 @@ class TestThePlacementItAdvisesAbout:
         probes = []
         backend = self._backend(monkeypatch, probes = probes)
         backend._record_carveout_advice(
-            [0], gb(42.90), is_vulkan_backend = True, shared_gpu_ids = None, detected_gpus = [],
+            [0],
+            gb(42.90),
+            is_vulkan_backend = True,
+            shared_gpu_ids = None,
+            detected_gpus = [],
         )
         assert backend.last_carveout_advice is None
         assert probes == []
