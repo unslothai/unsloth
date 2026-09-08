@@ -2284,6 +2284,90 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
     return html.encode("utf-8")
 
 
+# Restored deliberately, and only this half. The loopback/Host/proxy-header
+# helpers that sat beside these stay deleted: a same-host reverse proxy sends
+# byte-identical requests to a local browser, so that question cannot be
+# answered. Which ORIGIN is asking is a different question, the browser answers
+# it truthfully, and script cannot forge it -- which is what keeps a hostile
+# page from reading the setup token out of the index.
+_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+
+def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
+    """Canonicalise an Origin to ``(scheme, host, port)`` for equality.
+    Browsers strip default ports (RFC 6454 sec 6.1) and scheme/host are
+    case-insensitive (RFC 3986), so a bare string compare misclassifies
+    same-origin requests as cross-origin. Returns ``None`` on unparseable input
+    so callers fall to the safer cross-origin default.
+    """
+    scheme = (scheme or "").strip().lower()
+    if not scheme or not netloc:
+        return None
+    # Strip userinfo (RFC 3986); Origin never carries credentials.
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]
+    # IPv6 hosts use brackets (RFC 3986 3.2.2): bare partition(":") breaks `-H ::1`.
+    if netloc.startswith("["):
+        close = netloc.find("]")
+        if close == -1:
+            return None
+        host = netloc[1:close]
+        rest = netloc[close + 1 :]
+        if rest.startswith(":"):
+            port_str = rest[1:]
+        elif rest == "":
+            port_str = ""
+        else:
+            return None
+    else:
+        host, _, port_str = netloc.partition(":")
+    host = host.strip().lower()
+    if not host:
+        return None
+    if port_str:
+        try:
+            port = int(port_str)
+        except ValueError:
+            return None
+    else:
+        port = _DEFAULT_PORTS.get(scheme, 0)
+    return (scheme, host, port)
+
+
+def _is_same_origin_request(request: Request) -> bool:
+    """True when Origin is missing or matches request's scheme://host:port.
+
+    Missing Origin counts as same-origin (top-level GETs omit it). Both sides
+    are canonicalised via :func:`_canonical_origin`; callers must emit
+    ``Vary: Origin``.
+    """
+    origin = request.headers.get("origin")
+    if origin is None:
+        # Missing header: top-level same-document GETs omit Origin.
+        return True
+    # Empty string is not a valid serialised origin (RFC 6454 sec 6.1).
+    if not origin:
+        return False
+    # "null" token (sandboxed iframes, file:// pages) is never same-origin.
+    if origin == "null":
+        return False
+    # urlparse raises ValueError on malformed IPv6 brackets; swallow so it doesn't 500.
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    origin_canon = _canonical_origin(parsed.scheme, parsed.netloc)
+    if origin_canon is None:
+        return False
+    try:
+        self_canon = _canonical_origin(request.url.scheme, request.url.netloc)
+    except ValueError:
+        return False
+    if self_canon is None:
+        return False
+    return origin_canon == self_canon
+
+
 # A launch with no bootstrap deadline never shuts itself down, so the seed this
 # token replaces would have stayed usable for the life of the process. Long
 # enough that no first login reaches it, finite so the nonce row is still
@@ -2380,7 +2464,17 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
             timeout_seconds = bootstrap_timeout_seconds(),
         ):
             setup_ttl = bootstrap_timeout_seconds()
-        link_token = create_link_token(storage.DEFAULT_ADMIN_USERNAME, expires_in = setup_ttl)
+        # require_pending_setup closes the gap between the guard at the top of
+        # this function and the write below: a rotation committing in between
+        # would otherwise mint against the NEW secret, after update_password had
+        # cleared the old nonces, leaving a token that still exchanges once setup
+        # is finished and yields an ordinary session. The refusal surfaces as the
+        # except below, which injects nothing.
+        link_token = create_link_token(
+            storage.DEFAULT_ADMIN_USERNAME,
+            expires_in = setup_ttl,
+            require_pending_setup = True,
+        )
     except Exception:
         # No token means the page simply shows the ordinary login form; never
         # fall back to serving the seed.
@@ -2494,13 +2588,27 @@ def setup_frontend(
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
-        # Unconditional: what goes in the page is a one-time setup token, not the
-        # seeded password, so there is no longer a client to distinguish. The old
-        # same-origin/loopback gate was removed because it could not tell a
-        # same-host reverse proxy from a real local browser -- see _inject_bootstrap.
-        content, nonce = _inject_bootstrap(content, app)
+        # Same-origin only. Studio's default CORS is allow_origins=["*"] with
+        # credentials, so ANY page the operator visits can fetch this index and
+        # READ the body; without this check a hostile origin lifts the setup
+        # token, exchanges it and sets the admin password. Measured end to end in
+        # Chromium against a real install: cross-origin GET / -> link-exchange 200
+        # -> link-initial-password 200, and the attacker's password then logged in.
+        #
+        # This is NOT the loopback/Host gate that was removed, and the reason that
+        # one could not be written does not carry over. That one tried to tell a
+        # same-host reverse proxy from a local browser, which is impossible because
+        # the two send identical bytes. This asks a question the browser answers
+        # honestly and cannot be forged from script: which origin is asking.
+        if _is_same_origin_request(request):
+            content, nonce = _inject_bootstrap(content, app)
+        else:
+            nonce = None
         headers = {
             "Cache-Control": "no-cache, no-store, must-revalidate",
+            # The body now varies by Origin, so a shared cache must not serve one
+            # origin's response to another.
+            "Vary": "Origin",
         }
         if nonce:
             headers[_CSP_SCRIPT_NONCE_HEADER] = nonce

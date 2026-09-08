@@ -178,27 +178,50 @@ def test_nothing_is_injected_once_a_password_is_set():
     assert nonce is None
 
 
-def test_injection_does_not_depend_on_the_request():
-    """The gate is gone on purpose; assert it has not crept back.
+def test_the_unwritable_half_of_the_gate_stays_deleted():
+    """No Host, peer-address or forwarding-header test may come back.
 
-    _inject_bootstrap takes no Request, so there is nothing for a forged Origin,
-    Host or X-Forwarded-For to influence. This is the property the deleted
-    loopback/origin suites were trying and failing to guarantee.
+    That question cannot be answered: a same-host reverse proxy with a stock
+    `proxy_pass http://127.0.0.1:PORT;` sends byte-identical bytes to a genuine
+    local browser. The ORIGIN check is a different question and is expected to be
+    present -- see the tests below -- so it is deliberately not in this list.
     """
-    import inspect
-
-    params = inspect.signature(studio_main._inject_bootstrap).parameters
-    assert "request" not in params, (
-        "a per-request gate reappeared; a same-host reverse proxy is "
-        "indistinguishable from a local browser, so it cannot be correct"
-    )
     for gone in (
         "_should_inject_bootstrap",
         "_is_local_bootstrap_request",
-        "_is_same_origin_request",
         "_host_header_is_loopback",
+        "_is_loopback_ip",
+        "_PROXIED_CLIENT_HEADERS",
     ):
         assert not hasattr(studio_main, gone), f"{gone} was reintroduced"
+
+
+def test_a_cross_origin_request_is_not_same_origin():
+    """The check that keeps a hostile page from reading the setup token.
+
+    Studio's default CORS is allow_origins=["*"] with credentials, so any page
+    the operator visits can fetch this index and read the body. Measured in
+    Chromium against a real install before this check was restored: cross-origin
+    GET / -> link-exchange 200 -> link-initial-password 200, and the attacker's
+    password then logged in.
+    """
+
+    class _Req:
+        def __init__(self, origin, netloc = "127.0.0.1:8990", scheme = "http"):
+            self.headers = {} if origin is None else {"origin": origin}
+            self.url = type("U", (), {"scheme": scheme, "netloc": netloc})()
+
+    assert studio_main._is_same_origin_request(_Req("http://evil.example")) is False
+    assert studio_main._is_same_origin_request(_Req("http://localhost:8990")) is False
+    assert studio_main._is_same_origin_request(_Req("null")) is False
+    assert studio_main._is_same_origin_request(_Req("")) is False
+    # A top-level navigation sends no Origin, and is how the operator arrives.
+    assert studio_main._is_same_origin_request(_Req(None)) is True
+    assert studio_main._is_same_origin_request(_Req("http://127.0.0.1:8990")) is True
+    # Default ports are stripped by browsers (RFC 6454) and case is insensitive.
+    assert studio_main._is_same_origin_request(
+        _Req("HTTP://127.0.0.1", netloc = "127.0.0.1:80")
+    ) is True
 
 
 def test_a_headless_public_launch_injects_nothing():
@@ -250,3 +273,38 @@ def test_token_in_page_cannot_change_an_existing_password():
     assert storage.update_password(admin, "chosen-elsewhere-789") is not None
     # The rotation revoked outstanding link tokens in the same transaction.
     assert authentication.exchange_link_token(payload["link_token"]) is None
+
+
+def test_a_rotation_racing_the_mint_leaves_no_usable_token(monkeypatch):
+    """The window between "setup is pending" and recording the nonce.
+
+    _inject_bootstrap checks requires_password_change, then create_link_token
+    reads the JWT secret and records the nonce. A rotation committing in between
+    would mint against the NEW secret after update_password had deleted the old
+    nonces, leaving a token that still exchanges once setup is complete and hands
+    back an ordinary session. Forced here by rotating inside the mint.
+    """
+    admin = _seed_admin()
+    real_save = storage.save_link_token
+    fired = {"n": 0}
+
+    def _rotate_then_save(jti, username, expires_at, **kwargs):
+        if fired["n"] == 0:
+            fired["n"] = 1
+            # Setup completes elsewhere, between the guard and this write.
+            storage.update_password(admin, "chosen-by-the-operator-1")
+        return real_save(jti, username, expires_at, **kwargs)
+
+    monkeypatch.setattr(storage, "save_link_token", _rotate_then_save)
+    monkeypatch.setattr(authentication, "save_link_token", _rotate_then_save)
+
+    out, nonce = studio_main._inject_bootstrap(_HTML, _App(bootstrap_password = _SEED))
+    assert fired["n"] == 1, "the race was never triggered, so this proves nothing"
+    assert out == _HTML, "a token was injected after setup had already completed"
+    assert nonce is None
+    assert storage.requires_password_change(admin) is False
+    conn = storage.get_connection()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM link_tokens").fetchone()[0] == 0
+    finally:
+        conn.close()
