@@ -1733,6 +1733,7 @@ export const ru = {
       memoryEfficient: "Экономия памяти",
       weightDecomposed: "Декомпозиция весов",
       notSupportedAppleSilicon: "Не поддерживается на Apple Silicon",
+      doraNeedsVisionLayersOff: "Отключите обучение слоёв зрения, чтобы использовать DoRA",
       optimization: "Оптимизация",
       schedule: "Расписание",
       memory: "Память",

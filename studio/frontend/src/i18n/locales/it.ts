@@ -1720,6 +1720,7 @@ export const it = {
         ariaLabel: "Modalità dei parametri",
       },
       notSupportedAppleSilicon: "Non supportato su Apple Silicon",
+      doraNeedsVisionLayersOff: "Disattiva l'addestramento dei livelli visivi per usare DoRA",
       projectName: "Nome del progetto",
       optional: "Facoltativo",
       projectNameDescription:
