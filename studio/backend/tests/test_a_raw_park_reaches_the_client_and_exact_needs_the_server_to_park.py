@@ -89,15 +89,11 @@ class TestExactNeedsTheServerToPark:
 
     @pytest.mark.parametrize("setting", ["auto", "on"])
     def test_studio_side_pausing_is_not_exact(self, setting):
-        assert self._state(setting = setting, server_parks = False) == (
-            exact.EXACT_STATE_UNAVAILABLE
-        )
+        assert self._state(setting = setting, server_parks = False) == (exact.EXACT_STATE_UNAVAILABLE)
 
     @pytest.mark.parametrize("setting", ["auto", "on"])
     def test_a_budget_below_the_pool_is_not_exact(self, setting):
-        assert self._state(setting = setting, parking_holds = False) == (
-            exact.EXACT_STATE_UNAVAILABLE
-        )
+        assert self._state(setting = setting, parking_holds = False) == (exact.EXACT_STATE_UNAVAILABLE)
 
     def test_off_stays_off_whatever_the_server_does(self):
         assert self._state(setting = "off", server_parks = False) == exact.EXACT_STATE_OFF
@@ -138,7 +134,44 @@ class TestTheNamedBudgetIsJudged:
 
     def test_nothing_named_is_nothing_to_judge(self):
         assert llama_mod._exact_parking_shortfall_mib(12 * _GIB, args = [], env = {}) is None
-        assert llama_mod._exact_parking_shortfall_mib(0, args = ["--preempt-ram", "1"], env = {}) is None
+        assert (
+            llama_mod._exact_parking_shortfall_mib(0, args = ["--preempt-ram", "1"], env = {}) is None
+        )
+
+    def test_the_servers_default_is_judged_for_a_pool_sized_after_launch(self):
+        # An auto-fit context leaves the pool unknown at launch; after it the default budget
+        # the child ran with is judged against the context the server chose.
+        short = llama_mod._exact_parking_shortfall_mib(
+            12 * _GIB, args = [], env = {}, default_mib = llama_mod._PREEMPT_RAM_DEFAULT_MIB
+        )
+        assert short == (8192, 12 * 1024, 12 * 1024 + 64)
+        assert (
+            llama_mod._exact_parking_shortfall_mib(
+                4 * _GIB, args = [], env = {}, default_mib = llama_mod._PREEMPT_RAM_DEFAULT_MIB
+            )
+            is None
+        )
+        # A named budget still wins over the default.
+        assert (
+            llama_mod._exact_parking_shortfall_mib(
+                12 * _GIB, args = ["--preempt-ram", "-1"], env = {}, default_mib = 8192
+            )
+            is None
+        )
+
+    def test_an_unknown_pool_is_sized_off_the_servers_context_after_launch(self):
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        assert "self._exact_pool_unknown = _exact_kv_bytes <= 0" in source
+        judged = source.index('getattr(self, "_exact_pool_unknown", False)')
+        window = source[judged : judged + 1600]
+        assert "self._query_server_n_ctx()" in window
+        assert "default_mib = _PREEMPT_RAM_DEFAULT_MIB" in window
+        assert (
+            "_exact_short = (_PREEMPT_RAM_DEFAULT_MIB, 0, 0)" in window
+        ), "a pool that cannot be sized must not be certified"
+        assert window.index("self._exact_parking_short = _exact_short") < window.index(
+            "self._exact_state_after_launch("
+        )
 
     def test_the_environment_and_a_later_flag_are_read_in_llama_cpps_order(self):
         # The variable first, argv last-wins over it, as the child applies them.
@@ -201,4 +234,4 @@ class TestASilentParkStillRenewsTheLease:
         assert "else _renew_interval_seconds()" in source
         assert "elif await asyncio.to_thread(_server_park_excused_recently):" in source
         branch = source.index("elif await asyncio.to_thread(_server_park_excused_recently):")
-        assert "await self._try_touch_progress(run_id)" in source[branch:branch + 400]
+        assert "await self._try_touch_progress(run_id)" in source[branch : branch + 400]

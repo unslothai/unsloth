@@ -2102,16 +2102,24 @@ def _named_preempt_ram_mib(args, env: Mapping[str, str]) -> Optional[int]:
 
 
 def _exact_parking_shortfall_mib(
-    kv_bytes: int, *, args, env: Mapping[str, str]
+    kv_bytes: int,
+    *,
+    args,
+    env: Mapping[str, str],
+    default_mib: Optional[int] = None,
 ) -> Optional[tuple[int, int, int]]:
-    """``(named, pool, need)`` when the launch names a ``--preempt-ram`` too small to park
-    the whole pool, else None. A park that outgrows the budget is re-prefilled, which is
-    not byte-identical on CUDA, so a named budget below the pool is exact concurrency asked
-    for and taken away in the same line. ``-1`` is unlimited and ``0`` is parking off,
-    which ``server_preempts_kv`` already reports."""
+    """``(named, pool, need)`` when the budget in force is too small to park the whole pool,
+    else None. A park that outgrows the budget is re-prefilled, which is not byte-identical
+    on CUDA, so a budget below the pool is exact concurrency asked for and taken away in the
+    same line. ``-1`` is unlimited and ``0`` is parking off, which ``server_preempts_kv``
+    already reports. ``default_mib`` is the server's own default, judged when nothing named
+    a budget: the launch sizes one for a pool it can estimate, and a pool it could not
+    (an auto-fit context) is judged after launch against the default the child ran with."""
     if kv_bytes <= 0:
         return None
     named = _named_preempt_ram_mib(args, env)
+    if named is None:
+        named = default_mib
     if named is None or named <= 0:
         return None
     pool = -(-int(kv_bytes) // (1024 * 1024))
@@ -6908,6 +6916,7 @@ class LlamaCppBackend:
         build predating the stream comments is silent while parked, and `/metrics` says so."""
         try:
             from core.inference.llama_stats import scrape_llama_metrics
+
             # `/metrics` sits behind --api-key like `/slots`: unauthenticated, every check was a 401
             metrics = scrape_llama_metrics(self.base_url, timeout_s = 3.0, headers = self._auth_headers)
         except Exception:
@@ -23544,6 +23553,7 @@ class LlamaCppBackend:
                     # that. Under `on` the child still gets the variable and refuses it itself.
                     _exact_wanted = False
                 self._exact_parking_short = None
+                self._exact_pool_unknown = False
                 if _exact_wanted:
                     # Studio's line contradicts the mode in exactly one place: --parallel 1 skips
                     # --kv-unified, which the paged pool requires.
@@ -23575,6 +23585,10 @@ class LlamaCppBackend:
                                 _exact_budget,
                                 _exact_kv_bytes // (1024 * 1024),
                             )
+                        # An auto-fit context leaves the pool unknown here (the child picks
+                        # the context), so neither the budget nor the shortfall can be sized;
+                        # it is judged after launch off the context the server chose.
+                        self._exact_pool_unknown = _exact_kv_bytes <= 0
                         # A budget somebody named is kept, and judged: below the pool it takes
                         # the guarantee away, and the state reported after launch says so.
                         self._exact_parking_short = _exact_parking_shortfall_mib(
@@ -25818,6 +25832,34 @@ class LlamaCppBackend:
                 # several respawns rewrite one or the other.
                 self._requested_exact_concurrency = _exact_setting
                 _exact_short = getattr(self, "_exact_parking_short", None)
+                if (
+                    _exact_short is None
+                    and getattr(self, "_exact_pool_unknown", False)
+                    and _exact.wants_exact(_exact_setting)
+                ):
+                    # The pool could not be sized before launch, so the launch neither
+                    # enlarged the budget nor judged it, and the child ran on its default.
+                    # Size the pool now off the context the server chose (under the unified
+                    # cache the per-slot n_ctx is the whole pool) and judge that default; a
+                    # pool that cannot be sized at all is not certified either.
+                    try:
+                        _fitted_ctx = int(self._query_server_n_ctx() or 0)
+                    except Exception:
+                        _fitted_ctx = 0
+                    try:
+                        _fitted_bytes = _kv_bytes(_fitted_ctx) if _fitted_ctx > 0 else 0
+                    except Exception:
+                        _fitted_bytes = 0
+                    if _fitted_bytes > 0:
+                        _exact_short = _exact_parking_shortfall_mib(
+                            _fitted_bytes,
+                            args = _last_spawn_cmd or cmd,
+                            env = env,
+                            default_mib = _PREEMPT_RAM_DEFAULT_MIB,
+                        )
+                    else:
+                        _exact_short = (_PREEMPT_RAM_DEFAULT_MIB, 0, 0)
+                    self._exact_parking_short = _exact_short
                 self._exact_concurrency = self._exact_state_after_launch(
                     setting = _exact_setting,
                     env = env,
@@ -25834,11 +25876,16 @@ class LlamaCppBackend:
                             "parking off or UNSLOTH_LLAMA_PREEMPT_MODE=studio, and a chat Studio "
                             "resumes is re-prefilled rather than restored."
                         )
+                    elif _exact_short is not None and _exact_short[1] <= 0:
+                        _exact_why = (
+                            " The KV pool could not be sized after the auto-fit, so the "
+                            "parking budget cannot be checked; set an explicit context."
+                        )
                     elif _exact_short is not None:
                         _exact_why = (
                             f" --preempt-ram {_exact_short[0]} MiB cannot hold the "
                             f"{_exact_short[1]} MiB KV pool; raise it to at least "
-                            f"{_exact_short[2]} MiB."
+                            f"{_exact_short[2]} MiB, or set an explicit context."
                         )
                     else:
                         _exact_why = ""
@@ -30399,7 +30446,11 @@ class LlamaCppBackend:
             adds the accumulators itself. A pause that lands as the cap runs out folds the
             attempt first and then builds the terminal event, and with both readings of one
             attempt in the sum its tokens and timings were counted twice."""
-            _u = {k: v for k, v in (usage or {}).items() if k not in ("completion_tokens", "total_tokens")}
+            _u = {
+                k: v
+                for k, v in (usage or {}).items()
+                if k not in ("completion_tokens", "total_tokens")
+            }
             _t = {
                 k: v
                 for k, v in (timings or {}).items()
