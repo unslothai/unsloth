@@ -1750,9 +1750,7 @@ class TestAnthropicPassthroughEmitter:
             )
         )
         # Stream argument fragments
-        events1 = e.feed_chunk(
-            _chunk(tool_calls = [{"index": 0, "function": {"arguments": '{"cmd'}}])
-        )
+        events1 = e.feed_chunk(_chunk(tool_calls = [{"index": 0, "function": {"arguments": '{"cmd'}}]))
         events2 = e.feed_chunk(
             _chunk(tool_calls = [{"index": 0, "function": {"arguments": '": "ls"}'}}])
         )

@@ -18,6 +18,15 @@ from storage import rag_db  # noqa: E402
 THREAD = "thread-abc"
 
 
+def _assistant_call(name, arguments, *, id = "c1", content = ""):
+    """An assistant turn whose only content is one function tool call."""
+    return {
+        "role": "assistant",
+        "content": content,
+        "tool_calls": [{"id": id, "function": {"name": name, "arguments": arguments}}],
+    }
+
+
 def _turn(question, answer):
     return [
         {"role": "user", "content": question},
@@ -373,16 +382,12 @@ def test_the_reply_that_FOLLOWS_a_forced_recall_is_still_archived(conn):
     """
     evicted = [
         {"role": "user", "content": "what was the passphrase"},
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": "conv_recall_1",
-                    "function": {"name": "search_conversation", "arguments": '{"query": "pass"}'},
-                }
-            ],
-        },
+        _assistant_call(
+            "search_conversation",
+            "{\"query\": \"pass\"}",
+            id = "conv_recall_1",
+            content = None,
+        ),
         {"role": "tool", "tool_call_id": "conv_recall_1", "content": "<chunk>RETRIEVED</chunk>"},
         {"role": "assistant", "content": "The passphrase you set earlier was SWORDFISH-42."},
     ]
@@ -537,16 +542,7 @@ def test_a_search_the_MODEL_asked_for_is_not_archived_as_new_history():
     from core.rag import conversation_archive as archive
 
     recalled = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_0",
-                    "function": {"name": "search_conversation", "arguments": '{"query":"pass"}'},
-                }
-            ],
-        },
+        _assistant_call("search_conversation", '{"query":"pass"}', id = "call_0"),
         {"role": "tool", "tool_call_id": "call_0", "content": "<chunk>RETRIEVEDPASSAGE</chunk>"},
         {"role": "assistant", "content": "It was ZQXVARA123."},
     ]
@@ -588,16 +584,7 @@ def test_swapping_the_tool_retires_the_archived_call():
 
     archived = archive.render_turn(
         [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "c1",
-                        "function": {"name": "terminal", "arguments": '{"cmd":"ls -la /srv"}'},
-                    }
-                ],
-            },
+            _assistant_call("terminal", '{"cmd":"ls -la /srv"}'),
             {"role": "tool", "tool_call_id": "c1", "content": "total 12"},
         ]
     )
@@ -606,16 +593,7 @@ def test_swapping_the_tool_retires_the_archived_call():
         return [
             archive._normalise(archive._probe_text(message))
             for message in [
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "c1",
-                            "function": {"name": tool, "arguments": '{"cmd":"ls -la /srv"}'},
-                        }
-                    ],
-                },
+                _assistant_call(tool, '{"cmd":"ls -la /srv"}'),
                 {"role": "tool", "tool_call_id": "c1", "content": "total 12"},
             ]
         ]
@@ -864,13 +842,7 @@ def test_a_tool_turn_with_BOTH_text_and_a_call_stays_on_its_branch(conn):
     """
     request_shape = [
         {"role": "user", "content": "check the log"},
-        {
-            "role": "assistant",
-            "content": "I will read it now",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "terminal", "arguments": '{"cmd":"cat log"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"cmd":"cat log"}', content = "I will read it now"),
         {"role": "tool", "tool_call_id": "c1", "content": "log contents here"},
     ]
     archived = conversation_archive.render_turn(request_shape)
@@ -972,13 +944,7 @@ def test_a_long_multi_line_tool_result_stays_on_its_branch(conn):
     """
     body = "opening line TOOLWALL-6060\n" + ("filler output line\n" * 400) + "trailing line"
     group = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "terminal", "arguments": '{"cmd": "cat log"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"cmd": "cat log"}'),
         {"role": "tool", "tool_call_id": "c1", "content": body},
     ]
     text = conversation_archive.render_turn(group)
@@ -1042,16 +1008,7 @@ def test_the_branch_transcript_carries_request_shaped_tool_calls(conn):
     archived tool turn and filters the whole exchange out as rolled back.
     """
     branch = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_1",
-                    "function": {"name": "terminal", "arguments": '{"cmd": "ls TOOLARG-7777"}'},
-                }
-            ],
-        },
+        _assistant_call("terminal", '{"cmd": "ls TOOLARG-7777"}', id = "call_1"),
         {"role": "tool", "tool_call_id": "call_1", "content": "TOOLARG-7777 listed"},
     ]
     _archive(branch, thread_id = "tool-branch-thread")
@@ -1429,13 +1386,7 @@ def test_a_tool_exchange_archived_mid_request_is_recallable(conn):
     _save_thread(thread_id, request_branch, append = True)
 
     tool_exchange = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "grep", "arguments": '{"q": "deploy"}'}}
-            ],
-        },
+        _assistant_call("grep", '{"q": "deploy"}'),
         {"role": "tool", "tool_call_id": "c1", "content": "config/deploy.yml: token ZQX-5150"},
     ]
     assert conversation_archive.archive_turns(thread_id, tool_exchange) == 1
@@ -2791,13 +2742,7 @@ def _persist_agent_thread():
             }
         )
     return [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "ls"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"command": "ls"}'),
         {"role": "tool", "tool_call_id": "c1", "content": "main.py readme.md"},
         {"role": "assistant", "content": "the repo has two files."},
     ]
@@ -3325,13 +3270,7 @@ def test_an_in_flight_tool_group_does_not_take_the_live_user_turn_s_number(conn)
     _save_thread(THREAD, user_turn, append = True)
 
     in_flight = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "deploy"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"command": "deploy"}'),
         {"role": "tool", "tool_call_id": "c1", "content": "deploy failed: port in use"},
     ]
     conversation_archive.archive_turns(THREAD, in_flight)
@@ -3453,13 +3392,7 @@ def test_an_empty_tool_result_still_produces_a_tool_message():
     # And the reconstructed row matches the document archived from the request, which is
     # the point: emitting the message and still failing the match only looks fixed.
     wire = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command":"true"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"command":"true"}'),
         {"role": "tool", "tool_call_id": "c1", "content": '{"result":""}'},
     ]
     rendered = conversation_archive.render_turn(wire)
@@ -3518,16 +3451,7 @@ def test_a_persisted_tool_call_followed_by_its_answer_stays_on_its_branch(conn):
         }
     ]
     wire = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "c1",
-                    "function": {"name": "terminal", "arguments": '{"command": "cat deploy.yml"}'},
-                }
-            ],
-        },
+        _assistant_call("terminal", '{"command": "cat deploy.yml"}'),
         {"role": "tool", "tool_call_id": "c1", "content": "token ZQX-5150"},
         {"role": "assistant", "content": "The deploy token is ZQX-5150."},
     ]
@@ -3833,16 +3757,7 @@ def _persist_image_search_turn(answer = _ANSWER):
 # The request the client sent for that turn: one `tool` message, already stripped.
 _IMAGE_SEARCH_WIRE = [
     {"role": "user", "content": "how heavy is a ZQXVARA123 ragdoll"},
-    {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [
-            {
-                "id": "w1",
-                "function": {"name": "web_search", "arguments": '{"query":"ragdoll ZQXVARA123"}'},
-            }
-        ],
-    },
+    _assistant_call("web_search", '{"query":"ragdoll ZQXVARA123"}', id = "w1"),
     {"role": "tool", "tool_call_id": "w1", "content": _SEARCH_TEXT_REPLAYED},
     {"role": "assistant", "content": "A ZQXVARA123 ragdoll weighs 6 kg."},
 ]
@@ -4259,13 +4174,7 @@ def test_a_tool_turn_with_a_preamble_still_gets_its_seat():
         for record in (user, row)
     ]
     live = [
-        {
-            "role": "assistant",
-            "content": "Let me check",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "ls"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"command": "ls"}', content = "Let me check"),
         {"role": "tool", "tool_call_id": "c1", "content": "main.py"},
     ]
 
@@ -4283,13 +4192,7 @@ def test_the_same_text_over_a_longer_span_widens_the_stored_window(conn):
     could return it.
     """
     short = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"command":"ls"}', id = "c2"),
         {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
         {"role": "assistant", "content": "The repo has two files."},
     ]
@@ -4390,13 +4293,7 @@ def test_a_long_tool_exchange_stays_on_branch_across_a_chunk_boundary():
                     f"line {i} of the question about the repo" for i in range(lines)
                 ),
             },
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "c1", "function": {"name": "grep", "arguments": '{"pattern":"foo"}'}}
-                ],
-            },
+            _assistant_call("grep", '{"pattern":"foo"}'),
             {
                 "role": "tool",
                 "tool_call_id": "c1",
@@ -4435,13 +4332,7 @@ def test_one_pass_holding_both_spans_widens_the_window_too(conn):
     and the turn is unsearchable -- the same failure as the unlocked path, one lock down.
     """
     short = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}}
-            ],
-        },
+        _assistant_call("terminal", '{"command":"ls"}', id = "c2"),
         {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
         {"role": "assistant", "content": "The repo has two files."},
     ]

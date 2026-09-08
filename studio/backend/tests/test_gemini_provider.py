@@ -43,6 +43,17 @@ from core.inference.external_provider import ExternalProviderClient
 _active_mock_clients: list[httpx.AsyncClient] = []
 
 
+def _assistant_call(name, arguments, *, id = "call_1", content = ""):
+    """An assistant turn whose only content is one function tool call."""
+    return {
+        "role": "assistant",
+        "content": content,
+        "tool_calls": [
+            {"id": id, "type": "function", "function": {"name": name, "arguments": arguments}}
+        ],
+    }
+
+
 def _drive(coro):
     # Fresh loop per drive so tests don't share asyncio state. Close mocked
     # clients + shutdown async-generators inside this loop so Python 3.13
@@ -862,20 +873,7 @@ def test_tool_message_translates_to_function_response_part(monkeypatch):
     """role=tool follow-ups are rewritten to functionResponse parts."""
     messages = [
         {"role": "user", "content": "Weather?"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {
-                        "name": "get_weather",
-                        "arguments": json.dumps({"location": "Paris"}),
-                    },
-                }
-            ],
-        },
+        _assistant_call("get_weather", json.dumps({"location": "Paris"})),
         {
             "role": "tool",
             "name": "get_weather",
@@ -1072,20 +1070,7 @@ def test_tool_message_recovers_name_from_tool_call_id(monkeypatch):
     """When name is omitted, recover it from the matching tool_call_id."""
     messages = [
         {"role": "user", "content": "Weather?"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_xyz",
-                    "type": "function",
-                    "function": {
-                        "name": "get_weather",
-                        "arguments": json.dumps({"location": "Paris"}),
-                    },
-                }
-            ],
-        },
+        _assistant_call("get_weather", json.dumps({"location": "Paris"}), id = "call_xyz"),
         {
             "role": "tool",
             "tool_call_id": "call_xyz",
@@ -2192,20 +2177,7 @@ def test_gemini_native_skips_orphan_function_response_for_dropped_builtin(monkey
             "model": "gemini-2.5-flash",
             "messages": [
                 {"role": "user", "content": "search please"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_s",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": ('{"_server_tool": true, "query": "x"}'),
-                            },
-                        }
-                    ],
-                },
+                _assistant_call("web_search", '{"_server_tool": true, "query": "x"}', id = "call_s"),
                 {
                     "role": "tool",
                     "tool_call_id": "call_s",
@@ -2371,20 +2343,7 @@ def test_gemini_native_skips_synthetic_server_builtin_replay(monkeypatch):
             "model": "gemini-2.5-flash",
             "messages": [
                 {"role": "user", "content": "search please"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_s",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": ('{"_server_tool": true, "query": "x"}'),
-                            },
-                        }
-                    ],
-                },
+                _assistant_call("web_search", '{"_server_tool": true, "query": "x"}', id = "call_s"),
                 {
                     "role": "tool",
                     "tool_call_id": "call_s",
@@ -2934,20 +2893,7 @@ def test_builtin_named_with_server_tool_marker_dropped(monkeypatch):
         monkeypatch,
         [
         {"role": "user", "content": "search please"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_b",
-                    "type": "function",
-                    "function": {
-                        "name": "web_search",
-                        "arguments": json.dumps({"_server_tool": True, "query": "x"}),
-                    },
-                }
-            ],
-        },
+        _assistant_call("web_search", json.dumps({"_server_tool": True, "query": "x"}), id = "call_b"),
         {"role": "user", "content": "continue"},
         ],
     )
@@ -3135,20 +3081,7 @@ def test_anthropic_translates_openai_tool_calls_into_tool_use_blocks(monkeypatch
         async for _ in client.stream_chat_completion(
             messages = [
                 {"role": "user", "content": "look up X"},
-                {
-                    "role": "assistant",
-                    "content": "let me check",
-                    "tool_calls": [
-                        {
-                            "id": "call_a",
-                            "type": "function",
-                            "function": {
-                                "name": "lookup",
-                                "arguments": '{"q":"x"}',
-                            },
-                        }
-                    ],
-                },
+                _assistant_call("lookup", '{"q":"x"}', id = "call_a", content = "let me check"),
                 {
                     "role": "tool",
                     "content": "result_text",
@@ -3200,20 +3133,7 @@ def test_unmarked_user_web_search_function_survives_serialization():
     payload = {
         "model": "gpt-5.5",
         "messages": [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_user",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": '{"query": "x"}',
-                        },
-                    }
-                ],
-            }
+            _assistant_call("web_search", '{"query": "x"}', id = "call_user")
         ],
         "stream": True,
     }
@@ -3243,20 +3163,7 @@ def test_marked_server_builtin_dropped_from_build_external_messages():
     payload = {
         "model": "gpt-5.5",
         "messages": [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_b",
-                        "type": "function",
-                        "function": {
-                            "name": "image_generation",
-                            "arguments": marked_args,
-                        },
-                    }
-                ],
-            }
+            _assistant_call("image_generation", marked_args, id = "call_b")
         ],
         "stream": True,
     }
@@ -3473,20 +3380,7 @@ def test_user_code_execution_function_not_dropped():
     payload = {
         "model": "gpt-5.5",
         "messages": [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_user",
-                        "type": "function",
-                        "function": {
-                            "name": "code_execution",
-                            "arguments": '{"code": "print(1)"}',
-                        },
-                    }
-                ],
-            }
+            _assistant_call("code_execution", '{"code": "print(1)"}', id = "call_user")
         ],
         "stream": True,
     }
@@ -3526,20 +3420,7 @@ def test_native_part_code_execution_treated_as_server_side():
     payload = {
         "model": "gpt-5.5",
         "messages": [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_x",
-                        "type": "function",
-                        "function": {
-                            "name": "code_execution",
-                            "arguments": args_with_native_part,
-                        },
-                    }
-                ],
-            }
+            _assistant_call("code_execution", args_with_native_part, id = "call_x")
         ],
         "stream": True,
     }
@@ -3619,20 +3500,7 @@ def test_orphan_function_call_output_dropped_when_call_skipped(monkeypatch):
         monkeypatch,
         [
         {"role": "user", "content": "search please"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_b",
-                    "type": "function",
-                    "function": {
-                        "name": "web_search",
-                        "arguments": json.dumps({"_server_tool": True, "query": "x"}),
-                    },
-                }
-            ],
-        },
+        _assistant_call("web_search", json.dumps({"_server_tool": True, "query": "x"}), id = "call_b"),
         {
             "role": "tool",
             "content": "result_text",
@@ -3732,20 +3600,7 @@ def test_empty_assistant_turn_skipped_after_synthetic_tool_calls_dropped():
     payload = {
         "model": "gpt-5.5",
         "messages": [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_b",
-                        "type": "function",
-                        "function": {
-                            "name": "image_generation",
-                            "arguments": marked_args,
-                        },
-                    }
-                ],
-            }
+            _assistant_call("image_generation", marked_args, id = "call_b")
         ],
         "stream": True,
     }
@@ -3777,20 +3632,7 @@ def test_role_tool_dropped_when_matching_synthetic_call_filtered():
     payload = {
         "model": "gpt-5.5",
         "messages": [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_b",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": marked_args,
-                        },
-                    }
-                ],
-            },
+            _assistant_call("web_search", marked_args, id = "call_b"),
             {
                 "role": "tool",
                 "content": "result_text",
@@ -3897,20 +3739,7 @@ def test_anthropic_role_tool_list_content_translates_to_tool_result(monkeypatch)
         async for _ in client.stream_chat_completion(
             messages = [
                 {"role": "user", "content": "look up X"},
-                {
-                    "role": "assistant",
-                    "content": "let me check",
-                    "tool_calls": [
-                        {
-                            "id": "call_a",
-                            "type": "function",
-                            "function": {
-                                "name": "lookup",
-                                "arguments": '{"q":"x"}',
-                            },
-                        }
-                    ],
-                },
+                _assistant_call("lookup", '{"q":"x"}', id = "call_a", content = "let me check"),
                 {
                     "role": "tool",
                     "content": [{"type": "text", "text": "result_text"}],
@@ -4002,20 +3831,7 @@ def test_openai_responses_assistant_text_serialized_before_function_call(monkeyp
         monkeypatch,
         [
         {"role": "user", "content": "weather?"},
-        {
-            "role": "assistant",
-            "content": "Let me check that.",
-            "tool_calls": [
-                {
-                    "id": "call_w",
-                    "type": "function",
-                    "function": {
-                        "name": "get_weather",
-                        "arguments": "{}",
-                    },
-                }
-            ],
-        },
+        _assistant_call("get_weather", "{}", id = "call_w", content = "Let me check that."),
         {
             "role": "tool",
             "content": "sunny",
@@ -4220,20 +4036,7 @@ def test_gemini_role_tool_list_content_flattens_to_result_text(monkeypatch):
     instead of the actual tool output text."""
     history = [
         {"role": "user", "content": "look up"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {
-                        "name": "lookup",
-                        "arguments": json.dumps({"q": "x"}),
-                    },
-                }
-            ],
-        },
+        _assistant_call("lookup", json.dumps({"q": "x"})),
         {
             "role": "tool",
             "tool_call_id": "call_1",
