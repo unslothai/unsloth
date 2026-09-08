@@ -88,6 +88,18 @@ def _gemini_sse(events: list[dict]) -> bytes:
     return ("\n".join(chunks) + "\n").encode("utf-8")
 
 
+def _event(parts, *, finish_reason = "STOP", usage = None, **candidate):
+    """One Gemini SSE event: a model turn carrying ``parts``, plus optional usage metadata."""
+    event = {
+        "candidates": [
+            {"content": {"role": "model", "parts": parts}, **candidate, "finishReason": finish_reason}
+        ]
+    }
+    if usage is not None:
+        event["usageMetadata"] = usage
+    return event
+
+
 def _capture_body(monkeypatch, **kwargs) -> dict:
     """Drive a single stream and return the captured outbound request body."""
     captured: dict = {}
@@ -101,23 +113,7 @@ def _capture_body(monkeypatch, **kwargs) -> dict:
         return httpx.Response(
             200,
             content = _gemini_sse(
-                [
-                    {
-                        "candidates": [
-                            {
-                                "content": {
-                                    "role": "model",
-                                    "parts": [{"text": "ok"}],
-                                },
-                                "finishReason": "STOP",
-                            }
-                        ],
-                        "usageMetadata": {
-                            "promptTokenCount": 1,
-                            "candidatesTokenCount": 1,
-                        },
-                    }
-                ]
+                [_event([{"text": "ok"}], usage = {"promptTokenCount": 1, "candidatesTokenCount": 1})]
             ),
             headers = {"content-type": "text/event-stream"},
         )
@@ -536,19 +532,7 @@ def test_legacy_openai_base_url_normalized(monkeypatch):
 def test_finish_reason_swaps_to_tool_calls_when_function_call_emitted(monkeypatch):
     """Gemini emits finishReason="STOP" even for pure functionCall turns;
     surface as `tool_calls` so OAI clients run the tool."""
-    sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [{"functionCall": {"name": "lookup", "args": {"k": "v"}}}],
-                    },
-                    "finishReason": "STOP",
-                }
-            ]
-        }
-    ]
+    sse = [_event([{"functionCall": {"name": "lookup", "args": {"k": "v"}}}])]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
     finish_chunks = [
@@ -601,26 +585,14 @@ def test_thought_signature_emitted_in_tool_call_delta(monkeypatch):
     the outbound OpenAI tool_calls delta via
     `extra_content.google.thought_signature`."""
     sse = [
-        {
-            "candidates": [
+        _event(
+            [
                 {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "functionCall": {
-                                    "name": "lookup",
-                                    "args": {"k": "v"},
-                                    "id": "call_xyz",
-                                },
-                                "thoughtSignature": "SIG-FROM-GEMINI",
-                            }
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
-            ]
-        }
+                    "functionCall": {"name": "lookup", "args": {"k": "v"}, "id": "call_xyz"},
+                    "thoughtSignature": "SIG-FROM-GEMINI",
+                },
+            ],
+        ),
     ]
     chunks = _parse_chunks(_collect(monkeypatch, sse))
     deltas = [
@@ -638,16 +610,7 @@ def test_image_models_suppress_phantom_web_search_card(monkeypatch):
     inbound stream must NOT emit web_search tool_start / tool_end (else the UI
     shows a misleading 'Search complete' card on a turn Gemini never
     searched)."""
-    sse = [
-        {
-            "candidates": [
-                {
-                    "content": {"role": "model", "parts": [{"text": "drawn"}]},
-                    "finishReason": "STOP",
-                }
-            ]
-        }
-    ]
+    sse = [_event([{"text": "drawn"}])]
     lines = _collect(
         monkeypatch,
         sse,
@@ -703,20 +666,15 @@ def test_usage_chunk_includes_thoughts_tokens(monkeypatch):
     `output_tokens_details.reasoning_tokens` so total_tokens reflects the full
     billable spend."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {"role": "model", "parts": [{"text": "ok"}]},
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
+        _event(
+            [{"text": "ok"}],
+            usage = {
                 "promptTokenCount": 10,
                 "candidatesTokenCount": 5,
                 "thoughtsTokenCount": 20,
                 "totalTokenCount": 35,
             },
-        }
+        ),
     ]
     chunks = _parse_chunks(_collect(monkeypatch, sse))
     usage_chunk = next((c for c in chunks if isinstance(c.get("usage"), dict)), None)
@@ -802,28 +760,10 @@ def test_image_response_emits_image_b64_tool_event(monkeypatch):
     """`inlineData` parts become a tool_end with image_b64 + image_mime."""
     fake_b64 = base64.b64encode(b"PNG-BYTES").decode()
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "inlineData": {
-                                    "mimeType": "image/png",
-                                    "data": fake_b64,
-                                }
-                            }
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 5,
-                "candidatesTokenCount": 0,
-            },
-        }
+        _event(
+            [{"inlineData": {"mimeType": "image/png", "data": fake_b64}}],
+            usage = {"promptTokenCount": 5, "candidatesTokenCount": 0},
+        ),
     ]
     lines = _collect(
         monkeypatch,
@@ -848,28 +788,10 @@ def test_image_response_emits_image_b64_tool_event(monkeypatch):
 def test_function_call_response_translates_to_tool_calls_delta(monkeypatch):
     """Gemini `functionCall` parts become OpenAI `tool_calls` delta chunks."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "functionCall": {
-                                    "name": "get_weather",
-                                    "args": {"location": "Paris"},
-                                }
-                            }
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 12,
-                "candidatesTokenCount": 4,
-            },
-        }
+        _event(
+            [{"functionCall": {"name": "get_weather", "args": {"location": "Paris"}}}],
+            usage = {"promptTokenCount": 12, "candidatesTokenCount": 4},
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -940,36 +862,13 @@ def test_parallel_function_calls_get_distinct_tool_call_indices(monkeypatch):
     tool_calls[*].index. Hardcoding index=0 collapses parallel calls onto one
     slot in OpenAI-style reassemblers."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "functionCall": {
-                                    "id": "call_alpha",
-                                    "name": "search",
-                                    "args": {"q": "alpha"},
-                                }
-                            },
-                            {
-                                "functionCall": {
-                                    "id": "call_beta",
-                                    "name": "search",
-                                    "args": {"q": "beta"},
-                                }
-                            },
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
+        _event(
+            [
+                {"functionCall": {"id": "call_alpha", "name": "search", "args": {"q": "alpha"}}},
+                {"functionCall": {"id": "call_beta", "name": "search", "args": {"q": "beta"}}},
             ],
-            "usageMetadata": {
-                "promptTokenCount": 8,
-                "candidatesTokenCount": 4,
-            },
-        }
+            usage = {"promptTokenCount": 8, "candidatesTokenCount": 4},
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -1070,34 +969,13 @@ def test_parse_gemini_models_translates_native_catalog():
 def test_code_execution_parts_translate_to_code_execution_tool_events(monkeypatch):
     """executableCode + codeExecutionResult parts emit code_execution events."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "executableCode": {
-                                    "language": "PYTHON",
-                                    "code": "print(2+2)",
-                                }
-                            },
-                            {
-                                "codeExecutionResult": {
-                                    "outcome": "OUTCOME_OK",
-                                    "output": "4\n",
-                                }
-                            },
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
+        _event(
+            [
+                {"executableCode": {"language": "PYTHON", "code": "print(2+2)"}},
+                {"codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "4\n"}},
             ],
-            "usageMetadata": {
-                "promptTokenCount": 8,
-                "candidatesTokenCount": 4,
-            },
-        }
+            usage = {"promptTokenCount": 8, "candidatesTokenCount": 4},
+        ),
     ]
     lines = _collect(monkeypatch, sse, enabled_tools = ["code_execution"])
     chunks = _parse_chunks(lines)
@@ -1122,34 +1000,15 @@ def test_code_execution_parts_translate_to_code_execution_tool_events(monkeypatc
 def test_code_execution_failure_outcome_surfaces_in_result(monkeypatch):
     """OUTCOME_FAILED is prefixed onto the result text so the UI shows it."""
     sse = [
-        {
-            "candidates": [
+        _event(
+            [
+                {"executableCode": {"language": "PYTHON", "code": "1/0"}},
                 {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "executableCode": {
-                                    "language": "PYTHON",
-                                    "code": "1/0",
-                                }
-                            },
-                            {
-                                "codeExecutionResult": {
-                                    "outcome": "OUTCOME_FAILED",
-                                    "output": "ZeroDivisionError",
-                                }
-                            },
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
+                    "codeExecutionResult": {"outcome": "OUTCOME_FAILED", "output": "ZeroDivisionError"},
+                },
             ],
-            "usageMetadata": {
-                "promptTokenCount": 5,
-                "candidatesTokenCount": 2,
-            },
-        }
+            usage = {"promptTokenCount": 5, "candidatesTokenCount": 2},
+        ),
     ]
     lines = _collect(monkeypatch, sse, enabled_tools = ["code_execution"])
     chunks = _parse_chunks(lines)
@@ -1201,22 +1060,10 @@ def test_tool_message_recovers_name_from_tool_call_id(monkeypatch):
 
 def test_usage_chunk_translates_gemini_token_counts(monkeypatch):
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [{"text": "ok"}],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 1234,
-                "candidatesTokenCount": 56,
-                "cachedContentTokenCount": 1000,
-            },
-        }
+        _event(
+            [{"text": "ok"}],
+            usage = {"promptTokenCount": 1234, "candidatesTokenCount": 56, "cachedContentTokenCount": 1000},
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -1269,21 +1116,11 @@ def test_vision_data_url_translates_to_inline_data(monkeypatch):
 )
 def test_finish_reason_translation(monkeypatch, gemini_reason, openai_reason):
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [{"text": "x"}],
-                    },
-                    "finishReason": gemini_reason,
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 1,
-                "candidatesTokenCount": 1,
-            },
-        }
+        _event(
+            [{"text": "x"}],
+            finish_reason = gemini_reason,
+            usage = {"promptTokenCount": 1, "candidatesTokenCount": 1},
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -1301,37 +1138,16 @@ def test_finish_reason_translation(monkeypatch, gemini_reason, openai_reason):
 def test_grounding_metadata_surfaces_as_tool_end_citations(monkeypatch):
     """`groundingMetadata.groundingChunks[].web` -> tool_end result block."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [{"text": "Answer with sources."}],
-                    },
-                    "groundingMetadata": {
-                        "groundingChunks": [
-                            {
-                                "web": {
-                                    "uri": "https://example.com/a",
-                                    "title": "Example A",
-                                }
-                            },
-                            {
-                                "web": {
-                                    "uri": "https://example.com/b",
-                                    "title": "Example B",
-                                }
-                            },
-                        ]
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 7,
-                "candidatesTokenCount": 3,
+        _event(
+            [{"text": "Answer with sources."}],
+            groundingMetadata = {
+                "groundingChunks": [
+                    {"web": {"uri": "https://example.com/a", "title": "Example A"}},
+                    {"web": {"uri": "https://example.com/b", "title": "Example B"}},
+                ],
             },
-        }
+            usage = {"promptTokenCount": 7, "candidatesTokenCount": 3},
+        ),
     ]
     lines = _collect(
         monkeypatch,
@@ -1462,24 +1278,10 @@ def test_empty_text_part_with_thought_signature_emits_extra_content(monkeypatch)
     `thoughtSignature`. The translator must still surface it on a
     delta.extra_content envelope so the next turn can replay it."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {"text": "answer"},
-                            {"thoughtSignature": "SIG-FINAL"},
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 2,
-                "candidatesTokenCount": 1,
-            },
-        }
+        _event(
+            [{"text": "answer"}, {"thoughtSignature": "SIG-FINAL"}],
+            usage = {"promptTokenCount": 2, "candidatesTokenCount": 1},
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -1661,23 +1463,7 @@ def test_youtube_and_files_api_uris_stay_as_file_data(monkeypatch):
         return httpx.Response(
             200,
             content = _gemini_sse(
-                [
-                    {
-                        "candidates": [
-                            {
-                                "content": {
-                                    "role": "model",
-                                    "parts": [{"text": "ok"}],
-                                },
-                                "finishReason": "STOP",
-                            }
-                        ],
-                        "usageMetadata": {
-                            "promptTokenCount": 1,
-                            "candidatesTokenCount": 1,
-                        },
-                    }
-                ]
+                [_event([{"text": "ok"}], usage = {"promptTokenCount": 1, "candidatesTokenCount": 1})]
             ),
             headers = {"content-type": "text/event-stream"},
         )
@@ -1726,23 +1512,15 @@ def test_tool_use_prompt_tokens_added_to_input_tokens(monkeypatch):
     """`toolUsePromptTokenCount` must roll into the OpenAI prompt total --
     else tool turns silently undercount input tokens."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [{"text": "result"}],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
+        _event(
+            [{"text": "result"}],
+            usage = {
                 "promptTokenCount": 10,
                 "toolUsePromptTokenCount": 100,
                 "candidatesTokenCount": 5,
                 "thoughtsTokenCount": 2,
             },
-        }
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -1760,22 +1538,10 @@ def test_usage_chunk_reasoning_tokens_surfaced(monkeypatch):
     completion_tokens_details.reasoning_tokens in the emitted OpenAI usage
     chunk."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [{"text": "ok"}],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 8,
-                "candidatesTokenCount": 5,
-                "thoughtsTokenCount": 20,
-            },
-        }
+        _event(
+            [{"text": "ok"}],
+            usage = {"promptTokenCount": 8, "candidatesTokenCount": 5, "thoughtsTokenCount": 20},
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -1815,37 +1581,18 @@ def test_code_execution_tool_events_stow_native_part(monkeypatch):
     thoughtSignature in google.native_part so follow-up turns can replay
     Gemini's required history shape."""
     sse = [
-        {
-            "candidates": [
+        _event(
+            [
                 {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "executableCode": {
-                                    "id": "code_a",
-                                    "language": "PYTHON",
-                                    "code": "print(1+1)",
-                                },
-                                "thoughtSignature": "SIG-CODE",
-                            },
-                            {
-                                "codeExecutionResult": {
-                                    "id": "result_a",
-                                    "outcome": "OUTCOME_OK",
-                                    "output": "2\n",
-                                },
-                            },
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
+                    "executableCode": {"id": "code_a", "language": "PYTHON", "code": "print(1+1)"},
+                    "thoughtSignature": "SIG-CODE",
+                },
+                {
+                    "codeExecutionResult": {"id": "result_a", "outcome": "OUTCOME_OK", "output": "2\n"},
+                },
             ],
-            "usageMetadata": {
-                "promptTokenCount": 5,
-                "candidatesTokenCount": 4,
-            },
-        }
+            usage = {"promptTokenCount": 5, "candidatesTokenCount": 4},
+        ),
     ]
     lines = _collect(
         monkeypatch,
@@ -1881,29 +1628,15 @@ def test_inline_image_tool_end_carries_thought_signature(monkeypatch):
     """Inline image parts with thoughtSignature must persist it on the emitted
     tool_end so Gemini 3 image editing can echo it back."""
     sse = [
-        {
-            "candidates": [
+        _event(
+            [
                 {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "inlineData": {
-                                    "mimeType": "image/png",
-                                    "data": base64.b64encode(b"PNG").decode(),
-                                },
-                                "thoughtSignature": "SIG-IMG",
-                            }
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
+                    "inlineData": {"mimeType": "image/png", "data": base64.b64encode(b'PNG').decode()},
+                    "thoughtSignature": "SIG-IMG",
+                },
             ],
-            "usageMetadata": {
-                "promptTokenCount": 4,
-                "candidatesTokenCount": 1,
-            },
-        }
+            usage = {"promptTokenCount": 4, "candidatesTokenCount": 1},
+        ),
     ]
     lines = _collect(
         monkeypatch,
@@ -1933,42 +1666,16 @@ def test_code_execution_plot_attaches_inline_image_native_part(monkeypatch):
     replay the image alongside executableCode and codeExecutionResult."""
     plot_data = base64.b64encode(b"PLOT").decode()
     sse = [
-        {
-            "candidates": [
+        _event(
+            [
                 {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "executableCode": {
-                                    "id": "code_a",
-                                    "language": "PYTHON",
-                                    "code": "plt.plot([0,1])",
-                                },
-                            },
-                            {
-                                "codeExecutionResult": {
-                                    "id": "result_a",
-                                    "outcome": "OUTCOME_OK",
-                                    "output": "",
-                                },
-                            },
-                            {
-                                "inlineData": {
-                                    "mimeType": "image/png",
-                                    "data": plot_data,
-                                },
-                            },
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
+                    "executableCode": {"id": "code_a", "language": "PYTHON", "code": "plt.plot([0,1])"},
+                },
+                {"codeExecutionResult": {"id": "result_a", "outcome": "OUTCOME_OK", "output": ""}},
+                {"inlineData": {"mimeType": "image/png", "data": plot_data}},
             ],
-            "usageMetadata": {
-                "promptTokenCount": 5,
-                "candidatesTokenCount": 4,
-            },
-        }
+            usage = {"promptTokenCount": 5, "candidatesTokenCount": 4},
+        ),
     ]
     lines = _collect(
         monkeypatch,
@@ -2001,26 +1708,10 @@ def test_text_chunk_carries_thought_signature(monkeypatch):
     """Text parts with thoughtSignature surface it on delta.extra_content so
     frontend persistence can replay it on the follow-up turn."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "text": "hello",
-                                "thoughtSignature": "SIG-TEXT",
-                            }
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 2,
-                "candidatesTokenCount": 1,
-            },
-        }
+        _event(
+            [{"text": "hello", "thoughtSignature": "SIG-TEXT"}],
+            usage = {"promptTokenCount": 2, "candidatesTokenCount": 1},
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -2091,41 +1782,22 @@ def test_code_exec_inline_image_attaches_to_code_execution_card(monkeypatch):
     image_generation card, attach to the same code_execution tool_end via the
     `__IMAGES__:` marker the chat adapter already understands."""
     sse = [
-        {
-            "candidates": [
+        _event(
+            [
                 {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "executableCode": {
-                                    "id": "code_plot",
-                                    "language": "PYTHON",
-                                    "code": "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.savefig('out.png')",
-                                },
-                            },
-                            {
-                                "codeExecutionResult": {
-                                    "outcome": "OUTCOME_OK",
-                                    "output": "saved",
-                                },
-                            },
-                            {
-                                "inlineData": {
-                                    "mimeType": "image/png",
-                                    "data": base64.b64encode(b"PNGDATA").decode(),
-                                },
-                            },
-                        ],
+                    "executableCode": {
+                        "id": "code_plot",
+                        "language": "PYTHON",
+                        "code": "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.savefig('out.png')",
                     },
-                    "finishReason": "STOP",
-                }
+                },
+                {"codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "saved"}},
+                {
+                    "inlineData": {"mimeType": "image/png", "data": base64.b64encode(b'PNGDATA').decode()},
+                },
             ],
-            "usageMetadata": {
-                "promptTokenCount": 5,
-                "candidatesTokenCount": 4,
-            },
-        }
+            usage = {"promptTokenCount": 5, "candidatesTokenCount": 4},
+        ),
     ]
     lines = _collect(
         monkeypatch,
@@ -3060,23 +2732,7 @@ def test_files_api_substring_url_not_misclassified_as_filedata(monkeypatch):
         return httpx.Response(
             200,
             content = _gemini_sse(
-                [
-                    {
-                        "candidates": [
-                            {
-                                "content": {
-                                    "role": "model",
-                                    "parts": [{"text": "ok"}],
-                                },
-                                "finishReason": "STOP",
-                            }
-                        ],
-                        "usageMetadata": {
-                            "promptTokenCount": 1,
-                            "candidatesTokenCount": 1,
-                        },
-                    }
-                ]
+                [_event([{"text": "ok"}], usage = {"promptTokenCount": 1, "candidatesTokenCount": 1})]
             ),
             headers = {"content-type": "text/event-stream"},
         )
@@ -4016,23 +3672,7 @@ def test_remote_image_fetch_attempt_cap_includes_failures(monkeypatch):
         return httpx.Response(
             200,
             content = _gemini_sse(
-                [
-                    {
-                        "candidates": [
-                            {
-                                "content": {
-                                    "role": "model",
-                                    "parts": [{"text": "ok"}],
-                                },
-                                "finishReason": "STOP",
-                            }
-                        ],
-                        "usageMetadata": {
-                            "promptTokenCount": 1,
-                            "candidatesTokenCount": 1,
-                        },
-                    }
-                ]
+                [_event([{"text": "ok"}], usage = {"promptTokenCount": 1, "candidatesTokenCount": 1})]
             ),
             headers = {"content-type": "text/event-stream"},
         )
