@@ -65,14 +65,14 @@ class _Server:
         # helper cannot, and needs no free-port range on a busy CI runner.
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self._httpd.recorded = []  # type: ignore[attr-defined]
-        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        self._thread = threading.Thread(target = self._httpd.serve_forever, daemon = True)
         self._thread.start()
         return self
 
     def __exit__(self, *exc) -> None:
         self._httpd.shutdown()
         self._httpd.server_close()
-        self._thread.join(timeout=10)
+        self._thread.join(timeout = 10)
 
     @property
     def base_url(self) -> str:
@@ -114,7 +114,9 @@ def _run(coro) -> None:
 def _client_capture(provider_type: str, **kwargs) -> dict:
     with _Server() as server:
         client = ExternalProviderClient(
-            provider_type = provider_type, base_url = server.base_url, api_key = "",
+            provider_type = provider_type,
+            base_url = server.base_url,
+            api_key = "",
         )
 
         async def go() -> None:
@@ -147,13 +149,22 @@ def _route_capture(**payload_fields) -> dict:
             stream = True,
             **payload_fields,
         )
-        request = Request({
-            "type": "http", "http_version": "1.1", "method": "POST",
-            "path": "/v1/chat/completions", "raw_path": b"/v1/chat/completions",
-            "root_path": "", "scheme": "http", "query_string": b"",
-            "headers": [(b"content-type", b"application/json")],
-            "client": ("127.0.0.1", 12345), "server": ("127.0.0.1", 8000),
-        }, receive)
+        request = Request(
+            {
+                "type": "http",
+                "http_version": "1.1",
+                "method": "POST",
+                "path": "/v1/chat/completions",
+                "raw_path": b"/v1/chat/completions",
+                "root_path": "",
+                "scheme": "http",
+                "query_string": b"",
+                "headers": [(b"content-type", b"application/json")],
+                "client": ("127.0.0.1", 12345),
+                "server": ("127.0.0.1", 8000),
+            },
+            receive,
+        )
 
         async def go() -> None:
             response = await ri._proxy_to_external_provider(payload, request)
@@ -167,6 +178,7 @@ def _route_capture(**payload_fields) -> dict:
 
 # ── the route's explicit-vs-default gate, executed rather than parsed ──────────────────
 
+
 def test_a_request_that_never_mentioned_them_forwards_nothing():
     # Reading payload.min_p on such a request yields 0.01, not None; only
     # model_fields_set can tell it from a caller who asked for 0.01.
@@ -175,7 +187,9 @@ def test_a_request_that_never_mentioned_them_forwards_nothing():
 
 def test_the_route_forwards_explicit_values():
     assert _route_capture(top_k = 40, min_p = 0.07, repetition_penalty = 1.15) == {
-        "top_k": 40, "min_p": 0.07, "repetition_penalty": 1.15,
+        "top_k": 40,
+        "min_p": 0.07,
+        "repetition_penalty": 1.15,
     }
 
 
@@ -183,7 +197,9 @@ def test_explicit_values_equal_to_the_schema_defaults_are_still_forwarded():
     # 20 / 0.01 / 1.0 ARE the defaults, so a `!= default` shortcut would drop them and a
     # user who deliberately set the panel's own numbers would get provider sampling.
     assert _route_capture(top_k = 20, min_p = 0.01, repetition_penalty = 1.0) == {
-        "top_k": 20, "min_p": 0.01, "repetition_penalty": 1.0,
+        "top_k": 20,
+        "min_p": 0.01,
+        "repetition_penalty": 1.0,
     }
 
 
@@ -191,9 +207,14 @@ def test_zero_survives_the_route():
     assert _route_capture(top_k = 0, min_p = 0.0) == {"top_k": 0, "min_p": 0.0}
 
 
-@pytest.mark.parametrize("field,value", [
-    ("top_k", 40), ("min_p", 0.07), ("repetition_penalty", 1.15),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("top_k", 40),
+        ("min_p", 0.07),
+        ("repetition_penalty", 1.15),
+    ],
+)
 def test_one_field_set_forwards_only_that_field(field, value):
     assert _route_capture(**{field: value}) == {field: value}
 
@@ -203,58 +224,80 @@ def test_writing_to_the_payload_would_make_an_omission_look_explicit():
     # payload before those reads would silently start forwarding schema defaults.
     payload = ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}])
     assert "min_p" not in payload.model_fields_set
-    payload.min_p = payload.min_p          # a no-op write, same value
+    payload.min_p = payload.min_p  # a no-op write, same value
     assert "min_p" in payload.model_fields_set
 
 
 # ── the body on the wire, for the providers the panel offers these on ──────────────────
 
+
 @pytest.mark.parametrize("provider_type", ["vllm", "openrouter"])
 def test_all_three_reach_a_live_endpoint(provider_type):
     assert _client_capture(
-        provider_type, top_k = 40, min_p = 0.07, repetition_penalty = 1.15,
+        provider_type,
+        top_k = 40,
+        min_p = 0.07,
+        repetition_penalty = 1.15,
     ) == {"top_k": 40, "min_p": 0.07, "repetition_penalty": 1.15}
 
 
 def test_llama_server_receives_repeat_penalty_on_the_wire():
     assert _client_capture(
-        "llama_cpp", top_k = 40, min_p = 0.07, repetition_penalty = 1.15,
+        "llama_cpp",
+        top_k = 40,
+        min_p = 0.07,
+        repetition_penalty = 1.15,
     ) == {"top_k": 40, "min_p": 0.07, "repeat_penalty": 1.15}
 
 
 def test_ollama_receives_none_of_them_even_from_a_raw_api_caller():
-    assert _client_capture(
-        "ollama", top_k = 42, min_p = 0.07, repetition_penalty = 1.23,
-    ) == {}
+    assert _client_capture("ollama", top_k = 42, min_p = 0.07, repetition_penalty = 1.23) == {}
 
 
 def test_the_tool_loop_continuation_keeps_the_same_sampling():
     # OAICompatTransport captures **request_kwargs once and replays them every turn, so a
     # conversation that calls a tool must not start sampling differently afterwards.
     from core.inference.external_tool_transport import OAICompatTransport
-
     with _Server() as server:
         client = ExternalProviderClient(
-            provider_type = "vllm", base_url = server.base_url, api_key = "",
+            provider_type = "vllm",
+            base_url = server.base_url,
+            api_key = "",
         )
         transport = OAICompatTransport(
-            client, model = "a-model", stream = True,
-            top_k = 40, min_p = 0.07, repetition_penalty = 1.15,
+            client,
+            model = "a-model",
+            stream = True,
+            top_k = 40,
+            min_p = 0.07,
+            repetition_penalty = 1.15,
         )
         cancel_event = threading.Event()
         turns = [
             [{"role": "user", "content": "hi"}],
-            [{"role": "user", "content": "hi"},
-             {"role": "assistant", "content": "", "tool_calls": [
-                 {"id": "call_1", "type": "function",
-                  "function": {"name": "web_search", "arguments": "{}"}}]},
-             {"role": "tool", "tool_call_id": "call_1", "content": "result"}],
+            [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+            ],
         ]
 
         async def go() -> None:
             for messages in turns:
                 async for _ in transport.stream(
-                    messages = messages, tools = None, tool_choice = None,
+                    messages = messages,
+                    tools = None,
+                    tool_choice = None,
                     cancel_event = cancel_event,
                 ):
                     pass
