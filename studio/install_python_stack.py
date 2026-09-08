@@ -1758,15 +1758,37 @@ def _persist_bnb_rocm_version(version: str) -> bool:
     return True
 
 
+def _rocm_torch_explicitly_requested() -> bool:
+    """Whether this run was TOLD to install ROCm torch, whatever else the host has.
+
+    The automatic profile stops probing AMD the moment CUDA is usable, which is right
+    by default and leaves a mixed NVIDIA+AMD host with no route to its AMD card at all:
+    the only bypass was an index pin, which is undocumented and names a wheel family
+    rather than a preference (#10450). ``UNSLOTH_FORCE_ROCM_TORCH=1`` is the request,
+    mirroring ``UNSLOTH_FORCE_VULKAN`` for the llama.cpp bundle, and an index pin still
+    outranks it because a pin names the exact wheels.
+
+    One torch install serves one vendor, so this SWAPS the stack rather than adding to
+    it: the NVIDIA card stops being available to training for as long as it is set.
+    """
+    return (os.environ.get("UNSLOTH_FORCE_ROCM_TORCH") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def _has_rocm_gpu() -> bool:
     """Return True only if an actual AMD GPU is visible (not just ROCm tools installed).
 
-    Always returns False when an NVIDIA GPU is present -- NVIDIA takes
-    priority on mixed hosts and prevents every detection path below
-    (rocminfo, amd-smi, KFD sysfs) from producing a false positive even
-    if ROCm tools are installed alongside the NVIDIA driver.
+    Returns False when an NVIDIA GPU is present -- NVIDIA takes priority on mixed
+    hosts and prevents every detection path below (rocminfo, amd-smi, KFD sysfs) from
+    producing a false positive even if ROCm tools are installed alongside the NVIDIA
+    driver -- unless this run explicitly asked for ROCm, which is the one case where
+    the AMD card is the point.
     """
-    if _has_usable_nvidia_gpu():
+    if _has_usable_nvidia_gpu() and not _rocm_torch_explicitly_requested():
         return False
     for cmd, check_fn in (
         # rocminfo: real gfx GPU ids only (gfx000 = CPU agent, "gfx11-generic" = ISA line).
@@ -4182,7 +4204,7 @@ def _amd_torch_needs_dependency_pass() -> bool:
     if _explicit_rocm_torch_index_url() is None:
         if _explicit_torch_index_url() is not None:
             return False
-        if _has_usable_nvidia_gpu():
+        if _has_usable_nvidia_gpu() and not _rocm_torch_explicitly_requested():
             return False
         # A hidden layer either side leaves no target to classify. Same reading the routing
         # guard uses, so the two can never drift.
@@ -4401,7 +4423,11 @@ def _ensure_rocm_torch() -> None:
     if IS_WINDOWS:
         # An explicit ROCm pin overrides the per-arch index: retry the PINNED one, not repo.amd.com.
         _win_rocm_pin = _explicit_rocm_torch_index_url()
-        if _win_rocm_pin is None and _has_usable_nvidia_gpu():
+        if (
+            _win_rocm_pin is None
+            and _has_usable_nvidia_gpu()
+            and not _rocm_torch_explicitly_requested()
+        ):
             return
         gfx_arch = _detect_windows_gfx_arch()
         if not gfx_arch and _win_rocm_pin is None:
@@ -4490,8 +4516,10 @@ def _ensure_rocm_torch() -> None:
         _infer_linux_amd_gfx_arch() if (_rocm_pin is None and not IS_WINDOWS) else None
     )
     if _rocm_pin is None:
-        # NVIDIA takes precedence on mixed hosts (only if a GPU is usable).
-        if _has_usable_nvidia_gpu():
+        # NVIDIA takes precedence on mixed hosts (only if a GPU is usable), unless this
+        # run asked for ROCm outright. The AMD-presence test below still has to pass:
+        # the request relaxes which vendor wins, not whether there is a card to serve.
+        if _has_usable_nvidia_gpu() and not _rocm_torch_explicitly_requested():
             return
         # _has_rocm_gpu() (rocminfo / amd-smi rows) is the authoritative AMD-host signal;
         # the old /opt/rocm-or-hipcc gate broke runtime-only ROCm installs.

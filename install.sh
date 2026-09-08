@@ -3328,9 +3328,21 @@ _ensure_rocm_probe_env() {
     fi
 }
 
+# Whether this run was TOLD to install ROCm torch, whatever else the host has.
+# The automatic profile stops probing AMD once CUDA is usable, which leaves a mixed
+# NVIDIA+AMD host no route to its AMD card at all (#10450). One torch install serves
+# one vendor, so this SWAPS the stack rather than adding to it. Mirrors
+# install_python_stack._rocm_torch_explicitly_requested; keep the two in step.
+_rocm_torch_explicitly_requested() {
+    case "$(printf '%s' "${UNSLOTH_FORCE_ROCM_TORCH:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 _has_amd_rocm_gpu() {
     _ensure_rocm_probe_env
-    if _has_usable_nvidia_gpu; then
+    if _has_usable_nvidia_gpu && ! _rocm_torch_explicitly_requested; then
         return 1
     fi
     if command -v rocminfo >/dev/null 2>&1 && \
