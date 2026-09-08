@@ -809,6 +809,23 @@ def append_placeholder_turn(
         conversation.append(placeholder_turn(count, total, lead))
 
 
+def _without_replay_parts(content: list) -> list:
+    """The turn without a replay's marker AND its note. A non-GGUF message takes one
+    image, so the attachment displaces a replay marker merged into its turn; the
+    note that came with it would then say the caller's own picture was the tool's."""
+    return [
+        part
+        for part in content
+        if not (
+            isinstance(part, dict)
+            and (
+                part.get("type") == "image"
+                or (part.get("type") == "text" and _is_image_turn_note(part.get("text")))
+            )
+        )
+    ]
+
+
 def top_up_image_markers(
     messages: Sequence[dict],
     total: int,
@@ -850,11 +867,7 @@ def top_up_image_markers(
                     # A replay merged into this turn already left a marker here. A
                     # non-GGUF message takes one image, so the attachment displaces
                     # it; pixels_in_marker_order drops the orphaned payload.
-                    kept = [
-                        part
-                        for part in content
-                        if not (isinstance(part, dict) and part.get("type") == "image")
-                    ]
+                    kept = _without_replay_parts(content)
                     out[index] = {**message, "content": [*kept, *markers]}
                 else:
                     out[index] = {
@@ -879,11 +892,7 @@ def top_up_image_markers(
         content = message.get("content", "")
         markers = [{"type": "image"} for _ in range(missing)]
         if isinstance(content, list):
-            kept = [
-                part
-                for part in content
-                if not (isinstance(part, dict) and part.get("type") == "image")
-            ]
+            kept = _without_replay_parts(content)
             out[index] = {**message, "content": [*kept, *markers]}
         else:
             out[index] = {
@@ -1205,13 +1214,16 @@ def _promote(
                 admitted = images[: eligible.get(position, len(images))]
                 if admitted:
                     pending.append(admitted)
-                    # What the TOOL returned, which the slice above has already lost.
-                    # Summing the admitted candidates instead made a 100-image result
-                    # read "(4 of 8)" beside a tool result saying 100 -- the note
-                    # describing the admission pass rather than the tool. The frontend
-                    # bounds the envelope before it ever gets here and records the
-                    # count it started from on the first entry; honour that too.
-                    returned_totals.append(_returned_count(images))
+                # What the TOOL returned, which the slice above has already lost.
+                # Summing the admitted candidates instead made a 100-image result
+                # read "(4 of 8)" beside a tool result saying 100 -- the note
+                # describing the admission pass rather than the tool. The frontend
+                # bounds the envelope before it ever gets here and records the
+                # count it started from on the first entry; honour that too.
+                # Counted whether or not anything of it was admitted: a result the
+                # allowance left nothing of is still part of what the batch returned,
+                # and leaving it out read "(1 of 6)" for three results of three.
+                returned_totals.append(_returned_count(images))
             elif pending:
                 interrupted[0] = True
             out.append({**message, "content": text or "[image returned]"} if images else message)

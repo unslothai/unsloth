@@ -2680,3 +2680,57 @@ def test_a_replay_batch_of_two_picture_results_is_detached():
     )
     out, _payloads = mcp_images.promote_history_local(history, vision = True)
     assert _first_note(out).startswith(mcp_images.DETACHED_IMAGE_TURN_TEXT)
+
+
+def test_a_displaced_replay_marker_takes_its_note_with_it():
+    """The replay merged its marker and note into the question that also owns the
+    attachment; the attachment displaces the marker, and the note must go too, or it
+    says the caller's own picture was returned by the tool."""
+    question = {
+        "role": "user",
+        "content": [
+            {"type": "image"},
+            {"type": "text", "text": mcp_images.IMAGE_TURN_TEXT},
+            {"type": "text", "text": "and this one?"},
+        ],
+    }
+    for ordinal in (1, None):
+        conversation = [{"role": "user", "content": "read a.png"}, dict(question)]
+        prior = mcp_images.image_marker_parts(conversation)
+        topped = mcp_images.top_up_image_markers(conversation, 2, ordinal = ordinal)
+        parts = topped[1]["content"]
+        assert sum(1 for p in parts if p.get("type") == "image") == 1, parts
+        texts = [p["text"] for p in parts if p.get("type") == "text"]
+        assert texts == ["and this one?"], texts
+        assert mcp_images.pixels_in_marker_order(topped, prior, ["REPLAY"], "ATTACHMENT") == [
+            "ATTACHMENT"
+        ]
+
+
+def test_the_note_counts_a_result_the_allowance_left_nothing_of():
+    """Three results of three in one batch on the marker path: one picture is shown and
+    the note must say (1 of 9), not (1 of 6) -- the result with no admitted candidate
+    is still part of what the batch returned."""
+    history = [
+        {
+            "role": "tool",
+            "name": "mcp__s__a",
+            "content": _envelope("[3]", *[_image() for _ in range(3)]),
+        },
+        {
+            "role": "tool",
+            "name": "mcp__s__b",
+            "content": _envelope("[3]", *[_image() for _ in range(3)]),
+        },
+        {
+            "role": "tool",
+            "name": "mcp__s__c",
+            "content": _envelope("[3]", *[_image() for _ in range(3)]),
+        },
+        {"role": "assistant", "content": "three shots"},
+    ]
+    eligible = mcp_images.eligible_replay_images(history, local = True)
+    assert min(eligible.values()) == 0, eligible
+    out, payloads = mcp_images.promote_history_local(history, vision = True)
+    assert len(payloads) == 1
+    assert _first_note(out) == f"{mcp_images.DETACHED_IMAGE_TURN_TEXT} (1 of 9)"
