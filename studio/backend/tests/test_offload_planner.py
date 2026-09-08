@@ -2225,3 +2225,37 @@ def test_a_resident_fit_below_the_requested_context_is_a_change():
     assert not plan.ot_patterns and not plan.load_mode_none
     assert plan.n_ctx == resident
     assert plan.changed
+
+
+def test_the_context_bound_assumes_the_rungs_above_the_first_spill():
+    """The ladder's upper bound charged the projector and the draft in full and
+    priced the cache at the full slot count, so with a projector large enough to
+    eat the card on its own the bound was zero and the ladder never looked, even
+    though every context below the request fits once rung 0 moves the projector.
+    The bound now assumes those rungs, which is what the retry will do."""
+    blocks = tuple(
+        BlockLayout(index = i, spillable_bytes = 0, resident_bytes = 128 * MIB) for i in range(32)
+    )
+    layout = ModelLayout(
+        arch = "qwen3",
+        n_layers = 32,
+        n_attention_layers = 32,
+        blocks = blocks,
+        lm_head_bytes = 256 * MIB,
+        token_embd_bytes = 256 * MIB,
+        kv_bytes_per_token_f16 = 64 * 1024,
+        n_ctx_train = 131072,
+        complete = True,
+    )
+    opts = PlanOptions(
+        context_policy = ContextPolicy.FIT_ONLY,
+        allow_lm_head_spill = False,
+        mmproj_bytes = 3 * GIB,
+        mmproj_movable = True,
+    )
+    # With the projector charged the card cannot even hold the weights.
+    assert max_context_for(layout, [8 * GIB], opts = opts) == 0
+    plan = plan_placement(layout, [8 * GIB], 64 * GIB, 131072, opts = opts)
+    assert plan.changed and not plan.insufficient, plan.reason
+    assert plan.mmproj_to_host
+    assert opts.min_ctx <= plan.n_ctx < 131072, plan.n_ctx

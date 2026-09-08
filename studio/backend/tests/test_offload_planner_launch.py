@@ -452,3 +452,56 @@ def test_a_context_only_shrink_plan_is_launched_at_the_context_it_proved(tmp_pat
     cmd, backend, _ = _launch_with(tmp_path, monkeypatch, Plan(changed = True, n_ctx = NATIVE_CTX))
     assert _flag(cmd, "--fit") == "on"
     assert backend._spill_plan_flags == []
+
+
+def test_a_plan_that_moves_no_weight_is_all_on_the_gpu_for_the_mlock_gate(tmp_path, monkeypatch):
+    """A plan that fits by lowering the slots, moving the projector or dropping the
+    draft emits -ngl -1 --fit off with every layer on the card, the same launch the
+    fits branch makes, but the Model Memory gate was told the weights sit in host
+    RAM and would page-lock a full host copy of a model that needed those rungs to
+    fit at all. A plan that spills weights really does leave some in host RAM."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    seen = []
+    real = LlamaCppBackend._weights_in_host_memory
+
+    def spy(self, **kw):
+        seen.append(bool(kw.get("fully_gpu_offloaded")))
+        return real(self, **kw)
+
+    monkeypatch.setattr(LlamaCppBackend, "_weights_in_host_memory", spy)
+    _launch_with(tmp_path, monkeypatch, Plan(changed = True, n_ctx = 8192, n_parallel = 1))
+    assert seen and seen[0] is True, seen
+    seen.clear()
+    _launch_with(
+        tmp_path,
+        monkeypatch,
+        Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,)),
+    )
+    assert seen and seen[0] is False, seen
+
+
+def test_the_layout_cache_identity_covers_every_shard(tmp_path, monkeypatch):
+    """The layout of a split GGUF is read from every shard, so a sibling shard
+    replaced while shard 1 is untouched has to invalidate the cached layout, or a
+    stale complete one undercounts most of the model."""
+    import types
+
+    from core.inference import offload_layout
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    first = tmp_path / "m-00001-of-00002.gguf"
+    second = tmp_path / "m-00002-of-00002.gguf"
+    first.write_bytes(b"1")
+    second.write_bytes(b"2")
+    reads = []
+    monkeypatch.setattr(
+        offload_layout, "layout_from_gguf", lambda path, **kw: reads.append(path) or object()
+    )
+    self = types.SimpleNamespace()
+    a = LlamaCppBackend._tensor_spill_layout(self, str(first), all_shards = True)
+    b = LlamaCppBackend._tensor_spill_layout(self, str(first), all_shards = True)
+    assert a is b and len(reads) == 1
+    second.write_bytes(b"22")
+    c = LlamaCppBackend._tensor_spill_layout(self, str(first), all_shards = True)
+    assert c is not a and len(reads) == 2

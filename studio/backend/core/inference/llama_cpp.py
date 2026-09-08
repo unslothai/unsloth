@@ -22340,6 +22340,14 @@ class LlamaCppBackend:
                     cmd.extend(["--alias", _alias])
 
                 fully_gpu_offloaded = False
+                # A spill plan that moved no weight (fewer slots, the projector on
+                # the CPU, the draft dropped, a shorter context) pins every layer on
+                # the GPU with -ngl -1 --fit off, exactly as the fits branch does.
+                # Kept apart from fully_gpu_offloaded, which also keys the full-
+                # offload tuning and the --fit on crash retry; this only reaches the
+                # Model Memory gate, which would otherwise page-lock a full host copy
+                # of a model whose weights are all on the card.
+                _spill_keeps_every_layer_on_gpu = False
                 # Set when a positional --tensor-split is emitted, so the env block
                 # can pin CUDA to PCI order even without a GPU subset (see below).
                 manual_tensor_split_emitted = False
@@ -22423,6 +22431,7 @@ class LlamaCppBackend:
                         self._spill_plan_flags = _spill_flags
                         self._spill_plan_restore = {}
                         cmd.extend(self._spill_plan_flags)
+                        _spill_keeps_every_layer_on_gpu = "-ot" not in _spill_flags
                         # The plan's other decisions rewrite values this argv already
                         # carries, IN PLACE, with the fitter's own value recorded so a
                         # retry that revokes the plan can put it back. Each rebinding
@@ -23167,7 +23176,7 @@ class LlamaCppBackend:
                     _mem_extra_args = self._strip_device_extra_args(extra_args)
                     self._clear_device_placement_env(_mem_env)
                 _mem_host_resident = self._weights_in_host_memory(
-                    fully_gpu_offloaded = fully_gpu_offloaded,
+                    fully_gpu_offloaded = fully_gpu_offloaded or _spill_keeps_every_layer_on_gpu,
                     gpu_memory_mode = gpu_memory_mode,
                     gpu_layers = gpu_layers,
                     extra_args = _mem_extra_args,
@@ -24020,10 +24029,13 @@ class LlamaCppBackend:
                     /props by ``_reconcile_effective_ctx_with_server``) nothing else
                     corrects the slot count afterwards.
                     """
-                    nonlocal n_parallel
+                    nonlocal n_parallel, _spill_keeps_every_layer_on_gpu
                     reverted = self._drop_tensor_spill(run_cmd, why)
                     if reverted is run_cmd:
                         return run_cmd
+                    # Placement is llama.cpp's again, so the all-on-GPU answer the
+                    # plan justified goes with it.
+                    _spill_keeps_every_layer_on_gpu = False
                     _restored = (getattr(self, "_spill_plan_restore", None) or {}).get("--parallel")
                     if _restored is not None:
                         try:
@@ -24881,7 +24893,8 @@ class LlamaCppBackend:
                         # deliberate and deduping away the reload that would apply it.
                         # Through the same helpers, so the two cannot drift.
                         _retry_host_resident = self._weights_in_host_memory(
-                            fully_gpu_offloaded = fully_gpu_offloaded,
+                            fully_gpu_offloaded = fully_gpu_offloaded
+                            or _spill_keeps_every_layer_on_gpu,
                             gpu_memory_mode = gpu_memory_mode,
                             gpu_layers = gpu_layers,
                             extra_args = _mem_extra_args,
@@ -27837,11 +27850,21 @@ class LlamaCppBackend:
         # re-downloading or re-quantising to the same path would otherwise plan
         # against the OLD tensor table and understate the deficit. Same
         # (size, mtime_ns) stat identity _slot_launch_fingerprint uses.
+        # Every shard when all of them are read: a sibling downloaded or replaced
+        # while shard 1 is untouched would otherwise serve the stale layout, and a
+        # stale COMPLETE one undercounts most of the model.
         try:
-            st = os.stat(model_path)
-            key = (model_path, st.st_size, st.st_mtime_ns, all_shards)
+            paths = [model_path]
+            if all_shards:
+                from core.inference.offload_layout import split_shard_paths
+                paths = split_shard_paths(model_path) or [model_path]
+            key = (
+                model_path,
+                tuple((p, os.stat(p).st_size, os.stat(p).st_mtime_ns) for p in paths),
+                all_shards,
+            )
         except OSError:
-            key = (model_path, None, None, all_shards)
+            key = (model_path, None, all_shards)
         cached = getattr(self, "_spill_layout_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]

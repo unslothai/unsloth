@@ -1007,3 +1007,37 @@ def test_a_cpu_pinned_projector_is_charged_to_host_ram():
         opts = o,
     )
     assert roomy.mmproj_to_host and roomy.load_mode_none
+
+
+def test_the_per_device_selection_grades_its_boundary_block_too():
+    """The pooled ladder trims the LAST whole block it takes down to the rungs
+    the deficit needed; the per-device walk took whole blocks and stopped, so
+    every deficient device carried up to one whole block of host traffic the
+    deficit did not need. Each device's last whole block is its own boundary."""
+    from core.inference.offload_planner import (
+        PlanOptions,
+        _per_device_shortfall,
+        _select_units_per_device,
+    )
+
+    layout = graded_moe()
+    cards = [8 * GIB, 8 * GIB]
+    kwargs = dict(
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = cards,
+        kv_layer_weights = [1] * layout.n_layers,
+    )
+    graded = _select_units_per_device(layout, PlanOptions(), 8192, cards, **kwargs)
+    whole = _select_units_per_device(
+        layout, PlanOptions(ffn_granularity = FfnGranularity.WHOLE), 8192, cards, **kwargs
+    )
+    assert graded and whole, (graded, whole)
+    assert all(u.cls is None for u in whole)
+    assert any(u.cls is not None for u in graded), "no device's boundary block was graded"
+    assert sum(u.nbytes for u in graded) < sum(u.nbytes for u in whole)
+    # And the trimmed selection still fits device by device.
+    moved = {}
+    for u in graded:
+        moved[u.index] = moved.get(u.index, 0) + u.nbytes
+    assert _per_device_shortfall(layout, PlanOptions(), 8192, moved, False, cards, **kwargs) is None

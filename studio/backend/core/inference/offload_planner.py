@@ -1320,8 +1320,13 @@ def max_context_for(
     floor_ctx: int = 0,
     n_seq: int = 1,
     kv_on_host: bool = False,
+    outside_layout_bytes: Optional[int] = None,
 ) -> int:
     """Largest context whose cache fits, rounded down to 256 as CUDA wants.
+
+    ``outside_layout_bytes`` is what sits on the card outside the layout after the
+    rungs the caller intends to apply; ``None`` charges the projector and the draft
+    in full, as every call that predates those rungs meant.
 
     ``kv_bytes_floor`` is the caller's measured cache at ``floor_ctx``; without it
     the layout's f16 product sizes the cache, which is the product the rest of
@@ -1362,11 +1367,16 @@ def max_context_for(
         scaled = floor * ctx // floor_at if floor_at > 0 else floor
         return max(naive, scaled)
 
+    def usable(ctx: int) -> int:
+        return _usable_vram(
+            vram_bytes_per_device, opts, ctx, outside_layout_bytes = outside_layout_bytes
+        )
+
     def fits(ctx: int) -> bool:
-        return fixed + cache_at(ctx) <= _usable_vram(vram_bytes_per_device, opts, ctx)
+        return fixed + cache_at(ctx) <= usable(ctx)
 
     # Upper bound: the answer with no reserve growth at all, which nothing can exceed.
-    top = _usable_vram(vram_bytes_per_device, opts, 0) - fixed
+    top = usable(0) - fixed
     if top <= 0:
         return 0
     # ``top // per_token`` bounds the answer only while the cache really grows with
@@ -1560,6 +1570,19 @@ def plan_placement(
     # gate could land on a smaller accepted context than exists.
     if may_shrink:
         step = max(256, opts.ctx_step // 256 * 256)
+        # The bound has to assume every rung above the first weight spill is
+        # applied, or it is not an upper bound for what _plan_at will retry: with
+        # the projector and the draft still charged and the cache at the full slot
+        # count it can sit below a context that fits once rung 0 fires, or at zero,
+        # and the ladder then never looks. Over-estimating only costs steps.
+        relieved = _Knobs(
+            n_parallel = max(1, min(opts.min_parallel, opts.n_parallel)),
+            mmproj_to_host = bool(opts.mmproj_movable),
+            draft_dropped = bool(opts.draft_droppable),
+        )
+        relieved_floor = _kv_floor_at(
+            layout, opts, kv_bytes_floor, n_ctx, n_ctx, relieved.n_parallel
+        )
         for quantised in _kv_modes(opts):
             hi = max_context_for(
                 layout,
@@ -1568,10 +1591,11 @@ def plan_placement(
                 spill_lm_head = opts.allow_lm_head_spill,
                 kv_quantised = quantised,
                 opts = opts,
-                kv_bytes_floor = kv_bytes_floor,
+                kv_bytes_floor = kv_bytes_floor if relieved_floor is None else relieved_floor,
                 floor_ctx = n_ctx,
-                n_seq = max(1, opts.n_parallel),
+                n_seq = relieved.n_parallel,
                 kv_on_host = opts.kv_on_host,
+                outside_layout_bytes = _outside_layout_bytes(opts, relieved),
             )
             hi = min(hi, n_ctx) // 256 * 256
             if declined is not None and hi >= n_ctx:
@@ -1885,16 +1909,22 @@ def _select_units_per_device(
             continue
         local_blocks = [by_index[row] for row in rows if row in by_index]
         freed = 0
+        taken: list[SpillUnit] = []
         for cls in _rung_classes(layout, opts):
             if freed >= deficit:
                 break
             picked, got = _select_units(
                 _units_of(local_blocks, cls), deficit - freed, opts.spill_order
             )
-            chosen.extend(picked)
+            taken.extend(picked)
             freed += got
         if freed < deficit:
             return None
+        # The same grading the pooled ladder applies, per device: each device's
+        # last whole block is its own boundary, and left whole it is up to a full
+        # block of host traffic per device that nothing needed.
+        taken, freed = _grade_the_boundary_block(layout, opts, taken, freed, deficit)
+        chosen.extend(taken)
     if (
         _per_device_shortfall(
             layout,
