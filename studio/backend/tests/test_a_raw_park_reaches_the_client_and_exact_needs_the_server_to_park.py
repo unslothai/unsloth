@@ -349,9 +349,9 @@ class TestAutoDoesNotStartAModeItWillReportUnavailable:
         short_drop = source.index("if _exact_setting == _exact.EXACT_AUTO:\n")
         child_env = source.index("_exact.apply_child_env(env, on = _exact_wanted)")
         assert blocker < child_env and short_drop < child_env
-        # An unknown pool with nothing named parks without a limit rather than on a default
-        # the pool may exceed.
-        assert 'cmd.extend(["--preempt-ram", "-1"])' in source
+        # And an unknown pool is never handed a budget on speculation: an unlimited one
+        # generated before the server has confirmed the mode survives every fallback.
+        assert '"--preempt-ram", "-1"' not in source
 
 
 class _Request:
@@ -786,11 +786,10 @@ class TestAnExplicitOptOutOfTheUnifiedCacheIsKept:
 
 class TestTheGlobalOptOutBlocksAnExactOnLaunchToo:
     """`auto` was preflighted for the opt-out, `on` was not: the exact launch sized a parking
-    budget of its own (`--preempt-ram -1` for an auto-fit context, a finite one for a pool past
-    the server's default), and `_stand_down_child_parking` reads any `--preempt-ram` as a budget
-    somebody named, so the child parked -- without a limit in the auto-fit case -- with
-    UNSLOTH_LLAMA_ADMISSION_PREEMPT=0 set. The budget is generated only when the child is going
-    to be allowed to park at all."""
+    budget of its own (a finite one for a pool past the server's default), and
+    `_stand_down_child_parking` reads any `--preempt-ram` as a budget somebody named, so the
+    child parked with UNSLOTH_LLAMA_ADMISSION_PREEMPT=0 set. The budget is generated only when
+    the child is going to be allowed to park at all."""
 
     _POOL = 12 * _GIB
 
@@ -841,6 +840,65 @@ class TestTheGlobalOptOutBlocksAnExactOnLaunchToo:
         assert "_child_parking_stands_down(args, env)" in stand_down
         source = inspect.getsource(LlamaCppBackend.load_model)
         guard = source.index('server_caps.get("supports_preempt_ram")')
-        window = source[guard : source.index('cmd.extend(["--preempt-ram", "-1"])')]
+        window = source[guard : source.index("self._exact_pool_unknown = _exact_kv_bytes <= 0")]
         assert "not _child_parking_stands_down(" in window
         assert window.index("not _child_parking_stands_down(") < window.index("_exact_budget = ")
+
+
+class TestAnAbandonedExactAttemptLeavesNoUnlimitedParkingBudget:
+    """The exact launch used to append ``--preempt-ram -1`` for an auto-fit context, before the
+    running server had confirmed the mode. Every way the attempt is abandoned keeps that argv:
+    the refusal rung takes the mode off the child's ENVIRONMENT and relaunches the same command,
+    and a build that ignores ``LLAMA_EXACT_CONCURRENCY`` comes up healthy and is reported
+    ``unavailable`` with nothing relaunched at all. Either way a server with no exact
+    concurrency parked into unbounded host RAM instead of llama.cpp's 8192 MiB default
+    (unslothai/llama.cpp#184: ``--preempt-ram N`` bounds the host RAM parked sequences hold,
+    ``-1`` is no limit). So the launch names no budget it cannot size, and the default it left
+    the child on is judged after launch instead."""
+
+    def test_the_launch_never_generates_an_unlimited_budget(self):
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        assert '"--preempt-ram", "-1"' not in source
+        assert "--preempt-ram=-1" not in source
+        # The only budget the launch may name is the one it sized for a pool it could measure.
+        assert 'cmd.extend(["--preempt-ram", str(_exact_budget)])' in source
+
+    def test_an_unknown_pool_stays_unknown_so_the_default_is_judged_after_launch(self):
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        marked = source.index("self._exact_pool_unknown = _exact_kv_bytes <= 0")
+        # Nothing clears the flag between marking it and the post-launch judging that reads it.
+        judged = source.index('getattr(self, "_exact_pool_unknown", False)')
+        assert marked < judged
+        assert "self._exact_pool_unknown = False" not in source[marked:judged]
+
+    def test_the_refusal_rung_relaunches_the_same_argv_with_only_the_env_changed(self):
+        # Why a generated flag had to go: the fallback rebuilds nothing.
+        drop = inspect.getsource(LlamaCppBackend._drop_exact_after_refusal)
+        assert "apply_child_env(env, on = False)" in drop
+        spawn = inspect.getsource(LlamaCppBackend.load_model)
+        rung = spawn.index("if not _did_exact_retry and self._drop_exact_after_refusal(")
+        window = spawn[rung : rung + 900]
+        assert "continue" in window
+        assert "run_cmd" not in window.split("continue")[0]
+
+    def test_the_default_budget_the_child_keeps_is_the_one_that_gets_judged(self):
+        # An auto-fit pool the server's default cannot hold is reported, not papered over
+        # with an unlimited budget; one it can hold certifies as before.
+        assert llama_mod._exact_parking_shortfall_mib(
+            12 * _GIB,
+            args = ["llama-server", "--kv-unified"],
+            env = {},
+            default_mib = llama_mod._PREEMPT_RAM_DEFAULT_MIB,
+        ) == (8192, 12 * 1024, 12 * 1024 + 64)
+        assert (
+            llama_mod._exact_parking_shortfall_mib(
+                4 * _GIB,
+                args = ["llama-server", "--kv-unified"],
+                env = {},
+                default_mib = llama_mod._PREEMPT_RAM_DEFAULT_MIB,
+            )
+            is None
+        )
+        # A server left on its default names nothing, so nothing reads back as unlimited.
+        assert llama_mod._named_preempt_ram_mib(["llama-server", "--kv-unified"], {}) is None
+        assert llama_mod._preempt_ram_disabled_in(["llama-server", "--kv-unified"], env = {}) is False

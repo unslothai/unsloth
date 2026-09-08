@@ -23657,26 +23657,12 @@ class LlamaCppBackend:
                                 _exact_budget,
                                 _exact_kv_bytes // (1024 * 1024),
                             )
-                        # An auto-fit context leaves the pool unknown here (the child picks
-                        # the context), so the budget cannot be sized. With nothing named,
-                        # the child parks without a limit: a park is at most the pool, so
-                        # this is the sized budget the launch would have emitted. A named
-                        # budget is judged after launch off the context the server chose.
+                        # An auto-fit context leaves the pool unknown here, so no budget is
+                        # sized: the server's default is judged after launch off the context it
+                        # chose. An unlimited budget generated on the guess that the mode will
+                        # run survives every way the attempt is abandoned (a build ignoring the
+                        # variable, the refusal retry reusing this argv), parking without a limit.
                         self._exact_pool_unknown = _exact_kv_bytes <= 0
-                        if (
-                            self._exact_pool_unknown
-                            and _named_preempt_ram_mib(
-                                list(cmd) + [str(a) for a in (extra_args or ())], os.environ
-                            )
-                            is None
-                        ):
-                            cmd.extend(["--preempt-ram", "-1"])
-                            self._exact_pool_unknown = False
-                            logger.info(
-                                "Exact concurrency: the context is auto-fitted, so the KV pool "
-                                "cannot be sized before launch; --preempt-ram -1 lets every "
-                                "park fit."
-                            )
                         # A budget somebody named is kept, and judged: below the pool it takes
                         # the guarantee away, and the state reported after launch says so.
                         self._exact_parking_short = _exact_parking_shortfall_mib(
