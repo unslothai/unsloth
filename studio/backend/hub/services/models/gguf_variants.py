@@ -1504,15 +1504,11 @@ async def get_gguf_variants_answer(
                 sum(max(0, int(file.size or 0)) for file in companions),
             )
 
-        def _pending_drafter(requirement: Optional[_GgufVariantRequirement]):
+        def _pending_drafter(requirement: Optional[_GgufVariantRequirement], quant: str):
             """Name one companion-only transfer without mislabelling a model pull."""
             if requirement is None or not _filenames_cached(
                 requirement.main_filenames,
                 requirement.main_size_bytes,
-            ):
-                return None
-            if requirement.mmproj_filenames and not _any_mmproj_cached(
-                requirement.mmproj_filenames
             ):
                 return None
             missing = tuple(
@@ -1523,7 +1519,23 @@ async def get_gguf_variants_answer(
                     max(0, int(file.size or 0)),
                 )
             )
-            return missing[0] if len(missing) == 1 else None
+            if len(missing) != 1:
+                return None
+            local_blobs = local_blobs_by_quant.get(quant.lower(), {})
+            for expected in requirement.expected_files:
+                if expected.path == missing[0].path:
+                    continue
+                if not _filenames_cached(frozenset({expected.path}), expected.size):
+                    return None
+                # Only subtract files the worker can reuse at the planned revision.
+                identities = local_blobs.get(expected.path.replace("\\", "/"), set())
+                if (
+                    expected.sha256
+                    and expected.sha256 not in identities
+                    and not _size_identity_matches(identities, expected.size)
+                ):
+                    return None
+            return missing[0]
 
         def _is_fully_downloaded(variant) -> bool:
             quant = variant.quant.lower()
@@ -1662,7 +1674,7 @@ async def get_gguf_variants_answer(
             is_partial = v.quant in partial_quants
             requirement = requirements_by_quant.get(v.quant.lower())
             downloaded = _is_fully_downloaded(v) and not is_partial
-            pending_drafter = _pending_drafter(requirement) if not is_partial else None
+            pending_drafter = _pending_drafter(requirement, v.quant)
             return GgufVariantDetail(
                 filename = v.filename,
                 quant = v.quant,

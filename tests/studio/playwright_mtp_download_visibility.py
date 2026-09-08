@@ -106,6 +106,9 @@ def _backend_payload_here() -> dict[str, object]:
             ],
         )
         gguf_variants.iter_hf_cache_snapshots = lambda *_args, **_kwargs: [snapshot]
+        gguf_variants._local_main_gguf_blobs_by_quant = lambda *_args, **_kwargs: {
+            QUANT.lower(): {MAIN_FILENAME: {"main"}}
+        }
         gguf_variants.download_registry.incomplete_blob_hashes = lambda *_args, **_kwargs: set()
         state_dir.cache_root = lambda: root / "state"
         response = asyncio.run(gguf_variants.get_gguf_variants_response(REPO_ID))

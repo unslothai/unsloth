@@ -4663,8 +4663,16 @@ def test_gguf_variants_scopes_partial_state_to_requested_cache(monkeypatch, tmp_
     assert result.variants[0].partial is False
 
 
-def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "cache_case",
+    ["current", "partial-mtp", "alternate-projector", "stale-main", "planned-projector"],
+)
+def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(
+    monkeypatch, tmp_path, cache_case
+):
     """A pre-MTP cache must enter the manager instead of downloading at load time."""
+    with gguf_variants._VARIANT_HASH_LOCK:
+        gguf_variants._VARIANT_REQUIREMENT_CACHE.clear()
 
     async def _run_inline(fn, *args, **kwargs):
         return fn(*args, **kwargs)
@@ -4681,6 +4689,24 @@ def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(monke
         _sibling(main_name, 100, "main"),
         _sibling(mtp_name, 20, "mtp"),
     ]
+    local_blobs = {main_name: {"old-main" if cache_case == "stale-main" else "main"}}
+    if cache_case in {"alternate-projector", "planned-projector"}:
+        siblings.extend(
+            [
+                _sibling("mmproj-F16.gguf", 10, "projector-f16"),
+                _sibling("mmproj-Q8_0.gguf", 8, "projector-q8"),
+            ]
+        )
+        (snapshot / "mmproj-Q8_0.gguf").write_bytes(b"p" * 8)
+        local_blobs["mmproj-Q8_0.gguf"] = {"projector-q8"}
+        if cache_case == "planned-projector":
+            (snapshot / "mmproj-F16.gguf").write_bytes(b"p" * 10)
+            local_blobs["mmproj-F16.gguf"] = {"projector-f16"}
+    monkeypatch.setattr(
+        gguf_variants,
+        "_local_main_gguf_blobs_by_quant",
+        lambda *_args: {"ud-q4_k_xl": local_blobs},
+    )
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(gguf_variants.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
@@ -4707,18 +4733,28 @@ def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(monke
     monkeypatch.setattr(
         gguf_variants.download_registry,
         "incomplete_blob_hashes",
-        lambda *_args, **_kwargs: set(),
+        lambda *_args, **_kwargs: {"mtp"} if cache_case == "partial-mtp" else set(),
     )
 
     before = asyncio.run(gguf_variants.get_gguf_variants_response(repo_id))
     assert before.variants[0].downloaded is False
-    assert before.variants[0].download_size_bytes == 120
+    assert before.variants[0].download_size_bytes == (130 if "projector" in cache_case else 120)
+    assert before.variants[0].partial is (cache_case == "partial-mtp")
+    if cache_case in {"alternate-projector", "stale-main"}:
+        assert before.variants[0].pending_drafter_filename is None
+        assert before.variants[0].pending_drafter_size_bytes == 0
+        return
     assert before.variants[0].pending_drafter_filename == mtp_name
     assert before.variants[0].pending_drafter_size_bytes == 20
 
     companion = snapshot / mtp_name
     companion.parent.mkdir()
     companion.write_bytes(b"d" * 20)
+    monkeypatch.setattr(
+        gguf_variants.download_registry,
+        "incomplete_blob_hashes",
+        lambda *_args, **_kwargs: set(),
+    )
     after = asyncio.run(gguf_variants.get_gguf_variants_response(repo_id))
     assert after.variants[0].downloaded is True
     assert after.variants[0].pending_drafter_filename is None
