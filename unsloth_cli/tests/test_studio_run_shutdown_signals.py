@@ -3,13 +3,10 @@
 
 """`unsloth studio run` has to stop on a signal, and stop cleanly.
 
-Measured on a live two-Spark run: SIGINT did not end the process within 60 to 90 s,
-five attempts out of five, and only SIGTERM did -- which, with no handler installed,
-is a hard kill: the lifespan shutdown never ran and the peer's ggml-rpc-server was
-left holding the peer's GPU. These pin the two halves of the fix: both signals are
-handled and run the same graceful shutdown, and the command leaves through os._exit
-so nothing in interpreter shutdown can hold the process open after the cleanup.
-"""
+Live, SIGINT did not end the process at all and only SIGTERM did, which without a handler
+is a hard kill that leaves the peer's ggml-rpc-server holding the peer's GPU. These pin
+both halves of the fix: both signals run the same graceful shutdown, and the command
+leaves through os._exit so interpreter shutdown cannot hold the process open."""
 
 from __future__ import annotations
 

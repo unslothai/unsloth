@@ -1765,12 +1765,9 @@ def apply_lora(model, r: int):
 
 
 def make_token_batches(tok, args, device):
-    """The training rows for a run, identical on every rank.
-
-    Seeded at 3407 and drawn on every rank rather than broadcast: it is what the layer
-    split already relies on (stage 0 draws the inputs, the loss stage draws the targets,
-    and they have to agree), and it keeps the data parallel arm on the very same rows.
-    """
+    """The training rows for a run, drawn from a fixed seed on every rank rather than
+    broadcast: the layer split already relies on that (stage 0 draws the inputs and the loss
+    stage the targets, and they have to agree), and it keeps every arm on the same rows."""
     import torch
 
     torch.manual_seed(3407)
@@ -1794,16 +1791,13 @@ def make_token_batches(tok, args, device):
 def _main_data_parallel(args) -> int:
     """`--data-parallel`: one whole model per rank; the ranks average gradients.
 
-    The comparison the layer split has always lacked. A split of a model that FITS on
-    one Spark buys nothing by construction (both nodes still read every weight once per
-    step), so the honest question for such a model is data parallel against pipeline
-    parallel, measured on the same rows with the same loss. With LoRA the all-reduce
-    carries only the adapters (tens of MB), so the link is never the limit; with
-    `--fsdp` the base weights are sharded instead and gathered per layer as needed,
-    which also halves the resident weights.
+    The comparison the layer split has always lacked, on the same rows and the same loss:
+    a split of a model that FITS buys nothing by construction, since both nodes still read
+    every weight once per step. With LoRA the all-reduce carries only the adapters, so the
+    link is never the limit; `--fsdp` shards the base weights instead.
 
-    WORLD_SIZE=1 runs the identical code with no wrapper, and is the single-Spark
-    control every two-Spark number is divided by.
+    WORLD_SIZE=1 runs the identical code with no wrapper, and is the single-Spark control
+    every two-Spark number is divided by.
     """
     import contextlib
 
@@ -1932,8 +1926,7 @@ def _main_data_parallel(args) -> int:
             ctx = contextlib.nullcontext() if (last or no_sync is None) else no_sync()
             with ctx:
                 logits = model(input_ids = x, use_cache = False).logits
-                # Same mean-reduced next-token loss as the pipeline, and the same 1/M
-                # scaling that scale_grads=True applies there.
+                # The same mean-reduced next-token loss and 1/M scaling as the pipeline.
                 loss = pp_loss_fn(logits, x) / mb_per_rank
                 loss.backward()
             acc += loss.detach().float()

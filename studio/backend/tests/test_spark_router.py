@@ -3,11 +3,9 @@
 
 """The two-Spark request router, against fake llama-servers on loopback.
 
-Every test drives real sockets: fake backends from ``spark_fake_llama`` emit SSE, the
-router listens on 127.0.0.1, and ``httpx`` is the client, the same client the Studio
-backend uses. Health probing runs on demand (``check_health``) rather than on the
-interval so nothing here depends on timing.
-"""
+Every test drives real sockets, with ``httpx`` as the client the Studio backend uses.
+Health probing runs on demand rather than on the interval, so nothing here depends on
+timing."""
 
 from __future__ import annotations
 
@@ -67,9 +65,6 @@ def _who(frames: List[str]) -> str:
     return frames[0].rsplit("-", 1)[0]
 
 
-# ── Conversation keys ─────────────────────────────────────────────────────
-
-
 def test_conversation_key_precedence_and_prefix_fallback():
     body = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "hello"}]}
     assert conversation_key({CONVERSATION_HEADER: "hdr"}, dict(body, thread_id = "t")) == "hdr"
@@ -80,21 +75,16 @@ def test_conversation_key_precedence_and_prefix_fallback():
     assert conversation_key({}, dict(body, session_id = "s1")) == "session_id:s1"
     prefix = conversation_key({}, body)
     assert prefix and prefix.startswith("prefix:")
-    # Later turns keep the same prefix, so the same key.
     later = {
         "messages": body["messages"]
         + [{"role": "assistant", "content": "hi"}, {"role": "user", "content": "more"}]
     }
     assert conversation_key({}, later) == prefix
-    # A different first turn is a different conversation.
     other = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "bye"}]}
     assert conversation_key({}, other) != prefix
     assert conversation_key({}, {"prompt": "raw"}) is not None
     assert conversation_key({}, {"stream": True}) is None
     assert conversation_key({}, None) is None
-
-
-# ── Fan-out and stickiness ───────────────────────────────────────────────
 
 
 def test_keyless_requests_fan_out_across_both_backends():
@@ -126,15 +116,12 @@ def test_same_conversation_key_always_maps_to_the_same_backend_and_remaps_on_fai
         a, b = await FakeLlama("a").start(), await FakeLlama("b").start()
         router = await _router(a, b)
         try:
-            # Both healthy: a key is stable across many requests.
             first = router.pick("thread-1")
             assert first is not None
             for _ in range(20):
                 assert router.pick("thread-1") is first
-            # Many keys spread over both.
             targets = {router.pick(f"thread-{i}").name for i in range(64)}
             assert targets == {"a", "b"}
-            # Through the wire, with Studio's body tag and the prefix fallback.
             async with httpx.AsyncClient(timeout = 10) as client:
                 body = {
                     "messages": [{"role": "user", "content": "hi"}],
@@ -154,8 +141,8 @@ def test_same_conversation_key_always_maps_to_the_same_backend_and_remaps_on_fai
             for path, body, _headers in first_fake(a, b, first.name).served:
                 if path.startswith("/v1/chat"):
                     assert CONVERSATION_FIELD not in body
-            # One goes down: the key re-maps to the survivor, and comes back when it
-            # is healthy again (consistent hashing, not a rotation).
+            # Consistent hashing, not a rotation: the key comes back to its own
+            # backend once that backend is healthy again.
             await router.mark_down(first, "test")
             other = router.pick("thread-1")
             assert other is not None and other is not first
@@ -171,9 +158,6 @@ def test_same_conversation_key_always_maps_to_the_same_backend_and_remaps_on_fai
 
 def first_fake(a: FakeLlama, b: FakeLlama, name: str) -> FakeLlama:
     return a if a.name == name else b
-
-
-# ── Health-based eviction and recovery ───────────────────────────────────
 
 
 def test_health_eviction_and_recovery():
@@ -200,12 +184,10 @@ def test_health_eviction_and_recovery():
                     *(_chat(client, router.base_url, {"stream": True}) for _ in range(6))
                 )
             assert {_who(r) for r in results} == {"a", "b"}
-            # A backend whose process is gone is evicted on the failed connect.
             await b.stop()
             await router.check_health()
             await router.check_health()
             assert not router.get_backend("b").healthy
-            # And put back when something answers on its port again.
             b2 = await FakeLlama("b").start(port = b.port)
             try:
                 await router.check_health()
@@ -217,9 +199,6 @@ def test_health_eviction_and_recovery():
             await a.stop()
 
     run(scenario())
-
-
-# ── Streaming pass-through ───────────────────────────────────────────────
 
 
 def test_streaming_passes_chunks_through_in_order():
@@ -240,7 +219,6 @@ def test_streaming_passes_chunks_through_in_order():
                 assert frames == [f"a-{i}" for i in range(12)] + ["[DONE]"]
                 # Relayed as it arrived, not buffered to the end.
                 assert len(arrivals) > 1
-                # Non-generation paths go to the primary untouched.
                 props = await client.get(f"{router.base_url}/props")
                 assert props.json() == {"served_by": "a"}
                 assert (await client.get(f"{router.base_url}/nope")).status_code == 404
@@ -249,9 +227,6 @@ def test_streaming_passes_chunks_through_in_order():
             await a.stop()
 
     run(scenario())
-
-
-# ── Backpressure ─────────────────────────────────────────────────────────
 
 
 def test_backpressure_caps_in_flight_at_slots_plus_queue():
@@ -298,9 +273,6 @@ async def _until(predicate, timeout: float = 5.0) -> None:
         await asyncio.sleep(0.01)
 
 
-# ── Failure handling ─────────────────────────────────────────────────────
-
-
 def test_peer_dying_mid_stream_gives_that_client_a_clean_error_and_keeps_the_other_backend():
     async def scenario():
         a = await FakeLlama("a").start()
@@ -324,7 +296,6 @@ def test_peer_dying_mid_stream_gives_that_client_a_clean_error_and_keeps_the_oth
                 assert downs == ["b"]
                 assert not router.get_backend("b").healthy
                 assert router.get_backend("a").healthy
-                # The same conversation now lands on the survivor; the primary is untouched.
                 frames = await _chat(
                     client, router.base_url, {"prompt": "x", CONVERSATION_FIELD: key_on_b}
                 )
@@ -350,8 +321,8 @@ def test_no_healthy_backend_closes_the_connection_like_a_dead_llama_server():
             with pytest.raises(UpstreamUnreachable):
                 await router.dispatch("POST", "/v1/chat/completions", {}, b"{}")
             async with httpx.AsyncClient(timeout = 10) as client:
-                # No response at all, so httpx raises the same error a dead llama-server
-                # produces and LlamaCppBackend._respawn_if_dead keeps working unchanged.
+                # httpx must raise the same error a dead llama-server produces, or
+                # LlamaCppBackend._respawn_if_dead stops working.
                 with pytest.raises(httpx.RemoteProtocolError):
                     await client.post(
                         f"{router.base_url}/v1/chat/completions", json = {"prompt": "x"}

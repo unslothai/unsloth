@@ -6108,13 +6108,10 @@ _unsloth_spark_cluster_offer() {
     _unsloth_spark_perf_hint
 
 
-    # No prompt here. This used to ask "Set up the second Spark now?" behind a tty
-    # check, which meant a piped install could not stall on it, but the installer
-    # still must not grow questions: an answer given once during install is one the
-    # user cannot find again afterwards, which is what #7016 did and #8040 reverted.
-    # The setting is an environment variable with a non-interactive default of no,
-    # and the line below always says how to do it later, so nothing is lost by not
-    # asking. tests/test_installer_interactive_prompts.py enforces this.
+    # No prompt here: an answer given once during install is one the user cannot find
+    # again afterwards, which is what #7016 did and #8040 reverted. The setting is an
+    # environment variable, and the line below says how to do it later.
+    # tests/test_installer_interactive_prompts.py enforces this.
     case "${UNSLOTH_SPARK_CLUSTER:-}" in
         1|yes|YES|true|TRUE|on|ON) _sp_reply=y ;;
         *) _sp_reply=n ;;

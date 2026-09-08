@@ -2977,27 +2977,10 @@ LAYER_SPLIT_DECODE_SPEEDUP = {
 LAYER_SPLIT_DECODE_ONLY_SPEEDUP = 0.95
 LAYER_SPLIT_PREFILL_SPEEDUP = (1.7, 1.85)
 
-# ── Layer split WITH pipeline groups, measured in llama-server ───────────────
-# llama-server ``--pipeline-groups N`` (unslothai/llama.cpp PR #187, ready for review, in no
-# prebuilt yet): N contexts from one model, the slots partitioned across them, N interleaved
-# decode loops, so while one group's batch is on the peer's layers the other's is on this
-# node's and neither GPU waits for the wire. Precondition: the split lists the RPC device
-# first and the local CUDA device last, so the output layer and the logits stay on the local
-# GPU (with the output on the peer two groups LOSE, 75.5 against 94.9 tok/s, because the 1 MB
-# per row logits return and the CPU sampling under the other group's GPU load serialise them).
-# Qwen3.8-27B-UD-Q4_K_XL, two DGX Sparks, 2026-09-05, UNCAPPED clocks, closed-loop concurrent
-# rows, npp 128 / ntg 256, --cache-ram 0, two repeats; whole-cell decode tok/s:
-#
-#   rows |  1 Spark | split, 1 context | split, 2 groups || vs 1 context | vs 1 Spark
-#     32 |   116    |       100        |       130       ||    1.31x     |   1.12x
-#     64 |   139    |       117        |       157       ||    1.34x     |   1.13x
-#    128 |   150    |       124        |       170       ||    1.37x     |   1.13x
-#
-# Per-node GPU utilisation went from 42 to 47 percent to 76 to 79 percent. 256 rows is not
-# reported (HTTP truncation at 256 streams, node over 80 C). This does NOT move the replicas
-# rule for a model that fits: at 32 rows two replicas measured 1.91x against 1.12x here, so
-# replicas still win there; the groups make the split that a model too large for one node
-# needs anyway use both GPUs, and take it past what one node would do.
+# llama-server ``--pipeline-groups N`` (unslothai/llama.cpp PR #187, in no prebuilt yet): N
+# contexts from one model, so one group's batch runs on the peer's layers while the other's
+# runs here. Precondition: the RPC device FIRST, keeping the output layer local, or two
+# groups LOSE. Does not move the replicas rule for a model that fits.
 PIPELINE_GROUPS_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL, llama-server --pipeline-groups 2 with --device RPC0,CUDA0, two DGX "
     "Sparks, 2026-09-05, uncapped clocks, two repeats"
@@ -3013,26 +2996,11 @@ PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE = (1.12, 1.13)  # 32 to 128 rows
 PIPELINE_GROUPS_OVER_ONE_CONTEXT = {32: 1.31, 64: 1.34, 128: 1.37}  # two groups over one context
 PIPELINE_GROUPS_OVER_ONE_CONTEXT_RANGE = (1.31, 1.37)
 PIPELINE_GROUPS_GPU_UTIL = (0.45, 0.78)  # per node, without and with the groups
-# MTP self speculation (llama-server --spec-type draft-mtp) on ONE Spark, prebuilt b10796,
-# real-text prompts, npp 128 / ntg 256, --parallel 8, one clock state (1690 MHz). Ratios are
-# aggregate decode tok/s over the same model with no speculation at the same concurrency;
-# acceptance is accepted / drafted from /metrics. Only a GGUF whose header has
-# <arch>.nextn_predict_layers ships the head (Qwen3.5-4B-MTP and Qwen3.8-27B do, the
-# Qwen3.6-35B-A3B does not), and the flag is a no-op without it. n-max 3 is the mixed-traffic
-# depth: n-max 8 is 2.93x at one user on the 27B but 1.38x at 8 (acceptance 0.46). Draft models
-# and n-gram speculation are NOT defaults here: the 4B as a draft for the 27B is 1.93x at one
-# user and 0.54x to 0.71x from 4 users, and every n-gram variant is about 2x at one user and
-# 0.64x to 1.02x from 4. Greedy output under MTP is not byte identical to the baseline; the
-# control that shows this is not a defect: the baseline is not batch invariant itself (the
-# same four greedy prompts issued together differ from the same prompts issued one by one,
-# on the same server), and the MTP arms diverge on exactly those prompts, late in the text.
-#
-#   users |  27B baseline | 27B MTP n-max 3 | ratio | accept ||  4B baseline | 4B MTP | ratio
-#     1   |     11.2      |      28.6       | 2.61x |  0.88  ||     57.6     | 117.6  | 2.04x
-#     4   |     35.7      |      63.4       | 1.87x |        ||    162.0     | 270.8  | 1.67x
-#     8   |     52.1      |      81.0       | 1.59x |  0.74  ||    188.1     | 274.3  | 1.46x
-#
-# Long outputs (ntg 1024) hold up better: 27B 2.81x at 1 and 2.01x at 8 (acceptance 0.97 / 0.87).
+# MTP self speculation on ONE Spark, a no-op for a GGUF whose header has no
+# nextn_predict_layers. n-max 3 is the mixed-traffic depth: 8 is faster at one user and much
+# slower at eight. Draft models and n-gram speculation are NOT defaults, both winning at one
+# user and losing from four. Greedy output under MTP is not byte identical to the baseline,
+# which is not a defect: the baseline is not batch invariant itself.
 MTP_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL and Qwen3.5-4B-MTP-UD-Q4_K_XL, llama-server b10796 --spec-type "
     "draft-mtp --spec-draft-n-max 3, one DGX Spark, 2026-09-05, 1690 MHz, npp 128 / ntg 256"
@@ -3044,36 +3012,17 @@ MTP_ACCEPTANCE_27B = {1: 0.88, 8: 0.74}
 MTP_ACCEPTANCE_4B = {1: 0.88, 8: 0.72}
 MTP_DRAFT_N_MAX = 3
 MTP_SMALL_MODEL_B = 8.0  # below this many B parameters the 4B table is the closer estimate
-# ── The draft depth is not one number: it depends on how many rows are in flight ──────
-# Everything above was measured at 1 to 8 users, where n-max 3 is right. On the two-Spark
-# layer split the product runs 32 to 64 rows, and n-max 3 was never swept there: it was
-# simply the default carried up from the one-Spark table. Swept on the split at 32 / 64 /
-# 128 rows, two pipeline groups, --kv-unified, both nodes pinned at 1690 MHz, every cell
-# bracketed forward and reversed (2026-09-07):
-#
-#   rows | drafter off | n-max 1 | n-max 2 | n-max 3 | best n-max | best vs off
-#     32 |   146.8     |  152.8  |  162.9  |  155.9  |     2      |   +11 %
-#     64 |   186.3     |  171.7  |  166.9  |  146.3  |     1      |    -8 %
-#    128 |   212.7     |  164.1  |  138.7  |  132.2  |     1      |   -23 %
-#
-# So n-max 3 is the WORST of the three at every row count on the split, and the depth that
-# wins moves with rows: 2 at 32, 1 at 64 and above. Acceptance is a function of the depth
-# alone and not of rows -- 0.87 at n-max 1, 0.78 at 2, 0.69 at 3, flat to within 0.02 across
-# 32, 64 and 128 rows -- so this is not the drafter working less well at width; it is the
-# extra draft tokens widening a batch that is already past the cheap point of the per-token
-# curve. Below 32 rows nothing here was measured, so the one-Spark answer stands and the
-# default stays 3.
-# Every cell above is a TWO-GROUP split, which is what the product runs from 16 rows up, so
-# the depth only ever changes in the regime that was swept. A one-context split at the same
-# row count is not measured, and it gets the same depth: with one context the rows all sit in
-# one step rather than being halved across two groups, so the batch is WIDER at the same row
-# count and the width penalty this table is about can only be larger. Extrapolating a
-# narrower draft there is the safe direction, and it is the only extrapolation here.
-# This table answers two questions, and they are kept apart below. The DEPTH once a drafter
-# runs is ``mtp_draft_n_max``. WHETHER a drafter runs on a split at all is
-# ``split_mtp_wins`` and ``SPLIT_MTP_OFF_ROWS`` (64): at 64 and 128 rows the drafter loses at
-# every depth, so above the boundary the split runs with none. Neither is
-# ``GROUPS_X_MTP_CROSSOVER_ROWS`` (16), which is groups against one context and does not move.
+# The draft depth depends on how many rows are in flight: n-max 3 comes from the 1-to-8-user
+# table above and is the WORST of the three depths at every row count measured on a split, and
+# the winning depth narrows as the rows grow. Acceptance is a function of the depth alone and
+# flat in rows, so this is not the drafter working less well at width, it is the extra draft
+# tokens widening a batch already past the cheap point of the per-token curve. Below 32 rows
+# nothing was measured on a split, so the one-Spark answer stands there.
+# Every cell is a TWO-GROUP split, and a one-context split gets the same depth: its rows sit in
+# one step rather than being halved across two groups, so the batch is WIDER and the width
+# penalty can only be larger, which makes a narrower draft the only safe extrapolation.
+# The DEPTH once a drafter runs is ``mtp_draft_n_max``; WHETHER one runs at all is
+# ``split_mtp_wins``. Neither is ``GROUPS_X_MTP_CROSSOVER_ROWS``, which does not move.
 MTP_DRAFT_N_MAX_X_ROWS_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL split over two DGX Sparks, llama-server --pipeline-groups 2 "
     "--kv-unified --tensor-split 0.5,0.5 --spec-type draft-mtp, unslothai/llama.cpp PR #187 "
@@ -3087,19 +3036,15 @@ MTP_DRAFT_N_MAX_X_ROWS_TOKS = {
     128: {0: 212.7, 1: 164.1, 2: 138.7, 3: 132.2},
 }
 MTP_DRAFT_N_MAX_ACCEPTANCE = {1: 0.87, 2: 0.78, 3: 0.69}  # n-max -> acceptance, flat in rows
-# rows at or above the key -> the draft depth measured best there. Read by nearest key at or
-# below the row count; under the lowest key the one-Spark default applies.
+# rows at or above the key -> the depth measured best there; under the lowest key the one-Spark
+# default applies.
 MTP_DRAFT_N_MAX_BY_ROWS = {32: 2, 64: 1}
 
 
 def mtp_draft_n_max(users: Optional[int] = None) -> int:
-    """The ``--spec-draft-n-max`` depth measured best at this many concurrent rows.
-
-    ``MTP_DRAFT_N_MAX`` (3) below the lowest measured row count, which is where the
-    one-Spark table lives and where 3 is right; the nearest measured row count at or below
-    ``users`` otherwise. No fitting and no extrapolation above 128 rows: the largest
-    measured key applies from there up, and the depth is monotone in rows over the range
-    that was swept."""
+    """The ``--spec-draft-n-max`` depth measured best at this many concurrent rows, and
+    ``MTP_DRAFT_N_MAX`` below the lowest measured row count, where the one-Spark table lives.
+    No fitting: the largest measured key applies from there up."""
     if users is None:
         return MTP_DRAFT_N_MAX
     rows = max(1, int(users or 1))
@@ -3110,19 +3055,10 @@ def mtp_draft_n_max(users: Optional[int] = None) -> int:
     return depth
 
 
-# ── The rows above which a layer split is faster with NO drafter at all ───────────────
-# The depth rule above picks the best depth for the row count. It does not answer the prior
-# question, which the same matrix answers: whether a drafter pays at all. Reading the "best
-# depth" column of MTP_DRAFT_N_MAX_X_ROWS_TOKS against the drafter-off column, the best depth
-# is worth +11.0 % at 32 rows, -7.9 % at 64 and -22.9 % at 128. So above 32 rows the answer is
-# no drafter, at any depth, and the split gives away 8 to 23 percent by keeping one.
-# This is the LAYER SPLIT only. On one Spark and on two replicas the one-Spark table governs
-# (MTP_SPEEDUP_27B / MTP_SPEEDUP_4B: 2.61x / 1.87x / 1.59x at 1 / 4 / 8 users), MTP is a large
-# win there, and nothing in this matrix was measured on either of those topologies.
-# rows -> what the BEST depth is worth, in percent, against the same split with the drafter
-# off. From the unrounded leg means (32: 162.94 against 146.83, 64: 171.68 against 186.32,
-# 128: 164.06 against 212.72); MTP_DRAFT_N_MAX_X_ROWS_TOKS above is rounded to 0.1 tok/s, so
-# recomputing these from it lands within 0.2 points of them.
+# Whether a drafter pays on a split AT ALL, which the depth rule above does not answer. LAYER
+# SPLIT only: one Spark and two replicas keep the one-Spark table, where MTP is a large win.
+# rows -> what the BEST depth is worth against the same split with the drafter off, from the
+# unrounded leg means, so recomputing from the rounded table lands within 0.2 points.
 SPLIT_MTP_BEST_DEPTH_VS_OFF_PCT = {32: 11.0, 64: -7.9, 128: -22.9}
 SPLIT_MTP_OFF_ROWS = 64
 """Concurrent rows at or above which a two-Spark layer split runs with the drafter OFF.
@@ -3147,14 +3083,11 @@ pipeline groups against one context, both with the drafter on -- and does not mo
 
 def split_mtp_wins(users: Optional[int] = None) -> bool:
     """Whether a two-Spark layer split at this many concurrent rows should run a drafter AT
-    ALL, at the depth ``mtp_draft_n_max`` returns. True below ``SPLIT_MTP_OFF_ROWS``, where
-    the best depth measured +11.0 percent at 32 rows; False at or above it, where the best
-    depth measured -7.9 percent at 64 rows and -22.9 percent at 128.
+    ALL, at the depth ``mtp_draft_n_max`` returns: True below ``SPLIT_MTP_OFF_ROWS``.
 
-    Layer split only. One Spark and two replicas are governed by the one-Spark MTP table,
-    where speculation is a 1.46x to 2.61x win at 1 to 8 users, and no cell of this matrix was
-    measured on either. ``users`` of None is a caller that does not know the row count, and it
-    keeps the drafter, which is what every topology did before this rule existed."""
+    Layer split only; one Spark and two replicas are governed by the one-Spark MTP table, where
+    speculation is a large win, and no cell of this matrix was measured on either. ``users`` of
+    None keeps the drafter, which is what every topology did before this rule existed."""
     if users is None:
         return True
     return max(1, int(users or 1)) < SPLIT_MTP_OFF_ROWS
@@ -3162,7 +3095,7 @@ def split_mtp_wins(users: Optional[int] = None) -> bool:
 
 def split_mtp_note() -> str:
     """Whether a layer split speculates at all, and at what depth, for reasons and the
-    ``spark plan`` text. Both sides of ``SPLIT_MTP_OFF_ROWS`` are stated with their numbers."""
+    ``spark plan`` text."""
     lo, hi, top = 32, SPLIT_MTP_OFF_ROWS, max(MTP_DRAFT_N_MAX_X_ROWS_TOKS)
     cells = MTP_DRAFT_N_MAX_X_ROWS_TOKS
 
@@ -3192,48 +3125,16 @@ def split_mtp_note() -> str:
     )
 
 
-# ── Pipeline groups AND speculative decoding on the same layer split ──────────────────
-# unslothai/llama.cpp PR #187 (feature/pipeline-groups, a1dd7c5e8) gives every pipeline group
-# its own speculative state, so --pipeline-groups N > 1 is now accepted together with
-# --spec-type draft-mtp and with --model-draft. It is still refused with --mmproj, with
-# --control-vector and with --sleep-idle-seconds, --parallel must stay a multiple of N, and
-# one group is byte-for-byte the build without the flag. Measured on the pair with that
-# build, Qwen3.8-27B-UD-Q4_K_XL split across the two Sparks (--device RPC0,CUDA0 -sm layer
-# --parallel 32 --cache-ram 0), real-text prompts, npp 128 / ntg 256, two repeats each,
-# forward then reversed arm order, WITH --kv-unified.
-#
-# --kv-unified is the whole reason this table was re-measured. Studio passes it on every
-# GGUF load and the first table here did not, so the constants described a launch the
-# product never makes. Measured directly at 32 rows on a two-group split, everything else
-# equal: 137.1 tok/s without it, 173.7 with, 1.27x; --no-context-shift, which Studio also
-# passes, is worth nothing outside noise. It costs the one-context arms nothing at all --
-# one shared KV buffer only pays once the rows are split over two groups.
-#
-# Both nodes were PINNED at 300,1700 MHz for the whole block, deliberately. The first
-# attempt was not, and its eight cells spanned three clock states (local capped six minutes
-# in, the peer nine minutes after that), so no two arms were comparable. The pin costs about
-# 5 to 7 percent against an uncapped node -- the two clean uncapped cells of that attempt
-# read 54.9 and 101.9 for one context against 51.4 and 97.2 here -- which is small because
-# the decode is memory bound, and it applies to every arm equally.
-#
-#   rows | 1 context  | 1 context + MTP | 2 groups   | 2 groups + MTP | one Spark + MTP
-#      8 | 51.2  51.6 |   91.3   84.3   | 50.6  48.9 |   88.1   81.6  |  85.6 (unpinned)
-#     32 | 96.4  97.9 |  111.0  113.2   |145.7 133.3 |  154.9  150.2  |  83.8 (unpinned)
-#
-# MTP acceptance is 0.75 at 8 rows and 0.70 at 32 with one context, 0.74 and 0.71 with two
-# groups, so a second group costs the draft head nothing.
-#
-# At 32 rows the combination wins outright, 152.5 tok/s on the means against 112.1 for one
-# context with MTP (1.36x) and 139.5 for two groups alone (1.09x). At 8 rows one context
-# with MTP still wins, 87.8 against 84.8, but by 3 percent rather than the 12 percent the
-# unshared-KV table showed, and in both passes in the same direction (0.96x and 0.97x). So
-# --kv-unified moved the numbers and not the crossing point: the winner still flips between
-# 8 and 32 rows, nothing between them has been measured, and GROUPS_X_MTP_CROSSOVER_ROWS
-# stays the geometric midpoint of the two bracketing points with both sides measured. What
-# did change is the size of the prize above it, 1.36x rather than 1.15x, and the size of the
-# penalty below it, now small enough that the choice barely matters under 16 rows. One Spark
-# with MTP (85.6) is still faster than either split arm at 8 rows, so a model that fits
-# should not be split at all there.
+# Pipeline groups AND speculative decoding on the same layer split: unslothai/llama.cpp
+# PR #187 (a1dd7c5e8) gives every group its own speculative state, so the pair is accepted.
+# It is still refused with --mmproj, --control-vector and --sleep-idle-seconds, --parallel
+# must stay a multiple of N, and one group is byte-for-byte the build without the flag.
+# --kv-unified is on every cell, and is why this table was re-measured: the first version
+# left it out and so described a launch the product never makes. Both nodes were PINNED,
+# because the unpinned first attempt spanned three clock states and no two arms were
+# comparable. The winner flips between 8 and 32 rows with nothing measured in between, so
+# GROUPS_X_MTP_CROSSOVER_ROWS is the geometric midpoint. One Spark with MTP still beats
+# either split arm at 8 rows, so a model that fits is not split there.
 GROUPS_X_MTP_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL, llama-server --kv-unified --pipeline-groups 2 --spec-type "
     "draft-mtp with --device RPC0,CUDA0, unslothai/llama.cpp PR #187 a1dd7c5e8, two DGX "
@@ -3245,49 +3146,24 @@ GROUPS_X_MTP_DECODE_TOKS = {
     8: (51.4, 87.8, 49.7, 84.8),
     32: (97.2, 112.1, 139.5, 152.5),
 }
-# One Spark with MTP, for reference. NOT re-measured with --kv-unified or under the pin, so
-# it is the only row here not directly comparable with the rest; it is used only to say that
-# a model which fits should not be split at 8 rows, and the margin there is wide.
+# NOT re-measured with --kv-unified or under the pin, so the only row here not directly
+# comparable with the rest; used only to say a model that fits should not be split at 8 rows.
 GROUPS_X_MTP_ONE_SPARK_MTP_TOKS = {8: 85.6, 32: 83.8}
 GROUPS_X_MTP_ACCEPTANCE = {8: (0.75, 0.74), 32: (0.70, 0.71)}  # (one context, two groups)
 GROUPS_X_MTP_OVER_MTP_ONLY = {8: 0.97, 32: 1.36}  # both over one context with MTP
 GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.71, 32: 1.09}  # both over two groups alone
-# At or above this many concurrent rows a split asks for groups AND speculation, below it for
-# one context with speculation. The geometric mean of the measured 8 and 32.
+# The geometric mean of the measured 8 and 32: above it a split asks for both, below it for
+# one context with speculation.
 GROUPS_X_MTP_CROSSOVER_ROWS = 16
 
-# ---------------------------------------------------------------------------------------------
-# How a layer split scales with CONCURRENT ROWS, and where the layer boundary belongs.
-#
-# The table above holds --parallel at 32 and varies the arms. This one holds the arms and varies
-# the rows, because the rows turned out to matter more. Measured 2026-09-06, Qwen3.8-27B
-# UD-Q4_K_XL, two DGX Sparks, BOTH nodes pinned at 300,1700 MHz for the whole two-hour block with
-# no thermal-guard transition inside any cell, --kv-unified, --cache-ram 0, -fa on, npp 128 /
-# ntg 256, no speculation, and --parallel R with -c 512*R so every slot keeps the same 512-token
-# context at every point. Twenty cells, every rows point run forward and then with the arms
-# reversed; both passes agree to 3 percent.
-#
-#   rows | one context (fwd/rev) | two groups (fwd/rev) | two groups over one context
-#      8 |      50.8   51.1      |     67.6   68.4      |   1.33x  1.34x
-#     16 |      74.6   75.5      |     99.8  100.4      |   1.34x  1.33x
-#     32 |      97.5   97.5      |    144.2  142.6      |   1.48x  1.46x
-#     64 |     113.4  112.5      |    172.5  176.1      |   1.52x  1.57x
-#    128 |     115.3  117.9      |    200.9  201.5      |   1.74x  1.71x
-#
-# Two things follow, and the second is the surprise.
-#
-# 1. Two pipeline groups win at EVERY concurrency measured here, including 8 rows, where an
-#    earlier table had them losing. That table sized the server at --parallel 32 and then sent
-#    only 8 clients; this one sizes --parallel and -c to the concurrency actually offered. So the
-#    sizing is what decided it, not the topology. This does NOT restate the groups-versus-
-#    speculation crossover above: no cell here used a drafter, and GROUPS_X_MTP_CROSSOVER_ROWS is
-#    untouched.
-# 2. The gain GROWS with rows, from 1.33x to 1.74x, and it grows faster than a fixed-cost model
-#    predicts. Decode step time on this hardware is NOT c0 + c1*b: fitted between adjacent points,
-#    the marginal cost per row rises from about 6.0 ms at 8-16 rows to 6.3 at 16-32, 6.8-7.0 at
-#    32-64 and 7.9-8.4 at 64-128. Two groups of 64 therefore sit at a cheaper point on that curve
-#    than one context of 128, and at 128 rows the extra per-step cost of splitting the batch is
-#    fully repaid: the two arms do the SAME GPU work per token to within 1 percent.
+# How a layer split scales with CONCURRENT ROWS, sizing --parallel and -c to the offered
+# concurrency so every slot keeps the same context at every point. Two pipeline groups win at
+# EVERY concurrency here, including 8 rows, where an earlier table had them losing: that table
+# sized the server at --parallel 32 and sent only 8 clients, so the SIZING decided it and not
+# the topology. No cell used a drafter, so GROUPS_X_MTP_CROSSOVER_ROWS is untouched.
+# The gain grows with the rows faster than a fixed-cost model predicts, because decode step
+# time here is not c0 + c1*b: two groups of 64 sit at a cheaper point on that curve than one
+# context of 128, where the arms do the SAME GPU work per token to within 1 percent.
 SPLIT_GROUPS_ROWS_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL, llama-server --kv-unified --cache-ram 0 -fa on --device RPC0,CUDA0 "
     "-sm layer, --parallel R with -c 512*R, unslothai/llama.cpp PR #187 a1dd7c5e8, two DGX "
@@ -3302,67 +3178,26 @@ SPLIT_GROUPS_ROWS_TOKS = {
     64: (112.9, 174.3),
     128: (116.6, 201.2),
 }
-# Rows at and above which a layer split should ask for two pipeline groups WITHOUT a drafter.
 # Two groups win at every point measured, so this is the lowest measured point rather than a
-# crossing; nothing below 8 rows has been measured.
+# crossing; nothing below it has been measured.
 SPLIT_GROUPS_MIN_ROWS = 8
 
-# The layer boundary. With no --tensor-split, llama.cpp divides the layers by each device's FREE
-# MEMORY at load time, so the boundary moves with whatever else the nodes are holding and is not
-# reproducible between two loads of the same model; a load-time probe caught the default putting
-# 34 of this model's 64 blocks on the peer. Measured at 128 rows with two groups, both nodes
-# pinned, peer blocks -> decode tok/s:
-#     27 -> 192.1    30 -> 200.2 / 199.1    33 -> 203.7 / 209.2    34 (default) -> 200.9 / 201.5
-#     36 -> 192.5
-# 33 wins in both passes and is where the two GPUs' busy fractions come out equal. An explicit
-# even --tensor-split lands there, because llama.cpp indexes the split over n_layer + 1 slots
-# (the last is the output block), so half of 66 is 33 and blocks 0..32 go to the first device.
-# Worth about 2.6 percent over the wandering default, and it makes the boundary the same on
-# every load, which is worth more.
+# The layer boundary. With no --tensor-split, llama.cpp divides the layers by each device's
+# FREE MEMORY at load time, so the boundary moves with whatever else the nodes hold and is not
+# reproducible between two loads of the same model. The best measured boundary is one block
+# past the middle, where the two GPUs' busy fractions come out equal and where an explicit even
+# split lands, since the split indexes n_layer + 1 slots, the last being the output block. The
+# reproducibility is worth more than the couple of percent.
 SPLIT_TENSOR_SPLIT_EVEN = "0.5,0.5"
 SPLIT_TENSOR_SPLIT_MEASURED_PEER_BLOCKS = {27: 192.1, 30: 199.7, 33: 206.4, 34: 201.2, 36: 192.5}
 
-# ---------------------------------------------------------------------------------------------
 # How many rows to ask for, once TIME TO FIRST TOKEN is written next to the throughput.
-#
-# SPLIT_GROUPS_ROWS_TOKS above is a throughput table and on its own it says "use 128 rows". That
-# is wrong, and it is wrong for two independent reasons, both measured 2026-09-06 in one
-# clock-pinned block on the pair with both nodes at 1700 MHz and no thermal-guard transition.
-#
-# 1. TTFT rises faster than throughput does. Slots sized to the offered concurrency, two groups,
-#    npp 128 / ntg 256, --parallel R with -c 512*R:
-#
-#      rows | decode tok/s | TTFT median | TTFT p90 | speedup over one context
-#         8 |     66.8     |    1.7 s    |   2.0 s  |  1.34x
-#        16 |    100.1     |    2.9 s    |   3.5 s  |  1.33x
-#        32 |    143.3     |    4.6 s    |   5.6 s  |  1.47x
-#        64 |    182.7     |    9.1 s    |  13.2 s  |  1.54x
-#       128 |    211.1     |   18.1 s    |  26.3 s  |  1.78x
-#
-#    8 to 32 rows is 2.1x the throughput for 2.7x the TTFT; 32 to 128 rows is 1.47x the
-#    throughput for 3.9x the TTFT. The knee is between 32 and 64. Above 64 the trade gets worse
-#    at every step, and 128 rows costs 18 seconds of median TTFT for 15 percent more throughput
-#    than 64. A 1.78x that costs 18 seconds to first token is not obviously better than a 1.47x
-#    that costs five.
-#
-# 2. Asking for MORE slots than the load offers is not free, which is the assumption that made
-#    "just set it to 128" look safe. One server at --parallel 128 driven at 8, 32 and 128
-#    concurrent, three replicates each, against servers sized to the offered load:
-#
-#      offered | slots = offered | slots = 128 | throughput | TTFT median
-#            8 |   66.8 tok/s    |  51.6 tok/s |   -22.7 %  |  1.73 -> 1.89 s  (+9 %)
-#           32 |  143.3          | 110.3       |   -23.0 %  |  4.60 -> 6.36 s  (+38 %)
-#          128 |  211.1          | 207.9       |    -1.5 %  | 18.11 -> 17.81 s
-#
-#    Oversizing costs about a quarter of the throughput AND a third of the median TTFT at a
-#    third of the offered load, so there is no safety in rounding the slot count up.
-#
-# Hence: track the offered concurrency, and cap it. The interactive cap is 64 because that is the
-# last point whose p90 TTFT is inside 14 s; 128 is reachable only when a caller says explicitly
-# that it wants aggregate throughput and nobody is waiting on a first token.
-#
-# This says nothing about speculation. No cell behind these numbers carried a drafter, rows and
-# MTP compete for the same mechanism, and GROUPS_X_MTP_CROSSOVER_ROWS is untouched.
+# SPLIT_GROUPS_ROWS_TOKS alone says "use 128 rows", and that is wrong twice over: TTFT rises
+# faster than throughput, with the knee between 32 and 64 rows, and asking for MORE slots than
+# the load offers is not free either -- the assumption that made "just set it to 128" look safe
+# -- an oversized server losing about a quarter of the throughput AND a third of the median
+# TTFT. So the rows track the offered concurrency, capped at the last point whose p90 TTFT is
+# inside 14 s. No cell here carried a drafter, so GROUPS_X_MTP_CROSSOVER_ROWS is untouched.
 SPLIT_ROWS_TTFT_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL, llama-server --kv-unified --cache-ram 0 -fa on --device RPC0,CUDA0 "
     "-sm layer --tensor-split 0.5,0.5 --pipeline-groups 2, --parallel R with -c 512*R, two DGX "
@@ -3383,8 +3218,7 @@ SPLIT_ROWS_INTERACTIVE_MAX = 64
 SPLIT_ROWS_THROUGHPUT_MAX = 128
 # Smallest rows setting measured; below this nothing has been run.
 SPLIT_ROWS_MIN = 8
-# Measured cost of sizing the slots ABOVE the offered load: offered -> (tok/s ratio, TTFT
-# median ratio) of a 128-slot server against one sized to that offered load.
+# offered -> (tok/s ratio, TTFT median ratio) of a 128-slot server against one sized to that load.
 SPLIT_ROWS_OVERSIZED_SLOTS = {8: (0.773, 1.09), 32: (0.770, 1.38), 128: (1.0, 1.0)}
 
 
@@ -3392,10 +3226,8 @@ def split_rows_for_users(users: int, interactive: bool = True) -> int:
     """Rows (``--parallel``) a layer split should ask for, for ``users`` offered concurrency.
 
     Tracks the offered load rather than rounding up, because oversizing the slot count costs
-    about 23 percent of the throughput and up to 38 percent of the median TTFT
-    (``SPLIT_ROWS_OVERSIZED_SLOTS``). Clamped below at ``SPLIT_ROWS_MIN``, the lowest point
-    measured, and above at ``SPLIT_ROWS_INTERACTIVE_MAX`` unless the caller says it is not
-    serving anybody who is waiting, in which case the cap is ``SPLIT_ROWS_THROUGHPUT_MAX``.
+    throughput and TTFT both (``SPLIT_ROWS_OVERSIZED_SLOTS``). Clamped to the measured range,
+    and to ``SPLIT_ROWS_INTERACTIVE_MAX`` unless the caller says nobody is waiting.
     """
     cap = SPLIT_ROWS_INTERACTIVE_MAX if interactive else SPLIT_ROWS_THROUGHPUT_MAX
     return max(SPLIT_ROWS_MIN, min(cap, int(users or 1)))
@@ -3439,9 +3271,9 @@ def layer_split_decode_speedup(prompt_tokens: int = 512, users: int = 1) -> floa
 
 
 def pipeline_groups_note() -> str:
-    """What a layer split delivers with and without pipeline groups, for reasons and
-    the ``spark plan`` text. The serving side adds the flag only when the bundle's
-    llama-server has it, so both halves are stated."""
+    """What a layer split delivers with and without pipeline groups, for reasons and the
+    ``spark plan`` text. The flag is added only when the bundle has it, so both halves are
+    stated."""
     low, high = PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE
     clow, chigh = PIPELINE_GROUPS_OVER_ONE_CONTEXT_RANGE
     rows = sorted(PIPELINE_GROUPS_SPLIT_SPEEDUP)
@@ -3459,11 +3291,9 @@ def pipeline_groups_note() -> str:
 
 
 def mtp_speedup(users: int = 1, model_size_b: Optional[float] = None) -> float:
-    """MTP self speculation's aggregate decode gain at the nearest measured user count, for
-    a GGUF that ships the head: the 27B table, or the 4B table for a model under
-    ``MTP_SMALL_MODEL_B`` parameters (the smaller the model, the less the head pays). It
-    multiplies whatever the topology gives; 1.0 is the honest number for a GGUF without
-    the head, which the caller knows and this function does not."""
+    """MTP self speculation's aggregate decode gain at the nearest measured user count, for a
+    GGUF that ships the head. It multiplies whatever the topology gives; a GGUF without the head
+    is 1.0, which the caller knows and this function does not."""
     small = model_size_b is not None and float(model_size_b) < MTP_SMALL_MODEL_B
     table = MTP_SPEEDUP_4B if small else MTP_SPEEDUP_27B
     _users, value = _nearest_concurrency(table, max(1, int(users or 1)))
@@ -3471,9 +3301,9 @@ def mtp_speedup(users: int = 1, model_size_b: Optional[float] = None) -> float:
 
 
 def mtp_note() -> str:
-    """What MTP self speculation delivers, for reasons and the ``spark plan`` text. The
-    serving side asks for it only when the GGUF header has the head and the bundle's
-    llama-server has --spec-type, so the no-op case is stated too."""
+    """What MTP self speculation delivers, for reasons and the ``spark plan`` text. Asked for
+    only when the header has the head and the bundle has --spec-type, so the no-op case is
+    stated too."""
     a, b = MTP_SPEEDUP_27B, MTP_SPEEDUP_4B
     return (
         f"A GGUF that ships its own MTP head (Qwen3.5-4B-MTP, Qwen3.8-27B) self-speculates "
@@ -3491,19 +3321,13 @@ def mtp_note() -> str:
 
 
 def groups_x_mtp_wins(users: int) -> bool:
-    """Whether a two-Spark layer split at this many concurrent rows should run pipeline
-    groups AND speculative decoding, rather than one context with speculation. True at or
-    above ``GROUPS_X_MTP_CROSSOVER_ROWS``: the two together measured 1.36x of one context
-    with MTP at 32 rows but 0.97x of it at 8, because two groups halve the rows per group.
-    Below the crossover the two are within 3 percent of each other, so choosing wrong
-    there costs little; above it the prize is large.
+    """Whether a two-Spark layer split at this many concurrent rows should run pipeline groups
+    AND speculative decoding rather than one context with speculation. Below the crossover the
+    two are within 3 percent of each other, so choosing wrong there costs little.
 
-    This answers GROUPS against ONE CONTEXT and nothing else. Whether the split runs a
-    drafter at all is ``split_mtp_wins`` and ``SPLIT_MTP_OFF_ROWS`` (64), a separate
-    measurement: at or above 64 rows the answer here is still "two groups", and the drafter
-    is off, which is the fastest arm measured at those rows.
-    The serving side also needs a build that accepts the two flags together (PR #187); this
-    function only carries the measured crossover."""
+    This answers GROUPS against ONE CONTEXT and nothing else; whether the split runs a drafter
+    at all is ``split_mtp_wins`` / ``SPLIT_MTP_OFF_ROWS``, a separate measurement. The serving
+    side also needs a build that accepts the two flags together (PR #187)."""
     return max(1, int(users or 1)) >= GROUPS_X_MTP_CROSSOVER_ROWS
 
 
@@ -3511,12 +3335,10 @@ def groups_x_mtp_note() -> str:
     """What a layer split gets from pipeline groups and speculative decoding together, for
     reasons and the ``spark plan`` text.
 
-    Two decisions are stated, separately, because they are two measurements. This one is
-    groups against one context: at or above ``GROUPS_X_MTP_CROSSOVER_ROWS`` (16) the split
-    takes the groups, below it it drops them and runs one context. The other is whether a
-    drafter runs at all (``SPLIT_MTP_OFF_ROWS``, 64, and ``split_mtp_note``): on at the
-    measured depth below 64 rows, off above. So a split at 8 rows is one context with MTP, at
-    32 rows two groups with MTP, and at 64 rows and up two groups with no drafter."""
+    Two measurements are stated separately: ``GROUPS_X_MTP_CROSSOVER_ROWS`` for groups against
+    one context, and ``SPLIT_MTP_OFF_ROWS`` (``split_mtp_note``) for whether a drafter runs at
+    all. So a split at 8 rows is one context with MTP, at 32 rows two groups with MTP, and at
+    64 rows and up two groups with no drafter."""
     hi, lo = 32, 8
     both_hi = GROUPS_X_MTP_DECODE_TOKS[hi][3]
     mtp_hi = GROUPS_X_MTP_DECODE_TOKS[hi][1]
@@ -3587,13 +3409,10 @@ def recommend_topology(
         "speedup": None,
         "prefill_speedup": None,
         "pipeline_groups_speedup": None,
-        # MTP multiplies the topology's number when the GGUF ships the head (the serving
-        # side checks the header); the planner states the single-Spark measurement.
+        # The planner states the single-Spark measurement; the serving side checks the header.
         "mtp_speedup": mtp_speedup(users),
         "mtp_note": mtp_note(),
-        # Layer split only, and None on every other topology: the rows-against-drafter matrix
-        # was measured on the split alone, and one Spark and replicas keep MTP at every user
-        # count their own tables cover.
+        # Layer split only: the rows-against-drafter matrix was measured on the split alone.
         "split_mtp": None,
         "split_mtp_note": None,
         "fits_one_node": fits_model,
@@ -3727,24 +3546,17 @@ REPLICA_AGGREGATE_PER_NODE = 1.0  # n replicas -> ~n x aggregate, 1.0x per reque
 # 3024 tok/s against a 2032 tok/s single-node control.
 TRAIN_PP_SPEEDUP_2 = 1.49
 
-# ── Training: data parallel against pipeline parallel, on the same rows and loss ──────
-# LoRA r=16, seq 512, global batch 64, 32 microbatches (1024 tokens each), 20 steps, seed
-# 3407, NCCL over the pair, `studio.spark_pipeline` for every arm. The single-Spark control
-# is the same file at WORLD_SIZE=1. Both nodes ran uncapped at ~2400 MHz for every cell.
-#
-# Read the 2B row first, because it is the one with a control measured in the same state.
-# DDP reaches 1.99x -- essentially perfect scaling -- while the best pipeline schedule
-# reaches 1.58x. That inverts the old guidance: a layer split of a model that FITS was
-# never a throughput win, and the number that made it look like one (1.96x for dualpipev)
-# came from dividing by a single-Spark control taken on a node that was missing the
-# linear-attention fast path. The schedules themselves did not change; the denominator did.
+# Training: data parallel against pipeline parallel on the same rows and loss, the control
+# being the same file at WORLD_SIZE=1. DDP scales essentially perfectly and the best pipeline
+# schedule does not, which inverts the old guidance: the number that made a split of a model
+# that FITS look like a throughput win came from a control on a node missing the
+# linear-attention fast path. The schedules did not change; the denominator did.
 TRAIN_MEASUREMENT = (
     "2026-09-06, unsloth/Qwen3.5-2B and -9B, LoRA r=16, seq 512, global batch 64, M=32, "
     "20 steps, seed 3407, both Sparks uncapped at ~2400 MHz"
 )
-# tok/s per arm. `one_spark` is None where no control was measured in the SAME clock state -
-# a control taken while the thermal guard capped the node mid-cell is not a control, and two
-# such attempts were discarded rather than reported.
+# `one_spark` is None where no control was measured in the SAME clock state: a control taken
+# while the thermal guard capped the node mid-cell is not a control.
 TRAIN_DP_VS_PP_TOKS: Dict[str, Dict[str, Optional[int]]] = {
     "unsloth/Qwen3.5-2B": {
         "one_spark": 2613,
@@ -3761,112 +3573,61 @@ TRAIN_DP_VS_PP_TOKS: Dict[str, Dict[str, Optional[int]]] = {
         "fsdp": 927,
     },
 }
-# DDP over one Spark. 2.05x at 9B is perfect scaling inside the noise, not superlinearity.
+# DDP over one Spark. Above 2.0x is perfect scaling inside the noise, not superlinearity.
 TRAIN_DP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.99, "unsloth/Qwen3.5-9B": 2.05}
 # Best PP schedule over one Spark, same rows and loss.
 TRAIN_PP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.58, "unsloth/Qwen3.5-9B": 1.79}
 TRAIN_DP_SPEEDUP_RANGE = (1.99, 2.05)
 TRAIN_PP_SPEEDUP_RANGE = (1.58, 1.79)
-# DDP over the best PP schedule on the SAME pair. This one needs no single-Spark control at
-# all, so it survives even when a control has to be thrown away. DP wins on both models.
+# DDP over the best PP schedule on the SAME pair: no single-Spark control needed, so this one
+# survives even when a control has to be thrown away.
 TRAIN_DP_OVER_PP = {"unsloth/Qwen3.5-2B": 1.26, "unsloth/Qwen3.5-9B": 1.14}
-# Peak GiB on the fuller rank: DDP holds the whole model per node, PP half of it. That is
+# Peak GiB on the fuller rank. DDP holds the whole model per node against PP's half, which is
 # the price of the DP win and the reason the rule is size-gated rather than universal.
 TRAIN_PEAK_GIB = {"unsloth/Qwen3.5-2B": (10.16, 9.58), "unsloth/Qwen3.5-9B": (28.60, 24.13)}
-# FSDP shards the base weights instead of replicating them, which does cut resident memory
-# (9.21 against 10.16 GiB at 2B), but it gathers every layer on every microbatch and lands
-# BELOW both DDP and the pipeline schedules. It is not a recommended axis on this pair.
+# FSDP does cut resident memory, but it gathers every layer on every microbatch and lands BELOW
+# both DDP and the pipeline schedules. Not a recommended axis on this pair.
 TRAIN_FSDP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.25, "unsloth/Qwen3.5-9B": 1.09}
-# Which schedule when a split is forced. On models that FIT, dualpipev edges 1f1b by well
-# under a percent (4128 vs 4106 at 2B, 1525 vs 1505 at 9B) -- a tie-break, not a result --
-# while 1f1b is much the cheaper in memory on the fuller rank (5.52 vs 9.58 GiB at 2B, 16.86
-# vs 24.13 at 9B).
-#
-# But the split is only ever RECOMMENDED for a model that does NOT fit, and there the tie
-# breaks hard. Llama-3.3-70B on the pair, 2026-09-06, LoRA r=16, seq 512, global batch 16,
-# M=8, 10 steps, --shard-load --grad-checkpoint, both nodes pinned at 1690 MHz so neither
-# arm straddled a thermal cap:
-#
-#   1f1b       10 steps in 554.3 s, 55.43 s/step, 148 tok/s, peak 69.46 / 69.80 GiB
-#   dualpipev  did not complete: NVRM NV_ERR_NO_MEMORY on rank 0, the peer's collective
-#              timed out after 600 s, and the kernel OOM killer took rank 0
-#
-# Repeated at half the in-flight tokens (batch 8, same M) dualpipev still died, on step 1,
-# with rank 0 down to 3 GiB available while rank 1 sat at 45. The cause is structural, not a
-# bug: the V layout co-locates the FIRST and LAST stages on one rank, so rank 0 carries the
-# embedding, the LM head, the loss, two layer chunks (68.06 GiB resident against rank 1's
-# 64.14) and the deepest in-flight microbatch set all at once. At 2B and 9B that costs a few
-# GiB and is invisible; at 70B it does not fit on a 121.69 GiB node. 1f1b splits evenly
-# (66.10 GiB on both ranks) and lands the loss on the rank without the embedding.
-#
-# So the schedule default is 1f1b, and dualpipev is NOT a safe fallback at capacity sizes.
-# The co-located hop it trades that memory for buys nothing here either: the 1f1b cell moved
-# 1386 MB over 1079 s, about 2.5 MB/s, against a link that does 20.31 GB/s of NCCL busbw.
-# With grad checkpointing at seq 512 the stages are compute-bound by three orders of
-# magnitude and the interconnect is idle.
+# Which schedule when a split is forced. The two are a tie-break on models that FIT, but a
+# split is only RECOMMENDED for a model that does NOT, and there the tie breaks hard: at 70B
+# dualpipev never completed a step, out of memory on rank 0, while 1f1b did. Structural, not a
+# bug: the V layout co-locates the FIRST and LAST stages on one rank, which then carries the
+# embedding, the LM head, the loss and the deepest in-flight set at once. The co-located hop it
+# trades that memory for buys nothing either, the link being idle at seq 512 with grad
+# checkpointing.
 TRAIN_PP_SCHEDULE = "1f1b"
 TRAIN_PP_SCHEDULE_MARGIN = 0.005  # dualpipev over 1f1b ON MODELS THAT FIT; below noise
 
-# ── How many microbatches per optimiser step, measured 2026-09-07 ────────────────────────
-# Every pipeline-parallel training number this project recorded before today was taken at ONE
-# microbatch configuration, inherited from a script default and never swept: global batch 64
-# with M=32 at 9B, global batch 16 with M=8 at 70B. M is not a free parameter. It sets the
-# fill/drain bubble, which shrinks as 2M/(M+1), and it sets the microbatch size B/M, which
-# decides how often a stage pays the batch-independent part of its work.
-#
-# Swept at a FIXED global batch so the arithmetic per step is constant and only the schedule's
-# shape changes. Both Sparks pinned at 1690 MHz for every cell, forward and reversed:
-#
-#   9B, batch 64, 1f1b     M=4 1073/1144   M=8 1197/1281   M=16 1337/1350
-#                          M=32 1438/1434  M=64 1462/1485 tok/s
-#   9B, batch 64, control  M=8 779/782  M=16 788  M=32 823/822  M=64 845 tok/s
-#   70B, batch 16, 1f1b    M=2 111  M=4 133  M=8 146/139  M=16 161 tok/s
-#
-# MONOTONE, with no interior knee, on both models. More microbatches is always better, right
-# up to one row per microbatch, which is where the axis ends because a batch of B rows cannot
-# be cut into more than B pieces. The bubble term dominates and the per-microbatch fixed cost
-# stays cheap, because even one row of 512 tokens is above the ~436-token compute/bandwidth
-# crossover. At 70B the best M is also the CHEAPEST in memory (68.45/68.61 GiB at M=16 against
-# 76.88/75.15 at M=2), because fewer rows per microbatch means less activation in flight.
-#
-# So the rule is: one row per microbatch, M = global batch. There is no trade-off to balance.
-# This matters because the harness default is `--microbatches 4`, which on the 70B is 133 tok/s
-# against 161 at M=16 - the planner's own command line was emitting the WORST point on the
-# curve, and now names M explicitly.
+# How many microbatches per optimiser step. M sets the fill/drain bubble, which shrinks as
+# 2M/(M+1), and the microbatch size B/M. Swept at a FIXED global batch it is MONOTONE with no
+# interior knee on both models, right up to one row per microbatch, where the axis ends because
+# B rows cannot be cut into more than B pieces: the bubble term dominates and even one row of
+# 512 tokens is above the ~436-token compute/bandwidth crossover. At 70B the best M is also the
+# CHEAPEST in memory. This matters because the harness default of 4 was the WORST point on it.
 TRAIN_PP_MICROBATCHES_RULE = "one row per microbatch: --microbatches equal to the global batch"
 TRAIN_PP_MICROBATCHES_SWEPT = {
     # model -> global batch -> {M: tok/s}, best-of/mean where a point was measured twice
     "unsloth/Qwen3.5-9B": {64: {4: 1108, 8: 1239, 16: 1343, 32: 1436, 64: 1473}},
     "unsloth/Llama-3.3-70B-Instruct": {16: {2: 111, 4: 133, 8: 142, 16: 161}},
 }
-# Raising the GLOBAL batch while holding one row per microbatch - the direction that amortises
-# the per-optimiser-step cost rather than the per-microbatch one - saturates almost at once:
-# 1481, 1502, 1508 tok/s at batch 64/128/256 against a single-Spark control that is FLAT at
-# 847/849/849. The control not moving at all is the finding: a single Spark training the 9B is
-# bandwidth-bound, so neither the microbatch shape nor the SM clock changes it much.
+# Raising the GLOBAL batch while holding one row per microbatch saturates almost at once, and
+# the single-Spark control is FLAT: a single Spark training the 9B is bandwidth-bound, so
+# neither the microbatch shape nor the SM clock changes it much.
 TRAIN_PP_GLOBAL_BATCH_SWEPT = {64: (1481, 847), 128: (1502, 849), 256: (1508, 849)}
-# Best pipeline-parallel training speedup measured on the pair, against a control swept over
-# the same axis rather than pinned at somebody else's M. 1508 / 849.
+# Best PP training speedup on the pair, against a control swept over the same axis rather than
+# pinned at somebody else's M.
 TRAIN_PP_BEST_SPEEDUP = 1.776
 
-# A correction to the speedups recorded on 2026-09-06, which this sweep was run to check.
-# Those ratios divided by a single-Spark control that was ITSELF splitting batch 64 into 32
-# pieces and paying the per-microbatch cost 32 times, so the denominator was handicapped in
-# the same way the numerator was. Measured: the control does move with M, 779 to 845 tok/s,
-# 8.5 percent across the full range. But between the recorded M=32 and the best M=64 it moves
-# only 2.7 percent while the pipeline arm moves 1.7 percent, so the RATIO barely changes:
-# 1f1b over the control reads 1.537, 1.705, 1.746, 1.744 at M = 8, 16, 32, 64. The recorded
-# M=32 happens to sit at the top of that curve. So every training speedup on record is
-# inflated by roughly 2 to 3 percent at 9B, the ordering of the arms is untouched, and the
-# in-block 1.746 at M=32 reproduces the recorded 1.77 to within the clock difference. The
-# numbers below are NOT rewritten, because this block did not re-measure DDP or FSDP and a
-# table half at 1690 MHz and half uncapped would be worse than one that is consistent.
+# The earlier speedups divided by a control that was ITSELF splitting batch 64 into 32 pieces,
+# so the denominator was handicapped like the numerator. The control does move with M, but the
+# ratio barely does, so those speedups are inflated by a couple of percent and the ordering of
+# the arms is untouched. They are NOT rewritten here: this block did not re-measure DDP or FSDP,
+# and a table half pinned and half uncapped would be worse than a consistent one.
 TRAIN_SPEEDUP_INFLATION_FROM_UNSWEPT_CONTROL = 0.03
-# ... and a warning for whoever changes M next: M=32 was optimal by luck, not by design.
-# Moving off it in either direction costs speedup, and nobody chose it.
+# A warning for whoever changes M next: the recorded M=32 sat at the top of that curve by luck,
+# and moving off it in either direction costs speedup.
 
-# The capacity case, re-measured 2026-09-07 at the best M rather than at the script default.
-# `dualpipev_gib` is None because the arm never reached a step it could report a peak for --
+# `dualpipev_gib` is None because the arm never reached a step it could report a peak for, and
 # recording the number it died at would imply it ran.
 TRAIN_PP_70B = {
     "model": "unsloth/Llama-3.3-70B-Instruct",
@@ -3878,8 +3639,7 @@ TRAIN_PP_70B = {
     "1f1b_microbatches": 16,
     "1f1b_loss_at_last_step": 12.1359,
     "1f1b_peak_gib": (68.45, 68.61),
-    # The whole M sweep at this size, so the choice is visible and not just asserted. M=16 is
-    # both the fastest AND the smallest, so there is nothing to trade off.
+    # The whole M sweep at this size: the best M is both the fastest AND the smallest.
     "1f1b_toks_by_microbatches": {2: 111, 4: 133, 8: 142, 16: 161},
     "1f1b_peak_gib_by_microbatches": {
         2: (75.15, 76.88),
@@ -3889,26 +3649,18 @@ TRAIN_PP_70B = {
     },
     "dualpipev_toks": None,
     "dualpipev_peak_gib": None,
-    # Settled by exhaustion on 2026-09-07 rather than inferred from two failed cells. The
-    # earlier retry at global batch 8 with M=8 was ALREADY one row per microbatch, the
-    # smallest microbatch that exists, so no reduction in microbatch size was left to try.
-    # The only remaining variable was M, and ScheduleDualPipeV at pp=2 has num_stages=4, so
-    # M>=4 is a hard refusal; raising M only puts more microbatches in flight. That leaves
-    # exactly one configuration that minimises both terms at once, global batch 4 with M=4,
-    # and no smaller dualpipev configuration exists anywhere in the parameter space. It was
-    # run: rank 0 fell from 12 to 4 GiB available in ten seconds at the first step, GPU
-    # utilisation 6 percent, while rank 1 sat at 45 GiB. Killed by a memory watchdog, not by
-    # the kernel. So the answer is no at ANY microbatch configuration, not just at the two
-    # that were tried before.
+    # Settled by exhaustion, not inferred from two failed cells: ScheduleDualPipeV at pp=2 has
+    # num_stages=4, so M>=4 is a hard refusal and raising M only puts more microbatches in
+    # flight, leaving global batch 4 with M=4 the smallest configuration the V layout admits
+    # anywhere. It was run, and rank 0 ran out of memory there too.
     "dualpipev_outcome": "out of memory on rank 0 at global batch 16, at batch 8, and at "
     "batch 4 with M=4 -- the smallest configuration the V layout admits, so no microbatch "
     "setting makes it viable at this size",
     "dualpipev_rank0_weights_gib": 68.06,
     "dualpipev_rank1_weights_gib": 64.14,
     "link_mb_moved": 1386,
-    # Measured on the M=8 cell over 10 steps. Bytes per step do not depend on M: halving the
-    # microbatch halves each message and doubles the number of them, and the same total hidden
-    # state crosses the wire either way. So the bandwidth argument carries over to M=16.
+    # Measured on the M=8 cell. Bytes per step do not depend on M -- halving the microbatch
+    # halves each message and doubles the number of them -- so this carries over to any M.
     "link_measured_over_steps": 10,
     "link_measured_s_per_step": 55.96,
     "link_busbw_gbs": 20.31,
@@ -4005,18 +3757,15 @@ def plan_training(
         axis = "pipeline-parallel",
         schedule = TRAIN_PP_SCHEDULE,
         speedup = None,
-        # `measured` is about the SPEEDUP, and it stays False: a model that does not fit on
-        # one Spark has no single-Spark control to divide by, so there is no honest ratio to
-        # report. The schedule CHOICE, separately, is now measured at this size.
+        # `measured` is about the SPEEDUP and stays False: a model that does not fit on one
+        # Spark has no control to divide by. The schedule CHOICE is measured at this size.
         measured = False,
         schedule_measured = True,
         schedule_evidence = TRAIN_PP_70B,
         commands = [
             env,
-            # --microbatches is NOT optional here. Leaving it off takes the trainer default of
-            # 4, which at 70B measured 133 tok/s against 161 at M=16: this command line was
-            # emitting the worst point on a curve nobody had swept. One row per microbatch is
-            # both the fastest and the cheapest in memory, so M is the global batch.
+            # --microbatches is NOT optional: the trainer default of 4 is the worst point on
+            # the M curve, and one row per microbatch is both fastest and cheapest in memory.
             f"unsloth spark train --layer-split {model} --shard-load --grad-checkpoint "
             f"--schedule {TRAIN_PP_SCHEDULE} --batch {TRAIN_PP_70B['1f1b_microbatches']} "
             f"--microbatches {TRAIN_PP_70B['1f1b_microbatches']} --run",
@@ -4593,12 +4342,8 @@ NVFP4_KERNELS = {
             "compute-bound, which is the one regime where FP4's 3.3x arithmetic advantage "
             "over BF16 is reachable."
         ),
-        # NVFP4_FINDINGS.md sections 12 and 33: the override works on 0.28.0 and fails at
-        # init on main (cell e_u27_ficut), because on main it also picks the FP8 ScaledMM
-        # kernel for the FP8 layers of Unsloth's mixed FP8+NVFP4 checkpoints, which refuses
-        # on GB10. Section 37 (4096-token study) refuted the earlier "b12x 1.6x at long
-        # prompts" claim: flashinfer_b12x is worth about 5% on offline batch prefill only,
-        # nothing for serving, so it is not a serving recommendation.
+        # NVFP4_FINDINGS.md sections 12, 33 and 37. The earlier "b12x 1.6x at long prompts"
+        # claim was refuted by the 4096-token study, so b12x is not a serving recommendation.
         "note": (
             "validated on vLLM 0.28.0; on vLLM main the same override also selects the FP8 "
             "ScaledMM kernel for the FP8 layers of Unsloth's mixed checkpoints and fails at "

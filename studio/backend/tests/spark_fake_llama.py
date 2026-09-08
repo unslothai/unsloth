@@ -3,12 +3,10 @@
 
 """A fake llama-server for the two-Spark router tests: asyncio, loopback, SSE.
 
-Speaks just enough HTTP/1.1 for ``httpx``: one request per connection, ``/health``,
-``/slots``, ``/props`` and a streaming ``/v1/chat/completions`` that emits ``chunks``
-SSE frames tagged with the server's name, so a test can tell which backend served a
-request and in what order the frames arrived. ``die_after`` aborts the socket after
-that many frames (a process dying mid-stream); ``hold`` parks every generation on an
-event so admission and queueing can be observed; ``health_ok`` flips ``/health``.
+Speaks just enough HTTP/1.1 for ``httpx``, and tags its SSE frames with the server's name
+so a test can tell which backend served a request and in what order the frames arrived.
+``die_after`` aborts the socket mid-stream, ``hold`` parks every generation on an event so
+admission and queueing can be observed, and ``health_ok`` flips ``/health``.
 """
 
 from __future__ import annotations

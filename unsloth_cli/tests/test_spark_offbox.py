@@ -691,13 +691,9 @@ _DEVICE_MAPS = [
 def _import_loader_utils():
     """Import loader_utils, or skip when unsloth refuses to run on this machine.
 
-    Importing `unsloth.models` runs unsloth's accelerator detection, which raises
-    NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
-    on a CPU-only host. The repo test job runs on exactly such a host, so these six
-    parametrised cases and their thirty-one siblings went red there while passing on
-    any machine with a GPU. The notice cannot be exercised where the package it lives
-    in will not import, so the honest outcome is a skip and not a failure.
-    """
+    Importing `unsloth.models` runs the accelerator detection, which raises on a CPU-only
+    host like the repo test job. The notice cannot be exercised where the package it lives
+    in will not import, so the honest outcome is a skip and not a failure."""
     pytest.importorskip("torch")
     try:
         from unsloth.models import loader_utils as LU
@@ -898,10 +894,9 @@ def test_recommend_topology_layer_split_when_the_model_does_not_fit() -> None:
 
 
 def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
-    """A split is the only way to run a model that does not fit, and with the fork's
-    pipeline groups it is also the one place the second GPU pays on decode. The
-    reason says both halves, because the serving side adds the flag only when the
-    bundle's llama-server has it; a bundle without it is today's 0.85x to 1.01x."""
+    """A split is the only way to run a model that does not fit, and with the fork's pipeline
+    groups it is also the one place the second GPU pays on decode. The reason says both
+    halves, because the flag is added only when the bundle's llama-server has it."""
     sc = _load("studio/spark_cluster.py")
     out = sc.recommend_topology(150 * _GIB, 0.5 * _GIB, 32, 512, 113 * _GIB)
     assert out["topology"] == "layer_split"
@@ -919,8 +914,8 @@ def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
     ):
         assert text in reason, (text, reason)
     assert "without them expect 0.85x to 1.01x on decode and 1.7x to 1.85x on prefill" in reason
-    # And it says the other half of the split's launch: below 64 rows the drafter is on at the
-    # depth measured best for the row count, at or above 64 it is off entirely.
+    # And the other half of the split's launch: the drafter is on below the boundary at the
+    # depth measured best for the row count, and off entirely at or above it.
     for text in (
         "speculates only below 64 concurrent rows",
         "+11.0 percent at 32 rows",
@@ -933,19 +928,16 @@ def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
     assert out["split_mtp_note"] == sc.split_mtp_note()
     off = sc.recommend_topology(150 * _GIB, 0.5 * _GIB, 64, 512, 113 * _GIB)
     assert off["topology"] == "layer_split" and off["split_mtp"] is False
-    # The boundary is the SPLIT's. A model that fits is single or replicas, and those answers
-    # carry no split-speculation verdict at all: the one-Spark MTP table governs them.
+    # The boundary is the SPLIT's: single and replicas carry no split verdict at all.
     for users in (1, 8, 32, 64, 128):
         fits = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, users, 512, 113 * _GIB)
         assert fits["topology"] in ("single", "replicas"), users
         assert fits["split_mtp"] is None and fits["split_mtp_note"] is None, users
         assert "64 concurrent rows" not in fits["reason"], users
         assert fits["mtp_speedup"] == sc.mtp_speedup(users) > 1.0, users
-    # The KV-overflow split says the same.
     kv = sc.recommend_topology(100 * _GIB, 4 * _GIB, 16, 512, 120 * _GIB)
     assert kv["topology"] == "layer_split" and "pipeline groups" in kv["reason"]
     assert kv["pipeline_groups_speedup"] == sc.PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE
-    # `spark plan` prints serving["reason"], so the plan text carries it too.
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     plan = sc.plan_deployment(budget * 1.5, n_nodes = 2, intent = "throughput", concurrency = 32)
     assert plan["serving"]["topology"] == "layer_split"
@@ -961,8 +953,8 @@ def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
 
 
 def test_pipeline_groups_do_not_move_the_replicas_rule_for_a_model_that_fits() -> None:
-    """At 32 rows two replicas measured 1.91x and the grouped split 1.12x, so a model
-    that fits still gets replicas, and its reason never mentions pipeline groups."""
+    """Replicas beat a grouped split on a model that fits, so one still gets replicas and its
+    reason never mentions pipeline groups."""
     sc = _load("studio/spark_cluster.py")
     assert sc.REPLICAS_DECODE_SPEEDUP[512][32] > sc.PIPELINE_GROUPS_SPLIT_SPEEDUP[32]
     for users in (8, 16, 32, 64, 128):
@@ -976,9 +968,8 @@ def test_pipeline_groups_do_not_move_the_replicas_rule_for_a_model_that_fits() -
 
 
 def test_mtp_tables_are_the_measured_ratios_and_the_note_states_them() -> None:
-    """MTP self speculation multiplies whatever the topology gives, for a GGUF whose header
-    has the head. The planner carries the single-Spark measurement and says the no-op case;
-    the serving side decides per file."""
+    """MTP self speculation multiplies whatever the topology gives. The planner carries the
+    single-Spark measurement and the no-op case; the serving side decides per file."""
     sc = _load("studio/spark_cluster.py")
     assert sc.MTP_SPEEDUP_27B == {1: 2.61, 4: 1.87, 8: 1.59}
     assert sc.MTP_SPEEDUP_4B == {1: 2.04, 4: 1.67, 8: 1.46}
@@ -1001,7 +992,6 @@ def test_mtp_tables_are_the_measured_ratios_and_the_note_states_them() -> None:
         "stay off",
     ):
         assert text in note, (text, note)
-    # Every topology answer carries the multiplier and the note, unchanged by the topology.
     for args in ((150 * _GIB, 0.5 * _GIB, 8), (16.4 * _GIB, 0.4 * _GIB, 8), (16.4 * _GIB, 0, 1)):
         out = sc.recommend_topology(args[0], args[1], args[2], 512, 113 * _GIB)
         assert out["mtp_speedup"] == sc.mtp_speedup(args[2]) and out["mtp_note"] == note
@@ -1873,12 +1863,11 @@ def test_training_planner_picks_data_parallel_for_a_model_that_fits() -> None:
     assert out["schedule"] is None
     assert any("--data-parallel m" in c for c in out["commands"])
     assert "--layer-split" not in " ".join(out["commands"])
-    # The recommendation carries both measured numbers so the user can check the call.
     assert out["speedup"] == sc.TRAIN_DP_SPEEDUP_RANGE[0]
     assert f"{sc.TRAIN_DP_SPEEDUP_RANGE[0]:.2f}x" in out["recommendation"]
     assert f"{sc.TRAIN_PP_SPEEDUP_RANGE[0]:.2f}x" in out["recommendation"]
-    # DP costs the WHOLE model per node. A recommendation that does not say so invites the
-    # user to size a job by half the weights and OOM on the first step.
+    # A recommendation that does not say DP costs the WHOLE model per node invites the user
+    # to size a job by half the weights and OOM on the first step.
     assert "WHOLE model per node" in out["recommendation"]
 
 
@@ -1892,27 +1881,23 @@ def test_training_planner_splits_a_model_that_does_not_fit() -> None:
     assert "--layer-split big" in cmd and "--shard-load" in cmd and "--grad-checkpoint" in cmd
     assert f"--schedule {sc.TRAIN_PP_SCHEDULE}" in cmd
     assert "--data-parallel" not in cmd
-    # No speedup may be claimed for the capacity case: it was never measured against a
-    # single Spark, because at this size a single Spark cannot run the job at all.
+    # No speedup may be claimed for the capacity case: at this size a single Spark cannot
+    # run the job at all, so there is no control to divide by.
     assert out["speedup"] is None and out["measured"] is False
-    # The branch only fires for models too big for one Spark, and at that size the schedule
-    # choice is not a preference: dualpipev could not train a 70B on the pair at any batch
-    # tried. So the recommendation must name 1f1b AND warn against substituting dualpipev,
-    # which is the substitution a reader of the 2B/9B tie would otherwise make.
+    # At the size this branch fires for, dualpipev could not train at any batch tried, so the
+    # recommendation must warn against the substitution a reader of the 2B/9B tie would make.
     assert out["schedule"] == "1f1b"
     assert "1f1b" in out["recommendation"]
     assert "Do NOT substitute dualpipev" in out["recommendation"]
     assert out["schedule_measured"] is True
     assert out["schedule_evidence"] is sc.TRAIN_PP_70B
-    # Boundary: exactly the budget still fits.
     assert sc.plan_training(budget, n_nodes = 2)["axis"] == "data-parallel"
 
 
 def test_training_planner_constants_are_measured_and_consistent() -> None:
-    """The rule is only as good as its numbers: every ratio must follow from the recorded
-    tok/s, and DP must actually have beaten PP on every model measured, or the rule is
-    wrong. A model with no single-Spark control may state a DP-versus-PP ratio but must
-    NOT appear in the over-one-Spark tables."""
+    """Every ratio must follow from the recorded tok/s and DP must have beaten PP on every
+    model measured, or the rule is wrong. A model with no single-Spark control may state a
+    DP-versus-PP ratio but must NOT appear in the over-one-Spark tables."""
     sc = _load("studio/spark_cluster.py")
     assert "__" not in sc.TRAIN_MEASUREMENT and "2026" in sc.TRAIN_MEASUREMENT
     for name, arms in sc.TRAIN_DP_VS_PP_TOKS.items():
@@ -1928,7 +1913,7 @@ def test_training_planner_constants_are_measured_and_consistent() -> None:
         assert abs(sc.TRAIN_PP_SPEEDUP[name] - best_pp / one) < 0.02, name
         assert sc.TRAIN_DP_SPEEDUP[name] > sc.TRAIN_PP_SPEEDUP[name], name
         ddp_gib, pp_gib = sc.TRAIN_PEAK_GIB[name]
-        # DP replicates, PP halves: the memory price must be visible in the table.
+        # DP replicates and PP halves, so the memory price has to be visible in the table.
         assert ddp_gib > pp_gib > 0, name
     assert sc.TRAIN_DP_SPEEDUP_RANGE == (
         min(sc.TRAIN_DP_SPEEDUP.values()),
@@ -1946,72 +1931,68 @@ def test_training_planner_constants_are_measured_and_consistent() -> None:
 
 def test_capacity_schedule_is_the_one_that_actually_ran_a_70b() -> None:
     """The split is recommended ONLY for models that do not fit, so its default schedule has
-    to be justified at that size and not at 2B. dualpipev leads on speed at 2B and 9B and
-    still must not be the default, because it cannot run the case the branch exists for."""
+    to be justified at that size. dualpipev leads on speed at 2B and 9B and still must not be
+    the default, because it cannot run the case the branch exists for."""
     sc = _load("studio/spark_cluster.py")
     ev = sc.TRAIN_PP_70B
     assert sc.TRAIN_PP_SCHEDULE == "1f1b"
-    # dualpipev is faster on both models that FIT, which is exactly why the default cannot
-    # be derived from those two rows alone.
+    # dualpipev is faster on both models that FIT, which is why the default cannot come
+    # from those two rows alone.
     for name, arms in sc.TRAIN_DP_VS_PP_TOKS.items():
         assert arms["dualpipev"] >= arms["1f1b"], name
-    # ... and it has no 70B number at all, because it never completed a step. A peak
-    # recorded for an arm that died would read as though it ran.
+    # No 70B number at all, because it never completed a step: a peak recorded for an arm
+    # that died would read as though it ran.
     assert ev["dualpipev_toks"] is None and ev["dualpipev_peak_gib"] is None
     assert "out of memory" in ev["dualpipev_outcome"]
     assert ev["1f1b_toks"] > 0 and ev["1f1b_s_per_step"] > 0
     lo, hi = ev["1f1b_peak_gib"]
-    # Both ranks must be under the node budget with real headroom, or the arm that "ran"
-    # was only one bad allocation from the same fate.
+    # Both ranks need real headroom, or the arm that "ran" was one bad allocation from the
+    # same fate.
     assert 0 < lo <= hi < sc.SPARK_USABLE_GIB
-    # The V layout's selling point is a co-located hop that saves bandwidth. The link was
+    # The V layout's selling point is a co-located hop that saves bandwidth, and the link was
     # nowhere near its limit, so that saving cannot pay for the memory it costs. The step
-    # count and step time here are the ones the LINK figure was measured on, which is no
-    # longer the headline cell: it came from the M=8 run, while the headline is M=16. Bytes
-    # per step do not depend on M, so the conclusion carries, but the arithmetic must use the
-    # cell it was taken from rather than silently reusing whichever s/step is current.
+    # count and time here are the LINK cell's, not the headline cell's: bytes per step do not
+    # depend on M, so the conclusion carries, but the arithmetic must use its own cell.
     used_gbs = (
         ev["link_mb_moved"]
         / 1000.0
         / (ev["link_measured_s_per_step"] * ev["link_measured_over_steps"])
     )
     assert used_gbs < ev["link_busbw_gbs"] / 100
-    # The microbatch count is measured, monotone, and ends at one row per microbatch. A later
-    # edit that lowers it has to break this rather than quietly cost 20 percent.
+    # A later edit that lowers the microbatch count has to break this rather than quietly
+    # cost 20 percent.
     by_m = ev["1f1b_toks_by_microbatches"]
     assert ev["1f1b_microbatches"] == max(by_m), ev
     assert by_m[ev["1f1b_microbatches"]] == ev["1f1b_toks"] == max(by_m.values())
     assert sorted(by_m) == sorted(by_m, key = lambda m: by_m[m]), by_m  # monotone in M
-    # ... and at this size the best M is also the CHEAPEST, so there is no trade-off to argue
-    # about. If that ever stops being true the recommendation text has to change with it.
+    # At this size the best M is also the CHEAPEST, so there is no trade-off to argue about.
     peaks = ev["1f1b_peak_gib_by_microbatches"]
     assert peaks[ev["1f1b_microbatches"]] == ev["1f1b_peak_gib"]
     assert max(peaks[ev["1f1b_microbatches"]]) == min(max(v) for v in peaks.values())
-    # dualpipev is settled by exhaustion, not by two failed cells, so the record has to say
-    # that the smallest configuration the V layout admits was the one that failed.
+    # Settled by exhaustion, not by two failed cells: the record has to say that the smallest
+    # configuration the V layout admits was the one that failed.
     assert "batch 4 with M=4" in ev["dualpipev_outcome"]
     assert ev["dualpipev_rank0_weights_gib"] > ev["dualpipev_rank1_weights_gib"]
 
 
 def test_capacity_command_names_the_measured_microbatch_count() -> None:
-    """The planner used to emit no --microbatches at all, so a user got the trainer default of
-    4, which at 70B is the WORST point on the measured curve (133 tok/s against 161 at M=16).
-    A recommendation that silently costs 20 percent is a defect, not a default."""
+    """The planner used to emit no --microbatches at all, so a user got the trainer default,
+    which at 70B is the WORST point on the measured curve. A recommendation that silently
+    costs 20 percent is a defect, not a default."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     out = sc.plan_training(budget * 2, n_nodes = 2, model = "m")
     cmd = " ".join(out["commands"])
     m = sc.TRAIN_PP_70B["1f1b_microbatches"]
     assert f"--microbatches {m}" in cmd
-    # One row per microbatch: the batch and the microbatch count are the same number.
     assert f"--batch {m}" in cmd
     assert "microbatch" in out["recommendation"]
     assert "M=16" in out["recommendation"]
 
 
 def test_microbatch_sweep_constants_agree_with_the_rule() -> None:
-    """The rule is "one row per microbatch"; the tables that justify it must actually show it,
-    on every model swept, or the rule is being asserted rather than measured."""
+    """The tables that justify "one row per microbatch" must actually show it on every model
+    swept, or the rule is asserted rather than measured."""
     sc = _load("studio/spark_cluster.py")
     assert "one row per microbatch" in sc.TRAIN_PP_MICROBATCHES_RULE
     for name, by_batch in sc.TRAIN_PP_MICROBATCHES_SWEPT.items():
@@ -2020,9 +2001,8 @@ def test_microbatch_sweep_constants_agree_with_the_rule() -> None:
             best = max(by_m, key = lambda m: by_m[m])
             assert best == max(by_m), (name, batch, by_m)  # the largest M is the best M
             assert sorted(by_m) == sorted(by_m, key = lambda m: by_m[m]), (name, by_m)
-    # The global-batch axis saturates and the single-Spark control is flat, which is why the
-    # best speedup is barely above the one at batch 64 and why the control being bandwidth
-    # bound is the actual explanation.
+    # The global-batch axis saturates and the control is flat, which is why the best speedup
+    # is barely above the one at batch 64.
     g = sc.TRAIN_PP_GLOBAL_BATCH_SWEPT
     pp = [g[b][0] for b in sorted(g)]
     ctl = [g[b][1] for b in sorted(g)]
@@ -2030,8 +2010,8 @@ def test_microbatch_sweep_constants_agree_with_the_rule() -> None:
     assert max(ctl) / min(ctl) < 1.01  # flat: a single Spark here is bandwidth bound
     best_b = max(g, key = lambda b: g[b][0] / g[b][1])
     assert abs(sc.TRAIN_PP_BEST_SPEEDUP - g[best_b][0] / g[best_b][1]) < 0.01
-    # The best PP speedup must still be BELOW the DDP numbers, or the size-gated rule that
-    # sends models which fit to data parallel would be wrong.
+    # The best PP speedup must stay BELOW the DDP numbers, or the size-gated rule that sends
+    # models which fit to data parallel is wrong.
     assert sc.TRAIN_PP_BEST_SPEEDUP < min(sc.TRAIN_DP_SPEEDUP.values())
     assert 0 < sc.TRAIN_SPEEDUP_INFLATION_FROM_UNSWEPT_CONTROL < 0.05
 

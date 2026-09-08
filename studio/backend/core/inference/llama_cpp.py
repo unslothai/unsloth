@@ -6549,9 +6549,8 @@ class LlamaCppBackend:
 
     @property
     def base_url(self) -> str:
-        # On a paired DGX Spark serving replicas, requests go through the in-process
-        # router that spreads them over both nodes (core.inference.spark_serving). It
-        # answers None everywhere else, and the lookup is one module-global read.
+        # On a paired DGX Spark serving replicas this is the in-process router that
+        # spreads requests over both nodes; None everywhere else.
         from core.inference.spark_serving import route_base_url
 
         routed = route_base_url(self)
@@ -28087,9 +28086,8 @@ class LlamaCppBackend:
             "presence_penalty": presence_penalty,
             "frequency_penalty": frequency_penalty,
         }
-        # Two-Spark replicas: name the conversation so the router keeps every turn of
-        # this thread on the llama-server that holds its prefix in KV. The router pops
-        # the field before forwarding; it is only added while the router is active.
+        # Name the conversation, so the router keeps every turn of this thread on the
+        # llama-server that holds its prefix in KV. The router pops the field again.
         from core.inference.spark_serving import tag_conversation
 
         tag_conversation(payload, thread_id)

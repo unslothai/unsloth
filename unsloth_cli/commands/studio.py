@@ -902,16 +902,10 @@ _RUN_SHUTDOWN_SIGNALS = tuple(
 def _install_run_shutdown_handlers(run_mod):
     """Handle SIGINT and SIGTERM the way ``python run.py`` does, and return the callback.
 
-    ``run.py``'s ``__main__`` installs these; this path never did, and had two defects
-    because of it. SIGTERM had no handler at all, so it ended the process outright: the
-    lifespan shutdown never ran and the peer's ``ggml-rpc-server`` was left holding the
-    peer's GPU. And SIGINT arrived only as a ``KeyboardInterrupt``, which starts the
-    cleanup but bounds nothing after it.
-
-    The callback restores the default disposition before doing any work, so a second
-    signal force-quits an unresponsive shutdown, and it runs once however many signals
-    arrive. It never waits on anything: ``_graceful_shutdown`` bounds each of its own
-    steps, and setting the event only wakes the loop below.
+    This path never installed them, so SIGTERM ended the process outright, the lifespan
+    shutdown never ran, and the peer's ``ggml-rpc-server`` was left holding the peer's GPU.
+    The callback restores the default disposition before doing any work, so a second signal
+    force-quits an unresponsive shutdown, and it never waits on anything.
     """
     stopping = threading.Event()
 
@@ -928,8 +922,8 @@ def _install_run_shutdown_handlers(run_mod):
             event.set()
 
     for sig in _RUN_SHUTDOWN_SIGNALS:
-        # A ValueError means this is not the main thread (an embedded host); the
-        # KeyboardInterrupt path below is then the only one, exactly as before.
+        # Not the main thread (an embedded host): the KeyboardInterrupt path is the only
+        # one there, exactly as before.
         with contextlib.suppress(ValueError, OSError):
             signal.signal(sig, _request_shutdown)
     return _request_shutdown
@@ -3157,24 +3151,11 @@ def run(
         typer.echo(f"API Key: {api_key}")
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
-    # 7. Wait for Ctrl+C, SIGINT or SIGTERM.
-    #
-    # `python run.py` installs handlers for both signals in its __main__ block; this
-    # path never did, and had two defects because of it. SIGTERM had no handler at
-    # all, so it killed the process outright: the lifespan shutdown never ran and the
-    # peer's ggml-rpc-server was left holding the peer's GPU. And SIGINT reached only
-    # a KeyboardInterrupt, after which nothing bounded the exit -- the uvicorn thread
-    # is joined for five seconds and then the interpreter's own shutdown takes over,
-    # where an atexit join on a worker thread still inside an ssh or a subprocess wait
-    # holds the process for as long as that call takes. Measured live: no exit within
-    # 60 to 90 s of SIGINT, five times out of five, and only SIGTERM (i.e. a hard
-    # kill, with no cleanup) ended it.
-    #
-    # So: handle both signals, run the same graceful shutdown either way, and leave
-    # through os._exit once the cleanup has returned and the streams are flushed.
-    # Nothing after that point does any work that a user is waiting for, and nothing
-    # after that point can be allowed to block. A second signal restores the default
-    # disposition first, so an impatient Ctrl+C still force-quits.
+    # Handle both signals and leave through os._exit once the cleanup has returned:
+    # with only a KeyboardInterrupt nothing bounded the exit, and an atexit join on a
+    # worker thread inside an ssh or a subprocess wait held the process open for 60 to
+    # 90 s live. A second signal restores the default disposition, so an impatient
+    # Ctrl+C still force-quits.
     _request_shutdown = _install_run_shutdown_handlers(run_mod)
     try:
         if run_mod._shutdown_event is not None:

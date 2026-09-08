@@ -3,45 +3,24 @@
 
 """Asynchronous request router for llama-server replicas on a DGX Spark pair.
 
-Two Sparks cabled together are two hosts, so the fastest way to serve a model that fits
-on one of them is one llama-server per node and a front door that spreads requests over
-both. That front door is this module. It runs inside the Studio backend's event loop and
-listens on loopback; ``LlamaCppBackend.base_url`` points at it while replicas are active,
-so every existing Studio code path (the threaded chat generator, the OpenAI pass-through,
-tokenize, slots, health) goes through it without knowing it exists.
+One llama-server per node and a front door that spreads requests over both, inside the Studio
+backend's event loop and on loopback. ``LlamaCppBackend.base_url`` points at it while replicas
+are active, so every existing Studio code path goes through it without knowing it exists.
 
-Design, and what it does and does not borrow from vLLM
-------------------------------------------------------
-vLLM's V1 ``AsyncLLM`` (vllm/v1/engine/async_llm.py) keeps HTTP handling non-blocking by
-never running the engine in the request task: ``generate()`` makes a per-request
-``AsyncStream``, adds the request to the ``EngineCore`` ("separate process"), and "a
-separate output_handler loop runs in a background AsyncIO task, pulling outputs from
-EngineCore and putting them into the per-request AsyncStream". The engine step loop and
-the handlers only ever meet through queues, so a slow step never stalls the loop
-(https://docs.vllm.ai/en/v0.9.1/api/vllm/v1/engine/async_llm.html).
+Request handlers never block, the way vLLM's V1 ``AsyncLLM`` keeps HTTP handling off the
+engine step: every upstream exchange is an ``httpx`` async stream awaited chunk by chunk,
+health probing lives in its own background task, admission is an ``asyncio.Condition`` per
+backend, and the listener is a plain ``asyncio.start_server`` on the same loop. What is NOT
+borrowed is the single engine core and its output queue: the engines here are separate
+processes with their own schedulers and KV caches, so a request is a connection rather than a
+queue entry and the response bytes go straight from one socket to the other.
 
-Mirrored here: request handlers never block. Every upstream exchange is an ``httpx``
-async stream awaited chunk by chunk, health probing lives in its own background task
-(``_health_loop``), admission is an ``asyncio.Condition`` per backend rather than a
-thread lock, and the listener is a plain ``asyncio.start_server`` on the same loop.
-
-Not mirrored: there is no single engine core and no output queue to demultiplex. The
-engines are separate llama-server processes with their own HTTP servers, own schedulers
-and own KV caches, so a request is a connection, not a queue entry, and the response
-bytes go straight from the upstream socket to the client socket. That is also why prefix
-caching needs care (below): vLLM's one engine has one prefix cache, two llama-servers
-have two.
-
-Routing and prefix caching
---------------------------
-llama-server keeps its KV cache and prompt cache per process. A conversation whose turns
-alternate between replicas re-prefills its whole history on every turn, so routing is
-sticky: a request with a conversation key (the chat thread id, a session id, or a hash of
-the prompt prefix as a fallback) is mapped to a backend by consistent hashing over the
-healthy set. The trade-off is uneven load: a burst of turns in one conversation cannot
-spread across both nodes. Keyless requests fall back to least-outstanding-requests. When
-the sticky backend is at capacity and its queue is full the request overflows to the
-other node, paying one re-prefill rather than being refused.
+That is also why prefix caching needs care. llama-server keeps its caches per process, so a
+conversation alternating between replicas re-prefills its whole history every turn. Routing is
+therefore sticky, by consistent hashing over the healthy set, at the cost of a burst of turns
+in one conversation not spreading; keyless requests fall back to least-outstanding-requests,
+and a sticky backend whose queue is full overflows to the other node, paying one re-prefill
+rather than refusing.
 """
 
 from __future__ import annotations
@@ -58,15 +37,13 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# The chat path puts the thread id in the JSON body under this key (see
-# spark_serving.tag_conversation); the router pops it before forwarding so llama-server
-# never sees a field it does not know. Header form for external clients.
+# Popped before forwarding, so llama-server never sees a field it does not know. The header
+# form is for external clients.
 CONVERSATION_FIELD = "unsloth_conversation"
 CONVERSATION_HEADER = "x-unsloth-conversation"
 
-# Paths that generate and therefore benefit from KV locality and need admission control.
-# Everything else (health, props, slots, tokenize, apply-template, metrics) is answered
-# by the primary node, whose process the rest of Studio already manages.
+# Paths that generate, and so benefit from KV locality and need admission control. Everything
+# else is answered by the primary node, whose process the rest of Studio already manages.
 GENERATION_PATHS = frozenset(
     {
         "/v1/chat/completions",
@@ -99,9 +76,8 @@ _HOP_BY_HOP = frozenset(
     }
 )
 
-# Characters of prompt used for the fallback key. A conversation's prefix (system prompt
-# plus first user turn) is stable across turns, which is exactly the part llama-server's
-# prompt cache can reuse. Characters rather than tokens: the router does not tokenize.
+# A conversation's prefix is stable across turns, which is the part llama-server's prompt
+# cache reuses. Characters rather than tokens, because the router does not tokenize.
 PREFIX_KEY_CHARS = 1024
 
 _VIRTUAL_NODES = 64
@@ -137,12 +113,10 @@ class RouterError(Exception):
 
 
 class UpstreamUnreachable(RouterError):
-    """No backend accepted the connection.
-
-    The listener answers this by closing the client connection without a response, so
-    an ``httpx`` caller sees the same ``RemoteProtocolError`` a dead llama-server
-    produces and ``LlamaCppBackend._respawn_if_dead`` keeps working unchanged.
-    """
+    """No backend accepted the connection. The listener answers by closing the client
+    connection without a response, so an ``httpx`` caller sees the same
+    ``RemoteProtocolError`` a dead llama-server produces and
+    ``LlamaCppBackend._respawn_if_dead`` keeps working unchanged."""
 
     def __init__(self, message: str):
         super().__init__(502, message)
@@ -218,8 +192,8 @@ def _stable_hash(text: str) -> int:
 
 
 def _prompt_prefix(body: Dict[str, Any]) -> str:
-    """The stable prefix of a request: system prompt plus the first user turn, or the
-    raw prompt. Truncated so a huge first message does not cost a hash of megabytes."""
+    """The stable prefix of a request: system prompt plus the first user turn, or the raw
+    prompt. Truncated so a huge first message does not cost a hash of megabytes."""
     messages = body.get("messages")
     if isinstance(messages, list) and messages:
         parts: List[str] = []
@@ -258,11 +232,8 @@ def _prompt_prefix(body: Dict[str, Any]) -> str:
 
 
 def conversation_key(headers: Dict[str, str], body: Optional[Dict[str, Any]]) -> Optional[str]:
-    """The stickiness key for a request, or None when nothing identifies a conversation.
-
-    Precedence: the explicit header, then explicit body fields (Studio's tag, then the
-    session and user ids OpenAI-style clients send), then a hash of the prompt prefix.
-    """
+    """The stickiness key for a request, or None when nothing identifies a conversation: the
+    explicit header, then explicit body fields, then a hash of the prompt prefix."""
     header = (headers.get(CONVERSATION_HEADER) or "").strip()
     if header:
         return header
@@ -314,7 +285,6 @@ class SparkRouter:
         self.routed_keyless = 0
         self.rejected = 0
 
-    # ── Backends ──────────────────────────────────────────────────────────────
 
     def add_backend(
         self,
@@ -327,8 +297,8 @@ class SparkRouter:
         queue_limit: Optional[int] = None,
     ) -> Backend:
         if queue_limit is None:
-            # A small queue: enough to absorb a burst between two slot releases, not
-            # enough to hide a node that is saturated.
+            # Enough to absorb a burst between two slot releases, not enough to hide a
+            # saturated node.
             queue_limit = max(2, min(8, int(slots) // 2))
         backend = Backend(
             name = name,
@@ -371,10 +341,8 @@ class SparkRouter:
             backend.client = self._new_client(backend)
 
     def _new_client(self, backend: Backend) -> httpx.AsyncClient:
-        # One pool per backend. Generation streams are long, so the pool must hold
-        # every slot plus the queue; reads have no timeout because a slot can wait on
-        # other slots' prefill for a long time and the Studio side already enforces
-        # its own first-token and stall deadlines.
+        # The pool must hold every slot plus the queue. Reads have no timeout: a slot can
+        # wait on other slots' prefill, and Studio enforces its own stall deadlines.
         pool = backend.capacity + backend.queue_limit + 4
         return httpx.AsyncClient(
             base_url = backend.base_url,
@@ -401,7 +369,6 @@ class SparkRouter:
     def healthy_backends(self) -> List[Backend]:
         return [b for b in self.backends if b.healthy]
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def start(self, *, listen: bool = True) -> None:
         if self._started:
@@ -461,7 +428,6 @@ class SparkRouter:
             return None
         return f"http://{self.listen_host}:{self.listen_port}"
 
-    # ── Health ────────────────────────────────────────────────────────────────
 
     async def _health_loop(self) -> None:
         while self._started:
@@ -545,11 +511,10 @@ class SparkRouter:
         except Exception:
             logger.warning("spark router: backend callback failed", exc_info = True)
 
-    # ── Selection ─────────────────────────────────────────────────────────────
 
     def _ring(self, candidates: List[Backend]) -> List[Tuple[int, Backend]]:
-        # The ring only changes with the healthy set (two possibilities on a pair), so
-        # it is built once per set rather than once per keyed request.
+        # The ring only changes with the healthy set, so it is built once per set rather
+        # than once per keyed request.
         names = tuple(b.name for b in candidates)
         cached = self._rings.get(names)
         if cached is not None:
@@ -582,7 +547,6 @@ class SparkRouter:
             return ring[0][1]
         return min(candidates, key = lambda b: (b.in_flight + b.queued, b.name))
 
-    # ── Admission ─────────────────────────────────────────────────────────────
 
     def _has_room(self, backend: Backend) -> bool:
         return backend.in_flight < backend.capacity
@@ -592,8 +556,7 @@ class SparkRouter:
         cond = backend.cond()
         async with cond:
             # The fast path yields to anyone already queued: a slot freed by _release
-            # belongs to the first waiter, not to whichever newcomer runs first, or a
-            # sustained burst starves the queue past its wait budget.
+            # belongs to the first waiter, or a sustained burst starves the queue.
             if self._has_room(backend) and backend.queued == 0:
                 backend.in_flight += 1
                 return
@@ -631,8 +594,7 @@ class SparkRouter:
         target = self.pick(key, healthy)
         assert target is not None
         if key and not self._has_room(target) and target.queued >= target.queue_limit:
-            # Sticky target saturated and its queue full: overflow to the emptiest other
-            # node. Costs one re-prefill on that node; refusing would cost the request.
+            # Overflow costs one re-prefill on the other node; refusing costs the request.
             others = [
                 b
                 for b in healthy
@@ -642,16 +604,13 @@ class SparkRouter:
                 target = min(others, key = lambda b: (b.in_flight + b.queued, b.name))
         return target
 
-    # ── Dispatch ──────────────────────────────────────────────────────────────
 
     async def dispatch(
         self, method: str, path: str, headers: Dict[str, str], body: bytes
     ) -> Routed:
-        """Forward one request and return the upstream response for relaying.
-
-        Raises ``RouterError`` for a request that cannot be placed and
-        ``UpstreamUnreachable`` when the chosen backend refuses the connection.
-        """
+        """Forward one request and return the upstream response for relaying. Raises
+        ``RouterError`` when it cannot be placed and ``UpstreamUnreachable`` when the chosen
+        backend refuses the connection."""
         if not self._started:
             raise UpstreamUnreachable("router stopped")
         route_path = path.split("?", 1)[0]
@@ -730,9 +689,8 @@ class SparkRouter:
             except httpx.HTTPError as exc:
                 backend.failures += 1
                 backend.last_error = f"{type(exc).__name__}: {exc}"[:200]
-                # A transport failure mid-body means the process is gone or wedged. Take
-                # it out of rotation now rather than after two more probes; the health
-                # loop restores it when /health answers again.
+                # A transport failure mid-body means the process is gone or wedged: out of
+                # rotation now rather than after two more probes.
                 await self.mark_down(backend, backend.last_error)
                 raise
 
@@ -747,7 +705,6 @@ class SparkRouter:
             close = _close,
         )
 
-    # ── Status ────────────────────────────────────────────────────────────────
 
     def status(self) -> Dict[str, Any]:
         backends = [b.snapshot() for b in self.backends]
@@ -764,12 +721,9 @@ class SparkRouter:
             "backends": backends,
         }
 
-    # ── Loopback HTTP/1.1 listener ────────────────────────────────────────────
-    # Hand-rolled on purpose: the Studio process already runs uvicorn for its own app
-    # and a second uvicorn.Server in the same loop wants the signal handlers; a raw
-    # asyncio server needs nothing, parses only what httpx sends (Content-Length or
-    # chunked bodies), and relays response bodies as chunked transfer encoding so a
-    # token stream goes out the moment it comes in.
+    # Hand-rolled HTTP/1.1 on purpose: a second uvicorn.Server in the same loop wants the
+    # signal handlers, while a raw asyncio server needs nothing and parses only what httpx
+    # sends.
 
     async def _serve_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -846,9 +800,8 @@ class SparkRouter:
             await self._write_error(writer, exc.status, exc.message, retry_after = exc.retry_after)
             return not client_wants_close
 
-        # Watch the client socket while relaying so a disconnect during a long prefill
-        # (no bytes flowing yet) tears the upstream stream down promptly, which is what
-        # makes llama-server stop decoding for a request nobody is reading.
+        # Watch the client socket while relaying, so a disconnect during a long prefill tears
+        # the upstream stream down and llama-server stops decoding for a request nobody reads.
         disconnected = asyncio.Event()
         pipelined = asyncio.Event()
 
@@ -873,12 +826,11 @@ class SparkRouter:
                 pass
             await routed.close()
         if disconnected.is_set() or pipelined.is_set():
-            # A byte that arrived mid-response belongs to a pipelined request whose
-            # first byte the watcher consumed; close so the client resends it on a
-            # fresh connection (httpx never pipelines, so this is a guard, not a path).
+            # A byte that arrived mid-response belongs to a pipelined request whose first
+            # byte the watcher consumed; close so the client resends it on a fresh connection.
             return False
-        # Responses are relayed chunked and the request is fully consumed, so the
-        # connection can carry another request unless the client asked otherwise.
+        # Responses are relayed chunked and the request is fully consumed, so the connection
+        # can carry another request unless the client asked otherwise.
         return not client_wants_close
 
     async def _relay(
@@ -916,9 +868,9 @@ class SparkRouter:
                 except StopAsyncIteration:
                     break
                 except httpx.HTTPError as exc:
-                    # Upstream died after the headers went out. Tell the client in-band
-                    # in the same shape llama-server uses for its own mid-stream errors,
-                    # then end the chunked body cleanly so nothing waits on a hang.
+                    # Upstream died after the headers went out: tell the client in-band in the
+                    # shape llama-server uses for its own mid-stream errors, then end the
+                    # chunked body cleanly so nothing waits on a hang.
                     message = (
                         f"Lost connection to llama-server on {routed.backend.name} mid-response "
                         f"({type(exc).__name__}); the request cannot be resumed."
@@ -979,7 +931,6 @@ class SparkRouter:
             size_line = await reader.readuntil(b"\r\n")
             size = int(size_line.split(b";", 1)[0].strip() or b"0", 16)
             if size == 0:
-                # Trailers, then the blank line.
                 while True:
                     line = await reader.readuntil(b"\r\n")
                     if line == b"\r\n":
