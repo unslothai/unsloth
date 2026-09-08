@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import logging
+from collections.abc import Callable
 
 from . import config
 
@@ -174,7 +175,10 @@ def _ocr_one(base_url: str, model: str, image_bytes: bytes, timeout: float) -> s
 
 
 def caption_images(
-    images: list, *, endpoint: tuple[str, str] | None = None
+    images: list,
+    *,
+    endpoint: tuple[str, str] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[int, list[str]]:
     """Caption ``ParsedImage`` objects, keyed by 1-based page number; ``{}`` when there
     are no images or no vision model. The caller (`ingestion._run`) owns the on/off
@@ -187,19 +191,24 @@ def caption_images(
     base_url, model = ep
 
     out: dict[int, list[str]] = {}
-    for img in images[: config.CAPTION_MAX_IMAGES]:
-        image_bytes = getattr(img, "image_bytes", None)
-        if not image_bytes:
-            continue
-        caption = _caption_one(base_url, model, image_bytes, config.CAPTION_TIMEOUT_S)
+    selected = [
+        img for img in images[: config.CAPTION_MAX_IMAGES] if getattr(img, "image_bytes", None)
+    ]
+    for index, img in enumerate(selected, 1):
+        caption = _caption_one(base_url, model, img.image_bytes, config.CAPTION_TIMEOUT_S)
         if caption:
             page = getattr(img, "page_number", None) or 0
             out.setdefault(int(page), []).append(_collapse_runaway(caption))
+        if on_progress is not None:
+            on_progress(index, len(selected))
     return out
 
 
 def ocr_pages(
-    page_pngs: dict[int, bytes], *, endpoint: tuple[str, str] | None = None
+    page_pngs: dict[int, bytes],
+    *,
+    endpoint: tuple[str, str] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[int, str]:
     """OCR rendered page PNGs (keyed by 1-based page number) to text; ``{}`` when there
     is no vision model or no pages. The caller (`ingestion._ocr_scanned_pages`) owns the
@@ -212,10 +221,13 @@ def ocr_pages(
     base_url, model = ep
 
     out: dict[int, str] = {}
-    for page_num in sorted(page_pngs)[: config.OCR_MAX_PAGES]:
+    selected = sorted(page_pngs)[: config.OCR_MAX_PAGES]
+    for index, page_num in enumerate(selected, 1):
         text = _ocr_one(base_url, model, page_pngs[page_num], config.OCR_TIMEOUT_S)
         if text:
             out[int(page_num)] = _collapse_runaway(text)
+        if on_progress is not None:
+            on_progress(index, len(selected))
     return out
 
 
