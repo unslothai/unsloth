@@ -429,6 +429,14 @@ Environment:
         return (Test-Path -LiteralPath (Join-Path $Path "Scripts\python.exe") -PathType Leaf)
     }
 
+    # Does $Name carry the exact shape an installer gives a moved-aside venv? install.ps1 treats
+    # every other spelling as the user's own data (Test-StudioVenvRollbackMustBePreserved), so the
+    # uninstaller must not be looser about it, and the managed root is deleted recursively.
+    function _IsInstallerLeftoverName {
+        param([string]$Name)
+        return ($Name -match '^(unsloth_studio\.rollback|\.venv\.invalid)\.(\d{14}|time)\.\d+(\.\d+)?$')
+    }
+
     function _IsStudioRoot {
         param([string]$Path, [switch]$ManagedDefaultRoot)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -457,6 +465,7 @@ Environment:
         # renaming a venv.
         foreach ($leftover in @("unsloth_studio.rollback.*", ".venv.invalid.*")) {
             foreach ($dir in @(Get-ChildItem -LiteralPath $Path -Filter $leftover -Directory -Force -ErrorAction SilentlyContinue)) {
+                if (-not (_IsInstallerLeftoverName $dir.Name)) { continue }
                 if (_IsVenvDir $dir.FullName) { return $true }
             }
         }
@@ -928,6 +937,12 @@ Environment:
     if ($defaultStudioHome -and (Test-Path -LiteralPath $defaultStudioHome) -and
         -not (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot)) {
         _Substep "refusing to remove non-Unsloth path: $defaultStudioHome" "Yellow"
+        # A refused CUSTOM root is somebody else's by definition, so skipping it leaves none of
+        # our data behind. This is our own default path, where a damaged install can sit, so a
+        # studio.db here is chat history the summary must not report as never found.
+        if (Test-Path -LiteralPath (Join-Path $defaultStudioHome "studio.db") -PathType Leaf) {
+            $script:RemoveFailed = $true
+        }
     } elseif ($defaultStudioHome) {
         _RemoveRootRecordingDb $defaultStudioHome
     }

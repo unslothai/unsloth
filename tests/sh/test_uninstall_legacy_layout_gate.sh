@@ -17,8 +17,8 @@ trap 'rm -rf "$_TMP_ROOT"' EXIT
 HOME="$_TMP_ROOT/home"
 mkdir -p "$HOME"
 
-# _is_studio_root calls _is_venv_dir, so both come across or the suite is vacuous.
-for _name in _is_venv_dir _is_studio_root; do
+# _is_studio_root calls both helpers, so all three come across or the suite is vacuous.
+for _name in _is_venv_dir _is_installer_leftover_name _is_studio_root; do
     _fn=$(sed -n "/^$_name() {/,/^}/p" "$UNINSTALL_SH")
     if [ -z "$_fn" ]; then
         echo "  FAIL: could not extract $_name from $UNINSTALL_SH"
@@ -92,6 +92,21 @@ check "a leftover-named directory holding the user's own files" foreign managed 
 # bin/unsloth is only pip's console script when it is inside a venv; on its own it is a file.
 check "a console script with no venv around it" foreign managed ".venv/bin/unsloth"
 check "the same under a directory named unsloth_studio" foreign managed "unsloth_studio/bin/unsloth"
+# install.sh preserves any rollback outside <stamp>.<pid>[.<n>] as user data, so neither may the
+# uninstaller read one as ownership: "unsloth_studio.rollback.notes" is somebody's directory.
+check "a rollback-named venv outside the installer's format" foreign managed \
+    "unsloth_studio.rollback.user-data/pyvenv.cfg"
+check "an invalid-venv name outside the installer's format" foreign managed \
+    ".venv.invalid.backup/pyvenv.cfg"
+check "a rollback name with a non-numeric pid" foreign managed \
+    "unsloth_studio.rollback.20260908120000.mine/pyvenv.cfg"
+check "a rollback name with a short stamp" foreign managed \
+    "unsloth_studio.rollback.2026.4242/pyvenv.cfg"
+# ... and the shapes the installers really write, including install.sh's date fallback.
+check "partial install: rollback with a numeric suffix" own managed \
+    "unsloth_studio.rollback.20260908120000.4242.2/pyvenv.cfg"
+check "partial install: install.sh's 'time' date fallback" own managed \
+    ".venv.invalid.time.4242/pyvenv.cfg"
 
 echo
 echo "Edge cases:"

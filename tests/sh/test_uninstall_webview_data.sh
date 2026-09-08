@@ -566,6 +566,38 @@ for _case in dbremoved nodb; do
     esac
 done
 
+# ── 3j7. A default root the ownership gate refuses is skipped, not removed, so a studio.db
+# sitting in it is still on disk. Unlike a refused CUSTOM root, which is somebody else's by
+# definition, this is our own path: the summary must not answer "No studio.db was found". ──
+H=$(new_home)
+mkdir -p "$H/.unsloth/studio"
+: > "$H/.unsloth/studio/studio.db"
+_out=$(run_uninstall_out "$H" Linux)
+# The refusal goes to stderr, like every other one in the script, so ask for it separately.
+_err=$(printf '#!/bin/sh\necho Linux\n' > "$STUB_BIN/uname"; chmod +x "$STUB_BIN/uname";
+       env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME UNSLOTH_APPLICATIONS_DIR="$APPS_DIR" \
+           HOME="$H" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" 2>&1 >/dev/null)
+case "$_err" in
+    *"refusing to remove non-Unsloth path"*)
+        echo "  PASS: refused default root: says it refused"; PASS=$((PASS+1)) ;;
+    *)  echo "  FAIL: refused default root: never says it refused"; FAIL=$((FAIL+1)) ;;
+esac
+if [ -f "$H/.unsloth/studio/studio.db" ]; then
+    echo "  PASS: refused default root: the database survived"; PASS=$((PASS+1))
+else
+    echo "  FAIL: refused default root: the database was removed"; FAIL=$((FAIL+1))
+fi
+case "$_out" in
+    *"No studio.db was found"*)
+        echo "  FAIL: refused default root: claimed no studio.db was found"; FAIL=$((FAIL+1)) ;;
+    *)  echo "  PASS: refused default root: no claim that none was found"; PASS=$((PASS+1)) ;;
+esac
+case "$_out" in
+    *"some paths could not be removed"*)
+        echo "  PASS: refused default root: reported as incomplete cleanup"; PASS=$((PASS+1)) ;;
+    *)  echo "  FAIL: refused default root: reported as a clean uninstall"; FAIL=$((FAIL+1)) ;;
+esac
+
 # ── 3k. _set_marker must survive a write it cannot perform. 3i only proves the mktemp guard,
 # since an empty marker path never runs the redirection. This drives it directly: the marker
 # dir exists at startup and is gone by the write, as an operator clearing /tmp mid-run would

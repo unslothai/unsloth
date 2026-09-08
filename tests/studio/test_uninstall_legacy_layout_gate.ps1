@@ -21,12 +21,12 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ps1Path, [ref]$tokens, [ref]$errors)
 Check "uninstall.ps1 parses" ($null -eq $errors -or $errors.Count -eq 0)
 
-# _IsStudioRoot calls _IsUnslothCmdShim and _IsVenvDir, so all three must come across or the
-# suite is vacuous.
+# _IsStudioRoot calls the three helpers below, so all of them must come across or the suite is
+# vacuous.
 $allFns = $ast.FindAll({
         param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]
     }, $true)
-foreach ($name in @("_IsUnslothCmdShim", "_IsVenvDir", "_IsStudioRoot")) {
+foreach ($name in @("_IsUnslothCmdShim", "_IsVenvDir", "_IsInstallerLeftoverName", "_IsStudioRoot")) {
     $fn = $allFns | Where-Object { $_.Name -eq $name } | Select-Object -First 1
     if (-not $fn) {
         Write-Host "  FAIL  $name not found in uninstall.ps1" -ForegroundColor Red
@@ -83,6 +83,8 @@ try {
         (_IsStudioRoot (Make "partial-rollback" @("unsloth_studio.rollback.20260908120000.4242\pyvenv.cfg")) -ManagedDefaultRoot)
     Check "partial install: invalid legacy venv only" `
         (_IsStudioRoot (Make "partial-invalid" @(".venv.invalid.20260908120000.4242\pyvenv.cfg")) -ManagedDefaultRoot)
+    Check "partial install: rollback with a numeric suffix" `
+        (_IsStudioRoot (Make "partial-suffix" @("unsloth_studio.rollback.20260908120000.4242.2\pyvenv.cfg")) -ManagedDefaultRoot)
 
     # A marker is proof wherever the root sits; it is the only thing a custom root can offer.
     Check "a custom root with the venv owner marker" `
@@ -119,6 +121,14 @@ try {
         (-not (_IsStudioRoot (Make "loose-exe" @(".venv\Scripts\unsloth.exe")) -ManagedDefaultRoot))
     Check "a site-packages tree with no interpreter is refused" `
         (-not (_IsStudioRoot (Make "loose-pkg" @("unsloth_studio\Lib\site-packages\unsloth\__init__.py")) -ManagedDefaultRoot))
+    # install.ps1 preserves any rollback outside <stamp>.<pid>[.<n>] as user data, so neither may
+    # the uninstaller read one as ownership.
+    Check "a rollback-named venv outside the installer's format is refused" `
+        (-not (_IsStudioRoot (Make "leftover-freeform" @("unsloth_studio.rollback.user-data\pyvenv.cfg")) -ManagedDefaultRoot))
+    Check "an invalid-venv name outside the installer's format is refused" `
+        (-not (_IsStudioRoot (Make "leftover-backup" @(".venv.invalid.backup\pyvenv.cfg")) -ManagedDefaultRoot))
+    Check "a rollback name with a non-numeric pid is refused" `
+        (-not (_IsStudioRoot (Make "leftover-badpid" @("unsloth_studio.rollback.20260908120000.mine\pyvenv.cfg")) -ManagedDefaultRoot))
     $foreign = Make "foreign-shim" @()
     New-Item -ItemType Directory -Path (Join-Path $foreign "bin") -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $foreign "bin\unsloth.cmd") -Value "@echo off`r`npython -m mytool %*`r`n"

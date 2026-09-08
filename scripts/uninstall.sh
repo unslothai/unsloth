@@ -363,6 +363,35 @@ _is_venv_dir() {
     return 1
 }
 
+# Does $1 carry the exact name an installer gives a moved-aside venv, <prefix>.<stamp>.<pid>[.<n>]
+# with a 14-digit stamp or install.sh's "time" fallback? install.sh treats every other spelling as
+# the user's own data (_studio_venv_rollback_must_be_preserved), so the uninstaller must not be
+# looser about it: "unsloth_studio.rollback.notes" is somebody's directory, and the managed root
+# is deleted recursively.
+_is_installer_leftover_name() {
+    _l=${1##*/}
+    case "$_l" in
+        unsloth_studio.rollback.*) _l=${_l#unsloth_studio.rollback.} ;;
+        .venv.invalid.*)           _l=${_l#.venv.invalid.} ;;
+        *) return 1 ;;
+    esac
+    _l_rest=${_l#*.}
+    [ "$_l_rest" != "$_l" ] || return 1
+    _l_stamp=${_l%%.*}
+    case "$_l_stamp" in
+        time) ;;
+        ''|*[!0-9]*) return 1 ;;
+        *) [ "${#_l_stamp}" -eq 14 ] || return 1 ;;
+    esac
+    _l_pid=${_l_rest%%.*}
+    case "$_l_pid" in ''|*[!0-9]*) return 1 ;; esac
+    _l_suffix=${_l_rest#*.}
+    if [ "$_l_suffix" != "$_l_rest" ]; then
+        case "$_l_suffix" in ''|*[!0-9]*) return 1 ;; esac
+    fi
+    return 0
+}
+
 _is_studio_root() {
     _r="$1"
     # $2 = "managed": $_r is the default root install.sh manages, $HOME/.unsloth/studio.
@@ -389,6 +418,7 @@ _is_studio_root() {
     # the marker (install.sh:3190) leaves the root with neither, so it would be refused as
     # somebody else's. Only install.sh produces either name, and only ever by renaming a venv.
     for _p in "$_r"/unsloth_studio.rollback.* "$_r"/.venv.invalid.*; do
+        _is_installer_leftover_name "$_p" || continue
         _is_venv_dir "$_p" && return 0
     done
     return 1
@@ -618,6 +648,12 @@ _unsloth_uninstall_main() {
     # ~/.unsloth via the empty-dir prune below.
     if [ -e "$HOME/.unsloth/studio" ] && ! _is_studio_root "$HOME/.unsloth/studio" managed; then
         echo "  refusing to remove non-Unsloth path: $HOME/.unsloth/studio" >&2
+        # A refused CUSTOM root is somebody else's by definition, so skipping it leaves none of
+        # our data behind. This is our own default path, where a damaged install can sit, so a
+        # studio.db here is chat history the summary must not report as never found.
+        if [ -f "$HOME/.unsloth/studio/studio.db" ]; then
+            _set_marker "$_REMOVE_FAILED_FLAG"
+        fi
     else
         _remove_root_recording_db "$HOME/.unsloth/studio"
     fi
