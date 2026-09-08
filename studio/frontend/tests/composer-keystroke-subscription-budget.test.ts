@@ -91,7 +91,12 @@ test("the composer asks the thread-wide research question through the cache", ()
   // orphaned helper would leave the scan where it was.
   assert.match(
     thread,
-    /useAuiState\(\(\{ thread \}\) =>\s*threadHasResearchMessage\(thread\.messages\),?\s*\)/,
+    /state\.latestRunByThreadId\[researchThreadId\]/,
+    "the live run must override stale assistant-message status after retry or stop",
+  );
+  assert.match(
+    thread,
+    /useAuiState\(\(\{ thread \}\) =>\s*threadHasResearchMessage\(thread\.messages, liveResearchRunId\),?\s*\)/,
   );
   assert.doesNotMatch(
     thread,

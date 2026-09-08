@@ -16,8 +16,8 @@ _ZIP_DOS_EPOCH = (1980, 1, 1, 0, 0, 0)
 HERE = Path(__file__).resolve().parent
 
 
-# IOC literal scan_packages.py must trip on. Keep in sync with
-# KNOWN_IOC_STRINGS (scan_npm_packages.py) and RE_MAY12_IOC (scan_packages.py).
+# IOC literal scan_packages.py must trip on.
+# Keep in sync with KNOWN_IOC_STRINGS (scan_npm_packages.py) and RE_MAY12_IOC (scan_packages.py).
 MALICIOUS_SETUP_PY = '''"""Test fixture: do NOT install.
 
 This file embeds the May-12 Mini Shai-Hulud IOC literal so the
@@ -83,7 +83,6 @@ def _build_wheel(out_path: Path, *, name: str, payload_files: dict[str, bytes]) 
     record_lines.append(f"{dist_info}/RECORD,,")
     members[f"{dist_info}/RECORD"] = ("\n".join(record_lines) + "\n").encode()
 
-    # Write with sorted order for deterministic byte output.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression = zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(members):
@@ -140,7 +139,6 @@ def build_all() -> dict[str, Path]:
     _build_wheel(mal_whl, name = "malicious_fixture", payload_files = mal_payload)
     outputs["malicious_wheel"] = mal_whl
 
-    # Clean wheel: empty placeholder.
     clean_payload = {
         "clean_fixture/__init__.py": CLEAN_INIT_PY.encode(),
     }

@@ -58,6 +58,7 @@ import { MoreHorizontalIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  COMBINED_EXPORT_FORMATS_LIST,
   exportProjectConversations,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
@@ -83,8 +84,8 @@ const PROJECTS_INITIAL_FALLBACK = 8;
 // Approx list row height in px, used to estimate how many rows fit the page.
 const PROJECTS_ROW_HEIGHT = 68;
 
-// Modified column, matching a file-list feel: Today / Yesterday / N days ago,
-// then a short date once it is over a week old.
+// Modified column, matching a file-list feel: Today / Yesterday / N days ago, then a short date
+// once it is over a week old.
 function formatModified(ts: number): string {
   if (!Number.isFinite(ts)) return "";
   const now = new Date();
@@ -121,6 +122,7 @@ export function ProjectsPage() {
   const [extraCount, setExtraCount] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const reloadReadySent = useRef(false);
   const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
   const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
   const pinnedProjectIdSet = useMemo(
@@ -247,8 +249,8 @@ export function ProjectsPage() {
     );
     return filtered;
   }, [projects, query, sortMode]);
-  // Default view shows as many rows as fit the page, then loads more as the
-  // user scrolls near the bottom. Search always spans every project.
+  // Default view shows as many rows as fit the page, then loads more as the user scrolls near the
+  // bottom. Search always spans every project.
   const isSearching = query.trim() !== "";
   const visibleCount = baseFit + extraCount;
   const visibleProjects = isSearching
@@ -256,8 +258,16 @@ export function ProjectsPage() {
     : sortedProjects.slice(0, visibleCount);
   const hasMore = !isSearching && sortedProjects.length > visibleCount;
 
-  // Estimate how many rows fit below the list's top so the first page fills the
-  // screen without loading everything up front.
+  useEffect(() => {
+    if (!hasLoaded || reloadReadySent.current) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [hasLoaded]);
+
+  // Estimate how many rows fit below the list's top so the first page fills the screen without
+  // loading everything up front.
   useEffect(() => {
     function measure() {
       const el = listRef.current;
@@ -274,8 +284,7 @@ export function ProjectsPage() {
     return () => window.removeEventListener("resize", measure);
   }, [hasLoaded]);
 
-  // Infinite scroll: reveal another page-step whenever the sentinel near the
-  // list bottom scrolls into view.
+  // Infinite scroll: reveal another page-step whenever the sentinel near the list bottom scrolls into view.
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el || !hasMore) return;
@@ -289,8 +298,8 @@ export function ProjectsPage() {
     );
     io.observe(el);
     return () => io.disconnect();
-    // Re-observe after each load so it keeps filling while the sentinel stays
-    // in view (IntersectionObserver does not re-fire on a steady intersection).
+    // Re-observe after each load so it keeps filling while the sentinel stays in view
+    // (IntersectionObserver does not re-fire on a steady intersection).
   }, [hasMore, visibleCount]);
 
   function openProject(projectId: string) {
@@ -449,7 +458,7 @@ export function ProjectsPage() {
                     <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Combined
                     </DropdownMenuLabel>
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`ap-m-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, true)}>
                         {label}
                       </DropdownMenuItem>
@@ -475,7 +484,7 @@ export function ProjectsPage() {
                     <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Combined
                     </DropdownMenuLabel>
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`all-m-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, true)}>
                         {label}
                       </DropdownMenuItem>
@@ -656,7 +665,7 @@ export function ProjectsPage() {
                         <span>Export</span>
                       </DropdownMenuSubTrigger>
                       <DropdownMenuSubContent className="w-52">
-                        {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                        {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                           <DropdownMenuItem
                             key={fmt}
                             onSelect={(e) => {
@@ -743,7 +752,15 @@ export function ProjectsPage() {
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             Choose where to import{" "}
-            <span className="font-medium text-foreground">{importFile?.name}</span>:
+            {/* A picked local file, and the dialog portals out of any marked
+                ancestor, so the name needs its own marker. */}
+            <span
+              data-reload-snapshot-sensitive
+              className="font-medium text-foreground"
+            >
+              {importFile?.name}
+            </span>
+            :
           </p>
           <Select
             value={importTargetId ?? "__recents__"}

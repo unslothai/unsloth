@@ -512,7 +512,7 @@ export function RunPreviewCard({
           label={t("studio.preview.hardware")}
           value={
             gpu.available
-              ? `${gpu.name} · ${gpu.memoryTotalGb} GB`
+              ? `${gpu.name} · ${gpu.memoryTotalGb} GiB`
               : t("studio.preview.noGpu")
           }
         />

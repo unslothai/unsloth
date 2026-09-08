@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persist and validate the llama.cpp directory selected in Studio settings."""
+"""Persist and validate the llama.cpp directory selected in Unsloth settings."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ _path_revision = 0
 
 
 def mark_managed_llama_cpp_path(directory: Path | str) -> bool:
-    """Mark Studio's inherited install path without hiding a real env override."""
+    """Mark Unsloth's inherited install path without hiding a real env override."""
     configured = os.environ.get("UNSLOTH_LLAMA_CPP_PATH", "").strip()
     if not configured:
         os.environ.pop(MANAGED_LLAMA_CPP_PATH_MARKER, None)
@@ -92,7 +92,7 @@ def resolve_llama_server_binary(
 
 
 def get_stored_custom_llama_cpp_path() -> Optional[Path]:
-    """The Studio-selected directory, or ``None`` when automatic discovery is active."""
+    """The Unsloth-selected directory, or ``None`` when automatic discovery is active."""
     try:
         from storage.studio_db import get_app_setting
         value = get_app_setting(CUSTOM_LLAMA_CPP_PATH_SETTING_KEY, None)

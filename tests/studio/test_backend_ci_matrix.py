@@ -38,11 +38,11 @@ FLOOR_CHECK = REPO / "tests" / "test_python39_compatibility.py"
 BACKEND = REPO / "studio" / "backend"
 
 
-# The interpreter the full suite runs on. Written down rather than derived, so moving to
-# 3.14 is a decision somebody makes and defends here, not something that follows silently
-# from an edit elsewhere. Asserting only "newer than the floor" was not enough: 3.11 and
-# 3.12 satisfy that too, and either would quietly give up the removals-and-deprecations
-# coverage that is the whole reason the single leg is the newest one.
+# The interpreter the full suite runs on.
+# Written down rather than derived, so moving to 3.14 is a decision somebody makes and defends here, not something that
+# follows silently from an edit elsewhere.
+# Asserting only "newer than the floor" was not enough: 3.11 and 3.12 satisfy that too, and either would quietly give up
+# the removals-and-deprecations coverage that is the whole reason the single leg is the newest one.
 CEILING = "3.13"
 
 

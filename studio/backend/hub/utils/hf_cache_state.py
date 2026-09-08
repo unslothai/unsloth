@@ -9,7 +9,6 @@ import re
 import shutil
 import stat as stat_module
 import sys
-from functools import lru_cache
 from pathlib import Path, PureWindowsPath
 from typing import Iterable, Iterator, Optional
 
@@ -19,9 +18,8 @@ EXIT_CANCELLED = 130
 TRANSPORT_HTTP = "http"
 TRANSPORT_XET = "xet"
 VALID_TRANSPORTS = frozenset({TRANSPORT_HTTP, TRANSPORT_XET})
-# A *request* preference, deliberately NOT in VALID_TRANSPORTS: "auto" is resolved to a real
-# transport before anything is spawned, and the on-disk .transport marker must keep naming the
-# writer that produced a partial, or a resume picks the wrong strategy.
+# A request preference, deliberately NOT in VALID_TRANSPORTS: the on-disk .transport marker must
+# keep naming the writer that produced a partial, or a resume picks the wrong strategy.
 TRANSPORT_AUTO = "auto"
 VALID_TRANSPORT_MODES = frozenset({TRANSPORT_HTTP, TRANSPORT_XET, TRANSPORT_AUTO})
 TRANSPORT_MARKER_NAME = ".transport"
@@ -52,15 +50,12 @@ def incomplete_blob_hash(name: str) -> Optional[str]:
 # The last huggingface_hub line whose partials a later attempt can append to.
 _LAST_RESUMABLE_PARTIAL_VERSION = (1, 17)
 
-# How long a partial must sit untouched before it reads as abandoned rather than in flight.
-# huggingface_hub writes to one continuously, so anything still advancing has a live writer --
-# possibly a client in another process that no registry here can see. Shared by the sweep that
-# deletes abandoned partials and the progress scan that must not report one as current.
+# huggingface_hub writes to a partial continuously, so anything still advancing has a live writer,
+# possibly a client in another process no registry here can see.
 ABANDONED_PARTIAL_SECONDS = 120
 
 
-@lru_cache(maxsize = 1)
-def hf_partials_are_resumable() -> bool:
+def hf_partials_are_resumable(hub_cache: Optional[str] = None) -> bool:
     """Whether an interrupted download leaves bytes the next attempt can reuse.
 
     Up to 1.17 huggingface_hub appended to a shared ``<etag>.incomplete`` and restarted from
@@ -71,6 +66,19 @@ def hf_partials_are_resumable() -> bool:
 
     An unreadable version answers True: not knowing which writer is installed is not grounds
     for deleting bytes that may still be resumable.
+
+    On 1.18+ this also asks whether the download worker will put the 1.17 writer back
+    (:mod:`hub.utils.resumable_partials`), since a restored resumer makes partials reusable again.
+    That half turns on the filesystem the partial is on, so *hub_cache* names the root being asked
+    about. Unsloth remembers several and they need not lock alike: without it, a selected cache on a
+    network mount would condemn a local cache's partials to the abandoned-partial sweep. Omitting it
+    asks about the cache in force, which is where a new download lands.
+
+    Deliberately not cached here. The verdict is a fact about a filesystem, not about a path, so a
+    result keyed on the path alone survives a remount at the same name and outlives a momentary
+    failure to probe. The expensive part, the lock probe, is cached in
+    :mod:`hub.utils.resumable_partials` against the mounted device instead, and a probe that could
+    not run raises rather than answering, so nothing remembers a bad moment.
     """
     try:
         from huggingface_hub import __version__ as hf_version
@@ -86,7 +94,35 @@ def hf_partials_are_resumable() -> bool:
         if not digits:
             return True
         release.append(int(digits))
-    return tuple(release) <= _LAST_RESUMABLE_PARTIAL_VERSION
+    if tuple(release) <= _LAST_RESUMABLE_PARTIAL_VERSION:
+        return True
+    try:
+        from hub.utils.resumable_partials import _ProbeUnavailable, can_restore_partials
+        try:
+            return can_restore_partials(hub_cache)
+        except _ProbeUnavailable:
+            # Nothing was shown, so nothing is promised -- and nothing is remembered either.
+            return False
+    except Exception:  # noqa: BLE001 - no restoration is just the stock answer
+        from loggers import get_logger
+        get_logger(__name__).debug(
+            "Resumable-partial restoration unavailable; partials stay unresumable.",
+            exc_info = True,
+        )
+        return False
+
+
+def invalidate_partial_resumability() -> None:
+    """Re-decide resumability, for when the cache moves to another filesystem.
+
+    The verdict depends on whether ``flock`` excludes a second writer where the partial lands, so
+    it cannot be carried over from the old root.
+    """
+    try:
+        from hub.utils.resumable_partials import invalidate_probe_cache
+        invalidate_probe_cache()
+    except Exception:  # noqa: BLE001 - nothing to invalidate is not an error
+        pass
 
 
 def partial_is_process_unique(name: str) -> bool:
@@ -107,8 +143,8 @@ def blob_download_lock_held(entry: Path, blob_hash: str) -> bool:
     """
     lock_path = entry.parent / ".locks" / entry.name / f"{blob_hash}.lock"
     if not lock_path.exists():
-        # hf creates the lock file before taking the lock, so no file means no writer. It is
-        # also the answer for a SoftFileLock, whose file IS the lock (see below).
+        # hf creates the lock file before taking the lock, so no file means no writer; it is also the answer
+        # for a SoftFileLock, whose file IS the lock.
         return False
     try:
         from filelock import FileLock, Timeout
@@ -120,28 +156,27 @@ def blob_download_lock_held(entry: Path, blob_hash: str) -> bool:
     except Timeout:
         return True
     except Exception:  # noqa: BLE001 - deliberately broad, see below
-        # A filesystem without flock raises NotImplementedError here, and upstream's
-        # WeakFileLock answers it by retrying as a SoftFileLock (huggingface_hub
-        # utils/_fixes.py). Retrying is pointless for a PROBE: a soft lock is its file, and we
-        # only reach this line because that file exists, so the soft answer is "held" too.
-        # What matters is that the exception does not escape -- it used to travel out through
-        # the purge and fail the download on every retry. Any other unprobeable error answers
-        # the same way, because the caller's remaining guard is a staleness check that an
-        # ownership claim may skip, and a wrong "free" there deletes a live writer's file.
+        # A filesystem without flock raises NotImplementedError, which upstream answers by retrying as a
+        # SoftFileLock; retrying is pointless for a PROBE, since we only reach here because the file
+        # exists. What matters is that the exception does not escape: a wrong "free" deletes a live
+        # writer's file.
         return True
 
 
-def partial_is_resumable(name: str) -> bool:
+def partial_is_resumable(name: str, hub_cache: Optional[Path | str] = None) -> bool:
     """Whether any later attempt could append to this particular partial.
 
     Two conditions, and the layout half matters on its own: a nonce partial is private to the
     process that created it, so even a legacy writer will not reopen it. That combination is
     reachable whenever caches are shared across environments, which this repo's own pins
     produce (Python 3.10+ takes hub >= 1.23, older takes 0.36.2, one cache between them).
+
+    *hub_cache* is the root the partial lives under. Callers walking more than one cache must pass
+    it, since the answer is partly a property of that root's filesystem.
     """
     if partial_is_process_unique(name):
         return False
-    return hf_partials_are_resumable()
+    return hf_partials_are_resumable(str(hub_cache) if hub_cache is not None else None)
 
 
 def _safe_is_dir(path: Path, scan_errors: Optional[list] = None) -> bool:
@@ -206,10 +241,9 @@ def hf_cache_roots(scan_errors: Optional[list] = None) -> list[Path]:
         try:
             key = str(path.resolve())
         except OSError as exc:
-            # A root that stats but will not resolve -- an intermittent network mount, a
-            # Windows reparse point -- is a root we could not read, not a root that is gone.
-            # Dropping it silently let the progress scan answer "measured, no cache", which
-            # hydration acts on by retiring a download whose files may be entirely intact.
+            # A root that stats but will not resolve is a root we could not read, not one that is gone:
+            # dropping it silently let the progress scan answer "measured, no cache", which retires a download
+            # whose files may be intact.
             if scan_errors is not None:
                 scan_errors.append(exc)
             return
@@ -263,11 +297,9 @@ def blob_bytes_present(path: Path) -> int:
     blocks = getattr(st, "st_blocks", None)
     if blocks is not None and blocks > 0:
         return min(blocks * 512, st.st_size)
-    # A present zero is not a missing field. A parallel writer that sets the partial to its
-    # final length before its first chunk lands sits exactly here, and reading st_size then
-    # says "0 B left" on a download that has transferred nothing. The zero alone is not enough
-    # to act on -- a mount that never populates st_blocks looks the same -- so confirm the
-    # emptiness directly before believing it.
+    # A present zero is not a missing field: a parallel writer that sets the partial to its final
+    # length before its first chunk lands sits exactly here, and a mount that never populates
+    # st_blocks looks the same, so confirm the emptiness directly before believing st_size.
     if blocks == 0 and _holds_no_data(path):
         return 0
     if sys.platform == "win32":
@@ -439,8 +471,7 @@ def latest_snapshot_from_cache_path(
     try:
 
         def has_metadata(path: Path) -> bool:
-            # required_groups is an AND of ORs: the snapshot must carry at least one file from every
-            # group. That is what "loadable" means: metadata alone or weights alone is not enough.
+            # required_groups is an AND of ORs: "loadable" means metadata alone or weights alone is not enough.
             for group in required_groups:
                 if not any((path / name).is_file() for name in group):
                     return False
@@ -479,17 +510,32 @@ def latest_snapshot_from_cache_path(
         return None
 
 
-def _repo_dir_has_broken_snapshot_symlinks(repo_dir: Path) -> bool:
-    latest = latest_snapshot_dir(repo_dir)
-    if latest is None:
-        return False
+def snapshot_has_broken_symlinks(snapshot: Path) -> bool:
+    """Whether ``snapshot`` links to a blob that is not finalized.
+
+    Scoped to one snapshot on purpose. A ``.incomplete`` blob under ``blobs/``
+    belongs to whichever revision or scoped file set is fetching it, and the cache
+    is shared, so its presence says nothing about the revision being validated.
+    What does is a link this snapshot owns whose target is not there yet.
+
+    Windows hydrates the cache with copies rather than links, so there is nothing
+    to dangle: a half-fetched file is simply absent, which the payload inventory
+    catches instead.
+    """
     try:
-        for entry in latest.rglob("*"):
+        for entry in snapshot.rglob("*"):
             if entry.is_symlink() and not entry.exists():
                 return True
     except OSError:
         return False
     return False
+
+
+def _repo_dir_has_broken_snapshot_symlinks(repo_dir: Path) -> bool:
+    latest = latest_snapshot_dir(repo_dir)
+    if latest is None:
+        return False
+    return snapshot_has_broken_symlinks(latest)
 
 
 def iter_repo_cache_dirs(
@@ -562,7 +608,7 @@ def iter_active_repo_cache_dirs(
         for entry in root.iterdir():
             if entry.name.lower() == target:
                 yield entry
-    except OSError as exc:  # see iter_repo_cache_dirs on why the caller may want this
+    except OSError as exc:
         if scan_errors is not None:
             scan_errors.append(exc)
         return
@@ -576,22 +622,17 @@ def preferred_repo_cache_dirs(
     active_root: Optional[Path] = None,
     scan_errors: Optional[list] = None,
 ) -> list[Path]:
-    # iter_active_repo_cache_dirs already matches case-insensitively, so a repo
-    # dir the active root does hold is found whatever its casing; the canonical
-    # name below is only ever a placeholder for one that is not there yet.
+    # iter_active_repo_cache_dirs already matches case-insensitively, so the canonical name below is
+    # only ever a placeholder for a repo dir that is not there yet.
     active_entries = list(
         iter_active_repo_cache_dirs(repo_type, repo_id, root = active_root, scan_errors = scan_errors)
     )
     if active_entries:
         return active_entries
     if force_active:
-        # A running or cancelling job writes into the active root and nowhere
-        # else, so its progress may only ever be read from there. hf_cache_root
-        # returns None for a root that is not a directory yet -- the first
-        # download into a freshly configured cache creates it -- and falling
-        # through from there would read a previous cache's completed copy as
-        # this run's progress and finalize a job that has not written a byte.
-        # Name the directory this run will create instead.
+        # A running or cancelling job writes into the active root and nowhere else, so its progress may
+        # only be read from there: hf_cache_root returns None for a root not yet created, and falling
+        # through would read a previous cache's completed copy as this run's progress.
         root = hf_cache_root(root = active_root) or active_root or _configured_hub_cache()
         if root is not None:
             canonical = repo_cache_dir_name(repo_type, repo_id)
@@ -600,9 +641,8 @@ def preferred_repo_cache_dirs(
 
 
 def _configured_hub_cache() -> Optional[Path]:
-    # Path()-wrapped: the setting is typed Path, but a caller (or a test) that
-    # hands back a str would otherwise turn `root / name` above into a TypeError
-    # that surfaces as an empty progress reading -- the very card being fixed.
+    # Path()-wrapped: the setting is typed Path, but a caller handing back a str would turn `root /
+    # name` into a TypeError that surfaces as an empty progress reading.
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
         configured = get_hf_cache_paths().hub_cache
@@ -776,9 +816,8 @@ def with_load_subdirs(model_name: str, names: tuple[str, ...]) -> tuple[str, ...
         from utils.security import security_load_subdirs
         subdirs = security_load_subdirs(model_name, local_files_only = True)
     except Exception:
-        # Degrading to root-only is fail-closed at every caller, so nothing is wrongly accepted. But a
-        # real cache permission or corruption fault then reaches the user as "your cached model isn't
-        # cached" with no clue why, and four sites now share this handler.
+        # Degrading to root-only is fail-closed at every caller, but a real cache permission or corruption
+        # fault then reaches the user as "your cached model isn't cached" with no clue why.
         from loggers import get_logger
         get_logger(__name__).debug(
             "Load-subdir detection failed for %s; using root only.",

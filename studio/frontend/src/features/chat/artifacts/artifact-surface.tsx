@@ -45,9 +45,9 @@ function buildHtmlFence(source: string): string {
   const fence = "`".repeat(longestBacktickRun + 1);
   return `${fence}html\n${source}\n${fence}`;
 }
-// Sandboxed canvas iframes are deliberately outside the overlay focus trap:
-// granting same-origin sandbox privileges would weaken isolation, so reaching
-// interactive canvas content via keyboard is a known sandbox limitation.
+// Sandboxed canvas iframes are deliberately outside the overlay focus trap: granting same-origin
+// sandbox privileges would weaken isolation, so reaching interactive canvas content via keyboard
+// is a known sandbox limitation.
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -110,6 +110,7 @@ export function ArtifactSurface({
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<Element | null>(null);
   const filename = getArtifactFilename(artifact);
   const sourceMarkdown = useMemo(
@@ -198,10 +199,9 @@ export function ArtifactSurface({
           ? "artifact-panel-shell mx-2 mb-8 overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
           : "h-[min(92dvh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
       )}
-      // The chat-model notice is an absolute child of the chat content container, so
-      // it spans this column too, not just the thread pane. Its height is 0 whenever
-      // it is not on screen, which leaves the geometry this panel has always had.
-      // Both edges move, or the panel keeps its height and overflows the bottom.
+      // The chat-model notice is an absolute child of the chat content container, so it spans this
+      // column too, not just the thread pane. Its height is 0 whenever it is off screen, which leaves
+      // the geometry this panel has always had. Both edges move, or the panel overflows the bottom.
       style={
         variant === "panel"
           ? {
@@ -268,8 +268,8 @@ export function ArtifactSurface({
             className="size-8"
             disabled={isLoadingArtifact || !hasArtifactCode}
             onClick={() => {
-              // Route through the native save dialog on desktop; the plain
-              // blob-anchor download is silently dropped by the Tauri WebView2.
+              // Route through the native save dialog on desktop; the plain blob-anchor download is silently
+              // dropped by the Tauri WebView2.
               void downloadFile(
                 artifact.code,
                 filename,
@@ -312,6 +312,7 @@ export function ArtifactSurface({
             </Button>
           ) : null}
           <Button
+            ref={closeButtonRef}
             type="button"
             variant="ghost"
             size="icon"
@@ -344,6 +345,9 @@ export function ArtifactSurface({
             title={artifact.title}
             fill={true}
             className="h-full"
+            actionFocusTargetRef={
+              variant === "overlay" ? closeButtonRef : undefined
+            }
           />
         ) : (
           <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">

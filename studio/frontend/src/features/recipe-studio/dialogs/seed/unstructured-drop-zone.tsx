@@ -293,7 +293,10 @@ export function UnstructuredDropZone({
                   className="size-4 text-red-500"
                 />
               )}
-              <span className="flex-1 truncate">{entry.name}</span>
+              {/* Queued local upload, so keep the name out of the snapshot. */}
+              <span data-reload-snapshot-sensitive className="flex-1 truncate">
+                {entry.name}
+              </span>
               <span className="text-muted-foreground text-xs">
                 {formatSize(entry.size)}
               </span>

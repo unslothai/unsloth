@@ -32,7 +32,10 @@ import type {
 import { createHighlighter } from "shiki";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
-import { createCodePlugin } from "../src/components/assistant-ui/code-plugin.ts";
+import {
+  createCodePlugin,
+  TOKENIZE_LIMITS,
+} from "../src/components/assistant-ui/code-plugin.ts";
 
 const THEMES: [ThemeInput, ThemeInput] = ["github-light", "github-dark"];
 
@@ -201,6 +204,8 @@ test("a fence evicted mid-stream still tokenizes correctly when it resumes", asy
     highlighter.codeToTokens(code, {
       lang: "html",
       themes: { light: "github-light", dark: "github-dark" },
+      // Same tokenizer limits as the plugin, so neither side can degrade.
+      ...TOKENIZE_LIMITS,
     }).tokens;
 
   const settle = () => new Promise((r) => setTimeout(r, 260));

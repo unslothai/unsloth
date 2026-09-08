@@ -332,6 +332,15 @@ def _split_string_token(s: str) -> tuple[str, str, str] | None:
     return None
 
 
+# PEP 701 split f-strings into FSTRING_START/MIDDLE/END in 3.12. Before that one arrives
+# as a single STRING token, which the branch below already handles, so reading the names
+# unguarded raised AttributeError and killed the whole post-pass: `ruff format` had already
+# stripped the kwarg spacing this script exists to restore, so every file it touched came
+# back reformatted and the hook failed repo-wide. `t.type` is an int, so None never matches.
+_FSTRING_START = getattr(tokenize, "FSTRING_START", None)
+_FSTRING_END = getattr(tokenize, "FSTRING_END", None)
+
+
 # A "piece" is one string literal in source: a plain STRING token, or a whole
 # f-string spanning FSTRING_START..FSTRING_END. (kind, (row, col0), (row, col1), raw)
 def _string_pieces(
@@ -351,13 +360,13 @@ def _string_pieces(
         if t.type == tokenize.STRING:
             pieces.append(("str", t.start, t.end, raw_of(t.start, t.end)))
             i += 1
-        elif t.type == tokenize.FSTRING_START:
+        elif t.type == _FSTRING_START:
             depth = 0
             j = i
             while j < n:  # walk to the matching FSTRING_END (f-strings can nest)
-                if toks[j].type == tokenize.FSTRING_START:
+                if toks[j].type == _FSTRING_START:
                     depth += 1
-                elif toks[j].type == tokenize.FSTRING_END:
+                elif toks[j].type == _FSTRING_END:
                     depth -= 1
                     if depth == 0:
                         break

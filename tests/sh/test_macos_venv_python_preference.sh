@@ -98,10 +98,10 @@ else
     PASS=$((PASS + 1))
 fi
 
-echo "=== Studio installer stream ==="
+echo "=== Unsloth installer stream ==="
 
 # install.rs turns [TAURI:ERROR_OUTPUT] into "Installation failed" until a later
-# [TAURI:ERROR_CLEAR]. A recovered fallback must emit one or Studio reports a
+# [TAURI:ERROR_CLEAR]. A recovered fallback must emit one or Unsloth reports a
 # failure it already recovered from.
 _STREAM=$(mktemp)
 {
@@ -140,7 +140,7 @@ fi
 
 _out=$(_emit 1)
 assert_contains "fallback run still returns 0" "$_out" "RC=0"
-assert_contains "recovery clears the Studio failure" "$_out" "ERROR_CLEAR"
+assert_contains "recovery clears the Unsloth failure" "$_out" "ERROR_CLEAR"
 assert_eq "ERROR_CLEAR is the last error-state line" "ERROR_CLEAR" \
     "$(echo "$_out" | grep -o 'ERROR_OUTPUT\|ERROR_CLEAR' | tail -1)"
 

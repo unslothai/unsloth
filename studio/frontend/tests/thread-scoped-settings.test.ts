@@ -83,6 +83,7 @@ test("settings that describe the installation stay out of the snapshot", () => {
     "showCanvasMenuItem",
     "collapseHtmlArtifacts",
     "allowArtifactNetworkAccess",
+    "searchImages",
     "ragOcrScanned",
     "ragCaptionFigures",
     "researchWebsitePolicy",

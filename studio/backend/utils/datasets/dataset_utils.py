@@ -35,6 +35,7 @@ from .format_conversion import (
     convert_sharegpt_with_images_to_vlm_format,
 )
 from .chat_templates import (
+    _custom_prompt_template_error,
     apply_chat_template_to_dataset,
     get_dataset_info_summary,
     get_tokenizer_chat_template,
@@ -120,7 +121,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         }
 
     if is_audio:
-        # Audio dataset — require manual mapping only when columns aren't auto-detected
+        # Audio dataset - require manual mapping only when columns aren't auto-detected
         detected_audio = multimodal_info.get("detected_audio_column")
         detected_text = multimodal_info.get("detected_text_column")
         needs_mapping = not detected_audio or not detected_text
@@ -155,7 +156,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 **audio_fields,
             }
         else:
-            # Heuristic failed — user must map manually (or use AI Assist)
+            # Heuristic failed - user must map manually (or use AI Assist)
             return {
                 "requires_manual_mapping": True,
                 "detected_format": "unknown",
@@ -172,7 +173,6 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
                 **audio_fields,
             }
 
-    # Known format detected
     return {
         "requires_manual_mapping": False,
         "detected_format": detected["format"],
@@ -663,7 +663,6 @@ def format_dataset(
                 except Exception as e:
                     warnings.append(f"Could not standardize: {e}. Passing dataset as-is.")
 
-            # Return as-is with warnings
             return {
                 "dataset": dataset,
                 "detected_format": "unknown",
@@ -868,8 +867,8 @@ def format_and_template_dataset(
     tokenizer,
     is_vlm = False,
     format_type = "auto",
+    vlm_instruction = None,
     # VLM-specific parameters
-    vlm_instruction = None,  # Now optional - will auto-generate
     vlm_text_column = None,
     vlm_image_column = None,
     dataset_name = None,
@@ -900,6 +899,9 @@ def format_and_template_dataset(
     Combines format_dataset and apply_chat_template_to_dataset. Convenient for
     UI workflows: one function does everything.
 
+    custom_prompt_template is retained for signature compatibility. Non-None values are rejected
+    because Studio cannot persist a matching inference template.
+
     Returns:
         dict: {
             "dataset": Final dataset with 'text' column,
@@ -912,6 +914,21 @@ def format_and_template_dataset(
             "summary": Human-readable summary
         }
     """
+
+    custom_prompt_error = _custom_prompt_template_error(custom_prompt_template)
+    if custom_prompt_error:
+        return {
+            "dataset": dataset,
+            "detected_format": "unknown",
+            "final_format": "unknown",
+            "chat_column": None,
+            "is_vlm": is_vlm,
+            "success": False,
+            "requires_manual_mapping": False,
+            "warnings": [],
+            "errors": [custom_prompt_error],
+            "summary": None,
+        }
 
     # VLM FLOW
     if is_vlm:
@@ -967,7 +984,7 @@ def format_and_template_dataset(
                         f"falling back to auto-detection"
                     )
                     logger.info(f"⚠️ User VLM mapping failed, falling back to auto-detection...")
-                    custom_format_mapping = None  # so auto-detection runs below
+                    custom_format_mapping = None
             else:
                 errors.append(
                     f"Invalid VLM mapping: need 'image' and 'text' roles. Got: {custom_format_mapping}"
@@ -1114,7 +1131,6 @@ def format_and_template_dataset(
             dataset = [sample for sample in dataset]
             warnings.append("Dataset already in standard VLM messages format")
 
-        # Return as list
         return {
             "dataset": dataset,
             "detected_format": vlm_structure["format"],
@@ -1215,7 +1231,7 @@ def format_and_template_dataset(
             "detected_format": dataset_info["detected_format"],
             "final_format": final_format,
             "chat_column": dataset_info.get("chat_column"),
-            "is_vlm": False,  # LLM flow
+            "is_vlm": False,
             "success": template_result["success"],
             "requires_manual_mapping": requires_manual,
             "warnings": all_warnings,

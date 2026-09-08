@@ -489,6 +489,7 @@ def _upstream_message(
     content,
     tool_calls = None,
     finish_reason = "stop",
+    usage = None,
 ):
     message = {"role": "assistant", "content": content}
     if tool_calls is not None:
@@ -499,7 +500,7 @@ def _upstream_message(
         "created": 1,
         "model": "gguf",
         "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
-        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+        "usage": usage or {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
     }
 
 
@@ -804,6 +805,49 @@ class TestNudgeRetryOpenai:
 
         asyncio.run(_run())
 
+    def test_retry_usage_includes_both_generation_attempts(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            first = _upstream_message(
+                GARBAGE_SIGNAL,
+                usage = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+            )
+            retry = _upstream_message(
+                LOOKUP_XML,
+                usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+            )
+            client = ScriptedClient([first, retry])
+            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+
+            response = await _openai_passthrough_non_streaming(
+                _llama_backend(),
+                _payload(nudge_tool_calls = True),
+                "gguf",
+                monitor_id = monitor_id,
+            )
+            data = json.loads(response.body)
+
+            assert data["usage"] == {
+                "prompt_tokens": 20,
+                "completion_tokens": 8,
+                "total_tokens": 28,
+            }
+            [entry] = monitor.snapshot()
+            assert entry["prompt_tokens"] == 20
+            assert entry["completion_tokens"] == 8
+            assert entry["total_tokens"] == 28
+
+        asyncio.run(_run())
+
     def test_retry_still_garbage_returns_original(self, monkeypatch):
         async def _run():
             client, data = await _drive_non_streaming(
@@ -898,6 +942,29 @@ class TestNudgeRetryAnthropic:
             (block,) = [b for b in data["content"] if b["type"] == "tool_use"]
             assert block["name"] == "lookup"
             assert data["stop_reason"] == "tool_use"
+
+        asyncio.run(_run())
+
+    def test_discarded_retry_usage_still_counts_generated_tokens(self, monkeypatch):
+        async def _run():
+            first = _upstream_message(
+                GARBAGE_SIGNAL,
+                usage = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+            )
+            retry = _upstream_message(
+                GARBAGE_SIGNAL + "2",
+                usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+            )
+            client, data = await self._drive(
+                monkeypatch,
+                [first, retry],
+                nudge = True,
+            )
+
+            assert len(client.posts) == 2
+            assert data["content"][0]["text"] == GARBAGE_SIGNAL
+            assert data["usage"]["input_tokens"] == 20
+            assert data["usage"]["output_tokens"] == 8
 
         asyncio.run(_run())
 
@@ -1452,3 +1519,59 @@ class TestHealerSignalAlignment:
         (call,) = _events_calls(events)
         assert call["function"]["name"] == "web_search"
         assert healer.healed
+
+
+# --- client-supplied tool schemas -------------------------------------------------------
+# A coding agent on `unsloth start` declares its own tools, so schemas live in the request.
+
+
+def _client_tool(name, properties):
+    return {
+        "type": "function",
+        "function": {"name": name, "parameters": {"type": "object", "properties": properties}},
+    }
+
+
+GREP_TOOL = _client_tool(
+    "Grep",
+    {
+        "pattern": {"type": "string"},
+        "multiline": {"type": "boolean"},
+        "head_limit": {"type": "integer"},
+        "timeout": {"type": "integer"},
+    },
+)
+# Spells `timeout` the other way, so neither call reads through the other tool's schema.
+FETCH_TOOL = _client_tool("WebFetch", {"url": {"type": "string"}, "timeout": {"type": "string"}})
+CLIENT_TOOLS = [FETCH_TOOL, GREP_TOOL]
+CLIENT_NAMES = {"WebFetch", "Grep"}
+
+
+def _healed_arguments(content):
+    msg = {"role": "assistant", "content": content}
+    assert heal_openai_message(msg, CLIENT_NAMES, CLIENT_TOOLS) is True
+    (call,) = msg["tool_calls"]
+    return json.loads(call["function"]["arguments"])
+
+
+class TestClientToolSchemaTyping:
+    def test_xml_parameters_arrive_as_their_declared_types(self):
+        """Both spell "false": the declared flag becomes a boolean, the search text stays text."""
+        arguments = _healed_arguments(
+            "<function=Grep>"
+            "<parameter=pattern>false</parameter>"
+            "<parameter=head_limit>25</parameter>"
+            "<parameter=multiline>false</parameter>"
+            "</function>"
+        )
+        assert arguments == {"pattern": "false", "head_limit": 25, "multiline": False}
+
+    def test_each_call_is_typed_through_its_own_tools_schema(self):
+        """One key, two declarations: `timeout` is milliseconds on Grep and a duration
+        string on WebFetch. A schema picked by position, or merged across the request, has
+        one answer for both keys and so reads one of these calls wrong."""
+        call = (
+            "<function=%s><parameter=%s>x</parameter><parameter=timeout>30</parameter></function>"
+        )
+        assert _healed_arguments(call % ("WebFetch", "url")) == {"url": "x", "timeout": "30"}
+        assert _healed_arguments(call % ("Grep", "pattern")) == {"pattern": "x", "timeout": 30}

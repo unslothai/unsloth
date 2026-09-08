@@ -46,11 +46,11 @@ def test_index_written_by_llama_is_stale_for_a_sentence_transformers_query(
     """The scenario a CPU upgrade produces: documents embedded through the GGUF while
     sentence-transformers was failing, then queried by sentence-transformers once it
     works. Same model name, different pooling."""
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
     scope = store.kb_scope("K1")
     _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
 
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: False)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     conn = rag_db.get_connection()
     try:
         assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k = 5, model_name = MODEL) == []
@@ -62,11 +62,11 @@ def test_index_written_by_sentence_transformers_is_stale_for_a_llama_query(
     rag_home, stub_embeddings, monkeypatch, tmp_path
 ):
     """And the other direction, which is what a runtime fallback produces."""
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: False)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     scope = store.kb_scope("K2")
     _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
 
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
     conn = rag_db.get_connection()
     try:
         assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k = 5, model_name = MODEL) == []
@@ -78,7 +78,7 @@ def test_the_same_backend_still_answers_its_own_index(
     rag_home, stub_embeddings, monkeypatch, tmp_path
 ):
     """The filter must only drop the other backend's rows."""
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
     scope = store.kb_scope("K3")
     _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
     conn = rag_db.get_connection()
@@ -93,11 +93,11 @@ def test_re_uploading_after_a_backend_change_reindexes_instead_of_deduping(
 ):
     """Identical bytes used to dedupe against a row from the other backend, so there
     was no way to repair the index short of renaming the file."""
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
     scope = store.kb_scope("K4")
     first = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
 
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: False)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     second = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
     assert second != first
     conn = rag_db.get_connection()
@@ -107,18 +107,56 @@ def test_re_uploading_after_a_backend_change_reindexes_instead_of_deduping(
         conn.close()
 
 
+def test_re_resolved_backend_reindexes_before_the_stale_backend_is_rebuilt(
+    rag_home, stub_embeddings, monkeypatch, tmp_path
+):
+    """Saving a new backend changes the next encode before that encode rebuilds
+    the resident backend. Admission must predict the replacement or identical
+    bytes dedupe against the old vector space and never reach the rebuild."""
+    choice = {"backend": "sentence-transformers"}
+    monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(
+        embeddings,
+        "_resolve_auto_for_model",
+        lambda model_name = None: choice["backend"],
+    )
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
+    monkeypatch.setattr(embeddings, "_backend", embeddings._SentenceTransformersBackend())
+    monkeypatch.setattr(
+        embeddings,
+        "_backend_key",
+        embeddings._backend_cache_key("auto", "sentence-transformers"),
+    )
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
+
+    scope = store.kb_scope("K4-resolved")
+    first = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
+
+    # The same model now has a GGUF plan, but the first encode has not yet had a
+    # chance to replace the resident ST wrapper.
+    choice["backend"] = "llama-server"
+    second = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
+
+    assert second != first
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, second)["embedding_model"].startswith("llama-server:")
+    finally:
+        conn.close()
+
+
 def test_ingestion_records_the_backend_that_took_over_mid_job(
     rag_home, stub_embeddings, monkeypatch, tmp_path
 ):
     """The row is created before the encode, and an ST encode failure swaps the
     process to llama-server, so the identity is only correct once vectors exist."""
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: False)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     swapped = {"done": False}
     real_encode = embeddings.encode
 
     def encode_then_swap(texts, **kwargs):
         swapped["done"] = True
-        monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+        monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
         return real_encode(texts, **kwargs)
 
     monkeypatch.setattr(embeddings, "encode", encode_then_swap)
@@ -139,7 +177,7 @@ def test_legacy_rows_keep_answering_and_are_reported(
     """Rows written before the tag existed could be either backend's. Dropping them
     would empty dense search over every corpus indexed so far, and re-embedding one
     unasked is not kinder, so they are still served and counted instead."""
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: False)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     scope = store.kb_scope("K6")
     document_id = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
     conn = rag_db.get_connection()
@@ -147,14 +185,14 @@ def test_legacy_rows_keep_answering_and_are_reported(
         store.set_document_embedding_model(conn, document_id, MODEL)  # pre-tag spelling
         assert store.count_untagged_documents(conn) == 1
         assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k = 5, model_name = MODEL)
-        monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+        monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
         assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k = 5, model_name = MODEL)
     finally:
         conn.close()
 
 
 def test_null_rows_are_still_assumed_current(rag_home, stub_embeddings, monkeypatch, tmp_path):
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: False)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     scope = store.kb_scope("K7")
     document_id = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
     conn = rag_db.get_connection()
@@ -168,9 +206,9 @@ def test_null_rows_are_still_assumed_current(rag_home, stub_embeddings, monkeypa
 
 
 def test_identity_distinguishes_the_backends_and_the_gguf_repo(monkeypatch):
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: False)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     as_st = embeddings.embedding_identity(MODEL)
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
     as_llama = embeddings.embedding_identity(MODEL)
     assert as_st != as_llama
     assert config.embedding_identity_model(as_st) == MODEL
@@ -178,6 +216,45 @@ def test_identity_distinguishes_the_backends_and_the_gguf_repo(monkeypatch):
     monkeypatch.setattr(config, "EMBED_GGUF_REPO", "LLukas22/all-MiniLM-L6-v2-GGUF")
     monkeypatch.setenv("RAG_EMBED_GGUF_REPO", "LLukas22/all-MiniLM-L6-v2-GGUF")
     assert embeddings.embedding_identity(MODEL) != as_llama
+
+
+def test_llama_identity_uses_the_resolved_stored_repo(monkeypatch):
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        config,
+        "effective_gguf_repo_for_embedding_model",
+        lambda model: "publisher/off-convention-GGUF",
+    )
+    assert embeddings.embedding_identity(MODEL) == config.embedding_identity(
+        "llama-server",
+        MODEL,
+        gguf_repo = "publisher/off-convention-GGUF",
+    )
+
+
+def test_identity_for_a_pinned_model_ignores_the_live_setting(monkeypatch):
+    """A job pins its model once and embeds every file under it.
+
+    The backend half of the identity used to be resolved from whatever
+    ``effective_embedding_model()`` returned at the moment each file was tagged, so
+    changing the model in Settings part way through a linked-folder reconcile split
+    one folder across two identities. The pinned name is the only input.
+    """
+    embeddings._reset_backend()
+    reads = []
+
+    def _live_model():
+        reads.append(True)
+        return "org/whatever-settings-says-now"
+
+    monkeypatch.setattr(config, "effective_embedding_model", _live_model)
+    monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
+
+    first = embeddings.embedding_identity(MODEL)
+    second = embeddings.embedding_identity(MODEL)
+
+    assert first == second == config.embedding_identity("sentence-transformers", MODEL)
+    assert reads == [], "a pinned model must not re-read the live setting"
 
 
 def test_untagged_values_match_on_the_model_name_alone():
@@ -288,13 +365,11 @@ def test_the_identity_comes_from_the_encode_not_from_the_process_after_it(rag_co
             normalize = True,
         ):
             vectors = [_vector(t) for t in texts]
-            monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+            monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
             return vectors
 
     monkeypatch.setattr(embeddings, "_backend", _SwapsMidEncode())
-    monkeypatch.setattr(
-        embeddings, "_backend_key", (config.EMBED_BACKEND or "auto").strip().lower()
-    )
+    monkeypatch.setattr(embeddings, "_backend_key", embeddings._current_backend_key())
     hits = retrieval.retrieve_dense(rag_conn, "kb_r", "alpha bravo", k = 5, model_name = MODEL)
     assert [h.chunk_id for h in hits] == ["d1:0"]
 
@@ -304,7 +379,7 @@ def test_a_swap_between_batches_re_embeds_the_document(
 ):
     """A document whose batches straddle the swap would hold vectors from two spaces
     under one identity, so it restarts under the backend that took over."""
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: False)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     monkeypatch.setattr(ingestion, "_EMBED_BATCH", 1)
     monkeypatch.setattr(config, "CHUNK_TOKENS", 3)
     monkeypatch.setattr(config, "CHUNK_OVERLAP", 0)
@@ -321,7 +396,9 @@ def test_a_swap_between_batches_re_embeds_the_document(
                 calls["n"] += 1
                 out = real_encode(batch, **kwargs)
                 if calls["n"] == 1:
-                    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+                    monkeypatch.setattr(
+                        embeddings, "active_backend_is_llama", lambda *_a, **_k: True
+                    )
                 return out
 
             monkeypatch.setattr(embeddings, "encode_with_identity", swap_after_one_batch)
@@ -377,7 +454,7 @@ def test_the_web_ranker_labels_a_page_with_the_backend_that_encoded_it(rag_home,
     vectors instead of filtering them out."""
     from core.rag import web_rank
 
-    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: False)
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     monkeypatch.setattr(
         embeddings, "token_counter", lambda model_name = None: lambda t: max(1, len(t.split()))
     )
@@ -391,13 +468,11 @@ def test_the_web_ranker_labels_a_page_with_the_backend_that_encoded_it(rag_home,
             normalize = True,
         ):
             vectors = [_vector(t) for t in texts]
-            monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+            monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
             return vectors
 
     monkeypatch.setattr(embeddings, "_backend", _SwapsMidEncode())
-    monkeypatch.setattr(
-        embeddings, "_backend_key", (config.EMBED_BACKEND or "auto").strip().lower()
-    )
+    monkeypatch.setattr(embeddings, "_backend_key", embeddings._current_backend_key())
 
     labels: list[str | None] = []
     real_create = store.create_document

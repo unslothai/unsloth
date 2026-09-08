@@ -954,7 +954,7 @@ function collectBullets(markdown: string): {
     }
     const bullet = BULLET.exec(line.text);
     // Only an ordered list starting at 1 may interrupt a paragraph, so "2. Restart
-    // Studio" under prose is prose. A list item is not a paragraph.
+    // Unsloth" under prose is prose. A list item is not a paragraph.
     const interrupts =
       collector.current === null &&
       collector.paragraph !== "" &&

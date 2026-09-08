@@ -86,6 +86,77 @@ if ! grep -aEq '^[[:space:]]*unset[[:space:]]+LD_LIBRARY_PATH([[:space:]]|$)' \
   exit 1
 fi
 
+safe_emoji_font="$appdir/usr/share/unsloth/fonts/UnslothSafeEmoji.ttf"
+safe_emoji_license="$appdir/usr/share/doc/unsloth-safe-emoji/copyright"
+fontconfig_file="$appdir/usr/etc/fonts/unsloth-appimage.conf"
+for required_file in "$safe_emoji_font" "$safe_emoji_license" "$fontconfig_file"; do
+  [[ -f "$required_file" ]] || {
+    echo "Complete AppImage is missing safe emoji runtime file: $required_file" >&2
+    exit 1
+  }
+done
+for table in CBDT CBLC; do
+  grep -aFq "$table" "$safe_emoji_font" || {
+    echo "Complete AppImage safe emoji font has no $table bitmap table" >&2
+    exit 1
+  }
+done
+if grep -aFq 'COLR' "$safe_emoji_font"; then
+  echo "Complete AppImage safe emoji font unexpectedly contains a COLR table" >&2
+  exit 1
+fi
+grep -Fq 'Unsloth Safe Emoji' "$fontconfig_file" || {
+  echo "Complete AppImage fontconfig does not prefer its safe emoji family" >&2
+  exit 1
+}
+grep -Fq '@APPDIR@/usr/share/unsloth/fonts' "$fontconfig_file" || {
+  echo "Complete AppImage fontconfig does not name its font directory absolutely" >&2
+  exit 1
+}
+grep -Fq 'sed "s|@APPDIR@|$unsloth_fonts_appdir|g" "$unsloth_fonts_template"' "${launchers[@]}" || {
+  echo "Complete AppImage does not pin fontconfig to its safe emoji policy" >&2
+  exit 1
+}
+# A mount path carries the AppImage's own file name, so it reaches the policy encoded.
+grep -Fq "s,&,\\&amp;,g" "${launchers[@]}" || {
+  echo "Complete AppImage does not encode its mount path for the fontconfig policy" >&2
+  exit 1
+}
+
+# Exercise the policy with the host Fontconfig, including version 2.13.
+if command -v fc-match >/dev/null && command -v fc-query >/dev/null &&
+  fc-query "$safe_emoji_font" >/dev/null 2>&1; then
+  fc_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/unsloth-appimage-fc.XXXXXX")"
+  # Encode the AppDir exactly as AppRun does, so this exercises the shipped policy.
+  fc_appdir="$(printf '%s' "$appdir" | sed \
+    -e 's,&,\&amp;,g' -e 's,<,\&lt;,g' -e 's,>,\&gt;,g' \
+    -e 's,\\,\\\\,g' -e 's,&,\\&,g' -e 's,|,\\|,g')"
+  sed "s|@APPDIR@|$fc_appdir|g" "$fontconfig_file" >"$fc_root/fonts.conf"
+  selected="$(FONTCONFIG_FILE="$fc_root/fonts.conf" XDG_CACHE_HOME="$fc_root" \
+    fc-match -f '%{file}' 'sans-serif:charset=1f680')"
+  if [[ "$selected" != "$safe_emoji_font" ]]; then
+    echo "Complete AppImage fontconfig picks ${selected:-nothing} for U+1F680," \
+      "not its bundled safe emoji font" >&2
+    rm -rf -- "$fc_root"
+    exit 1
+  fi
+  # Emoji coverage must not cost the host's text fonts their own requests.
+  text_font="$(FONTCONFIG_FILE="$fc_root/fonts.conf" XDG_CACHE_HOME="$fc_root" \
+    fc-match -f '%{file}' 'sans-serif:charset=41')"
+  if [[ -n "$text_font" && "$text_font" != "$safe_emoji_font" ]]; then
+    for family in sans-serif serif monospace; do
+      chosen="$(FONTCONFIG_FILE="$fc_root/fonts.conf" XDG_CACHE_HOME="$fc_root" \
+        fc-match -f '%{file}' "$family")"
+      [[ "$chosen" != "$safe_emoji_font" ]] || {
+        echo "Complete AppImage fontconfig hands $family to the emoji font" >&2
+        rm -rf -- "$fc_root"
+        exit 1
+      }
+    done
+  fi
+  rm -rf -- "$fc_root"
+fi
+
 if ! grep -Rqs 'GIO_MODULE_DIR=' \
   "$appdir/AppRun" "$appdir/apprun-hooks" "$appdir/usr/lib" 2>/dev/null; then
   echo "Complete AppImage does not isolate bundled GIO modules" >&2

@@ -4,7 +4,7 @@
 """Regressions for the second review pass on the local STT dictation feature:
 
 1. scripts/build_whisper_cpp.sh must not rm -rf a whisper.cpp/src tree under a
-   custom Studio home unless Studio itself created it (ownership marker), the
+   custom Unsloth home unless Unsloth itself created it (ownership marker), the
    same policy studio/setup.sh applies before its destructive replacements.
 2. _snapshot_is_complete must reject pickle (pytorch_model.bin) checkpoints
    outright; only safetensors weights count as a usable snapshot.
@@ -126,7 +126,7 @@ def test_build_script_keeps_legacy_home_behavior(tmp_path):
     env["HOME"] = str(fake_home)
     result = _run_build_script(env)
 
-    # The legacy managed dir is always Studio-owned; no gate, straight to git.
+    # The legacy managed dir is always Unsloth-owned; no gate, straight to git.
     assert "not marked as an Unsloth-owned" not in result.stderr
     assert "stub-git-invoked" in result.stderr
 

@@ -7,13 +7,58 @@
 from __future__ import annotations
 
 import json
+import os
+import pytest
 
-from utils.models.model_config import _AUDIO_TOKEN_PATTERNS, is_audio_input_type
+from utils.audio_tokens import AUDIO_TOKEN_PATTERNS
+from utils.models.model_config import (
+    detect_audio_type_checked,
+    is_audio_input_type,
+)
+
+
+def test_curated_native_audio_repos_are_detected_without_hub_reads():
+    expected = {
+        "bosonai/higgs-tts-2-3b-base": "higgs_tts2",
+        "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5": "moss_tts_local",
+        "OpenMOSS-Team/MOSS-TTS-Nano-100M": "moss_tts_nano",
+        "multimodalart/higgs-audio-v3-tts-4b-transformers": "higgs_tts3",
+        "MiniMaxAI/MiniMax-Music3": "minimax_music3",
+    }
+    for repo, audio_type in expected.items():
+        assert detect_audio_type_checked(repo) == (audio_type, True)
+
+
+def test_local_native_audio_model_type_is_detected(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "moss_tts_nano"}),
+        encoding = "utf-8",
+    )
+    assert detect_audio_type_checked(str(tmp_path)) == ("moss_tts_nano", True)
+
+
+def test_replacing_local_audio_metadata_invalidates_the_cached_verdict(tmp_path, monkeypatch):
+    from utils.models import model_config
+
+    monkeypatch.setattr(model_config, "_audio_detection_cache", {})
+    config = tmp_path / "config.json"
+    replacement = tmp_path / "replacement.json"
+    config.write_text('{"model_type":"moss_tts_nano"}', encoding = "utf-8")
+    replacement.write_text('{"model_type":"not_audio_xyz"}', encoding = "utf-8")
+    assert config.stat().st_size == replacement.stat().st_size
+    assert model_config.detect_audio_type_checked(str(tmp_path))[0] == "moss_tts_nano"
+
+    original = config.stat()
+    os.replace(replacement, config)
+    os.utime(config, ns = (config.stat().st_atime_ns, original.st_mtime_ns))
+    assert config.stat().st_size == original.st_size
+    assert config.stat().st_mtime_ns == original.st_mtime_ns
+    assert model_config.detect_audio_type_checked(str(tmp_path))[0] is None
 
 
 def _classify(tokens: list[str]) -> str | None:
     """Mirror _check_token_patterns: first match in dict order wins."""
-    for audio_type, check in _AUDIO_TOKEN_PATTERNS.items():
+    for audio_type, check in AUDIO_TOKEN_PATTERNS.items():
         if check(tokens):
             return audio_type
     return None
@@ -183,7 +228,7 @@ def test_an_offline_miss_is_not_reprobed_on_every_poll(monkeypatch, tmp_path):
 
 def test_the_offline_miss_expires_so_a_later_download_is_seen(monkeypatch):
     """Bounded, not permanent: the base may be downloaded, or a training run may finish
-    writing the tokenizer it was missing, and neither restarts Studio."""
+    writing the tokenizer it was missing, and neither restarts Unsloth."""
     from utils.models import model_config
 
     monkeypatch.setattr(model_config, "_audio_detection_cache", {})
@@ -227,21 +272,10 @@ def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
     """The marker list is what lets a large text tokenizer_config be settled without
     parsing it. It cannot be derived from the patterns, which are lambdas, so a codec
     added there without a marker here would silently stop being detected."""
-    from utils.models.model_config import (
-        _AUDIO_TOKEN_MARKERS,
-        _AUDIO_TOKEN_PATTERNS,
-        _may_hold_audio_tokens,
-    )
+    from utils.audio_tokens import AUDIO_TOKEN_MARKERS, may_hold_audio_tokens
 
     # Fails when a codec is added, which is the point: add its marker too.
-    assert set(_AUDIO_TOKEN_PATTERNS) == {
-        "csm",
-        "whisper",
-        "bicodec",
-        "dac",
-        "snac",
-        "audio_vlm",
-    }
+    assert set(AUDIO_TOKEN_PATTERNS) == {"csm", "whisper", "bicodec", "dac", "snac", "audio_vlm"}
 
     # Whatever each pattern matches, the marker scan must let it through to the parse.
     samples = {
@@ -254,14 +288,14 @@ def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
     }
     for audio_type, tokens in samples.items():
         assert _classify(tokens) == audio_type, audio_type
-        assert _may_hold_audio_tokens(json.dumps(tokens)), audio_type
-    assert _may_hold_audio_tokens(json.dumps(["<|image|>", "<|audio|>"]))
+        assert may_hold_audio_tokens(json.dumps(tokens)), audio_type
+    assert may_hold_audio_tokens(json.dumps(["<|image|>", "<|audio|>"]))
 
     # And an ordinary text tokenizer is settled without a parse.
-    assert not _may_hold_audio_tokens(
+    assert not may_hold_audio_tokens(
         json.dumps([f"<|extra_token_{i}|>" for i in range(500)] + ["<bos>", "<eos>"])
     )
-    assert all(marker in "".join(_AUDIO_TOKEN_MARKERS) for marker in _AUDIO_TOKEN_MARKERS)
+    assert all(marker in "".join(AUDIO_TOKEN_MARKERS) for marker in AUDIO_TOKEN_MARKERS)
 
 
 def test_a_large_text_tokenizer_is_not_parsed(monkeypatch, tmp_path):
@@ -320,3 +354,281 @@ def test_a_half_written_tokenizer_stays_unknown(tmp_path):
         None,
         True,
     )
+
+
+def _cached_snapshot(
+    tmp_path,
+    repo_id,
+    files,
+    sha = "abc123",
+):
+    """A repo laid out the way the HF hub cache lays one out."""
+    repo_dir = tmp_path / ("models--" + repo_id.replace("/", "--"))
+    snapshot = repo_dir / "snapshots" / sha
+    snapshot.mkdir(parents = True)
+    for name, text in files.items():
+        target = snapshot / name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_text(text, encoding = "utf-8")
+    return repo_dir, snapshot
+
+
+def _detect_against_cache(
+    monkeypatch,
+    snapshot_repo_dir,
+    *,
+    sha = "abc123",
+    listed = ("tokenizer_config.json",),
+    responses = None,
+    **kwargs,
+):
+    """Drive the probe against a cached snapshot, recording the Hub reads it still makes.
+
+    Returns ``(result, file_reads, document_reads)``. ``listed`` is what the repo document
+    says the repo holds; None stands for no document being available.
+    """
+    import types as _types
+
+    from utils.models import model_config as mc
+
+    reads: list = []
+    documents: list = []
+    monkeypatch.setattr(mc, "_audio_detection_cache", {})
+    monkeypatch.setattr(mc, "_audio_offline_miss_cache", {})
+    monkeypatch.setattr(mc, "get_cache_path", lambda *a, **k: snapshot_repo_dir)
+    monkeypatch.setattr(mc, "_env_offline", lambda: False)
+
+    def _info(
+        model_name,
+        hf_token = None,
+        **kw,
+    ):
+        documents.append(model_name)
+        if listed is None:
+            raise ConnectionError("no repo document")
+        return _types.SimpleNamespace(
+            sha = sha,
+            siblings = [_types.SimpleNamespace(rfilename = name) for name in listed],
+        )
+
+    monkeypatch.setattr(mc, "_hub_model_info", _info)
+
+    import requests
+
+    def _get(url, **kw):
+        reads.append(url)
+        return (responses or []).pop(0)
+
+    monkeypatch.setattr(requests, "get", _get)
+    return mc.detect_audio_type_checked("acme/tts-model", **kwargs), reads, documents
+
+
+def _tokenizer(marker):
+    return json.dumps({"added_tokens_decoder": {"0": {"content": marker}}})
+
+
+@pytest.mark.parametrize("marker, expected", [("<bos>", None), ("<|audio|>", "audio_vlm")])
+def test_the_current_snapshot_answers_without_fetching_the_file(
+    monkeypatch, tmp_path, marker, expected
+):
+    """Every tokenizer path this repo has was read from disk, so a fetch would re-read it.
+
+    The repo document is still read -- that is what says which paths the repo has. What the
+    snapshot saves is fetching the files themselves.
+    """
+    repo_dir, _ = _cached_snapshot(
+        tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer(marker)}
+    )
+
+    (audio_type, definitive), reads, _documents = _detect_against_cache(monkeypatch, repo_dir)
+
+    assert audio_type == expected
+    assert definitive is True
+    assert reads == []
+
+
+def test_a_tokenizer_the_repo_has_but_the_cache_lacks_still_asks_the_hub(monkeypatch, tmp_path):
+    """Loadable weights do not mean every file arrived: the markers may be in the one that
+    did not, and a negative answer here is cached for the life of the process."""
+    repo_dir, _ = _cached_snapshot(
+        tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer("<bos>")}
+    )
+
+    (audio_type, definitive), reads, _documents = _detect_against_cache(
+        monkeypatch,
+        repo_dir,
+        listed = ("tokenizer_config.json", "LLM/tokenizer_config.json"),
+        responses = [_Resp(200, json.loads(_tokenizer("<|audio|>"))), _Resp(404)],
+    )
+
+    assert audio_type == "audio_vlm"
+    assert definitive is True
+    assert len(reads) == 1
+
+
+def test_a_snapshot_that_is_not_the_current_commit_still_asks_the_hub(monkeypatch, tmp_path):
+    """A repo re-downloaded at a new commit keeps the old snapshot beside the new one."""
+    repo_dir, _ = _cached_snapshot(
+        tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer("<bos>")}, sha = "old"
+    )
+
+    (audio_type, definitive), reads, _documents = _detect_against_cache(
+        monkeypatch,
+        repo_dir,
+        sha = "new",
+        responses = [_Resp(200, json.loads(_tokenizer("<|audio|>"))), _Resp(404)],
+    )
+
+    assert audio_type == "audio_vlm"
+    assert len(reads) == 1
+
+
+def test_an_older_snapshot_beside_the_current_one_cannot_answer_negatively(monkeypatch, tmp_path):
+    """Either may be read first, but only the current commit may answer negatively: the
+    older one predates the markers, and a negative here is cached for the process. A
+    positive match from any snapshot still stands, as it did before."""
+    repo_dir, _ = _cached_snapshot(
+        tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer("<bos>")}, sha = "old"
+    )
+    current = repo_dir / "snapshots" / "new"
+    current.mkdir()
+    (current / "tokenizer_config.json").write_text(_tokenizer("<|audio|>"), encoding = "utf-8")
+
+    (audio_type, definitive), reads, _documents = _detect_against_cache(
+        monkeypatch, repo_dir, sha = "new"
+    )
+
+    assert audio_type == "audio_vlm"
+    assert definitive is True
+    assert reads == []
+
+
+def test_without_a_repo_document_the_hub_still_answers(monkeypatch, tmp_path):
+    """Offline, or on any failed read, there is nothing to judge the snapshot against."""
+    repo_dir, _ = _cached_snapshot(
+        tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer("<bos>")}
+    )
+
+    (audio_type, _definitive), reads, _documents = _detect_against_cache(
+        monkeypatch,
+        repo_dir,
+        listed = None,
+        responses = [_Resp(200, json.loads(_tokenizer("<|audio|>"))), _Resp(404)],
+    )
+
+    assert audio_type == "audio_vlm"
+    assert len(reads) == 1
+
+
+def test_local_files_only_reads_no_repo_document(monkeypatch, tmp_path):
+    """The /loras filesystem scan asks for no network, and resolving the current commit
+    would be one. The local read still answers it, exactly as it did before."""
+    repo_dir, _ = _cached_snapshot(
+        tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer("<bos>")}
+    )
+
+    (audio_type, definitive), reads, documents = _detect_against_cache(
+        monkeypatch, repo_dir, local_files_only = True
+    )
+
+    assert (audio_type, definitive) == (None, True)
+    assert reads == []
+    assert documents == []
+
+
+def test_a_half_written_tokenizer_ending_in_a_brace_still_asks_the_hub(monkeypatch, tmp_path):
+    """The trailing brace tells a whole file from a half-written one only by luck. Standing
+    in for the Hub copy needs more than luck, since the markers may be in the missing tail."""
+    whole = json.dumps(
+        {"added_tokens_decoder": {"0": {"content": "<bos>"}, "1": {"content": "<|audio|>"}}}
+    )
+    truncated = whole[: whole.index('"1"')] + "}"
+    assert truncated.rstrip().endswith("}") and "<|audio|>" not in truncated
+
+    repo_dir, _ = _cached_snapshot(tmp_path, "acme/tts-model", {"tokenizer_config.json": truncated})
+
+    (audio_type, definitive), reads, _documents = _detect_against_cache(
+        monkeypatch, repo_dir, responses = [_Resp(200, json.loads(whole)), _Resp(404)]
+    )
+
+    assert audio_type == "audio_vlm"
+    assert definitive is True
+    assert len(reads) == 1
+
+
+def test_a_tokenizer_that_is_unreadable_still_asks_the_hub(monkeypatch, tmp_path):
+    """Nothing was read, so having the file says nothing: a truncated file is not a negative."""
+    whole = _tokenizer("<|audio|>")
+    repo_dir, _ = _cached_snapshot(
+        tmp_path, "acme/tts-model", {"tokenizer_config.json": whole[: len(whole) // 2]}
+    )
+
+    (audio_type, _definitive), reads, _documents = _detect_against_cache(
+        monkeypatch, repo_dir, responses = [_Resp(200, json.loads(whole)), _Resp(404)]
+    )
+
+    assert audio_type == "audio_vlm"
+    assert len(reads) == 1
+
+
+def test_a_document_that_lists_no_files_cannot_answer_negatively(monkeypatch, tmp_path):
+    """The negative rests on having read every tokenizer path the repo lists. A document
+    that lists none satisfies that vacuously while proving nothing, and the answer here is
+    cached for the life of the process -- so the markers in LLM/tokenizer_config.json
+    would be missed for good. Nothing is answerable from it, so it answers nothing."""
+    repo_dir, _ = _cached_snapshot(
+        tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer("<bos>")}
+    )
+
+    (audio_type, definitive), reads, _documents = _detect_against_cache(
+        monkeypatch,
+        repo_dir,
+        listed = (),
+        responses = [_Resp(200, json.loads(_tokenizer("<|audio|>"))), _Resp(404)],
+    )
+
+    assert audio_type == "audio_vlm"
+    assert definitive is True
+    assert len(reads) == 1
+
+
+def test_a_document_without_siblings_at_all_cannot_answer_negatively(monkeypatch, tmp_path):
+    """``siblings`` is optional on the hub's model, so absent is a shape a response takes
+    and not only an empty list."""
+    import types as _types
+
+    from utils.models import model_config as mc
+
+    repo_dir, _ = _cached_snapshot(
+        tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer("<bos>")}
+    )
+    monkeypatch.setattr(mc, "get_cache_path", lambda *a, **k: repo_dir)
+    monkeypatch.setattr(
+        mc,
+        "_hub_model_info",
+        lambda *a, **k: _types.SimpleNamespace(sha = "abc123", siblings = None),
+    )
+
+    assert mc._current_cached_snapshot("acme/tts-model") is None
+
+
+def test_a_marker_written_as_an_escape_is_still_found(monkeypatch, tmp_path):
+    """The raw scan that decides whether a file is worth parsing reads the text, so a
+    content written as a JSON escape does not match it. Go's encoding/json escapes < and >
+    that way by default, so it is a shape real tooling uploads. The Hub fallback decodes
+    before it looks; standing in for it has to classify what it would have classified, or
+    the miss becomes a definitive negative cached for the life of the process."""
+    from utils.models.model_config import _may_hold_audio_tokens
+
+    escaped = (
+        _tokenizer("<|audio|>").replace("<", chr(92) + "u003c").replace(">", chr(92) + "u003e")
+    )
+    assert "<|audio|>" not in escaped and json.loads(escaped)
+    assert not _may_hold_audio_tokens(escaped), "the raw scan is what misses it"
+
+    repo_dir, _ = _cached_snapshot(tmp_path, "acme/tts-model", {"tokenizer_config.json": escaped})
+
+    (audio_type, definitive), reads, _documents = _detect_against_cache(monkeypatch, repo_dir)
+
+    assert (audio_type, definitive) == ("audio_vlm", True)
+    assert reads == [], "and the snapshot still answers it without a fetch"

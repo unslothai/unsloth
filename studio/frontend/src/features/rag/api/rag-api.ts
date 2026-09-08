@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { openStreamResponse } from "@/lib/open-stream-response";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
 import type {
   DocumentUploadResult,
@@ -730,7 +731,7 @@ async function openEventStream(
   url: string,
   signal: AbortSignal | undefined,
 ): Promise<ReadableStream<Uint8Array>> {
-  const response = await authFetch(url, signal ? { signal } : undefined);
+  const response = await openStreamResponse(authFetch, url, { signal });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     // also gated on the extension, and also not routed through ragRequest

@@ -30,6 +30,26 @@ description: >-
   runs on the default branch only.
 
 inputs:
+  name:
+    description: >-
+      Short, stable identifier for the INSTALLING JOB (`consolidated`,
+      `notebooks-colab`, ...). Two things depend on it.
+
+      Jobs that install different things must not share a key. Five jobs here
+      passed the same key-files and so resolved to the same key; the save is
+      gated on `cache-hit != 'true'`, so whichever finished first on main wrote
+      the cache and the other four restored it exactly, installed their own
+      extra wheels, and never saved them. Those extras were re-downloaded on
+      every run of main, forever, and nothing about it was visible.
+
+      It also makes each family its own key prefix. Without that, generations of
+      five different jobs sit under `pip-<os>-<arch>-py<ver>-` and cannot be told
+      apart from five generations of one, so cache-janitor.yml cannot prune any
+      of them. 14 GiB of unreachable pip entries had accumulated by 2026-08-26
+      for exactly that reason.
+
+      Lowercase, digits and dashes; it goes into the cache key verbatim.
+    required: true
   key-files:
     description: >-
       Newline-separated glob(s) whose hash keys the cache. Pass the files this
@@ -47,6 +67,9 @@ outputs:
   key:
     description: The full cache key, to hand to pip-cache-save.
     value: ${{ steps.probe.outputs.key }}
+  prefix:
+    description: The cache key without the dependency hash, i.e. the restore-key.
+    value: ${{ steps.probe.outputs.prefix }}
   cache-hit:
     description: 'true when the exact key was restored.'
     value: ${{ steps.restore.outputs.cache-hit }}
@@ -84,7 +107,28 @@ runs:
           echo "::error::pip-cache: key-files matched no file, so the cache key would not distinguish anything. Given: ${{ inputs.key-files }}"
           exit 1
         fi
-        echo "key=pip-${{ runner.os }}-${{ runner.arch }}-py${pyver}-${hash}" >> "$GITHUB_OUTPUT"
+        name="${{ inputs.name }}"
+        # An empty or surprising segment collapses distinct jobs onto one key, or
+        # breaks the janitor's prefix grouping. Both fail silently, so check here.
+        case "$name" in
+          ''|*[!a-z0-9-]*)
+            echo "::error::pip-cache: name must be lowercase letters, digits and dashes. Given: '$name'"
+            exit 1 ;;
+        esac
+
+        # `v2` is a real load-bearing segment, not decoration. Keys minted before
+        # `name` existed look like `pip-Linux-X64-py3.12-<hash>`, and `Linux` is a
+        # valid name, so nothing distinguishes an old key from a new one whose job
+        # happens to be called `linux`. The janitor matches `pip-v2-` only, which
+        # leaves every legacy entry untouched to expire on its own 7-day idle
+        # timer rather than being ranked against keys it has nothing to do with.
+        #
+        # Emitted separately so the restore-key fallback and the janitor's
+        # grouping are built from the same string as the key, not a copy that
+        # can drift.
+        prefix="pip-v2-${name}-${{ runner.os }}-${{ runner.arch }}-py${pyver}-"
+        echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+        echo "key=${prefix}${hash}" >> "$GITHUB_OUTPUT"
 
     - name: Restore the pip cache
       id: restore
@@ -94,3 +138,15 @@ runs:
       with:
         path: ${{ steps.probe.outputs.dir }}
         key: ${{ steps.probe.outputs.key }}
+        # WITH a prefix fallback, unlike the frontend-dist cache. A dist cache is
+        # a build output: the wrong generation is wrong, so only an exact key will
+        # do. This is pip's HTTP cache, addressed by URL and content hash, where
+        # the previous generation is the current one minus whatever moved. A
+        # dependency bump then costs the changed wheels instead of all of them,
+        # and a stale entry cannot serve wrong content -- the worst it can do is
+        # miss. Same argument that lets the key carry 3.12 rather than 3.12.14.
+        #
+        # `name` is inside the prefix, so the fallback stays inside this job's own
+        # family and never hands one job the wheels another downloaded.
+        restore-keys: |
+          ${{ steps.probe.outputs.prefix }}

@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 QUANT_4BIT_FACTOR = 16 / 5
-DOUBLE_QUANT_4BIT_FACTOR = 3.6  # bnb_4bit_use_double_quant; see VRAM_ESTIMATION.md section 1
-CUDA_OVERHEAD_BYTES = int(1.4 * 1024**3)  # calibrated on RTX 5070 Ti
+DOUBLE_QUANT_4BIT_FACTOR = 3.6
+CUDA_OVERHEAD_BYTES = int(1.4 * 1024**3)
 NON_FLASH_ATTENTION_FACTOR = (
     12.0  # eager attention score+workspace overhead; see VRAM_ESTIMATION.md section 5
 )
@@ -47,18 +47,18 @@ DEFAULT_TARGET_MODULES = [
 ATTENTION_TARGET_MODULES = {"q_proj", "k_proj", "v_proj", "o_proj"}
 MLP_TARGET_MODULES = {"gate_proj", "up_proj", "down_proj"}
 
-# Empirically calibrated bytes/param — see VRAM_ESTIMATION.md for rationale.
+# Empirically calibrated bytes/param - see VRAM_ESTIMATION.md for rationale.
 OPTIMIZER_BYTES_PER_PARAM: Dict[str, int] = {
-    "adamw_8bit": 4,  # BNB upcasts to fp32 during step
+    "adamw_8bit": 4,
     "paged_adamw_8bit": 4,
     "adamw_bnb_8bit": 4,
     "paged_adamw_32bit": 8,
-    "adamw_torch": 6,  # fused, no master copy
+    "adamw_torch": 6,
     "adamw_torch_fused": 6,
     "sgd": 4,
 }
 
-# (full_ft_multiplier, lora_multiplier) — fraction of num_layers.
+# (full_ft_multiplier, lora_multiplier) - fraction of num_layers.
 # LoRA: frozen layers skip activation storage, but ~1 is in flight during backprop.
 GC_LAYER_MULTIPLIERS = {
     "none": (None, None),
@@ -101,6 +101,10 @@ class ModelArchConfig:
     moe_has_dense_mlp: bool = False
     dense_layer_indices: tuple = ()
     dense_intermediate_size: Optional[int] = None
+    model_type: Optional[str] = None
+    block_auto_adjust_ff_dim: bool = False
+    block_ffn_dim_multiplier: Optional[float] = None
+    block_multiple_of: int = 1
 
 
 @dataclass
@@ -294,7 +298,7 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     if shared_expert_intermediate_size and n_shared_experts == 0:
         n_shared_experts = 1
     # DBRX moe_top_k; Hunyuan-V1-MoE moe_topk (may be a per-layer list).
-    # _max_scalar normalizes lists to the worst case so int(...) can't crash.
+    # _max_scalar normalizes lists to the worst case so int(...) cannot crash.
     num_experts_per_tok = (
         _max_scalar(_moe_attr("num_experts_per_tok"))
         or _max_scalar(_moe_attr("top_k_experts"))
@@ -376,12 +380,15 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
         moe_has_dense_mlp = bool(getattr(text_config, "enable_moe_block", False)),
         dense_layer_indices = dense_layer_indices,
         dense_intermediate_size = dense_intermediate_size,
+        model_type = getattr(text_config, "model_type", None),
+        block_auto_adjust_ff_dim = bool(getattr(text_config, "block_auto_adjust_ff_dim", False)),
+        block_ffn_dim_multiplier = getattr(text_config, "block_ffn_dim_multiplier", None),
+        block_multiple_of = getattr(text_config, "block_multiple_of", 1),
     )
 
 
 def _targets_all_linear(target_modules) -> bool:
-    # peft LoraConfig accepts target_modules="all-linear" as a bare string;
-    # iterating a string yields chars and never matches the set.
+    # peft LoraConfig accepts target_modules="all-linear" as a bare string
     if isinstance(target_modules, str):
         target_modules = [target_modules]
     normalized = {str(module).lower().replace("_", "-") for module in target_modules}
@@ -399,9 +406,8 @@ def _layer_types(arch: ModelArchConfig) -> list:
 
 
 def _uses_structured_layer_shapes(arch: ModelArchConfig) -> bool:
-    # MLA configs have their own q/kv low-rank projection shape formulas in
-    # _compute_attn_elements / _lora_attn_elements; do not let head_dim or
-    # other structured fields override that path.
+    # MLA configs have their own q/kv low-rank projection shape formulas
+    # Do not let head_dim or other structured fields override that path.
     if arch.q_lora_rank is not None:
         return False
     return bool(
@@ -419,9 +425,9 @@ def _is_kv_shared_layer(arch: ModelArchConfig, layer_idx: int) -> bool:
     if arch.num_kv_shared_layers <= 0:
         return False
     first_shared = arch.num_hidden_layers - arch.num_kv_shared_layers
-    # Gemma4 (modeling_gemma4.py:1031, modular_gemma4.py:863) uses the same
-    # `> 0` guard so a fully-shared config raises at model construction;
+    # Gemma4 uses the same `> 0` guard, so a fully-shared config raises at model construction:
     # matching upstream avoids estimating a shape the model code rejects.
+    # Gemma4's guard is at modeling_gemma4.py:1031 / modular_gemma4.py:863.
     return layer_idx >= first_shared > 0
 
 
@@ -526,6 +532,46 @@ def _text_linear_dims(arch: ModelArchConfig, layer_idx: int) -> Dict[str, tuple[
     return dims
 
 
+def _lora_linear_dims(arch: ModelArchConfig, layer_idx: int) -> Dict[str, tuple[int, int]]:
+    if arch.model_type != "lfm2":
+        return _text_linear_dims(arch, layer_idx)
+
+    hd = arch.hidden_size
+    mlp_size = arch.intermediate_size
+    if arch.block_auto_adjust_ff_dim:
+        mlp_size = int(2 * mlp_size / 3)
+        if arch.block_ffn_dim_multiplier is not None:
+            mlp_size = int(arch.block_ffn_dim_multiplier * mlp_size)
+            multiple = max(arch.block_multiple_of, 1)
+            mlp_size = multiple * ((mlp_size + multiple - 1) // multiple)
+    dims = {
+        "w1": (hd, mlp_size),
+        "w3": (hd, mlp_size),
+        "w2": (mlp_size, hd),
+    }
+    if _layer_types(arch)[layer_idx] == "conv":
+        dims.update({"in_proj": (hd, 3 * hd), "out_proj": (hd, hd)})
+        return dims
+
+    q_size, kv_size, has_k, has_v = _layer_attention_dims(arch, layer_idx)
+    dims.update({"q_proj": (hd, q_size), "out_proj": (q_size, hd)})
+    if has_k:
+        dims["k_proj"] = (hd, kv_size)
+    if has_v:
+        dims["v_proj"] = (hd, kv_size)
+    return dims
+
+
+def _is_lora_attention_linear(arch: ModelArchConfig, name: str) -> bool:
+    return name in ATTENTION_TARGET_MODULES or (
+        arch.model_type == "lfm2" and name in {"in_proj", "out_proj"}
+    )
+
+
+def _is_lora_mlp_linear(arch: ModelArchConfig, name: str) -> bool:
+    return name in MLP_TARGET_MODULES or (arch.model_type == "lfm2" and name in {"w1", "w2", "w3"})
+
+
 def _module_path_matches(skip_module: str, alias: str) -> bool:
     skip_parts = [part for part in skip_module.split(".") if part]
     alias_parts = [part for part in alias.split(".") if part]
@@ -542,8 +588,8 @@ def _module_path_matches(skip_module: str, alias: str) -> bool:
     prefix_parts = skip_parts[: len(skip_parts) - len(alias_parts)]
     if not prefix_parts:
         return True
-    # Bound the prefix to text-tower roots so VLM skips like
-    # vision_tower.model.layers... don't shadow the text alias.
+    # Bound the prefix to text-tower roots so VLM keys like vision_tower.model.layers do not shadow
+    # the text alias.
     return ".".join(prefix_parts) in _SKIP_MODULE_TEXT_PREFIXES
 
 
@@ -907,9 +953,40 @@ def _lora_mlp_elements(
     return total
 
 
+EMBEDDING_TARGET_MODULES = frozenset(("embed_tokens", "lm_head"))
+
+
+def _embedding_leaves(target_modules) -> set:
+    """PEFT matches on the module suffix, so model.embed_tokens is the same module."""
+    if isinstance(target_modules, str):
+        return set()
+    leaves = {str(m).rsplit(".", 1)[-1] for m in target_modules or ()}
+    return leaves & EMBEDDING_TARGET_MODULES
+
+
+def _full_weight_embedding_elements(arch: ModelArchConfig, target_modules) -> int:
+    """embed_tokens/lm_head cost a full matrix each, not a low-rank pair.
+
+    Unsloth redirects them into modules_to_save. A tied pair also gets
+    ensure_weight_tying, which collapses them to one trainable matrix.
+    """
+    selected = len(_embedding_leaves(target_modules))
+    if arch.tie_word_embeddings:
+        selected = min(selected, 1)
+    return arch.vocab_size * arch.hidden_size * selected
+
+
 def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: list) -> int:
-    all_linear = _targets_all_linear(target_modules)
-    selected_modules = list(DEFAULT_TARGET_MODULES) if all_linear else target_modules
+    embedding_params = _full_weight_embedding_elements(arch, target_modules)
+    lora_targets = target_modules
+    if embedding_params:
+        lora_targets = [
+            m for m in target_modules if str(m).rsplit(".", 1)[-1] not in EMBEDDING_TARGET_MODULES
+        ]
+        if not lora_targets:
+            lora_targets = list(DEFAULT_TARGET_MODULES)
+    all_linear = _targets_all_linear(lora_targets)
+    selected_modules = list(DEFAULT_TARGET_MODULES) if all_linear else lora_targets
     hd = arch.hidden_size
     r = lora_rank
     n_layers = arch.num_hidden_layers
@@ -922,25 +999,24 @@ def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: l
         per_layer_dense_mlp = []
         for layer_idx in range(n_layers):
             layer_dense = 0
-            for name, (in_dim, out_dim) in _text_linear_dims(
+            for name, (in_dim, out_dim) in _lora_linear_dims(
                 arch,
                 layer_idx,
             ).items():
-                if name not in selected_modules:
+                if not all_linear and name not in selected_modules:
                     continue
-                if name in ATTENTION_TARGET_MODULES:
+                if _is_lora_attention_linear(arch, name):
                     attn_total += in_dim * r + r * out_dim
-                elif name in MLP_TARGET_MODULES:
+                elif _is_lora_mlp_linear(arch, name):
                     layer_dense += in_dim * r + r * out_dim
             per_layer_dense_mlp.append(layer_dense)
             structured_dense_mlp += layer_dense
         if n_experts > 1:
             n_dense = arch.num_dense_layers
             n_moe = n_layers - n_dense
-            # peft "all-linear" attaches LoRA to nn.Linear only; routed experts
-            # are nn.Parameter and need explicit gate_proj/up_proj/down_proj
-            # naming via Unsloth's get_moe_target_parameters. Shared experts are
-            # nn.Linear, picked up by get_peft_regex.
+            # peft "all-linear" attaches LoRA to nn.Linear only; routed experts are nn.Parameter and need explicit
+            # naming, while shared experts are nn.Linear and get_peft_regex picks them up.
+            # Routed experts need explicit gate_proj/up_proj/down_proj naming via Unsloth's get_moe_target_parameters.
             routed_moe = (
                 0
                 if all_linear
@@ -972,15 +1048,20 @@ def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: l
                 mlp_total = moe_mlp * n_moe + dense_only
         else:
             mlp_total = structured_dense_mlp
-        return attn_total + mlp_total + _per_layer_input_lora_params(arch, r, target_modules)
+        return (
+            attn_total
+            + mlp_total
+            + _per_layer_input_lora_params(arch, r, lora_targets)
+            + embedding_params
+        )
     elif n_experts > 1:
         attn_total = _lora_attn_elements(arch, r, selected_modules) * n_layers
         n_dense = arch.num_dense_layers
         n_moe = n_layers - n_dense
-        # Routed and shared experts may use different intermediate sizes
-        # (Qwen3.5-MoE: routed mlp_size != shared_expert_intermediate_size).
-        # See structured branch for the all-linear exclusion rationale; only
-        # routed (nn.Parameter) experts are excluded under all-linear.
+        # Routed and shared experts may use different intermediate sizes (Qwen3.5-MoE), and only routed nn.Parameter
+        # experts are excluded under all-linear.
+        # Qwen3.5-MoE has routed mlp_size != shared_expert_intermediate_size; see the structured branch for the all-
+        # linear exclusion rationale.
         routed_moe = (
             0
             if all_linear
@@ -1024,7 +1105,12 @@ def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: l
             * n_layers
         )
 
-    return attn_total + mlp_total + _per_layer_input_lora_params(arch, r, target_modules)
+    return (
+        attn_total
+        + mlp_total
+        + _per_layer_input_lora_params(arch, r, lora_targets)
+        + embedding_params
+    )
 
 
 def compute_lora_adapter_bytes(lora_params: int) -> int:

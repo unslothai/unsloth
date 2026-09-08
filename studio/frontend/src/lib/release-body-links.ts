@@ -3,7 +3,7 @@
 
 /**
  * A relative link in a release body means "somewhere in the Unsloth
- * repository", but inside Studio it would resolve against Studio's own origin.
+ * repository", but inside Unsloth it would resolve against Unsloth's own origin.
  * Rewriting to absolute repository URLs makes them behave the way GitHub
  * renders the release page.
  */

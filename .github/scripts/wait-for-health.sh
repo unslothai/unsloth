@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
-# Poll a booted Studio's /api/health until it reports healthy, and on timeout
+# Poll a booted Unsloth's /api/health until it reports healthy, and on timeout
 # print the tail of that server's log before failing.
 #
 # Usage:
@@ -62,8 +62,24 @@ done
 
 [ -n "$PORT" ] || { echo "wait-for-health.sh: --port is required" >&2; exit 2; }
 
-for _ in $(seq 1 "$TIMEOUT_SECONDS"); do
-  if curl -fs "http://127.0.0.1:${PORT}/api/health" > "$TMP" \
+# Two halves of one bound, and neither works without the other.
+#
+# --max-time, because curl sets no maximum transfer time by default and
+# --connect-timeout stops helping the moment the handshake completes. An Unsloth
+# that binds the port and then wedges its event loop -- the shape of a wedged
+# server on a 4 vCPU runner with four of them on it -- parks the FIRST
+# iteration forever, and an iteration count is not a deadline if an iteration
+# can be infinite.
+#
+# A real deadline, because once each probe can cost up to --max-time, counting
+# iterations turns "180s" into up to 180 x 6s = 18 minutes: a bound far looser
+# than the one this file advertises, and looser than the lane budget that
+# contains it. $SECONDS is the elapsed wall of this shell, so the wait is now
+# TIMEOUT_SECONDS of real time no matter what each probe costs.
+deadline=$(( SECONDS + TIMEOUT_SECONDS ))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if curl -fs --connect-timeout 3 --max-time 5 \
+       "http://127.0.0.1:${PORT}/api/health" > "$TMP" \
      && jq -e '.status == "healthy"' "$TMP" > /dev/null; then
     echo "[health] 127.0.0.1:${PORT} reported healthy"
     exit 0

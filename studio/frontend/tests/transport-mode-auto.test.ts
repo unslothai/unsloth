@@ -8,9 +8,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-// constants.ts only: transport-preference.ts reaches lib/toast -> a .tsx barrel node's type
-// stripping cannot load. It adds no decision logic (readStored() is exactly
-// `isTransportMode(raw) ? raw : DEFAULT_TRANSPORT_MODE`), so these two exports pin the contract.
+// constants.ts only: transport-preference.ts reaches lib/toast, a .tsx barrel node's type
+// stripping cannot load. Its decision logic is pinned in download-transport-setting.test.ts.
 const {
   DEFAULT_TRANSPORT_MODE,
   RESOLVED_TRANSPORTS,
@@ -21,14 +20,14 @@ const {
 } = await import("../src/features/hub/download-manager/constants.ts");
 
 test("auto is the default transport preference", () => {
-  // The backend picks per machine (RAM, hf_xet build, recent Xet failures), and a user who never
-  // touches this control is the one who most needs that.
+  // The backend picks per machine (RAM, hf_xet build, recent Xet failures), which is what a
+  // user who never touches this control most needs. A floor now that the install has a setting,
+  // but an untouched install still runs on what it always did.
   assert.equal(DEFAULT_TRANSPORT_MODE, TRANSPORT.AUTO);
 });
 
 test("auto is a preference, not a transport a download can run on", () => {
-  // Only "xet"/"http" reach a .transport marker: it records which writer produced a partial, and
-  // a resume picks its strategy from it.
+  // Only "xet"/"http" reach a .transport marker, which records the writer a resume must match.
   assert.ok(TRANSPORT_MODES.includes(TRANSPORT.AUTO));
   assert.ok(!RESOLVED_TRANSPORTS.includes(TRANSPORT.AUTO as never));
   assert.ok(isResolvedTransport("xet"));
@@ -36,15 +35,19 @@ test("auto is a preference, not a transport a download can run on", () => {
   assert.ok(!isResolvedTransport("auto"));
 });
 
-test("a previously stored explicit preference is still valid", () => {
-  // Someone who pinned HTTP (or Xet) before this change must not be moved onto Auto:
-  // isTransportMode() accepting the old values is what keeps readStored() returning them.
+test("every previously stored preference is still valid", () => {
+  // A transport pinned before this change is kept: only an unset value falls through to the
+  // install setting.
   assert.ok(isTransportMode("http"));
   assert.ok(isTransportMode("xet"));
+  assert.ok(isTransportMode("auto"));
 });
 
-test("an unrecognised stored value is rejected, so readStored falls back to auto", () => {
+test("an unrecognised stored value is rejected, so readStored reports no choice", () => {
   for (const junk of ["ftp", "", "AUTO", null, undefined, 3]) {
-    assert.ok(!isTransportMode(junk), `${String(junk)} should not be a transport mode`);
+    assert.ok(
+      !isTransportMode(junk),
+      `${String(junk)} should not be a transport mode`,
+    );
   }
 });
