@@ -3072,9 +3072,7 @@ export function AppSidebar() {
       item.type === "compare"
         ? (item.threadIds ?? []).some((id) => Boolean(runningByThreadId[id]))
         : Boolean(runningByThreadId[item.id]);
-    // A paused queue is not activity. The entry survives a Stop now that the composer
-    // pauses instead of deleting the run, so without this the row keeps spinning for
-    // work the user explicitly stopped, with nothing left to ever clear it.
+    // A paused queue is not activity: its entry outlives Stop, so the row would spin on.
     const hasQueuedActivity = threadIds.some((threadId) => {
       const entry = queueByThreadId[threadId];
       return Boolean(entry) && !entry.paused;

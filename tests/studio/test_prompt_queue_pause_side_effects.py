@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Contracts for the paths a paused prompt queue reaches without being edited by it.
-
-Pausing instead of deleting keeps the run, and therefore its PromptQueueUIEntry,
-alive after the user presses Stop. Everything that treated "an entry exists" as
-"work is happening" silently starts reporting a chat the user has already stopped.
-These pin the three places that had to learn about `paused`.
-"""
+"""A paused run keeps its PromptQueueUIEntry, so every reader of "an entry exists"
+had to learn about `paused`. These pin those places and the two dispatch races."""
 
 from pathlib import Path
 
@@ -22,8 +17,6 @@ CONFIRM = (
 
 
 def test_the_sidebar_work_spinner_ignores_a_paused_queue():
-    # Measured before the guard: BEFORE 0 sidebar spinners after Stop settled,
-    # AFTER 1, on the same probe against two builds of the same commit pair.
     block = SIDEBAR.split("const hasQueuedActivity", 1)[1]
     block = block.split("const showQueuedActivity", 1)[0]
     assert "entry.paused" in block
@@ -36,9 +29,6 @@ def test_a_paused_queue_is_not_a_running_chat_in_the_stop_dialog():
 
 
 def test_resume_clears_the_stale_running_edge_so_it_cannot_skip_a_prompt():
-    # handlePromptQueueRunState records prevStoreRunning before it returns for a paused
-    # run, so a rising edge seen while paused survives. Resuming without clearing it
-    # lets the next idle edge advance past the first retained prompt without sending it.
     resume = THREAD.split("function resumePromptQueueRun(threadIds?: string[])", 1)[1]
     resume = resume.split("function stopPromptQueueRun", 1)[0]
     assert "run.prevStoreRunning = false" in resume
@@ -47,8 +37,6 @@ def test_resume_clears_the_stale_running_edge_so_it_cannot_skip_a_prompt():
 
 
 def test_a_superseded_dispatch_does_not_release_the_live_dispatch_flag():
-    # Without this the same prompt is appended twice when Stop then Resume happen
-    # while a document-indexing probe is still outstanding.
     pump = THREAD.split("function pumpPromptQueues()", 1)[1]
     pump = pump.split("async function dispatchQueuedPrompt(", 1)[0]
     assert "const dispatchGeneration = run.generation" in pump
