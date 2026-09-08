@@ -90,6 +90,17 @@ def _pending_turn(
     }
 
 
+def _row(**overrides):
+    """One stored conversation row without metadata, with per-test overrides."""
+    return {
+        "id": "u1",
+        "parentId": None,
+        "role": "user",
+        "content": "Continue",
+        **overrides,
+    }
+
+
 def test_a_reset_keeps_the_system_turn_and_the_newest_user_turn():
     messages = _thread() + [{"role": "user", "content": "continue"}]
 
@@ -1503,12 +1514,11 @@ def test_a_wire_shaped_tool_branch_restores_the_stored_rows_boundary(monkeypatch
             content = "An abandoned retry on a sibling branch.",
             metadata = _checkpoint_metadata(99),
         ),
-        {
-            "id": "user-retry",
-            "parentId": "assistant-retry",
-            "role": "user",
-            "content": "A sibling question the request did not select.",
-        },
+        _row(
+            id = "user-retry",
+            parentId = "assistant-retry",
+            content = "A sibling question the request did not select.",
+        ),
     ]
     branch = [
         {"role": "user", "content": "Run the diagnostic."},
@@ -1576,26 +1586,11 @@ def test_repeated_text_on_one_parent_chain_uses_only_the_newest_state(monkeypatc
     from routes import inference as inference_routes
 
     rows = [
-        {
-            "id": "user-1",
-            "parentId": None,
-            "role": "user",
-            "content": "First task.",
-        },
+        _row(id = "user-1", content = "First task."),
         _pending_turn(id = "assistant-1", parentId = "user-1"),
-        {
-            "id": "user-2",
-            "parentId": "assistant-1",
-            "role": "user",
-            "content": "Second task.",
-        },
+        _row(id = "user-2", parentId = "assistant-1", content = "Second task."),
         _turn(id = "assistant-2", parentId = "user-2", metadata = _checkpoint_metadata(5)),
-        {
-            "id": "user-3",
-            "parentId": "assistant-2",
-            "role": "user",
-            "content": "What happened?",
-        },
+        _row(id = "user-3", parentId = "assistant-2", content = "What happened?"),
     ]
     branch = [{"role": row["role"], "content": row["content"]} for row in rows]
     _stub_studio_db(monkeypatch, rows)
@@ -1616,12 +1611,11 @@ def test_authoritative_ancestry_stops_before_an_unmatched_stored_descendant(monk
         _pending_turn(
             id = "assistant-1", parentId = "user-1", content = "The common-prefix reply."
         ),
-        {
-            "id": "user-old",
-            "parentId": "assistant-1",
-            "role": "user",
-            "content": "The question before it was edited.",
-        },
+        _row(
+            id = "user-old",
+            parentId = "assistant-1",
+            content = "The question before it was edited.",
+        ),
         _turn(
             id = "assistant-old",
             parentId = "user-old",
@@ -1714,12 +1708,7 @@ def test_the_newest_authoritative_state_controls_the_old_epoch(monkeypatch, meta
             content = "The newest reply.",
             metadata = metadata,
         ),
-        {
-            "id": "user-3",
-            "parentId": "assistant-2",
-            "role": "user",
-            "content": "Continue again.",
-        },
+        _row(id = "user-3", parentId = "assistant-2", content = "Continue again."),
     ]
     branch = [{"role": row["role"], "content": row["content"]} for row in rows]
     _stub_studio_db(monkeypatch, rows)
@@ -1759,12 +1748,7 @@ def test_a_cancelled_epoch_boundary_is_found_through_its_stored_descendant(monke
                 **_checkpoint_metadata(12, checkpoint_started = True),
             },
         },
-        {
-            "id": "user-3",
-            "parentId": "assistant-2",
-            "role": "user",
-            "content": "Continue after stopping.",
-        },
+        _row(id = "user-3", parentId = "assistant-2", content = "Continue after stopping."),
     ]
     # The adapter omits an unfinished local card, but user-3 durably descends from its row.
     assert conversation_archive._as_wire([rows[3]]) == []
@@ -1825,12 +1809,7 @@ def test_retrying_the_newest_turn_twice_still_resolves_the_proved_branch(monkeyp
 
     for retry in range(3):
         rows.append(
-            {
-                "id": f"fu{retry}",
-                "parentId": "a1",
-                "role": "user",
-                "content": f"A retried follow-up {retry}.",
-            }
+            _row(id = f"fu{retry}", parentId = "a1", content = f"A retried follow-up {retry}.")
         )
         assert llama_cpp._sticky_compaction_state("t1", branch) == (4, True)
         assert inference_routes._thread_has_checkpoint("t1", branch) is True

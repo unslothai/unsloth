@@ -99,6 +99,24 @@ def conn(rag_home, rag_conn, stub_embeddings):
     return rag_conn
 
 
+def _tool_part(
+    *,
+    type = "tool-call",
+    toolCallId = "c1",
+    toolName = "terminal",
+    command = "ls",
+    result = "main.py readme.md",
+):
+    """One stored tool-invocation content part, with per-test overrides."""
+    return {
+        "type": type,
+        "toolCallId": toolCallId,
+        "toolName": toolName,
+        "args": {"command": command},
+        "result": result,
+    }
+
+
 def test_evicted_turns_are_archived_under_the_conversation_scope(conn):
     written = _archive(_turn("what is a duck", "a waterfowl"))
 
@@ -1214,13 +1232,7 @@ def test_an_archived_tool_turn_survives_the_branch_filter(conn):
             "threadId": "tool-thread",
             "role": "assistant",
             "content": [
-                {
-                    "type": "tool-call",
-                    "toolCallId": "c1",
-                    "toolName": "terminal",
-                    "args": {"command": "alembic upgrade head"},
-                    "result": "migration applied cleanly",
-                }
+                _tool_part(command = "alembic upgrade head", result = "migration applied cleanly")
             ],
             "createdAt": 2,
         }
@@ -1445,13 +1457,10 @@ def test_a_tool_call_message_is_exempt_from_the_character_anchors(conn):
             {
                 "role": "assistant",
                 "content": [
-                    {
-                        "type": "tool-call",
-                        "toolCallId": "c1",
-                        "toolName": "terminal",
-                        "args": {"command": "alembic upgrade head"},
-                        "result": "migration applied cleanly",
-                    }
+                    _tool_part(
+                        command = "alembic upgrade head",
+                        result = "migration applied cleanly",
+                    )
                 ],
             }
         ]
@@ -2720,13 +2729,7 @@ def _persist_agent_thread():
         (
             "assistant",
             [
-                {
-                    "type": "tool-call",
-                    "toolCallId": "c1",
-                    "toolName": "terminal",
-                    "args": {"command": "ls"},
-                    "result": "main.py readme.md",
-                },
+                _tool_part(type = "tool-call"),
                 {"type": "text", "text": "the repo has two files."},
             ],
         ),
@@ -3046,13 +3049,7 @@ def test_text_said_before_a_tool_call_rides_on_the_call_message():
     reply that followed the result and still belongs last, which is why this splits by
     POSITION and not by part type.
     """
-    call = {
-        "type": "tool-call",
-        "toolCallId": "c1",
-        "toolName": "terminal",
-        "args": {"command": "ls"},
-        "result": "main.py readme.md",
-    }
+    call = _tool_part(type = "tool-call")
     before = conversation_archive._as_wire(
         [{"role": "assistant", "content": [{"type": "text", "text": "Let me check."}, call]}]
     )
@@ -3215,13 +3212,7 @@ def test_two_sequential_tool_rounds_replay_as_two_exchanges():
     """
 
     def _call(index, command, result):
-        return {
-            "type": "tool-call",
-            "toolCallId": f"c{index}",
-            "toolName": "terminal",
-            "args": {"command": command},
-            "result": result,
-        }
+        return _tool_part(toolCallId = f"c{index}", command = command, result = result)
 
     wire = conversation_archive._as_wire(
         [
@@ -3439,13 +3430,7 @@ def test_a_persisted_tool_call_followed_by_its_answer_stays_on_its_branch(conn):
         {
             "role": "assistant",
             "content": [
-                {
-                    "type": "tool-call",
-                    "toolCallId": "c1",
-                    "toolName": "terminal",
-                    "args": {"command": "cat deploy.yml"},
-                    "result": "token ZQX-5150",
-                },
+                _tool_part(command = "cat deploy.yml", result = "token ZQX-5150"),
                 {"type": "text", "text": "The deploy token is ZQX-5150."},
             ],
         }
@@ -3549,13 +3534,7 @@ def test_a_sandbox_result_is_replayed_as_the_text_the_model_saw():
             {
                 "role": "assistant",
                 "content": [
-                    {
-                        "type": "tool-call",
-                        "toolCallId": "c1",
-                        "toolName": tool_name,
-                        "args": {"command": "ls"},
-                        "result": result,
-                    }
+                    _tool_part(toolName = tool_name, result = result)
                 ],
             }
         ]
@@ -4157,13 +4136,7 @@ def test_a_tool_turn_with_a_preamble_still_gets_its_seat():
         "role": "assistant",
         "content": [
             {"type": "text", "text": "Let me check"},
-            {
-                "type": "tool-call",
-                "toolCallId": "c1",
-                "toolName": "terminal",
-                "args": {"command": "ls"},
-                "result": "main.py",
-            },
+            _tool_part(result = "main.py"),
         ],
     }
     positions = [

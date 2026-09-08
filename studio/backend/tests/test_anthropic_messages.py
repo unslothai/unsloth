@@ -92,6 +92,16 @@ def _emitter_client_thinking(events):
     return thinking
 
 
+def _tool_event(**overrides):
+    """A studio tool-loop event, with per-test overrides."""
+    return {
+        "type": "tool_start",
+        "tool_name": "python",
+        "tool_call_id": "call_0",
+        **overrides,
+    }
+
+
 def test_anthropic_emitter_reasoning_only_becomes_thinking_block():
     # Anthropic asks the GGUF generator not to promote reasoning into a duplicate
     # visible fallback; the balanced <think> markup becomes one typed thinking
@@ -1282,12 +1292,7 @@ class TestAnthropicStreamEmitter:
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
         first_events = e.feed(
-            {
-                "type": "tool_start",
-                "tool_name": "render_html",
-                "tool_call_id": "call_0",
-                "arguments": {},
-            }
+            _tool_event(tool_name = "render_html")
         )
         second_events = e.feed(
             {
@@ -1324,12 +1329,7 @@ class TestAnthropicStreamEmitter:
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
         start_events = e.feed(
-            {
-                "type": "tool_start",
-                "tool_name": "t",
-                "tool_call_id": "tc_1",
-                "arguments": {},
-            }
+            _tool_event(tool_name = "t", tool_call_id = "tc_1")
         )
         start_payload = next(
             json.loads(event.split("data: ")[1])
@@ -1414,12 +1414,7 @@ class TestAnthropicStreamEmitter:
         e.feed({"type": "content", "text": "Before"})
         assert e.block_index == 0
         e.feed(
-            {
-                "type": "tool_start",
-                "tool_name": "t",
-                "tool_call_id": "tc_1",
-                "arguments": {},
-            }
+            _tool_event(tool_name = "t", tool_call_id = "tc_1")
         )
         assert e.block_index == 1
         e.feed(
@@ -1438,12 +1433,7 @@ class TestAnthropicStreamEmitter:
         e.start("msg_1", "m")
         e.feed({"type": "content", "text": "Before tool"})
         e.feed(
-            {
-                "type": "tool_start",
-                "tool_name": "t",
-                "tool_call_id": "tc_1",
-                "arguments": {},
-            }
+            _tool_event(tool_name = "t", tool_call_id = "tc_1")
         )
         e.feed(
             {
@@ -1619,12 +1609,7 @@ class TestAnthropicToolNonStreaming:
 
     def test_duplicate_tool_start_replaces_provisional_tool_block(self):
         def _run_gen():
-            yield {
-                "type": "tool_start",
-                "tool_name": "render_html",
-                "tool_call_id": "call_0",
-                "arguments": {},
-            }
+            yield _tool_event(tool_name = "render_html")
             yield {
                 "type": "tool_start",
                 "tool_name": "render_html",
@@ -3786,12 +3771,7 @@ def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
 
     def run_gen():
         def gen():
-            yield {
-                "type": "tool_start",
-                "tool_name": "python",
-                "tool_call_id": "call_0",
-                "arguments": {},
-            }
+            yield _tool_event(type = "tool_start")
             yield {"type": "heartbeat"}
             yield {
                 "type": "tool_end",
@@ -3801,12 +3781,7 @@ def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
             }
             # Second call: dropped by disable_parallel_tool_use, still executed
             # server-side (heartbeats + live output).
-            yield {
-                "type": "tool_start",
-                "tool_name": "python",
-                "tool_call_id": "call_1",
-                "arguments": {},
-            }
+            yield _tool_event(tool_call_id = "call_1")
             yield {"type": "heartbeat"}
             yield {
                 "type": "tool_output",
@@ -3886,12 +3861,7 @@ def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
 
     def run_gen():
         def gen():
-            yield {
-                "type": "tool_start",
-                "tool_name": "python",
-                "tool_call_id": "call_0",
-                "arguments": {},
-            }
+            yield _tool_event(type = "tool_start")
             # Chatty streamed stdout, no heartbeats.
             for i in range(n_output):
                 yield {
@@ -3966,12 +3936,7 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
     def run_gen():
         def gen():
             # First (kept) call.
-            yield {
-                "type": "tool_start",
-                "tool_name": "python",
-                "tool_call_id": "call_0",
-                "arguments": {},
-            }
+            yield _tool_event(type = "tool_start")
             yield {
                 "type": "tool_end",
                 "tool_name": "python",
@@ -3980,12 +3945,7 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
             }
             # Second call: dropped whole by disable_parallel_tool_use but still
             # executed server-side, streaming chatty stdout with no heartbeats.
-            yield {
-                "type": "tool_start",
-                "tool_name": "python",
-                "tool_call_id": "call_1",
-                "arguments": {},
-            }
+            yield _tool_event(tool_call_id = "call_1")
             for i in range(n_output):
                 yield {
                     "type": "tool_output",
