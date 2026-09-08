@@ -42,14 +42,24 @@ test("a preset selection is unsent until the flush, and lands on it", async () =
   assert.equal(put?.activePreset, "Long context");
 });
 
-test("a flush with nothing queued sends nothing and does not wait", async () => {
+test("a flush with nothing queued sends nothing and arms no timeout", async () => {
   await flushPendingChatSettings();
   settingsHttp.puts.length = 0;
 
-  const started = Date.now();
-  await flushPendingChatSettings();
+  // The behaviour under test is that the idle path returns before it can arm
+  // SETTINGS_FLUSH_TIMEOUT_MS, so watch the timer instead of the wall clock.
+  const realSetTimeout = globalThis.setTimeout;
+  const delays: number[] = [];
+  globalThis.setTimeout = ((fn: never, delay?: number, ...rest: never[]) => {
+    delays.push(delay ?? 0);
+    return realSetTimeout(fn, delay, ...rest);
+  }) as typeof globalThis.setTimeout;
+  try {
+    await flushPendingChatSettings();
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
 
   assert.equal(settingsHttp.puts.length, 0);
-  // Well under SETTINGS_FLUSH_TIMEOUT_MS: an update must not pay the timeout for an idle queue.
-  assert.ok(Date.now() - started < 200, "the idle flush waited");
+  assert.deepEqual(delays, [], "the idle flush armed a timer");
 });
