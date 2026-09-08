@@ -12,6 +12,50 @@ from hub.utils import download_manifest, download_registry
 from hub.utils.hf_cache_state import incomplete_blob_hash
 
 
+# Shared setup for test_progress_counts_completed_materialized_snapshot_file, test_progress_counts_the_snapshot_the_refs_point_at, test_progress_ignores_stale_revision_in_copy_layout and 1 more.
+def _shared_setup_1():
+    result = snapshot_progress.compute_snapshot_progress(
+        repo_type = "model",
+        repo_id = "Org/Model",
+        job_key = "model:org/model#@diffusion",
+        expected_bytes = 100,
+        hf_token = None,
+        registry = _running_registry(),
+        metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
+        variant = "@diffusion",
+        variant_file_matcher = lambda path, **_kwargs: path == "model.safetensors",
+    )
+    return result
+
+
+# Shared setup for test_finalized_blob_supersedes_an_orphaned_partial, test_progress_counts_completed_materialized_snapshot_file, test_progress_counts_process_unique_incomplete_blob and 5 more.
+def _shared_setup_2(entry, monkeypatch):
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+
+
+# Shared setup for test_finalized_blob_supersedes_an_orphaned_partial, test_progress_counts_completed_materialized_snapshot_file, test_progress_ignores_stale_revision_in_copy_layout.
+def _shared_setup_3(manifest, monkeypatch):
+    monkeypatch.setattr(
+        snapshot_progress.download_manifest,
+        "read_manifest",
+        lambda *_args, **_kwargs: manifest,
+    )
+
+
+# Shared setup for test_progress_counts_the_snapshot_the_refs_point_at, test_progress_ignores_stale_revision_in_copy_layout, test_progress_ignores_stale_revision_without_a_manifest.
+def _shared_setup_4(tmp_path):
+    commit = "b" * 40
+    entry = tmp_path / "models--Org--Model"
+    (entry / "blobs").mkdir(parents = True)
+    (entry / "refs").mkdir(parents = True)
+    (entry / "refs" / "main").write_text(commit)
+    return commit, entry
+
+
 _BLOB_HASH = "a" * 64
 
 
@@ -94,11 +138,7 @@ def test_progress_counts_process_unique_incomplete_blob(monkeypatch, tmp_path):
     blobs.mkdir(parents = True)
     (blobs / f"{_BLOB_HASH}.deadbeef.incomplete").write_bytes(b"x" * 5)
 
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
+    _shared_setup_2(entry, monkeypatch)
     result = snapshot_progress.compute_snapshot_progress(
         repo_type = "model",
         repo_id = "Org/Model-GGUF",
@@ -136,28 +176,10 @@ def test_progress_counts_completed_materialized_snapshot_file(monkeypatch, tmp_p
         ),
     )
 
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        snapshot_progress.download_manifest,
-        "read_manifest",
-        lambda *_args, **_kwargs: manifest,
-    )
+    _shared_setup_2(entry, monkeypatch)
+    _shared_setup_3(manifest, monkeypatch)
 
-    result = snapshot_progress.compute_snapshot_progress(
-        repo_type = "model",
-        repo_id = "Org/Model",
-        job_key = "model:org/model#@diffusion",
-        expected_bytes = 100,
-        hf_token = None,
-        registry = _running_registry(),
-        metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
-        variant = "@diffusion",
-        variant_file_matcher = lambda path, **_kwargs: path == "model.safetensors",
-    )
+    result = _shared_setup_1()
 
     assert result["completed_bytes"] == 5
     assert result["downloaded_bytes"] == 5
@@ -172,11 +194,7 @@ def test_progress_groups_duplicate_process_unique_writers(monkeypatch, tmp_path)
     (blobs / f"{_BLOB_HASH}.11111111.incomplete").write_bytes(b"x" * 60)
     (blobs / f"{_BLOB_HASH}.22222222.incomplete").write_bytes(b"x" * 60)
 
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
+    _shared_setup_2(entry, monkeypatch)
     result = snapshot_progress.compute_snapshot_progress(
         repo_type = "model",
         repo_id = "Org/Model-GGUF",
@@ -198,11 +216,7 @@ def test_progress_ignores_stale_revision_in_copy_layout(monkeypatch, tmp_path):
     Written the way production writes it: model, GGUF and scoped manifests all go through
     ``write_manifest`` without a commit, so ``refs/main`` is the only marker available.
     """
-    commit = "b" * 40
-    entry = tmp_path / "models--Org--Model"
-    (entry / "blobs").mkdir(parents = True)
-    (entry / "refs").mkdir(parents = True)
-    (entry / "refs" / "main").write_text(commit)
+    commit, entry = _shared_setup_4(tmp_path)
     stale = entry / "snapshots" / ("c" * 40)
     stale.mkdir(parents = True)
     (stale / "model.safetensors").write_bytes(b"x" * 100)
@@ -221,27 +235,9 @@ def test_progress_ignores_stale_revision_in_copy_layout(monkeypatch, tmp_path):
         ),
     )
 
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        snapshot_progress.download_manifest,
-        "read_manifest",
-        lambda *_args, **_kwargs: manifest,
-    )
-    result = snapshot_progress.compute_snapshot_progress(
-        repo_type = "model",
-        repo_id = "Org/Model",
-        job_key = "model:org/model#@diffusion",
-        expected_bytes = 100,
-        hf_token = None,
-        registry = _running_registry(),
-        metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
-        variant = "@diffusion",
-        variant_file_matcher = lambda path, **_kwargs: path == "model.safetensors",
-    )
+    _shared_setup_2(entry, monkeypatch)
+    _shared_setup_3(manifest, monkeypatch)
+    result = _shared_setup_1()
 
     assert result["completed_bytes"] == 0
     assert result["downloaded_bytes"] == 0
@@ -249,37 +245,19 @@ def test_progress_ignores_stale_revision_in_copy_layout(monkeypatch, tmp_path):
 
 def test_progress_ignores_stale_revision_without_a_manifest(monkeypatch, tmp_path):
     """No manifest is not a licence to count any retained snapshot."""
-    commit = "b" * 40
-    entry = tmp_path / "models--Org--Model"
-    (entry / "blobs").mkdir(parents = True)
-    (entry / "refs").mkdir(parents = True)
-    (entry / "refs" / "main").write_text(commit)
+    commit, entry = _shared_setup_4(tmp_path)
     stale = entry / "snapshots" / ("c" * 40)
     stale.mkdir(parents = True)
     (stale / "model.safetensors").write_bytes(b"x" * 100)
     (entry / "snapshots" / commit).mkdir(parents = True)
 
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
+    _shared_setup_2(entry, monkeypatch)
     monkeypatch.setattr(
         snapshot_progress.download_manifest,
         "read_manifest",
         lambda *_args, **_kwargs: None,
     )
-    result = snapshot_progress.compute_snapshot_progress(
-        repo_type = "model",
-        repo_id = "Org/Model",
-        job_key = "model:org/model#@diffusion",
-        expected_bytes = 100,
-        hf_token = None,
-        registry = _running_registry(),
-        metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
-        variant = "@diffusion",
-        variant_file_matcher = lambda path, **_kwargs: path == "model.safetensors",
-    )
+    result = _shared_setup_1()
 
     assert result["completed_bytes"] == 0
     assert result["downloaded_bytes"] == 0
@@ -287,36 +265,18 @@ def test_progress_ignores_stale_revision_without_a_manifest(monkeypatch, tmp_pat
 
 def test_progress_counts_the_snapshot_the_refs_point_at(monkeypatch, tmp_path):
     """The revision check must not cost the Windows copy-layout fix it guards."""
-    commit = "b" * 40
-    entry = tmp_path / "models--Org--Model"
-    (entry / "blobs").mkdir(parents = True)
-    (entry / "refs").mkdir(parents = True)
-    (entry / "refs" / "main").write_text(commit)
+    commit, entry = _shared_setup_4(tmp_path)
     current = entry / "snapshots" / commit
     current.mkdir(parents = True)
     (current / "model.safetensors").write_bytes(b"x" * 100)
 
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
+    _shared_setup_2(entry, monkeypatch)
     monkeypatch.setattr(
         snapshot_progress.download_manifest,
         "read_manifest",
         lambda *_args, **_kwargs: None,
     )
-    result = snapshot_progress.compute_snapshot_progress(
-        repo_type = "model",
-        repo_id = "Org/Model",
-        job_key = "model:org/model#@diffusion",
-        expected_bytes = 100,
-        hf_token = None,
-        registry = _running_registry(),
-        metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
-        variant = "@diffusion",
-        variant_file_matcher = lambda path, **_kwargs: path == "model.safetensors",
-    )
+    result = _shared_setup_1()
 
     assert result["completed_bytes"] == 100
 
@@ -348,16 +308,8 @@ def test_finalized_blob_supersedes_an_orphaned_partial(monkeypatch, tmp_path):
         ),
     )
 
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        snapshot_progress.download_manifest,
-        "read_manifest",
-        lambda *_args, **_kwargs: manifest,
-    )
+    _shared_setup_2(entry, monkeypatch)
+    _shared_setup_3(manifest, monkeypatch)
     result = snapshot_progress.compute_snapshot_progress(
         repo_type = "model",
         repo_id = "Org/Model-GGUF",
@@ -386,11 +338,7 @@ def test_progress_is_stable_across_which_racer_wrote_last(monkeypatch, tmp_path)
     straggler = blobs / f"{_BLOB_HASH}.22222222.incomplete"
     straggler.write_bytes(b"x" * 10)
 
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
+    _shared_setup_2(entry, monkeypatch)
 
     def _read():
         return snapshot_progress.compute_snapshot_progress(

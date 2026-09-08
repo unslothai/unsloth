@@ -26,6 +26,24 @@ from pathlib import Path
 
 import pytest
 
+
+# Shared setup for test_continuous_over_cap_output_does_not_starve_heartbeats, test_heartbeats_continue_while_capped_output_flows, test_heartbeats_emitted_while_tool_blocks.
+def _shared_setup_1(events, gen, release):
+    while True:
+        event = next(gen)
+        events.append(event)
+        if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
+            release.set()
+    return e
+
+
+# Shared setup for test_python_exec_hallucinated_absolute_write_is_remapped_into_workdir, test_python_exec_mnt_data_open_is_remapped_into_workdir, test_python_exec_pathlib_write_text_is_remapped_into_workdir.
+def _shared_setup_2(baseline, code, target):
+    _os.remove(target)
+    streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
+    assert streamed == baseline
+    assert _os.path.isfile(target)
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -136,11 +154,7 @@ def test_heartbeats_emitted_while_tool_blocks():
     events = []
     result = None
     try:
-        while True:
-            event = next(gen)
-            events.append(event)
-            if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
-                release.set()
+        e = _shared_setup_1(events, gen, release)
     except StopIteration as stop:
         result = stop.value
     assert result == "done"
@@ -343,11 +357,7 @@ def test_heartbeats_continue_while_capped_output_flows():
     events = []
     result = None
     try:
-        while True:
-            event = next(gen)
-            events.append(event)
-            if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
-                release.set()
+        e = _shared_setup_1(events, gen, release)
     except StopIteration as stop:
         result = stop.value
     finally:
@@ -1042,10 +1052,7 @@ def test_python_exec_mnt_data_open_is_remapped_into_workdir():
             assert f.read() == "hello remap"
         assert "hello remap" in baseline
         assert "/mnt/data does not exist in this sandbox" in baseline
-        _os.remove(target)
-        streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
-        assert streamed == baseline
-        assert _os.path.isfile(target)
+        _shared_setup_2(baseline, code, target)
     finally:
         if _os.path.exists(target):
             _os.remove(target)
@@ -1069,10 +1076,7 @@ def test_python_exec_pathlib_write_text_is_remapped_into_workdir():
             assert f.read() == "pathlib remap"
         assert "pathlib remap" in baseline
         assert "/mnt/data does not exist in this sandbox" in baseline
-        _os.remove(target)
-        streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
-        assert streamed == baseline
-        assert _os.path.isfile(target)
+        _shared_setup_2(baseline, code, target)
     finally:
         if _os.path.exists(target):
             _os.remove(target)
@@ -1099,10 +1103,7 @@ def test_python_exec_hallucinated_absolute_write_is_remapped_into_workdir():
             assert f.read() == "hello fallback"
         assert "hello fallback" in baseline
         assert "does not exist in this sandbox" in baseline
-        _os.remove(target)
-        streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
-        assert streamed == baseline
-        assert _os.path.isfile(target)
+        _shared_setup_2(baseline, code, target)
     finally:
         if _os.path.exists(target):
             _os.remove(target)
@@ -1197,11 +1198,7 @@ def test_continuous_over_cap_output_does_not_starve_heartbeats():
     events = []
     result = None
     try:
-        while True:
-            event = next(gen)
-            events.append(event)
-            if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
-                release.set()
+        e = _shared_setup_1(events, gen, release)
     except StopIteration as stop:
         result = stop.value
     finally:

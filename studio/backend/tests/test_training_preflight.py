@@ -21,6 +21,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+
+# Shared setup for test_bounded_cached_train_forwards_only_required_row_count, test_cached_explicit_eval_failure_reloads_remote_pair, test_cached_train_auto_eval_stays_on_pinned_dataset and 1 more.
+def _shared_setup_1(monkeypatch):
+    from hub.utils import dataset_cache
+
+    _patch_dataset_formatting(monkeypatch)
+    trainer = _dataset_loader_self()
+    return dataset_cache, trainer
+
 torch = pytest.importorskip("torch")
 
 
@@ -388,10 +397,7 @@ def test_torch_eval_split_warns_when_dataset_is_too_small():
 
 
 def test_cached_train_auto_eval_stays_on_pinned_dataset(monkeypatch):
-    from hub.utils import dataset_cache
-
-    _patch_dataset_formatting(monkeypatch)
-    trainer = _dataset_loader_self()
+    dataset_cache, trainer = _shared_setup_1(monkeypatch)
     cache_calls: list[str] = []
     train = _SizedDataset(40, ("train", "validation"))
     validation = _SizedDataset(20, ("train", "validation"))
@@ -428,10 +434,7 @@ def test_cached_train_auto_eval_stays_on_pinned_dataset(monkeypatch):
 
 
 def test_bounded_cached_train_forwards_only_required_row_count(monkeypatch):
-    from hub.utils import dataset_cache
-
-    _patch_dataset_formatting(monkeypatch)
-    trainer = _dataset_loader_self()
+    dataset_cache, trainer = _shared_setup_1(monkeypatch)
     cache_calls: list[tuple[str, int | None]] = []
     validation = _SizedDataset(20, ("train", "validation"))
 
@@ -1363,10 +1366,7 @@ def test_mlx_adapter_keeps_one_source_of_truth_for_the_bound():
 
 
 def test_remote_train_fallback_keeps_auto_eval_remote(monkeypatch):
-    from hub.utils import dataset_cache
-
-    _patch_dataset_formatting(monkeypatch)
-    trainer = _dataset_loader_self()
+    dataset_cache, trainer = _shared_setup_1(monkeypatch)
     cache_calls: list[str] = []
     remote_calls: list[tuple[str, str | None]] = []
     train = _SizedDataset(40, ("train", "validation"))
@@ -1485,10 +1485,7 @@ def test_manual_eager_slice_attests_original_hub_stream(monkeypatch, tmp_path):
     ],
 )
 def test_cached_explicit_eval_failure_reloads_remote_pair(monkeypatch, cached_eval_error):
-    from hub.utils import dataset_cache
-
-    _patch_dataset_formatting(monkeypatch)
-    trainer = _dataset_loader_self()
+    dataset_cache, trainer = _shared_setup_1(monkeypatch)
     cache_calls: list[str] = []
     remote_calls: list[str] = []
     cached_train = _SizedDataset(40, ("train", "validation"))

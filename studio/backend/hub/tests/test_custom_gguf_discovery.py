@@ -13,6 +13,16 @@ from hub.utils import gguf
 from utils.models.model_config import detect_gguf_model, _find_local_gguf_by_variant
 
 
+# Shared setup for test_aliased_nested_independent_loose_root_stays_selectable, test_overlapping_nested_independent_loose_root_stays_selectable, test_overlapping_nested_independent_model_root_stays_selectable.
+def _shared_setup_1(tmp_path):
+    root = tmp_path / "root"
+    parent = root / "parent"
+    _write_gguf(parent / "parent-Q4_K_M.gguf")
+    (parent / "config.json").write_text("{}", encoding = "utf-8")
+    child = parent / "child"
+    return child, parent, root
+
+
 def _write_gguf(path: Path, size: int = 4) -> Path:
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"G" * size)
@@ -422,11 +432,7 @@ def test_symlinked_nested_quant_root_keeps_the_real_parent_group(tmp_path):
 
 
 def test_overlapping_nested_independent_model_root_stays_selectable(tmp_path):
-    root = tmp_path / "root"
-    parent = root / "parent"
-    _write_gguf(parent / "parent-Q4_K_M.gguf")
-    (parent / "config.json").write_text("{}", encoding = "utf-8")
-    child = parent / "child"
+    child, parent, root = _shared_setup_1(tmp_path)
     _write_gguf(child / "child-Q8_0.gguf")
     (child / "config.json").write_text("{}", encoding = "utf-8")
 
@@ -436,11 +442,7 @@ def test_overlapping_nested_independent_model_root_stays_selectable(tmp_path):
 
 
 def test_overlapping_nested_independent_loose_root_stays_selectable(tmp_path):
-    root = tmp_path / "root"
-    parent = root / "parent"
-    _write_gguf(parent / "parent-Q4_K_M.gguf")
-    (parent / "config.json").write_text("{}", encoding = "utf-8")
-    child = parent / "child"
+    child, parent, root = _shared_setup_1(tmp_path)
     loose = _write_gguf(child / "child-Q8_0.gguf")
 
     rows = _custom_rows(root, child)
@@ -449,11 +451,7 @@ def test_overlapping_nested_independent_loose_root_stays_selectable(tmp_path):
 
 
 def test_aliased_nested_independent_loose_root_stays_selectable(tmp_path):
-    root = tmp_path / "root"
-    parent = root / "parent"
-    _write_gguf(parent / "parent-Q4_K_M.gguf")
-    (parent / "config.json").write_text("{}", encoding = "utf-8")
-    child = parent / "child"
+    child, parent, root = _shared_setup_1(tmp_path)
     loose = _write_gguf(child / "child-Q8_0.gguf")
     alias_child = tmp_path / "alias-child"
     _symlink_dir(alias_child, child)

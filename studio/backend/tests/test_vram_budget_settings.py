@@ -16,6 +16,26 @@ import pytest
 import utils.vram_budget_settings as vb
 
 
+# Shared setup for test_a_nonterminal_retry_keeps_the_pending_value, test_every_pooled_caller_says_so, test_marker_is_committed_with_the_rest_of_the_launch_state and 4 more.
+def _shared_setup_1():
+    import inspect
+
+    import core.inference.llama_cpp as lc
+
+    compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+    return compact
+
+
+# Shared setup for test_a_cpu_fallback_child_is_not_stamped_with_a_budget, test_a_terminal_failure_releases_the_pending_value, test_the_diffusion_launch_clears_the_marker.
+def _shared_setup_2():
+    import inspect
+
+    import core.inference.llama_cpp as lc
+
+    source = inspect.getsource(lc.LlamaCppBackend.load_model)
+    return source
+
+
 @pytest.fixture(autouse = True)
 def _isolate(monkeypatch):
     """No stored value and no environment, so each test states its own inputs."""
@@ -263,11 +283,7 @@ class TestLaunchedMarker:
     def test_marker_is_committed_with_the_rest_of_the_launch_state(self):
         # Guards the placement: next to _requested_n_batch, inside the block only a
         # _healthy=True launch runs, not at the top of load_model with no child yet.
-        import inspect
-
-        import core.inference.llama_cpp as lc
-
-        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        compact = _shared_setup_1()
         assert (
             "self._vram_fraction_launched=_budget_priced_placement()"
             "self._vram_fraction_pending=Noneself._requested_n_batch" in compact
@@ -277,11 +293,7 @@ class TestLaunchedMarker:
         # gpus is empty in manual mode and on GPU-less hosts, and every consumer of
         # the fraction is gated on it, so a value there is a budget the child never
         # applied. Pending value and committed marker share the one predicate.
-        import inspect
-
-        import core.inference.llama_cpp as lc
-
-        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        compact = _shared_setup_1()
         assert "self._vram_fraction_pending=_budget_priced_placement()" in compact
         assert "self._vram_fraction_launched=_budget_priced_placement()" in compact
 
@@ -346,11 +358,7 @@ class TestDiffusionPath:
         # The diffusion branch returns before the launch block that commits the
         # marker, so a previous llama-server's fraction would survive and, since the
         # dedupe compares it, relaunch a healthy diffusion runner on every Apply.
-        import inspect
-
-        import core.inference.llama_cpp as lc
-
-        source = inspect.getsource(lc.LlamaCppBackend.load_model)
+        source = _shared_setup_2()
         diffusion = source[source.index("if self._is_diffusion:") :]
         diffusion = diffusion[: diffusion.index("_start_diffusion_server")]
         compact = "".join(diffusion.split())
@@ -395,11 +403,7 @@ class TestLaunchFinalization:
         # An auto Vulkan crash that recovers on CPU rewrites the intent but leaves
         # gpus populated from the failed attempt, so gpus alone would stamp a
         # CPU-only child.
-        import inspect
-
-        import core.inference.llama_cpp as lc
-
-        source = inspect.getsource(lc.LlamaCppBackend.load_model)
+        source = _shared_setup_2()
         helper = source[source.index("def _budget_priced_placement()") :]
         # Bounded by the first statement after the nested def, not by a comment:
         # the comments here get rewritten and the slice should not care.
@@ -439,11 +443,7 @@ class TestPreLaunchWindow:
     def test_a_terminal_failure_releases_the_pending_value(self):
         # The route reads the pending value before it checks is_active, so a value
         # left behind by a failed load would ask for a reload with nothing loaded.
-        import inspect
-
-        import core.inference.llama_cpp as lc
-
-        source = inspect.getsource(lc.LlamaCppBackend.load_model)
+        source = _shared_setup_2()
         funnel = source[source.index("def _raise_terminal_load_failure") :]
         funnel = funnel[: funnel.index("def _try_auto_vulkan_cpu_fallback")]
         compact = "".join(funnel.split())
@@ -589,11 +589,7 @@ class TestFloorReserve:
     def test_every_pooled_caller_says_so(self):
         # Five call sites hand _fit_context_to_vram an absolute pool budget; each
         # has to be marked, since the flag is what keeps them from double-paying.
-        import inspect
-
-        import core.inference.llama_cpp as lc
-
-        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        compact = _shared_setup_1()
         assert compact.count("budget_frac=1.0,pooled=True,total_mib=None,") == 5
 
 
@@ -602,21 +598,13 @@ class TestRetriesAndDedup:
         # The flash-attn-off and drafterless retries spawn a replacement child, so
         # releasing at the first spawn left that window answered from the previous
         # child's marker. The load scope releases it on every exit.
-        import inspect
-
-        import core.inference.llama_cpp as lc
-
-        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        compact = _shared_setup_1()
         assert "ifnothealthy:self._vram_fraction_pending=None" not in compact
 
     def test_the_duplicate_check_uses_the_captured_fraction(self):
         # Resolve-once: the load captured a fraction under the lock, so the check
         # must not read the setting again and decide against a different number.
-        import inspect
-
-        import core.inference.llama_cpp as lc
-
-        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        compact = _shared_setup_1()
         assert "self._vram_fraction_pending=_vram_frac" in compact
         assert "adopt_load_intent_if_matched(intent)" in compact
 
@@ -719,11 +707,7 @@ class TestFitTarget:
         # make not ours to assume; a misaligned list hands a card the wrong margin.
         # One broadcast value instead, sized by whichever card makes it safe in the
         # direction asked for.
-        import inspect
-
-        import core.inference.llama_cpp as lc
-
-        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        compact = _shared_setup_1()
         assert "if_vram_frac!=_CTX_FIT_VRAM_FRACTIONandgpus:" in compact
         assert "_fit_target_delta_mib=(_CTX_FIT_VRAM_FRACTION-_vram_frac)*_scale" in compact
         # Direction picks the card, since one value is broadcast to all of them:
@@ -761,11 +745,7 @@ class TestManualAutoIsPriced:
         # --fit off, an older server without the capability, and a budget at the
         # default all leave the child unpriced, and each is decided inside the call
         # that builds the flags rather than by its inputs.
-        import inspect
-
-        import core.inference.llama_cpp as lc
-
-        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        compact = _shared_setup_1()
         assert '_fit_target_priced="--fit-target"in_integrity_flags' in compact
 
     def test_a_cpu_fallback_child_is_still_refused(self):

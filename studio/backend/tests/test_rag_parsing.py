@@ -7,6 +7,17 @@ from __future__ import annotations
 
 import pytest
 
+
+# Shared setup for test_docx_flattens_nested_table, test_docx_nested_table_keeps_in_cell_order, test_docx_table_keeps_columns_and_collapses_cell_newlines and 2 more.
+def _shared_setup_1():
+    pytest.importorskip("docx")
+    import docx
+
+    from core.rag import parsers
+
+    document = docx.Document()
+    return document, docx, parsers
+
 pytest.importorskip("pymupdf")
 
 
@@ -207,12 +218,7 @@ def test_docx_extracts_table_cells(tmp_path):
 def test_docx_table_keeps_columns_and_collapses_cell_newlines(tmp_path):
     # Empty cells are kept (so columns stay aligned across rows) and a cell's internal
     # newlines are collapsed to spaces (so a multi-paragraph cell can't break the row).
-    pytest.importorskip("docx")
-    import docx
-
-    from core.rag import parsers
-
-    document = docx.Document()
+    document, docx, parsers = _shared_setup_1()
     table = document.add_table(rows = 2, cols = 3)
     table.cell(0, 0).text = "A"
     table.cell(0, 1).text = ""  # empty middle cell
@@ -234,12 +240,7 @@ def test_docx_table_merged_cell_keeps_grid_alignment(tmp_path):
     # A horizontally merged cell repeats across the spanned columns: emit its text once
     # then a placeholder, so the row keeps as many fields as its siblings (columns stay
     # aligned) without duplicating the merged text.
-    pytest.importorskip("docx")
-    import docx
-
-    from core.rag import parsers
-
-    document = docx.Document()
+    document, docx, parsers = _shared_setup_1()
     table = document.add_table(rows = 2, cols = 3)
     table.cell(0, 0).text = "WIDE"
     table.cell(0, 2).text = "END"
@@ -285,12 +286,7 @@ def test_docx_table_pads_omitted_grid_columns(tmp_path):
 def test_docx_flattens_nested_table(tmp_path):
     # cell.text ignores tables nested inside a cell; walk cell.tables so nested rows are
     # not silently dropped from the indexed text.
-    pytest.importorskip("docx")
-    import docx
-
-    from core.rag import parsers
-
-    document = docx.Document()
+    document, docx, parsers = _shared_setup_1()
     outer = document.add_table(rows = 1, cols = 1).cell(0, 0)
     outer.text = "outer"
     nested = outer.add_table(rows = 1, cols = 2)
@@ -306,12 +302,7 @@ def test_docx_flattens_nested_table(tmp_path):
 def test_docx_nested_table_keeps_in_cell_order(tmp_path):
     # A cell holding paragraph, nested table, paragraph must serialize in that order
     # (cell.text alone would emit both paragraphs before the nested rows).
-    pytest.importorskip("docx")
-    import docx
-
-    from core.rag import parsers
-
-    document = docx.Document()
+    document, docx, parsers = _shared_setup_1()
     cell = document.add_table(rows = 1, cols = 1).cell(0, 0)
     cell.text = "before"
     nested = cell.add_table(rows = 1, cols = 2)
@@ -328,12 +319,7 @@ def test_docx_nested_table_keeps_in_cell_order(tmp_path):
 def test_docx_table_vertical_merge_emitted_once(tmp_path):
     # A vertically merged cell maps every continuation row back to the origin <w:tc>;
     # emit it once and leave placeholders below so a row-spanning label isn't repeated.
-    pytest.importorskip("docx")
-    import docx
-
-    from core.rag import parsers
-
-    document = docx.Document()
+    document, docx, parsers = _shared_setup_1()
     table = document.add_table(rows = 3, cols = 2)
     table.cell(0, 0).merge(table.cell(1, 0)).merge(table.cell(2, 0)).text = "SECTION"
     table.cell(0, 1).text = "r0"

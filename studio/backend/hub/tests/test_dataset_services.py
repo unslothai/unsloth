@@ -27,6 +27,63 @@ from hub.utils import (
 )
 
 
+# Shared setup for test_delete_app_only_cache_path_isolated_by_hub_root, test_delete_app_processed_cache_isolated_by_hub_root, test_delete_raw_path_removes_only_same_scope_app_cache.
+def _shared_setup_1(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    first = _app_cache_entry(
+        monkeypatch,
+        tmp_path / "first" / "hub",
+        repo_id,
+        "commit-a",
+    )
+    second = _app_cache_entry(
+        monkeypatch,
+        tmp_path / "second" / "hub",
+        repo_id,
+        "commit-b",
+    )
+    return first, repo_id, second
+
+
+# Shared setup for test_app_processed_cache_never_settles_a_partial_raw_row, test_dataset_cache_without_data_files_is_partial, test_processed_cache_settles_a_partial_raw_row_without_losing_its_path.
+def _shared_setup_2(monkeypatch):
+    monkeypatch.setattr(
+        cache_inventory,
+        "_collect_hf_cache_scans",
+        lambda: ([SimpleNamespace(repos = [_metadata_only_raw_repo()])], {"/cache/hub"}),
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: False)
+    monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
+
+
+# Shared setup for test_delete_cached_dataset_absent_everywhere_raises_404, test_delete_cached_dataset_purges_blob_only_repo_dir, test_delete_raw_path_removes_only_same_scope_app_cache.
+def _shared_setup_3(monkeypatch):
+    monkeypatch.setattr(
+        cache_inventory,
+        "purge_partial_repo",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        cache_inventory.download_manifest,
+        "purge_all_state_for_repo",
+        lambda *_args, **_kwargs: 0,
+    )
+
+
+# Shared setup for test_delete_cached_dataset_absent_everywhere_raises_404, test_delete_cached_dataset_purges_blob_only_repo_dir, test_delete_cached_dataset_scopes_delete_to_selected_root.
+def _shared_setup_4(monkeypatch):
+    monkeypatch.setattr(
+        cache_inventory,
+        "_delete_processed_dataset_cache",
+        lambda _repo_id, **_kwargs: (False, []),
+    )
+
+
 @pytest.fixture(autouse = True)
 def _app_dataset_cache_root(monkeypatch, tmp_path):
     monkeypatch.setattr(
@@ -438,18 +495,7 @@ def _metadata_only_raw_repo() -> SimpleNamespace:
 def test_dataset_cache_without_data_files_is_partial(monkeypatch):
     """A snapshot holding only the dataset card passes every structural check but
     cannot be loaded, so it must not be offered as usable On Device."""
-    monkeypatch.setattr(
-        cache_inventory,
-        "_collect_hf_cache_scans",
-        lambda: ([SimpleNamespace(repos = [_metadata_only_raw_repo()])], {"/cache/hub"}),
-    )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_snapshot_partial",
-        lambda *_args, **_kwargs: False,
-    )
-    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: False)
-    monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(cache_inventory, "_scan_processed_dataset_caches", lambda: [])
     monkeypatch.setattr(cache_inventory, "_scan_app_processed_dataset_caches", lambda: [])
 
@@ -463,18 +509,7 @@ def test_processed_cache_settles_a_partial_raw_row_without_losing_its_path(monke
     """The Arrow cache loads on its own, so it clears `partial`. The row must keep the hub
     `cache_path`, which is the only handle `delete_cached_dataset_response` can scope a
     hub-dir purge to."""
-    monkeypatch.setattr(
-        cache_inventory,
-        "_collect_hf_cache_scans",
-        lambda: ([SimpleNamespace(repos = [_metadata_only_raw_repo()])], {"/cache/hub"}),
-    )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_snapshot_partial",
-        lambda *_args, **_kwargs: False,
-    )
-    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: False)
-    monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         cache_inventory,
         "_scan_processed_dataset_caches",
@@ -502,18 +537,7 @@ def test_processed_cache_settles_a_partial_raw_row_without_losing_its_path(monke
 def test_app_processed_cache_never_settles_a_partial_raw_row(monkeypatch):
     """App caches are written per snapshot commit but grouped without one, so a finished
     cache proves nothing about the snapshot the loader will resolve."""
-    monkeypatch.setattr(
-        cache_inventory,
-        "_collect_hf_cache_scans",
-        lambda: ([SimpleNamespace(repos = [_metadata_only_raw_repo()])], {"/cache/hub"}),
-    )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_snapshot_partial",
-        lambda *_args, **_kwargs: False,
-    )
-    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: False)
-    monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(cache_inventory, "_scan_processed_dataset_caches", lambda: [])
     monkeypatch.setattr(
         cache_inventory,
@@ -594,11 +618,7 @@ def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_p
         "_collect_hf_cache_scans",
         lambda: ([_cache("active", target_hub), _cache("previous", other_hub)], set()),
     )
-    monkeypatch.setattr(
-        cache_inventory,
-        "_delete_processed_dataset_cache",
-        lambda _repo_id, **_kwargs: (False, []),
-    )
+    _shared_setup_4(monkeypatch)
     monkeypatch.setattr(
         cache_inventory.download_manifest,
         "purge_all_state_for_repo",
@@ -687,19 +707,7 @@ def _app_cache_entry(monkeypatch, hub_cache: Path, repo_id: str, commit_hash: st
 
 
 def test_delete_app_processed_cache_isolated_by_hub_root(monkeypatch, tmp_path):
-    repo_id = "Org/Data"
-    first = _app_cache_entry(
-        monkeypatch,
-        tmp_path / "first" / "hub",
-        repo_id,
-        "commit-a",
-    )
-    second = _app_cache_entry(
-        monkeypatch,
-        tmp_path / "second" / "hub",
-        repo_id,
-        "commit-b",
-    )
+    first, repo_id, second = _shared_setup_1(monkeypatch, tmp_path)
     external = tmp_path / "external"
     external.mkdir()
     (external / "keep.txt").write_text("keep")
@@ -740,19 +748,7 @@ def test_delete_raw_scope_purges_corrupt_app_cache_entry(monkeypatch, tmp_path):
 
 
 def test_delete_app_only_cache_path_isolated_by_hub_root(monkeypatch, tmp_path):
-    repo_id = "Org/Data"
-    first = _app_cache_entry(
-        monkeypatch,
-        tmp_path / "first" / "hub",
-        repo_id,
-        "commit-a",
-    )
-    second = _app_cache_entry(
-        monkeypatch,
-        tmp_path / "second" / "hub",
-        repo_id,
-        "commit-b",
-    )
+    first, repo_id, second = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.setattr(cache_inventory, "_collect_hf_cache_scans", lambda: ([], set()))
     monkeypatch.setattr(
         cache_inventory,
@@ -774,19 +770,7 @@ def test_delete_app_only_cache_path_isolated_by_hub_root(monkeypatch, tmp_path):
 
 
 def test_delete_raw_path_removes_only_same_scope_app_cache(monkeypatch, tmp_path):
-    repo_id = "Org/Data"
-    first = _app_cache_entry(
-        monkeypatch,
-        tmp_path / "first" / "hub",
-        repo_id,
-        "commit-a",
-    )
-    second = _app_cache_entry(
-        monkeypatch,
-        tmp_path / "second" / "hub",
-        repo_id,
-        "commit-b",
-    )
+    first, repo_id, second = _shared_setup_1(monkeypatch, tmp_path)
 
     class _Strategy:
         def execute(self):
@@ -823,16 +807,7 @@ def test_delete_raw_path_removes_only_same_scope_app_cache(monkeypatch, tmp_path
         "purge_repo_cache_dirs",
         lambda *_args, **_kwargs: False,
     )
-    monkeypatch.setattr(
-        cache_inventory,
-        "purge_partial_repo",
-        lambda *_args, **_kwargs: False,
-    )
-    monkeypatch.setattr(
-        cache_inventory.download_manifest,
-        "purge_all_state_for_repo",
-        lambda *_args, **_kwargs: 0,
-    )
+    _shared_setup_3(monkeypatch)
 
     result = cache_inventory._delete_cached_dataset_blocking(
         repo_id,
@@ -889,26 +864,13 @@ def test_delete_cached_dataset_purges_blob_only_repo_dir(monkeypatch):
         "_collect_hf_cache_scans",
         lambda: ([], set()),
     )
-    monkeypatch.setattr(
-        cache_inventory,
-        "_delete_processed_dataset_cache",
-        lambda _repo_id, **_kwargs: (False, []),
-    )
+    _shared_setup_4(monkeypatch)
     monkeypatch.setattr(
         cache_inventory,
         "purge_repo_cache_dirs",
         lambda _repo_type, repo_id, **_kwargs: purged_dirs.append(repo_id) or True,
     )
-    monkeypatch.setattr(
-        cache_inventory,
-        "purge_partial_repo",
-        lambda *_args, **_kwargs: False,
-    )
-    monkeypatch.setattr(
-        cache_inventory.download_manifest,
-        "purge_all_state_for_repo",
-        lambda *_args, **_kwargs: 0,
-    )
+    _shared_setup_3(monkeypatch)
 
     result = cache_inventory._delete_cached_dataset_blocking("Org/Data")
 
@@ -922,26 +884,13 @@ def test_delete_cached_dataset_absent_everywhere_raises_404(monkeypatch):
         "_collect_hf_cache_scans",
         lambda: ([], set()),
     )
-    monkeypatch.setattr(
-        cache_inventory,
-        "_delete_processed_dataset_cache",
-        lambda _repo_id, **_kwargs: (False, []),
-    )
+    _shared_setup_4(monkeypatch)
     monkeypatch.setattr(
         cache_inventory,
         "purge_repo_cache_dirs",
         lambda *_args, **_kwargs: False,
     )
-    monkeypatch.setattr(
-        cache_inventory,
-        "purge_partial_repo",
-        lambda *_args, **_kwargs: False,
-    )
-    monkeypatch.setattr(
-        cache_inventory.download_manifest,
-        "purge_all_state_for_repo",
-        lambda *_args, **_kwargs: 0,
-    )
+    _shared_setup_3(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
         cache_inventory._delete_cached_dataset_blocking("Org/Missing")

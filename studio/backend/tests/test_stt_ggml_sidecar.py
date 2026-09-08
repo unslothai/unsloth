@@ -35,6 +35,15 @@ from core.inference.stt_sidecar import (
 )
 
 
+# Shared setup for test_cpu_root_marker_forces_no_gpu_despite_inner_packaging_marker, test_server_pid_is_tracked_for_parent_lifetime, test_training_forces_whisper_server_off_gpu.
+def _shared_setup_1(monkeypatch):
+    monkeypatch.setattr(
+        GgmlSttSidecar,
+        "_wait_for_server",
+        staticmethod(lambda process, port, cancel_event = None: None),
+    )
+
+
 @pytest.fixture(autouse = True)
 def isolate_runtime_and_stub_audio_decoder(monkeypatch, tmp_path):
     """Unit tests exercise orchestration, not PyAV container parsing."""
@@ -658,11 +667,7 @@ def test_server_pid_is_tracked_for_parent_lifetime(monkeypatch):
     monkeypatch.setattr(ggml_module.subprocess, "Popen", FakeProcess)
     monkeypatch.setattr(ggml_module, "adopt_pid", lambda pid: events.append(("adopt", pid)))
     monkeypatch.setattr(ggml_module, "forget_pid", lambda pid: events.append(("forget", pid)))
-    monkeypatch.setattr(
-        GgmlSttSidecar,
-        "_wait_for_server",
-        staticmethod(lambda process, port, cancel_event = None: None),
-    )
+    _shared_setup_1(monkeypatch)
 
     sidecar = GgmlSttSidecar()
     sidecar.load("small")
@@ -696,11 +701,7 @@ def test_training_forces_whisper_server_off_gpu(monkeypatch):
     monkeypatch.setattr(ggml_module.subprocess, "Popen", FakeProcess)
     monkeypatch.setattr(ggml_module, "adopt_pid", lambda pid: None)
     monkeypatch.setattr(ggml_module, "forget_pid", lambda pid: None)
-    monkeypatch.setattr(
-        GgmlSttSidecar,
-        "_wait_for_server",
-        staticmethod(lambda process, port, cancel_event = None: None),
-    )
+    _shared_setup_1(monkeypatch)
 
     monkeypatch.setattr(ggml_module, "_training_active", lambda: False)
     idle = GgmlSttSidecar()
@@ -745,11 +746,7 @@ def test_cpu_root_marker_forces_no_gpu_despite_inner_packaging_marker(monkeypatc
     monkeypatch.setattr(ggml_module, "adopt_pid", lambda pid: None)
     monkeypatch.setattr(ggml_module, "forget_pid", lambda pid: None)
     monkeypatch.setattr(ggml_module, "_training_active", lambda: False)
-    monkeypatch.setattr(
-        GgmlSttSidecar,
-        "_wait_for_server",
-        staticmethod(lambda process, port, cancel_event = None: None),
-    )
+    _shared_setup_1(monkeypatch)
 
     sidecar = GgmlSttSidecar()
     sidecar.load("small")

@@ -10,6 +10,30 @@ from hub.services import download_lifecycle
 from hub.utils import download_registry, state_dir
 
 
+# Shared setup for test_a_stalled_xet_worker_respawns_over_xet_keeping_its_claim, test_a_verdict_carried_onto_the_http_rung_is_still_charged, test_an_unspawnable_xet_retry_falls_through_to_http and 1 more.
+def _shared_setup_1():
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = None,
+        blob_hashes = frozenset({"blob"}),
+    )[0]
+    return key, registry
+
+
+# Shared setup for test_a_first_stall_buys_another_xet_worker_and_records_nothing, test_a_pre_byte_trip_never_buys_another_xet_worker, test_the_attempts_knob_of_one_restores_the_straight_to_http_ladder and 1 more.
+def _shared_setup_2(monkeypatch):
+    monkeypatch.setattr(
+        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
+    )
+    retries = []
+    return retries
+
+
 class _Proc:
     pid = 4242
 
@@ -175,16 +199,7 @@ def test_a_stalled_xet_worker_respawns_over_xet_keeping_its_claim(monkeypatch, t
     )
     register_worker = download_lifecycle.register_worker
 
-    registry = download_registry.DownloadRegistry()
-    key = download_registry.normalize_job_key("Org/Model")
-    assert registry.claim(
-        key,
-        download_registry.TRANSPORT_XET,
-        repo_type = "model",
-        repo_id = "Org/Model",
-        variant = None,
-        blob_hashes = frozenset({"blob"}),
-    )[0]
+    key, registry = _shared_setup_1()
     generation = registry.current_generation(key)
     spawned = []
 
@@ -251,16 +266,7 @@ def test_an_unspawnable_xet_retry_falls_through_to_http(monkeypatch, tmp_path):
     monkeypatch.setattr(download_lifecycle, "spawn_worker", flaky_spawn)
     monkeypatch.setattr(download_lifecycle, "register_worker", lambda *a, **k: True)
 
-    registry = download_registry.DownloadRegistry()
-    key = download_registry.normalize_job_key("Org/Model")
-    assert registry.claim(
-        key,
-        download_registry.TRANSPORT_XET,
-        repo_type = "model",
-        repo_id = "Org/Model",
-        variant = None,
-        blob_hashes = frozenset({"blob"}),
-    )[0]
+    key, registry = _shared_setup_1()
 
     assert download_lifecycle._try_transport_retry(
         registry,
@@ -311,16 +317,7 @@ def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_
     recorded = []
     monkeypatch.setattr(download_lifecycle, "_record_xet_failure", lambda m, _l: recorded.append(m))
 
-    registry = download_registry.DownloadRegistry()
-    key = download_registry.normalize_job_key("Org/Model")
-    assert registry.claim(
-        key,
-        download_registry.TRANSPORT_XET,
-        repo_type = "model",
-        repo_id = "Org/Model",
-        variant = None,
-        blob_hashes = frozenset({"blob"}),
-    )[0]
+    key, registry = _shared_setup_1()
     download_lifecycle.register_worker(
         registry,
         key,
@@ -583,10 +580,7 @@ def test_a_first_stall_buys_another_xet_worker_and_records_nothing(monkeypatch, 
     """A wedged Xet transfer usually clears on a fresh process, so the first data-phase stall
     respawns over XET. Nothing is recorded yet: if the retry succeeds the stall was noise, and
     charging both attempts would let ONE download hit the two-failure demotion threshold."""
-    monkeypatch.setattr(
-        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
-    )
-    retries = []
+    retries = _shared_setup_2(monkeypatch)
     verdict = "Download appears stalled (xet transport) -- no progress for 30s"
     assert (
         _trip_xet_worker(monkeypatch, tmp_path, verdict, xet_attempt = 1, retries = retries) == []
@@ -596,10 +590,7 @@ def test_a_first_stall_buys_another_xet_worker_and_records_nothing(monkeypatch, 
 
 def test_the_last_xet_stall_falls_back_to_http_and_charges_once(monkeypatch, tmp_path):
     """Out of Xet attempts: the transport changes, and the single accumulated verdict is reported."""
-    monkeypatch.setattr(
-        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
-    )
-    retries = []
+    retries = _shared_setup_2(monkeypatch)
     recorded = _trip_xet_worker(
         monkeypatch,
         tmp_path,
@@ -615,10 +606,7 @@ def test_the_last_xet_stall_falls_back_to_http_and_charges_once(monkeypatch, tmp
 def test_a_pre_byte_trip_never_buys_another_xet_worker(monkeypatch, tmp_path):
     """Retrying "did not start" would buy a second full 600s connect window before HTTP ever
     starts, and that trip is as likely slow metadata as a broken Xet."""
-    monkeypatch.setattr(
-        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
-    )
-    retries = []
+    retries = _shared_setup_2(monkeypatch)
     _trip_xet_worker(
         monkeypatch,
         tmp_path,
@@ -631,10 +619,7 @@ def test_a_pre_byte_trip_never_buys_another_xet_worker(monkeypatch, tmp_path):
 
 def test_the_attempts_knob_of_one_restores_the_straight_to_http_ladder(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_XET_ATTEMPTS", "1")
-    monkeypatch.setattr(
-        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
-    )
-    retries = []
+    retries = _shared_setup_2(monkeypatch)
     recorded = _trip_xet_worker(
         monkeypatch,
         tmp_path,
@@ -696,16 +681,7 @@ def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_p
     recorded = []
     monkeypatch.setattr(download_lifecycle, "_record_xet_success", lambda _l: recorded.append(True))
 
-    registry = download_registry.DownloadRegistry()
-    key = download_registry.normalize_job_key("Org/Model")
-    assert registry.claim(
-        key,
-        download_registry.TRANSPORT_XET,
-        repo_type = "model",
-        repo_id = "Org/Model",
-        variant = None,
-        blob_hashes = frozenset({"blob"}),
-    )[0]
+    key, registry = _shared_setup_1()
 
     def _spawn():
         order.append("spawn")

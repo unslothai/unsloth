@@ -17,6 +17,14 @@ from models.training import TrainingRunSummary
 from routes import training_history
 
 
+# Shared setup for test_a_failure_computing_the_reason_is_not_fatal, test_a_provenance_refusal_is_reported_on_the_summary, test_a_resumable_run_carries_no_reason.
+def _shared_setup_1(monkeypatch):
+    monkeypatch.setattr(training_history, "artifacts_present", lambda *a, **k: True)
+    monkeypatch.setattr(
+        training_history, "_preview_fields", lambda *a, **k: {"has_preview_model": False}
+    )
+
+
 _REASON = "The exact model snapshot for this run is no longer available."
 
 
@@ -57,10 +65,7 @@ def test_a_provenance_refusal_is_reported_on_the_summary(monkeypatch):
 
     monkeypatch.setattr(resume_mod, "has_resume_state", lambda output_dir: True)
     monkeypatch.setattr(training_history, "can_resume_run", lambda *a, **k: False)
-    monkeypatch.setattr(training_history, "artifacts_present", lambda *a, **k: True)
-    monkeypatch.setattr(
-        training_history, "_preview_fields", lambda *a, **k: {"has_preview_model": False}
-    )
+    _shared_setup_1(monkeypatch)
     from core.training import provenance as provenance_mod
 
     monkeypatch.setattr(
@@ -76,10 +81,7 @@ def test_a_provenance_refusal_is_reported_on_the_summary(monkeypatch):
 
 def test_a_resumable_run_carries_no_reason(monkeypatch):
     monkeypatch.setattr(training_history, "can_resume_run", lambda *a, **k: True)
-    monkeypatch.setattr(training_history, "artifacts_present", lambda *a, **k: True)
-    monkeypatch.setattr(
-        training_history, "_preview_fields", lambda *a, **k: {"has_preview_model": False}
-    )
+    _shared_setup_1(monkeypatch)
 
     summary = training_history._summary_from_row(_row(), False)
 
@@ -117,10 +119,7 @@ def test_a_failure_computing_the_reason_is_not_fatal(monkeypatch):
 
     monkeypatch.setattr(resume_mod, "has_resume_state", lambda output_dir: True)
     monkeypatch.setattr(training_history, "can_resume_run", lambda *a, **k: False)
-    monkeypatch.setattr(training_history, "artifacts_present", lambda *a, **k: True)
-    monkeypatch.setattr(
-        training_history, "_preview_fields", lambda *a, **k: {"has_preview_model": False}
-    )
+    _shared_setup_1(monkeypatch)
     from core.training import provenance as provenance_mod
 
     def boom(config):

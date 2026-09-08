@@ -29,6 +29,15 @@ import pytest
 from core.inference import tools
 
 
+# Shared setup for test_a_backend_with_no_resident_process_is_not_cached, test_a_prefix_too_large_to_hold_is_skipped_not_stored, test_an_unhashable_identity_field_disables_the_cache_rather_than_raising and 1 more.
+def _shared_setup_1():
+    text = "0123456789abcdef" * 2000
+    budget = tools._tool_result_char_budget()
+
+    first = tools._dense_char_limit(text, budget)
+    return budget, first, text
+
+
 @pytest.fixture(autouse = True)
 def _unknown_window(monkeypatch):
     """Default to "no model loaded" so each test states the window it means."""
@@ -710,10 +719,7 @@ class TestTheProbeIsNotPaidForTwice:
         """Retries, regenerations and a model that runs the same command again."""
         _window(monkeypatch, 5120)
         calls, _ = self._serving(monkeypatch, 5120)
-        text = "0123456789abcdef" * 2000
-        budget = tools._tool_result_char_budget()
-
-        first = tools._dense_char_limit(text, budget)
+        budget, first, text = _shared_setup_1()
         assert calls, "the first pass must actually measure"
         calls.clear()
         second = tools._dense_char_limit(text, budget)
@@ -747,10 +753,7 @@ class TestTheProbeIsNotPaidForTwice:
         does, so the safe answer is to keep paying. Every lightweight double lands here."""
         _window(monkeypatch, 5120)
         calls, _ = self._serving(monkeypatch, 5120, identified = False)
-        text = "0123456789abcdef" * 2000
-        budget = tools._tool_result_char_budget()
-
-        first = tools._dense_char_limit(text, budget)
+        budget, first, text = _shared_setup_1()
         spent = len(calls)
         calls.clear()
         second = tools._dense_char_limit(text, budget)
@@ -828,10 +831,7 @@ class TestTheProbeIsNotPaidForTwice:
         monkeypatch.setattr(tools, "_PROBE_COUNT_CACHE_CHARS", 5000)
         _window(monkeypatch, 5120)
         calls, _ = self._serving(monkeypatch, 5120)
-        text = "0123456789abcdef" * 2000
-        budget = tools._tool_result_char_budget()
-
-        first = tools._dense_char_limit(text, budget)
+        budget, first, text = _shared_setup_1()
         held = sum(len(key) for entry in tools._PROBE_COUNT_CACHE.values() for key in entry)
         calls.clear()
         second = tools._dense_char_limit(text, budget)
@@ -929,10 +929,7 @@ class TestTheProbeIsNotPaidForTwice:
         _window(monkeypatch, 5120)
         calls, backend = self._serving(monkeypatch, 5120)
         backend._gguf_load_identity = {"not": "hashable"}
-        text = "0123456789abcdef" * 2000
-        budget = tools._tool_result_char_budget()
-
-        first = tools._dense_char_limit(text, budget)
+        budget, first, text = _shared_setup_1()
         spent = len(calls)
         calls.clear()
 

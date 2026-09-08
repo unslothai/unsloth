@@ -9,6 +9,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+
+# Shared setup for test_personalization_put_preserves_absent_fields, test_personalization_put_preserves_existing_fields_on_stale_write, test_personalization_route_roundtrip_real_shape.
+def _shared_setup_1(monkeypatch, store):
+    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(settings_routes.router, prefix = "/api/settings")
+    client = TestClient(app)
+    return client
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -404,13 +416,7 @@ def test_get_set_roundtrip(monkeypatch):
 
 def test_personalization_route_roundtrip_real_shape(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
-    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
-
-    app = FastAPI()
-    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
-    app.include_router(settings_routes.router, prefix = "/api/settings")
-    client = TestClient(app)
+    client = _shared_setup_1(monkeypatch, store)
 
     initial = client.get("/api/settings/personalization")
     assert initial.status_code == 200
@@ -512,13 +518,7 @@ def test_personalization_put_preserves_absent_fields(monkeypatch):
     # A stale client that omits palette/customization must not materialize them,
     # so the record stays legacy and GET keeps reporting those fields unsaved.
     store: dict = {}
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
-    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
-
-    app = FastAPI()
-    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
-    app.include_router(settings_routes.router, prefix = "/api/settings")
-    client = TestClient(app)
+    client = _shared_setup_1(monkeypatch, store)
 
     put = client.put(
         "/api/settings/personalization",
@@ -555,13 +555,7 @@ def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatc
             },
         }
     }
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
-    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
-
-    app = FastAPI()
-    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
-    app.include_router(settings_routes.router, prefix = "/api/settings")
-    client = TestClient(app)
+    client = _shared_setup_1(monkeypatch, store)
 
     put = client.put(
         "/api/settings/personalization",

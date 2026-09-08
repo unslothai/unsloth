@@ -20,6 +20,117 @@ from pydantic import ValidationError
 from hub.utils import hf_cache_state
 from models.training import TrainingStartRequest
 
+
+# Shared setup for test_client_error_probe_with_incomplete_cache_preserves_error, test_client_error_probe_with_partial_shards_preserves_error, test_incomplete_safetensors_index_is_not_masked_by_pytorch_weights.
+def _shared_setup_1(route):
+    metadata_error = HTTPException(
+        status_code = 403,
+        detail = "hub metadata error 403",
+    )
+
+    with patch.object(
+        route,
+        "_remote_untrainable_model_format",
+        side_effect = metadata_error,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(_request())
+
+    assert exc_info.value is metadata_error
+
+
+# Shared setup for test_optimizer_checkpoint_does_not_make_adapter_trainable, test_start_rejects_claimed_cache_without_trainable_weights, test_start_rejects_local_dir_without_trainable_weights and 5 more.
+def _shared_setup_2(request, route):
+    with pytest.raises(HTTPException) as exc_info:
+        route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 400
+    return exc_info
+
+
+# Shared setup for test_pinned_dataset_cache_failure_never_falls_back_offline, test_strict_resume_cached_dataset_failure_never_loads_remote, test_strict_resume_cached_dataset_none_never_loads_remote and 1 more.
+def _shared_setup_3(config, worker):
+    worker._load_hf_train_and_eval_datasets(
+        config,
+        None,
+        lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
+        lambda _message: None,
+    )
+
+
+# Shared setup for test_worker_auto_eval_excludes_every_split_in_training_instruction, test_worker_does_not_load_explicit_eval_when_evaluation_is_disabled, test_worker_same_train_and_eval_split_defers_to_held_out_split.
+def _shared_setup_4(config, load_remote, train, worker):
+    dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
+        config,
+        None,
+        load_remote,
+        lambda _message: None,
+    )
+
+    assert dataset is train
+    return eval_dataset
+
+
+# Shared setup for test_start_rejects_adapter_only_local_dir, test_start_rejects_gguf_only_local_dir, test_start_rejects_missing_local_model and 1 more.
+def _shared_setup_5(request, route):
+    with patch.object(route, "get_training_backend", return_value = _refusing_backend()):
+        with pytest.raises(HTTPException) as exc_info:
+            _start(route, request)
+
+    assert exc_info.value.status_code == 400
+    return exc_info
+
+
+# Shared setup for test_strict_resume_cached_dataset_failure_never_loads_remote, test_strict_resume_cached_dataset_none_never_loads_remote, test_strict_resume_embedding_cached_dataset_none_never_loads_remote.
+def _shared_setup_6():
+    from core.training import worker
+    config = {
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": "/cache/exact",
+        "train_split": "train",
+        "require_exact_resume_resources": True,
+    }
+    return config, worker
+
+
+# Shared setup for test_client_error_probe_uses_complete_sharded_cache, test_client_error_probe_with_partial_shards_preserves_error, test_incomplete_safetensors_index_is_not_masked_by_pytorch_weights.
+def _shared_setup_7(tmp_path):
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    first_shard = "model-00001-of-00002.safetensors"
+    second_shard = "model-00002-of-00002.safetensors"
+    (snapshot / first_shard).write_bytes(b"x")
+    return first_shard, second_shard, snapshot
+
+
+# Shared setup for test_runtime_4bit_resume_reaches_worker_with_source_resource_pins, test_unadvertised_cache_pin_reaches_worker, test_wsl_windows_model_path_is_normalized_for_preflight_and_worker.
+def _shared_setup_8(captured):
+    backend = SimpleNamespace(
+        current_job_id = None,
+        is_training_active = lambda: False,
+        start_training = lambda **kwargs: captured.update(kwargs) or True,
+    )
+    return backend
+
+
+# Shared setup for test_worker_exact_resume_rejects_incomplete_model_cache_with_clear_error, test_worker_incomplete_model_cache_reports_actionable_offline_error, test_worker_model_cache_fallback_recognizes_missing_tokenizer_and_processor.
+def _shared_setup_9(monkeypatch):
+    from core.training import worker
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    return worker
+
+
+# Shared setup for test_resume_resource_provenance_rejects_identity_changes, test_resume_resource_provenance_rejects_invalid_stored_structure, test_unattested_current_hub_model_resume_is_rejected.
+def _shared_setup_10(request, resume_run, route):
+    with pytest.raises(HTTPException) as exc_info:
+        route._prepare_resume_resource_provenance(request, resume_run)
+
+    assert exc_info.value.status_code == 409
+    return exc_info
+
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -350,11 +461,7 @@ def test_start_rejects_untrainable_model_formats(model_format, code, expected):
     route = _load_route_module(f"training_route_reject_{model_format}")
     request = _request(model_format = model_format)
 
-    with patch.object(route, "get_training_backend", return_value = _refusing_backend()):
-        with pytest.raises(HTTPException) as exc_info:
-            _start(route, request)
-
-    assert exc_info.value.status_code == 400
+    exc_info = _shared_setup_5(request, route)
     assert exc_info.value.detail["code"] == code
     assert expected in exc_info.value.detail["message"]
 
@@ -365,11 +472,7 @@ def test_start_rejects_adapter_only_local_dir(tmp_path):
     (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
     request = _request(model_name = str(tmp_path))
 
-    with patch.object(route, "get_training_backend", return_value = _refusing_backend()):
-        with pytest.raises(HTTPException) as exc_info:
-            _start(route, request)
-
-    assert exc_info.value.status_code == 400
+    exc_info = _shared_setup_5(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
     assert "Adapter-only local models" in exc_info.value.detail["message"]
 
@@ -378,11 +481,7 @@ def test_start_rejects_missing_local_model(tmp_path):
     route = _load_route_module("training_route_reject_missing_local_model")
     request = _request(model_name = str(tmp_path / "missing-model"))
 
-    with patch.object(route, "get_training_backend", return_value = _refusing_backend()):
-        with pytest.raises(HTTPException) as exc_info:
-            _start(route, request)
-
-    assert exc_info.value.status_code == 400
+    exc_info = _shared_setup_5(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_unavailable"
     assert "Local model path was not found" in exc_info.value.detail["message"]
 
@@ -392,10 +491,7 @@ def test_start_rejects_local_dir_without_trainable_weights(tmp_path):
     (tmp_path / "config.json").write_text("{}")
     request = _request(model_name = str(tmp_path))
 
-    with pytest.raises(HTTPException) as exc_info:
-        route._reject_untrainable_model_request(request)
-
-    assert exc_info.value.status_code == 400
+    exc_info = _shared_setup_2(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_weights_missing"
     assert "does not contain trainable weights" in exc_info.value.detail["message"]
 
@@ -407,10 +503,7 @@ def test_start_rejects_claimed_cache_without_trainable_weights(tmp_path):
     (snapshot / "config.json").write_text("{}")
     request = _request(model_known_cached = True, model_format = "unknown")
 
-    with pytest.raises(HTTPException) as exc_info:
-        route._reject_untrainable_model_request(request)
-
-    assert exc_info.value.status_code == 400
+    exc_info = _shared_setup_2(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_weights_missing"
     assert "does not contain trainable weights" in exc_info.value.detail["message"]
 
@@ -437,10 +530,7 @@ def test_start_rejects_partial_adapter_local_dir(tmp_path):
     (tmp_path / "adapter_config.json").write_text("{}")
     request = _request(model_name = str(tmp_path), model_format = "safetensors")
 
-    with pytest.raises(HTTPException) as exc_info:
-        route._reject_untrainable_model_request(request)
-
-    assert exc_info.value.status_code == 400
+    exc_info = _shared_setup_2(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
     assert "Adapter-only local models" in exc_info.value.detail["message"]
 
@@ -450,11 +540,7 @@ def test_start_rejects_gguf_only_local_dir(tmp_path):
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x")
     request = _request(model_name = str(tmp_path))
 
-    with patch.object(route, "get_training_backend", return_value = _refusing_backend()):
-        with pytest.raises(HTTPException) as exc_info:
-            _start(route, request)
-
-    assert exc_info.value.status_code == 400
+    exc_info = _shared_setup_5(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_gguf_only"
     assert "GGUF-only local models" in exc_info.value.detail["message"]
 
@@ -465,10 +551,7 @@ def test_start_rejects_nested_gguf_only_local_dir(tmp_path):
     (tmp_path / "weights" / "model-Q4_K_M.gguf").write_bytes(b"x")
     request = _request(model_name = str(tmp_path), model_format = "safetensors")
 
-    with pytest.raises(HTTPException) as exc_info:
-        route._reject_untrainable_model_request(request)
-
-    assert exc_info.value.status_code == 400
+    exc_info = _shared_setup_2(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_gguf_only"
     assert "GGUF-only local models" in exc_info.value.detail["message"]
 
@@ -505,11 +588,7 @@ def test_wsl_windows_model_path_is_normalized_for_preflight_and_worker(monkeypat
     (model_path / "model.safetensors").write_bytes(b"x")
     windows_path = r"C:\models\alpha"
     captured: dict = {}
-    backend = SimpleNamespace(
-        current_job_id = None,
-        is_training_active = lambda: False,
-        start_training = lambda **kwargs: captured.update(kwargs) or True,
-    )
+    backend = _shared_setup_8(captured)
     normalized: list[str] = []
 
     def normalize_model_path(value: str) -> str:
@@ -575,10 +654,7 @@ def test_untrainable_gate_does_not_trust_claimed_safetensors(tmp_path):
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x")
     request = _request(model_name = str(tmp_path), model_format = "safetensors")
 
-    with pytest.raises(HTTPException) as exc_info:
-        route._reject_untrainable_model_request(request)
-
-    assert exc_info.value.status_code == 400
+    exc_info = _shared_setup_2(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_gguf_only"
     assert "GGUF-only local models" in exc_info.value.detail["message"]
 
@@ -595,10 +671,7 @@ def test_untrainable_gate_inspects_verified_snapshot_path(tmp_path):
         resume_from_checkpoint = "/outputs/run",
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        route._reject_untrainable_model_request(request)
-
-    assert exc_info.value.status_code == 400
+    exc_info = _shared_setup_2(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
     assert "Adapter-only local models" in exc_info.value.detail["message"]
 
@@ -613,10 +686,7 @@ def test_untrainable_gate_inspects_selected_cache(tmp_path):
         model_format = "safetensors",
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        route._reject_untrainable_model_request(request)
-
-    assert exc_info.value.status_code == 400
+    exc_info = _shared_setup_2(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
     assert "Adapter-only local models" in exc_info.value.detail["message"]
 
@@ -713,20 +783,7 @@ def test_client_error_probe_with_incomplete_cache_preserves_error(tmp_path):
     snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
     snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_text("{}")
-    metadata_error = HTTPException(
-        status_code = 403,
-        detail = "hub metadata error 403",
-    )
-
-    with patch.object(
-        route,
-        "_remote_untrainable_model_format",
-        side_effect = metadata_error,
-    ):
-        with pytest.raises(HTTPException) as exc_info:
-            route._reject_untrainable_model_request(_request())
-
-    assert exc_info.value is metadata_error
+    _shared_setup_1(route)
 
 
 @pytest.mark.parametrize(
@@ -735,12 +792,7 @@ def test_client_error_probe_with_incomplete_cache_preserves_error(tmp_path):
 )
 def test_client_error_probe_with_partial_shards_preserves_error(tmp_path, index_mode):
     route = _load_route_module(f"training_route_client_error_partial_shards_{index_mode}")
-    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
-    snapshot.mkdir(parents = True)
-    (snapshot / "config.json").write_text("{}")
-    first_shard = "model-00001-of-00002.safetensors"
-    second_shard = "model-00002-of-00002.safetensors"
-    (snapshot / first_shard).write_bytes(b"x")
+    first_shard, second_shard, snapshot = _shared_setup_7(tmp_path)
     if index_mode != "absent":
         indexed_shards = (
             [first_shard, second_shard]
@@ -756,30 +808,12 @@ def test_client_error_probe_with_partial_shards_preserves_error(tmp_path, index_
                 },
             )
         )
-    metadata_error = HTTPException(
-        status_code = 403,
-        detail = "hub metadata error 403",
-    )
-
-    with patch.object(
-        route,
-        "_remote_untrainable_model_format",
-        side_effect = metadata_error,
-    ):
-        with pytest.raises(HTTPException) as exc_info:
-            route._reject_untrainable_model_request(_request())
-
-    assert exc_info.value is metadata_error
+    _shared_setup_1(route)
 
 
 def test_client_error_probe_uses_complete_sharded_cache(tmp_path):
     route = _load_route_module("training_route_client_error_complete_shards")
-    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
-    snapshot.mkdir(parents = True)
-    (snapshot / "config.json").write_text("{}")
-    first_shard = "model-00001-of-00002.safetensors"
-    second_shard = "model-00002-of-00002.safetensors"
-    (snapshot / first_shard).write_bytes(b"x")
+    first_shard, second_shard, snapshot = _shared_setup_7(tmp_path)
     (snapshot / second_shard).write_bytes(b"x")
     (snapshot / "model.safetensors.index.json").write_text(
         json.dumps(
@@ -804,12 +838,7 @@ def test_client_error_probe_uses_complete_sharded_cache(tmp_path):
 
 def test_incomplete_safetensors_index_is_not_masked_by_pytorch_weights(tmp_path):
     route = _load_route_module("training_route_incomplete_safe_index_with_pytorch")
-    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
-    snapshot.mkdir(parents = True)
-    (snapshot / "config.json").write_text("{}")
-    first_shard = "model-00001-of-00002.safetensors"
-    second_shard = "model-00002-of-00002.safetensors"
-    (snapshot / first_shard).write_bytes(b"x")
+    first_shard, second_shard, snapshot = _shared_setup_7(tmp_path)
     (snapshot / "model.safetensors.index.json").write_text(
         json.dumps(
             {
@@ -821,20 +850,7 @@ def test_incomplete_safetensors_index_is_not_masked_by_pytorch_weights(tmp_path)
         )
     )
     (snapshot / "pytorch_model.bin").write_bytes(b"x")
-    metadata_error = HTTPException(
-        status_code = 403,
-        detail = "hub metadata error 403",
-    )
-
-    with patch.object(
-        route,
-        "_remote_untrainable_model_format",
-        side_effect = metadata_error,
-    ):
-        with pytest.raises(HTTPException) as exc_info:
-            route._reject_untrainable_model_request(_request())
-
-    assert exc_info.value is metadata_error
+    _shared_setup_1(route)
 
 
 @pytest.mark.parametrize("offline", [False, True])
@@ -848,11 +864,7 @@ def test_unadvertised_cache_pin_reaches_worker(monkeypatch, tmp_path, offline):
     (snapshot / "config.json").write_text("{}")
     (snapshot / "model.safetensors").write_bytes(b"x")
     captured: dict = {}
-    backend = SimpleNamespace(
-        current_job_id = None,
-        is_training_active = lambda: False,
-        start_training = lambda **kwargs: captured.update(kwargs) or True,
-    )
+    backend = _shared_setup_8(captured)
     if offline:
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
@@ -953,10 +965,7 @@ def test_selected_cached_model_tokenizer_failure_allows_hub_fallback(tmp_path):
     ],
 )
 def test_worker_model_cache_fallback_recognizes_missing_tokenizer_and_processor(monkeypatch, error):
-    from core.training import worker
-
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    worker = _shared_setup_9(monkeypatch)
 
     assert worker._cache_artifact_fallback_allowed({}, error, "model") is True
 
@@ -965,10 +974,7 @@ def test_worker_model_cache_fallback_recognizes_missing_tokenizer_and_processor(
 def test_worker_incomplete_model_cache_reports_actionable_offline_error(
     monkeypatch, offline_variable
 ):
-    from core.training import worker
-
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    worker = _shared_setup_9(monkeypatch)
     monkeypatch.setenv(offline_variable, "1")
     config = {"model_revision": "deadbeef"}
     error = TypeError("expected str, bytes or os.PathLike object, not NoneType")
@@ -981,10 +987,7 @@ def test_worker_incomplete_model_cache_reports_actionable_offline_error(
 
 
 def test_worker_exact_resume_rejects_incomplete_model_cache_with_clear_error(monkeypatch):
-    from core.training import worker
-
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    worker = _shared_setup_9(monkeypatch)
     config = {"require_exact_model_resource": True}
     error = OSError("Can't load processor for '/cache/snapshot'.")
 
@@ -1224,10 +1227,7 @@ def test_optimizer_checkpoint_does_not_make_adapter_trainable(tmp_path):
     (tmp_path / "optimizer.pt").write_bytes(b"x")
     request = _request(model_name = str(tmp_path), model_format = "safetensors")
 
-    with pytest.raises(HTTPException) as exc_info:
-        route._reject_untrainable_model_request(request)
-
-    assert exc_info.value.status_code == 400
+    exc_info = _shared_setup_2(request, route)
     assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
     assert "Adapter-only local models" in exc_info.value.detail["message"]
 
@@ -1549,11 +1549,7 @@ def test_runtime_4bit_resume_reaches_worker_with_source_resource_pins(tmp_path):
     )
     captured: dict = {}
     tier_targets: list[str] = []
-    backend = SimpleNamespace(
-        current_job_id = None,
-        is_training_active = lambda: False,
-        start_training = lambda **kwargs: captured.update(kwargs) or True,
-    )
+    backend = _shared_setup_8(captured)
 
     with (
         patch.object(route, "get_training_backend", return_value = backend),
@@ -1693,10 +1689,7 @@ def test_resume_resource_provenance_rejects_invalid_stored_structure(invalid_str
         },
     }
 
-    with pytest.raises(HTTPException) as exc_info:
-        route._prepare_resume_resource_provenance(request, resume_run)
-
-    assert exc_info.value.status_code == 409
+    exc_info = _shared_setup_10(request, resume_run, route)
     assert "invalid training configuration" in exc_info.value.detail
 
 
@@ -1774,10 +1767,7 @@ def test_resume_resource_provenance_rejects_identity_changes(request_overrides, 
         },
     }
 
-    with pytest.raises(HTTPException) as exc_info:
-        route._prepare_resume_resource_provenance(request, resume_run)
-
-    assert exc_info.value.status_code == 409
+    exc_info = _shared_setup_10(request, resume_run, route)
     assert detail in exc_info.value.detail
 
 
@@ -1841,10 +1831,7 @@ def test_unattested_current_hub_model_resume_is_rejected(status):
         },
     }
 
-    with pytest.raises(HTTPException) as exc_info:
-        route._prepare_resume_resource_provenance(request, resume_run)
-
-    assert exc_info.value.status_code == 409
+    exc_info = _shared_setup_10(request, resume_run, route)
 
 
 def test_pending_hub_model_resume_before_attestation_is_allowed():
@@ -2828,14 +2815,7 @@ def test_worker_does_not_load_explicit_eval_when_evaluation_is_disabled():
         calls.append(kwargs["split"])
         return train
 
-    dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
-        config,
-        None,
-        load_remote,
-        lambda _message: None,
-    )
-
-    assert dataset is train
+    eval_dataset = _shared_setup_4(config, load_remote, train, worker)
     assert eval_dataset is None
     assert calls == ["train"]
 
@@ -2856,14 +2836,7 @@ def test_worker_same_train_and_eval_split_defers_to_held_out_split():
         calls.append(kwargs["split"])
         return train
 
-    dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
-        config,
-        None,
-        load_remote,
-        lambda _message: None,
-    )
-
-    assert dataset is train
+    eval_dataset = _shared_setup_4(config, load_remote, train, worker)
     assert eval_dataset is None
     assert calls == ["train"]
 
@@ -2926,14 +2899,7 @@ def test_worker_auto_eval_excludes_every_split_in_training_instruction(monkeypat
         calls.append(split)
         return held_out if split == "test" else train
 
-    dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
-        config,
-        None,
-        load_remote,
-        lambda _message: None,
-    )
-
-    assert dataset is train
+    eval_dataset = _shared_setup_4(config, load_remote, train, worker)
     assert eval_dataset is held_out
     assert calls == ["train + validation", "test"]
 
@@ -3123,13 +3089,7 @@ def test_strict_resume_disables_cache_artifact_fallback():
 
 
 def test_strict_resume_cached_dataset_failure_never_loads_remote():
-    from core.training import worker
-    config = {
-        "hf_dataset": "org/dataset",
-        "dataset_snapshot_path": "/cache/exact",
-        "train_split": "train",
-        "require_exact_resume_resources": True,
-    }
+    config, worker = _shared_setup_6()
 
     with patch.object(
         worker,
@@ -3137,12 +3097,7 @@ def test_strict_resume_cached_dataset_failure_never_loads_remote():
         side_effect = FileNotFoundError("evicted"),
     ):
         with pytest.raises(FileNotFoundError, match = "evicted"):
-            worker._load_hf_train_and_eval_datasets(
-                config,
-                None,
-                lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
-                lambda _message: None,
-            )
+            _shared_setup_3(config, worker)
 
 
 def test_pinned_dataset_cache_failure_never_falls_back_offline(monkeypatch):
@@ -3162,12 +3117,7 @@ def test_pinned_dataset_cache_failure_never_falls_back_offline(monkeypatch):
         side_effect = FileNotFoundError("corrupt cache"),
     ):
         with pytest.raises(FileNotFoundError, match = "corrupt cache"):
-            worker._load_hf_train_and_eval_datasets(
-                config,
-                None,
-                lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
-                lambda _message: None,
-            )
+            _shared_setup_3(config, worker)
 
 
 def test_missing_pinned_dataset_fails_preflight_offline(monkeypatch):
@@ -3219,13 +3169,7 @@ def test_mlx_adapter_accepts_dataset_hf_token():
 
 
 def test_strict_resume_cached_dataset_none_never_loads_remote():
-    from core.training import worker
-    config = {
-        "hf_dataset": "org/dataset",
-        "dataset_snapshot_path": "/cache/exact",
-        "train_split": "train",
-        "require_exact_resume_resources": True,
-    }
+    config, worker = _shared_setup_6()
 
     with patch.object(
         worker,
@@ -3233,12 +3177,7 @@ def test_strict_resume_cached_dataset_none_never_loads_remote():
         return_value = None,
     ):
         with pytest.raises(FileNotFoundError, match = "exact cached dataset split 'train'"):
-            worker._load_hf_train_and_eval_datasets(
-                config,
-                None,
-                lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
-                lambda _message: None,
-            )
+            _shared_setup_3(config, worker)
 
 
 def test_strict_resume_cached_eval_none_never_loads_remote():
@@ -3261,22 +3200,11 @@ def test_strict_resume_cached_eval_none_never_loads_remote():
             FileNotFoundError,
             match = "exact cached dataset split 'validation'",
         ):
-            worker._load_hf_train_and_eval_datasets(
-                config,
-                None,
-                lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
-                lambda _message: None,
-            )
+            _shared_setup_3(config, worker)
 
 
 def test_strict_resume_embedding_cached_dataset_none_never_loads_remote():
-    from core.training import worker
-    config = {
-        "hf_dataset": "org/dataset",
-        "dataset_snapshot_path": "/cache/exact",
-        "train_split": "train",
-        "require_exact_resume_resources": True,
-    }
+    config, worker = _shared_setup_6()
 
     with patch.object(
         worker,

@@ -18,6 +18,15 @@ from pathlib import Path
 
 import pytest
 
+
+# Shared setup for test_a_save_landing_after_the_replace_is_not_recorded_as_pristine, test_the_recorded_hash_is_the_cleaned_copy_when_nobody_races, test_the_recorded_hash_still_matches_the_file_after_a_racing_save.
+def _shared_setup_1(tmp_path):
+    dest = tmp_path / "unsloth-notebooks"
+    dest.mkdir()
+    path = dest / "Llama.ipynb"
+    write(path, notebook([INTRO, "\n", "# Llama\n"]))
+    return dest, path
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STRIP_PATH = REPO_ROOT / "docker" / "unsloth_nb_strip_colab.py"
 
@@ -90,10 +99,7 @@ def test_the_recorded_hash_still_matches_the_file_after_a_racing_save(
 ):
     # migrate() rewrites STATE with the post-strip hash, so a clobbered save is also
     # recorded as pristine and every later refresh overwrites it again
-    dest = tmp_path / "unsloth-notebooks"
-    dest.mkdir()
-    path = dest / "Llama.ipynb"
-    write(path, notebook([INTRO, "\n", "# Llama\n"]))
+    dest, path = _shared_setup_1(tmp_path)
     before = strip._sha256(str(path))
     state = tmp_path / ".unsloth_sync_state"
     state.write_text(f"{before}  Llama.ipynb\n", encoding = "utf-8")
@@ -148,10 +154,7 @@ def test_a_save_landing_after_the_replace_is_not_recorded_as_pristine(
     strip, racing_after_replace, tmp_path: Path
 ):
     # rename(2) is atomic, but migrate()'s re-read of the published file is not
-    dest = tmp_path / "unsloth-notebooks"
-    dest.mkdir()
-    path = dest / "Llama.ipynb"
-    write(path, notebook([INTRO, "\n", "# Llama\n"]))
+    dest, path = _shared_setup_1(tmp_path)
     before = strip._sha256(str(path))
     state = tmp_path / ".unsloth_sync_state"
     state.write_text(f"{before}  Llama.ipynb\n", encoding = "utf-8")
@@ -174,10 +177,7 @@ def test_a_save_landing_after_the_replace_is_not_recorded_as_pristine(
 
 def test_the_recorded_hash_is_the_cleaned_copy_when_nobody_races(strip, tmp_path: Path):
     # over-reach guard: STATE must adopt the cleaned hash, or every boot re-strips it
-    dest = tmp_path / "unsloth-notebooks"
-    dest.mkdir()
-    path = dest / "Llama.ipynb"
-    write(path, notebook([INTRO, "\n", "# Llama\n"]))
+    dest, path = _shared_setup_1(tmp_path)
     state = tmp_path / ".unsloth_sync_state"
     state.write_text(f"{strip._sha256(str(path))}  Llama.ipynb\n", encoding = "utf-8")
 

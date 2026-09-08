@@ -31,6 +31,56 @@ from core.inference.video_families import (
 from routes.video import router as video_router
 
 
+# Shared setup for test_clearing_the_gallery_clears_the_terminal_generation_record, test_delete_and_clear, test_deleting_a_clip_clears_the_terminal_generation_record and 8 more.
+def _shared_setup_1(client):
+    client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
+    )
+
+
+# Shared setup for test_video_download_plan_judges_a_quantized_reference_pick_per_partition, test_video_download_plan_refuses_a_quantized_reference_task, test_video_download_plan_refuses_an_unavailable_transformer_quant and 1 more.
+def _shared_setup_2(monkeypatch):
+    backend = video_module.get_video_backend()
+    monkeypatch.setattr(
+        backend,
+        "validate_load_request",
+        video_module.VideoBackend.validate_load_request.__get__(backend),
+        raising = False,
+    )
+    return backend
+
+
+# Shared setup for test_load_happy_path_and_arbiter_acquired, test_load_refuses_a_gpu_index_this_host_does_not_have, test_video_download_plan_refuses_a_gpu_index_this_host_does_not_have.
+def _shared_setup_3(monkeypatch):
+    import types
+
+    import core.inference.diffusion_device as devmod
+
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+    return devmod
+
+
+# Shared setup for test_generate_cancelled_reports_failed_with_sentinel, test_generate_pipeline_error_reports_sanitized_failure, test_generate_value_error_reports_reason.
+def _shared_setup_4(client):
+    resp = client.post("/api/inference/video/generate", json = {"prompt": "p"})
+    assert resp.status_code == 200
+    progress = _wait_terminal(client)
+    assert progress["phase"] == "failed"
+    return progress
+
+
+# Shared setup for test_load_refuses_an_unusable_explicit_precision_with_409, test_precision_refusal_precedes_eviction, test_the_training_guard_runs_before_the_precision_probe.
+def _shared_setup_5(client):
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "Lightricks/LTX-2.3", "transformer_quant": "nvfp4"},
+    )
+    return resp
+
+
 def _defaults():
     return {
         "steps": 40,
@@ -278,13 +328,7 @@ def _generate_and_wait(client, payload) -> dict:
 
 def test_load_happy_path_and_arbiter_acquired(client, monkeypatch):
     # Force the device to cuda so the load takes the GPU arbiter, and record the acquire.
-    import types
-
-    import core.inference.diffusion_device as devmod
-
-    monkeypatch.setattr(
-        devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
-    )
+    devmod = _shared_setup_3(monkeypatch)
     acquired: list = []
 
     def _fake_acquire(role, register = None):
@@ -335,13 +379,7 @@ def test_load_forwards_the_gpu_selection(client, monkeypatch):
 
 def test_load_refuses_a_gpu_index_this_host_does_not_have(client, monkeypatch):
     # Refused BEFORE the arbiter evicts chat, so a bad pick costs a resident model nothing.
-    import types
-
-    import core.inference.diffusion_device as devmod
-
-    monkeypatch.setattr(
-        devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
-    )
+    devmod = _shared_setup_3(monkeypatch)
 
     def _refuse(_ids):
         raise ValueError("Requested GPU [7] but this host has 2 CUDA device(s).")
@@ -462,10 +500,7 @@ def test_load_rejects_bad_text_encoder_quant_422(client):
 def test_load_progress_route(client):
     idle = client.get("/api/inference/video/load-progress")
     assert idle.status_code == 200 and idle.json()["phase"] is None
-    client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
-    )
+    _shared_setup_1(client)
     ready = client.get("/api/inference/video/load-progress")
     assert ready.json()["phase"] == "ready"
 
@@ -502,10 +537,7 @@ def test_load_local_pipeline_dir_stays_pipeline(client, tmp_path):
 
 
 def test_generate_happy_path_persists_and_reports_record(client):
-    client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
-    )
+    _shared_setup_1(client)
     # The POST returns at once ("started"); the saved record arrives through the generate-progress terminal state.
     video = _generate_and_wait(client, {"prompt": "a sloth surfing", "seed": 7})
     assert video["seed"] == 7 and video["prompt"] == "a sloth surfing" and video["id"]
@@ -566,10 +598,7 @@ def test_generate_cancelled_reports_failed_with_sentinel(client, monkeypatch):
         raise RuntimeError(VIDEO_CANCELLED_MSG)
 
     monkeypatch.setattr(backend, "generate", _cancel)
-    resp = client.post("/api/inference/video/generate", json = {"prompt": "p"})
-    assert resp.status_code == 200
-    progress = _wait_terminal(client)
-    assert progress["phase"] == "failed"
+    progress = _shared_setup_4(client)
     assert progress["error"] == VIDEO_CANCELLED_MSG
     assert progress["active"] is False
 
@@ -583,10 +612,7 @@ def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
         raise RuntimeError("CUDA out of memory. Tried to allocate 40.00 GiB")
 
     monkeypatch.setattr(backend, "generate", _oom)
-    resp = client.post("/api/inference/video/generate", json = {"prompt": "p"})
-    assert resp.status_code == 200
-    progress = _wait_terminal(client)
-    assert progress["phase"] == "failed"
+    progress = _shared_setup_4(client)
     assert progress["error"] == "Video generation failed."
     assert "CUDA" not in progress["error"]
 
@@ -600,10 +626,7 @@ def test_generate_value_error_reports_reason(client, monkeypatch):
         raise ValueError("negative_prompt is not supported by this family.")
 
     monkeypatch.setattr(backend, "generate", _bad)
-    resp = client.post("/api/inference/video/generate", json = {"prompt": "p"})
-    assert resp.status_code == 200
-    progress = _wait_terminal(client)
-    assert progress["phase"] == "failed"
+    progress = _shared_setup_4(client)
     assert "not supported" in progress["error"]
 
 
@@ -686,10 +709,7 @@ def test_serve_and_export_refuse_orphan_mp4(client, tmp_path):
 
 
 def test_delete_and_clear(client):
-    client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
-    )
+    _shared_setup_1(client)
     first = _generate_and_wait(client, {"prompt": "a"})
     second = _generate_and_wait(client, {"prompt": "b"})
     assert len(client.get("/api/inference/video/gallery").json()["videos"]) == 2
@@ -710,10 +730,7 @@ def test_deleting_a_clip_clears_the_terminal_generation_record(client):
     """The completed record outlives its job so a page mounting late still sees the clip. Once the
     clip is deleted that record points at a file that is gone, and the Video page merged it back on
     every reload as a card whose fetch 404s."""
-    client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
-    )
+    _shared_setup_1(client)
     clip = _generate_and_wait(client, {"prompt": "a"})
     progress = client.get("/api/inference/video/generate-progress").json()
     assert progress["phase"] == "completed" and progress["video"]["id"] == clip["id"]
@@ -727,10 +744,7 @@ def test_deleting_a_clip_clears_the_terminal_generation_record(client):
 
 
 def test_clearing_the_gallery_clears_the_terminal_generation_record(client):
-    client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
-    )
+    _shared_setup_1(client)
     _generate_and_wait(client, {"prompt": "a"})
     assert client.delete("/api/inference/video/gallery").status_code == 200
 
@@ -742,10 +756,7 @@ def test_clearing_the_gallery_clears_the_terminal_generation_record(client):
 def test_deleting_a_different_clip_leaves_the_terminal_record_alone(client):
     """Only the terminal clip's own deletion clears it: deleting an older clip must not drop the
     record the page needs to show the run that just finished."""
-    client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
-    )
+    _shared_setup_1(client)
     older = _generate_and_wait(client, {"prompt": "a"})
     newest = _generate_and_wait(client, {"prompt": "b"})
 
@@ -756,10 +767,7 @@ def test_deleting_a_different_clip_leaves_the_terminal_record_alone(client):
 
 
 def test_gallery_pagination(client):
-    client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
-    )
+    _shared_setup_1(client)
     for i in range(5):
         _generate_and_wait(client, {"prompt": f"clip {i}", "seed": i})
     page1 = client.get("/api/inference/video/gallery?limit=2&offset=0").json()
@@ -885,10 +893,7 @@ def test_load_refuses_an_unusable_explicit_precision_with_409(client, monkeypatc
         raise RuntimeError(refusal)
 
     monkeypatch.setattr(backend, "begin_load", _refuse)
-    resp = client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "Lightricks/LTX-2.3", "transformer_quant": "nvfp4"},
-    )
+    resp = _shared_setup_5(client)
     assert resp.status_code == 409
     assert "transformer_quant='nvfp4' could not be used" in resp.json()["detail"]
     assert client.get("/api/inference/video/status").json()["loaded"] is False
@@ -920,10 +925,7 @@ def test_precision_refusal_precedes_eviction(client, monkeypatch):
         "begin_load",
         lambda *a, **k: pytest.fail("begin_load ran after an impossible precision"),
     )
-    resp = client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "Lightricks/LTX-2.3", "transformer_quant": "nvfp4"},
-    )
+    resp = _shared_setup_5(client)
     assert resp.status_code == 409
     assert "transformer_quant='nvfp4' could not be used" in resp.json()["detail"]
     assert evicted == []
@@ -1003,10 +1005,7 @@ def test_export_endpoint_validation(client, monkeypatch):
         raise RuntimeError("WebM export needs the 'av' package (PyAV).")
 
     monkeypatch.setattr(gallery_module, "transcode_to_file", _boom)
-    client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
-    )
+    _shared_setup_1(client)
     video = _generate_and_wait(client, {"prompt": "a"})
     resp = client.get(f"/api/inference/video/gallery/{video['id']}/export?format=webm")
     assert resp.status_code == 501
@@ -1184,10 +1183,7 @@ def test_video_load_guard_still_checks_diffusion_when_the_llm_probe_raises(clien
 
 def test_signed_video_link_streams_without_a_bearer(client):
     # A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob like a PNG: that buffers the whole MP4, kills seeking and pins the bytes. The signed link makes the range-capable /file route usable as a plain <video src>.
-    client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
-    )
+    _shared_setup_1(client)
     video = _generate_and_wait(client, {"prompt": "a"})
     vid = video["id"]
 
@@ -1211,10 +1207,7 @@ def test_signed_video_link_streams_without_a_bearer(client):
 def test_keyless_caller_cannot_mint_a_signed_video_link(client):
     from routes import video as video_routes
 
-    client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
-    )
+    _shared_setup_1(client)
     video_id = _generate_and_wait(client, {"prompt": "a"})["id"]
     client.app.dependency_overrides[video_routes.request_admitted_without_credential] = lambda: True
 
@@ -1225,10 +1218,7 @@ def test_keyless_caller_cannot_mint_a_signed_video_link(client):
 
 
 def test_signed_video_link_rejects_tampering_and_other_ids(client):
-    client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
-    )
+    _shared_setup_1(client)
     first = _generate_and_wait(client, {"prompt": "a"})["id"]
     second = _generate_and_wait(client, {"prompt": "b"})["id"]
     token = (
@@ -1361,13 +1351,7 @@ def test_video_download_plan_judges_a_quantized_reference_pick_per_partition(cli
     monkeypatch.setattr(
         video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
     )
-    backend = video_module.get_video_backend()
-    monkeypatch.setattr(
-        backend,
-        "validate_load_request",
-        video_module.VideoBackend.validate_load_request.__get__(backend),
-        raising = False,
-    )
+    backend = _shared_setup_2(monkeypatch)
     seen: dict = {}
 
     def _plan(model_path, **kwargs):
@@ -1409,13 +1393,7 @@ def test_video_download_plan_refuses_an_unsupported_combination_before_staging(c
     # The whole point of moving the refusal into validation: this pick used to return a 200 plan,
     # stage ~98.7 GB, and only then fail inside the loader. Runs the REAL validation rather than
     # the fake backend's mirror of it, since the rule under test lives in the real one.
-    backend = video_module.get_video_backend()
-    monkeypatch.setattr(
-        backend,
-        "validate_load_request",
-        video_module.VideoBackend.validate_load_request.__get__(backend),
-        raising = False,
-    )
+    backend = _shared_setup_2(monkeypatch)
 
     def _plan(model_path, **kwargs):  # pragma: no cover - reaching this IS the regression
         raise AssertionError("download_plan must not be reached for a refused pick")
@@ -1441,13 +1419,7 @@ def test_video_download_plan_refuses_an_unsupported_combination_before_staging(c
 def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, monkeypatch):
     # And the quant-keyed refusal has to fire on THIS route too, which needs the route to forward
     # transformer_quant into validation: it is the route that stages the download.
-    backend = video_module.get_video_backend()
-    monkeypatch.setattr(
-        backend,
-        "validate_load_request",
-        video_module.VideoBackend.validate_load_request.__get__(backend),
-        raising = False,
-    )
+    backend = _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         backend,
         "download_plan",
@@ -1478,13 +1450,7 @@ def test_video_download_plan_refuses_a_quantized_reference_task(client, monkeypa
     # neither is refused any more (test_a_quantized_reference_load_resolves_the_reference_denoiser
     # in test_video_backend.py pins that), and the per-scheme table in test_video_prequant.py
     # covers a family where the pair itself is missing.
-    backend = video_module.get_video_backend()
-    monkeypatch.setattr(
-        backend,
-        "validate_load_request",
-        video_module.VideoBackend.validate_load_request.__get__(backend),
-        raising = False,
-    )
+    backend = _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         backend,
         "download_plan",
@@ -1569,10 +1535,7 @@ def test_the_training_guard_runs_before_the_precision_probe(client, monkeypatch)
         "assert_video_precision_available",
         lambda fam, **kw: pytest.fail("the precision probe ran while training was active"),
     )
-    resp = client.post(
-        "/api/inference/video/load",
-        json = {"model_path": "Lightricks/LTX-2.3", "transformer_quant": "nvfp4"},
-    )
+    resp = _shared_setup_5(client)
     assert resp.status_code == 409 and resp.json()["detail"] == "Training is running."
 
 
@@ -1662,13 +1625,7 @@ def test_video_download_plan_sizes_its_file_set_for_the_selected_card(client, mo
 
 
 def test_video_download_plan_refuses_a_gpu_index_this_host_does_not_have(client, monkeypatch):
-    import types
-
-    import core.inference.diffusion_device as devmod
-
-    monkeypatch.setattr(
-        devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
-    )
+    devmod = _shared_setup_3(monkeypatch)
 
     def _refuse(_ids):
         raise ValueError("Requested GPU [7] but none of them are visible to this process")

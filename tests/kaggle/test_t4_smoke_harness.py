@@ -22,6 +22,34 @@ from pathlib import Path
 
 import pytest
 
+
+# Shared setup for test_a_compile_check_with_no_baseline_is_refused_rather_than_assumed, test_a_gptoss_run_that_never_compiled_is_a_failure, test_the_other_gptoss_assertions_fire and 1 more.
+def _shared_setup_1():
+    sys.path.insert(0, str(SMOKE_DIR))
+    from run_gptoss_t4 import failures_for
+
+    report = _gptoss_ok()
+    return failures_for, report
+
+
+# Shared setup for test_a_dispatched_commit_is_proven_to_exist_before_the_quota_is_spent, test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given.
+def _shared_setup_2(stub, work):
+    (stub / "sleep").write_text("#!/bin/sh\nexit 0\n")
+    for name in ("git", "sleep"):
+        (stub / name).chmod(0o755)
+    out = work / "github_output"
+    out.write_text("", encoding = "utf-8")
+    return name, out
+
+
+# Shared setup for test_a_group_with_no_reward_spread_is_the_failure_that_matters, test_completions_that_are_all_empty_are_caught_even_when_rewards_agree, test_the_other_grpo_assertions_fire.
+def _shared_setup_3():
+    sys.path.insert(0, str(SMOKE_DIR))
+    from run_grpo_t4 import failures_for
+
+    report = _grpo_ok()
+    return failures_for, report
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_DIR = REPO_ROOT / "tests" / "kaggle" / "t4_smoke"
 CI_DIR = REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci"
@@ -2791,11 +2819,7 @@ def test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given(tmp_path):
         # `git` answers with whatever ls-remote is supposed to have said, and
         # `sleep` returns at once so the retry loop costs nothing.
         (stub / "git").write_text("#!/bin/sh\nprintf '%s' \"$LS_OUT\"\n")
-        (stub / "sleep").write_text("#!/bin/sh\nexit 0\n")
-        for name in ("git", "sleep"):
-            (stub / name).chmod(0o755)
-        out = work / "github_output"
-        out.write_text("", encoding = "utf-8")
+        name, out = _shared_setup_2(stub, work)
         env = dict(
             os.environ,
             PATH = f"{stub}:{os.environ['PATH']}",
@@ -2849,11 +2873,7 @@ def test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given(tmp_path):
             "  *) exit 0 ;;\n"
             "esac\n"
         )
-        (stub / "sleep").write_text("#!/bin/sh\nexit 0\n")
-        for name in ("git", "sleep"):
-            (stub / name).chmod(0o755)
-        out = work / "github_output"
-        out.write_text("", encoding = "utf-8")
+        name, out = _shared_setup_2(stub, work)
         env = dict(
             os.environ,
             PATH = f"{stub}:{os.environ['PATH']}",
@@ -3959,10 +3979,7 @@ def test_a_gptoss_run_that_never_compiled_is_a_failure():
     generation working, so nothing else in the report moves and the leg would
     report green while covering the eager path only.
     """
-    sys.path.insert(0, str(SMOKE_DIR))
-    from run_gptoss_t4 import failures_for
-
-    report = _gptoss_ok()
+    failures_for, report = _shared_setup_1()
     report["compile"] = {
         "available": True,
         "unique_graphs": 32,
@@ -3984,10 +4001,7 @@ def test_a_compile_check_with_no_baseline_is_refused_rather_than_assumed():
     passed an entirely eager training path in exactly the case where the two
     cannot be told apart.
     """
-    sys.path.insert(0, str(SMOKE_DIR))
-    from run_gptoss_t4 import failures_for
-
-    report = _gptoss_ok()
+    failures_for, report = _shared_setup_1()
     report["compile"] = {
         "available": True,
         "unique_graphs": 32,
@@ -4000,10 +4014,7 @@ def test_a_compile_check_with_no_baseline_is_refused_rather_than_assumed():
 
 
 def test_unreadable_compile_counters_are_not_read_as_success():
-    sys.path.insert(0, str(SMOKE_DIR))
-    from run_gptoss_t4 import failures_for
-
-    report = _gptoss_ok()
+    failures_for, report = _shared_setup_1()
     report["compile"] = {"available": False, "error": "AttributeError"}
     assert any("could not be established" in f for f in failures_for(report, _Args()))
 
@@ -4027,10 +4038,7 @@ def test_unreadable_compile_counters_are_not_read_as_success():
     ],
 )
 def test_the_other_gptoss_assertions_fire(mutate, expected):
-    sys.path.insert(0, str(SMOKE_DIR))
-    from run_gptoss_t4 import failures_for
-
-    report = _gptoss_ok()
+    failures_for, report = _shared_setup_1()
     mutate(report)
     assert any(expected in f for f in failures_for(report, _Args())), report
 
@@ -4086,10 +4094,7 @@ def test_a_group_with_no_reward_spread_is_the_failure_that_matters():
     nothing while the loss, the step count and the adapter all look ordinary. It
     is the one bug on this path nothing else would show.
     """
-    sys.path.insert(0, str(SMOKE_DIR))
-    from run_grpo_t4 import failures_for
-
-    report = _grpo_ok()
+    failures_for, report = _shared_setup_3()
     for entry in report["log_history"]:
         entry["reward_std"] = 0.0
     failures = failures_for(report, _GrpoArgs())
@@ -4102,10 +4107,7 @@ def test_a_group_with_no_reward_spread_is_the_failure_that_matters():
 def test_completions_that_are_all_empty_are_caught_even_when_rewards_agree():
     """N empty strings score identically, so the reward checks alone would
     call an engine that produced nothing a clean run."""
-    sys.path.insert(0, str(SMOKE_DIR))
-    from run_grpo_t4 import failures_for
-
-    report = _grpo_ok()
+    failures_for, report = _shared_setup_3()
     report["completions"] = [["", "", "", ""]]
     assert any(
         "every one of the 4 completions was empty" in f for f in failures_for(report, _GrpoArgs())
@@ -4122,10 +4124,7 @@ def test_completions_that_are_all_empty_are_caught_even_when_rewards_agree():
     ],
 )
 def test_the_other_grpo_assertions_fire(mutate, expected):
-    sys.path.insert(0, str(SMOKE_DIR))
-    from run_grpo_t4 import failures_for
-
-    report = _grpo_ok()
+    failures_for, report = _shared_setup_3()
     mutate(report)
     assert any(expected in f for f in failures_for(report, _GrpoArgs())), report
 
@@ -4654,11 +4653,7 @@ def test_a_dispatched_commit_is_proven_to_exist_before_the_quota_is_spent(tmp_pa
             "  *) exit 0 ;;\n"
             "esac\n"
         )
-        (stub / "sleep").write_text("#!/bin/sh\nexit 0\n")
-        for name in ("git", "sleep"):
-            (stub / name).chmod(0o755)
-        out = work / "github_output"
-        out.write_text("", encoding = "utf-8")
+        name, out = _shared_setup_2(stub, work)
         log = work / "fetches"
         log.write_text("", encoding = "utf-8")
         env = dict(

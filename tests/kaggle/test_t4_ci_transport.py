@@ -26,6 +26,14 @@ from pathlib import Path
 import pytest
 import yaml
 
+
+# Shared setup for test_a_repos_allow_patterns_reach_the_hub_and_a_bare_repo_stays_unfiltered, test_the_generated_prefetch_cell_runs_not_merely_compiles, test_the_last_prefetch_attempt_falls_back_to_classic_http.
+def _shared_setup_1(saved):
+    if saved is None:
+        sys.modules.pop("huggingface_hub", None)
+    else:
+        sys.modules["huggingface_hub"] = saved
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_DIR = REPO_ROOT / "tests" / "kaggle" / "t4_smoke"
 CI_DIR = REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci"
@@ -2852,10 +2860,7 @@ def test_the_generated_prefetch_cell_runs_not_merely_compiles():
             )
             exec(compile(source, "<prefetch>", "exec"), {"__name__": "prefetch"})
     finally:
-        if saved is None:
-            sys.modules.pop("huggingface_hub", None)
-        else:
-            sys.modules["huggingface_hub"] = saved
+        _shared_setup_1(saved)
     assert hub.calls == ["a/b", "a/b"], hub.calls
 
 
@@ -2884,10 +2889,7 @@ def test_a_repos_allow_patterns_reach_the_hub_and_a_bare_repo_stays_unfiltered()
         )
         exec(compile(source, "<prefetch>", "exec"), {"__name__": "prefetch"})
     finally:
-        if saved is None:
-            sys.modules.pop("huggingface_hub", None)
-        else:
-            sys.modules["huggingface_hub"] = saved
+        _shared_setup_1(saved)
 
     assert hub.calls == ["big/gguf", "small/model"], hub.calls
     assert hub.patterns_at_call == [["*UD-Q4_K_XL*"], None], hub.patterns_at_call
@@ -2921,10 +2923,7 @@ def test_the_last_prefetch_attempt_falls_back_to_classic_http():
         source = prefetch.prefetch_cell(["a/b"], attempt_timeout = 1, total_timeout = 30)
         exec(compile(source, "<prefetch>", "exec"), {"__name__": "prefetch"})
     finally:
-        if saved is None:
-            sys.modules.pop("huggingface_hub", None)
-        else:
-            sys.modules["huggingface_hub"] = saved
+        _shared_setup_1(saved)
     assert seen[-1] == "1", seen
     assert seen[:-1] == [None] * (len(seen) - 1), seen
     # ...and it is not left set for whatever runs next in this interpreter.

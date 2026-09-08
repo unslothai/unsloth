@@ -16,6 +16,17 @@ from pathlib import Path
 
 import pytest
 
+
+# Shared setup for test_a_fragment_does_not_hide_a_local_protected_project, test_a_local_protected_project_is_found_in_uvs_working_directory, test_the_working_dir_env_also_finds_a_local_protected_project.
+def _shared_setup_1(monkeypatch, tmp_path):
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    here, there = tmp_path / "here", tmp_path / "there"
+    here.mkdir()
+    there.mkdir()
+    _local_project(there, "unsloth")
+    monkeypatch.chdir(here)
+    return there
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHIM_PATH = REPO_ROOT / "docker" / "unsloth_pip_shim.py"
 
@@ -1454,12 +1465,7 @@ def _local_project(
 def test_a_local_protected_project_is_found_in_uvs_working_directory(
     shim, monkeypatch, tmp_path, build
 ):
-    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
-    here, there = tmp_path / "here", tmp_path / "there"
-    here.mkdir()
-    there.mkdir()
-    _local_project(there, "unsloth")
-    monkeypatch.chdir(here)
+    there = _shared_setup_1(monkeypatch, tmp_path)
 
     ran = _full_argv(shim, build(str(there)))
     assert ran is None or not any(
@@ -1468,12 +1474,7 @@ def test_a_local_protected_project_is_found_in_uvs_working_directory(
 
 
 def test_the_working_dir_env_also_finds_a_local_protected_project(shim, monkeypatch, tmp_path):
-    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
-    here, there = tmp_path / "here", tmp_path / "there"
-    here.mkdir()
-    there.mkdir()
-    _local_project(there, "unsloth")
-    monkeypatch.chdir(here)
+    there = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.setenv("UV_WORKING_DIR", str(there))
 
     ran = _full_argv(shim, ["uv", "pip", "install", "-e", "./unsloth"])
@@ -1522,12 +1523,7 @@ def test_a_fragment_does_not_hide_a_local_protected_project(shim, monkeypatch, t
     """The stat has to happen on the path alone. `#egg=` is recognised earlier, but
     any other fragment reaches the directory lookup still attached, and leaving it on
     makes the stat miss and forwards the project for replacement."""
-    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
-    here, there = tmp_path / "here", tmp_path / "there"
-    here.mkdir()
-    there.mkdir()
-    _local_project(there, "unsloth")
-    monkeypatch.chdir(here)
+    there = _shared_setup_1(monkeypatch, tmp_path)
 
     ran = _full_argv(shim, ["uv", "pip", "--directory", str(there), "install", "-e", spec])
     assert ran is None or not any(

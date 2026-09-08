@@ -47,6 +47,31 @@ import utils.hardware as hardware_pkg
 import utils.hardware.hardware as hw
 from utils.hardware import nvidia
 
+
+# Shared setup for test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen, test_a_token_authenticated_cpu_pin_is_still_a_cpu_pin, test_an_ordinary_intel_igpu_does_not_establish_a_mismatch.
+def _shared_setup_1(monkeypatch, tmp_path):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+    return sys
+
+
+# Shared setup for test_a_driver_without_the_cli_still_reports_its_cards, test_a_missing_nvidia_smi_does_not_warn_every_refresh, test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe.
+def _shared_setup_2(monkeypatch):
+    def _missing(*_a, **_k):
+        raise FileNotFoundError("nvidia-smi")
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _missing)
+
+
+# Shared setup for test_a_broken_nvidia_smi_still_reports_the_kernel_driver_cards, test_a_missing_nvidia_smi_does_not_warn_every_refresh, test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe.
+def _shared_setup_3(monkeypatch):
+    def _hang(*_a, **_k):
+        raise subprocess.TimeoutExpired("nvidia-smi", 10)
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _hang)
+
 # nvidia-smi rows for User A's box: two A4000s, the second carrying a comma in its name.
 _TWO_A4000_ROWS = "\n".join(
     [
@@ -735,10 +760,7 @@ def test_a_token_authenticated_cpu_pin_is_still_a_cpu_pin(monkeypatch, tmp_path)
     A raw final-segment split sees "cpu?token=..." there, so the deliberate CPU build on
     a GPU host was reported as broken and offered a repair that would replace it.
     """
-    import sys
-
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
-    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+    sys = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
 
     for pinned in (
@@ -1143,10 +1165,7 @@ def test_an_ordinary_intel_igpu_does_not_establish_a_mismatch(monkeypatch, tmp_p
     counting it would report a broken install and offer a repair that reinstalls the
     very CPU build it just replaced.
     """
-    import sys
-
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
-    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+    sys = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
 
@@ -1163,10 +1182,7 @@ def test_an_ordinary_intel_igpu_does_not_establish_a_mismatch(monkeypatch, tmp_p
 
 
 def test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen(monkeypatch, tmp_path):
-    import sys
-
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
-    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+    sys = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
     nameless = [{"vendor": "intel", "name": None, "index": 0}]
 
@@ -1357,20 +1373,14 @@ def test_a_missing_nvidia_smi_does_not_warn_every_refresh(monkeypatch, capsys):
     polls, so a warning here is a line a minute on a machine that is working correctly.
     """
 
-    def _missing(*_a, **_k):
-        raise FileNotFoundError("nvidia-smi")
-
-    monkeypatch.setattr(nvidia.subprocess, "run", _missing)
+    _shared_setup_2(monkeypatch)
     capsys.readouterr()
     assert (
         nvidia._query_gpu_inventory("test") is nvidia.NVIDIA_SMI_ABSENT
     ), "an absent CLI is its own answer, not the None that means a probe failed"
     assert '"level": "warning"' not in capsys.readouterr().out
 
-    def _hang(*_a, **_k):
-        raise subprocess.TimeoutExpired("nvidia-smi", 10)
-
-    monkeypatch.setattr(nvidia.subprocess, "run", _hang)
+    _shared_setup_3(monkeypatch)
     capsys.readouterr()
     assert nvidia._query_gpu_inventory("test") is None
     assert '"level": "warning"' in capsys.readouterr().out
@@ -1923,10 +1933,7 @@ def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
     reason, while /api/system had already dropped the device rows.
     """
 
-    def _missing(*_a, **_k):
-        raise FileNotFoundError("nvidia-smi")
-
-    monkeypatch.setattr(nvidia.subprocess, "run", _missing)
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_linux_drm_sysfs_records", lambda **_kw: [])
@@ -1945,10 +1952,7 @@ def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
     hw.torch_build_snapshot()
     assert hw.current_chat_only_verdict() == ("no_gpu", None)
 
-    def _hang(*_a, **_k):
-        raise subprocess.TimeoutExpired("nvidia-smi", 10)
-
-    monkeypatch.setattr(nvidia.subprocess, "run", _hang)
+    _shared_setup_3(monkeypatch)
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     assert hw.get_physical_gpu_inventory()["unknown"] is True
 
@@ -2053,10 +2057,7 @@ def test_a_driver_without_the_cli_still_reports_its_cards(monkeypatch):
     the backend insisted there was no card, and the user got no_gpu with no repair.
     """
 
-    def _missing(*_a, **_k):
-        raise FileNotFoundError("nvidia-smi")
-
-    monkeypatch.setattr(nvidia.subprocess, "run", _missing)
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 2)
 
     result = nvidia.get_physical_gpu_inventory()
@@ -2226,10 +2227,7 @@ def test_a_broken_nvidia_smi_still_reports_the_kernel_driver_cards(monkeypatch):
     """
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 1)
 
-    def _hang(*_a, **_k):
-        raise subprocess.TimeoutExpired("nvidia-smi", 10)
-
-    monkeypatch.setattr(nvidia.subprocess, "run", _hang)
+    _shared_setup_3(monkeypatch)
     result = nvidia.get_physical_gpu_inventory()
     assert [d["vendor"] for d in result["devices"]] == ["nvidia"]
     assert result["source"] == "proc-driver-nvidia"

@@ -15,6 +15,50 @@ from pathlib import Path
 # The backend uses "from utils..." imports; ensure the backend dir is on sys.path.
 import sys
 
+
+# Shared setup for test_mlx_host_is_never_offered_a_transformers_upgrade, test_mlx_skips_the_unsloth_bnb_repo_it_swaps_for_a_base, test_mlx_still_offers_the_upgrade_for_a_bitsandbytes_repo and 1 more.
+def _shared_setup_1(monkeypatch):
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
+    )
+
+
+# Shared setup for test_mlx_host_is_never_offered_a_transformers_upgrade, test_mlx_skips_the_unsloth_bnb_repo_it_swaps_for_a_base, test_mlx_still_offers_the_upgrade_for_a_bitsandbytes_repo and 1 more.
+def _shared_setup_2(monkeypatch):
+    monkeypatch.setattr(tl, "_disabled", lambda: False)
+    monkeypatch.setattr(tl, "_env_offline", lambda: False)
+    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
+    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
+
+
+# Shared setup for test_upgrade_check_mixed_pypi_main_reports_dev_only, test_upgrade_check_requires_every_missing_type, test_upgrade_check_requires_primary_supported.
+def _shared_setup_3(monkeypatch):
+    cfg = {
+        "model_type": "zz_new_wrapper",
+        "text_config": {"model_type": "zz_new_llm"},
+    }
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+
+
+# Shared setup for test_ensure_latest_offline_refuses, test_ensure_latest_rejects_bad_version, test_unpinned_sidecar_never_installs.
+def _shared_setup_4(monkeypatch):
+    monkeypatch.setattr(
+        tv,
+        "_ensure_venv_dir",
+        lambda *a: (_ for _ in ()).throw(AssertionError("must not install")),
+    )
+
+
+# Shared setup for test_activation_prepends_latest_dir, test_pinned_sidecar_repairs_with_same_version, test_probe_order_includes_provisioned_latest.
+def _shared_setup_5(monkeypatch, tmp_path):
+    venv_dir = tmp_path / ".venv_t5_latest"
+    venv_dir.mkdir()
+    (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
+    monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
+    return venv_dir
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -533,37 +577,22 @@ class TestLatestVenvProvisioning:
 
     def test_ensure_latest_rejects_bad_version(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
-        monkeypatch.setattr(
-            tv,
-            "_ensure_venv_dir",
-            lambda *a: (_ for _ in ()).throw(AssertionError("must not install")),
-        )
+        _shared_setup_4(monkeypatch)
         assert ensure_latest_transformers_venv("5.13.0 && curl evil") is False
 
     def test_ensure_latest_offline_refuses(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-        monkeypatch.setattr(
-            tv,
-            "_ensure_venv_dir",
-            lambda *a: (_ for _ in ()).throw(AssertionError("must not install")),
-        )
+        _shared_setup_4(monkeypatch)
         assert ensure_latest_transformers_venv("5.13.0") is False
 
     def test_unpinned_sidecar_never_installs(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
-        monkeypatch.setattr(
-            tv,
-            "_ensure_venv_dir",
-            lambda *a: (_ for _ in ()).throw(AssertionError("must not install")),
-        )
+        _shared_setup_4(monkeypatch)
         assert tv._ensure_venv_t5_latest_exists() is False
 
     def test_pinned_sidecar_repairs_with_same_version(self, tmp_path: Path, monkeypatch):
-        venv_dir = tmp_path / ".venv_t5_latest"
-        venv_dir.mkdir()
-        (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
+        venv_dir = _shared_setup_5(monkeypatch, tmp_path)
         monkeypatch.setattr(tv, "_venv_dir_is_valid", lambda *a: False)
         recorded = {}
 
@@ -608,17 +637,11 @@ class TestLatestTierRouting:
         assert tv._probe_tier_order() == tv._PROBE_TIER_ORDER
 
     def test_probe_order_includes_provisioned_latest(self, tmp_path: Path, monkeypatch):
-        venv_dir = tmp_path / ".venv_t5_latest"
-        venv_dir.mkdir()
-        (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
+        venv_dir = _shared_setup_5(monkeypatch, tmp_path)
         assert tv._probe_tier_order() == tv._PROBE_TIER_ORDER + ("latest",)
 
     def test_activation_prepends_latest_dir(self, tmp_path: Path, monkeypatch):
-        venv_dir = tmp_path / ".venv_t5_latest"
-        venv_dir.mkdir()
-        (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
+        venv_dir = _shared_setup_5(monkeypatch, tmp_path)
         monkeypatch.setattr(tv, "get_transformers_tier", lambda *a, **k: "latest")
         monkeypatch.setattr(tv, "_ensure_venv_t5_latest_exists", lambda: True)
         old_sys_path = list(sys.path)
@@ -941,11 +964,7 @@ def test_upgrade_check_ignores_nested_known_types(monkeypatch):
 def test_upgrade_check_requires_primary_supported(monkeypatch):
     """Latest supporting only a nested type must not prompt: routing still
     cannot load the primary, so the install would not fix the model."""
-    cfg = {
-        "model_type": "zz_new_wrapper",
-        "text_config": {"model_type": "zz_new_llm"},
-    }
-    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+    _shared_setup_3(monkeypatch)
     monkeypatch.setattr(
         tl,
         "latest_transformers_supports",
@@ -962,11 +981,7 @@ def test_upgrade_check_requires_every_missing_type(monkeypatch):
     """Primary supported but a nested backbone missing from latest -> no prompt
     (CONFIG_MAPPING would still fail on the sub-config); all supported -> signal
     carries the primary type."""
-    cfg = {
-        "model_type": "zz_new_wrapper",
-        "text_config": {"model_type": "zz_new_llm"},
-    }
-    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+    _shared_setup_3(monkeypatch)
     monkeypatch.setattr(
         tl,
         "latest_transformers_supports",
@@ -1079,11 +1094,7 @@ def test_upgrade_check_mixed_pypi_main_reports_dev_only(monkeypatch):
     """Primary in the PyPI release but a nested type only on main: no install
     may be offered (CONFIG_MAPPING would fail on the nested sub-config), so the
     aggregate must read as main-only."""
-    cfg = {
-        "model_type": "zz_new_wrapper",
-        "text_config": {"model_type": "zz_new_llm"},
-    }
-    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+    _shared_setup_3(monkeypatch)
     monkeypatch.setattr(
         tl,
         "latest_transformers_supports",
@@ -1412,16 +1423,9 @@ def _transformers_backend_host(monkeypatch):
 @pytest.mark.parametrize("device", ["cuda", "cpu", "xpu"])
 def test_transformers_backends_still_get_the_upgrade_offer(device, monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module(device))
-    monkeypatch.setattr(tl, "_disabled", lambda: False)
-    monkeypatch.setattr(tl, "_env_offline", lambda: False)
-    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
-    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: {"model_type": "brandnew_arch"})
-    monkeypatch.setattr(
-        tl,
-        "latest_transformers_supports",
-        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
-    )
+    _shared_setup_1(monkeypatch)
 
     offered = tl.check_upgrade_for_model("org/brandnew")
 
@@ -1432,16 +1436,9 @@ def test_mlx_host_is_never_offered_a_transformers_upgrade(monkeypatch):
     """MLX picks its backend from hardware and never falls back to transformers,
     so no install can make an architecture loadable there. Same inputs as the
     transformers-backend test above, which does get an offer."""
-    monkeypatch.setattr(tl, "_disabled", lambda: False)
-    monkeypatch.setattr(tl, "_env_offline", lambda: False)
-    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
-    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: {"model_type": "muse_glimmer"})
-    monkeypatch.setattr(
-        tl,
-        "latest_transformers_supports",
-        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
-    )
+    _shared_setup_1(monkeypatch)
 
     monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("cuda"))
     assert tl.check_upgrade_for_model("mlx-community/Muse-Glimmer-30B-4bit") is not None
@@ -1462,15 +1459,8 @@ def test_mlx_still_offers_the_upgrade_for_a_bitsandbytes_repo(monkeypatch):
     ``AutoModelForCausalLM.from_pretrained``. That call is transformers building the
     architecture, and on a brand-new type it raises the very unrecognized-architecture
     error this offer fixes -- so a bnb repo keeps the offer even on MLX."""
-    monkeypatch.setattr(tl, "_disabled", lambda: False)
-    monkeypatch.setattr(tl, "_env_offline", lambda: False)
-    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
-    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
-    monkeypatch.setattr(
-        tl,
-        "latest_transformers_supports",
-        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
-    )
+    _shared_setup_2(monkeypatch)
+    _shared_setup_1(monkeypatch)
     monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("mlx"))
 
     # Control: the same architecture unquantized is MLX's own to load, and is skipped.
@@ -1489,16 +1479,9 @@ def test_mlx_skips_the_unsloth_bnb_repo_it_swaps_for_a_base(monkeypatch):
     asked to build it. Those keep the skip -- they are most of the bnb rows Studio
     suggests on a Mac, and offering an install for them is the annoyance this
     short-circuit exists to remove."""
-    monkeypatch.setattr(tl, "_disabled", lambda: False)
-    monkeypatch.setattr(tl, "_env_offline", lambda: False)
-    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
-    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: _bnb("muse_glimmer"))
-    monkeypatch.setattr(
-        tl,
-        "latest_transformers_supports",
-        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
-    )
+    _shared_setup_1(monkeypatch)
     monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("mlx"))
 
     for remapped in (

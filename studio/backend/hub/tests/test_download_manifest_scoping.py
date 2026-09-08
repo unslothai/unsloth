@@ -12,6 +12,26 @@ import pytest
 from hub.utils import download_manifest, state_dir
 
 
+# Shared setup for test_repo_delete_clears_legacy_scope_when_handed_a_RESOLVED_root, test_the_configured_spelling_is_only_borrowed_for_the_SAME_directory, test_variant_delete_clears_legacy_scope_when_handed_a_RESOLVED_root and 2 more.
+def _shared_setup_1(monkeypatch, spelled, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = str(spelled)),
+    )
+
+
+# Shared setup for test_every_enumerator_agrees_about_the_pre_resolve_digest, test_manifest_under_the_pre_resolve_digest_is_still_found, test_pre_resolve_digest_cancel_marker_is_cleared_by_a_new_attempt and 1 more.
+def _shared_setup_2(monkeypatch, tmp_path):
+    spelled, _resolved = _redirected_hub_cache(tmp_path)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = str(tmp_path / "other")),
+    )
+    return spelled
+
+
 def _write_manifest(path, payload):
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_text(json.dumps(payload), encoding = "utf-8")
@@ -134,12 +154,7 @@ def test_manifest_under_the_pre_resolve_digest_is_still_found(monkeypatch, tmp_p
     degraded to it -- sits under legacy_cache_scope_name. Readers probe it after
     the canonical one, so the manifest survives the migration.
     """
-    spelled, _resolved = _redirected_hub_cache(tmp_path)
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = str(tmp_path / "other")),
-    )
+    spelled = _shared_setup_2(monkeypatch, tmp_path)
 
     legacy_scope = state_dir.legacy_cache_scope_name(spelled)
     assert legacy_scope != state_dir.cache_scope_name(spelled)
@@ -193,12 +208,7 @@ def test_every_enumerator_agrees_about_the_pre_resolve_digest(monkeypatch, tmp_p
     missed it while the per-variant endpoint saw it would have the list view and
     the detail view disagree about the same quant.
     """
-    spelled, _resolved = _redirected_hub_cache(tmp_path)
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = str(tmp_path / "other")),
-    )
+    spelled = _shared_setup_2(monkeypatch, tmp_path)
     orphan = _legacy_scoped_variant_manifest(tmp_path, spelled)
 
     assert (
@@ -228,12 +238,7 @@ def test_pre_resolve_digest_cancel_marker_is_cleared_by_a_new_attempt(monkeypatc
     under the pre-resolve digest but not clearable there would pin a finished
     variant to partial for good.
     """
-    spelled, _resolved = _redirected_hub_cache(tmp_path)
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = str(tmp_path / "other")),
-    )
+    spelled = _shared_setup_2(monkeypatch, tmp_path)
     marker = state_dir.marker_path(
         "model",
         "Org/Model",
@@ -269,12 +274,7 @@ def test_repo_delete_clears_variant_state_under_a_redirected_cache(monkeypatch, 
     the digest shared one canonicalization this globbed a scope directory that
     never existed and every variant manifest survived the delete.
     """
-    spelled, _resolved = _redirected_hub_cache(tmp_path)
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = str(tmp_path / "other")),
-    )
+    spelled = _shared_setup_2(monkeypatch, tmp_path)
 
     assert download_manifest.write_manifest(
         "model",
@@ -413,11 +413,7 @@ def test_repo_delete_clears_legacy_scope_when_handed_a_RESOLVED_root(monkeypatch
     it back, which is exactly the resurrection the scope fan-out exists to stop.
     """
     spelled, resolved = _redirected_hub_cache(tmp_path)
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = str(spelled)),
-    )
+    _shared_setup_1(monkeypatch, spelled, tmp_path)
     legacy = _legacy_scoped_manifest(tmp_path, spelled, resolved, "Org/Model", "Q4_K_M")
 
     # The resolved spelling, as resolve_delete_target_root would hand it over.
@@ -441,11 +437,7 @@ def test_variant_delete_clears_legacy_scope_when_handed_a_RESOLVED_root(monkeypa
     gone but its state file sitting under the pre-resolve digest.
     """
     spelled, resolved = _redirected_hub_cache(tmp_path)
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = str(spelled)),
-    )
+    _shared_setup_1(monkeypatch, spelled, tmp_path)
     legacy = _legacy_scoped_manifest(tmp_path, spelled, resolved, "Org/Model", "Q4_K_M")
 
     removed = download_manifest.purge_state("model", "Org/Model", "Q4_K_M", hub_cache = str(resolved))
@@ -464,11 +456,7 @@ def test_variant_index_sees_legacy_scope_when_handed_a_RESOLVED_root(monkeypatch
     progress endpoint can see.
     """
     spelled, resolved = _redirected_hub_cache(tmp_path)
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = str(spelled)),
-    )
+    _shared_setup_1(monkeypatch, spelled, tmp_path)
     _legacy_scoped_manifest(tmp_path, spelled, resolved, "Org/Model", "Q4_K_M")
 
     index = download_manifest.build_variant_state_index(
@@ -491,11 +479,7 @@ def test_the_configured_spelling_is_only_borrowed_for_the_SAME_directory(monkeyp
     spelled, resolved = _redirected_hub_cache(tmp_path)
     other = tmp_path / "other" / "hub"
     other.mkdir(parents = True)
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = str(spelled)),
-    )
+    _shared_setup_1(monkeypatch, spelled, tmp_path)
     active_legacy = _legacy_scoped_manifest(tmp_path, spelled, resolved, "Org/Model", "Q4_K_M")
     victim = state_dir.manifest_path("model", "Org/Model", "Q8_0", hub_cache = str(other))
     _write_manifest(victim, _manifest_payload("Org/Model", "Q8_0", str(other)))
@@ -601,11 +585,7 @@ def test_variant_enumeration_sees_legacy_scope_when_handed_a_RESOLVED_root(monke
     still see it.
     """
     spelled, resolved = _redirected_hub_cache(tmp_path)
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = str(spelled)),
-    )
+    _shared_setup_1(monkeypatch, spelled, tmp_path)
     _legacy_scoped_manifest(tmp_path, spelled, resolved, "Org/Model", "Q4_K_M")
 
     listed = dict(

@@ -14,6 +14,15 @@ from pathlib import Path
 
 import pytest
 
+
+# Shared setup for test_allows_json_and_jsonl_family, test_basename_collision_skips_existing_generated_suffix, test_ignores_common_json_metadata_files.
+def _shared_setup_1(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
+    monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda cfg: client)
+
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    return files
+
 # Load the modules under test directly by path. Importing them through their
 # packages (core.training / models) would execute heavy package __init__ chains
 # (structlog, torch, …) that aren't needed for these unit tests.
@@ -103,10 +112,7 @@ def test_downloads_only_supported_files_under_prefix(fake_client, tmp_path):
 
 def test_allows_json_and_jsonl_family(monkeypatch, tmp_path):
     client = _FakeS3Client(["datasets/train.json", "datasets/extra.jsonl"])
-    monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
-    monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda cfg: client)
-
-    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    files = _shared_setup_1(client, monkeypatch, tmp_path)
 
     assert sorted(os.path.basename(f) for f in files) == ["extra.jsonl", "train.json"]
 
@@ -120,10 +126,7 @@ def test_ignores_common_json_metadata_files(monkeypatch, tmp_path):
             "datasets/dataset_info.json",
         ]
     )
-    monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
-    monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda cfg: client)
-
-    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    files = _shared_setup_1(client, monkeypatch, tmp_path)
 
     assert [os.path.basename(f) for f in files] == ["train.parquet"]
 
@@ -171,10 +174,7 @@ def test_basename_collision_skips_existing_generated_suffix(monkeypatch, tmp_pat
             "datasets/c/train.parquet",
         ]
     )
-    monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
-    monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda cfg: client)
-
-    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    files = _shared_setup_1(client, monkeypatch, tmp_path)
 
     assert [os.path.basename(f) for f in files] == [
         "train.parquet",

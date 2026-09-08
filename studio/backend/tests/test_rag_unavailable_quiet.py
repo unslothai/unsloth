@@ -23,6 +23,15 @@ from fastapi import HTTPException
 
 from storage import rag_db
 
+
+# Shared setup for test_list_knowledge_bases_still_raises_real_database_errors, test_mutating_endpoints_still_raise_real_database_errors, test_rag_available_propagates_real_database_errors.
+def _shared_setup_1(monkeypatch):
+    def _boom():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True)
+    return _boom
+
 UNAVAILABLE = "RAG is unavailable: the sqlite-vec extension could not be loaded."
 
 
@@ -102,10 +111,7 @@ def test_rag_available_propagates_real_database_errors(
     rag_home, reset_unavailable_warning, monkeypatch
 ):
     # "Is RAG switched off here" is not the question a locked database answers.
-    def _boom():
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True)
+    _boom = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(rag_db, "get_connection", _boom)
     with pytest.raises(sqlite3.OperationalError, match = "database is locked"):
         rag_db.rag_available()
@@ -336,10 +342,7 @@ def test_list_knowledge_bases_still_raises_real_database_errors(
     # real failure and must keep surfacing.
     from routes import rag as rag_routes
 
-    def _boom():
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True)
+    _boom = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(rag_db, "get_connection", _boom)
     with pytest.raises(sqlite3.OperationalError, match = "database is locked"):
         rag_routes.list_knowledge_bases(subject = "tester")
@@ -352,10 +355,7 @@ def test_mutating_endpoints_still_raise_real_database_errors(
     # "RAG is switched off on this machine".
     from routes import rag as rag_routes
 
-    def _boom():
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True)
+    _boom = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(rag_db, "_extension_loaded", True)
     monkeypatch.setattr(rag_db, "get_connection", _boom)
     with pytest.raises(sqlite3.OperationalError, match = "database is locked"):

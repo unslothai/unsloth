@@ -28,6 +28,82 @@ from pathlib import Path
 
 import httpx
 
+
+# Shared setup for test_a_continuation_with_room_to_answer_in_is_still_sent, test_a_count_that_cannot_be_taken_is_not_a_refusal, test_a_respawn_refit_does_not_replay_a_caller_prefill_twice and 7 more.
+def _shared_setup_1(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+    return backend, payloads
+
+
+# Shared setup for test_a_continuation_that_stalls_in_reasoning_is_not_read_as_more_answer, test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering, test_a_respawn_refit_during_the_reasoning_recovery_keeps_its_request and 1 more.
+def _shared_setup_2(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
+            [
+                _sse({"reasoning_content": "Let me reconsider the whole approach. " * 60}),
+                _finish("length"),
+                _done(),
+            ],
+            [_sse({"content": "and here is the rest."}), _done()],
+        ],
+        payloads,
+    )
+    return backend, payloads
+
+
+# Shared setup for test_continuation_is_capped, test_the_final_continuation_is_capped, test_the_partial_is_kept_when_it_never_converges.
+def _shared_setup_3(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()]
+            for _ in range(_MAX_LENGTH_CONTINUATIONS + 3)
+        ],
+        payloads,
+    )
+    return backend, payloads
+
+
+# Shared setup for test_a_caller_set_max_tokens_is_not_exceeded, test_a_continuation_that_would_be_rejected_is_not_sent, test_an_in_loop_continuation_that_would_be_rejected_is_not_sent and 1 more.
+def _shared_setup_4(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": " never sent"}), _done()]),
+        payloads,
+    )
+    return backend, payloads
+
+
+# Shared setup for test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering, test_an_older_exchange_is_still_evicted_to_admit_the_recovery, test_the_recovery_is_declined_rather_than_sent_without_its_question.
+def _shared_setup_5(backend, monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda messages, *_a, **_k: sum(
+            len(str(message.get("content", ""))) for message in messages
+        )
+        // 2,
+    )
+
+
+# Shared setup for test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering, test_a_respawn_refit_does_not_replay_a_caller_prefill_twice, test_a_respawn_refit_during_a_continuation_carries_the_partial and 2 more.
+def _shared_setup_6(_respawned, backend, monkeypatch):
+    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+    return calls, healthy
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -141,12 +217,7 @@ def _cut_off_then(*later: list[str]) -> list[list[str]]:
 
 
 def test_an_answer_cut_in_half_is_finished(monkeypatch):
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_1(monkeypatch)
 
     events = _run(backend)
 
@@ -207,15 +278,7 @@ def test_an_echo_is_kept_as_is_rather_than_continued(monkeypatch):
 
 
 def test_continuation_is_capped(monkeypatch):
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        [
-            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()]
-            for _ in range(_MAX_LENGTH_CONTINUATIONS + 3)
-        ],
-        payloads,
-    )
+    backend, payloads = _shared_setup_3(monkeypatch)
 
     _run(backend)
 
@@ -238,15 +301,7 @@ def test_a_clean_stop_is_never_continued(monkeypatch):
 def test_the_partial_is_kept_when_it_never_converges(monkeypatch):
     """Giving up must not throw away the work already streamed to the user."""
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        [
-            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()]
-            for _ in range(_MAX_LENGTH_CONTINUATIONS + 3)
-        ],
-        payloads,
-    )
+    backend, payloads = _shared_setup_3(monkeypatch)
 
     content = "".join(_texts(_run(backend), "content"))
 
@@ -273,12 +328,7 @@ def test_the_final_answer_is_continued_too(monkeypatch):
     its whole tool budget produces its answer here, not in the loop.
     """
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_1(monkeypatch)
 
     events = _run_no_tools(backend)
 
@@ -290,12 +340,7 @@ def test_the_final_answer_is_continued_too(monkeypatch):
 def test_the_final_continuation_turns_the_generation_prompt_off(monkeypatch):
     """llama-server rejects a request carrying both flags."""
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_1(monkeypatch)
 
     _run_no_tools(backend)
 
@@ -309,12 +354,7 @@ def test_the_final_continuation_turns_the_generation_prompt_off(monkeypatch):
 def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
     """The refit must restore the partial absent from `conversation`."""
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 64)
 
     def _respawned() -> bool:
@@ -322,10 +362,7 @@ def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
         backend._effective_context_length = 2048
         return True
 
-    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
-
-    healthy = backend._stream_with_retry
-    calls = {"n": 0}
+    calls, healthy = _shared_setup_6(_respawned, backend, monkeypatch)
 
     @contextlib.contextmanager
     def flaky_stream(*args, **kwargs):
@@ -353,12 +390,7 @@ def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
 def test_a_respawn_refit_prices_the_carried_partial(monkeypatch):
     """The replacement window must include the restored partial."""
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_1(monkeypatch)
 
     def _count(messages, *_a, **_k) -> int:
         return sum(len(str(message.get("content", ""))) for message in messages) // 2
@@ -370,10 +402,7 @@ def test_a_respawn_refit_prices_the_carried_partial(monkeypatch):
         backend._effective_context_length = 1400
         return True
 
-    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
-
-    healthy = backend._stream_with_retry
-    calls = {"n": 0}
+    calls, healthy = _shared_setup_6(_respawned, backend, monkeypatch)
 
     @contextlib.contextmanager
     def flaky_stream(*args, **kwargs):
@@ -413,22 +442,14 @@ def test_a_respawn_refit_does_not_replay_a_caller_prefill_twice(monkeypatch):
     """A respawn refit must not duplicate a caller prefill."""
 
     prefill = "Here is the beginning of my answer: "
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 64)
 
     def _respawned() -> bool:
         backend._effective_context_length = 2048
         return True
 
-    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
-
-    healthy = backend._stream_with_retry
-    calls = {"n": 0}
+    calls, healthy = _shared_setup_6(_respawned, backend, monkeypatch)
 
     @contextlib.contextmanager
     def flaky_stream(*args, **kwargs):
@@ -465,30 +486,14 @@ def test_a_respawn_refit_does_not_replay_a_caller_prefill_twice(monkeypatch):
 def test_a_respawn_refit_during_the_reasoning_recovery_keeps_its_request(monkeypatch):
     """A respawn refit must preserve the reasoning recovery tail."""
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        [
-            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
-            [
-                _sse({"reasoning_content": "Let me reconsider the whole approach. " * 60}),
-                _finish("length"),
-                _done(),
-            ],
-            [_sse({"content": "and here is the rest."}), _done()],
-        ],
-        payloads,
-    )
+    backend, payloads = _shared_setup_2(monkeypatch)
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 64)
 
     def _respawned() -> bool:
         backend._effective_context_length = 2048
         return True
 
-    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
-
-    healthy = backend._stream_with_retry
-    calls = {"n": 0}
+    calls, healthy = _shared_setup_6(_respawned, backend, monkeypatch)
 
     @contextlib.contextmanager
     def flaky_stream(*args, **kwargs):
@@ -518,28 +523,8 @@ def test_the_recovery_is_declined_rather_than_sent_without_its_question(monkeypa
     """Decline a recovery that cannot retain the question it answers."""
 
     question = "QUESTION_MARKER show me the HTML inline <|im_end|>" + "q" * 200
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        [
-            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
-            [
-                _sse({"reasoning_content": "Let me reconsider the whole approach. " * 60}),
-                _finish("length"),
-                _done(),
-            ],
-            [_sse({"content": "and here is the rest."}), _done()],
-        ],
-        payloads,
-    )
-    monkeypatch.setattr(
-        backend,
-        "count_chat_tokens",
-        lambda messages, *_a, **_k: sum(
-            len(str(message.get("content", ""))) for message in messages
-        )
-        // 2,
-    )
+    backend, payloads = _shared_setup_2(monkeypatch)
+    _shared_setup_5(backend, monkeypatch)
 
     healthy = backend._stream_with_retry
     calls = {"n": 0}
@@ -591,14 +576,7 @@ def test_an_older_exchange_is_still_evicted_to_admit_the_recovery(monkeypatch):
         ],
         payloads,
     )
-    monkeypatch.setattr(
-        backend,
-        "count_chat_tokens",
-        lambda messages, *_a, **_k: sum(
-            len(str(message.get("content", ""))) for message in messages
-        )
-        // 2,
-    )
+    _shared_setup_5(backend, monkeypatch)
 
     healthy = backend._stream_with_retry
     calls = {"n": 0}
@@ -637,38 +615,15 @@ def test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering(monkeypatch)
     """Refit eviction must keep the original turn behind a recovery request."""
 
     question = "QUESTION_MARKER show me the HTML inline <|im_end|>" + "q" * 200
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        [
-            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
-            [
-                _sse({"reasoning_content": "Let me reconsider the whole approach. " * 60}),
-                _finish("length"),
-                _done(),
-            ],
-            [_sse({"content": "and here is the rest."}), _done()],
-        ],
-        payloads,
-    )
-    monkeypatch.setattr(
-        backend,
-        "count_chat_tokens",
-        lambda messages, *_a, **_k: sum(
-            len(str(message.get("content", ""))) for message in messages
-        )
-        // 2,
-    )
+    backend, payloads = _shared_setup_2(monkeypatch)
+    _shared_setup_5(backend, monkeypatch)
 
     def _respawned() -> bool:
         # The refitted conversation fits without its recovery tail.
         backend._effective_context_length = 300
         return True
 
-    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
-
-    healthy = backend._stream_with_retry
-    calls = {"n": 0}
+    calls, healthy = _shared_setup_6(_respawned, backend, monkeypatch)
 
     @contextlib.contextmanager
     def flaky_stream(*args, **kwargs):
@@ -696,15 +651,7 @@ def test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering(monkeypatch)
 
 
 def test_the_final_continuation_is_capped(monkeypatch):
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        [
-            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()]
-            for _ in range(_MAX_LENGTH_CONTINUATIONS + 3)
-        ],
-        payloads,
-    )
+    backend, payloads = _shared_setup_3(monkeypatch)
 
     _run_no_tools(backend)
 
@@ -853,12 +800,7 @@ def test_a_continuation_that_would_be_rejected_is_not_sent(monkeypatch):
     keeps the partial either way; only one of the two paths also shows an error.
     """
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": " never sent"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_4(monkeypatch)
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *_args, **_kwargs: 4096)
 
     events = _run_no_tools(backend)
@@ -871,12 +813,7 @@ def test_a_continuation_that_would_be_rejected_is_not_sent(monkeypatch):
 def test_a_count_that_cannot_be_taken_is_not_a_refusal(monkeypatch):
     """Failing open restores what this path did before the check, which is the safe side."""
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_1(monkeypatch)
 
     def _no_count(*_args, **_kwargs):
         raise RuntimeError("llama-server is not loaded")
@@ -899,12 +836,7 @@ def test_a_continuation_with_room_to_answer_in_is_still_sent(monkeypatch):
     the reply floor is 256.
     """
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *_args, **_kwargs: 3800)
 
     events = _run_no_tools(backend)
@@ -921,12 +853,7 @@ def test_a_caller_set_max_tokens_is_not_exceeded(monkeypatch):
     context wall deserves a continuation.
     """
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": " never sent"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_4(monkeypatch)
 
     _run_no_tools(backend, max_tokens = 100)
 
@@ -956,12 +883,7 @@ def test_a_caller_cap_with_room_left_continues_within_it(monkeypatch):
 def test_max_tokens_equal_to_the_window_is_the_context_wall(monkeypatch):
     """That is what the backend substitutes for "Max", so it is not a caller cap."""
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_1(monkeypatch)
 
     _run_no_tools(backend, max_tokens = 4096)
 
@@ -994,12 +916,7 @@ def test_the_in_loop_continuation_respects_the_caller_cap(monkeypatch):
     tokens still ran two more 100-token generations.
     """
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": " never sent"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_4(monkeypatch)
 
     _run(backend, max_tokens = 100)
 
@@ -1026,12 +943,7 @@ def test_the_in_loop_continuation_spends_the_remainder(monkeypatch):
 def test_an_in_loop_continuation_that_would_be_rejected_is_not_sent(monkeypatch):
     """Same guard the final pass has. With one user turn there is no history to evict."""
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": " never sent"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_4(monkeypatch)
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 4096)
 
     events = _run(backend)
@@ -1041,12 +953,7 @@ def test_an_in_loop_continuation_that_would_be_rejected_is_not_sent(monkeypatch)
 
 
 def test_an_in_loop_continuation_with_room_is_still_sent(monkeypatch):
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
-        payloads,
-    )
+    backend, payloads = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 3800)
 
     events = _run(backend)
@@ -1086,20 +993,7 @@ def test_a_continuation_that_stalls_in_reasoning_is_not_read_as_more_answer(monk
     reasoning-off recovery. Judged on what this attempt put on screen now.
     """
 
-    payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        [
-            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
-            [
-                _sse({"reasoning_content": "Let me reconsider the whole approach. " * 60}),
-                _finish("length"),
-                _done(),
-            ],
-            [_sse({"content": "and here is the rest."}), _done()],
-        ],
-        payloads,
-    )
+    backend, payloads = _shared_setup_2(monkeypatch)
 
     events = _run_no_tools(backend)
 

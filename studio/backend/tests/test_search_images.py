@@ -26,6 +26,14 @@ from core.inference.tool_loop_controller import strip_result_for_model
 from core.inference.tool_stream_exec import accepts_kwarg, search_images_kwargs
 from routes.inference import studio_router
 
+
+# Shared setup for test_a_clear_between_the_two_registry_reads_still_wins, test_a_selective_clear_does_not_abort_a_fetch_for_an_image_it_spared, test_a_selective_clear_still_aborts_the_fetch_for_an_image_it_reaped.
+def _shared_setup_1(clearing_lookup, monkeypatch):
+    monkeypatch.setattr(search_images, "_lookup_locked", clearing_lookup)
+    monkeypatch.setattr(
+        tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
+    )
+
 RAW_IMAGES = [
     {
         "title": "Golden  Retriever\nportrait",
@@ -553,10 +561,7 @@ def test_a_clear_between_the_two_registry_reads_still_wins(monkeypatch, tmp_path
             stale.unlink()
         return found
 
-    monkeypatch.setattr(search_images, "_lookup_locked", clearing_lookup)
-    monkeypatch.setattr(
-        tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
-    )
+    _shared_setup_1(clearing_lookup, monkeypatch)
     assert search_images.thumbnail_bytes(entry["id"]) is None
     assert list(tmp_path.glob("*.jpg")) == []
 
@@ -1110,10 +1115,7 @@ def test_a_selective_clear_does_not_abort_a_fetch_for_an_image_it_spared(monkeyp
         search_images._reaped_at[doomed_id] = search_images._cache_generation
         return found
 
-    monkeypatch.setattr(search_images, "_lookup_locked", clearing_lookup)
-    monkeypatch.setattr(
-        tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
-    )
+    _shared_setup_1(clearing_lookup, monkeypatch)
 
     assert (
         search_images.thumbnail_bytes(spared["id"]) is not None
@@ -1136,10 +1138,7 @@ def test_a_selective_clear_still_aborts_the_fetch_for_an_image_it_reaped(monkeyp
             stale.unlink()
         return found
 
-    monkeypatch.setattr(search_images, "_lookup_locked", clearing_lookup)
-    monkeypatch.setattr(
-        tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
-    )
+    _shared_setup_1(clearing_lookup, monkeypatch)
 
     assert search_images.thumbnail_bytes(doomed["id"]) is None
     assert list(tmp_path.glob("*.jpg")) == []

@@ -32,6 +32,24 @@ from core.inference.sd_cpp_engine import (
 from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles, SdCppUpscaleParams
 
 
+# Shared setup for test_identity_probe_does_not_memoize_a_nonzero_exit_it_learned_nothing_from, test_identity_probe_does_not_memoize_a_probe_that_failed, test_identity_probe_is_memoized_per_file_revision and 2 more.
+def _shared_setup_1(monkeypatch, tmp_path):
+    _clear_env(monkeypatch)
+    candidate = tmp_path / "sd"
+    candidate.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    return candidate
+
+
+# Shared setup for test_generate_does_not_return_stale_preexisting_output, test_generate_raises_on_nonzero_exit, test_generate_raises_when_no_output_despite_success.
+def _shared_setup_2(e, out):
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+        SdCppGenParams(prompt = "x"),
+        output_path = str(out),
+    )
+
+
 # ── binary discovery ────────────────────────────────────────────────────────
 
 
@@ -187,10 +205,7 @@ def test_identity_probe_is_memoized_per_file_revision(tmp_path, monkeypatch):
     # unrelated `sd` was re-executed several times per load -- once per full 10s timeout when the
     # candidate hangs. The verdict is keyed on the file, not the path, so an in-place replacement
     # is still re-probed rather than answered from a stale entry.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
     runs: list[list[str]] = []
 
     def _run(cmd, **_kwargs):
@@ -262,10 +277,7 @@ def test_identity_probe_does_not_memoize_a_nonzero_exit_it_learned_nothing_from(
     # exception, so it would otherwise be cached as a definitive "not stable-diffusion.cpp"
     # against a file that never changed -- and installing the missing library would not get it
     # re-probed until Unsloth restarted.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.setattr(
         eng.subprocess,
         "run",
@@ -292,10 +304,7 @@ def test_identity_probe_does_not_memoize_a_nonzero_exit_it_learned_nothing_from(
 def test_identity_probe_memoizes_an_identifying_build_that_exits_nonzero(tmp_path, monkeypatch):
     # The other half: older builds print usage and exit 1. Identifying output settles the question
     # whatever the exit code, so that verdict is decisive and worth keeping.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
     runs = []
     monkeypatch.setattr(
         eng.subprocess,
@@ -320,10 +329,7 @@ def test_identity_verdict_expires(tmp_path, monkeypatch):
     # unchanged. Hashing the binary on every lookup would cost a full read on a path walked for
     # every load; a short life bounds that staleness instead, and bounds whatever else the key
     # cannot see.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
     runs = []
 
     def _reject(cmd, **_kwargs):
@@ -355,10 +361,7 @@ def test_identity_probe_does_not_memoize_a_probe_that_failed(tmp_path, monkeypat
     # A timeout or a failed spawn does not touch the file, so its memo key does not change either.
     # Remembering that "no" would blacklist a genuine build for the life of the process over one
     # slow --help under disk or memory pressure -- Unsloth would have to be restarted to see it.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
 
     def _timeout(*_args, **_kwargs):
         raise eng.subprocess.TimeoutExpired("sd", 10)
@@ -632,11 +635,7 @@ def test_generate_raises_on_nonzero_exit(tmp_path, monkeypatch):
     out = tmp_path / "img.png"
     _patch_popen(monkeypatch, lines = ["boom: bad gguf"], returncode = 1, out_file = out, write = False)
     with pytest.raises(RuntimeError, match = "exited 1"):
-        e.generate(
-            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-            SdCppGenParams(prompt = "x"),
-            output_path = str(out),
-        )
+        _shared_setup_2(e, out)
 
 
 def test_generate_raises_when_no_output_despite_success(tmp_path, monkeypatch):
@@ -644,11 +643,7 @@ def test_generate_raises_when_no_output_despite_success(tmp_path, monkeypatch):
     out = tmp_path / "img.png"
     _patch_popen(monkeypatch, lines = ["ok"], returncode = 0, out_file = out, write = False)
     with pytest.raises(RuntimeError, match = "no image"):
-        e.generate(
-            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-            SdCppGenParams(prompt = "x"),
-            output_path = str(out),
-        )
+        _shared_setup_2(e, out)
 
 
 def test_generate_does_not_return_stale_preexisting_output(tmp_path, monkeypatch):
@@ -658,11 +653,7 @@ def test_generate_does_not_return_stale_preexisting_output(tmp_path, monkeypatch
     out.write_bytes(b"stale")
     _patch_popen(monkeypatch, lines = ["ok"], returncode = 0, out_file = out, write = False)
     with pytest.raises(RuntimeError, match = "no image"):
-        e.generate(
-            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-            SdCppGenParams(prompt = "x"),
-            output_path = str(out),
-        )
+        _shared_setup_2(e, out)
     assert not out.exists()
 
 

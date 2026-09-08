@@ -14,6 +14,18 @@ import pytest
 import torch
 
 
+# Shared setup for test_a_repeat_call_with_the_same_targets_still_passes_through, test_embedding_only_target_list_raises_instead_of_training_nothing, test_flipping_ensure_weight_tying_is_seen_as_a_different_request and 1 more.
+def _shared_setup_1():
+    from unsloth import FastLanguageModel
+
+    model, _ = FastLanguageModel.from_pretrained(
+        model_name = MODEL_NAME,
+        load_in_4bit = True,
+        max_seq_length = 512,
+    )
+    return FastLanguageModel, model
+
+
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(),
     reason = "embedding target redirect integration test needs a CUDA GPU",
@@ -110,13 +122,7 @@ def test_embed_lm_head_target_redirect(new_model_path: bool, target_modules):
 @pytest.mark.slow
 def test_a_repeat_call_with_the_same_targets_still_passes_through():
     """A tied lm_head lands in modules_to_tie, which the equality check has to count."""
-    from unsloth import FastLanguageModel
-
-    model, _ = FastLanguageModel.from_pretrained(
-        model_name = MODEL_NAME,
-        load_in_4bit = True,
-        max_seq_length = 512,
-    )
+    FastLanguageModel, model = _shared_setup_1()
     try:
         kwargs = dict(r = 8, lora_alpha = 16, target_modules = list(TARGET_MODULES))
         model = FastLanguageModel.get_peft_model(model, **kwargs)
@@ -181,13 +187,7 @@ def test_dropping_the_embeddings_from_a_repeat_call_is_not_silently_ignored(firs
 def test_qualified_targets_are_not_collapsed_to_their_leaf():
     """Only PEFT's model.embed_tokens alias is folded away. layers.0.q_proj is a real
     request and is not the same module as layers.1.q_proj."""
-    from unsloth import FastLanguageModel
-
-    model, _ = FastLanguageModel.from_pretrained(
-        model_name = MODEL_NAME,
-        load_in_4bit = True,
-        max_seq_length = 512,
-    )
+    FastLanguageModel, model = _shared_setup_1()
     try:
         model = FastLanguageModel.get_peft_model(
             model,
@@ -212,13 +212,7 @@ def test_qualified_targets_are_not_collapsed_to_their_leaf():
 def test_flipping_ensure_weight_tying_is_seen_as_a_different_request():
     """Tying is not in check_parameters and leaves both name lists identical, so it has
     to be compared on its own or the caller's request is silently ignored."""
-    from unsloth import FastLanguageModel
-
-    model, _ = FastLanguageModel.from_pretrained(
-        model_name = MODEL_NAME,
-        load_in_4bit = True,
-        max_seq_length = 512,
-    )
+    FastLanguageModel, model = _shared_setup_1()
     try:
         kwargs = dict(r = 8, lora_alpha = 16, target_modules = list(TARGET_MODULES))
         model = FastLanguageModel.get_peft_model(model, **kwargs)
@@ -266,13 +260,7 @@ def test_a_classification_repeat_call_is_not_tripped_by_peft_added_modules():
 @pytest.mark.slow
 def test_embedding_only_target_list_raises_instead_of_training_nothing():
     """Redirecting every target would leave an adapter with no trainable LoRA."""
-    from unsloth import FastLanguageModel
-
-    model, _ = FastLanguageModel.from_pretrained(
-        model_name = MODEL_NAME,
-        load_in_4bit = True,
-        max_seq_length = 512,
-    )
+    FastLanguageModel, model = _shared_setup_1()
     try:
         with pytest.raises(RuntimeError, match = "target_modules` is now empty"):
             FastLanguageModel.get_peft_model(

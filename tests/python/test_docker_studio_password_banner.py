@@ -26,6 +26,15 @@ from pathlib import Path
 
 import pytest
 
+
+# Shared setup for test_a_disabled_timeout_drops_the_shutdown_note, test_a_malformed_timeout_keeps_the_note_like_the_backend_does, test_the_timeout_is_reported_like_the_backend_formats_it.
+def _shared_setup_1(tmp_path, value):
+    auth = tmp_path / "auth"
+    auth.mkdir()
+    (auth / ".bootstrap_password").write_bytes(b"abc\n")
+    res = _run(tmp_path, env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": value})
+    return res
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKER = REPO_ROOT / "docker"
 SCRIPT = DOCKER / "studio_password.sh"
@@ -188,10 +197,7 @@ def test_a_crlf_file_does_not_leak_the_cr_into_the_credential(tmp_path: Path):
 @behavioural
 @pytest.mark.parametrize("value", ["0", "-5", " -1 "])
 def test_a_disabled_timeout_drops_the_shutdown_note(tmp_path: Path, value: str):
-    auth = tmp_path / "auth"
-    auth.mkdir()
-    (auth / ".bootstrap_password").write_bytes(b"abc\n")
-    res = _run(tmp_path, env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": value})
+    res = _shared_setup_1(tmp_path, value)
     assert "Unsloth Studio login -> username: unsloth   password: abc\n" in res.stdout, repr(
         res.stdout
     )
@@ -204,10 +210,7 @@ def test_a_malformed_timeout_keeps_the_note_like_the_backend_does(tmp_path: Path
     """bootstrap_timeout.py strips only the surrounding whitespace and falls back
     to 3600 on a typo rather than disabling, so Studio still stops after an hour;
     the note must not vanish. "- 5" and "1 000" are typos, not numbers."""
-    auth = tmp_path / "auth"
-    auth.mkdir()
-    (auth / ".bootstrap_password").write_bytes(b"abc\n")
-    res = _run(tmp_path, env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": value})
+    res = _shared_setup_1(tmp_path, value)
     assert "60 minutes" in res.stdout, repr(res.stdout)
 
 
@@ -223,10 +226,7 @@ def test_a_malformed_timeout_keeps_the_note_like_the_backend_does(tmp_path: Path
     ],
 )
 def test_the_timeout_is_reported_like_the_backend_formats_it(tmp_path: Path, value: str, text: str):
-    auth = tmp_path / "auth"
-    auth.mkdir()
-    (auth / ".bootstrap_password").write_bytes(b"abc\n")
-    res = _run(tmp_path, env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": value})
+    res = _shared_setup_1(tmp_path, value)
     assert f"stops after {text} with" in res.stdout, repr(res.stdout)
 
 

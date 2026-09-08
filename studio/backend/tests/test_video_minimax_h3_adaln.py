@@ -20,6 +20,15 @@ from core.inference.video_minimax_h3_adaln import (
     is_curve_checkpoint,
 )
 
+
+# Shared setup for test_time_embedder_clamps_out_of_range_timesteps_to_the_curve_ends, test_time_embedder_interpolates_between_the_two_neighbouring_grid_rows, test_time_embedder_pins_the_grid_endpoints.
+def _shared_setup_1():
+    model = _FakeH3()
+    apply_h3_adaln_curve(model, _curve_meta())
+    _fill_table(model)
+    table = model.time_embedder.table
+    return model, table
+
 HIDDEN = 4
 CURVE_DIM = 3
 CURVE_GRID = 5
@@ -189,10 +198,7 @@ def _fill_table(model):
 
 
 def test_time_embedder_interpolates_between_the_two_neighbouring_grid_rows():
-    model = _FakeH3()
-    apply_h3_adaln_curve(model, _curve_meta())
-    _fill_table(model)
-    table = model.time_embedder.table
+    model, table = _shared_setup_1()
     # Half-way between grid rows 0 and 1 (grid of 5 spans [0,1], so t=0.125 is row 0.5).
     got = model.time_embedder(torch.tensor([0.125]))
     expected = 0.5 * table[0] + 0.5 * table[1]
@@ -200,10 +206,7 @@ def test_time_embedder_interpolates_between_the_two_neighbouring_grid_rows():
 
 
 def test_time_embedder_pins_the_grid_endpoints():
-    model = _FakeH3()
-    apply_h3_adaln_curve(model, _curve_meta())
-    _fill_table(model)
-    table = model.time_embedder.table
+    model, table = _shared_setup_1()
     got = model.time_embedder(torch.tensor([0.0, 1.0]))
     assert torch.equal(got[0], table[0])
     # t=1.0 must land exactly on the LAST row, not read past the table.
@@ -211,10 +214,7 @@ def test_time_embedder_pins_the_grid_endpoints():
 
 
 def test_time_embedder_clamps_out_of_range_timesteps_to_the_curve_ends():
-    model = _FakeH3()
-    apply_h3_adaln_curve(model, _curve_meta())
-    _fill_table(model)
-    table = model.time_embedder.table
+    model, table = _shared_setup_1()
     got = model.time_embedder(torch.tensor([-3.0, 7.5]))
     assert torch.equal(got[0], table[0])
     assert torch.equal(got[1], table[-1])

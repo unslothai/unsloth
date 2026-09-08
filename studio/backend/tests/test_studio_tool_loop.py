@@ -25,6 +25,31 @@ from core.inference.studio_tool_loop import (
 )
 
 
+# Shared setup for test_full_access_disables_the_sandbox_at_execution, test_sandbox_stays_on_by_default, test_tool_stdout_streams_while_the_call_runs.
+def _shared_setup_1():
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "python", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    return transport
+
+
 def _sse(
     delta = None,
     finish = None,
@@ -575,52 +600,14 @@ def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
 
 
 def test_full_access_disables_the_sandbox_at_execution(executed):
-    transport = FakeTransport(
-        [
-            [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "python", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
-                _sse(finish = "tool_calls"),
-                _DONE,
-            ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
+    transport = _shared_setup_1()
     _run(transport, tools = [PY], bypass_permissions = True)
 
     assert executed[0]["disable_sandbox"] is True
 
 
 def test_sandbox_stays_on_by_default(executed):
-    transport = FakeTransport(
-        [
-            [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "python", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
-                _sse(finish = "tool_calls"),
-                _DONE,
-            ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
+    transport = _shared_setup_1()
     _run(transport, tools = [PY])
 
     assert executed[0]["disable_sandbox"] is False
@@ -863,26 +850,7 @@ def test_tool_stdout_streams_while_the_call_runs(executed, monkeypatch):
         return "final"
 
     monkeypatch.setattr(loop_mod, "execute_tool", _execute)
-    transport = FakeTransport(
-        [
-            [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "python", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
-                _sse(finish = "tool_calls"),
-                _DONE,
-            ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
+    transport = _shared_setup_1()
     lines = _run(transport, tools = [PY])
 
     progress = [line for line in lines if line.startswith("data: ") and "partial line" in line]

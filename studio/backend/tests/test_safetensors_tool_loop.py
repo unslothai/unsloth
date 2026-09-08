@@ -36,6 +36,78 @@ from state.tool_approvals import resolve_tool_decision
 from utils.datasets import is_gpt_oss_model_name
 
 
+# Shared setup for test_render_html_auto_mode_static_runs_without_prompt, test_render_html_bypass_permissions_keeps_early_provisional, test_render_html_confirmation_gate_suppresses_early_provisional and 1 more.
+def _shared_setup_1():
+    exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+    turn_iter = iter(
+        [
+            [
+                "<function=render_html>",
+                "<parameter=code><!doctype html><html>",
+                "<body>Hi</body></html></parameter></function>",
+            ],
+            ["Done."],
+        ]
+    )
+    return exec_fn, turn_iter
+
+
+# Shared setup for test_render_with_native_template_fallback_keeps_prompt_when_no_tools_probe_raises, test_render_with_native_template_fallback_keeps_prompt_when_tools_emitted, test_render_with_native_template_fallback_swaps_when_override_drops_tools.
+def _shared_setup_2():
+    from types import SimpleNamespace
+
+    from core.inference.chat_template_helpers import render_with_native_template_fallback
+
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    return SimpleNamespace, messages, render_with_native_template_fallback, tools
+
+
+# Shared setup for test_render_html_emits_provisional_tool_start, test_render_html_provisional_card_closed_on_generator_exception, test_render_html_success_blocks_second_canvas_call.
+def _shared_setup_3(_gen, exec_fn):
+    loop = run_safetensors_tool_loop(
+        single_turn = _gen,
+        messages = [{"role": "user", "content": "make html"}],
+        tools = [{"type": "function", "function": {"name": "render_html"}}],
+        execute_tool = exec_fn,
+    )
+    return loop
+
+
+# Shared setup for test_prefilled_no_close_reasoning_intent_still_reprompts, test_prefilled_reasoning_prefix_is_kept_for_reasoning_only_reprompt, test_reasoning_only_intent_still_reprompts_and_uses_a_tool.
+def _shared_setup_4(exec_fn, loop):
+    events = _collect_events(loop)
+
+    assert exec_fn.calls == [("web_search", {"query": "cats"})]
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert contents[-1] == "Here is the answer."
+
+
+# Shared setup for test_disabled_auto_heal_is_not_reprompted, test_explicit_nudge_off_is_not_reprompted, test_omitted_nudge_flag_follows_disabled_process_default.
+def _shared_setup_5(exec_fn, loop):
+    events = _collect_events(loop)
+    assert exec_fn.calls == []
+    texts = [e["text"] for e in events if e["type"] == "content"]
+    assert any("I'll search the web for that." in t for t in texts)
+    assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+
+# Shared setup for test_deepseek_call_parses_to_name_and_args, test_family_call_parses_to_name_and_args, test_robust_form_parses_to_name_and_args.
+def _shared_setup_6(args, name, text):
+    result = parse_tool_calls_from_text(text)
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == name
+    assert json.loads(result[0]["function"]["arguments"]) == args
+
+
+# Shared setup for test_duplicate_noop_does_not_consume_budget_at_small_cap, test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool, test_same_turn_duplicate_does_not_drop_later_parallel_call.
+def _shared_setup_7(exec_fn):
+    assert exec_fn.calls == [
+        ("web_search", {"query": "x"}),
+        ("python", {"code": "print(1)"}),
+    ]
+
+
 # ────────────────────────────────────────────────────────────────────
 # parse_tool_calls_from_text
 # ────────────────────────────────────────────────────────────────────
@@ -598,10 +670,7 @@ class TestParserMultiFormat:
         ],
     )
     def test_family_call_parses_to_name_and_args(self, text, name, args):
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == name
-        assert json.loads(result[0]["function"]["arguments"]) == args
+        _shared_setup_6(args, name, text)
 
     @pytest.mark.parametrize(
         "text, names",
@@ -924,10 +993,7 @@ class TestParserDeepSeek:
         ],
     )
     def test_deepseek_call_parses_to_name_and_args(self, text, name, args):
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == name
-        assert json.loads(result[0]["function"]["arguments"]) == args
+        _shared_setup_6(args, name, text)
 
     @pytest.mark.parametrize(
         "text, name",
@@ -1939,17 +2005,7 @@ class TestLoopBasic:
         assert tool_start["tool_call_id"] == "functions.web_search:0"
 
     def test_render_html_emits_provisional_tool_start(self):
-        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
-        turn_iter = iter(
-            [
-                [
-                    "<function=render_html>",
-                    "<parameter=code><!doctype html><html>",
-                    "<body>Hi</body></html></parameter></function>",
-                ],
-                ["Done."],
-            ]
-        )
+        exec_fn, turn_iter = _shared_setup_1()
 
         def _gen(_messages):
             chunks = next(turn_iter)
@@ -1958,12 +2014,7 @@ class TestLoopBasic:
                 acc += chunk
                 yield acc
 
-        loop = run_safetensors_tool_loop(
-            single_turn = _gen,
-            messages = [{"role": "user", "content": "make html"}],
-            tools = [{"type": "function", "function": {"name": "render_html"}}],
-            execute_tool = exec_fn,
-        )
+        loop = _shared_setup_3(_gen, exec_fn)
         events = _collect_events(loop)
         tool_starts = [e for e in events if e["type"] == "tool_start"]
 
@@ -1984,17 +2035,7 @@ class TestLoopBasic:
         monkeypatch.setattr(safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object())
         monkeypatch.setattr(safetensors_agentic, "wait_tool_decision", lambda *_a, **_k: "allow")
 
-        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
-        turn_iter = iter(
-            [
-                [
-                    "<function=render_html>",
-                    "<parameter=code><!doctype html><html>",
-                    "<body>Hi</body></html></parameter></function>",
-                ],
-                ["Done."],
-            ]
-        )
+        exec_fn, turn_iter = _shared_setup_1()
 
         def _gen(_messages):
             chunks = next(turn_iter)
@@ -2030,17 +2071,7 @@ class TestLoopBasic:
     def test_render_html_bypass_permissions_keeps_early_provisional(self, monkeypatch):
         """bypass_permissions wins over the confirm gate, so the early provisional
         card is preserved (no human approval is required)."""
-        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
-        turn_iter = iter(
-            [
-                [
-                    "<function=render_html>",
-                    "<parameter=code><!doctype html><html>",
-                    "<body>Hi</body></html></parameter></function>",
-                ],
-                ["Done."],
-            ]
-        )
+        exec_fn, turn_iter = _shared_setup_1()
 
         def _gen(_messages):
             chunks = next(turn_iter)
@@ -2071,17 +2102,7 @@ class TestLoopBasic:
         longer unconditionally safe (a networked canvas must ask), so its early
         provisional card is suppressed under the confirm gate; a static canvas is
         still classified safe and runs without an approval prompt."""
-        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
-        turn_iter = iter(
-            [
-                [
-                    "<function=render_html>",
-                    "<parameter=code><!doctype html><html>",
-                    "<body>Hi</body></html></parameter></function>",
-                ],
-                ["Done."],
-            ]
-        )
+        exec_fn, turn_iter = _shared_setup_1()
 
         def _gen(_messages):
             chunks = next(turn_iter)
@@ -2123,12 +2144,7 @@ class TestLoopBasic:
                 yield acc
             raise RuntimeError("model pipeline exploded")
 
-        loop = run_safetensors_tool_loop(
-            single_turn = _gen,
-            messages = [{"role": "user", "content": "make html"}],
-            tools = [{"type": "function", "function": {"name": "render_html"}}],
-            execute_tool = exec_fn,
-        )
+        loop = _shared_setup_3(_gen, exec_fn)
 
         collected: list[dict] = []
         raised = False
@@ -2232,12 +2248,7 @@ class TestLoopBasic:
                 acc += chunk
                 yield acc
 
-        loop = run_safetensors_tool_loop(
-            single_turn = _gen,
-            messages = [{"role": "user", "content": "make html"}],
-            tools = [{"type": "function", "function": {"name": "render_html"}}],
-            execute_tool = exec_fn,
-        )
+        loop = _shared_setup_3(_gen, exec_fn)
         events = _collect_events(loop)
         tool_starts = [e for e in events if e["type"] == "tool_start"]
 
@@ -2356,10 +2367,7 @@ class TestLoopBehaviour:
         )
 
         # Turn-1 search and turn-2 python both ran; the turn-2 duplicate search did not.
-        assert exec_fn.calls == [
-            ("web_search", {"query": "x"}),
-            ("python", {"code": "print(1)"}),
-        ]
+        _shared_setup_7(exec_fn)
 
         conv = captured_messages[-1]
         turn2 = [m for m in conv if m.get("role") == "assistant" and m.get("tool_calls")][-1]
@@ -2413,10 +2421,7 @@ class TestLoopBehaviour:
             )
         )
 
-        assert exec_fn.calls == [
-            ("web_search", {"query": "x"}),
-            ("python", {"code": "print(1)"}),
-        ]
+        _shared_setup_7(exec_fn)
         assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == [
             "call_0",
             "call_2",
@@ -2481,10 +2486,7 @@ class TestLoopBehaviour:
         )
 
         # Both distinct tools execute; the repeated call in between did not cost a slot.
-        assert exec_fn.calls == [
-            ("web_search", {"query": "x"}),
-            ("python", {"code": "print(1)"}),
-        ]
+        _shared_setup_7(exec_fn)
         # The turn after the duplicate still offered tools (budget not yet spent).
         assert captured_tool_names[2] == ["web_search", "python"]
 
@@ -2743,11 +2745,7 @@ class TestLoopRePrompt:
             nudge_tool_calls = True,
         )
 
-        events = _collect_events(loop)
-
-        assert exec_fn.calls == [("web_search", {"query": "cats"})]
-        contents = [e["text"] for e in events if e["type"] == "content"]
-        assert contents[-1] == "Here is the answer."
+        _shared_setup_4(exec_fn, loop)
 
     def test_prefilled_no_close_reasoning_intent_still_reprompts(self):
         loop, exec_fn = _make_loop(
@@ -2761,11 +2759,7 @@ class TestLoopRePrompt:
             reasoning_prefilled = True,
         )
 
-        events = _collect_events(loop)
-
-        assert exec_fn.calls == [("web_search", {"query": "cats"})]
-        contents = [e["text"] for e in events if e["type"] == "content"]
-        assert contents[-1] == "Here is the answer."
+        _shared_setup_4(exec_fn, loop)
 
     def test_prefilled_reasoning_prefix_is_kept_for_reasoning_only_reprompt(self):
         loop, exec_fn = _make_loop(
@@ -2779,11 +2773,7 @@ class TestLoopRePrompt:
             reasoning_prefilled = True,
         )
 
-        events = _collect_events(loop)
-
-        assert exec_fn.calls == [("web_search", {"query": "cats"})]
-        contents = [e["text"] for e in events if e["type"] == "content"]
-        assert contents[-1] == "Here is the answer."
+        _shared_setup_4(exec_fn, loop)
 
     def test_reprompt_history_uses_visible_intent_text(self):
         captured: list[list[dict]] = []
@@ -3777,11 +3767,7 @@ class TestPlanWithoutActionReprompt:
             auto_heal_tool_calls = False,
             nudge_tool_calls = True,
         )
-        events = _collect_events(loop)
-        assert exec_fn.calls == []
-        texts = [e["text"] for e in events if e["type"] == "content"]
-        assert any("I'll search the web for that." in t for t in texts)
-        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+        _shared_setup_5(exec_fn, loop)
 
     def test_explicit_nudge_off_is_not_reprompted(self, monkeypatch):
         from core.inference import passthrough_healing
@@ -3794,11 +3780,7 @@ class TestPlanWithoutActionReprompt:
             ],
             nudge_tool_calls = False,
         )
-        events = _collect_events(loop)
-        assert exec_fn.calls == []
-        texts = [e["text"] for e in events if e["type"] == "content"]
-        assert any("I'll search the web for that." in t for t in texts)
-        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+        _shared_setup_5(exec_fn, loop)
 
     def test_omitted_nudge_flag_follows_disabled_process_default(self, monkeypatch):
         from core.inference import passthrough_healing
@@ -3810,11 +3792,7 @@ class TestPlanWithoutActionReprompt:
                 ["SHOULD NOT APPEAR"],
             ],
         )
-        events = _collect_events(loop)
-        assert exec_fn.calls == []
-        texts = [e["text"] for e in events if e["type"] == "content"]
-        assert any("I'll search the web for that." in t for t in texts)
-        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+        _shared_setup_5(exec_fn, loop)
 
     def test_omitted_nudge_flag_follows_enabled_process_default(self, monkeypatch):
         from core.inference import passthrough_healing
@@ -3985,10 +3963,7 @@ class TestParserRobustness:
         ],
     )
     def test_robust_form_parses_to_name_and_args(self, text, name, args):
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == name
-        assert json.loads(result[0]["function"]["arguments"]) == args
+        _shared_setup_6(args, name, text)
 
     def test_function_attribute_form_has_tool_signal(self):
         # The standalone ``<function name="...">`` attribute form must flip
@@ -4154,12 +4129,7 @@ def test_native_template_loads_from_base_model_for_lora(monkeypatch):
 def test_render_with_native_template_fallback_swaps_when_override_drops_tools():
     # The shared gate (used by the transformers and MLX backends): when the live render is
     # identical with and without tools, re-render with the native template and return it.
-    from types import SimpleNamespace
-
-    from core.inference.chat_template_helpers import render_with_native_template_fallback
-
-    messages = [{"role": "user", "content": "hi"}]
-    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    SimpleNamespace, messages, render_with_native_template_fallback, tools = _shared_setup_2()
 
     # apply_fn that IGNORES tools -> live render drops the schema.
     def ignoring(tokenizer, msgs, *, tools, **_kw):
@@ -4194,12 +4164,7 @@ def test_render_with_native_template_fallback_swaps_when_override_drops_tools():
 def test_render_with_native_template_fallback_keeps_prompt_when_tools_emitted():
     # Live render already differs with vs without tools -> no fallback, returned
     # unchanged. Also a no-tools call is a passthrough.
-    from types import SimpleNamespace
-
-    from core.inference.chat_template_helpers import render_with_native_template_fallback
-
-    messages = [{"role": "user", "content": "hi"}]
-    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    SimpleNamespace, messages, render_with_native_template_fallback, tools = _shared_setup_2()
 
     def emitting(tokenizer, msgs, *, tools, **_kw):
         body = "".join(m["content"] for m in msgs)
@@ -4231,12 +4196,7 @@ def test_render_with_native_template_fallback_keeps_prompt_when_tools_emitted():
 
 def test_render_with_native_template_fallback_keeps_prompt_when_no_tools_probe_raises():
     # A template that REQUIRES tools can raise on the no-tools probe.
-    from types import SimpleNamespace
-
-    from core.inference.chat_template_helpers import render_with_native_template_fallback
-
-    messages = [{"role": "user", "content": "hi"}]
-    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    SimpleNamespace, messages, render_with_native_template_fallback, tools = _shared_setup_2()
 
     def raises_without_tools(tokenizer, msgs, *, tools, **_kw):
         if not tools:

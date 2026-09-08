@@ -29,6 +29,26 @@ from pathlib import Path
 
 import pytest
 
+
+# Shared setup for test_crash_watchdog_ignores_intentional_termination, test_crash_watchdog_triggers_recovery_on_death, test_kill_process_stops_crash_watchdog.
+def _shared_setup_1(monkeypatch):
+    b = _recovery_backend()
+    proc = _ToggleProcess()
+    b._process = proc
+    fired = threading.Event()
+    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
+    b._start_mtp_crash_watchdog()
+    return b, fired, proc
+
+
+# Shared setup for test_respawn_defers_to_an_inflight_mtp_reload, test_respawn_does_not_resurrect_a_deliberate_unload, test_respawn_rechecks_the_cancel_flag_after_the_grace_wait.
+def _shared_setup_2(b, monkeypatch):
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+
+    assert b._respawn_if_dead() is False
+    return loads
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -715,10 +735,7 @@ def test_respawn_defers_to_an_inflight_mtp_reload(monkeypatch):
     # crashing MTP intent and aborts the in-flight no-MTP reload on its "newer load" check.
     b = _recovery_backend()
     b._mtp_runtime_fallback_in_progress = True
-    loads: list[GgufLoadIntent] = []
-    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
-
-    assert b._respawn_if_dead() is False
+    loads = _shared_setup_2(b, monkeypatch)
     assert loads == []
 
     # Once that reload finishes, an ordinary respawn works again.
@@ -842,10 +859,7 @@ def test_respawn_does_not_resurrect_a_deliberate_unload(monkeypatch):
     b._healthy = True
     b._process = _DyingChild()
     b._cancel_event.set()
-    loads: list[GgufLoadIntent] = []
-    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
-
-    assert b._respawn_if_dead() is False
+    loads = _shared_setup_2(b, monkeypatch)
     assert loads == [], "resurrected a model the user unloaded"
 
 
@@ -854,10 +868,7 @@ def test_respawn_rechecks_the_cancel_flag_after_the_grace_wait(monkeypatch):
     b = _recovery_backend()
     b._healthy = True
     b._process = _DyingChild(on_death = b._cancel_event.set)
-    loads: list[GgufLoadIntent] = []
-    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
-
-    assert b._respawn_if_dead() is False
+    loads = _shared_setup_2(b, monkeypatch)
     assert loads == [], "checked the cancel flag only before the wait"
 
 
@@ -1076,12 +1087,7 @@ class _ToggleProcess:
 def test_crash_watchdog_triggers_recovery_on_death(monkeypatch):
     # The watchdog must notice the process exit and recover even when no request
     # handler observed it (e.g. the direct proxy endpoints).
-    b = _recovery_backend()
-    proc = _ToggleProcess()
-    b._process = proc
-    fired = threading.Event()
-    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
-    b._start_mtp_crash_watchdog()
+    b, fired, proc = _shared_setup_1(monkeypatch)
     assert b._mtp_watchdog_thread is not None
     proc.die()
     assert fired.wait(timeout = 3)
@@ -1090,12 +1096,7 @@ def test_crash_watchdog_triggers_recovery_on_death(monkeypatch):
 def test_crash_watchdog_ignores_intentional_termination(monkeypatch):
     # A planned reload/unload stops the watchdog before killing the process, so
     # the resulting death must not be mistaken for a crash.
-    b = _recovery_backend()
-    proc = _ToggleProcess()
-    b._process = proc
-    fired = threading.Event()
-    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
-    b._start_mtp_crash_watchdog()
+    b, fired, proc = _shared_setup_1(monkeypatch)
     b._stop_mtp_crash_watchdog()  # what _kill_process does first
     proc.die()
     assert not fired.wait(timeout = 2)
@@ -1121,12 +1122,7 @@ def test_crash_watchdog_not_armed_when_inapplicable(mutate):
 def test_kill_process_stops_crash_watchdog(monkeypatch):
     # _kill_process is the single deliberate-termination chokepoint; it must
     # stop the watchdog so the planned kill isn't seen as a crash.
-    b = _recovery_backend()
-    proc = _ToggleProcess()
-    b._process = proc
-    fired = threading.Event()
-    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
-    b._start_mtp_crash_watchdog()
+    b, fired, proc = _shared_setup_1(monkeypatch)
     b._kill_process()
     assert b._mtp_watchdog_thread is None
     assert b._process is None

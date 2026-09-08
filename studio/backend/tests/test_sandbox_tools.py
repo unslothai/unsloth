@@ -9,6 +9,15 @@ from pathlib import Path
 
 import pytest
 
+
+# Shared setup for test_canonical_git_dir_appended, test_git_cmd_shim_extension_added_to_pathext, test_host_git_dir_appended_after_curated and 7 more.
+def _shared_setup_1(monkeypatch):
+    import core.inference.tools as tools_mod
+    from core.inference.tools import _build_safe_env
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    return _build_safe_env, tools_mod
+
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
@@ -502,10 +511,7 @@ class TestSandboxEnvIsolation:
         # #7317: Windows Git lives under Program Files, not System32. Sandbox
         # PATH resolves bare `git` by appending the dir of the git the HOST
         # shell resolves (shutil.which), after the curated prefix.
-        import core.inference.tools as tools_mod
-        from core.inference.tools import _build_safe_env
-
-        monkeypatch.setattr(sys, "platform", "win32")
+        _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         prog = tmp_path / "Program Files"
         monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(prog)])
         git_dir = prog / "Git" / "cmd"
@@ -520,10 +526,7 @@ class TestSandboxEnvIsolation:
     def test_host_path_dirs_not_inherited(self, monkeypatch, tmp_path):
         """Host PATH dirs (user-writable, git-lookalike) are never inherited;
         only the resolved git dir is. No git resolved -> nothing appended."""
-        import core.inference.tools as tools_mod
-        from core.inference.tools import _build_safe_env
-
-        monkeypatch.setattr(sys, "platform", "win32")
+        _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         venv_scripts = tmp_path / "venv" / "Scripts"
         venv_scripts.mkdir(parents = True)
         fake_git = tmp_path / "scratch" / "Git" / "cmd"
@@ -542,10 +545,7 @@ class TestSandboxEnvIsolation:
     def test_git_cmd_shim_extension_added_to_pathext(self, monkeypatch, tmp_path):
         """A host git resolved as a .cmd shim under a trusted root stays
         resolvable under the restricted PATHEXT (cwd lookup disabled)."""
-        import core.inference.tools as tools_mod
-        from core.inference.tools import _build_safe_env
-
-        monkeypatch.setattr(sys, "platform", "win32")
+        _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         prog = tmp_path / "Program Files"
         monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(prog)])
         git_dir = prog / "Git" / "cmd"
@@ -558,10 +558,7 @@ class TestSandboxEnvIsolation:
     def test_user_writable_git_dir_refused(self, monkeypatch, tmp_path):
         """Git resolved from a per-user manager (Scoop shims) is NOT trusted:
         an attacker could drop rg.exe beside it and hit the auto-approve gate."""
-        import core.inference.tools as tools_mod
-        from core.inference.tools import _build_safe_env
-
-        monkeypatch.setattr(sys, "platform", "win32")
+        _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         monkeypatch.setattr(
             tools_mod, "_windows_program_roots", lambda: [str(tmp_path / "Program Files")]
         )
@@ -576,10 +573,7 @@ class TestSandboxEnvIsolation:
     def test_trust_uses_known_folder_not_env_override(self, monkeypatch, tmp_path):
         """Trust is driven by the resolved Program Files roots, so a git under
         an attacker-overridden %ProgramFiles% env value is still refused."""
-        import core.inference.tools as tools_mod
-        from core.inference.tools import _build_safe_env
-
-        monkeypatch.setattr(sys, "platform", "win32")
+        _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         real_prog = tmp_path / "RealProgramFiles"
         (real_prog).mkdir()
         evil = tmp_path / "attacker"
@@ -596,10 +590,7 @@ class TestSandboxEnvIsolation:
     def test_canonical_git_dir_appended(self, monkeypatch, tmp_path):
         """The PATH entry is the realpath of the trusted dir, not a junction
         alias, so it cannot be retargeted after the trust check."""
-        import core.inference.tools as tools_mod
-        from core.inference.tools import _build_safe_env
-
-        monkeypatch.setattr(sys, "platform", "win32")
+        _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         real_prog = tmp_path / "Program Files"
         real_git = real_prog / "Git" / "cmd"
         real_git.mkdir(parents = True)
@@ -621,10 +612,7 @@ class TestSandboxEnvIsolation:
     def test_windows_temp_git_dir_refused(self, monkeypatch, tmp_path):
         """A git under a world-writable %SystemRoot% subdir (Windows\\Temp) is
         NOT trusted, even though it sits under the Windows root."""
-        import core.inference.tools as tools_mod
-        from core.inference.tools import _build_safe_env
-
-        monkeypatch.setattr(sys, "platform", "win32")
+        _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         monkeypatch.setattr(
             tools_mod, "_windows_program_roots", lambda: [str(tmp_path / "Program Files")]
         )
@@ -637,10 +625,7 @@ class TestSandboxEnvIsolation:
     def test_trusted_program_dir_matches_via_realpath(self, monkeypatch, tmp_path):
         """The trust check canonicalizes paths, so a symlinked/short alias of
         Program Files still matches (stand-in for 8.3 PROGRA~1 on Windows)."""
-        import core.inference.tools as tools_mod
-        from core.inference.tools import _build_safe_env
-
-        monkeypatch.setattr(sys, "platform", "win32")
+        _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         real_prog = tmp_path / "Program Files"
         (real_prog / "Git" / "cmd").mkdir(parents = True)
         alias = tmp_path / "PROGRA~1"
@@ -658,10 +643,7 @@ class TestSandboxEnvIsolation:
     def test_scan_past_untrusted_git_shim(self, monkeypatch, tmp_path):
         """When an untrusted shim sorts first on PATH, the scan still finds a
         later trusted Program Files git."""
-        import core.inference.tools as tools_mod
-        from core.inference.tools import _build_safe_env
-
-        monkeypatch.setattr(sys, "platform", "win32")
+        _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         prog = tmp_path / "Program Files"
         trusted_git = prog / "Git" / "cmd"
         trusted_git.mkdir(parents = True)
@@ -713,10 +695,7 @@ class TestSandboxEnvIsolation:
 
     def test_no_default_current_directory_in_exe_path_set_on_windows(self, monkeypatch, tmp_path):
         """cmd/CreateProcess must not search cwd for bare names in the sandbox."""
-        import core.inference.tools as tools_mod
-        from core.inference.tools import _build_safe_env
-
-        monkeypatch.setattr(sys, "platform", "win32")
+        _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         monkeypatch.setattr(tools_mod.shutil, "which", lambda name: None)
         env = _build_safe_env(str(tmp_path))
         assert env["NoDefaultCurrentDirectoryInExePath"] == "1"

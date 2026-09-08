@@ -18,6 +18,15 @@ from storage import research_runs_db as research_db
 from storage import studio_db
 
 
+# Shared setup for test_plan_titles_stream_before_the_plan_is_complete, test_planning_emits_a_phase_bracket, test_titles_split_across_tokens_still_publish.
+def _shared_setup_1(worker):
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    run = research_db.claim_next(supervisor.worker_id)
+
+    asyncio.run(supervisor._plan(run))
+    return run
+
+
 @pytest.fixture
 def research_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -106,10 +115,7 @@ def test_planning_emits_a_phase_bracket(research_home, monkeypatch):
     _create()
     plan = {"title": "Plan", "steps": [{"title": "One", "query": "first query"}]}
     _stub_transport(monkeypatch, worker, json.dumps(plan))
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
-    run = research_db.claim_next(supervisor.worker_id)
-
-    asyncio.run(supervisor._plan(run))
+    run = _shared_setup_1(worker)
 
     types = [event["type"] for event in _events("run-1")]
     assert "phase.started" in types
@@ -172,10 +178,7 @@ def test_plan_titles_stream_before_the_plan_is_complete(research_home, monkeypat
         ],
     }
     _stub_transport(monkeypatch, worker, json.dumps(plan))
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
-    run = research_db.claim_next(supervisor.worker_id)
-
-    asyncio.run(supervisor._plan(run))
+    run = _shared_setup_1(worker)
 
     labels = [
         event["data"]["label"] for event in _events("run-1") if event["type"] == "phase.progress"
@@ -229,10 +232,7 @@ def test_titles_split_across_tokens_still_publish(research_home, monkeypatch):
         worker.auth_storage, "create_api_key", lambda **kwargs: ("token", {"id": 1})
     )
     monkeypatch.setattr(worker.auth_storage, "revoke_internal_api_key", lambda key_id: None)
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
-    run = research_db.claim_next(supervisor.worker_id)
-
-    asyncio.run(supervisor._plan(run))
+    run = _shared_setup_1(worker)
 
     labels = [
         event["data"]["label"] for event in _events("run-1") if event["type"] == "phase.progress"

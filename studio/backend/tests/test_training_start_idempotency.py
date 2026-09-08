@@ -17,6 +17,21 @@ from core.training.training import (
 from models.training import TrainingStartRequest
 
 
+# Shared setup for test_cancel_accepted_start_releases_tombstone_capacity_after_failure, test_cancel_accepted_start_stops_and_resets_only_its_job, test_concurrent_duplicate_cancel_returns_the_cancelled_tombstone and 1 more.
+def _shared_setup_1():
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-current", "job-current")
+    backend.resolve_start_request(
+        "request-current",
+        state = "accepted",
+        message = "Training queued",
+    )
+    backend.current_start_request_id = "request-current"
+    backend.current_job_id = "job-current"
+    backend._progress.is_training = True
+    return backend
+
+
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -395,16 +410,7 @@ def test_cancel_racing_proc_start_uses_the_committed_job_scope():
 def test_cancel_accepted_start_stops_and_resets_only_its_job(monkeypatch):
     from core.training.lifecycle import training_lifecycle_guard
 
-    backend = TrainingBackend()
-    backend.reserve_start_request("request-current", "job-current")
-    backend.resolve_start_request(
-        "request-current",
-        state = "accepted",
-        message = "Training queued",
-    )
-    backend.current_start_request_id = "request-current"
-    backend.current_job_id = "job-current"
-    backend._progress.is_training = True
+    backend = _shared_setup_1()
     calls = []
 
     monkeypatch.setattr(
@@ -448,16 +454,7 @@ def test_cancel_accepted_start_releases_tombstone_capacity_after_failure(
     import core.training.training as training_module
 
     monkeypatch.setattr(training_module, "_MAX_START_CANCEL_TOMBSTONES", 1)
-    backend = TrainingBackend()
-    backend.reserve_start_request("request-current", "job-current")
-    backend.resolve_start_request(
-        "request-current",
-        state = "accepted",
-        message = "Training queued",
-    )
-    backend.current_start_request_id = "request-current"
-    backend.current_job_id = "job-current"
-    backend._progress.is_training = True
+    backend = _shared_setup_1()
 
     def stop_training(**_kwargs):
         if failure_stage == "stop":
@@ -480,16 +477,7 @@ def test_cancel_accepted_start_releases_tombstone_capacity_after_failure(
 
 
 def test_concurrent_duplicate_cancel_returns_the_cancelled_tombstone(monkeypatch):
-    backend = TrainingBackend()
-    backend.reserve_start_request("request-current", "job-current")
-    backend.resolve_start_request(
-        "request-current",
-        state = "accepted",
-        message = "Training queued",
-    )
-    backend.current_start_request_id = "request-current"
-    backend.current_job_id = "job-current"
-    backend._progress.is_training = True
+    backend = _shared_setup_1()
     stop_entered = threading.Event()
     release_stop = threading.Event()
     results = []
@@ -528,16 +516,7 @@ def test_duplicate_cancel_holds_capacity_when_the_first_cancel_fails(monkeypatch
     import core.training.training as training_module
 
     monkeypatch.setattr(training_module, "_MAX_START_CANCEL_TOMBSTONES", 1)
-    backend = TrainingBackend()
-    backend.reserve_start_request("request-current", "job-current")
-    backend.resolve_start_request(
-        "request-current",
-        state = "accepted",
-        message = "Training queued",
-    )
-    backend.current_start_request_id = "request-current"
-    backend.current_job_id = "job-current"
-    backend._progress.is_training = True
+    backend = _shared_setup_1()
     reset_lock = threading.Lock()
     reset_calls = 0
     first_reset_entered = threading.Event()

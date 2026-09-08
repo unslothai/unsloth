@@ -17,6 +17,57 @@ from unittest import mock
 
 import pytest
 
+
+# Shared setup for test_ci_repair_restores_only_the_candidate_unsloth_checkout, test_local_repair_reinstalls_a_custom_package_from_its_normal_source, test_local_repair_restores_only_the_source_it_replaced.
+def _shared_setup_1(installs, monkeypatch):
+    monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+    monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+    monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+    monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
+    monkeypatch.setattr(
+        ips,
+        "pip_install_try",
+        lambda label, *args, **kwargs: installs.append((label, args, kwargs)) or True,
+    )
+
+
+# Shared setup for test_a_failed_overlay_falls_back_to_the_staged_source, test_a_git_overlay_is_staged_before_the_uninstall_loop, test_an_editable_overlay_stages_the_checkout.
+def _shared_setup_2(monkeypatch, probes):
+    monkeypatch.setattr(
+        ips.install_manifest, "installed_versions", lambda name: next(probes[name])
+    )
+    monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
+    monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+    monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+
+
+# Shared setup for test_a_quarantined_backup_is_restored_when_staging_fails, test_a_sole_tilde_backup_is_repaired_by_a_fresh_install, test_pips_tilde_backup_is_moved_aside_so_the_loop_can_converge.
+def _shared_setup_3(tmp_path):
+    backup = tmp_path / "~nsloth-2026.8.12.dist-info"
+    backup.mkdir()
+    (backup / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.12\n", encoding = "utf-8"
+    )
+    return backup
+
+
+# Shared setup for test_ci_repair_restores_only_the_candidate_unsloth_checkout, test_every_duplicate_record_is_uninstalled_before_reinstall, test_local_repair_restores_only_the_source_it_replaced.
+def _shared_setup_4(monkeypatch, probes):
+    monkeypatch.setattr(
+        ips.install_manifest,
+        "installed_versions",
+        lambda name: next(probes[name]),
+    )
+
+
+# Shared setup for test_a_committed_rewrite_is_not_undone, test_an_unbackable_metadata_stops_the_repair, test_the_original_metadata_comes_back_when_the_repair_fails.
+def _shared_setup_5(tmp_path):
+    record = tmp_path / "unsloth-2026.8.12.dist-info"
+    record.mkdir()
+    (record / "METADATA").write_bytes(b"\xff\xfe")
+    (record / "RECORD").write_text("unsloth/gone.py,,\n")
+    return record
+
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
 sys.path.insert(0, str(STUDIO_DIR))
 
@@ -1020,11 +1071,7 @@ class TestDuplicateCoreMetadataRepair:
         distribution" and skips it, so the loop never converges and the repair
         fails on every future run. Verified in a real venv before this fix.
         """
-        backup = tmp_path / "~nsloth-2026.8.12.dist-info"
-        backup.mkdir()
-        (backup / "METADATA").write_text(
-            "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.12\n", encoding = "utf-8"
-        )
+        backup = _shared_setup_3(tmp_path)
         # Two records; one once the backup is aside; none after the uninstall; then the reinstalled one for the final
         # convergence probe.
         probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
@@ -1054,11 +1101,7 @@ class TestDuplicateCoreMetadataRepair:
         is no payload left to lay a replacement over, so installing fresh is right
         and refusing would abort the installer on a trivially fixable state.
         """
-        backup = tmp_path / "~nsloth-2026.8.12.dist-info"
-        backup.mkdir()
-        (backup / "METADATA").write_text(
-            "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.12\n", encoding = "utf-8"
-        )
+        backup = _shared_setup_3(tmp_path)
         probes = iter((["2026.8.12"], [], ["2026.8.15"]))
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
         monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
@@ -1096,11 +1139,7 @@ class TestDuplicateCoreMetadataRepair:
         invalidations = []
         commands = []
 
-        monkeypatch.setattr(
-            ips.install_manifest,
-            "installed_versions",
-            lambda name: next(probes[name]),
-        )
+        _shared_setup_4(monkeypatch, probes)
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: invalidations.append(True))
         monkeypatch.setattr(
@@ -1178,20 +1217,8 @@ class TestDuplicateCoreMetadataRepair:
         }
         installs = []
 
-        monkeypatch.setattr(
-            ips.install_manifest,
-            "installed_versions",
-            lambda name: next(probes[name]),
-        )
-        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
-        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
-        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
-        monkeypatch.setattr(
-            ips,
-            "pip_install_try",
-            lambda label, *args, **kwargs: installs.append((label, args, kwargs)) or True,
-        )
+        _shared_setup_4(monkeypatch, probes)
+        _shared_setup_1(installs, monkeypatch)
 
         assert ips._repair_duplicate_core_metadata(
             ("unsloth", "unsloth-zoo"), local_repo = "/src/unsloth"
@@ -1213,15 +1240,7 @@ class TestDuplicateCoreMetadataRepair:
             "installed_versions",
             lambda _name: next(probes),
         )
-        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
-        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
-        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
-        monkeypatch.setattr(
-            ips,
-            "pip_install_try",
-            lambda label, *args, **kwargs: installs.append((label, args, kwargs)) or True,
-        )
+        _shared_setup_1(installs, monkeypatch)
 
         assert ips._repair_duplicate_core_metadata(("custom-package",), local_repo = "/src/unsloth")
         assert len(installs) == 1
@@ -1242,20 +1261,8 @@ class TestDuplicateCoreMetadataRepair:
         }
         installs = []
 
-        monkeypatch.setattr(
-            ips.install_manifest,
-            "installed_versions",
-            lambda name: next(probes[name]),
-        )
-        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
-        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
-        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
-        monkeypatch.setattr(
-            ips,
-            "pip_install_try",
-            lambda label, *args, **kwargs: installs.append((label, args, kwargs)) or True,
-        )
+        _shared_setup_4(monkeypatch, probes)
+        _shared_setup_1(installs, monkeypatch)
 
         assert ips._repair_duplicate_core_metadata(
             ("unsloth", "unsloth-zoo"), ci_source_overlay = "/src/candidate"
@@ -1935,10 +1942,7 @@ class TestDuplicateCoreMetadataRepair:
         Without a backup the original is gone and what remains parses, so the next
         run would see one readable record, decide nothing is wrong, and never attempt
         the payload repair that is still owed."""
-        record = tmp_path / "unsloth-2026.8.12.dist-info"
-        record.mkdir()
-        (record / "METADATA").write_bytes(b"\xff\xfe")
-        (record / "RECORD").write_text("unsloth/gone.py,,\n")
+        record = _shared_setup_5(tmp_path)
         quarantine = ips._QuarantinedMetadata()
 
         assert quarantine.back_up(str(record / "METADATA")) is True
@@ -1950,10 +1954,7 @@ class TestDuplicateCoreMetadataRepair:
         assert (record / "METADATA").read_bytes() == b"\xff\xfe"
 
     def test_a_committed_rewrite_is_not_undone(self, tmp_path):
-        record = tmp_path / "unsloth-2026.8.12.dist-info"
-        record.mkdir()
-        (record / "METADATA").write_bytes(b"\xff\xfe")
-        (record / "RECORD").write_text("unsloth/gone.py,,\n")
+        record = _shared_setup_5(tmp_path)
         quarantine = ips._QuarantinedMetadata()
         quarantine.back_up(str(record / "METADATA"))
         ips._rewrite_minimal_metadata(str(record), "unsloth")
@@ -1972,10 +1973,7 @@ class TestDuplicateCoreMetadataRepair:
         the repair returned True, the module only the stale release shipped stayed
         importable, and its dist-info was deleted, so nothing could report it again.
         """
-        record = tmp_path / "unsloth-2026.8.12.dist-info"
-        record.mkdir()
-        (record / "METADATA").write_bytes(b"\xff\xfe")
-        (record / "RECORD").write_text("unsloth/gone.py,,\n")
+        record = _shared_setup_5(tmp_path)
 
         monkeypatch.setattr(
             ips.install_manifest, "installed_versions", lambda _n: ["", "2026.8.15"]
@@ -2195,11 +2193,7 @@ class TestDuplicateCoreMetadataRepair:
         replacement would leave the venv worse than it was found, so a failed
         staging has to put it back.
         """
-        backup = tmp_path / "~nsloth-2026.8.12.dist-info"
-        backup.mkdir()
-        (backup / "METADATA").write_text(
-            "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.12\n", encoding = "utf-8"
-        )
+        backup = _shared_setup_3(tmp_path)
         probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"]))
 
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _n: next(probes))
@@ -2230,12 +2224,7 @@ class TestDuplicateCoreMetadataRepair:
         probes = {"unsloth-zoo": iter((["old", "new"], ["new"], [], ["new"]))}
         order = []
 
-        monkeypatch.setattr(
-            ips.install_manifest, "installed_versions", lambda name: next(probes[name])
-        )
-        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
-        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        _shared_setup_2(monkeypatch, probes)
         monkeypatch.setattr(
             ips, "_stage_replacement", lambda spec: order.append(("stage", spec)) or "/staged"
         )
@@ -2252,12 +2241,7 @@ class TestDuplicateCoreMetadataRepair:
         probes = {"unsloth": iter((["old", "new"], ["new"], [], ["new"]))}
         staged_for = []
 
-        monkeypatch.setattr(
-            ips.install_manifest, "installed_versions", lambda name: next(probes[name])
-        )
-        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
-        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        _shared_setup_2(monkeypatch, probes)
         monkeypatch.setattr(
             ips, "_stage_replacement", lambda spec: staged_for.append(spec) or "/staged"
         )
@@ -2271,12 +2255,7 @@ class TestDuplicateCoreMetadataRepair:
         probes = {"unsloth-zoo": iter((["old", "new"], ["new"], [], ["new"]))}
         installs = []
 
-        monkeypatch.setattr(
-            ips.install_manifest, "installed_versions", lambda name: next(probes[name])
-        )
-        monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
-        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        _shared_setup_2(monkeypatch, probes)
         monkeypatch.setattr(ips, "_stage_replacement", lambda _spec: "/staged")
         monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
         monkeypatch.setattr(ips, "_overlay_local_core_package", lambda *a, **k: False)

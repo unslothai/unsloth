@@ -14,6 +14,15 @@ from unittest import mock
 
 import pytest
 
+
+# Shared setup for test_all_routes_registered, test_hardware_endpoint_no_torch, test_server_starts_without_torch.
+def _shared_setup_1(server_process):
+    import json
+    import urllib.request
+
+    _, port = server_process
+    return json, port, urllib
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STUDIO_DIR = REPO_ROOT / "studio"
 BACKEND_DIR = STUDIO_DIR / "backend"
@@ -1028,10 +1037,7 @@ class TestLiveServerStartup:
 
     def test_server_starts_without_torch(self, server_process):
         """Server responds to /api/health with chat_only: true."""
-        import json
-        import urllib.request
-
-        _, port = server_process
+        json, port, urllib = _shared_setup_1(server_process)
         resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout = 5)
         data = json.loads(resp.read())
         assert data["status"] == "healthy"
@@ -1039,10 +1045,7 @@ class TestLiveServerStartup:
 
     def test_all_routes_registered(self, server_process):
         """OpenAPI spec shows >= 20 paths (server started fully)."""
-        import json
-        import urllib.request
-
-        _, port = server_process
+        json, port, urllib = _shared_setup_1(server_process)
         resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/openapi.json", timeout = 5)
         spec = json.loads(resp.read())
         assert (
@@ -1051,10 +1054,7 @@ class TestLiveServerStartup:
 
     def test_hardware_endpoint_no_torch(self, server_process):
         """GET /api/system/hardware returns torch=null, gpu_name=null."""
-        import json
-        import urllib.request
-
-        _, port = server_process
+        json, port, urllib = _shared_setup_1(server_process)
         resp = urllib.request.urlopen(
             f"http://127.0.0.1:{port}/api/system/hardware",
             timeout = 5,

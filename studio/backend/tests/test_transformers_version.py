@@ -17,6 +17,33 @@ from unittest.mock import patch
 # ---------------------------------------------------------------------------
 import sys
 
+
+# Shared setup for test_a_model_type_the_default_lacks_never_reaches_the_version_field_probe, test_ordinary_4x_config_does_not_probe, test_version_field_probe_escalates_when_default_fails and 1 more.
+def _shared_setup_1(monkeypatch, self):
+    self._patch_venvs(monkeypatch)
+    monkeypatch.setattr(
+        "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
+    )
+
+
+# Shared setup for test_dead_owner_lock_reclaimed_promptly, test_foreign_process_lock_file_visible, test_unreadable_pid_lock_uses_age_cutoff.
+def _shared_setup_2(monkeypatch, tmp_path):
+    import utils.transformers_version as tv
+
+    monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
+    lock = tv._swap_lock_path()
+    lock.parent.mkdir(parents = True, exist_ok = True)
+    return lock, tv
+
+
+# Shared setup for test_backoff_window_keeps_the_damaged_sidecar_withheld, test_kill_switch_frees_the_sidecar_mid_backoff, test_repair_backoff_window_never_repeats_the_scan.
+def _shared_setup_3(monkeypatch, self, tmp_path):
+    live = self._sidecar(tmp_path / "venv_t5_latest")
+    tv, _ = self._patch(monkeypatch, live)
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+    self._damage(live)
+    return _, live, tv
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -1426,10 +1453,7 @@ class TestProbeGating:
     # ---- version-field probe is default-first (no mis-routing of 4.x models) ----
 
     def test_version_field_probe_stays_default_when_default_parses(self, monkeypatch):
-        self._patch_venvs(monkeypatch)
-        monkeypatch.setattr(
-            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
-        )
+        _shared_setup_1(monkeypatch, self)
         # A model_type the ambient default DOES ship. "brandnew" is in none of the
         # mappings, so the static config-mapping tier upgraded it to 530 before the
         # version-field probe under test ever ran, and the assert below only passed
@@ -1450,10 +1474,7 @@ class TestProbeGating:
     def test_version_field_probe_escalates_when_default_fails(self, monkeypatch):
         import utils.transformers_version as tv
 
-        self._patch_venvs(monkeypatch)
-        monkeypatch.setattr(
-            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
-        )
+        _shared_setup_1(monkeypatch, self)
         # Shipped by the ambient default, for the same reason as the test above.
         _config_json_cache[("org/new", None)] = {
             "model_type": "llama",
@@ -1484,10 +1505,7 @@ class TestProbeGating:
         """
         import utils.transformers_version as tv
 
-        self._patch_venvs(monkeypatch)
-        monkeypatch.setattr(
-            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
-        )
+        _shared_setup_1(monkeypatch, self)
         monkeypatch.setattr(
             tv,
             "_config_model_types",
@@ -1509,10 +1527,7 @@ class TestProbeGating:
         assert probed == [], "the mapping check must answer before any sidecar probe runs"
 
     def test_ordinary_4x_config_does_not_probe(self, monkeypatch):
-        self._patch_venvs(monkeypatch)
-        monkeypatch.setattr(
-            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
-        )
+        _shared_setup_1(monkeypatch, self)
         _config_json_cache[("org/llama", None)] = {
             "model_type": "llama",
             "transformers_version": "4.57.0",
@@ -3188,11 +3203,7 @@ class TestSidecarSwapReservation:
         process, and its lock is never broken while the owner is alive."""
         import os
         import time
-        import utils.transformers_version as tv
-
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
-        lock = tv._swap_lock_path()
-        lock.parent.mkdir(parents = True, exist_ok = True)
+        lock, tv = _shared_setup_2(monkeypatch, tmp_path)
         # A live owner (this process): visible and never reclaimed, even once aged past
         # the cutoff -- a slow but live pip install must keep its lock.
         lock.write_text('{"pid": %d}' % os.getpid())
@@ -3206,11 +3217,7 @@ class TestSidecarSwapReservation:
     def test_dead_owner_lock_reclaimed_promptly(self, monkeypatch, tmp_path):
         """A fresh lock whose recorded owner is dead is reclaimed at once, not after the
         long cutoff: a crash mid-install must not wedge loads/training/export for hours."""
-        import utils.transformers_version as tv
-
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
-        lock = tv._swap_lock_path()
-        lock.parent.mkdir(parents = True, exist_ok = True)
+        lock, tv = _shared_setup_2(monkeypatch, tmp_path)
         # 999999 is not a live PID: a fresh dead-owner lock is immediately stale.
         lock.write_text('{"pid": 999999, "kind": "install"}')
         assert tv._pid_alive(999999) is False
@@ -3228,11 +3235,7 @@ class TestSidecarSwapReservation:
         created is not stolen before its PID lands."""
         import os
         import time
-        import utils.transformers_version as tv
-
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
-        lock = tv._swap_lock_path()
-        lock.parent.mkdir(parents = True, exist_ok = True)
+        lock, tv = _shared_setup_2(monkeypatch, tmp_path)
         lock.write_text("")  # created but metadata not yet written
         assert tv.sidecar_swap_in_progress() is True
         old_ts = time.time() - (tv._SWAP_LOCK_STALE_SECS + 60)
@@ -3807,10 +3810,7 @@ class TestDamagedLatestSidecarRepairHandoff:
     def test_repair_backoff_window_never_repeats_the_scan(self, monkeypatch, tmp_path):
         """A sidecar that cannot be repaired (offline, pip down) must not put a ~25 ms
         scan on every routing call for the whole backoff window."""
-        live = self._sidecar(tmp_path / "venv_t5_latest")
-        tv, _ = self._patch(monkeypatch, live)
-        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
-        self._damage(live)
+        _, live, tv = _shared_setup_3(monkeypatch, self, tmp_path)
 
         assert tv._overlay_transformers_dir("latest") is None  # scans, tries, fails
 
@@ -3827,10 +3827,7 @@ class TestDamagedLatestSidecarRepairHandoff:
         cheap predicate cannot see a truncated file, so without the marker every
         routing call in the window routes latest-only models straight back into a
         sidecar whose worker activation is known to fail."""
-        live = self._sidecar(tmp_path / "venv_t5_latest")
-        tv, _ = self._patch(monkeypatch, live)
-        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
-        self._damage(live)
+        _, live, tv = _shared_setup_3(monkeypatch, self, tmp_path)
 
         assert tv._overlay_transformers_dir("latest") is None  # scans, tries, fails
         assert tv._venv_dir_is_valid(
@@ -3907,10 +3904,7 @@ class TestDamagedLatestSidecarRepairHandoff:
         """The hatch exists for a false positive, so it has to work at the moment one is
         being hit: with a marker already written and a repair already failed, it must
         restore routing now rather than one backoff window later."""
-        live = self._sidecar(tmp_path / "venv_t5_latest")
-        tv, _ = self._patch(monkeypatch, live)
-        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
-        self._damage(live)
+        _, live, tv = _shared_setup_3(monkeypatch, self, tmp_path)
 
         assert tv._overlay_transformers_dir("latest") is None  # arms marker + backoff
         assert tv._latest_repair_requested(), "precondition: the marker is armed"

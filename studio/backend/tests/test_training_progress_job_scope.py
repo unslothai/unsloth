@@ -11,6 +11,15 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
+
+# Shared setup for test_competing_pending_job_does_not_displace_the_active_owner, test_competing_rejected_job_does_not_displace_the_active_owner, test_handoff_without_a_start_request_exposes_only_the_new_identity and 6 more.
+def _shared_setup_1(backend, inline, monkeypatch):
+    monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
+    monkeypatch.setattr(rt.asyncio, "to_thread", inline)
+
+    status = asyncio.run(rt.get_training_status(current_subject = "tester"))
+    return status
+
 if "structlog" not in sys.modules:
 
     class _DummyLogger:
@@ -291,10 +300,7 @@ def test_pending_job_status_excludes_the_previous_owner_state(monkeypatch):
     backend = _StatusBackend()
     backend._spawn_in_progress = True
     backend._new_job_spawn_id = "job-new"
-    monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
-    monkeypatch.setattr(rt.asyncio, "to_thread", inline)
-
-    status = asyncio.run(rt.get_training_status(current_subject = "tester"))
+    status = _shared_setup_1(backend, inline, monkeypatch)
 
     assert status.job_id == "job-new"
     assert status.start_request_state == "pending"
@@ -309,10 +315,7 @@ def test_competing_pending_job_does_not_displace_the_active_owner(monkeypatch):
         return callback(*args, **kwargs)
 
     backend = _StatusBackend()
-    monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
-    monkeypatch.setattr(rt.asyncio, "to_thread", inline)
-
-    status = asyncio.run(rt.get_training_status(current_subject = "tester"))
+    status = _shared_setup_1(backend, inline, monkeypatch)
 
     assert status.job_id == "job-old"
     assert status.start_request_id is None
@@ -331,10 +334,7 @@ def test_competing_rejected_job_does_not_displace_the_active_owner(monkeypatch):
     backend._start_request.state = "rejected"
     backend._start_request.message = "Training already active"
     backend._start_request.error = "Training already active"
-    monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
-    monkeypatch.setattr(rt.asyncio, "to_thread", inline)
-
-    status = asyncio.run(rt.get_training_status(current_subject = "tester"))
+    status = _shared_setup_1(backend, inline, monkeypatch)
 
     assert status.job_id == "job-old"
     assert status.phase == "training"
@@ -347,10 +347,7 @@ def test_idle_owner_exposes_a_pending_start_without_owner_state(monkeypatch):
 
     backend = _StatusBackend()
     backend.is_training_active = lambda: False
-    monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
-    monkeypatch.setattr(rt.asyncio, "to_thread", inline)
-
-    status = asyncio.run(rt.get_training_status(current_subject = "tester"))
+    status = _shared_setup_1(backend, inline, monkeypatch)
 
     assert status.job_id == "job-new"
     assert status.start_request_state == "pending"
@@ -367,10 +364,7 @@ def test_handoff_without_a_start_request_exposes_only_the_new_identity(monkeypat
     backend._start_request = None
     backend._spawn_in_progress = True
     backend._new_job_spawn_id = "job-new"
-    monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
-    monkeypatch.setattr(rt.asyncio, "to_thread", inline)
-
-    status = asyncio.run(rt.get_training_status(current_subject = "tester"))
+    status = _shared_setup_1(backend, inline, monkeypatch)
 
     assert status.job_id == "job-new"
     assert status.start_request_id is None
@@ -410,10 +404,7 @@ def test_status_retries_when_ownership_changes_during_the_active_probe(monkeypat
         return True
 
     backend.is_training_active = switch_owner
-    monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
-    monkeypatch.setattr(rt.asyncio, "to_thread", inline)
-
-    status = asyncio.run(rt.get_training_status(current_subject = "tester"))
+    status = _shared_setup_1(backend, inline, monkeypatch)
 
     assert polls == 2
     assert status.job_id == "job-new"
@@ -446,10 +437,7 @@ def test_status_retries_when_a_handoff_starts_during_the_build(monkeypatch):
         )
 
     backend.trainer.get_training_progress = get_progress
-    monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
-    monkeypatch.setattr(rt.asyncio, "to_thread", inline)
-
-    status = asyncio.run(rt.get_training_status(current_subject = "tester"))
+    status = _shared_setup_1(backend, inline, monkeypatch)
 
     assert polls == 1
     assert status.job_id == "job-new"
@@ -544,10 +532,7 @@ def test_installing_job_exposes_no_previous_status_details(monkeypatch):
     backend._start_request = None
     backend._spawn_in_progress = True
     backend._new_job_spawn_id = "job-new"
-    monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
-    monkeypatch.setattr(rt.asyncio, "to_thread", inline)
-
-    status = asyncio.run(rt.get_training_status(current_subject = "tester"))
+    status = _shared_setup_1(backend, inline, monkeypatch)
 
     assert status.job_id == "job-new"
     assert status.details is None
@@ -571,10 +556,7 @@ def test_xet_respawn_preserves_the_owner_status(monkeypatch):
 
     backend = _StatusBackend()
     backend._spawn_in_progress = True
-    monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
-    monkeypatch.setattr(rt.asyncio, "to_thread", inline)
-
-    status = asyncio.run(rt.get_training_status(current_subject = "tester"))
+    status = _shared_setup_1(backend, inline, monkeypatch)
 
     assert status.job_id == "job-old"
     assert status.details["step"] == 7

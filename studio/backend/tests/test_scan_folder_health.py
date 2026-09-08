@@ -35,6 +35,24 @@ from utils.paths.scan_folder_health import (
 )
 
 
+# Shared setup for test_a_chmod_000_directory_fails_the_probe, test_the_hub_scan_records_a_folder_it_cannot_read, test_the_real_scan_records_a_folder_it_cannot_read.
+def _shared_setup_1(tmp_path):
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    (denied / "model.gguf").write_bytes(b"stub")
+    denied.chmod(0o000)
+    return denied
+
+
+# Shared setup for test_a_wide_folder_still_clears_once_it_is_fixed, test_an_exhausted_budget_does_not_clear_a_known_failure, test_the_internal_unknown_status_never_reaches_the_api.
+def _shared_setup_2(tmp_path):
+    import utils.paths.scan_folder_health as health
+
+    for i in range(health._PROBE_OPEN_LIMIT * 3):
+        (tmp_path / f"model{i:03d}").mkdir()
+    return health
+
+
 # os.geteuid is missing on Windows, and a skipif condition is evaluated at import,
 # so the check has to be resolved before the decorator sees it.
 requires_posix_permissions = pytest.mark.skipif(
@@ -67,10 +85,7 @@ def test_an_empty_directory_still_passes(tmp_path: Path):
 
 @requires_posix_permissions
 def test_a_chmod_000_directory_fails_the_probe(tmp_path: Path):
-    denied = tmp_path / "denied"
-    denied.mkdir()
-    (denied / "model.gguf").write_bytes(b"stub")
-    denied.chmod(0o000)
+    denied = _shared_setup_1(tmp_path)
     try:
         assert is_readable_dir(str(denied)) is False
     finally:
@@ -280,10 +295,7 @@ def test_the_real_scan_records_a_folder_it_cannot_read(tmp_path: Path):
     """End to end through collect_local_models, the scan behind the model list."""
     from routes.models import collect_local_models
 
-    denied = tmp_path / "denied"
-    denied.mkdir()
-    (denied / "model.gguf").write_bytes(b"stub")
-    denied.chmod(0o000)
+    denied = _shared_setup_1(tmp_path)
     rows = [{"id": 1, "path": str(denied), "created_at": "2026-01-01"}]
     try:
         collect_local_models(tmp_path, custom_folders = list(rows))
@@ -448,10 +460,7 @@ def test_the_hub_scan_records_a_folder_it_cannot_read(tmp_path: Path):
 
     from hub.services.models.local_inventory import _collect_models_from_default_sources
 
-    denied = tmp_path / "denied"
-    denied.mkdir()
-    (denied / "model.gguf").write_bytes(b"stub")
-    denied.chmod(0o000)
+    denied = _shared_setup_1(tmp_path)
     rows = [{"id": 1, "path": str(denied), "created_at": "2026-01-01"}]
 
     def scan():
@@ -684,10 +693,7 @@ def test_an_exhausted_budget_does_not_clear_a_known_failure(tmp_path: Path):
     The folder is too wide to finish probing, and the denied directory sits past
     the cutoff, so a probe that treated exhaustion as ok would drop the warning.
     """
-    import utils.paths.scan_folder_health as health
-
-    for i in range(health._PROBE_OPEN_LIMIT * 3):
-        (tmp_path / f"model{i:03d}").mkdir()
+    health = _shared_setup_2(tmp_path)
     # Deterministically past the budget: pick by real listing order, not by name.
     order = [entry.name for entry in os.scandir(tmp_path)]
     denied = tmp_path / order[-1]
@@ -705,10 +711,7 @@ def test_an_exhausted_budget_does_not_clear_a_known_failure(tmp_path: Path):
 @requires_posix_permissions
 def test_a_wide_folder_still_clears_once_it_is_fixed(tmp_path: Path):
     """The flip side: recovery cannot depend on the probe reaching the tail."""
-    import utils.paths.scan_folder_health as health
-
-    for i in range(health._PROBE_OPEN_LIMIT * 3):
-        (tmp_path / f"model{i:03d}").mkdir()
+    health = _shared_setup_2(tmp_path)
     order = [entry.name for entry in os.scandir(tmp_path)]
     fixed = tmp_path / order[-1]
     # Recorded as the cause, but readable again by the time the scan runs.
@@ -740,10 +743,7 @@ def test_a_partial_folder_that_disappears_reports_missing(tmp_path: Path):
 
 def test_the_internal_unknown_status_never_reaches_the_api(tmp_path: Path):
     """STATUS_UNKNOWN is a probe result, not something the UI can render."""
-    import utils.paths.scan_folder_health as health
-
-    for i in range(health._PROBE_OPEN_LIMIT * 3):
-        (tmp_path / f"model{i:03d}").mkdir()
+    health = _shared_setup_2(tmp_path)
     rows = [{"id": 1, "path": str(tmp_path), "created_at": "2026-01-01"}]
 
     note_scan_folder_scanned(str(tmp_path), found = True)

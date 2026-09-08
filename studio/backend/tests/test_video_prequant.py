@@ -20,6 +20,16 @@ from core.inference.diffusion_prequant import (
 from core.inference.video import VideoBackend
 
 
+# Shared setup for test_an_explicit_speed_off_keeps_the_released_denoiser, test_auto_takes_the_hosted_denoiser_even_on_a_card_with_room_to_spare, test_auto_takes_the_hosted_denoiser_when_the_released_one_cannot_stay_resident and 4 more.
+def _shared_setup_1():
+    import torch
+
+    from core.inference import video as vid
+
+    fam = _h3_family()
+    return fam, torch, vid
+
+
 @pytest.fixture(autouse = True)
 def _assume_the_restricted_load_is_available(monkeypatch):
     """Policy/planning tests, not a check on whether this host's torchao imports.
@@ -861,11 +871,7 @@ def test_auto_takes_the_hosted_denoiser_even_on_a_card_with_room_to_spare(monkey
 
     What it costs is the picture (mean SSIM 0.49 against the released weights), which is a choice
     ``transformer_quant='none'`` reverses and which no amount of free VRAM changes."""
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     # Comfortably more free memory than the released denoiser plus everything beside it.
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 500 * 1000**3)
@@ -888,11 +894,7 @@ def test_auto_takes_the_hosted_denoiser_when_the_released_one_cannot_stay_reside
     """The bug users hit. Below the fit line the released denoiser rides the CPU-offload rotation,
     and a module that moves cannot be compiled, so the regional compile goes with it: 194 s against
     23.7 s on the same 8-step job. Auto now takes the hosted checkpoint instead of the cliff."""
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     # An 80 GB card: under the 113.5 GB the released denoiser plus its companions need, over the
     # 67.5 GB the hosted one needs, which is the band where the substitution buys anything.
@@ -918,11 +920,7 @@ def test_the_auto_fallback_is_declined_when_nothing_can_answer(monkeypatch):
 
     The partition gate is the same rule the explicit path applies: a task with no hosted checkpoint
     has no fallback, and serving the other partition's would generate the wrong thing."""
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
 
     def ask(**over):
         kw = dict(
@@ -967,11 +965,7 @@ def test_an_explicit_speed_off_keeps_the_released_denoiser(monkeypatch):
     The conventional loader rewrites an unset precision to "off" under speed off for exactly this
     reason; the modular workflow returns above that rewrite, so the fallback has to decline it
     itself or "off" stops meaning bit-exact on precisely the cards this fallback targets."""
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
 
@@ -1002,11 +996,7 @@ def test_the_automatic_substitution_needs_the_exact_base_model(monkeypatch):
     someone/MiniMax-H3 would take MiniMaxAI/MiniMax-H3's denoiser and silently generate from
     someone else's weights -- for a user who never asked for a scheme at all. Same bar as the
     conditioner's index gate: exact identity, mirrors folded, nothing else."""
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
 
@@ -1036,11 +1026,7 @@ def test_the_fallback_is_declined_when_the_hosted_denoiser_cannot_be_pinned(monk
     rotation it replaces: the card renders today and would refuse every generation afterwards.
     Where the replacement does not fit either, the released denoiser in the rotation is the
     configuration that still runs, so auto keeps it."""
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
 
@@ -1073,11 +1059,7 @@ def test_the_fallback_is_resolved_before_the_download_is_planned(monkeypatch):
     import inspect
     import types
 
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
     backend = vid.VideoBackend.__new__(vid.VideoBackend)
 
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)

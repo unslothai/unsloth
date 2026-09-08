@@ -26,6 +26,15 @@ from core.inference.context_window import (
 )
 
 
+# Shared setup for test_a_call_still_awaiting_its_result_is_left_alone, test_a_call_that_never_ran_keeps_its_arguments, test_a_thread_with_no_tool_calls_is_returned_untouched.
+def _shared_setup_1(messages):
+    fitted, compacted = compact_completed_tool_arguments(messages)
+
+    assert compacted == 0
+    assert fitted is messages
+    return fitted
+
+
 def _call(
     call_id = "c1",
     name = "edit_file",
@@ -100,10 +109,7 @@ def test_a_call_still_awaiting_its_result_is_left_alone():
     """Rewriting the in-flight call would describe a write different from the one running."""
     messages = _thread("x" * 8000, answered = False)
 
-    fitted, compacted = compact_completed_tool_arguments(messages)
-
-    assert compacted == 0
-    assert fitted is messages
+    fitted = _shared_setup_1(messages)
 
 
 def test_protect_last_holds_the_freshest_exchange_clear():
@@ -200,10 +206,7 @@ def test_one_large_edit_beside_many_small_ones_still_compacts_all_of_them():
 def test_a_thread_with_no_tool_calls_is_returned_untouched():
     messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
 
-    fitted, compacted = compact_completed_tool_arguments(messages)
-
-    assert compacted == 0
-    assert fitted is messages
+    fitted = _shared_setup_1(messages)
 
 
 def test_unparseable_arguments_still_report_their_size():
@@ -457,10 +460,7 @@ def test_a_call_that_never_ran_keeps_its_arguments(reply):
     messages = _thread("x" * 8000)
     messages[-1]["content"] = reply
 
-    fitted, compacted = compact_completed_tool_arguments(messages)
-
-    assert compacted == 0
-    assert fitted is messages
+    fitted = _shared_setup_1(messages)
     assert "already written" not in json.dumps(fitted)
 
 

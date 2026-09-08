@@ -13,6 +13,16 @@ from pathlib import Path
 
 import pytest
 
+
+# Shared setup for test_convert_alpaca_to_chatml_no_torch, test_convert_chatml_to_alpaca_no_torch, test_dataclass_deepseek_collator_instantiable and 5 more.
+def _shared_setup_1(code, no_torch_venv):
+    result = subprocess.run(
+        [no_torch_venv, "-c", code],
+        capture_output = True,
+        timeout = 30,
+    )
+    return result
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_COLLATORS = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "data_collators.py"
 CHAT_TEMPLATES = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "chat_templates.py"
@@ -151,11 +161,7 @@ class TestDataCollatorsNoTorchVenv:
             exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             print("OK: exec succeeded")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert (
             result.returncode == 0
         ), f"data_collators.py failed in no-torch venv:\n{result.stderr.decode()}"
@@ -173,11 +179,7 @@ class TestDataCollatorsNoTorchVenv:
             assert obj.processor is None, "processor should be None"
             print("OK: DataCollatorSpeechSeq2SeqWithPadding instantiated")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert (
             result.returncode == 0
         ), f"DataCollatorSpeechSeq2SeqWithPadding failed:\n{result.stderr.decode()}"
@@ -197,11 +199,7 @@ class TestDataCollatorsNoTorchVenv:
             assert obj.ignore_index == -100, "default ignore_index should be -100"
             print("OK: DeepSeekOCRDataCollator instantiated")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert result.returncode == 0, f"DeepSeekOCRDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: DeepSeekOCRDataCollator instantiated" in result.stdout
 
@@ -218,11 +216,7 @@ class TestDataCollatorsNoTorchVenv:
             assert obj.mask_input_tokens is True, "default mask_input_tokens should be True"
             print("OK: VLMDataCollator instantiated")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert result.returncode == 0, f"VLMDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: VLMDataCollator instantiated" in result.stdout
 
@@ -271,11 +265,7 @@ class TestChatTemplatesNoTorchVenv:
             assert 'DEFAULT_ALPACA_TEMPLATE' in ns, "DEFAULT_ALPACA_TEMPLATE not defined after exec"
             print("OK: chat_templates.py exec succeeded")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert (
             result.returncode == 0
         ), f"chat_templates.py failed in no-torch venv:\n{result.stderr.decode()}"
@@ -315,11 +305,7 @@ class TestChatTemplatesNoTorchVenv:
             assert 'Instruction' in ns['DEFAULT_ALPACA_TEMPLATE'], "Template content unexpected"
             print("OK: DEFAULT_ALPACA_TEMPLATE defined and valid")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert (
             result.returncode == 0
         ), f"DEFAULT_ALPACA_TEMPLATE check failed:\n{result.stderr.decode()}"
@@ -425,11 +411,7 @@ class TestFormatConversionNoTorchVenv:
             assert result['output'] == ['Hi there']
             print("OK: convert_chatml_to_alpaca works without torch")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert (
             result.returncode == 0
         ), f"convert_chatml_to_alpaca failed without torch:\n{result.stderr.decode()}"
@@ -485,11 +467,7 @@ class TestFormatConversionNoTorchVenv:
             assert convo[1]['role'] == 'assistant'
             print("OK: convert_alpaca_to_chatml works without torch")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert (
             result.returncode == 0
         ), f"convert_alpaca_to_chatml failed without torch:\n{result.stderr.decode()}"

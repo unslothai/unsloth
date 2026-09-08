@@ -20,6 +20,15 @@ from types import SimpleNamespace
 
 import pytest
 
+
+# Shared setup for test_a_filesystem_that_cannot_lock_is_not_read_as_contention, test_a_live_sibling_keeps_the_compiled_cache, test_a_lock_that_cannot_be_taken_at_all_still_clears and 2 more.
+def _shared_setup_1(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+    return events
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -836,10 +845,7 @@ def test_a_lock_that_cannot_be_taken_at_all_still_clears(tmp_path, monkeypatch):
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("", encoding = "utf-8")
     monkeypatch.setattr(cache_cleanup, "cache_coordination_dir", lambda: blocked / "lock")
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     with cache_cleanup.compiled_cache_lock() as state:
         assert state == cache_cleanup.LOCK_UNAVAILABLE
@@ -850,10 +856,7 @@ def test_a_lock_that_cannot_be_taken_at_all_still_clears(tmp_path, monkeypatch):
 
 
 def test_a_live_sibling_keeps_the_compiled_cache(tmp_path, monkeypatch):
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550)
 
@@ -862,10 +865,7 @@ def test_a_live_sibling_keeps_the_compiled_cache(tmp_path, monkeypatch):
 
 def test_no_sibling_probe_clears_unconditionally(tmp_path, monkeypatch):
     # An embedded app or a test never sets the probe, and the old behaviour stands.
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     cache_cleanup.clear_compiled_cache_unless_shared(None)
 
@@ -1036,10 +1036,7 @@ def test_a_filesystem_that_cannot_lock_is_not_read_as_contention(tmp_path, monke
         raise OSError(errno.ENOSYS, "flock not supported")
 
     monkeypatch.setattr(cache_cleanup, "_try_lock", unsupported)
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     with cache_cleanup.compiled_cache_lock(timeout = 30.0) as state:
         assert state == cache_cleanup.LOCK_UNAVAILABLE
@@ -1154,10 +1151,7 @@ def test_two_cold_starts_keep_rather_than_delete_each_others_modules(tmp_path, m
     # The documented limitation of scoping this back: both keep a cache neither
     # cleaned, which is the safe direction. The failure being replaced is the two
     # of them deleting each other's modules mid-run.
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550)
     cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8551)

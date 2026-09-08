@@ -22,6 +22,19 @@ from utils.hardware.vram_estimation import (
 )
 
 
+# Shared setup for test_flash_attention_uses_linear_path, test_flex_attention_treated_as_linear, test_sdpa_attention_uses_linear_path.
+def _shared_setup_1():
+    flash = compute_activation_bytes(
+        STRUCTURED_MIXED,
+        1,
+        4096,
+        "unsloth",
+        is_lora = True,
+        attention_implementation = "flash_attention_2",
+    )
+    return flash
+
+
 def _gb(b: int) -> float:
     return b / (1024**3)
 
@@ -420,14 +433,7 @@ class TestActivationBytes(unittest.TestCase):
         self.assertAlmostEqual(act_4k / act_2k, 2.0, delta = 0.1)
 
     def test_flash_attention_uses_linear_path(self):
-        flash = compute_activation_bytes(
-            STRUCTURED_MIXED,
-            1,
-            4096,
-            "unsloth",
-            is_lora = True,
-            attention_implementation = "flash_attention_2",
-        )
+        flash = _shared_setup_1()
         default = compute_activation_bytes(
             STRUCTURED_MIXED,
             1,
@@ -438,14 +444,7 @@ class TestActivationBytes(unittest.TestCase):
         self.assertEqual(flash, default)
 
     def test_sdpa_attention_uses_linear_path(self):
-        flash = compute_activation_bytes(
-            STRUCTURED_MIXED,
-            1,
-            4096,
-            "unsloth",
-            is_lora = True,
-            attention_implementation = "flash_attention_2",
-        )
+        flash = _shared_setup_1()
         sdpa = compute_activation_bytes(
             STRUCTURED_MIXED,
             1,
@@ -1075,14 +1074,7 @@ class TestKvSharedLayer(unittest.TestCase):
 
 class TestFlexAttentionLinear(unittest.TestCase):
     def test_flex_attention_treated_as_linear(self):
-        flash = compute_activation_bytes(
-            STRUCTURED_MIXED,
-            1,
-            4096,
-            "unsloth",
-            is_lora = True,
-            attention_implementation = "flash_attention_2",
-        )
+        flash = _shared_setup_1()
         flex = compute_activation_bytes(
             STRUCTURED_MIXED,
             1,

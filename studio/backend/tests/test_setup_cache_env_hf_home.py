@@ -15,6 +15,16 @@ from pathlib import Path
 
 import pytest
 
+
+# Shared setup for test_custom_hf_home_seeds_hub_and_xet, test_default_when_hf_home_unset, test_explicit_hub_cache_is_not_overridden and 2 more.
+def _shared_setup_1():
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    import os
+    return os
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -70,11 +80,7 @@ def test_custom_hf_home_seeds_hub_and_xet(monkeypatch, tmp_path):
     _clear_hf_env(monkeypatch)
     custom = tmp_path / "shared" / "huggingface"
     monkeypatch.setenv("HF_HOME", str(custom))
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    import os
+    os = _shared_setup_1()
 
     assert os.environ["HF_HUB_CACHE"] == str(custom / "hub")
     assert os.environ["HF_XET_CACHE"] == str(custom / "xet")
@@ -83,11 +89,7 @@ def test_custom_hf_home_seeds_hub_and_xet(monkeypatch, tmp_path):
 def test_default_when_hf_home_unset(monkeypatch, tmp_path):
     _clear_hf_env(monkeypatch)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    import os
+    os = _shared_setup_1()
 
     expected = tmp_path / "xdg" / "huggingface"
     assert os.environ["HF_HUB_CACHE"] == str(expected / "hub")
@@ -98,11 +100,7 @@ def test_explicit_hub_cache_is_not_overridden(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HOME", str(tmp_path / "home"))
     explicit = tmp_path / "explicit" / "hub"
     monkeypatch.setenv("HF_HUB_CACHE", str(explicit))
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    import os
+    os = _shared_setup_1()
 
     assert os.environ["HF_HUB_CACHE"] == str(explicit)
 
@@ -112,11 +110,7 @@ def test_legacy_huggingface_hub_cache_alias_is_honored(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HOME", str(tmp_path / "home"))
     legacy = tmp_path / "legacy" / "hub"
     monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(legacy))
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    import os
+    os = _shared_setup_1()
 
     assert os.environ["HF_HUB_CACHE"] == str(legacy)
 
@@ -126,11 +120,7 @@ def test_whitespace_hf_home_falls_back_to_default(monkeypatch, tmp_path):
     _clear_hf_env(monkeypatch)
     monkeypatch.setenv("HF_HOME", "   ")
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
-    sr = _load_storage_roots()
-
-    sr._setup_cache_env()
-
-    import os
+    os = _shared_setup_1()
 
     assert os.environ["HF_HOME"] == str(tmp_path / "xdg" / "huggingface")
     assert os.environ["HF_HUB_CACHE"] == str(tmp_path / "xdg" / "huggingface" / "hub")

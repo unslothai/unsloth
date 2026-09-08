@@ -18,6 +18,17 @@ from pathlib import Path
 import pytest
 
 
+# Shared setup for test_late_stop_does_not_unfinish_a_completed_run, test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed, test_stop_mid_run_still_works.
+def _shared_setup_1():
+    resp = asyncio.run(
+        rt.stop_training(
+            rt.TrainingStopRequest(save = True, expected_job_id = "job_1"),
+            current_subject = "t",
+        )
+    )
+    return resp
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -179,12 +190,7 @@ def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
     b = _running(monkeypatch)
     b._handle_event(dict(_DONE))
 
-    resp = asyncio.run(
-        rt.stop_training(
-            rt.TrainingStopRequest(save = True, expected_job_id = "job_1"),
-            current_subject = "t",
-        )
-    )
+    resp = _shared_setup_1()
     assert resp.status == "idle"
     assert b._should_stop is False
 
@@ -218,12 +224,7 @@ def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monke
 
     b.stop_training = stop_after_complete
 
-    resp = asyncio.run(
-        rt.stop_training(
-            rt.TrainingStopRequest(save = True, expected_job_id = "job_1"),
-            current_subject = "t",
-        )
-    )
+    resp = _shared_setup_1()
     assert resp.status == "idle"
     assert b._should_stop is False, "a run that finished in the gap must not latch a stop"
     assert (b._terminal_finalize_payload or {}).get("status") == "completed"
@@ -235,12 +236,7 @@ def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monke
 
 def test_stop_mid_run_still_works(monkeypatch):
     b = _running(monkeypatch)
-    resp = asyncio.run(
-        rt.stop_training(
-            rt.TrainingStopRequest(save = True, expected_job_id = "job_1"),
-            current_subject = "t",
-        )
-    )
+    resp = _shared_setup_1()
     assert resp.status == "stopped"
     assert b._should_stop is True
 

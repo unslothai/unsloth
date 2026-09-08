@@ -19,6 +19,17 @@ import pytest
 from core.inference import stt_ggml_sidecar
 
 
+# Shared setup for test_a_plain_transformers_pick_is_left_alone, test_an_already_downloaded_snapshot_is_not_fetched_again, test_the_fallback_fetches_the_transformers_snapshot_it_needs.
+def _shared_setup_1(monkeypatch, stt_sidecar):
+    started: list[tuple] = []
+    monkeypatch.setattr(
+        stt_sidecar,
+        "start_model_download",
+        lambda model, token = None, revision = None: started.append((model, token)),
+    )
+    return started
+
+
 @pytest.fixture(autouse = True)
 def _clean_runtime_state():
     stt_ggml_sidecar.clear_runtime_inference_failure()
@@ -95,12 +106,7 @@ def test_the_fallback_fetches_the_transformers_snapshot_it_needs(monkeypatch):
     monkeypatch.setattr(stt_ggml_sidecar, "find_whisper_server_binary", lambda: "whisper-server")
     monkeypatch.setattr(stt_ggml_sidecar, "slim_runtime_intact", lambda binary: True)
     monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: False)
-    started: list[tuple] = []
-    monkeypatch.setattr(
-        stt_sidecar,
-        "start_model_download",
-        lambda model, token = None, revision = None: started.append((model, token)),
-    )
+    started = _shared_setup_1(monkeypatch, stt_sidecar)
 
     # A healthy runtime serves the GGUF itself, so nothing is fetched.
     inference_routes._prepare_runtime_fallback_checkpoint("gguf", "gguf", "small")
@@ -117,12 +123,7 @@ def test_an_already_downloaded_snapshot_is_not_fetched_again(monkeypatch):
     from routes import inference as inference_routes
 
     monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: True)
-    started: list[tuple] = []
-    monkeypatch.setattr(
-        stt_sidecar,
-        "start_model_download",
-        lambda model, token = None, revision = None: started.append((model, token)),
-    )
+    started = _shared_setup_1(monkeypatch, stt_sidecar)
     stt_ggml_sidecar.note_runtime_inference_failure("RemoteDisconnected")
     inference_routes._prepare_runtime_fallback_checkpoint("gguf", "transformers", "small")
     assert started == []
@@ -135,12 +136,7 @@ def test_a_plain_transformers_pick_is_left_alone(monkeypatch):
     from routes import inference as inference_routes
 
     monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: False)
-    started: list[tuple] = []
-    monkeypatch.setattr(
-        stt_sidecar,
-        "start_model_download",
-        lambda model, token = None, revision = None: started.append((model, token)),
-    )
+    started = _shared_setup_1(monkeypatch, stt_sidecar)
     stt_ggml_sidecar.note_runtime_inference_failure("RemoteDisconnected")
     inference_routes._prepare_runtime_fallback_checkpoint("transformers", "transformers", "small")
     inference_routes._prepare_runtime_fallback_checkpoint("mtmd", "mtmd", "small")

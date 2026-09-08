@@ -16,6 +16,23 @@ from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
 from core.inference import stt_ggml_sidecar as ggml_mod
 
 
+# Shared setup for test_a_dead_server_can_still_be_replaced_while_a_request_is_pending, test_a_model_switch_never_kills_a_running_transcription, test_a_switch_to_a_missing_model_keeps_the_working_one and 1 more.
+def _shared_setup_1(monkeypatch, spawned):
+    made, _, _ = spawned
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    sidecar.load("qwen3-asr-0.6b")
+    return made, sidecar
+
+
+# Shared setup for test_audio_is_never_sent_to_a_server_another_client_swapped_in, test_dictation_still_works_on_cpu_during_training, test_disconnecting_one_mtmd_request_does_not_kill_its_sibling.
+def _shared_setup_2(monkeypatch):
+    monkeypatch.setattr(
+        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000
+    )
+    monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
+
+
 class _FakeProcess:
     """A child that stays alive until terminated, and can refuse SIGTERM."""
 
@@ -206,10 +223,7 @@ def _swallow(sidecar, model_id):
 
 def test_a_switch_to_a_missing_model_keeps_the_working_one(spawned, monkeypatch):
     """Releasing before the cache check cost a usable server on a 409."""
-    made, _, _ = spawned
-    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
-    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
-    sidecar.load("qwen3-asr-0.6b")
+    made, sidecar = _shared_setup_1(monkeypatch, spawned)
     assert sidecar.loaded_model == "qwen3-asr-0.6b"
 
     def missing(self, model_id):
@@ -227,10 +241,7 @@ def test_a_switch_to_a_missing_model_keeps_the_working_one(spawned, monkeypatch)
 def test_path_save_restarts_warm_mtmd_server(spawned, monkeypatch):
     from utils import llama_cpp_path_settings
 
-    made, _, _ = spawned
-    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
-    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
-    sidecar.load("qwen3-asr-0.6b")
+    made, sidecar = _shared_setup_1(monkeypatch, spawned)
     monkeypatch.setattr(
         llama_cpp_path_settings,
         "_path_revision",
@@ -246,10 +257,7 @@ def test_path_save_restarts_warm_mtmd_server(spawned, monkeypatch):
 
 
 def test_a_model_switch_never_kills_a_running_transcription(spawned, monkeypatch):
-    made, _, _ = spawned
-    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
-    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
-    sidecar.load("qwen3-asr-0.6b")
+    made, sidecar = _shared_setup_1(monkeypatch, spawned)
     with sidecar._lock:
         sidecar._active_requests = 1  # mid _post_transcribe, outside the lock
 
@@ -265,10 +273,7 @@ def test_a_model_switch_never_kills_a_running_transcription(spawned, monkeypatch
 
 
 def test_a_dead_server_can_still_be_replaced_while_a_request_is_pending(spawned, monkeypatch):
-    made, _, _ = spawned
-    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
-    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
-    sidecar.load("qwen3-asr-0.6b")
+    made, sidecar = _shared_setup_1(monkeypatch, spawned)
     made[0]._returncode = 1  # crashed under the request
     with sidecar._lock:
         sidecar._active_requests = 1
@@ -464,10 +469,7 @@ def test_audio_is_never_sent_to_a_server_another_client_swapped_in(spawned, monk
     in between and the port read would be the other server's."""
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
     monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
-    monkeypatch.setattr(
-        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000
-    )
-    monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
+    _shared_setup_2(monkeypatch)
 
     posted = []
     monkeypatch.setattr(
@@ -533,10 +535,7 @@ def test_dictation_still_works_on_cpu_during_training(spawned, monkeypatch):
     threw away a recording the preload had said was fine."""
     monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
     monkeypatch.setattr(mtmd_mod, "_training_active", lambda: True)
-    monkeypatch.setattr(
-        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000
-    )
-    monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         MtmdSttSidecar,
         "_post_transcribe",
@@ -552,10 +551,7 @@ def test_dictation_still_works_on_cpu_during_training(spawned, monkeypatch):
 def test_disconnecting_one_mtmd_request_does_not_kill_its_sibling(monkeypatch):
     monkeypatch.setattr(mtmd_mod, "ensure_engine_available", lambda: None)
     monkeypatch.setattr(MtmdSttSidecar, "_ensure_model_downloaded", lambda *args: None)
-    monkeypatch.setattr(
-        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000
-    )
-    monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
+    _shared_setup_2(monkeypatch)
 
     class _AliveProcess:
         terminated = False
