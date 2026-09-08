@@ -1644,16 +1644,14 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert any("torchao==0.17.0" in " ".join(c) for c in calls["torchao"])
 
     def test_a_flavor_change_within_one_cuda_major_re_pins_torchao(self):
-        """This left torchao alone while every host took PyPI's one build, where cu124 and
-        cu128 really did resolve to the same file. Now that the install is pinned to the leaf
-        matching torch, they are different wheels and the move has to be followed."""
+        """A no-op while every host took PyPI's one build; different wheels now that the
+        install is pinned to the leaf matching torch."""
         calls = self._resync("2.10.0+cu124", "2.10.0+cu128")
         assert calls["torchao"], "the leaf moved, so the pinned build has to be re-selected"
         assert any("cu128" in " ".join(c) for c in calls["torchao"]), calls["torchao"]
 
     def test_a_cpu_to_xpu_move_re_pins_torchao(self):
-        """Neither side names a CUDA major, so a cuda-major-only test read None == None and
-        skipped the resync entirely, leaving a +cpu torchao beside an xpu torch."""
+        """Neither side names a CUDA major, so None == None skipped the resync entirely."""
         calls = self._resync("2.10.0+cpu", "2.10.0+xpu")
         assert calls["torchao"], "cpu to xpu changes the build even at one release"
         assert any("/xpu" in " ".join(c) for c in calls["torchao"]), calls["torchao"]
@@ -1670,9 +1668,8 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert calls["ok"] is False, "re-pinning torchao asks for a re-verify, as anywhere else"
 
     def test_the_torchao_reinstall_cannot_drag_torch_back(self):
-        # Belt and braces: torchao declares no runtime torch dependency in any release, so
-        # this skips nothing today, but a reinstall right after a repair is the one place
-        # where a torchao that gained one would undo the repair.
+        # No torchao release declares a runtime torch dependency, but a reinstall right after
+        # a repair is where one would undo it.
         calls = self._resync("2.11.0+cu124", "2.10.0+cu124")
         assert calls["torchao"], "the release moved, so torchao is re-pinned"
         assert all("--no-deps" in c for c in calls["torchao"])

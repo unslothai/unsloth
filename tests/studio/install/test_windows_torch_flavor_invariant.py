@@ -290,9 +290,8 @@ class TestStepThirteenWiring:
             assert calls[:2] == ["_progress", "_torch_step_label"]
         # str() is the label coercion around the probe, not a step.
         step13 = [c for c in _calls_in(guards[1]) if c != "str"]
-        # Step 13 additionally re-selects torchao when a repair moved the torch label: the
-        # spec and the index leaf are both read off it, so the earlier choice can be stale.
-        # Nothing else may join the set, and step 2b must not have grown the same call.
+        # Step 13 also re-selects torchao when a repair moved the torch label, which both the
+        # spec and the leaf are read from. Nothing else may join the set.
         assert step13 == (
             ["_progress", "_torch_step_label", "_probe_installed_torch_version"]
             + repairs + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]

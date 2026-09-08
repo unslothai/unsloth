@@ -51,13 +51,12 @@ def _load_module(monkeypatch):
         ("2.10.0.dev20250804+cu130", "torchao==0.17.0"),
         ("2.10.0.dev20250804+cu128", "torchao==0.16.0"),
         ("2.10rc1", "torchao==0.16.0"),
-        # torch 2.11 (reachable via ROCm rocm7.2) -> 0.17.0, whose cpp is built for it.
+        # 2.11 -> 0.17.0, whose cpp is built for it.
         ("2.11.0+cu130", "torchao==0.17.0"),
         ("2.11.0", "torchao==0.17.0"),
         ("2.11.1+cu126", "torchao==0.17.0"),
-        # torch 2.12 and forward -> 0.18.0. 0.18.0 dropped torch <2.11 and pinned its
-        # release CI to 2.13, and 0.17.0's own upstream table stops supporting the Python
-        # API at 2.11, so leaving this range on 0.17.0 ran it outside its declared window.
+        # 2.12+ -> 0.18.0, whose release CI is pinned to 2.13. 0.17.0's upstream table stops
+        # at 2.11, so leaving this range there ran it outside its declared window.
         ("2.12.0", "torchao==0.18.0"),
         ("2.12.1+cu130", "torchao==0.18.0"),
         ("2.13.0+cu132", "torchao==0.18.0"),
@@ -129,9 +128,8 @@ def test_the_torchao_index_follows_the_resident_torch_build(monkeypatch, torch_v
     assert got == (f"https://download.pytorch.org/whl/{leaf}" if leaf else None)
 
 
-# What each accelerator leaf publishes for torchao, read off the live listings. Only the
-# leaves whose inventory does NOT cover every release this selector can ask for are listed:
-# everything absent from here serves its whole range.
+# torchao per leaf, from the live listings. Only leaves that do NOT cover every release this
+# selector can ask for; everything absent serves its whole range.
 _TORCHAO_INDEX_GAPS = {
     "cu118": ({m: f"0.{m}.0" for m in range(3, 12)}, range(5, 8)),
     "cu129": (
@@ -199,21 +197,13 @@ def test_the_torchao_step_pins_the_index_and_retries_without_it():
 
 
 def test_the_fallback_is_never_conditioned_on_the_accelerator(monkeypatch):
-    """A wrong-accelerator torchao COSTS ITS KERNELS; it does not fail to import, so the
-    fallback must stay unconditional. Guarding it on the CUDA major would regress a CUDA-13,
-    ROCm or XPU host from a working-but-slower torchao to none at all.
-
-    The premise is checked here rather than trusted, because a comment claiming otherwise is
-    what motivated a guard that had to be reverted. torchao/__init__.py has wrapped the whole
-    cpp load in try/except since 0.12.0 (and per-file since 0.16.0), logging "Failed to load
-    {file}: {e}" -- the exact message unsloth/import_fixes.py already filters as expected on
-    an ABI mismatch. Forcing torch.ops.load_library to raise the libcudart.so.12 OSError
-    leaves `import torchao` and torchao.quantization both working."""
+    """A wrong-accelerator torchao costs its kernels, not its import, so the fallback stays
+    unconditional -- guarding it on the CUDA major regressed CUDA-13/ROCm/XPU hosts from a
+    slow torchao to none. torchao/__init__.py has wrapped the cpp load since 0.12.0."""
     body = _torchao_installer_source()
     fallback = body.split("retrying from the default index", 1)[1]
     assert 'pip_install("Installing dependency overrides", *args, spec)' in fallback
-    # No branch may stand between the failed pin and the retry. Comments carry the word,
-    # so compare code only.
+    # No branch between the failed pin and the retry. Comments carry the word; compare code.
     between = body.split("if pip_install_try(", 1)[1].split("retrying from the default index", 1)[0]
     code = [l for l in between.split("\n") if not l.strip().startswith("#")]
     assert not any(l.strip().startswith(("if ", "elif ")) for l in code), between
@@ -226,23 +216,20 @@ def test_the_fallback_is_never_conditioned_on_the_accelerator(monkeypatch):
     [
         # No index pinned: the wheel comes from the default index, which stamps no tag.
         ("0.18.0", "torchao==0.18.0", "<none>", False),
-        # No index pinned means the DEFAULT index, whose wheels carry no local tag, so a
-        # tagged wheel sitting there came from somewhere else and is replaced. It settles
-        # after one pass: what lands is bare and matches on the next run.
+        # A tagged wheel on the unpinned path came from elsewhere, so it is replaced once,
+        # then settles: what lands is bare.
         ("0.18.0+cu130", "torchao==0.18.0", "<none>", True),
         ("0.17.0", "torchao==0.18.0", "<none>", True),
         (None, "torchao==0.18.0", "<none>", True),
-        # Index pinned: the release can be right while the BUILD is wrong. pip counts an
-        # 0.18.0+cu126 wheel as satisfying ==0.18.0, fetches nothing, and leaves exactly the
-        # wrong-accelerator build the pin exists to replace.
+        # Pinned: the release can be right while the BUILD is wrong. 0.18.0+cu126 satisfies
+        # ==0.18.0, so pip fetches nothing and the wrong build stays.
         ("0.18.0+cu130", "torchao==0.18.0", "cu130", False),
         ("0.18.0+cu126", "torchao==0.18.0", "cu130", True),
         ("0.18.0", "torchao==0.18.0", "cu130", True),
         ("0.18.0+rocm7.2", "torchao==0.18.0", "rocm7.2", False),
         ("0.17.0+cu130", "torchao==0.18.0", "cu130", True),
-        # An opaque mirror proves nothing about the installed wheel, so it is replaced.
-        # Accepting it would leave an untagged wheel satisfying the pin and the mirror
-        # would never be contacted.
+        # An opaque mirror proves nothing, so it is replaced: otherwise an untagged wheel
+        # satisfies the pin and the mirror is never contacted.
         ("0.18.0", "torchao==0.18.0", None, True),
         ("0.18.0+cu130", "torchao==0.18.0", None, True),
     ],
@@ -290,13 +277,9 @@ def test_every_torchao_call_site_asks_for_the_pinned_tag():
 
 
 def test_no_torchao_install_can_resolve_a_dependency():
-    """Both call sites pass --no-deps. The post-repair one is why: it runs directly after
-    step 13 has fixed the torch build, so any dependency resolution there could undo it.
-
-    No torchao release actually declares a runtime torch dependency -- PyPI and the
-    cpu/cu126/cu130/cu132/xpu/rocm7.2 leaves all carry Requires-Dist entries only under the
-    dev extra -- so this is hardening rather than a live fix, and the test exists so that
-    stays true if a future torchao adds a pin."""
+    """Both call sites pass --no-deps, for the post-repair one: it runs right after step 13
+    fixed the torch build. No torchao release declares a runtime torch dependency today, so
+    this is hardening that must stay if one ever gains a pin."""
     body = _torchao_installer_source()
     assert 'args = ["--no-deps", "--no-cache-dir"]' in body
     # --force-reinstall must not be able to widen the install back out.
