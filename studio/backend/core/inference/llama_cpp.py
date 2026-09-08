@@ -32286,16 +32286,10 @@ class LlamaCppBackend:
         # tool-iteration cap, a controller turning tools off) leave the assistant turn,
         # its tool results and any nudge appended after the last re-cost -- making this
         # final pass the largest request of the run and the one the pool never heard
-        # about. Here rather than at the breaks: the recall above can rebind
-        # `conversation`, and every path reaches this point with the list about to be sent.
+        # about. Its own hook, because this is the one request that sends no `tools`
+        # array; it runs at the top of the retry loop below, where every attempt including
+        # a continuation passes through it.
         _final_recost = on_final_conversation_grew or on_conversation_grew
-        if _final_recost is not None:
-            try:
-                _final_recosted_allowance = _final_recost(conversation)
-                if _final_recosted_allowance is not None:
-                    admission_output_allowance = _final_recosted_allowance
-            except Exception:  # accounting must never break a run in progress
-                logger.debug("tool loop final recost failed", exc_info = True)
 
         stream_payload = {
             "messages": neutralize_control_markup_in_messages(
@@ -32564,12 +32558,24 @@ class LlamaCppBackend:
         # left on instead of taking the reasoning-only recovery.
         _attempt_started_at = ""
         while True:
-            # Here rather than at the build above: this is the last point every attempt
-            # passes through, so a continuation that rewrote the cap is bounded too. The
-            # final pass carries the whole run's history and is the largest request it
-            # makes, so it is the one that must not be sent on the whole window while the
-            # ledger holds a share. The respawn refit runs INSIDE the stream below and
-            # re-applies the bound itself.
+            # Per attempt, not once before the loop: a continuation appends the partial
+            # answer to the payload, so each retry is a larger prompt on the same lease,
+            # and one priced on the first attempt's prompt would let it occupy a whole
+            # share again on top of what it already wrote. `stream_payload["messages"]`
+            # rather than `conversation`, because the continuation tail lives only on the
+            # payload (see `_record_refit_tail`).
+            if _final_recost is not None:
+                try:
+                    _final_recosted_allowance = _final_recost(stream_payload["messages"])
+                    if _final_recosted_allowance is not None:
+                        admission_output_allowance = _final_recosted_allowance
+                except Exception:  # accounting must never break a run in progress
+                    logger.debug("tool loop final recost failed", exc_info = True)
+            # After it, and the last point every attempt passes through, so a continuation
+            # that rewrote the cap is bounded too. The final pass carries the whole run's
+            # history and is the largest request it makes, so it is the one that must not
+            # be sent on the whole window while the ledger holds a share. The respawn
+            # refit runs INSIDE the stream below and re-applies the bound itself.
             if admission_output_allowance is not None:
                 stream_payload["max_tokens"] = min(
                     stream_payload["max_tokens"], admission_output_allowance

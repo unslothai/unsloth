@@ -68,6 +68,14 @@ def _done() -> str:
     return "data: [DONE]\n"
 
 
+def _finish(reason: str) -> str:
+    return (
+        "data: "
+        + json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]})
+        + "\n"
+    )
+
+
 def _tool_call(name: str, arguments: dict, call_id: str) -> list[str]:
     return [
         _sse(
@@ -130,6 +138,48 @@ def _caps(payloads: list[dict]) -> list[int]:
     return [payload["max_tokens"] for payload in payloads]
 
 
+_TOOL = {
+    "type": "function",
+    "function": {"name": "web_search", "parameters": {"type": "object", "properties": {}}},
+}
+
+
+def _run_tool_loop(
+    monkeypatch,
+    payloads,
+    *,
+    streams = None,
+    backend = None,
+    **kwargs,
+):
+    """One tool round then the synthesized final pass, which is two payloads."""
+    if backend is None:
+        backend = _make_backend(
+            monkeypatch,
+            streams
+            if streams is not None
+            else [
+                _tool_call("web_search", {"query": "kernel"}, "c1"),
+                [_sse({"content": "6.10"}), _done()],
+            ],
+            payloads,
+        )
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: "Linux kernel 6.10.",
+    )
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Which kernel?"}],
+            tools = [_TOOL],
+            max_tool_iterations = 1,
+            permission_mode = "off",
+            **kwargs,
+        )
+    )
+    return backend
+
+
 class TestTheGeneratorsSendIt:
     """Every request a run makes, not only the first one of each kind."""
 
@@ -174,36 +224,7 @@ class TestTheGeneratorsSendIt:
     def test_the_tool_round_and_the_final_pass_both_send_it(self, monkeypatch):
         """The final pass carries the whole run's history and skips the top of the loop."""
         payloads: list[dict] = []
-        backend = _make_backend(
-            monkeypatch,
-            [
-                _tool_call("web_search", {"query": "kernel"}, "c1"),
-                [_sse({"content": "6.10"}), _done()],
-            ],
-            payloads,
-        )
-        monkeypatch.setattr(
-            "core.inference.tools.execute_tool",
-            lambda name, arguments, **_kwargs: "Linux kernel 6.10.",
-        )
-
-        list(
-            backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "Which kernel?"}],
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
-                max_tool_iterations = 1,
-                permission_mode = "off",
-                admission_output_allowance = _SHARE,
-            )
-        )
+        _run_tool_loop(monkeypatch, payloads, admission_output_allowance = _SHARE)
 
         assert len(payloads) == 2, "expected one tool round and one synthesized final pass"
         assert _caps(payloads) == [_SHARE, _SHARE]
@@ -217,37 +238,12 @@ class TestTheGeneratorsSendIt:
         The callback hands the fresh figure back, so the two move together.
         """
         payloads: list[dict] = []
-        backend = _make_backend(
-            monkeypatch,
-            [
-                _tool_call("web_search", {"query": "kernel"}, "c1"),
-                [_sse({"content": "6.10"}), _done()],
-            ],
-            payloads,
-        )
-        monkeypatch.setattr(
-            "core.inference.tools.execute_tool",
-            lambda name, arguments, **_kwargs: "Linux kernel 6.10.",
-        )
         recosted = iter([_SHARE - 100, _SHARE - 400])
-
-        list(
-            backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "Which kernel?"}],
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
-                max_tool_iterations = 1,
-                permission_mode = "off",
-                admission_output_allowance = _SHARE,
-                on_conversation_grew = lambda _conversation: next(recosted, None),
-            )
+        _run_tool_loop(
+            monkeypatch,
+            payloads,
+            admission_output_allowance = _SHARE,
+            on_conversation_grew = lambda _conversation: next(recosted, None),
         )
 
         assert _caps(payloads) == [_SHARE - 100, _SHARE - 400]
@@ -255,39 +251,43 @@ class TestTheGeneratorsSendIt:
     def test_a_re_cost_that_says_nothing_leaves_the_bound_alone(self, monkeypatch):
         """Accounting that declined to re-price must not read as "no bound"."""
         payloads: list[dict] = []
-        backend = _make_backend(
+        _run_tool_loop(
             monkeypatch,
-            [
-                _tool_call("web_search", {"query": "kernel"}, "c1"),
-                [_sse({"content": "6.10"}), _done()],
-            ],
             payloads,
-        )
-        monkeypatch.setattr(
-            "core.inference.tools.execute_tool",
-            lambda name, arguments, **_kwargs: "Linux kernel 6.10.",
-        )
-
-        list(
-            backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "Which kernel?"}],
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
-                max_tool_iterations = 1,
-                permission_mode = "off",
-                admission_output_allowance = _SHARE,
-                on_conversation_grew = lambda _conversation: None,
-            )
+            admission_output_allowance = _SHARE,
+            on_conversation_grew = lambda _conversation: None,
         )
 
         assert _caps(payloads) == [_SHARE, _SHARE]
+
+    def test_the_final_pass_gets_its_own_re_cost(self, monkeypatch):
+        """It is the one request of the run that sends no `tools` array.
+
+        The rounds subtract the injected catalogue from the share because they carry it;
+        subtracting it from a pass that does not send it takes roughly 1250 tokens off a
+        real answer, and floors it at one token once the history is long enough.
+        """
+        payloads: list[dict] = []
+        _run_tool_loop(
+            monkeypatch,
+            payloads,
+            admission_output_allowance = _SHARE,
+            on_conversation_grew = lambda _conversation: _SHARE - 500,
+            on_final_conversation_grew = lambda _conversation: _SHARE - 100,
+        )
+
+        assert _caps(payloads) == [_SHARE - 500, _SHARE - 100]
+
+    def test_a_caller_with_no_final_hook_keeps_the_old_behaviour(self, monkeypatch):
+        payloads: list[dict] = []
+        _run_tool_loop(
+            monkeypatch,
+            payloads,
+            admission_output_allowance = _SHARE,
+            on_conversation_grew = lambda _conversation: _SHARE - 500,
+        )
+
+        assert _caps(payloads) == [_SHARE - 500, _SHARE - 500]
 
     def test_a_respawn_refit_does_not_restore_the_window(self, monkeypatch):
         """A replacement server reporting a bigger window is not a bigger reservation.
@@ -314,111 +314,53 @@ class TestTheGeneratorsSendIt:
         # The refit prices its fit against llama-server; the window is what this test is
         # about, not the count.
         monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 10)
-        monkeypatch.setattr(
-            "core.inference.tools.execute_tool",
-            lambda name, arguments, **_kwargs: "Linux kernel 6.10.",
-        )
-
-        list(
-            backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "Which kernel?"}],
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
-                max_tool_iterations = 1,
-                permission_mode = "off",
-                context_overflow = "truncate_oldest",
-                admission_output_allowance = _SHARE,
-            )
+        _run_tool_loop(
+            monkeypatch,
+            payloads,
+            backend = backend,
+            context_overflow = "truncate_oldest",
+            admission_output_allowance = _SHARE,
         )
 
         assert payloads, "no request was sent"
         assert all(cap <= _SHARE for cap in _caps(payloads)), _caps(payloads)
 
-    def test_the_final_pass_gets_its_own_re_cost(self, monkeypatch):
-        """It is the one request of the run that sends no `tools` array.
+    def test_every_final_continuation_is_re_costed(self, monkeypatch):
+        """A continuation is a bigger prompt on the same lease.
 
-        The rounds subtract the injected catalogue from the share because they carry it;
-        subtracting it from a pass that does not send it takes roughly 1250 tokens off a
-        real answer, and floors it at one token once the history is long enough.
+        The final answer stops at `length`, the partial is appended to the payload, and
+        the retry goes out. Re-costing once before the first attempt leaves the retry
+        permitted a whole share again on top of what it already wrote.
         """
         payloads: list[dict] = []
         backend = _make_backend(
             monkeypatch,
             [
                 _tool_call("web_search", {"query": "kernel"}, "c1"),
-                [_sse({"content": "6.10"}), _done()],
+                [_sse({"content": "6.10 and then some"}), _finish("length"), _done()],
+                [_sse({"content": " more"}), _done()],
             ],
             payloads,
         )
-        monkeypatch.setattr(
-            "core.inference.tools.execute_tool",
-            lambda name, arguments, **_kwargs: "Linux kernel 6.10.",
-        )
+        monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 10)
+        seen: list[int] = []
+        recosted = iter([_SHARE - 100, _SHARE - 700])
 
-        list(
-            backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "Which kernel?"}],
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
-                max_tool_iterations = 1,
-                permission_mode = "off",
-                admission_output_allowance = _SHARE,
-                on_conversation_grew = lambda _conversation: _SHARE - 500,
-                on_final_conversation_grew = lambda _conversation: _SHARE - 100,
-            )
-        )
+        def _final_recost(messages):
+            seen.append(len(messages))
+            return next(recosted, None)
 
-        assert _caps(payloads) == [_SHARE - 500, _SHARE - 100]
-
-    def test_a_caller_with_no_final_hook_keeps_the_old_behaviour(self, monkeypatch):
-        payloads: list[dict] = []
-        backend = _make_backend(
+        _run_tool_loop(
             monkeypatch,
-            [
-                _tool_call("web_search", {"query": "kernel"}, "c1"),
-                [_sse({"content": "6.10"}), _done()],
-            ],
             payloads,
-        )
-        monkeypatch.setattr(
-            "core.inference.tools.execute_tool",
-            lambda name, arguments, **_kwargs: "Linux kernel 6.10.",
-        )
-
-        list(
-            backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "Which kernel?"}],
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
-                max_tool_iterations = 1,
-                permission_mode = "off",
-                admission_output_allowance = _SHARE,
-                on_conversation_grew = lambda _conversation: _SHARE - 500,
-            )
+            backend = backend,
+            admission_output_allowance = _SHARE,
+            on_final_conversation_grew = _final_recost,
         )
 
-        assert _caps(payloads) == [_SHARE - 500, _SHARE - 500]
+        assert len(seen) == 2, f"the final re-cost ran {len(seen)} time(s), not once per attempt"
+        assert seen[1] >= seen[0], "the retry should carry at least the first attempt's prompt"
+        assert _caps(payloads)[1:] == [_SHARE - 100, _SHARE - 700]
 
 
 def _backend_stub(*, window, total, slots):
@@ -435,6 +377,16 @@ class _Payload:
 
     def __getattr__(self, _name):
         return None
+
+
+def _reservation():
+    """A lease that accepts any re-cost, so a test reads the figure it hands back."""
+
+    class _Lease:
+        def recost_waiting(self, *_args, **_kwargs):
+            return None
+
+    return SimpleNamespace(lease_nowait = lambda: _Lease())
 
 
 def _chat(text = "hi", **fields):
@@ -564,11 +516,7 @@ class TestWhatThePromptIsMeasuredAgainst:
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
 
-        class _Lease:
-            def recost_waiting(self, *_args, **_kwargs):
-                return None
-
-        reservation = SimpleNamespace(lease_nowait = lambda: _Lease())
+        reservation = _reservation()
 
         opening = _openai_llama_admission_enforced_max_tokens(
             payload, request = None, llama_backend = backend
@@ -595,11 +543,7 @@ class TestWhatThePromptIsMeasuredAgainst:
         """
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
 
-        class _Lease:
-            def recost_waiting(self, *_args, **_kwargs):
-                return None
-
-        reservation = SimpleNamespace(lease_nowait = lambda: _Lease())
+        reservation = _reservation()
         grown = [{"role": "user", "content": "word " * 900}]
         for payload, cap in (
             (_chat(max_tokens = 512), 512),
@@ -649,11 +593,7 @@ class TestWhatTheWireActuallyCarries:
             {"role": "user", "content": "hi"},
         ]
 
-        class _Lease:
-            def recost_waiting(self, *_args, **_kwargs):
-                return None
-
-        reservation = SimpleNamespace(lease_nowait = lambda: _Lease())
+        reservation = _reservation()
         wire = _openai_llama_admission_recost(
             reservation,
             conversation,
@@ -716,11 +656,7 @@ class TestWhatTheWireActuallyCarries:
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
 
-        class _Lease:
-            def recost_waiting(self, *_args, **_kwargs):
-                return None
-
-        reservation = SimpleNamespace(lease_nowait = lambda: _Lease())
+        reservation = _reservation()
         conversation = [{"role": "user", "content": "word " * 700}]
 
         def _recost(wire_sends_tools):
@@ -744,6 +680,49 @@ class TestWhatTheWireActuallyCarries:
             _Payload(messages = [{"role": "user", "content": ""}])
         )
         assert without - with_tools == catalogue
+
+    def test_a_prompt_injected_after_the_payload_is_still_inside_the_bound(self):
+        """The plain GGUF path splices the current-date prompt into a system turn and has
+        no re-cost afterwards, so a bound priced from the raw payload leaves those tokens
+        outside the share the request was admitted on."""
+        backend = _backend_stub(window = 16384, total = 16384, slots = 4)
+        payload = _chat(max_tokens = 16384)
+        injected = [
+            {"role": "system", "content": "Today's date is 2026-09-08. " * 40},
+            {"role": "user", "content": "hi"},
+        ]
+        raw = _openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend
+        )
+        wire = _openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, conversation = injected
+        )
+        assert wire < raw, (raw, wire)
+        assert (
+            _openai_llama_admission_wire_prompt_tokens(injected, llama_backend = backend) + wire
+            <= 16384 // 4
+        )
+
+    def test_audio_transport_is_not_priced_as_prompt_text(self):
+        """`_inject_audio_part` puts the upload in the message list, and admission charges
+        it from the payload's own field. Priced as text as well, a 25 MB clip swamps any
+        share and the answer floors at one token."""
+        backend = _backend_stub(window = 16384, total = 16384, slots = 4)
+        clip = "A" * 200000
+        payload = _Payload(messages = [{"role": "user", "content": "listen"}], max_tokens = 16384)
+        with_audio = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "listen"},
+                    {"type": "input_audio", "input_audio": {"data": clip, "format": "wav"}},
+                ],
+            }
+        ]
+        bound = _openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, conversation = with_audio
+        )
+        assert bound is not None and bound > 1000, bound
 
 
 class TestARetryThatGrewItsPrompt:

@@ -74,6 +74,7 @@ from core.inference.audio_errors import (
 )
 from core.inference import context_refusal
 from core.inference.context_window import (
+    _UNPRICED_MEDIA_TYPES,
     estimate_message_tokens as _estimate_message_tokens,
     estimate_messages_tokens as _estimate_messages_tokens,
     estimate_messages_tokens_dense,
@@ -2187,6 +2188,31 @@ def _openai_llama_admission_share(
     return None if share >= window else share
 
 
+def _openai_llama_admission_messages_without_transport(conversation):
+    """``conversation`` with the media parts the text estimator cannot price removed.
+
+    ``_UNPRICED_MEDIA_TYPES`` names them; ``image_url`` is the exception, compacted and
+    counted by ``_openai_llama_admission_messages_for_estimate`` instead.
+    """
+    dropped = _UNPRICED_MEDIA_TYPES - {"image_url"}
+    stripped = []
+    for message in conversation or []:
+        message_dict = (
+            message if isinstance(message, dict) else message.model_dump(exclude_none = True)
+        )
+        content = message_dict.get("content")
+        if not isinstance(content, list):
+            stripped.append(message_dict)
+            continue
+        kept = [
+            part for part in content if not (isinstance(part, dict) and part.get("type") in dropped)
+        ]
+        stripped.append(
+            {**message_dict, "content": kept} if len(kept) != len(content) else message_dict
+        )
+    return stripped
+
+
 def _openai_llama_admission_wire_prompt_tokens(
     conversation,
     *,
@@ -2208,7 +2234,14 @@ def _openai_llama_admission_wire_prompt_tokens(
 
     So this counts only what goes on the wire: the conversation as it stands, its media,
     and a catalogue only where one is actually sent.
+
+    Transport bytes are dropped first. An injected ``input_audio`` part rides in the
+    message list and is charged from the payload's own field, so leaving it in the text
+    estimate prices a 25 MB upload as millions of prompt tokens and floors the answer at
+    one. ``image_url`` stays, since the estimator compacts it and returns the count this
+    then prices as an image.
     """
+    conversation = _openai_llama_admission_messages_without_transport(conversation)
     estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
         conversation
     )
@@ -2427,13 +2460,16 @@ def _openai_llama_admission_recost(
             + _openai_llama_admission_extra_prompt_tokens(payload)
             + media_tokens
         )
-        # The same parts, minus the two the next request does not carry: `system`/`tools`
-        # from the payload, which a translating route has already folded into the
-        # conversation, and the catalogue on the pass that sends none. Assembled here
-        # rather than through `_openai_llama_admission_wire_prompt_tokens` so the
-        # conversation is priced once per round, not twice.
-        wire_prompt_tokens = (
-            conversation_tokens + media_tokens + (catalogue_tokens if wire_sends_tools else 0)
+        # Priced separately rather than assembled from the parts above: the charge counts
+        # `system`/`tools` from the payload that a translating route has already folded
+        # into the conversation, keeps the catalogue on the pass that sends none, and
+        # prices audio transport as prompt text. Conservative for a lease; on the wire
+        # every one of those comes off the answer.
+        wire_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
+            conversation,
+            llama_backend = llama_backend,
+            payload = payload,
+            injected_tools = injected_tools if wire_sends_tools else None,
         )
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.
@@ -22009,13 +22045,6 @@ async def produce_openai_chat_completions(
     # carry `tool_calls` (content=None) - both of which are valid in
     # multi-turn client-side tool loops.
     effective_max_tokens = _effective_openai_max_tokens(payload)
-    # Carried BESIDE the caller's cap, never folded into it. `_loop_budget_left` reads
-    # `max_tokens` as "what the caller allowed" and stops continuing once it is spent, so
-    # assigning this into effective_max_tokens would turn the crash into a silent
-    # truncation at one share instead of an answer that resumes.
-    _admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
-        payload, request = request, llama_backend = llama_backend
-    )
 
     _has_tool_messages = _has_openai_tool_history(payload.messages)
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
@@ -22410,18 +22439,6 @@ async def produce_openai_chat_completions(
                 without one. The CHARGE keeps it, as every other round does."""
                 return _gguf_recost(conversation, wire_sends_tools = False)
 
-            # Recomputed now `tools_to_use` is resolved, with the same catalogue the
-            # reservation below charges. The opening figure was priced without it, and the
-            # catalogue is roughly 1250 prompt tokens llama-server holds every round, so
-            # sending a cap measured against the client's messages alone would permit
-            # `share + catalogue` per slot on a cache sized for `share`.
-            _tool_admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
-                payload,
-                request = request,
-                llama_backend = llama_backend,
-                injected_tools = tools_to_use,
-            )
-
             # Active tool names gating the bare-rehearsal strip, matching the loop gate.
             _gguf_display_tool_names = _display_tool_name_gate(tools_to_use)
 
@@ -22444,6 +22461,22 @@ async def produce_openai_chat_completions(
                     _msg["content"] = (
                         _stripped if _msg is _gguf_continue_target else _stripped.strip()
                     )
+
+            # Priced from the finalized `gguf_messages` and the catalogue the reservation
+            # above charges: the messages carry the current-date prompt, the tool nudge
+            # and any media part, and the catalogue is roughly 1250 prompt tokens
+            # llama-server holds every round that the message list cannot show. Measured
+            # against the client's messages alone this permitted `share + catalogue` per
+            # slot on a cache sized for `share`. Round zero re-costs it from the live
+            # conversation, so this figure only has to be right for the run that never
+            # reaches a re-cost.
+            _tool_admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
+                payload,
+                request = request,
+                llama_backend = llama_backend,
+                conversation = gguf_messages,
+                injected_tools = tools_to_use,
+            )
 
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
@@ -23192,6 +23225,22 @@ async def produce_openai_chat_completions(
                 _tracker.__exit__(None, None, None)
 
         # ── Standard GGUF path (no tools) ─────────────────────
+
+        # Carried BESIDE the caller's cap, never folded into it. `_loop_budget_left` reads
+        # `max_tokens` as "what the caller allowed" and stops continuing once it is spent,
+        # so assigning this into effective_max_tokens would turn the crash into a silent
+        # truncation at one share instead of an answer that resumes.
+        #
+        # Priced HERE, from the finalized `gguf_messages`, not from the raw payload: the
+        # current-date prompt and the audio or video parts are spliced in above, and this
+        # path has no re-cost afterwards to notice them. Every token the model actually
+        # holds has to be inside the share the request was admitted on.
+        _admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
+            payload,
+            request = request,
+            llama_backend = llama_backend,
+            conversation = gguf_messages,
+        )
 
         def gguf_generate(choice_index: int = 0):
             _seed = _choice_seed(payload.seed, choice_index, negative_is_random = True)
