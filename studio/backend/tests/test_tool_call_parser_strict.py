@@ -424,20 +424,22 @@ class TestParserLinearity:
     """Llama-3 ``.call`` kwargs and Mistral-array healing must stay linear (a regex-per-offset blew up on long truncated bodies)."""
 
     @pytest.mark.parametrize(
-        "_p0, _p1",
+        "prefix, filler",
         [
+            # No closing quote or paren.
             pytest.param('<|python_tag|>upload.call(data="', "A", id = "llama3_unterminated_call_arg_is_linear"),
+            # Giant word run, no '='.
             pytest.param("<|python_tag|>upload.call(", "a", id = "llama3_huge_wordrun_call_arg_is_linear"),
+            # Unclosed array, all open braces.
             pytest.param("[TOOL_CALLS] [", "{", id = "mistral_unclosed_array_open_braces_is_linear"),
         ],
     )
-    def test_parser_linearity_cases(self, _p0, _p1):
+    def test_parser_linearity_cases(self, prefix, filler):
         import time
-        text = _p0 + _p1 * 200000
+        text = prefix + filler * 200000
         t0 = time.perf_counter()
-        parse_tool_calls_from_text(text, allow_incomplete=True)
+        parse_tool_calls_from_text(text, allow_incomplete = True)
         assert time.perf_counter() - t0 < 2.0
-
 
     def test_gemma_wrapperless_deep_nesting_is_linear(self):
         # Wrapper-less Gemma ``call:f{a:{a:{...}}}`` deep nesting must parse in linear time (no quadratic re-scan).

@@ -1440,7 +1440,7 @@ def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
         pytest.param([['web_search[ARGS]{"query":"cats"}'], ["Found."]],
             [("web_search", {"query": "cats"})], ["web_search"], None,
             id = "rehearsal_call_name_is_not_streamed_before_args"),
-        # Name and [ARGS] in separate chunks -- the bare name is held until [ARGS] arrives.
+        # Finding 5: name and [ARGS] in separate chunks, so the bare name is held until [ARGS] arrives.
         pytest.param([["web_search", '[ARGS]{"query":"cats"}'], ["Found."]],
             [("web_search", {"query": "cats"})], ["web_search"], None,
             id = "rehearsal_call_name_split_before_args_is_not_streamed"),
