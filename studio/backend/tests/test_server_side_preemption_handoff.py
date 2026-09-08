@@ -30,6 +30,7 @@ import routes.inference as inference_route
 
 from .llama_backend_double import FakeLlamaCppBackend
 from .preempt_fakes import (
+    bare_backend,
     FakeResponse as _FakeResponse,
     PreemptRecorder,
     ServerHookPolicy as _HookPolicy,
@@ -329,6 +330,20 @@ class TestEverySignalTheClientReadsHasAProducer:
 
 class _Obj:
     pass
+
+
+class TestTheParkedMetricsProbeIsAuthenticated:
+    def test_the_probe_carries_the_key(self, monkeypatch):
+        seen = {}
+
+        def scrape(base_url, timeout_s = 3.0, headers = None):
+            seen["headers"] = headers
+            return {"requests_preempted": 1.0}
+
+        monkeypatch.setattr("core.inference.llama_stats.scrape_llama_metrics", scrape)
+        backend = bare_backend(_api_key = "sk-test")
+        assert backend._server_park_grace() is True
+        assert seen["headers"] == {"Authorization": "Bearer sk-test"}
 
 
 class TestAParkIsNotAStall:

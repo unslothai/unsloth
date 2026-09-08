@@ -827,6 +827,20 @@ class TestTheResumeWait:
     def _shutdown(loop):
         loop.call_soon_threadsafe(loop.stop)
 
+    def test_stop_before_the_wait_books_no_room(self):
+        # with room to spare the grant would succeed at once, and a Stop read only inside the
+        # loop was skipped, sending the stopped chat into the resume
+        controller = PreemptionController("stop-first")
+        controller.configure(budget = 16384, kv_unified = True)
+        policy, loop = self._waiting_policy(controller, "chat", 1000, paused = True)
+        try:
+            stop = threading.Event()
+            stop.set()
+            assert policy.await_resume(timeout = 5.0, cancel_event = stop) is False
+            assert controller.participant("chat").state == ParticipantState.PAUSED
+        finally:
+            self._shutdown(loop)
+
     def test_the_progress_signature_sees_a_decoding_backend_committed_cannot(self):
         """"no progress for 90.0s" about three chats decoding at full rate."""
         controller = self._pinned("pinned")

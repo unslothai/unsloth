@@ -1266,13 +1266,16 @@ class ControllerPreemptionPolicy:
         # Fresh reading first: this grant lets a chat back in carrying its whole replayed partial.
         self._controller.refresh_residency()
         # try_grant_resume, not room_for: the room has to be BOOKED at the instant it is found,
-        # or two chats waiting at once both find the same space and both take it.
-        while not self._controller.try_grant_resume(self._gen_id, want):
+        # or two chats waiting at once both find the same space and both take it. Stop is read
+        # before every attempt: a grant that succeeds at once would otherwise skip it.
+        while True:
             if cancel_event is not None and cancel_event.is_set():
                 # Stop pressed during the pause: nothing to resume, and the worker must not
                 # sit here until room appears for a chat nobody is reading.
                 _log.info("llama preemption cancelled-while-paused: gen_id=%s", self._gen_id)
                 return False
+            if self._controller.try_grant_resume(self._gen_id, want):
+                break
             self._controller.refresh_residency()
             now = time.monotonic()
             current = self._controller.progress_signature()
@@ -1311,7 +1314,8 @@ class ControllerPreemptionPolicy:
             time.sleep(0.1)
         try:
             future = asyncio.run_coroutine_threadsafe(
-                lease.resume_async(want, timeout_s = timeout), self._loop
+                lease.resume_async(want, timeout_s = timeout, cancel_event = cancel_event),
+                self._loop,
             )
             # A backstop for a loop that never runs the coroutine at all; resume_async is
             # already bounded by timeout_s.

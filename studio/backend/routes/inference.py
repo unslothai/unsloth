@@ -2586,6 +2586,7 @@ def _openai_llama_admission_enforced_max_tokens(
     request: Optional[Request],
     llama_backend,
     injected_tools = None,
+    pausable: bool = True,
 ) -> Optional[int]:
     """The cap to SEND, so the reservation is enforced instead of merely recorded.
 
@@ -2630,8 +2631,9 @@ def _openai_llama_admission_enforced_max_tokens(
     # THE WINDOW, not a share of it. The cache is deliberately overcommitted and preemption
     # reclaims when the live total approaches it, which is what vLLM does. Dividing was the right
     # STOPGAP while nothing could pause: two of four chats failed to finish inside 900s while the
-    # cache sat mostly idle. ONLY while something will reclaim the difference.
-    if not _openai_llama_preemption_will_apply(llama_backend, budget):
+    # cache sat mostly idle. ONLY while something will reclaim the difference, which a request
+    # that is never chosen as a victim (`pausable=False`) cannot have reclaimed.
+    if not pausable or not _openai_llama_preemption_will_apply(llama_backend, budget):
         share = max(1, budget // max(1, capacity))
         if share >= (window or budget):
             return None
@@ -32530,7 +32532,7 @@ def _build_openai_passthrough_body(
         # effective_max_tokens.
         (
             _openai_llama_admission_enforced_max_tokens(
-                payload, request = None, llama_backend = llama_backend
+                payload, request = None, llama_backend = llama_backend, pausable = False
             )
             or _effective_openai_max_tokens(payload)
         ),

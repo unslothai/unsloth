@@ -168,6 +168,15 @@ class TestWhenNothingWillReclaim:
         prompt = _prompt_tokens(_chat("hi"))
         assert _enforced(_chat("hi"), self._backend()) == 16384 - prompt
 
+    def test_an_unpausable_request_is_held_to_its_share_while_the_switch_is_on(self, monkeypatch):
+        # never chosen as a victim, so nothing reclaims what it generates past its charge
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "1")
+        prompt = _prompt_tokens(_chat("hi"))
+        enforced = _openai_llama_admission_enforced_max_tokens(
+            _chat("hi"), request = None, llama_backend = self._backend(), pausable = False
+        )
+        assert enforced == 4096 - prompt
+
     def test_the_switch_off_brings_the_share_back_and_four_of_them_fit(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")
         prompt = _prompt_tokens(_chat("hi"))

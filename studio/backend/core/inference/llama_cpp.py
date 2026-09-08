@@ -6774,7 +6774,8 @@ class LlamaCppBackend:
         build predating the stream comments is silent while parked, and `/metrics` says so."""
         try:
             from core.inference.llama_stats import scrape_llama_metrics
-            metrics = scrape_llama_metrics(self.base_url, timeout_s = 3.0)
+            # `/metrics` sits behind --api-key like `/slots`: unauthenticated, every check was a 401
+            metrics = scrape_llama_metrics(self.base_url, timeout_s = 3.0, headers = self._auth_headers)
         except Exception:
             return False
         if not metrics:
