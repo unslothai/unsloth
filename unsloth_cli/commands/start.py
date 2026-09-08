@@ -193,6 +193,10 @@ _CLAUDE_ENV_UNSET = (
     "CLAUDE_CODE_USE_MANTLE",
 )
 _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
+# OpenClaw tries CODEX_API_KEY before OPENAI_API_KEY, so dropping only the latter still embeds
+# via OpenAI. CODEX_ACCESS_TOKEN is not a provider candidate but its host exec tool inherits it
+# (it is absent from host-env-security-policy.json), and the codex CLI on PATH logs in with it.
+_OPENCLAW_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
 # Help is grouped into rich panels so `--help` reads as Model / Server / Session
@@ -4645,6 +4649,26 @@ def _session_config(
         yield path
 
 
+def _studio_embedding_model(base: str, key: str) -> Optional[str]:
+    """Studio's configured embedding model, or None when this server cannot say.
+
+    Not a model name: a name this server will not serve, beside fallback "none", is the one
+    combination OpenClaw cannot degrade out of. The caller writes provider "none" instead.
+    """
+    try:
+        info = _http_json("GET", f"{base}/api/settings/embedding-model", key, timeout = 10)
+    # typer.Exit is a RuntimeError subclass: the broad catch would swallow a deliberate abort.
+    except (typer.Exit, typer.Abort, click.exceptions.Exit, click.exceptions.Abort):
+        raise
+    except Exception:  # noqa: BLE001 - an older or unreachable server still gets a working config
+        return None
+    name = info.get("embedding_model") if isinstance(info, dict) else None
+    if not isinstance(name, str) or not name.strip():
+        return None
+    # OpenClaw sends this to /v1/embeddings verbatim; Settings stores what was typed.
+    return name.strip()
+
+
 def write_openclaw_config(
     base: str,
     key: str,
@@ -4652,6 +4676,7 @@ def write_openclaw_config(
     path: Path,
     yolo: bool = False,
     workspace_path: Optional[str] = None,
+    embedding_model: Optional[str] = None,
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -4675,6 +4700,26 @@ def write_openclaw_config(
         "api": "openai-completions",
         "models": [provider_model],
     }
+    # Memory search is on by default and defaults to openai, so a local session reaches
+    # OpenAI unless this block is written.
+    search = _subdict(_subdict(config, "memory"), "search")
+    if embedding_model:
+        search.update(
+            {
+                "provider": "openai-compatible",
+                "model": embedding_model,
+                "fallback": "none",
+                "remote": {"baseUrl": f"{base}/v1", "apiKey": key},
+            }
+        )
+    else:
+        # "none" is OpenClaw's keyword-only mode: no network call, and search still returns
+        # hits. Clearing the remote stops a reused --persist config aiming at a dead endpoint.
+        search.update({"provider": "none", "fallback": "none"})
+        search.pop("model", None)
+        search.pop("remote", None)
+    # ORed with OPENCLAW_LOAD_SHELL_ENV: a persisted true re-enables the login-shell key import.
+    _subdict(_subdict(config, "env"), "shellEnv")["enabled"] = False
     # Pin a default model, else OpenClaw drops into its setup agent ("no models available").
     agents = _subdict(config, "agents")
     defaults = _subdict(agents, "defaults")
@@ -5280,7 +5325,15 @@ def codex(
     with _session_config("codex", launch, persist = persist) as home:
         write_codex_config(base, entry, home)
         env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
-        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+        _run(
+            base,
+            entry,
+            env,
+            command,
+            launch = launch,
+            install_hint = install_hint,
+            unset_env = _CODEX_ENV_UNSET,
+        )
 
 
 @start_app.command("openclaw", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
@@ -5364,9 +5417,15 @@ def openclaw(
             config_path,
             yolo = yolo,
             workspace_path = "${OPENCLAW_WORKSPACE_DIR}",
+            embedding_model = _studio_embedding_model(base, key),
         )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
-        env = {"OPENCLAW_CONFIG_PATH": str(config_path), "OPENCLAW_STATE_DIR": str(cfg)}
+        # Off, else OpenClaw re-imports any provider key it cannot see from a login shell.
+        env = {
+            "OPENCLAW_CONFIG_PATH": str(config_path),
+            "OPENCLAW_STATE_DIR": str(cfg),
+            "OPENCLAW_LOAD_SHELL_ENV": "0",
+        }
         _run(
             base,
             entry,
@@ -5374,6 +5433,7 @@ def openclaw(
             command,
             launch = launch,
             install_hint = install_hint,
+            unset_env = _OPENCLAW_ENV_UNSET,
             cwd_env = ("OPENCLAW_WORKSPACE_DIR",),
         )
 
@@ -5803,7 +5863,9 @@ def dsh(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(

@@ -34,8 +34,8 @@ import types
 import pytest
 
 
-# Collection must stay cheap and safe where the runtime is absent (the
-# daily-fresh-fetch job collects tests/version_compat/ with only pytest).
+# Collection must stay cheap and safe where the runtime is absent (the daily-fresh-fetch job collects
+# tests/version_compat/ with only pytest).
 if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed; this test drives the real patch", allow_module_level = True)
 
@@ -45,7 +45,6 @@ if importlib.util.find_spec("torch") is None:
 # `_init_vllm` and `sync_weights` are still rewritten from source, so their text
 # has to carry the anchors the regexes look for: an `self.llm = LLM(...)` block
 # and a bare `def sync_weights(self):` line.
-
 _INIT_VLLM = """
 def _init_vllm(self, model):
     if self.mode == "colocate":
@@ -66,7 +65,6 @@ def sync_weights(self):
 """
 
 # TRL >= 1.10.0: no `collective_rpc("reload_weights")` anywhere in `generate`.
-# This is the shape that silently dropped the adapter.
 _GENERATE_TRL_1_10 = """
 def generate(self, prompts, **kwargs):
     self.sync_weights()
@@ -82,7 +80,6 @@ def generate(self, prompts, **kwargs):
     return self.llm.generate(prompts, sampling_params = self.sampling_params, use_tqdm = False)
 """
 
-# Conversational rollouts go through `LLM.chat`, which needs the same adapter.
 _GENERATE_CHAT = """
 def generate(self, prompts, **kwargs):
     self.sync_weights()
@@ -191,9 +188,8 @@ def _build_fake_trl(
     )
     generation.vllm_generation = vllm_generation
 
-    # A fake `trl` package too, so nothing here depends on a real TRL install:
-    # the patch gates on `importlib.util.find_spec("trl")`, which resolves out of
-    # sys.modules when the name is already there.
+    # A fake `trl` package too, so nothing here depends on a real TRL install: the patch gates on
+    # `importlib.util.find_spec("trl")`, which resolves out of sys.modules when the name is already there.
     trl = types.ModuleType("trl")
     trl.__spec__ = importlib.machinery.ModuleSpec(name = "trl", loader = None, origin = "<fake trl>")
     trl.__spec__.submodule_search_locations = []
@@ -286,8 +282,8 @@ def test_trl_0_22_shape_keeps_working(monkeypatch):
     assert requests and all(
         str(r).startswith("LORA[vllm_gen_lora") for r in requests
     ), f"adapter missing on the 0.22.2-era shape: {log}"
-    # The shared engine already holds the live training weights, so a
-    # reload_weights would drag the original checkpoint back off disk.
+    # The shared engine already holds the live training weights, so a reload_weights would drag the original checkpoint
+    # back off disk.
     assert (
         ("collective_rpc", "reload_weights") not in log
     ), f"reload_weights reached the shared engine and clobbered the trained weights: {log}"
@@ -437,8 +433,8 @@ def test_patching_twice_does_not_double_wrap(monkeypatch):
     for name, method in after_first.items():
         assert getattr(cls, name) is method, f"{name} was re-patched on the second call"
 
-    # One layer of wrapping, and it unwraps to TRL's own function so that
-    # `inspect.getsource` / `inspect.signature` still report TRL's `generate`.
+    # One layer of wrapping, and it unwraps to TRL's own function so that `inspect.getsource` / `inspect.signature`
+    # still report TRL's `generate`.
     wrapped = getattr(cls.generate, "__wrapped__", None)
     assert wrapped is not None, "the wrapper did not set __wrapped__"
     assert getattr(wrapped, "__wrapped__", None) is None, "generate was wrapped twice"
@@ -463,8 +459,6 @@ def test_patching_twice_does_not_double_wrap(monkeypatch):
 # positional parameter, and its index has already moved once (`tokenization_kwargs`
 # was inserted in 0.18.0). A caller that fills it positionally and an injector that
 # then adds it as a keyword is `TypeError: got multiple values for argument`.
-
-
 class VLLMSignatureEngine(FakeEngine):
     """`FakeEngine` with vLLM 0.27.1's real parameter lists on both entry points."""
 

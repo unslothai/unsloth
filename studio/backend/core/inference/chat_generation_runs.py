@@ -76,7 +76,11 @@ def _background_request(app: Any, run_id: str, cancel_event: threading.Event) ->
         "path": "/api/inference/chat-runs/producer",
         "raw_path": b"/api/inference/chat-runs/producer",
         "query_string": b"",
-        "headers": [(b"x-unsloth-generation-run", run_id.encode("ascii", "ignore"))],
+        "headers": [
+            (b"x-unsloth-generation-run", run_id.encode("ascii", "ignore")),
+            # Durable runs replay their event log to the UI, which needs the Unsloth control frames (see routes.inference).
+            (b"x-unsloth-events", b"1"),
+        ],
         "client": ("127.0.0.1", 0),
         "server": ("127.0.0.1", 0),
         "app": app,

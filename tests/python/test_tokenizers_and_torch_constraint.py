@@ -193,10 +193,10 @@ class TestInstallShUvDefaultIndex:
         assert '--default-index "$TORCH_INDEX_URL"' in self._sh
 
     def test_torch_installs_do_not_use_deprecated_index_url(self):
-        # uv deprecated --index-url in favour of --default-index; pip never had it, so the XPU
-        # triton pre-fetch (`pip download`) legitimately uses --index-url. Checked per
-        # occurrence so a uv invocation still cannot slip one through. Backslash continuations
-        # are joined first, since the flag and its command are often on different lines.
+        # uv deprecated --index-url in favour of --default-index; pip never had it, so the XPU triton pre-fetch
+        # (`pip download`) legitimately uses --index-url. Checked per occurrence so a uv invocation still cannot slip
+        # one through. Backslash continuations are joined first, since the flag and its command are often on
+        # different lines.
         joined = self._sh.replace("\\\n", " ")
         offenders = [
             " ".join(line.split())
@@ -436,10 +436,9 @@ class TestTorchConstraintShell:
         logged = log_file.read_text()
         assert "torch>=2.4,<2.11.0" in logged, f"uv log: {logged}"
 
-    # Mirrors the _torch_index_leaf case in install.sh: rocm7.2 -> 2.11.x floor,
-    # CUDA -> widened <2.12.0 ceiling, else (CPU/older ROCm) -> default. Anchored
-    # on the final path segment, so a mirror base path containing cu*/rocm7.2 but
-    # ending in a cpu/older-rocm leaf keeps the default.
+    # Mirrors the _torch_index_leaf case in install.sh: rocm7.2 -> 2.11.x floor, CUDA -> widened <2.12.0 ceiling, else
+    # (CPU/older ROCm) -> default. Anchored on the final path segment, so a mirror base path containing cu*/rocm7.2
+    # but ending in a cpu/older-rocm leaf keeps the default.
     _INDEX_SNIPPET = textwrap.dedent(r"""
         #!/bin/bash
         set -e
@@ -497,8 +496,8 @@ class TestTorchConstraintShell:
         ],
     )
     def test_cuda_in_mirror_path_but_noncuda_leaf_keeps_default(self, tmp_path, url):
-        # A cu128 in the mirror base path must not widen when the leaf is cpu /
-        # older ROCm: the case anchors on _torch_index_leaf, not the whole URL.
+        # A cu128 in the mirror base path must not widen when the leaf is cpu / older ROCm: the case anchors on
+        # _torch_index_leaf, not the whole URL.
         assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.11.0"
 
 
@@ -567,12 +566,21 @@ class TestE2ETokenizersFix:
         assert result.returncode != 0, "torch should NOT be importable"
 
     def test_negative_control_no_tokenizers(self, tmp_path):
-        """Without the tokenizers line, AutoConfig must fail (negative control)."""
+        """Without the tokenizers line, AutoConfig must fail (negative control).
+
+        Dropped by package name, not by exact text. This filter used to compare the whole
+        line against "tokenizers", which matched the bare entry #4748 added and matched
+        nothing once #5359 gave it a version bound: the control then installed tokenizers
+        and asserted a failure that could not happen, so it failed on every tree from that
+        commit onward. A name-based match survives the next bound too.
+        """
         venv = self._create_venv(tmp_path, "neg-ctrl", "3.12")
         req_no_tokenizers = tmp_path / "no-tokenizers.txt"
         req_no_tokenizers.write_text(
             "\n".join(
-                line for line in _read(_NO_TORCH_RT).splitlines() if line.strip() != "tokenizers"
+                line
+                for line in _read(_NO_TORCH_RT).splitlines()
+                if not re.match(r"tokenizers([^A-Za-z0-9._-]|$)", line.strip())
             ),
             encoding = "utf-8",
         )
