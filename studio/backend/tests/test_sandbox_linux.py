@@ -845,3 +845,30 @@ def test_the_probe_launch_sets_no_new_privs_like_a_real_one(tmp_path):
         for node in ast.walk(ast.parse(inspect.getsource(sandbox_probe._no_new_privs)))
         if isinstance(node, (ast.Import, ast.ImportFrom))
     ]
+
+
+def test_the_pip_targets_script_directory_is_last_on_path(prepared):
+    """pip writes a console entry point to <target>/bin, so `pip install black`
+    followed by `black .` needs it on PATH. LAST, and that placement is the whole
+    safety argument: the directory is writable by the tool call, and
+    _build_safe_env drops user-writable PATH entries precisely so a planted binary
+    cannot shadow a bare command the approval logic treats as safe."""
+    argv = prepared.argv
+    entries = argv[argv.index("PATH") + 1].split(os.pathsep)
+    packages = os.path.join(prepared.workdir, sandbox_linux._PACKAGE_TARGET_RELPATH)
+    assert entries[-1] == os.path.join(packages, "bin")
+    assert "/usr/bin" in entries[:-1]
+
+
+def test_the_compiler_headers_a_source_build_needs_are_readable(prepared):
+    """A pip install with no wheel builds from source, which the executor this
+    replaces could do: without the include trees it fails at the first #include,
+    and Python.h lives under the interpreter's prefix, not /usr/include, for a uv
+    or pyenv managed runtime."""
+    sources = [source for source, _ in _pairs(prepared.argv, "--ro-bind-try")]
+    assert "/usr/include" in sources
+    assert "/usr/local/include" in sources
+    include = sysconfig.get_paths().get("include")
+    if include and os.path.isdir(include):
+        bound = [source for source, _ in _pairs(prepared.argv, "--ro-bind")]
+        assert any(sandbox_linux._within(include, path) for path in (*sources, *bound)), include

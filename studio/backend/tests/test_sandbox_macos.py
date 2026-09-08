@@ -530,3 +530,24 @@ def test_a_runtime_path_symlinked_out_of_the_workdir_is_not_readable(monkeypatch
     # Without the workdir it is the resolved spelling that survives, which is the
     # behaviour this excludes; asserted so the parameter cannot be dropped silently.
     assert str(secret) in backend.runtime_read_paths()
+
+
+def test_pip_console_scripts_are_reachable_and_never_shadow_a_system_command():
+    """Parity with the Linux backend: <target>/bin holds the console entry point
+    pip writes, and it goes last so a binary the tool call plants there cannot
+    shadow a bare command the approval logic treats as safe."""
+    env = backend._sandbox_environment(
+        {"PATH": "/usr/bin:/bin", "PYTHONPATH": "/shim"}, _WORKDIR, _PRIVATE_TMP
+    )
+    packages = f"{_WORKDIR}/{backend.PACKAGE_TARGET_RELPATH}"
+    assert env["PATH"].split(os.pathsep) == ["/usr/bin", "/bin", f"{packages}/bin"]
+
+
+def test_the_semaphore_namespace_is_named_rather_than_narrowed(profile):
+    """ipc-posix-sem is unfiltered and the namespace is host-wide, so a launch can
+    reach another same-user process's semaphore. Narrowing it would need the names
+    torch and OpenMP pick on a platform none of this runs on, and a wrong guess
+    breaks multiprocessing instead of confining a filesystem, so the record states
+    it instead."""
+    assert "(allow ipc-posix-sem)" in profile
+    assert "posix_semaphore_namespace_shared" in backend.LIMITATIONS

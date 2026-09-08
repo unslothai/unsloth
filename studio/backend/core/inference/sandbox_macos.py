@@ -72,6 +72,13 @@ LIMITATIONS = (
     # POSIX shared memory has one namespace per host, and torch's segments and
     # the standard library's are allowed by name pattern rather than isolated.
     "pytorch_posix_shm_namespace_shared",
+    # Named semaphores share that host namespace too, and unlike the shared
+    # memory rules ipc-posix-sem is granted unfiltered: a launch can open or
+    # unlink another same-user process's semaphore if it knows the name. Stated
+    # rather than narrowed, because the allowlist would have to cover whatever
+    # torch and OpenMP name theirs on a platform none of this can be run on, and
+    # a wrong guess breaks multiprocessing instead of confining a filesystem.
+    "posix_semaphore_namespace_shared",
 )
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
@@ -463,12 +470,15 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
     # extension in the standard library -- hangs off the alias spelling.
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
         candidates.extend(
-            posixpath.join(prefix, name) for name in ("bin", "lib", "lib64", "pyvenv.cfg")
+            posixpath.join(prefix, name)
+            for name in ("bin", "include", "lib", "lib64", "pyvenv.cfg")
         )
     try:
         paths = sysconfig.get_paths()
         candidates.extend(
-            paths[key] for key in ("stdlib", "platstdlib", "purelib", "platlib") if paths.get(key)
+            paths[key]
+            for key in ("stdlib", "platstdlib", "purelib", "platlib", "include", "platinclude")
+            if paths.get(key)
         )
     except (KeyError, OSError):
         pass
@@ -699,6 +709,14 @@ def _sandbox_environment(env: dict[str, str], workdir: str, private_tmp: str) ->
             "TEMP": tmpdir,
             "XDG_RUNTIME_DIR": private_tmp,
             "PIP_TARGET": packages,
+            # <target>/bin is where pip writes a console entry point, so without
+            # it `pip install black && black .` installs and then fails. Last on
+            # PATH: the directory is writable by the tool call, and behind every
+            # system directory a planted binary cannot shadow a bare command the
+            # approval logic treats as safe.
+            "PATH": os.pathsep.join(
+                part for part in (env.get("PATH") or "", posixpath.join(packages, "bin")) if part
+            ),
             "PYTHONPATH": os.pathsep.join(
                 part for part in (env.get("PYTHONPATH") or "", packages) if part
             ),

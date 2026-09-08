@@ -79,6 +79,11 @@ _SYSTEM_ROOTS = (
     "/usr/local/sbin",
     "/usr/local/share",
     "/usr/share",
+    # Headers, for the pip installs that have no wheel and build from source.
+    # Read-only system paths like the rest of this list, and the executor they
+    # replace had them: without them a source build fails at the first #include.
+    "/usr/include",
+    "/usr/local/include",
     "/bin",
     "/sbin",
     "/lib",
@@ -263,18 +268,24 @@ def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[st
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site"),
     ]
     # The subdirectories a Python installation lives in, never the prefix itself.
+    # "include" is in the list for the same reason /usr/include is a system root:
+    # a pip install with no wheel builds from source and needs Python.h, which
+    # for a uv- or pyenv-managed interpreter lives under the prefix rather than
+    # in /usr/include.
     # ``python -m venv .`` at a project root makes sys.prefix the project root, so
     # binding the prefix would hand the jail the entire tree -- sources, .git,
     # .env -- to reach one lib directory, which is the read side this backend
     # exists to keep closed.
     for prefix in prefixes:
         candidates.extend(
-            os.path.join(prefix, name) for name in ("bin", "lib", "lib64", "pyvenv.cfg")
+            os.path.join(prefix, name) for name in ("bin", "include", "lib", "lib64", "pyvenv.cfg")
         )
     try:
         paths = sysconfig.get_paths()
         candidates.extend(
-            paths[key] for key in ("stdlib", "platstdlib", "purelib", "platlib") if paths.get(key)
+            paths[key]
+            for key in ("stdlib", "platstdlib", "purelib", "platlib", "include", "platinclude")
+            if paths.get(key)
         )
     except (KeyError, OSError):
         pass
@@ -365,6 +376,21 @@ def _pythonpath(plan: ToolLaunchPlan, packages: str) -> str:
     """
     inherited = plan.env.get("PYTHONPATH") or ""
     return os.pathsep.join(part for part in (inherited, packages) if part)
+
+
+def _path(plan: ToolLaunchPlan, packages: str) -> str:
+    """The caller's PATH with the package target's script directory appended.
+
+    ``pip install black`` writes its launcher to ``<target>/bin``, so without
+    this the install succeeds and the command that follows it does not.
+
+    LAST, and that placement is the whole safety argument: this directory is
+    writable by the tool call, and _build_safe_env drops user-writable PATH
+    entries precisely so a planted binary cannot shadow a bare command the
+    approval logic treats as safe. Behind every system directory it cannot.
+    """
+    inherited = plan.env.get("PATH") or ""
+    return os.pathsep.join(part for part in (inherited, os.path.join(packages, "bin")) if part)
 
 
 def _model_cache_path(workdir: str) -> str | None:
@@ -537,6 +563,9 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             "--setenv",
             "PYTHONPATH",
             _pythonpath(plan, packages),
+            "--setenv",
+            "PATH",
+            _path(plan, packages),
             "--",
         ]
         argv += list(plan.argv)

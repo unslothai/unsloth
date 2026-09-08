@@ -72,7 +72,7 @@ def _gated_grandchild_sh(gate: Path, sentinel: Path) -> str:
 
 
 def _os_isolated_tools() -> bool:
-    """Whether a tool launch on this host really gets its own PID namespace.
+    """Whether a tool launch on this host is reaped by its own PID namespace.
 
     The grandchild tests below all reproduce the same pathology: the foreground
     leader exits while a detached descendant still holds stdout, and tools.py has
@@ -82,9 +82,18 @@ def _os_isolated_tools() -> bool:
     leader's output instead of a timeout or a cancellation. The invariant is the
     same on both paths and is asserted on both: nothing of the tool call outlives
     it. Only the mechanism, and therefore the result string, differs.
+
+    Keyed on the backend's own limitation, not on "is a sandbox available":
+    Seatbelt is available and has no PID namespace, and says so by reporting
+    detached_descendant_cleanup_unverified. A macOS host therefore behaves like
+    the unisolated path here and has to take the unisolated expectations.
     """
     from core.inference import os_sandbox
-    return os_sandbox.capability_snapshot().available
+
+    capability = os_sandbox.capability_snapshot()
+    return capability.available and (
+        "detached_processes_die_with_the_call" in capability.limitations
+    )
 
 
 def _assert_grandchild_was_killed(gate: Path, sentinel: Path) -> None:
@@ -578,7 +587,7 @@ def test_bash_exec_invalid_utf8_identical_with_streaming():
 
 @pytest.mark.skipif(
     _os_isolated_tools(),
-    reason = "a PID namespace kills the background job with the leader; see the isolated case below",
+    reason = "a PID namespace kills the background job with the leader; see below",
 )
 def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     # A background grandchild holds the pipe open past the shell's exit and writes
@@ -592,7 +601,9 @@ def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     assert "late-grandchild-output" in "".join(chunks)
 
 
-@pytest.mark.skipif(not _os_isolated_tools(), reason = "this host cannot isolate")
+@pytest.mark.skipif(
+    not _os_isolated_tools(), reason = "no PID namespace here, so nothing reaps the job"
+)
 def test_bash_exec_unlimited_timeout_does_not_wait_for_a_job_the_namespace_reaps():
     # The isolated counterpart, and the reason "detached_processes_die_with_the
     # _call" is in the backend's LIMITATIONS: the background job goes down with
