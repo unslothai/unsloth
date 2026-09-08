@@ -2163,6 +2163,19 @@ def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[
     return None
 
 
+def _child_parking_stands_down(args, env: Mapping[str, str]) -> bool:
+    """Whether the child's own parking is to be switched off for the line as it stands.
+
+    Read by `_stand_down_child_parking`, and BEFORE an exact launch sizes a budget of its
+    own: the stand-down reads any ``--preempt-ram`` as a budget somebody named, so a budget
+    Studio generated for itself would defeat the switch and run the parking it turned off.
+    """
+    studio_pauses = _preemption.preempt_mode_setting() == _preemption.PREEMPT_MODE_STUDIO
+    if (_preemption.preemption_enabled() and not studio_pauses) or "LLAMA_ARG_PREEMPT_RAM" in env:
+        return False
+    return not any(str(a).startswith("--preempt-ram") for a in (args or ()))
+
+
 def _stand_down_child_parking(env: dict, args) -> bool:
     """One switch means no preemption anywhere: with Studio's off, the child would still park
     on its own default budget. ``UNSLOTH_LLAMA_PREEMPT_MODE=studio`` stands it down as well:
@@ -2170,10 +2183,7 @@ def _stand_down_child_parking(env: dict, args) -> bool:
     the child made on its own raced Studio's pause with no relay excusing the silence. Puts
     ``LLAMA_ARG_PREEMPT_RAM=0`` in ``env`` and returns True, unless something named a budget
     already: a ``--preempt-ram`` in the extras or an inherited variable keeps its say."""
-    studio_pauses = _preemption.preempt_mode_setting() == _preemption.PREEMPT_MODE_STUDIO
-    if (_preemption.preemption_enabled() and not studio_pauses) or "LLAMA_ARG_PREEMPT_RAM" in env:
-        return False
-    if any(str(a).startswith("--preempt-ram") for a in (args or ())):
+    if not _child_parking_stands_down(args, env):
         return False
     env["LLAMA_ARG_PREEMPT_RAM"] = "0"
     return True
@@ -23624,7 +23634,12 @@ class LlamaCppBackend:
                     # A park that outgrows the host budget is re-prefilled, and a re-prefill is
                     # not byte-identical on CUDA, so the budget has to hold the whole pool. Only
                     # when nothing named one: the extras and an inherited variable keep their say.
-                    if server_caps.get("supports_preempt_ram"):
+                    # And not when the stand-down below is going to switch the child's parking
+                    # off: it reads any --preempt-ram as one somebody named, so a budget generated
+                    # here ran the parking the switch turned off, unlimited under an auto-fit.
+                    if server_caps.get("supports_preempt_ram") and not _child_parking_stands_down(
+                        list(cmd) + [str(a) for a in (extra_args or ())], os.environ
+                    ):
                         try:
                             _exact_kv_bytes = _kv_bytes(effective_ctx)
                         except Exception:
