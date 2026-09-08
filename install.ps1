@@ -1390,8 +1390,6 @@ public static class UnslothStudioFinalPathV2
             [string]$UvExecutable = ""
         )
         $studioCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
-        # Ahead of the custom-cache return below, or a preset UV_CACHE_DIR skips the claim.
-        Write-StudioRootOwnerMarker -Root $StudioRoot
         if (-not [string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
             $script:StudioUvCacheMode = "custom"
             # Absolute before anything uses it, so every phase of one install and the
@@ -4104,6 +4102,12 @@ exit 0
         return (Exit-InstallFailure "uv could not be installed")
     }
 
+    # Ahead of the cache setup, which is the first thing to write inside the root and returns
+    # early for a preset UV_CACHE_DIR. Here rather than inside it: the claim has nothing to do
+    # with the uv cache, and that function is lifted out and run on its own by
+    # tests/python/test_windows_python_venv_hardening.py, where a call into the rest of the
+    # installer is a command-not-found.
+    Write-StudioRootOwnerMarker -Root $StudioHome
     Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
 
     # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
