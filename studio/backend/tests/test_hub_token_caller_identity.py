@@ -1711,7 +1711,9 @@ def test_a_ui_sessions_marker_survives_the_route_level_token_normalizer():
     assert isinstance(resolved, hf_tokens.AmbientAuthorizedToken), "marker lost in normalization"
     # An API key must not acquire the marker on the way through.
     api_key = hf_token_arg("  hf_saved  ", allow_ambient_token = False)
-    assert not isinstance(models_routes._normalize_hf_token(api_key), hf_tokens.AmbientAuthorizedToken)
+    assert not isinstance(
+        models_routes._normalize_hf_token(api_key), hf_tokens.AmbientAuthorizedToken
+    )
     assert models_routes._normalize_hf_token("   ") is None
     assert models_routes._normalize_hf_token(False) is None
 
@@ -1783,12 +1785,12 @@ def test_an_explicit_tokens_offline_config_read_is_not_memoized_forever(monkeypa
     reset_repo_access_cache()
     tv._config_json_cache.clear()
     monkeypatch.setattr(tv, "_env_offline", lambda: True)
-    monkeypatch.setattr(tv, "_config_json_from_hf_cache", lambda *_a, **_k: {"model_type": "secret"})
+    monkeypatch.setattr(
+        tv, "_config_json_from_hf_cache", lambda *_a, **_k: {"model_type": "secret"}
+    )
 
     authorized = {"v": True}
-    monkeypatch.setattr(
-        tv, "cache_reads_authorized", lambda *_a, **_k: authorized["v"]
-    )
+    monkeypatch.setattr(tv, "cache_reads_authorized", lambda *_a, **_k: authorized["v"])
 
     token = hf_token_arg("hf_explicit", allow_ambient_token = False)
     assert tv._load_config_json("acme/private", token) == {"model_type": "secret"}
@@ -1859,7 +1861,8 @@ def test_the_vision_config_read_keeps_the_wire_for_a_repo_not_on_disk(monkeypatc
 
     probes = {"n": 0}
     monkeypatch.setattr(
-        mc, "cache_reads_authorized",
+        mc,
+        "cache_reads_authorized",
         lambda *_a, **_k: probes.__setitem__("n", probes["n"] + 1) or False,
     )
     downloads = {"n": 0}
@@ -1903,7 +1906,11 @@ def test_the_legacy_body_token_keeps_its_caller_class():
 
     seen = {}
 
-    def _capture(request, hf_token = None, **_k):
+    def _capture(
+        request,
+        hf_token = None,
+        **_k,
+    ):
         seen["token"] = hf_token
         raise HTTPException(status_code = 418, detail = "captured")
 
@@ -1918,9 +1925,9 @@ def test_the_legacy_body_token_keeps_its_caller_class():
     finally:
         datasets_routes.formatting.check_format_response = original
 
-    assert isinstance(seen.get("token"), hf_tokens.AmbientAuthorizedToken), (
-        "a UI session's body token was demoted to an API key"
-    )
+    assert isinstance(
+        seen.get("token"), hf_tokens.AmbientAuthorizedToken
+    ), "a UI session's body token was demoted to an API key"
 
 
 def test_the_same_token_from_two_caller_classes_takes_two_cache_identities():
@@ -1935,7 +1942,11 @@ def test_the_same_token_from_two_caller_classes_takes_two_cache_identities():
     ui = hf_token_arg("hf_saved", allow_ambient_token = True)
     api = hf_token_arg("hf_saved", allow_ambient_token = False)
 
-    for fingerprint in (inventory_scan.token_fingerprint, mc._token_fingerprint, dc._token_fingerprint):
+    for fingerprint in (
+        inventory_scan.token_fingerprint,
+        mc._token_fingerprint,
+        dc._token_fingerprint,
+    ):
         ui_id, api_id = fingerprint(ui), fingerprint(api)
         assert ui_id != api_id, f"{fingerprint.__module__} still collides across caller classes"
         # The qualifier must not smuggle the credential into a dict key.

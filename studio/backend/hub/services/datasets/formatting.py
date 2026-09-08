@@ -368,11 +368,15 @@ def check_format_response(
         # prefer_local_cache=false, ahead of the guarded cache reader below. The anonymous
         # sentinel is not the only caller that has not earned that disk: an explicit token
         # that cannot reach the repo is the same leak, so this mirrors the seed-inspect gate.
-        if not dataset_exists and not cache_reads_authorized(
-            hf_token,
-            repo_id = request.dataset_name,
-            repo_type = "dataset",
-        ) and (anonymous_and_offline(hf_token) or isinstance(hf_token, str)):
+        if (
+            not dataset_exists
+            and not cache_reads_authorized(
+                hf_token,
+                repo_id = request.dataset_name,
+                repo_type = "dataset",
+            )
+            and (anonymous_and_offline(hf_token) or isinstance(hf_token, str))
+        ):
             raise HTTPException(
                 status_code = 404,
                 detail = "Dataset preview is not available without Hub authorization.",

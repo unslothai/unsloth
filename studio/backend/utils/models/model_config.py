@@ -798,7 +798,6 @@ def _config_json_already_cached(model_name: str, revision: Optional[str] = None)
     """True if this repo's config.json is on disk, so an unauthorized read could be served it."""
     try:
         from huggingface_hub import try_to_load_from_cache
-
         hit = try_to_load_from_cache(
             repo_id = model_name,
             filename = "config.json",

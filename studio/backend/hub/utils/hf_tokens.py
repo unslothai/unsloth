@@ -100,7 +100,11 @@ def qualify_cache_identity(hf_token: HfTokenArg, digest: str) -> str:
 
     This is the same reason the forced-anonymous sentinel already takes its own identity.
     """
-    return f"{UI_CACHE_IDENTITY_PREFIX}{digest}" if isinstance(hf_token, AmbientAuthorizedToken) else digest
+    return (
+        f"{UI_CACHE_IDENTITY_PREFIX}{digest}"
+        if isinstance(hf_token, AmbientAuthorizedToken)
+        else digest
+    )
 
 
 # Both signs: a revoked token must not keep reading, a flapping Hub must not be re-dialled.
