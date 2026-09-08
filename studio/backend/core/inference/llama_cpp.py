@@ -14266,7 +14266,12 @@ class LlamaCppBackend:
 
         healthy = self._wait_for_health(timeout = 600.0, cancelled = cancelled)
         if healthy:
-            self._healthy = True
+            if not self._publish_healthy():
+                # Same window as the llama-server path: a teardown between the
+                # probe and this commit is already killing the runner, so
+                # publishing it healthy would advertise a server that is gone.
+                self._kill_process()
+                return False
             self._gpu_offload_active = not holds_no_gpu
             if extra_args is not None:
                 self._extra_args = list(extra_args)
@@ -25219,7 +25224,12 @@ class LlamaCppBackend:
                             else None
                         ),
                     )
-                self._healthy = True
+                if not self._publish_healthy():
+                    # Teardown began between the probe that answered 200 and this
+                    # commit, so the child is already being killed. Publishing here
+                    # would leave the backend reporting a model it does not have.
+                    _cleanup_cancelled_load("App shut down as the load was completing")
+                    return False
                 self._commit_effective_parallel_slots(n_parallel)
                 self._swa_full = swa_full
                 self._kv_cache_unified = kv_cache_unified
@@ -26348,6 +26358,23 @@ class LlamaCppBackend:
             terminate_descendants(collected, timeout = 5.0)
         except Exception as e:
             logger.debug(f"Could not terminate server descendants: {e}")
+
+    def _publish_healthy(self) -> bool:
+        """Commit _healthy under the spawn lock, or refuse if teardown has begun.
+
+        The recheck inside the health wait only narrows the window: teardown can
+        still start after a successful probe returns, kill the child and clear the
+        reference, and the caller would then publish _healthy for a server that no
+        longer exists. Taken under the same lock the teardown mark is set with, so
+        the two orders are the only ones possible: publish then teardown (which
+        clears _healthy on its way out), or teardown then a refused publish.
+        """
+        with self._spawn_lock:
+            if getattr(self, "_shutting_down", False):
+                logger.info("app shut down as the load completed; not publishing it healthy")
+                return False
+            self._healthy = True
+            return True
 
     def _close_attempt_log(self) -> None:
         """Close the per-attempt tee log opened just before a spawn.

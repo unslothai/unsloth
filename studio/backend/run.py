@@ -2748,27 +2748,6 @@ def run_server(
     _server = _ReadyServer(config)
     _shutdown_event = Event()
 
-    # A new server lifecycle. The backend is a module singleton, so an embedded host
-    # that stops and calls this again reuses the instance _graceful_shutdown marked
-    # as shutting down, and without this every launch of the second session would be
-    # refused.
-    #
-    # Last, after every fail-fast path, because clearing the flag is what lets a
-    # spawn through: an abort between the reset and the serve (an occupied port from
-    # _resolve_port, the missing-frontend SystemExit) would leave the previous
-    # session's still-unwinding load free to start a child that the shutdown sweep
-    # has already run past. Also after `from main import app`, which imports the
-    # route package, so the singleton exists by now and the import below is a lookup
-    # -- reaching for it earlier would build it here instead, ahead of the UTF-8
-    # reconfigure, the session log, the structlog setup, initialize_parent_lifetime()
-    # and write_startup_marker(), each documented above as having to come first.
-    try:
-        from routes.inference import _llama_cpp_backend
-        if _llama_cpp_backend is not None:
-            _llama_cpp_backend._begin_server_lifecycle()
-    except Exception as e:
-        logger.warning("Could not reset llama-server shutdown state: %s", e)
-
     # Expose the actual bound port so handlers build loopback URLs at the real
     # backend, not whatever a proxy/tunnel exposed. For ephemeral binds (port==0)
     # leave it unset so handlers fall back to the request scope / base_url.
@@ -2888,6 +2867,29 @@ def run_server(
             from lan_access import close_lan_listener_lifecycle as _close_lan_listener
 
             _close_lan_listener()
+
+    # A new server lifecycle. The backend is a module singleton, so an embedded host
+    # that stops and calls this again reuses the instance _graceful_shutdown marked
+    # as shutting down, and without this every launch of the second session would be
+    # refused.
+    #
+    # Immediately before the serve, after EVERY pre-serve exit: clearing the flag is
+    # what lets a spawn through, so an abort in between (an occupied port from
+    # _resolve_port, the missing-frontend SystemExit, the admin-password gate's
+    # sys.exit) would leave the previous session's still-unwinding load free to start
+    # a child that the shutdown sweep has already run past. The sys.exit further down
+    # is a startup FAILURE after this thread is running, by which point a spawn is
+    # legitimate. Also after `from main import app`, which imports the route package,
+    # so the singleton exists by now and the import below is a lookup -- reaching for
+    # it earlier would build it here instead, ahead of the UTF-8 reconfigure, the
+    # session log, the structlog setup, initialize_parent_lifetime() and
+    # write_startup_marker(), each documented above as having to come first.
+    try:
+        from routes.inference import _llama_cpp_backend
+        if _llama_cpp_backend is not None:
+            _llama_cpp_backend._begin_server_lifecycle()
+    except Exception as e:
+        logger.warning("Could not reset llama-server shutdown state: %s", e)
 
     thread = Thread(target = _run, daemon = True)
     _server_thread = thread

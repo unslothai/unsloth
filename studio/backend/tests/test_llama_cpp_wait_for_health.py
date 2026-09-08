@@ -1174,10 +1174,18 @@ def test_the_lifecycle_reset_is_the_last_thing_before_the_serve():
     """
     body = _run_server_body()
     reset = body.index("_begin_server_lifecycle()")
-    tail = body[reset:]
+    serve = body.index("thread.start()")
+    assert reset < serve, "the lifecycle reset no longer precedes the serve"
 
-    for fail_fast in ("raise SystemExit", "_resolve_port("):
-        assert fail_fast not in tail, (
+    # Only the window between the reset and the serve. The sys.exit further down is
+    # a startup FAILURE after the thread is running, by which point a spawn is
+    # legitimate, so the whole tail is the wrong scope.
+    #
+    # sys.exit( as well as raise SystemExit: the first version of this test checked
+    # only the latter and missed the admin-password gate, which exits the other way.
+    window = body[reset:serve]
+    for fail_fast in ("raise SystemExit", "sys.exit(", "_resolve_port("):
+        assert fail_fast not in window, (
             f"{fail_fast} runs after the lifecycle reset, so a failed restart leaves the "
             "spawn guard cleared"
         )
@@ -1281,3 +1289,56 @@ def test_the_pid_is_recorded_before_the_spawn_lock_is_released():
         f"the pid is recorded after the lock is released ({order}), so a teardown "
         "between the two writes a bare pid record for an already-reaped process"
     )
+
+
+class TestHealthPublicationIsAtomicWithTeardown:
+    """A successful probe and the _healthy commit are separate steps, so a teardown
+    landing between them left the backend advertising a model whose child had
+    already been killed. The recheck inside the wait narrows that window; only
+    taking the same lock the teardown mark is set under closes it."""
+
+    def _backend(self):
+        b = _make_backend()
+        b._stop_mtp_crash_watchdog = lambda: None
+        b._healthy = False
+        b._spawn_lock = threading.Lock()
+        return b
+
+    def test_a_teardown_before_the_commit_refuses_publication(self):
+        b = self._backend()
+        b._shutting_down = True
+
+        assert b._publish_healthy() is False
+        assert b._healthy is False, "a torn-down backend was published as healthy"
+
+    def test_an_ordinary_load_still_publishes(self):
+        b = self._backend()
+        b._shutting_down = False
+
+        assert b._publish_healthy() is True
+        assert b._healthy is True
+
+    def test_the_teardown_mark_and_the_commit_cannot_interleave(self):
+        """The two orders the lock permits are the only safe ones: publish then
+        teardown (which clears _healthy on its way out), or teardown then a refused
+        publish. This drives the first order and asserts the second is impossible."""
+        b = self._backend()
+        b._shutting_down = False
+        # A real child, not None: _kill_process returns before clearing _healthy when
+        # there is nothing to kill, and a backend that published healthy by
+        # definition has a process, so None would be testing the wrong ordering.
+        b._process = object()
+        b._reset_effective_parallel_slots = lambda: None
+        b._leading_process_group = lambda _pid: None
+        b._collect_descendants = lambda _pid: []
+        b._diffusion_requested_ngl = None
+
+        published = b._publish_healthy()
+        assert published is True and b._healthy is True
+
+        b._kill_process(teardown = True)
+
+        assert b._healthy is False, (
+            "teardown left _healthy set, so a publication that won the race is never undone"
+        )
+        assert b._publish_healthy() is False, "a later publication slipped past the teardown"
