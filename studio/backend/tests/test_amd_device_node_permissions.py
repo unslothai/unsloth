@@ -1463,3 +1463,151 @@ def test_a_path_that_cannot_be_read_reports_no_acl(tmp_path):
     """And the failure mode that must not raise: this runs where things are already
     wrong, so an unreadable path answers False rather than taking the hint down."""
     assert amd._has_an_access_acl(str(tmp_path / "gone")) is False
+
+
+def test_the_acl_probe_matches_the_name_type_listxattr_returns(monkeypatch, tmp_path):
+    """os.listxattr returns ``str`` names for a ``str`` path, so the bytes literal this
+    first shipped with could never match one and the whole ACL branch was dead.
+
+    Stubbed rather than written with setfacl, which is not installed here: the shell twin
+    skips when it is absent, and a probe whose positive direction is only ever exercised
+    by a skipping test is not exercised at all. That is how this survived a round."""
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    monkeypatch.setattr(
+        amd.os, "listxattr", lambda path: ["security.selinux", "system.posix_acl_access"]
+    )
+    assert amd._has_an_access_acl(str(node)) is True
+
+
+def test_the_acl_probe_also_reads_bytes_names(monkeypatch, tmp_path):
+    """A bytes path yields bytes names, and the caller chooses the path type, so both are
+    accepted. The control for the test above: without it, swapping one literal for the
+    other passes just as well and nothing says which type is actually returned."""
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    monkeypatch.setattr(amd.os, "listxattr", lambda path: [b"system.posix_acl_access"])
+    assert amd._has_an_access_acl(str(node)) is True
+
+
+def test_another_xattr_is_not_read_as_an_acl(monkeypatch, tmp_path):
+    """The negative control. An ACL is claimed from one exact name, so a node carrying
+    only other attributes stays prescribed for."""
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    monkeypatch.setattr(amd.os, "listxattr", lambda path: ["security.selinux", "user.note"])
+    assert amd._has_an_access_acl(str(node)) is False
+
+
+def test_every_unnamed_gid_reaches_the_docker_repair(monkeypatch, linux):
+    """docker's --group-add takes ONE value, so a host whose nodes sit in two unnamed
+    groups needs the flag twice. Naming only the first leaves the second node shut and
+    the user with a command that half works.
+
+    Fails before the fix, which interpolated unnamed[0] alone."""
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993, 994], [], []))
+    monkeypatch.setenv("USER", "ada")
+    hint = amd.amd_node_permission_hint()
+    assert "--group-add 993 --group-add 994" in hint
+    assert "GIDs 993, 994" in hint
+
+
+def test_a_lone_unnamed_gid_is_still_named_in_the_singular(monkeypatch, linux):
+    """The control on the wording: the one-GID host is the common one and must not start
+    reading as though it had several."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993], [], []))
+    monkeypatch.setenv("USER", "ada")
+    hint = amd.amd_node_permission_hint()
+    assert "GID 993, which has" in hint
+    assert "--group-add 993." in hint
+
+
+def test_a_rocr_selector_naming_a_uuid_is_reported_as_unresolved(monkeypatch, linux):
+    """ROCr accepts a UUID as well as an ordinal, and one naming no device on this host
+    stops the list exactly as a bad ordinal does. Nothing here can match a UUID against
+    the KFD ordinal count, so it is reported as unresolved rather than dismissed -- which
+    is what the ordinal check did to it, leaving the user with no mention of the one
+    variable that may be hiding their card.
+
+    Fails before the fix, which returned False for any non-digit entry and said nothing."""
+    reason = _reason_with_masks(
+        monkeypatch,
+        {"ROCR_VISIBLE_DEVICES": "GPU-4b2c9f1e0a7d3b58"},
+        {"hip"},
+        gpu_count = 1,
+    )
+    assert "cannot resolve" in reason
+    assert "ROCR_VISIBLE_DEVICES" in reason
+    # Reported, not judged: claiming it blocks would invent a fault this cannot see.
+    assert "which the groups do not clear" not in reason
+
+
+def test_a_rocr_ordinal_that_names_a_device_is_still_left_alone(monkeypatch, linux):
+    """The control that keeps it narrow: an ordinal the count can resolve is judged as
+    before, so the new sentence cannot appear on every host that sets the variable."""
+    reason = _reason_with_masks(
+        monkeypatch, {"ROCR_VISIBLE_DEVICES": "0"}, {"hip"}, gpu_count = 2
+    )
+    assert "cannot resolve" not in reason
+    assert "visibility mask" not in reason
+
+
+def test_a_uuid_in_the_hip_layer_is_not_reported_as_unresolved(monkeypatch, linux):
+    """And the other boundary: only ROCr accepts a UUID. Reporting one for HIP would send
+    the user after the wrong variable, and HIP's own handling of a non-ordinal entry is a
+    separate question this does not answer."""
+    reason = _reason_with_masks(
+        monkeypatch,
+        {"HIP_VISIBLE_DEVICES": "GPU-4b2c9f1e0a7d3b58"},
+        {"hip"},
+        gpu_count = 1,
+    )
+    assert "cannot resolve" not in reason
+
+
+def _vulkan_reason_with_open_sibling(monkeypatch, openable: set) -> str:
+    """The empty-probe reason for a Vulkan build with renderD128 closed."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(
+        monkeypatch,
+        present = ["/dev/dri/renderD128", "/dev/dri/renderD129"],
+        openable = openable,
+    )
+    monkeypatch.setenv("USER", "ada")
+    for var in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_installed_ggml_backends", staticmethod(lambda _b: frozenset({"vulkan"}))
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _b: True))
+    return LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+
+
+def test_an_open_sibling_node_keeps_the_vulkan_reason(monkeypatch, linux):
+    """A closed node explains an empty probe only when it is the node the runtime would
+    have used. With renderD129 open the Vulkan loader had one to enumerate and still
+    reported nothing, so the closed renderD128 is a second finding and returning it alone
+    sends the user after a repair that leaves the probe just as empty.
+
+    Fails before the fix, which returned the node hint unconditionally."""
+    reason = _vulkan_reason_with_open_sibling(monkeypatch, {"/dev/dri/renderD129"})
+    assert "the Vulkan probe reported no device" in reason
+    # Still said, because it is still true and still worth repairing.
+    assert "/dev/dri/renderD128" in reason
+
+
+def test_no_open_sibling_still_gives_the_node_hint_alone(monkeypatch, linux):
+    """The control, and the #10466 host itself: with every AMD node closed there is no
+    sibling the loader could have used, so the closed node IS the reason and must not be
+    demoted to a footnote behind a Vulkan sentence that explains nothing."""
+    reason = _vulkan_reason_with_open_sibling(monkeypatch, set())
+    assert "the Vulkan probe reported no device" not in reason
+    assert "/dev/dri/renderD128" in reason

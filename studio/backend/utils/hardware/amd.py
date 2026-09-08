@@ -698,6 +698,27 @@ def _amd_render_node_exists() -> bool:
     return any(_render_node_is_amd(path) for path in glob.glob(_DRI_RENDER_GLOB))
 
 
+def an_amd_render_node_is_open() -> bool:
+    """Whether this user can open at least one AMD render node.
+
+    The counterpart to amd_nodes_closed_to_this_user, and the reason it is not simply
+    "closed is empty": a multi-AMD host can have one node shut and another open, and a
+    caller explaining an empty GPU probe needs to know that the runtime had a node to
+    use. False off Linux, where there are no such nodes to open.
+    """
+    if platform.system() != "Linux":
+        return False
+    for path in sorted(glob.glob(_DRI_RENDER_GLOB)):
+        try:
+            if not _render_node_is_amd(path):
+                continue
+            if os.access(path, os.R_OK | os.W_OK):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def amd_nodes_closed_to_this_user() -> list[str]:
     """AMD device nodes that exist on this host and this user cannot open.
 
@@ -738,11 +759,20 @@ def _has_an_access_acl(path: str) -> bool:
     Read through the xattr rather than by shelling out to ``getfacl``, which is not
     installed everywhere this runs. False on any platform or filesystem that cannot
     answer, which is the direction that keeps the ordinary node prescribed for.
+
+    os.listxattr returns the names as ``str`` for a ``str`` path, so a bytes literal can
+    never match one and the check would be dead. Both are accepted rather than assumed,
+    because a bytes path yields bytes names and the caller decides the path type.
     """
     try:
-        return b"system.posix_acl_access" in os.listxattr(path)
+        names = os.listxattr(path)
     except (OSError, AttributeError, UnicodeDecodeError):
         return False
+    return any(
+        (_n.decode("utf-8", "replace") if isinstance(_n, bytes) else _n)
+        == "system.posix_acl_access"
+        for _n in names
+    )
 
 
 def _groups_that_own(paths: list) -> tuple:
@@ -852,10 +882,15 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
         )
     if unnamed:
         _gids = ", ".join(str(_g) for _g in unnamed)
+        # One flag per GID: docker's --group-add takes a single value, so naming only the
+        # first leaves every other node shut on a host whose nodes differ in group.
+        _adds = " ".join(f"--group-add {_g}" for _g in unnamed)
+        _noun = "GID" if len(unnamed) == 1 else "GIDs"
+        _verb = "which has" if len(unnamed) == 1 else "which have"
         hint += (
-            f" Some of those nodes belong to GID {_gids}, which has no group entry on this "
-            f"system, so usermod cannot name it: create a group with that GID, or recreate "
-            f"the container passing --group-add {unnamed[0]}."
+            f" Some of those nodes belong to {_noun} {_gids}, {_verb} no group entry on "
+            f"this system, so usermod cannot name them: create a group with that GID, or "
+            f"recreate the container passing {_adds}."
         )
     if no_group:
         hint += (

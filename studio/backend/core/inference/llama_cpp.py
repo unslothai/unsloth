@@ -9891,6 +9891,16 @@ class LlamaCppBackend:
                     return False
                 return int(first) >= _amd_gpu_count
 
+            def _cannot_be_resolved(value: str) -> bool:
+                # ROCr accepts a UUID as well as an ordinal ("0,GPU-4b2c..."), and a UUID
+                # naming no device on this host stops the list exactly as a bad ordinal
+                # does. Nothing here can match one -- the KFD count is an ordinal space --
+                # so it is reported as unresolved rather than judged either way: calling it
+                # a blocker would invent a fault, and dropping it silently leaves the user
+                # with no mention of the one variable that may be hiding their card.
+                first = value.split(",")[0].strip()
+                return bool(first) and not first.startswith("-") and not first.isdigit()
+
             # Which of the four this host actually reads, per variable rather than one
             # rule applied to all of them alike. Reaching a node hint at all means an
             # AMD-capable install and a closed AMD node, so the runtime being explained
@@ -9918,6 +9928,7 @@ class LlamaCppBackend:
 
             masks = []
             blocking = []
+            unresolved = []
             for var in (
                 "CUDA_VISIBLE_DEVICES",
                 "HIP_VISIBLE_DEVICES",
@@ -9936,8 +9947,12 @@ class LlamaCppBackend:
                 else:
                     _consulted = var == _hip_layer_var
                 # A Vulkan build reads none of the four, so none of them blocks it.
-                if not _is_vulkan and _consulted and _hides_every_device(raw):
+                if _is_vulkan or not _consulted:
+                    continue
+                if _hides_every_device(raw):
                     blocking.append(phrase)
+                elif var == "ROCR_VISIBLE_DEVICES" and _cannot_be_resolved(raw):
+                    unresolved.append(phrase)
             mask_note = f" ({', '.join(masks)})" if masks else ""
 
             node_hint = None
@@ -9947,6 +9962,15 @@ class LlamaCppBackend:
                     node_hint = amd_node_permission_hint(needs_kfd = not _is_vulkan)
                 except Exception:  # noqa: BLE001
                     node_hint = None
+
+            def _an_amd_render_node_is_open() -> bool:
+                # A host this cannot read answers False, which keeps the closed node as
+                # the stated reason -- what this returned before the sibling check existed.
+                try:
+                    from utils.hardware.amd import an_amd_render_node_is_open
+                    return an_amd_render_node_is_open()
+                except Exception:  # noqa: BLE001
+                    return False
             if node_hint:
                 # A mask hides devices whatever the node permissions are, so a host with
                 # both needs both fixes and the early return was hiding the second one.
@@ -9956,9 +9980,28 @@ class LlamaCppBackend:
                 # mask_note below is deliberately left listing all four -- there it
                 # annotates what torch was looking at rather than claiming a repair.
                 if blocking:
-                    return (
+                    node_hint = (
                         f"{node_hint} A device visibility mask is also in force "
                         f"({', '.join(blocking)}), which the groups do not clear."
+                    )
+                elif unresolved:
+                    node_hint = (
+                        f"{node_hint} {', '.join(unresolved)} names a device this cannot "
+                        f"resolve, so whether it also hides the card is unknown; check it "
+                        f"if the groups do not help."
+                    )
+                # A closed node explains an empty probe only when it is the node the
+                # runtime would have used. With another AMD render node OPEN, the Vulkan
+                # loader had one to enumerate and still reported nothing, so the closed
+                # one is a second finding rather than the reason, and returning it alone
+                # sends the user after a repair that leaves the probe just as empty.
+                # Asked only of a Vulkan build: HIP needs /dev/kfd, which is a single
+                # node, so there is no sibling for it to have used instead.
+                if _is_vulkan and _an_amd_render_node_is_open():
+                    return (
+                        f"the Vulkan probe reported no device even though another AMD "
+                        f"render node is open, so this is a second finding rather than "
+                        f"the reason: {node_hint}"
                     )
                 return node_hint
             if _is_vulkan:
