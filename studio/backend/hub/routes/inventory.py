@@ -9,7 +9,11 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Query
 
-from auth.authentication import allow_ambient_hf_token, get_current_subject
+from auth.authentication import (
+    allow_ambient_hf_token,
+    authenticated_with_sk_unsloth_key,
+    get_current_subject,
+)
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
@@ -194,16 +198,33 @@ async def get_download_progress(
 @router.get("/cached-gguf", response_model = CachedGgufResponse)
 async def list_cached_gguf(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
+    via_sk_key: bool = Depends(authenticated_with_sk_unsloth_key),
     current_subject: str = Depends(get_current_subject),
 ):
+    """Local filesystem inventory of cached GGUF repos.
+
+    An sk-unsloth API key must not learn which private repos, sizes, or absolute
+    cache paths sit on this host. UI sessions and keyless local CLI callers keep
+    the full listing. The in-process CLI catalog still scans disk directly.
+    """
+    if via_sk_key:
+        return CachedGgufResponse(cached = [], scan_confirmed = True)
     return await cache_inventory.list_cached_gguf_response(hf_token)
 
 
 @router.get("/cached-models", response_model = CachedModelsResponse)
 async def list_cached_models(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
+    via_sk_key: bool = Depends(authenticated_with_sk_unsloth_key),
     current_subject: str = Depends(get_current_subject),
 ):
+    """Local filesystem inventory of cached non-GGUF repos.
+
+    Same caller boundary as ``/cached-gguf``: sk-unsloth API keys get an empty
+    list; UI sessions and keyless local CLI callers get the host scan.
+    """
+    if via_sk_key:
+        return CachedModelsResponse(cached = [], scan_confirmed = True)
     return await cache_inventory.list_cached_models_response(hf_token)
 
 

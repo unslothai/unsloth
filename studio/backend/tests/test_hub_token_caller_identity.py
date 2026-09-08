@@ -19,7 +19,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from auth.authentication import authenticated_via_api_key, get_current_subject
+from auth.authentication import (
+    API_KEY_PREFIX,
+    KEYLESS_SCHEME,
+    authenticated_via_api_key,
+    authenticated_with_sk_unsloth_key,
+    get_current_subject,
+)
 from core.inference import diffusion_compat
 from hub.dependencies import get_request_hf_token
 from hub.utils.hf_tokens import (
@@ -924,3 +930,101 @@ def test_every_offline_reachable_route_refuses_before_it_reads(monkeypatch):
         assert (
             "anonymous_and_offline" in source
         ), f"{name} can still be answered from disk for a denied caller"
+
+
+def _hub_inventory_client(via_sk_key: bool) -> TestClient:
+    from auth.authentication import allow_ambient_hf_token
+    from hub.routes import inventory as inventory_routes
+
+    app = FastAPI()
+    app.include_router(inventory_routes.router, prefix = "/api/hub")
+    app.dependency_overrides[get_current_subject] = lambda: "alice"
+    app.dependency_overrides[authenticated_with_sk_unsloth_key] = lambda: via_sk_key
+    # get_request_hf_token still resolves allow_ambient_hf_token, which hits HTTPBearer.
+    app.dependency_overrides[allow_ambient_hf_token] = lambda: True
+    return TestClient(app, raise_server_exceptions = False)
+
+
+def test_sk_unsloth_key_helper_excludes_keyless_and_session_callers():
+    """The inventory guard must not treat a keyless CLI caller as an API key."""
+    import asyncio
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    keyless = HTTPAuthorizationCredentials(scheme = KEYLESS_SCHEME, credentials = "")
+    key = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = API_KEY_PREFIX + "abc")
+    session = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = "eyJhbGciOiJ.session")
+
+    assert asyncio.run(authenticated_with_sk_unsloth_key(keyless)) is False
+    assert asyncio.run(authenticated_with_sk_unsloth_key(key)) is True
+    assert asyncio.run(authenticated_with_sk_unsloth_key(session)) is False
+
+
+@pytest.mark.parametrize("path", ["/api/hub/cached-models", "/api/hub/cached-gguf"])
+def test_hub_cache_inventory_is_hidden_from_an_api_key(monkeypatch, path):
+    """Repo ids, sizes, capabilities and absolute cache paths are a host inventory."""
+    from hub.services.models import cache_inventory
+
+    async def _secret(*_a, **_k):
+        raise AssertionError("an API key walked the host cache")
+
+    monkeypatch.setattr(cache_inventory, "list_cached_models_response", _secret)
+    monkeypatch.setattr(cache_inventory, "list_cached_gguf_response", _secret)
+
+    response = _hub_inventory_client(True).get(
+        path,
+        headers = {
+            "Authorization": "Bearer sk-unsloth-deadbeefdeadbeef",
+            "X-Unsloth-HF-Token": "hf_dummy",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cached"] == []
+    assert body["scan_confirmed"] is True
+
+
+@pytest.mark.parametrize(
+    "path, scanner",
+    [
+        ("/api/hub/cached-models", "list_cached_models_response"),
+        ("/api/hub/cached-gguf", "list_cached_gguf_response"),
+    ],
+)
+def test_hub_cache_inventory_still_scans_for_a_ui_session(monkeypatch, path, scanner):
+    from hub.services.models import cache_inventory
+
+    called = {"n": 0}
+
+    async def _rows(*_a, **_k):
+        called["n"] += 1
+        return {"cached": [], "scan_confirmed": True}
+
+    monkeypatch.setattr(cache_inventory, scanner, _rows)
+
+    response = _hub_inventory_client(False).get(path, headers = {"Authorization": "Bearer token"})
+    assert response.status_code == 200
+    assert called["n"] == 1, "the UI session lost the host cache listing"
+
+
+@pytest.mark.parametrize(
+    "path, scanner",
+    [
+        ("/api/hub/cached-models", "list_cached_models_response"),
+        ("/api/hub/cached-gguf", "list_cached_gguf_response"),
+    ],
+)
+def test_hub_cache_inventory_still_scans_for_a_keyless_caller(monkeypatch, path, scanner):
+    """Keyless local CLI/API consumers enumerate downloaded models through these routes."""
+    from hub.services.models import cache_inventory
+
+    called = {"n": 0}
+
+    async def _rows(*_a, **_k):
+        called["n"] += 1
+        return {"cached": [], "scan_confirmed": True}
+
+    monkeypatch.setattr(cache_inventory, scanner, _rows)
+
+    response = _hub_inventory_client(False).get(path)
+    assert response.status_code == 200
+    assert called["n"] == 1, "a keyless caller lost the host cache listing"
