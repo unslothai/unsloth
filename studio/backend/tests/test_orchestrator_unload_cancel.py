@@ -3403,8 +3403,32 @@ def test_a_restart_waits_for_the_whole_shutdown_not_just_the_teardown_lock():
         for n in ast.walk(tree)
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "_graceful_shutdown"
     )
-    sd = textwrap.dedent(ast.get_source_segment(run_py, shutdown) or "")
-    assert sd.index("terminate_all()") < sd.index("_shutdown_complete.set()"), (
+    # By AST node: terminate_all now takes the sweep generation, so matching the bare
+    # call text stopped working the moment an argument was added.
+    sweep_line = min(
+        (
+            n.lineno
+            for n in ast.walk(shutdown)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "terminate_all"
+        ),
+        default = None,
+    )
+    done_line = min(
+        (
+            n.lineno
+            for n in ast.walk(shutdown)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "set"
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "_shutdown_complete"
+        ),
+        default = None,
+    )
+    assert sweep_line is not None and done_line is not None, "shutdown shape changed; retarget"
+    assert sweep_line < done_line, (
         "the completion flag is set before the final sweep, so waiting on it proves "
         "nothing about the sweep"
     )
@@ -3433,15 +3457,17 @@ def test_an_old_sweep_does_not_terminate_the_new_lifecycles_children():
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
-        # Session 1 quits: the sweep it will run belongs to this generation.
+        # Session 1 quits. Its sweep belongs to the generation captured HERE, the way
+        # _graceful_shutdown captures one at step 0a and carries it to step 7.
         pl.mark_process_shutting_down()
+        sweep_generation = pl.process_lifecycle_generation()
 
         # Session 2 opens and adopts a child while that shutdown is still in flight.
         pl.begin_process_lifecycle()
         pl.adopt_pid(child.pid)
 
         # The old shutdown finally reaches its sweep.
-        pl.terminate_all(timeout = 0.5)
+        pl.terminate_all(timeout = 0.5, sweep_generation = sweep_generation)
 
         assert (
             child.poll() is None
@@ -3627,3 +3653,44 @@ def test_the_publish_branch_rechecks_shutdown_before_recording_the_model():
         "the load publishes active_model_name before rechecking shutdown, so a worker "
         "killed mid-load is recorded as resident"
     )
+
+
+def test_reopening_a_lifecycle_re_arms_the_backstop_sweep():
+    """_shutdown_generation names the session whose sweep is running. Left set across a
+    reopen it keeps naming the session that ENDED, so every pid the new session adopts
+    has a higher generation than the filter, terminate_all skips all of them, and the
+    backstop is silently disabled for the rest of the process's life.
+
+    Found in a full-suite run, where it looked like a test-ordering artifact because the
+    affected tests pass in isolation. It is not: the sequence below reproduces it
+    directly.
+    """
+    import subprocess
+    import sys
+
+    from utils import process_lifetime as pl
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        pl.mark_process_shutting_down()
+        pl.begin_process_lifecycle()
+
+        assert not hasattr(pl, "_shutdown_generation"), (
+            "the sweep filter is global again; a reopen cannot clear it reliably and "
+            "every later sweep skips everything it finds"
+        )
+
+        pl.adopt_pid(child.pid)
+        pl.terminate_all(timeout = 1.0)
+        assert (
+            child.poll() is not None
+        ), "terminate_all swept nothing: the backstop is disabled after a reopen"
+    finally:
+        with pl._record_lock:
+            pl._tracked_pids.pop(child.pid, None)
+            pl._adoption_generation.pop(child.pid, None)
+            pl._tracked_pgids.pop(child.pid, None)
+        pl.begin_process_lifecycle()
+        if child.poll() is None:
+            child.kill()
+        child.wait()

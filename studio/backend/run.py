@@ -1614,9 +1614,14 @@ def _graceful_shutdown(server = None):
     # different spawner afterwards: the orchestrator is stopped at step 2 and swept at
     # step 5, and a helper load owns a backend no step touches at all. One flag read at
     # every spawn covers the gaps between the steps.
+    _sweep_generation = None
     try:
-        from utils.process_lifetime import mark_process_shutting_down
+        from utils.process_lifetime import mark_process_shutting_down, process_lifecycle_generation
         mark_process_shutting_down()
+        # Captured here so step 7's sweep belongs to THIS shutdown. A concurrent
+        # embedded restart advances the generation, and children it adopts must
+        # outlive a sweep that was started before they existed.
+        _sweep_generation = process_lifecycle_generation()
     except Exception as e:
         logger.warning("Could not latch the process shutdown flag: %s", e)
 
@@ -1682,7 +1687,7 @@ def _graceful_shutdown(server = None):
     # 7. Backstop sweep for any adopted child the steps above missed.
     try:
         from utils.process_lifetime import clear_breadcrumb, terminate_all
-        terminate_all()
+        terminate_all(sweep_generation = _sweep_generation)
         clear_breadcrumb()  # nothing left for the next startup to sweep
     except Exception as e:
         logger.warning("Error in process-lifetime sweep: %s", e)

@@ -1003,7 +1003,6 @@ _generation_lock = threading.Lock()
 # Instead the old sweep is scoped: it never signals a child a LATER lifecycle adopted.
 # None means no shutdown has been marked, so a sweep filters nothing.
 _adoption_generation: "dict[int, int]" = {}
-_shutdown_generation: "Optional[int]" = None
 
 
 def process_lifecycle_generation() -> int:
@@ -1023,10 +1022,8 @@ def mark_process_shutting_down() -> None:
     Under the generation lock, so that a set racing begin_process_lifecycle's clear
     cannot be erased by it: whichever transition happens second is the one that stands.
     """
-    global _shutdown_generation
     with _generation_lock:
         _shutdown_latch.set()
-        _shutdown_generation = _lifecycle_generation
 
 
 def is_process_shutting_down(admitted_generation: "Optional[int]" = None) -> bool:
@@ -1066,7 +1063,7 @@ def begin_process_lifecycle() -> None:
         _shutdown_latch.clear()
 
 
-def terminate_all(timeout: float = 5.0) -> "list[int]":
+def terminate_all(timeout: float = 5.0, sweep_generation: "Optional[int]" = None) -> "list[int]":
     """Backstop sweep over adopted pids, after per-subsystem cleanup. SIGTERM,
     then SIGKILL the survivors after `timeout`. Idempotent and teardown-safe.
 
@@ -1079,8 +1076,11 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
     survivors: "list[int]" = []
     # Snapshot under the same lock the writes take: a request thread can still
     # reach adopt_pid while this runs.
-    with _generation_lock:
-        sweeping_for = _shutdown_generation
+    # The filter belongs to the shutdown that is running, so it is PASSED IN rather
+    # than read from a global: a global one keeps naming the session that ended once a
+    # restart clears the latch, and every later sweep then skips everything it finds.
+    # None means "no session to compare", i.e. sweep whatever is tracked.
+    sweeping_for = sweep_generation
     with _record_lock:
         tracked = list(_tracked_pids.items())
     for pid, identity in tracked:
