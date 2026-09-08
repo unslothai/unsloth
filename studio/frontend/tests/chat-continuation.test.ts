@@ -8,6 +8,10 @@ import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
+const THREAD = readSrc("components/assistant-ui/thread.tsx");
+const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+const AUTO_CONTINUE_RUN_KEEPER = readSrc("features/chat/utils/auto-continue-run-keeper.ts");
+
 const {
   AUTO_CONTINUE_CONTINUED_TTL_MS,
   AUTO_CONTINUE_LEASE_KEY,
@@ -1904,9 +1908,6 @@ const { createContinuationMerger } = await import(
   "../src/features/chat/utils/continuation.ts"
 );
 
-const THREAD = readSrc("components/assistant-ui/thread.tsx");
-const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
-const AUTO_CONTINUE_RUN_KEEPER = readSrc("features/chat/utils/auto-continue-run-keeper.ts");
 
 const REASONING =
   "Okay, so the user is asking about how to structure the migration. " +
