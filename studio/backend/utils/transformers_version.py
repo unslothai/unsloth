@@ -903,10 +903,20 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     network fetch, so an online read never serves stale metadata.
     """
     cache_key = _token_cache_key(model_name, hf_token)
-    if cache_key in _config_json_cache:
-        return _config_json_cache[cache_key]
-
     local_cfg = Path(model_name) / "config.json"
+    if cache_key in _config_json_cache:
+        # A hit predates the 60 s authorization TTL, so an explicit token revoked since the
+        # fetch would keep reading this repo's metadata for the life of the process. Local
+        # paths are the caller's own and never went through the Hub. A miss here re-fetches,
+        # which is what tells a revoked token no.
+        if (
+            not isinstance(hf_token, str)
+            or _safe_is_file(local_cfg)
+            or _safe_is_dir(Path(model_name))
+            or cache_reads_authorized(hf_token, repo_id = model_name)
+        ):
+            return _config_json_cache[cache_key]
+
     if _safe_is_file(local_cfg):
         try:
             with open(local_cfg, encoding = "utf-8-sig") as f:

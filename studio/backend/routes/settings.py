@@ -2557,6 +2557,13 @@ def _resolve_embedding_model_plan(
             if _sentence_transformers_fallback_allowed(resolved)
             else None
         )
+        # The GGUF branches above are gated and this one was not. The plan answers with the
+        # repo the snapshot is FILED under, which for a slashless alias is not the name the
+        # caller typed, and the response then reports it cached: that is how a denied caller
+        # discovers the operator's private weights and force-saves them as the embedder.
+        # Reading our own disk to find the repo is fine; naming it back is what is gated.
+        if st_plan is not None and not _authorized(st_plan[0]):
+            st_plan = None
         if st_plan is None:
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved,
@@ -2570,7 +2577,7 @@ def _resolve_embedding_model_plan(
             backend = "sentence-transformers",
             download_repo = st_repo,
             # Same alias-aware predicate, asked about the repo the plan named
-            # rather than the alias the user typed.
+            # rather than the alias the user typed, which the gate above authorized.
             cached = _cached_snapshot_has_st_weights(st_repo),
             size_bytes = _hf_snapshot_size(st_repo, token),
         )

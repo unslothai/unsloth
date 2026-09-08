@@ -23,7 +23,7 @@ from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_errors import hf_error_status
-from hub.utils.hf_tokens import cache_reads_authorized as hub_cache_reads_authorized
+from hub.utils.hf_tokens import cached_read_refused as hub_cached_read_refused
 from hub.utils.hf_cache_state import (
     incomplete_blob_hash,
     iter_destructive_repo_cache_dirs,
@@ -1280,8 +1280,12 @@ async def get_gguf_variants_answer(
         # a cached private repo and read back its filenames, sizes and vision flag. A
         # local_path the caller named itself is not the Hub cache and stays available.
         # `offline` passed in: a cache-only request must not pay a probe it will not use.
-        cache_reads_authorized = hub_cache_reads_authorized(
-            hf_token, repo_id = repo_id, offline = bool(offline)
+        # The shared gate rather than the raw check, so the forced-anonymous sentinel keeps
+        # a cached PUBLIC repo instead of falling through to the network for one it was
+        # always entitled to. is_cached is True because each read below tests its own
+        # directory; the question here is only whether this caller may be told.
+        cache_reads_authorized = not hub_cached_read_refused(
+            hf_token, repo_id = repo_id, is_cached = lambda: True, offline = bool(offline)
         )
 
         def _scoped_local_response():
@@ -1672,8 +1676,8 @@ async def get_gguf_variants_answer(
         # The enrichment reads this repo's cache dir, so it takes the same authorization:
         # else the except branch returns 200 labelled with an empty quant folder, which is
         # the existence of a cached private repo. Remote valid ids only, and memoized.
-        if not skip and not hub_cache_reads_authorized(
-            hf_token, repo_id = repo_id, offline = bool(offline)
+        if not skip and hub_cached_read_refused(
+            hf_token, repo_id = repo_id, is_cached = lambda: True, offline = bool(offline)
         ):
             skip = True
             # Carried out: the route's context-length fallback walks these same caches.

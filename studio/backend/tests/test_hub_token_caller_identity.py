@@ -18,7 +18,6 @@ import hashlib
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from pathlib import Path
 from typing import Optional
@@ -2123,3 +2122,158 @@ def test_every_scan_target_is_authorized_not_only_the_one_named(monkeypatch):
             )
         )
     assert excinfo.value.status_code == 404
+
+
+def test_the_embedding_resolver_gates_the_base_repo_too(monkeypatch):
+    """The per-candidate check answers for an alias or a derived conversion, and defers to
+    the base decision when the cache answered under the requested id itself. That leg is the
+    one the base decision still owns, so it needs its own row."""
+    from routes import settings as settings_routes
+
+    _counting_probe(monkeypatch, False)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(settings_routes, "_llama_backend_active", lambda _m: False)
+    monkeypatch.setattr(
+        settings_routes, "_local_sentence_transformer_is_present", lambda _m: False
+    )
+    monkeypatch.setattr(
+        settings_routes, "_cached_st_source", lambda m: (m, Path("/cache/snap"))
+    )
+    monkeypatch.setattr(settings_routes, "_st_weight_source", lambda *_a, **_k: None)
+
+    plan = settings_routes._resolve_embedding_model_plan("acme/private", "hf_dummy")
+
+    assert plan.cached is False, "the operator's cached copy was reported to a denied caller"
+
+
+def test_the_scan_is_refused_before_it_expands_its_targets(monkeypatch):
+    """The per-target check inside the loop cannot stand in for this one. Target expansion
+    resolves the adapter's base and its native-audio dependencies, which reads the cache and
+    talks to the Hub with the caller's token, so the primary has to be refused ahead of it."""
+    import fastapi
+
+    _counting_probe(monkeypatch, False)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(models_routes, "_repo_in_any_hf_cache", lambda *_a, **_k: True)
+
+    def _must_not_run(*_a, **_k):
+        raise AssertionError("target expansion ran for a caller that was already refused")
+
+    monkeypatch.setattr(
+        "core.inference.native_audio.native_audio_security_targets", _must_not_run
+    )
+
+    with pytest.raises(fastapi.HTTPException) as excinfo:
+        asyncio.run(
+            models_routes.scan_model_remote_code(
+                model_name = "acme/private",
+                hf_token = "hf_dummy",
+                allow_ambient_token = False,
+                current_subject = "alice",
+            )
+        )
+    assert excinfo.value.status_code == 404
+
+
+def test_local_only_audio_detection_refuses_without_asking(monkeypatch):
+    """The twin of the vision gate, and its own call site. /loras drives this one with
+    local_files_only=True over every adapter it finds, so an unentitled caller must be told
+    no from the disk state alone, without a probe and without a cached answer."""
+    from utils.models import model_config
+
+    probes = _counting_probe(monkeypatch, True)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(model_config, "_env_offline", lambda: False)
+
+    audio_type, definitive = model_config.detect_audio_type_checked(
+        "acme/private-audio", hf_token = "hf_dummy", local_files_only = True
+    )
+
+    assert (audio_type, definitive) == (None, False)
+    assert probes["n"] == 0
+
+
+@pytest.mark.parametrize("public", [True, False])
+def test_an_anonymous_caller_keeps_a_cached_public_gguf(monkeypatch, tmp_path, public):
+    """The same rule the chat template needed, at the site that still asked the raw
+    question. The sentinel can never authorize itself, so a downloaded public quant was
+    reported as absent and a cache-only listing fell through to the network."""
+    from hub.services.models import gguf_variants as gv
+    from hub.utils.gguf import GgufVariantInfo
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"x" * 256)
+
+    monkeypatch.setattr(
+        gv,
+        "list_gguf_variants",
+        lambda repo_id, hf_token = None: (
+            [GgufVariantInfo(filename = "Model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 256)],
+            False,
+            [],
+        ),
+    )
+    monkeypatch.setattr(gv, "iter_hf_cache_snapshots", lambda *_a, **_k: [snapshot])
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: public)
+    _hub_reachable(monkeypatch)
+
+    answer = asyncio.run(gv.get_gguf_variants_answer("acme/repo", hf_token = False))
+
+    assert answer.response.variants[0].downloaded is public
+    assert answer.cache_authorized is public
+
+
+def test_the_safetensors_fallback_authorizes_the_repo_it_found(monkeypatch):
+    """The GGUF branch was gated and this one was not: after the remote probes come back
+    empty, the plan reads the operator's snapshot and reports the repo it is filed under as
+    cached, which is how a denied caller discovers and then force-saves private weights."""
+    from routes import settings as settings_routes
+
+    _counting_probe(monkeypatch, False)
+    _hub_reachable(monkeypatch)
+    monkeypatch.setattr(settings_routes, "_llama_backend_active", lambda _m: True)
+    monkeypatch.setattr(settings_routes, "_llama_runtime_available", lambda: True)
+    monkeypatch.setattr(settings_routes, "_resolves_as_local_gguf", lambda _m: False)
+    monkeypatch.setattr(settings_routes, "_local_gguf_backend_error", lambda _m: None)
+    monkeypatch.setattr(settings_routes, "_embedding_gguf_candidates", lambda m: [m])
+    monkeypatch.setattr(settings_routes, "_cached_embedding_gguf", lambda *_a, **_k: None)
+    monkeypatch.setattr(settings_routes, "_remote_embedding_gguf_plan", lambda *_a, **_k: None)
+    monkeypatch.setattr(settings_routes, "_search_hub_for_gguf", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        settings_routes, "_sentence_transformers_fallback_allowed", lambda _m: True
+    )
+    monkeypatch.setattr(
+        settings_routes, "_safetensors_plan", lambda *_a, **_k: ("acme/private-st", [])
+    )
+    reported: list = []
+    monkeypatch.setattr(
+        settings_routes,
+        "_cached_snapshot_has_st_weights",
+        lambda repo: reported.append(repo) or True,
+    )
+
+    plan = settings_routes._resolve_embedding_model_plan("acme/private", "hf_dummy")
+
+    assert plan.download_repo is None, "a denied caller was pointed at the private weights"
+    assert plan.error, "with the snapshot withheld there is no artifact to offer"
+    assert reported == [], "the cache was consulted for a repo nothing had authorized"
+
+
+def test_the_config_memo_is_rechecked_before_it_is_served(monkeypatch):
+    """The memo is untimed and was read before the authorization check, so a token revoked
+    after one successful online fetch kept its answer for the life of the process, outliving
+    the TTL that exists to end exactly that."""
+    from utils import transformers_version as tv
+
+    _hub_reachable(monkeypatch)
+    key = tv._token_cache_key("acme/private", "hf_dummy")
+    monkeypatch.setitem(tv._config_json_cache, key, {"model_type": "llama"})
+
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: True)
+    assert tv._load_config_json("acme/private", "hf_dummy") == {"model_type": "llama"}
+
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: False)
+    monkeypatch.setattr(tv, "_env_offline", lambda: True)
+    assert tv._load_config_json("acme/private", "hf_dummy") is None, "revoked token kept the memo"
