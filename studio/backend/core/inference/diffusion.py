@@ -396,7 +396,7 @@ def decode_b64_image(
     import binascii
     import io
 
-    from PIL import Image
+    from PIL import Image, ImageOps
 
     raw = data.strip()
     if raw.startswith("data:"):
@@ -416,6 +416,7 @@ def decode_b64_image(
                 f"Image is too large ({w}x{h}); maximum is {max_pixels:,} source pixels."
             )
         img.load()
+        ImageOps.exif_transpose(img, in_place = True)
     except ValueError:
         raise  # the size guard's own message; don't wrap it as a decode error
     except Exception as exc:  # noqa: BLE001 - surfaced as a 400 to the client
