@@ -1889,7 +1889,24 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
             $_rest = $_p.Substring(1).TrimStart('/', '\')
             $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
         }
-        try { $_p = [System.IO.Path]::GetFullPath($_p) } catch { }
+        # GetUnresolvedProviderPathFromPSPath, not GetFullPath: a relative override is
+        # anchored by GetFullPath to [Environment]::CurrentDirectory, which PowerShell does
+        # NOT move on Set-Location (documented, PowerShell#10278 closed as by-design). The
+        # downstream resolver reaches it through Resolve-Path, which DOES follow the provider
+        # location, so after a `cd` the two disagreed and the comparison missed a legacy root
+        # it should have collapsed -- naming the studio child and sending the user past the
+        # admin-owned llama.cpp beside it. Resolve-StudioUvCachePath in this same file
+        # already carries the same warning about GetFullPath.
+        #
+        # "Unresolved" is the literal-path form: it normalizes separators and .. segments for
+        # a path that need not exist, and does not treat [ ] as wildcards. Still wrapped: an
+        # unresolvable override must cost the comparison, not the install, and a non-FileSystem
+        # provider location falls back to the old behaviour rather than throwing.
+        try {
+            $_p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($_p)
+        } catch {
+            try { $_p = [System.IO.Path]::GetFullPath($_p) } catch { }
+        }
         return $_p.TrimEnd('\', '/')
     }
 

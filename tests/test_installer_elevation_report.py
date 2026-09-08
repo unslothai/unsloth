@@ -185,7 +185,22 @@ def test_the_legacy_root_comparison_is_canonical():
         assert (
             "[System.IO.Path]::GetFullPath" in body
         ), f"{path.name} must normalize separators and .. segments"
-        assert "TrimEnd" in body, f"{path.name} must ignore a trailing separator"
+        # ...but not as the FIRST answer. GetFullPath anchors a relative override to
+        # [Environment]::CurrentDirectory, which PowerShell does not move on Set-Location,
+        # while the downstream resolver reaches it through Resolve-Path, which does. After a
+        # `cd` the two disagreed and the comparison missed a legacy root it should have
+        # collapsed. The provider-aware resolver has to be tried first, with GetFullPath
+        # left as the fallback.
+        assert (
+            "GetUnresolvedProviderPathFromPSPath" in body
+        ), f"{path.name} must resolve a relative override against the PowerShell location"
+        assert body.index("GetUnresolvedProviderPathFromPSPath") < body.index(
+            "[System.IO.Path]::GetFullPath"
+        ), f"{path.name} must try the provider location before the .NET working directory"
+        assert "TrimEnd('\\', '/')" in body, (
+            f"{path.name} must ignore a trailing separator -- with its arguments, since a bare "
+            "TrimEnd() strips whitespace only and leaves the case this exists for unhandled"
+        )
         # A bare "~" leaves an empty child path, which Join-Path rejects on PS 5.1.
         assert "Substring(1)" in body, f"{path.name} must handle a bare ~"
         # An unresolvable path must not take the install down.
