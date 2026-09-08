@@ -805,6 +805,39 @@ class TestTheAdvisoryCannotReachTheLaunch:
                     written.add(target.attr)
         assert written == {"_last_carveout_advice"}, written
 
+    def test_no_call_site_computes_anything_of_its_own(self):
+        # Arguments are evaluated OUTSIDE the recorder's try/except, so a helper
+        # called in the argument list is a way for an advisory to raise into a
+        # launch. Every argument must be a name or a constant, computed under the
+        # caller's own guard.
+        tree = self._module_tree()
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_record_carveout_advice"
+        ]
+        assert calls
+
+        def cannot_raise(node) -> bool:
+            # A name, a constant, an attribute of one, or an `or` over those: all
+            # already-evaluated locals. Anything else -- a call above all -- is
+            # work done outside the recorder's guard.
+            if isinstance(node, (ast.Name, ast.Constant)):
+                return True
+            if isinstance(node, ast.Attribute):
+                return cannot_raise(node.value)
+            if isinstance(node, ast.BoolOp):
+                return all(cannot_raise(value) for value in node.values)
+            return False
+
+        for call in calls:
+            for argument in [*call.args, *(kw.value for kw in call.keywords)]:
+                assert cannot_raise(
+                    argument
+                ), f"an advisory call site evaluates {ast.unparse(argument)}"
+
     def test_no_caller_can_branch_on_what_it_returns(self):
         # Every call is a bare expression statement, so its value is discarded
         # where it is made. A launch cannot take a different path on advice it
@@ -829,24 +862,25 @@ class TestTheAdvisoryCannotReachTheLaunch:
 
 
 class TestTheIndexSpaceTheAllocationIsReadIn:
-    """The Linux fallback reads HIP ids; a Vulkan launch does not name devices that way.
+    """The Linux fallback reads HIP ids, and a Vulkan launch does not name devices that way.
 
-    The Vulkan gate above classifies the TARGET correctly, but the reading behind it
-    was still handed `gpu_indices`, and `_rocm_selected_pool_mib` compares that
-    argument with physical HIP ids. On a Linux host pairing an APU with a discrete
-    card the two enumerations need not agree, so the reading could land on the wrong
-    device: advice suppressed on a load that deserved it, or priced against another
-    APU's pool.
+    Two separate reasons it must not run there. `_rocm_selected_pool_mib` compares
+    its argument with physical HIP ids, so Vulkan ordinals would land on another
+    device on any host where the enumerations differ. And the reading imports torch
+    and asks the device for its properties, which creates a HIP primary context in
+    the backend process -- measured at about 800 MiB, out of the pool the advice
+    would then call too small. The Windows registry answer is unaffected: it costs
+    a few winreg queries and needs no ordinal.
     """
 
     @staticmethod
     def _readers(
         monkeypatch,
         *,
-        device_count,
         pool_mib = 32 * 1024,
+        records = None,
     ):
-        """Record what the ROCm pool reader is asked for, and how many GPUs exist."""
+        """Record what the ROCm pool reader is asked, and stub the Windows registry."""
         asked = []
 
         def _pool(indices = None):
@@ -854,34 +888,37 @@ class TestTheIndexSpaceTheAllocationIsReadIn:
             return pool_mib
 
         monkeypatch.setattr(LlamaCppBackend, "_rocm_selected_pool_mib", staticmethod(_pool))
+        import utils.hardware.hardware as hw
+
         monkeypatch.setattr(
-            LlamaCppBackend,
-            "_rocm_single_device_pool_mib",
-            staticmethod(lambda: _pool(None) if device_count == 1 else None),
+            hw,
+            "_windows_amd_adapter_records_by_luid",
+            lambda vendor_id = hw._AMD_PCI_VENDOR_ID, **_kw: (records or {}).get(vendor_id, {}),
         )
         return asked
 
-    def test_a_vulkan_launch_never_asks_the_hip_reader_about_an_ordinal(self, monkeypatch):
-        asked = self._readers(monkeypatch, device_count = 1)
-        LlamaCppBackend._igpu_dedicated_memory_bytes([1], ordinals_are_vulkan = True)
-        assert asked == [None], f"a Vulkan ordinal reached the HIP-id reader: {asked}"
+    def test_a_vulkan_launch_never_reaches_the_hip_reader(self, monkeypatch):
+        asked = self._readers(monkeypatch)
+        got = LlamaCppBackend._igpu_dedicated_memory_bytes([1], ordinals_are_vulkan = True)
+        assert got is None
+        assert asked == [], f"a Vulkan launch paid for a HIP context: {asked}"
 
-    def test_a_vulkan_launch_on_a_multi_gpu_host_declines(self, monkeypatch):
-        # Two devices, no way to join a Vulkan ordinal to a HIP id, so there is no
-        # reading -- which every caller treats as "say nothing".
-        self._readers(monkeypatch, device_count = 2)
-        assert LlamaCppBackend._igpu_dedicated_memory_bytes([0], ordinals_are_vulkan = True) is None
+    def test_a_vulkan_launch_still_reads_the_windows_registry(self, monkeypatch):
+        # The half that must keep working: that reading is per adapter, costs a few
+        # registry queries and never touches an ordinal.
+        import utils.hardware.hardware as hw
 
-    def test_a_single_gpu_vulkan_host_still_reads(self, monkeypatch):
-        # One device is named the same by every enumeration, so the ordinal cannot
-        # be the wrong device and the advice this PR exists for still fires.
-        self._readers(monkeypatch, device_count = 1)
+        asked = self._readers(
+            monkeypatch,
+            records = {hw._AMD_PCI_VENDOR_ID: {1: {"dedicated_memory_bytes": 32 * _GB}}},
+        )
         got = LlamaCppBackend._igpu_dedicated_memory_bytes([0], ordinals_are_vulkan = True)
-        assert got == 32 * 1024 * 1024 * 1024
+        assert got == 32 * _GB
+        assert asked == []
 
     def test_a_non_vulkan_launch_still_scopes_by_physical_id(self, monkeypatch):
-        # The ROCm path is unchanged: those integers ARE HIP ids and narrowing the
+        # The ROCm path is unchanged: those integers ARE HIP ids, and narrowing the
         # reading to the selected ones is what keeps a dGPU out of the answer.
-        asked = self._readers(monkeypatch, device_count = 2)
+        asked = self._readers(monkeypatch)
         LlamaCppBackend._igpu_dedicated_memory_bytes([0])
         assert asked == [[0]]
