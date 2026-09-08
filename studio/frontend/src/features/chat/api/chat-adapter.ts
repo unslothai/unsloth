@@ -1233,9 +1233,12 @@ function buildReplayContent(
   textContent: string,
   imageParts: Array<{ type: "image_url"; image_url: { url: string } }>,
 ): OpenAIMessageContent {
-  return imageParts.length > 0
+  if (imageParts.length === 0) return textContent;
+  // Anthropic rejects whitespace-only text, and collectTextParts joins with "\n".
+  // Spread: the caller's array must not become the message content.
+  return textContent.trim()
     ? [{ type: "text", text: textContent }, ...imageParts]
-    : textContent;
+    : [...imageParts];
 }
 
 function collectAssistantTextThoughtSignature(
@@ -6154,6 +6157,10 @@ export function createOpenAIStreamAdapter(
                 ? { thread_id: resolvedThreadId }
                 : {}),
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
+              ...(externalCapabilities?.minP ? { min_p: params.minP } : {}),
+              ...(externalCapabilities?.repetitionPenalty
+                ? { repetition_penalty: params.repetitionPenalty }
+                : {}),
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),

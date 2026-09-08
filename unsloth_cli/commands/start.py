@@ -5863,7 +5863,9 @@ def dsh(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
