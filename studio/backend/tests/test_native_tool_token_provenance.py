@@ -10,7 +10,9 @@ import torch
 
 from core.inference.native_tool_tokens import (
     NATIVE_TOOL_CONTROL_TOKENS,
+    NativeToolTokenDecoder,
     decode_with_native_tool_tokens,
+    decoder_preserves_token,
 )
 from core.inference.safetensors_agentic import run_safetensors_tool_loop
 from core.inference.tool_call_parser import parse_tool_calls_from_text
@@ -297,3 +299,40 @@ def test_blocked_rehearsal_is_opaque_but_outside_sibling_remains_eligible():
     )
     assert [call["function"]["name"] for call in calls] == ["web_search"]
     assert json.loads(calls[0]["function"]["arguments"]) == {"query": "outside"}
+
+
+def test_a_tokenizer_whose_special_ids_raise_falls_back_instead_of_killing_the_turn():
+    """The streamers build this decoder unguarded on every tool-enabled turn.
+
+    ``all_special_ids`` is a property on third-party tokenizer adapters, and they raise
+    their own exception types from it. Anything that escapes here takes down generation
+    for a model that worked before, so every failure has to land on the documented
+    fail-closed path instead.
+    """
+
+    class RaisesOnSpecialIds:
+        def __init__(self, exc):
+            self._exc = exc
+
+        @property
+        def all_special_ids(self):
+            raise self._exc
+
+        def convert_ids_to_tokens(self, token_id):
+            raise self._exc
+
+        def decode(self, token_ids, **kwargs):
+            return "".join(f"<{int(i)}>" for i in token_ids)
+
+    for exc in (
+        RuntimeError("adapter has no special ids"),
+        KeyError("all_special_ids"),
+        NotImplementedError(),
+        OSError("backing file went away"),
+    ):
+        tokenizer = RaisesOnSpecialIds(exc)
+        decoder = NativeToolTokenDecoder(tokenizer)
+        # Fail closed: behave exactly as skip_special_tokens=True did before this module.
+        assert decoder.decode([1, 2]) == "<1><2>"
+        assert decoder.preserves("<tool_call>") is False
+        assert decoder_preserves_token(tokenizer, "<tool_call>") is False

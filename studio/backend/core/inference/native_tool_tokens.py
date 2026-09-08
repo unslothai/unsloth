@@ -163,7 +163,8 @@ def _special_token_sets(tokenizer, preserved_tokens = ()) -> tuple[frozenset[int
     which leaves the caller on fail-closed ``skip_special_tokens=True``."""
     try:
         special_ids = frozenset(int(token_id) for token_id in tokenizer.all_special_ids)
-    except (AttributeError, TypeError, ValueError):
+    except Exception:  # noqa: BLE001 -- adapters raise their own types; any of them means
+        # no usable ids, and the streamers build this decoder unguarded on every tool turn.
         return frozenset(), frozenset()
 
     preserved_tokens = frozenset(str(token) for token in preserved_tokens if token)
