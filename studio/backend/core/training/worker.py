@@ -1817,11 +1817,11 @@ def _install_fast_path_hooks(
 
     Idempotent. UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring gate.
     """
+    _guard_fla_tilelang()
+
     if os.getenv(_FAST_PATH_HOOKS_SKIP_ENV) == "1":
         logger.info("Fast-path hooks disabled via env; using substring fallback")
         return
-
-    _guard_fla_tilelang()
 
     try:
         from transformers.utils import import_utils as _iu

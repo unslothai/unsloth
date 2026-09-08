@@ -912,9 +912,9 @@ def test_rebind_does_not_trigger_module_getattr(monkeypatch):
             old_obj = original,
             new_obj = replacement,
         )
-        assert (
-            not _GetattrTripwire.getattr_called
-        ), "Rebind sweep invoked __getattr__ - should use __dict__ probe"
+        assert not _GetattrTripwire.getattr_called, (
+            "Rebind sweep invoked __getattr__ - should use __dict__ probe"
+        )
     finally:
         sys.modules.pop("_lazy_test_module", None)
 
@@ -1018,9 +1018,9 @@ def test_worker_source_never_pins_the_vendored_stack():
         if node.value in _FLA_PROSE_LOG_LINES:
             continue
         for package in _NEVER_PIP_INSTALLED:
-            assert not node.value.startswith(
-                package
-            ), f"worker.py names {package} in a string constant: {node.value!r}"
+            assert not node.value.startswith(package), (
+                f"worker.py names {package} in a string constant: {node.value!r}"
+            )
 
 
 def _stub_fla_modules(monkeypatch):
@@ -1063,6 +1063,19 @@ def test_install_fast_path_hooks_sets_fla_tilelang_zero_on_hip(monkeypatch):
     _force_torch_hip(monkeypatch, "6.4.43483")
     _patch_iu_gate(monkeypatch, _make_fake_gate(initial_return = True))
     monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **kw: True)
+
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
+
+    assert os.environ.get("FLA_TILELANG") == "0"
+
+
+def test_install_fast_path_hooks_guards_tilelang_even_when_hooks_are_skipped(monkeypatch):
+    """The opt-out skips the hooks, not the ROCm / tvm-ffi protection."""
+    monkeypatch.delenv("FLA_TILELANG", raising = False)
+    monkeypatch.setenv(worker._FAST_PATH_HOOKS_SKIP_ENV, "1")
+    _force_torch_hip(monkeypatch, "6.4.43483")
+    gate = _make_fake_gate(initial_return = True)
+    _patch_iu_gate(monkeypatch, gate)
 
     worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
