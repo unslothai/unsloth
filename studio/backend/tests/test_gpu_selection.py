@@ -41,7 +41,12 @@ async def _inline_to_thread(func, /, *args, **kwargs):
     return func(*args, **kwargs)
 
 
-def _load_model(inference_route, request, *, slots = 1):
+def _load_model(
+    inference_route,
+    request,
+    *,
+    slots = 1,
+):
     """Call the load route with a request scope carrying ``slots`` llama-server slots."""
     scope = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = slots)))
     return inference_route._load_model_impl(request, scope, current_subject = "test-user")
@@ -49,21 +54,23 @@ def _load_model(inference_route, request, *, slots = 1):
 
 def _gguf_model_config(**overrides):
     """The GGUF model row the load route reads, with per-test overrides."""
-    return SimpleNamespace(**{
-        "is_gguf": True,
-        "is_lora": False,
-        "gguf_hf_repo": None,
-        "gguf_file": "/tmp/test.gguf",
-        "gguf_mmproj_file": None,
-        "gguf_variant": None,
-        "identifier": "unsloth/test.gguf",
-        "display_name": "unsloth/test.gguf",
-        "is_vision": False,
-        "is_audio": False,
-        "audio_type": None,
-        "has_audio_input": False,
-        **overrides,
-    })
+    return SimpleNamespace(
+        **{
+            "is_gguf": True,
+            "is_lora": False,
+            "gguf_hf_repo": None,
+            "gguf_file": "/tmp/test.gguf",
+            "gguf_mmproj_file": None,
+            "gguf_variant": None,
+            "identifier": "unsloth/test.gguf",
+            "display_name": "unsloth/test.gguf",
+            "is_vision": False,
+            "is_audio": False,
+            "audio_type": None,
+            "has_audio_input": False,
+            **overrides,
+        }
+    )
 
 
 def _fake_unsloth_attention_modules(resolver):

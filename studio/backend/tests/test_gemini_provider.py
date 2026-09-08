@@ -43,7 +43,13 @@ from core.inference.external_provider import ExternalProviderClient
 _active_mock_clients: list[httpx.AsyncClient] = []
 
 
-def _assistant_call(name, arguments, *, id = "call_1", content = ""):
+def _assistant_call(
+    name,
+    arguments,
+    *,
+    id = "call_1",
+    content = "",
+):
     """An assistant turn whose only content is one function tool call."""
     return {
         "role": "assistant",
@@ -146,11 +152,21 @@ def _capture_responses_input(monkeypatch, messages):
     return captured["input_items"] or []
 
 
-def _event(parts, *, finish_reason = "STOP", usage = None, **candidate):
+def _event(
+    parts,
+    *,
+    finish_reason = "STOP",
+    usage = None,
+    **candidate,
+):
     """One Gemini SSE event: a model turn carrying ``parts``, plus optional usage metadata."""
     event = {
         "candidates": [
-            {"content": {"role": "model", "parts": parts}, **candidate, "finishReason": finish_reason}
+            {
+                "content": {"role": "model", "parts": parts},
+                **candidate,
+                "finishReason": finish_reason,
+            }
         ]
     }
     if usage is not None:
@@ -1049,7 +1065,10 @@ def test_code_execution_failure_outcome_surfaces_in_result(monkeypatch):
             [
                 {"executableCode": {"language": "PYTHON", "code": "1/0"}},
                 {
-                    "codeExecutionResult": {"outcome": "OUTCOME_FAILED", "output": "ZeroDivisionError"},
+                    "codeExecutionResult": {
+                        "outcome": "OUTCOME_FAILED",
+                        "output": "ZeroDivisionError",
+                    },
                 },
             ],
             usage = {"promptTokenCount": 5, "candidatesTokenCount": 2},
@@ -1094,7 +1113,11 @@ def test_usage_chunk_translates_gemini_token_counts(monkeypatch):
     sse = [
         _event(
             [{"text": "ok"}],
-            usage = {"promptTokenCount": 1234, "candidatesTokenCount": 56, "cachedContentTokenCount": 1000},
+            usage = {
+                "promptTokenCount": 1234,
+                "candidatesTokenCount": 56,
+                "cachedContentTokenCount": 1000,
+            },
         ),
     ]
     lines = _collect(monkeypatch, sse)
@@ -1620,7 +1643,11 @@ def test_code_execution_tool_events_stow_native_part(monkeypatch):
                     "thoughtSignature": "SIG-CODE",
                 },
                 {
-                    "codeExecutionResult": {"id": "result_a", "outcome": "OUTCOME_OK", "output": "2\n"},
+                    "codeExecutionResult": {
+                        "id": "result_a",
+                        "outcome": "OUTCOME_OK",
+                        "output": "2\n",
+                    },
                 },
             ],
             usage = {"promptTokenCount": 5, "candidatesTokenCount": 4},
@@ -1663,7 +1690,10 @@ def test_inline_image_tool_end_carries_thought_signature(monkeypatch):
         _event(
             [
                 {
-                    "inlineData": {"mimeType": "image/png", "data": base64.b64encode(b'PNG').decode()},
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(b"PNG").decode(),
+                    },
                     "thoughtSignature": "SIG-IMG",
                 },
             ],
@@ -1701,7 +1731,11 @@ def test_code_execution_plot_attaches_inline_image_native_part(monkeypatch):
         _event(
             [
                 {
-                    "executableCode": {"id": "code_a", "language": "PYTHON", "code": "plt.plot([0,1])"},
+                    "executableCode": {
+                        "id": "code_a",
+                        "language": "PYTHON",
+                        "code": "plt.plot([0,1])",
+                    },
                 },
                 {"codeExecutionResult": {"id": "result_a", "outcome": "OUTCOME_OK", "output": ""}},
                 {"inlineData": {"mimeType": "image/png", "data": plot_data}},
@@ -1763,7 +1797,11 @@ def test_openai_tools_translated_into_function_declarations(monkeypatch):
         tools = _tools(
             name = "get_weather",
             description = "Look up the weather for a city.",
-            parameters = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
+            parameters = {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
         ),
         tool_choice = {"type": "function", "function": {"name": "get_weather"}},
     )
@@ -1809,7 +1847,10 @@ def test_code_exec_inline_image_attaches_to_code_execution_card(monkeypatch):
                 },
                 {"codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "saved"}},
                 {
-                    "inlineData": {"mimeType": "image/png", "data": base64.b64encode(b'PNGDATA').decode()},
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(b"PNGDATA").decode(),
+                    },
                 },
             ],
             usage = {"promptTokenCount": 5, "candidatesTokenCount": 4},
@@ -2494,7 +2535,10 @@ def test_function_schema_nullable_type_array_flattens(monkeypatch):
             name = "lookup",
             parameters = {
                 "type": "object",
-                "properties": {"city": {"type": ["string", "null"]}, "score": {"type": ["number", "null"]}},
+                "properties": {
+                    "city": {"type": ["string", "null"]},
+                    "score": {"type": ["number", "null"]},
+                },
             },
         ),
     )
@@ -2855,28 +2899,28 @@ def test_user_function_named_with_server_tool_arg_not_dropped(monkeypatch):
     items = _capture_responses_input(
         monkeypatch,
         [
-        {"role": "user", "content": "hi"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_user",
-                    "type": "function",
-                    "function": {
-                        "name": "user_function",
-                        "arguments": json.dumps({"_server_tool": True, "q": "x"}),
-                    },
-                }
-            ],
-        },
-        {
-            "role": "tool",
-            "content": "result",
-            "tool_call_id": "call_user",
-            "name": "user_function",
-        },
-        {"role": "user", "content": "continue"},
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_user",
+                        "type": "function",
+                        "function": {
+                            "name": "user_function",
+                            "arguments": json.dumps({"_server_tool": True, "q": "x"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": "result",
+                "tool_call_id": "call_user",
+                "name": "user_function",
+            },
+            {"role": "user", "content": "continue"},
         ],
     )
     fn_calls = [i for i in items if i.get("type") == "function_call"]
@@ -2892,9 +2936,11 @@ def test_builtin_named_with_server_tool_marker_dropped(monkeypatch):
     items = _capture_responses_input(
         monkeypatch,
         [
-        {"role": "user", "content": "search please"},
-        _assistant_call("web_search", json.dumps({"_server_tool": True, "query": "x"}), id = "call_b"),
-        {"role": "user", "content": "continue"},
+            {"role": "user", "content": "search please"},
+            _assistant_call(
+                "web_search", json.dumps({"_server_tool": True, "query": "x"}), id = "call_b"
+            ),
+            {"role": "user", "content": "continue"},
         ],
     )
     fn_calls = [i for i in items if i.get("type") == "function_call"]
@@ -2936,7 +2982,9 @@ def test_schema_anyof_multitype_with_null_keeps_anyof_and_nullable(monkeypatch):
             name = "lookup",
             parameters = {
                 "type": "object",
-                "properties": {"either": {"anyOf": [{"type": "string"}, {"type": "integer"}, {"type": "null"}]}},
+                "properties": {
+                    "either": {"anyOf": [{"type": "string"}, {"type": "integer"}, {"type": "null"}]}
+                },
             },
         ),
     )
@@ -3132,9 +3180,7 @@ def test_unmarked_user_web_search_function_survives_serialization():
 
     payload = {
         "model": "gpt-5.5",
-        "messages": [
-            _assistant_call("web_search", '{"query": "x"}', id = "call_user")
-        ],
+        "messages": [_assistant_call("web_search", '{"query": "x"}', id = "call_user")],
         "stream": True,
     }
     req = ChatCompletionRequest.model_validate(payload)
@@ -3162,9 +3208,7 @@ def test_marked_server_builtin_dropped_from_build_external_messages():
     marked_args = json.dumps({"_server_tool": True, "kind": "image"})
     payload = {
         "model": "gpt-5.5",
-        "messages": [
-            _assistant_call("image_generation", marked_args, id = "call_b")
-        ],
+        "messages": [_assistant_call("image_generation", marked_args, id = "call_b")],
         "stream": True,
     }
     req = ChatCompletionRequest.model_validate(payload)
@@ -3379,9 +3423,7 @@ def test_user_code_execution_function_not_dropped():
 
     payload = {
         "model": "gpt-5.5",
-        "messages": [
-            _assistant_call("code_execution", '{"code": "print(1)"}', id = "call_user")
-        ],
+        "messages": [_assistant_call("code_execution", '{"code": "print(1)"}', id = "call_user")],
         "stream": True,
     }
     req = ChatCompletionRequest.model_validate(payload)
@@ -3419,9 +3461,7 @@ def test_native_part_code_execution_treated_as_server_side():
     )
     payload = {
         "model": "gpt-5.5",
-        "messages": [
-            _assistant_call("code_execution", args_with_native_part, id = "call_x")
-        ],
+        "messages": [_assistant_call("code_execution", args_with_native_part, id = "call_x")],
         "stream": True,
     }
     req = ChatCompletionRequest.model_validate(payload)
@@ -3499,15 +3539,17 @@ def test_orphan_function_call_output_dropped_when_call_skipped(monkeypatch):
     items = _capture_responses_input(
         monkeypatch,
         [
-        {"role": "user", "content": "search please"},
-        _assistant_call("web_search", json.dumps({"_server_tool": True, "query": "x"}), id = "call_b"),
-        {
-            "role": "tool",
-            "content": "result_text",
-            "tool_call_id": "call_b",
-            "name": "web_search",
-        },
-        {"role": "user", "content": "continue"},
+            {"role": "user", "content": "search please"},
+            _assistant_call(
+                "web_search", json.dumps({"_server_tool": True, "query": "x"}), id = "call_b"
+            ),
+            {
+                "role": "tool",
+                "content": "result_text",
+                "tool_call_id": "call_b",
+                "name": "web_search",
+            },
+            {"role": "user", "content": "continue"},
         ],
     )
     fn_calls = [i for i in items if i.get("type") == "function_call"]
@@ -3525,7 +3567,10 @@ def test_schema_multitype_union_with_null_preserves_anyof(monkeypatch):
         monkeypatch,
         tools = _tools(
             name = "lookup",
-            parameters = {"type": "object", "properties": {"either": {"type": ["string", "integer", "null"]}}},
+            parameters = {
+                "type": "object",
+                "properties": {"either": {"type": ["string", "integer", "null"]}},
+            },
         ),
     )
     decls = _function_declarations(captured)
@@ -3599,9 +3644,7 @@ def test_empty_assistant_turn_skipped_after_synthetic_tool_calls_dropped():
     marked_args = json.dumps({"_server_tool": True, "kind": "image"})
     payload = {
         "model": "gpt-5.5",
-        "messages": [
-            _assistant_call("image_generation", marked_args, id = "call_b")
-        ],
+        "messages": [_assistant_call("image_generation", marked_args, id = "call_b")],
         "stream": True,
     }
     req = ChatCompletionRequest.model_validate(payload)
@@ -3830,15 +3873,15 @@ def test_openai_responses_assistant_text_serialized_before_function_call(monkeyp
     items = _capture_responses_input(
         monkeypatch,
         [
-        {"role": "user", "content": "weather?"},
-        _assistant_call("get_weather", "{}", id = "call_w", content = "Let me check that."),
-        {
-            "role": "tool",
-            "content": "sunny",
-            "tool_call_id": "call_w",
-            "name": "get_weather",
-        },
-        {"role": "user", "content": "thanks"},
+            {"role": "user", "content": "weather?"},
+            _assistant_call("get_weather", "{}", id = "call_w", content = "Let me check that."),
+            {
+                "role": "tool",
+                "content": "sunny",
+                "tool_call_id": "call_w",
+                "name": "get_weather",
+            },
+            {"role": "user", "content": "thanks"},
         ],
     )
     types = [i.get("type") or i.get("role") for i in items]

@@ -18,7 +18,13 @@ from storage import rag_db  # noqa: E402
 THREAD = "thread-abc"
 
 
-def _assistant_call(name, arguments, *, id = "c1", content = ""):
+def _assistant_call(
+    name,
+    arguments,
+    *,
+    id = "c1",
+    content = "",
+):
     """An assistant turn whose only content is one function tool call."""
     return {
         "role": "assistant",
@@ -402,7 +408,7 @@ def test_the_reply_that_FOLLOWS_a_forced_recall_is_still_archived(conn):
         {"role": "user", "content": "what was the passphrase"},
         _assistant_call(
             "search_conversation",
-            "{\"query\": \"pass\"}",
+            '{"query": "pass"}',
             id = "conv_recall_1",
             content = None,
         ),
@@ -3533,9 +3539,7 @@ def test_a_sandbox_result_is_replayed_as_the_text_the_model_saw():
         return [
             {
                 "role": "assistant",
-                "content": [
-                    _tool_part(toolName = tool_name, result = result)
-                ],
+                "content": [_tool_part(toolName = tool_name, result = result)],
             }
         ]
 

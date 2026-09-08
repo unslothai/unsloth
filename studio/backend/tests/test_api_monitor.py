@@ -17,13 +17,15 @@ import routes.inference as inference_route
 
 def _start(monitor, **overrides):
     """Begin a monitored request, defaulting the fields a test does not vary."""
-    return monitor.start(**{
-        "endpoint": "/v1/chat/completions",
-        "method": "POST",
-        "model": "m",
-        "prompt": "hi",
-        **overrides,
-    })
+    return monitor.start(
+        **{
+            "endpoint": "/v1/chat/completions",
+            "method": "POST",
+            "model": "m",
+            "prompt": "hi",
+            **overrides,
+        }
+    )
 
 
 def test_terminal_api_usage_receipt_is_immutable_and_emitted_once():

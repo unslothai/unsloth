@@ -36,28 +36,32 @@ _spec.loader.exec_module(tv)
 
 def _gguf_cfg(**overrides):
     """The GGUF model row the chat route reads, with per-test overrides."""
-    return SimpleNamespace(**{
-        "gguf_file": None,
-        "gguf_mmproj_file": None,
-        "gguf_mtp_file": None,
-        "gguf_dspark_file": None,
-        "gguf_dflash_file": None,
-        "gguf_hf_repo": "org/repo",
-        "gguf_variant": "Q4_K_M",
-        **overrides,
-    })
+    return SimpleNamespace(
+        **{
+            "gguf_file": None,
+            "gguf_mmproj_file": None,
+            "gguf_mtp_file": None,
+            "gguf_dspark_file": None,
+            "gguf_dflash_file": None,
+            "gguf_hf_repo": "org/repo",
+            "gguf_variant": "Q4_K_M",
+            **overrides,
+        }
+    )
 
 
 def _model_cfg(**overrides):
     """A non-GGUF model row, with per-test overrides."""
-    return SimpleNamespace(**{
-        "is_gguf": False,
-        "is_lora": False,
-        "is_vision": False,
-        "path": None,
-        "base_model": None,
-        **overrides,
-    })
+    return SimpleNamespace(
+        **{
+            "is_gguf": False,
+            "is_lora": False,
+            "is_vision": False,
+            "path": None,
+            "base_model": None,
+            **overrides,
+        }
+    )
 
 
 class _GpuCacheResetMixin:

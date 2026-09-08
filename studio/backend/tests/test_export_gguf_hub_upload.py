@@ -127,15 +127,24 @@ def _patch_hub(monkeypatch, export_module, calls, seen):
     monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
 
 
-def _push_gguf(backend, save_dir, quant = "Q4_K_M", **overrides):
+def _push_gguf(
+    backend,
+    save_dir,
+    quant = "Q4_K_M",
+    **overrides,
+):
     """Export a GGUF and push it, with the upload fields these tests do not vary."""
-    return backend.export_gguf(save_dir, quant, **{
-        "push_to_hub": True,
-        "repo_id": "owner/model",
-        "hf_token": "token",
-        "private": False,
-        **overrides,
-    })
+    return backend.export_gguf(
+        save_dir,
+        quant,
+        **{
+            "push_to_hub": True,
+            "repo_id": "owner/model",
+            "hf_token": "token",
+            "private": False,
+            **overrides,
+        },
+    )
 
 
 def test_gguf_hub_export_uploads_the_built_files_instead_of_reconverting(tmp_path, monkeypatch):

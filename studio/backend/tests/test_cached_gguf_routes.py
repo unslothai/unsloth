@@ -1265,7 +1265,10 @@ def test_an_audio_only_projector_in_the_cache_is_not_vision(monkeypatch, tmp_pat
         "Org/Audio",
         repo_dir,
         snapshot,
-        [ _file("Model-Q4_K_M.gguf", 256), _file("mmproj-F16.gguf", 256), ],
+        [
+            _file("Model-Q4_K_M.gguf", 256),
+            _file("mmproj-F16.gguf", 256),
+        ],
     )
     _scanned_repos(monkeypatch, repo)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)

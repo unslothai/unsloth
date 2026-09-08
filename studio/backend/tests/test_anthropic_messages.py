@@ -756,9 +756,7 @@ class TestAnthropicMessagesToOpenAI:
         assert json.loads(tc["function"]["arguments"]) == {"query": "test"}
 
     def test_tool_result_maps_to_tool_role(self):
-        msgs = [
-            _tool_result_turn(tool_use_id = "tu_1", content = "Result text")
-        ]
+        msgs = [_tool_result_turn(tool_use_id = "tu_1", content = "Result text")]
         result = anthropic_messages_to_openai(msgs)
         assert len(result) == 1
         assert result[0]["role"] == "tool"
@@ -1720,7 +1718,9 @@ class TestAnthropicPassthroughEmitter:
             )
         )
         # Stream argument fragments
-        events1 = e.feed_chunk(_chunk(tool_calls = [{"index": 0, "function": {"arguments": '{"cmd'}}]))
+        events1 = e.feed_chunk(
+            _chunk(tool_calls = [{"index": 0, "function": {"arguments": '{"cmd'}}])
+        )
         events2 = e.feed_chunk(
             _chunk(tool_calls = [{"index": 0, "function": {"arguments": '": "ls"}'}}])
         )

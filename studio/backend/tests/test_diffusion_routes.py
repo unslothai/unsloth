@@ -557,10 +557,10 @@ def test_generate_rejects_non_multiple_of_16(client):
 def test_generate_rejects_batch_seed_past_json_safe_range(client):
     _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
     # A seed at the cap with a batch derives per-image seeds past the JSON-safe range, so the request is rejected.
-    over = _post_generate(client, prompt = "p", seed = 2 ** 53 - 1, batch_size = 2)
+    over = _post_generate(client, prompt = "p", seed = 2**53 - 1, batch_size = 2)
     assert over.status_code == 422
     # The top-of-batch seed lands exactly on the cap: still JSON-safe, so accepted.
-    ok = _post_generate(client, prompt = "p", seed = 2 ** 53 - 2, batch_size = 2)
+    ok = _post_generate(client, prompt = "p", seed = 2**53 - 2, batch_size = 2)
     assert ok.status_code == 200
 
 

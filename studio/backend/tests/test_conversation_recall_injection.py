@@ -68,7 +68,9 @@ def _truncated_turn(
     return {
         "role": role,
         "content": content,
-        "metadata": {"custom": {"contextTruncation": {"fits": fits, "dropped_messages": dropped_messages}}},
+        "metadata": {
+            "custom": {"contextTruncation": {"fits": fits, "dropped_messages": dropped_messages}}
+        },
     }
 
 

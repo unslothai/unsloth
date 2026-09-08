@@ -1608,9 +1608,7 @@ def test_authoritative_ancestry_stops_before_an_unmatched_stored_descendant(monk
 
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "First task."},
-        _pending_turn(
-            id = "assistant-1", parentId = "user-1", content = "The common-prefix reply."
-        ),
+        _pending_turn(id = "assistant-1", parentId = "user-1", content = "The common-prefix reply."),
         _row(
             id = "user-old",
             parentId = "assistant-1",
@@ -1726,9 +1724,7 @@ def test_a_cancelled_epoch_boundary_is_found_through_its_stored_descendant(monke
 
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "First question."},
-        _turn(
-            id = "assistant-1", content = "The old epoch reply.", metadata = _checkpoint_metadata(6)
-        ),
+        _turn(id = "assistant-1", content = "The old epoch reply.", metadata = _checkpoint_metadata(6)),
         {"id": "user-2", "parentId": "assistant-1", "role": "user", "content": "More work."},
         {
             "id": "assistant-2",
@@ -1808,9 +1804,7 @@ def test_retrying_the_newest_turn_twice_still_resolves_the_proved_branch(monkeyp
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
     for retry in range(3):
-        rows.append(
-            _row(id = f"fu{retry}", parentId = "a1", content = f"A retried follow-up {retry}.")
-        )
+        rows.append(_row(id = f"fu{retry}", parentId = "a1", content = f"A retried follow-up {retry}."))
         assert llama_cpp._sticky_compaction_state("t1", branch) == (4, True)
         assert inference_routes._thread_has_checkpoint("t1", branch) is True
 

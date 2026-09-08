@@ -1130,7 +1130,9 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
 
     (tmp_path / "model.safetensors").write_bytes(b"weights")
     backend = DiffusionBackend()
-    status = _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
+    status = _load_into(
+        backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
+    )
     assert status["speed_mode"] == "off"
     assert status["resolved"]["speed_mode"]["value"] == "deferred"
     assert status["resolved"]["speed_mode"]["source"] == "auto"
@@ -1147,7 +1149,13 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
 
     # An explicit "off" is pinned: no deferral, still eager after 3 generations.
     backend.unload()
-    status_off = _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image", speed_mode = "off")
+    status_off = _load_into(
+        backend,
+        tmp_path,
+        gguf_filename = "model.safetensors",
+        family_override = "qwen-image",
+        speed_mode = "off",
+    )
     assert status_off["resolved"]["speed_mode"]["value"] == "off"
     for p in ("a", "b", "c"):
         backend.generate(prompt = p)
@@ -1170,7 +1178,9 @@ def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkey
     # Stub LoRA loading (covered elsewhere) so no adapter file is needed.
     monkeypatch.setattr(DiffusionBackend, "_apply_loras", lambda self, state, loras, cancel: None)
 
-    backend = _loaded_backend(tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
+    backend = _loaded_backend(
+        tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
+    )
     backend.generate(prompt = "one")
     backend.generate(prompt = "two")
     # 3rd generation requests a LoRA: the deferral must be skipped (pipe stays LoRA-capable).
@@ -1201,7 +1211,9 @@ def test_deferred_speed_skips_while_adapter_attached(fake_runtime, tmp_path, mon
 
     monkeypatch.setattr(DiffusionBackend, "_apply_loras", fake_apply)
 
-    backend = _loaded_backend(tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
+    backend = _loaded_backend(
+        tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
+    )
     # Gens 1-2 attach an adapter, so it is still resident going into gen 3.
     backend.generate(prompt = "one", loras = [("adapter", 1.0)])
     backend.generate(prompt = "two", loras = [("adapter", 1.0)])
@@ -1244,7 +1256,13 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
 
     (tmp_path / "model.safetensors").write_bytes(b"weights")
     backend = DiffusionBackend()
-    _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image", attention_backend = "native")
+    _load_into(
+        backend,
+        tmp_path,
+        gguf_filename = "model.safetensors",
+        family_override = "qwen-image",
+        attention_backend = "native",
+    )
     backend.generate(prompt = "one")
     backend.generate(prompt = "two")
     backend.generate(prompt = "three")  # deferred profile engages here
@@ -1879,7 +1897,9 @@ def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path
     no input image."""
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
-    _load_into(backend, tmp_path, base_repo = "Qwen/Qwen-Image-Edit-2511", family_override = "qwen-image-edit")
+    _load_into(
+        backend, tmp_path, base_repo = "Qwen/Qwen-Image-Edit-2511", family_override = "qwen-image-edit"
+    )
     # Edit families advertise only the edit workflow.
     assert backend.status()["workflows"] == ["edit"]
     loaded_pipe = backend._state.pipe
@@ -1924,7 +1944,9 @@ def test_load_single_file_safetensors_no_gguf_config(fake_runtime, tmp_path):
     GGUF dequant config (it carries its own dtype), then assembled from the base repo."""
     (tmp_path / "model.safetensors").write_bytes(b"weights")
     backend = DiffusionBackend()
-    status = _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
+    status = _load_into(
+        backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
+    )
     assert status["loaded"] is True
     assert _FakeTransformer.last["path"] == str((tmp_path / "model.safetensors").resolve())
     assert _FakeTransformer.last["subfolder"] == "transformer"
@@ -1957,7 +1979,9 @@ def test_load_sdxl_single_file_uses_pipeline_from_single_file(fake_runtime, tmp_
     (UNet2DConditionModel has no companion-transformer assembly here)."""
     (tmp_path / "sdxl.safetensors").write_bytes(b"weights")
     backend = DiffusionBackend()
-    status = _load_into(backend, tmp_path, gguf_filename = "sdxl.safetensors", base_repo = None, family_override = "sdxl")
+    status = _load_into(
+        backend, tmp_path, gguf_filename = "sdxl.safetensors", base_repo = None, family_override = "sdxl"
+    )
     assert status["loaded"] is True
     assert status["family"] == "sdxl"
     # The whole-pipeline single-file path was taken with the base repo as config.
@@ -2343,7 +2367,14 @@ def test_ideogram_rejects_single_file_and_gguf_kinds(fake_runtime, tmp_path):
         _load_into(backend, tmp_path, base_repo = None, family_override = "ideogram-4")
     (tmp_path / "model.safetensors").write_bytes(b"x")
     with pytest.raises(ValueError, match = "full diffusers pipeline"):
-        _load_into(backend, tmp_path, gguf_filename = "model.safetensors", base_repo = None, family_override = "ideogram-4", model_kind = "single_file")
+        _load_into(
+            backend,
+            tmp_path,
+            gguf_filename = "model.safetensors",
+            base_repo = None,
+            family_override = "ideogram-4",
+            model_kind = "single_file",
+        )
 
 
 def test_generate_ideogram_defaults_keep_recommended_schedule(fake_runtime, tmp_path):
@@ -3096,7 +3127,6 @@ def _force_cuda_target(backend, monkeypatch):
 def _mps_target(torch):
     """An Apple/MPS device target: no model offload, no compile, no pinned transfer."""
     from core.inference.diffusion_device import DiffusionDeviceTarget
-
     return DiffusionDeviceTarget(
         device = "mps",
         dtype = torch.bfloat16,
@@ -3602,7 +3632,13 @@ def test_declined_explicit_precision_reports_the_ask_and_the_outcome(
     backend = DiffusionBackend()
     _stub_declining_dense_quant(backend, monkeypatch)
     (tmp_path / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"x")
-    status = _load_into(backend, tmp_path, gguf_filename = "z-image-turbo-Q4_K_M.gguf", base_repo = None, transformer_quant = "fp8")
+    status = _load_into(
+        backend,
+        tmp_path,
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        base_repo = None,
+        transformer_quant = "fp8",
+    )
     # Runtime telemetry: fp8 is NOT engaged.
     assert status["transformer_quant"] is None
     resolved = status["resolved"]["transformer_quant"]
@@ -3641,7 +3677,13 @@ def test_explicit_transformer_quant_refuses_instead_of_loading_the_gguf(
     _stub_declining_dense_quant(backend, monkeypatch)
     (tmp_path / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"x")
     with pytest.raises(RuntimeError) as excinfo:
-        _load_into(backend, tmp_path, gguf_filename = "z-image-turbo-Q4_K_M.gguf", base_repo = None, transformer_quant = "fp8")
+        _load_into(
+            backend,
+            tmp_path,
+            gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+            base_repo = None,
+            transformer_quant = "fp8",
+        )
     message = str(excinfo.value)
     assert "transformer_quant='fp8' could not be used" in message
     assert "build failed" in message
@@ -5274,7 +5316,13 @@ def test_status_reports_the_dense_build_when_it_replaced_the_gguf(
     _force_cuda_target(backend, monkeypatch)
     _stub_dense_quant(monkeypatch, scheme = "fp8")
     (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
-    status = _load_into(backend, tmp_path, gguf_filename = "z-image-turbo-Q8_0.gguf", base_repo = None, transformer_quant = "fp8")
+    status = _load_into(
+        backend,
+        tmp_path,
+        gguf_filename = "z-image-turbo-Q8_0.gguf",
+        base_repo = None,
+        transformer_quant = "fp8",
+    )
     assert status["transformer_quant"] == "fp8"
     assert backend.status()["transformer_quant"] == "fp8"
 
@@ -5833,7 +5881,9 @@ def test_dense_fit_check_runs_for_a_base_the_live_cache_root_does_not_hold(
         DiffusionBackend, "_load_dense_quant_pipeline", lambda self, *a, **k: (None, None)
     )
     (tmp_path / "m.gguf").write_bytes(b"x")
-    _load_m(backend, tmp_path, transformer_quant = "fp8", _base_local_dir = str(shards) if staged else None)
+    _load_m(
+        backend, tmp_path, transformer_quant = "fp8", _base_local_dir = str(shards) if staged else None
+    )
     assert dense_refit_ran == [12288]
     assert backend.status()["loaded"] is True
 
@@ -8207,7 +8257,14 @@ def test_the_offload_retry_runs_when_the_auto_winner_had_no_candidate_at_all(
 
     monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    _load_into(backend, tmp_path, gguf_filename = "m.gguf", base_repo = None, family_override = "qwen-image", transformer_quant = "auto")
+    _load_into(
+        backend,
+        tmp_path,
+        gguf_filename = "m.gguf",
+        base_repo = None,
+        family_override = "qwen-image",
+        transformer_quant = "auto",
+    )
 
     # Both resolves ran, so the retry was actually taken rather than dying on the way in.
     assert len(resolved) == 2
@@ -8273,7 +8330,15 @@ def test_the_resident_retry_runs_when_the_dense_shards_were_never_staged(
 
     monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
     (tmp_path / "m.gguf").write_bytes(b"x")
-    _load_into(backend, tmp_path, gguf_filename = "m.gguf", base_repo = None, family_override = "qwen-image", transformer_quant = "auto", _transformer_prefetched = False)
+    _load_into(
+        backend,
+        tmp_path,
+        gguf_filename = "m.gguf",
+        base_repo = None,
+        family_override = "qwen-image",
+        transformer_quant = "auto",
+        _transformer_prefetched = False,
+    )
     # Retried down to the cached rung rather than attempting the unbuildable winner.
     assert seen == ["int8"]
 
@@ -8335,7 +8400,15 @@ def test_the_resident_retry_declines_a_rung_that_does_not_plan_resident(
         lambda self, *a, **k: attempted.append(True),
     )
     (tmp_path / "m.gguf").write_bytes(b"x")
-    _load_into(backend, tmp_path, gguf_filename = "m.gguf", base_repo = None, family_override = "qwen-image", transformer_quant = "auto", _transformer_prefetched = False)
+    _load_into(
+        backend,
+        tmp_path,
+        gguf_filename = "m.gguf",
+        base_repo = None,
+        family_override = "qwen-image",
+        transformer_quant = "auto",
+        _transformer_prefetched = False,
+    )
     # Declined: neither the winner nor the retried rung is loadable, so the GGUF stands.
     assert attempted == []
 

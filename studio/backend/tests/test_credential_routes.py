@@ -29,12 +29,14 @@ from models.providers import (
 
 def _provider(**overrides):
     """A provider creation payload, with per-test overrides."""
-    return ProviderCreate(**{
-        "provider_type": "openai_codex",
-        "display_name": "ChatGPT subscription",
-        "models": ["gpt-5.4"],
-        **overrides,
-    })
+    return ProviderCreate(
+        **{
+            "provider_type": "openai_codex",
+            "display_name": "ChatGPT subscription",
+            "models": ["gpt-5.4"],
+            **overrides,
+        }
+    )
 
 
 def _load_route_module(module_name: str, path: Path):

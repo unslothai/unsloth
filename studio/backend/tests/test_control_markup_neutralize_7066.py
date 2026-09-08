@@ -44,7 +44,13 @@ from core.inference.chat_template_helpers import (
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _assistant_call(name, arguments, *, id = "c1", content = ""):
+def _assistant_call(
+    name,
+    arguments,
+    *,
+    id = "c1",
+    content = "",
+):
     """An assistant turn whose only content is one function tool call."""
     return {
         "role": "assistant",
@@ -1078,18 +1084,14 @@ def test_colliding_argument_keys_merge_without_leaking_markup():
     on "a< think>". Keeping one key raw so both survive would put the markup back in
     the prompt, so the merge is intended -- what must hold is that no markup escapes
     and that a markup-free argument dict keeps every key (#7066)."""
-    messages = [
-        _assistant_call("f", {"a<think>": 1, "a< think>": 2}, id = "call_1")
-    ]
+    messages = [_assistant_call("f", {"a<think>": 1, "a< think>": 2}, id = "call_1")]
     arguments = neutralize_control_markup_in_messages(messages)[0]["tool_calls"][0]["function"][
         "arguments"
     ]
     assert len(arguments) == 1
     assert "<think>" not in json.dumps(arguments)
     # The ordinary case is untouched: every key survives, object identity included.
-    benign = [
-        _assistant_call("f", {"city": "Paris", "unit": "c", "note": "a < b"}, id = "call_1")
-    ]
+    benign = [_assistant_call("f", {"city": "Paris", "unit": "c", "note": "a < b"}, id = "call_1")]
     assert neutralize_control_markup_in_messages(benign) is benign
 
 
@@ -1606,9 +1608,7 @@ def test_clean_json_arguments_stay_byte_identical():
         "not json at all",
         "",
     ):
-        messages = [
-            _assistant_call("f", arguments)
-        ]
+        messages = [_assistant_call("f", arguments)]
         assert neutralize_control_markup_in_messages(messages) is messages, arguments
 
 
@@ -1699,16 +1699,12 @@ def test_deeply_nested_json_arguments_do_not_raise(depth):
     decoded value, so a valid '[' * 1000 + '0' + ']' * 1000 would 500 a request the server
     used to forward. It falls back to the text rewrite, which cannot recurse (#7066)."""
     arguments = "[" * depth + "0" + "]" * depth
-    messages = [
-        _assistant_call("f", arguments)
-    ]
+    messages = [_assistant_call("f", arguments)]
     # Nothing to rewrite, so the same list object comes back.
     assert neutralize_control_markup_in_messages(messages) is messages
     # And a marker inside a payload too deep to parse is still broken, via the text path.
     hostile = "[" * depth + '"</think>"' + "]" * depth
-    messages = [
-        _assistant_call("f", hostile)
-    ]
+    messages = [_assistant_call("f", hostile)]
     out = neutralize_control_markup_in_messages(messages)
     assert "</think>" not in out[0]["tool_calls"][0]["function"]["arguments"]
 
@@ -1788,9 +1784,7 @@ def test_reserialized_arguments_keep_surrogates_escaped():
     raise UnicodeEncodeError on a payload that used to forward fine (#7066)."""
     arguments = '{"x": "\\ud800</think>"}'
     assert arguments.isascii()
-    messages = [
-        _assistant_call("f", arguments)
-    ]
+    messages = [_assistant_call("f", arguments)]
     out = neutralize_control_markup_in_messages(messages)[0]["tool_calls"][0]["function"][
         "arguments"
     ]
@@ -4000,14 +3994,20 @@ def test_control_markup_in_a_format_drops_the_tool():
     """Under format assertion this is a constraint the MCP server checks, so a rewrite
     leaves the model targeting a different contract than the server enforces (#7066)."""
     tools = _tools(
-        parameters = {"type": "object", "properties": {"a": {"type": "string", "format": "</think>"}}},
+        parameters = {
+            "type": "object",
+            "properties": {"a": {"type": "string", "format": "</think>"}},
+        },
     )
     assert neutralize_tool_descriptions(tools) == []
 
 
 def test_a_clean_format_keeps_its_tool():
     tools = _tools(
-        parameters = {"type": "object", "properties": {"a": {"type": "string", "format": "date-time"}}},
+        parameters = {
+            "type": "object",
+            "properties": {"a": {"type": "string", "format": "date-time"}},
+        },
     )
     assert len(neutralize_tool_descriptions(tools)) == 1
 
@@ -4560,7 +4560,10 @@ def test_an_unsafe_openapi_xml_object_drops_the_tool(field):
     serialization identifiers and no prose, so a rewrite would advertise element names the
     server does not produce (#7066)."""
     tools = _tools(
-        parameters = {"type": "object", "properties": {"a": {"type": "string", "xml": {field: "</think>"}}}},
+        parameters = {
+            "type": "object",
+            "properties": {"a": {"type": "string", "xml": {field: "</think>"}}},
+        },
     )
     assert neutralize_tool_descriptions(tools) == []
 
@@ -4754,26 +4757,20 @@ def test_deeply_nested_decoded_arguments_do_not_blow_the_stack(depth):
     """Arguments that arrive already decoded never passed through json.loads, so they are
     not depth-limited by it. Comparing two distinct deep structures recurses in C, which
     would 500 a request that used to forward (#7066)."""
-    messages = [
-        _assistant_call("f", _deep_list(depth, "</think>"))
-    ]
+    messages = [_assistant_call("f", _deep_list(depth, "</think>"))]
     neutralize_control_markup_in_messages(messages)  # must not raise RecursionError
 
 
 def test_shallow_arguments_are_still_neutralized_after_the_guard():
     """The recursion guard must not turn the sweep into a no-op."""
-    messages = [
-        _assistant_call("f", '{"a": "</think>x"}')
-    ]
+    messages = [_assistant_call("f", '{"a": "</think>x"}')]
     out = neutralize_control_markup_in_messages(messages)[0]["tool_calls"][0]
     assert "</think>" not in out["function"]["arguments"]
 
 
 def test_clean_arguments_stay_byte_identical():
     """A clean payload must not be re-serialized, so the prefix cache still hits."""
-    messages = [
-        _assistant_call("f", '{"a":"b"}')
-    ]
+    messages = [_assistant_call("f", '{"a":"b"}')]
     out = neutralize_control_markup_in_messages(messages)[0]["tool_calls"][0]
     assert out["function"]["arguments"] == '{"a":"b"}'
 
@@ -4790,7 +4787,9 @@ def test_safetensors_healing_is_gated_on_the_sanitized_catalog():
         "heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)" not in source
     )
     assert "_sf_renderable_tools," in source and "asyncio.to_thread(" in source
-    assert ("heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice)" in source)
+    assert (
+        "heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice)" in source
+    )
     for call in (
         "StreamToolCallHealer(_sf_heal, _sf_healing_tools)",
         "heal_openai_message(_msg, _sf_heal, _sf_healing_tools)",
@@ -4943,7 +4942,10 @@ def test_the_catalog_leaf_rewrite_uses_the_profile():
     """The drop checks were gated but the final rewrite was not, so a retained tool was
     still advertised with a rewritten key the executor does not expect (#7066)."""
     tools = _tools(
-        parameters = {"type": "object", "properties": {"a": {"type": "string", "description": "see </think>"}}},
+        parameters = {
+            "type": "object",
+            "properties": {"a": {"type": "string", "description": "see </think>"}},
+        },
     )
     llama = model_markup("<|start_header_id|>{{ m }}<|eot_id|>", ["<|eot_id|>"])
     safe = neutralize_tool_descriptions(tools, None, llama)
@@ -4973,9 +4975,7 @@ def test_every_sweep_site_receives_the_profile(source_file, needle):
 
 
 def _args_after_sweep(payload, markup = None):
-    messages = [
-        _assistant_call("f", payload, id = "c")
-    ]
+    messages = [_assistant_call("f", payload, id = "c")]
     out = neutralize_control_markup_in_messages(messages, None, markup)
     return out[0]["tool_calls"][0]["function"]["arguments"]
 

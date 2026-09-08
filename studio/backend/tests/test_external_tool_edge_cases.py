@@ -34,7 +34,13 @@ from core.inference.studio_tool_loop import (
 _DONE = "data: [DONE]"
 
 
-def _tool_call_delta(name, arguments, *, id = "c1", index = 0):
+def _tool_call_delta(
+    name,
+    arguments,
+    *,
+    id = "c1",
+    index = 0,
+):
     """A streaming delta payload carrying one function tool call."""
     return {
         "tool_calls": [
@@ -916,9 +922,7 @@ def test_one_megabyte_argument_streams_in_fragments(executed):
     blob = "x" * (1024 * 1024)
     arguments = json.dumps({"query": blob})
     chunks = [arguments[i : i + 4096] for i in range(0, len(arguments), 4096)]
-    turn = [
-        _sse(_tool_call_delta("web_search", ""))
-    ]
+    turn = [_sse(_tool_call_delta("web_search", ""))]
     turn += [
         _sse({"tool_calls": [{"index": 0, "function": {"arguments": chunk}}]}) for chunk in chunks
     ]

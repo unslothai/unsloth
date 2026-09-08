@@ -30,13 +30,15 @@ from core.inference.diffusion_prequant import (
 
 def _prequant_source(**overrides):
     """A prequantized checkpoint source, with per-test overrides."""
-    return PrequantSource(**{
-        "kind": "repo",
-        "location": "unsloth/Z-Image-Turbo-FP8",
-        "filename": "Z-Image-Turbo-FP8.pt",
-        "fallback_filename": "transformer_fp8.pt",
-        **overrides,
-    })
+    return PrequantSource(
+        **{
+            "kind": "repo",
+            "location": "unsloth/Z-Image-Turbo-FP8",
+            "filename": "Z-Image-Turbo-FP8.pt",
+            "fallback_filename": "transformer_fp8.pt",
+            **overrides,
+        }
+    )
 
 
 @pytest.fixture(autouse = True)
