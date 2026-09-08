@@ -17,6 +17,7 @@ from loggers import get_logger
 
 from auth.authentication import authenticated_without_credential, get_current_subject
 from core.training.resume import artifacts_present, can_resume_run
+from utils.training_runs import drop_non_finite
 from models import (
     TrainingRunDeleteResponse,
     TrainingRunDetailResponse,
@@ -310,7 +311,8 @@ async def get_training_run_detail(
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
 
     try:
-        config = json.loads(run.get("config_json", "{}"))
+        # An older install may have stored `Infinity` / `NaN`, which Starlette refuses to render.
+        config = drop_non_finite(json.loads(run.get("config_json", "{}")))
     except (json.JSONDecodeError, TypeError):
         logger.debug("Failed to parse config_json for run %s", run_id)
         config = {}

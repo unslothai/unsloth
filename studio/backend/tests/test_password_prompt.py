@@ -338,3 +338,118 @@ def test_resolve_supplied_password_off_by_default(monkeypatch):
     monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising = False)
     assert tp.resolve_supplied_password("") is None
     assert tp.resolve_supplied_password(None) is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# A raw non-loopback bind is exposure too. `-H 0.0.0.0` starts no tunnel, so it
+# used to return False here and skip the gate, leaving the seeded admin password
+# live and served in the page to every host on the network.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_a_raw_exposed_bind_prompts_when_a_terminal_is_attached():
+    from auth.terminal_prompt import should_prompt_password_change
+    assert (
+        should_prompt_password_change(
+            tunnel_will_start = False,
+            bind_is_exposed = True,
+            requires_change = True,
+            stdin_isatty = True,
+            stderr_isatty = True,
+        )
+        is True
+    )
+
+
+def test_a_raw_exposed_bind_stays_silent_without_a_terminal():
+    """Headless raw binds keep today's behaviour, deliberately.
+
+    Everything downstream of a True here is calibrated to publishing a public URL:
+    it refuses to launch when the deadline is disabled, and it deletes
+    .bootstrap_password, which long-running headless containers (the common use of
+    -H 0.0.0.0) are often logged into by reading. They keep the deadline instead.
+    """
+    from auth.terminal_prompt import should_prompt_password_change
+    for stdin_tty, stderr_tty in ((False, False), (True, False), (False, True)):
+        assert (
+            should_prompt_password_change(
+                tunnel_will_start = False,
+                bind_is_exposed = True,
+                requires_change = True,
+                stdin_isatty = stdin_tty,
+                stderr_isatty = stderr_tty,
+            )
+            is False
+        )
+
+
+def test_a_loopback_launch_is_untouched():
+    """Plain `unsloth studio` must be completely unaffected."""
+    from auth.terminal_prompt import should_prompt_password_change
+    assert (
+        should_prompt_password_change(
+            tunnel_will_start = False,
+            bind_is_exposed = False,
+            requires_change = True,
+            stdin_isatty = True,
+            stderr_isatty = True,
+        )
+        is False
+    )
+
+
+def test_an_already_changed_password_never_prompts():
+    from auth.terminal_prompt import should_prompt_password_change
+    assert (
+        should_prompt_password_change(
+            tunnel_will_start = True,
+            bind_is_exposed = True,
+            requires_change = False,
+            stdin_isatty = True,
+            stderr_isatty = True,
+        )
+        is False
+    )
+
+
+def test_the_default_keeps_old_callers_tunnel_only():
+    """bind_is_exposed defaults False, so an old caller behaves as before."""
+    from auth.terminal_prompt import should_prompt_password_change
+    assert (
+        should_prompt_password_change(
+            tunnel_will_start = False,
+            requires_change = True,
+            stdin_isatty = True,
+            stderr_isatty = True,
+        )
+        is False
+    )
+
+
+def test_the_prompt_banner_does_not_claim_the_internet_for_a_lan_bind(monkeypatch):
+    """`-H 0.0.0.0` behind a NAT router is the LAN, not the public internet.
+
+    Saying "public internet" is false often enough to train people to ignore the
+    message, which is the one thing this prompt cannot afford.
+    """
+    import io
+
+    from auth import terminal_prompt
+
+    def _no_input(*_a, **_k):
+        raise EOFError
+
+    monkeypatch.setattr(terminal_prompt, "_read_password", _no_input)
+
+    out = io.StringIO()
+    # The read aborts immediately; fine, the banner is written before any read.
+    terminal_prompt.prompt_for_password_change(
+        min_length = 8,
+        is_current_password = lambda _c: False,
+        apply_change = lambda _p: None,
+        out = out,
+        exposure = "on every network interface",
+    )
+    text = out.getvalue()
+    assert "on every network interface" in text
+    assert "public internet" not in text

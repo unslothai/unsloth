@@ -775,6 +775,7 @@ installed_llama_prebuilt_release() {
     [ -f "$metadata_path" ] || return 0
     python - "$metadata_path" <<'PY' 2>/dev/null || true
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -792,6 +793,10 @@ llama_tag = str(payload.get("tag") or "").strip()
 source = str(payload.get("source") or "").strip()
 binary_repo = str(payload.get("binary_repo") or "").strip()
 binary_tag = str(payload.get("binary_release_tag") or "").strip()
+_backend_raw = payload.get("backend")
+# Absent before #8520, and null when backend_for_install_kind() had no answer. str() on a
+# non-string would diverge from the setup.ps1 twin (Python "[1, 2]" vs PowerShell "1 2").
+backend = _backend_raw.strip() if isinstance(_backend_raw, str) else ""
 if not repo or not release_tag:
     raise SystemExit(0)
 
@@ -804,6 +809,10 @@ else:
     message = f"installed release: {repo}@{release_tag}"
     if llama_tag and llama_tag != release_tag:
         message += f" (tag {llama_tag})"
+# Name the backend: a Vulkan and a ROCm bundle print an identical line without it. The
+# shape check keeps the line single-line and matches the setup.ps1 twin byte for byte.
+if re.fullmatch(r"[A-Za-z0-9._+-]{1,32}", backend):
+    message += f" -- {backend} backend"
 print(message)
 PY
 }
@@ -1879,6 +1888,30 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
+        # Same shape, same reason: a venv installed before the tokenizers pin can
+        # hold a tokenizers the installed transformers rejects at import, which
+        # takes down every `import transformers` and so the whole MLX stack, while
+        # $_PKG_NAME itself is current. Without this the fast path reports "up to
+        # date" and repairs nothing. Ask the metadata, not an import: the import is
+        # what is broken. Any unreadable half exits 1 and changes nothing.
+        if "$VENV_DIR/bin/python" -c "
+import sys
+from importlib.metadata import PackageNotFoundError, requires, version
+try:
+    from packaging.requirements import Requirement
+    installed = version('tokenizers')
+    windows = [
+        req.specifier
+        for req in (Requirement(raw) for raw in (requires('transformers') or []))
+        if req.name == 'tokenizers' and req.marker is None
+    ]
+except (PackageNotFoundError, ImportError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if windows and installed not in windows[0] else 1)
+" 2>/dev/null; then
+            substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
         # An interrupted install leaves $_PKG_NAME current while studio.txt
         # never finished, so the compare above says "up to date" and update --
         # plus the desktop Repair button -- no-ops on a venv that cannot boot.
@@ -2537,6 +2570,7 @@ LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
 _LLAMA_CPP_NO_SPACE=false
+_LLAMA_KEEP_PREBUILT_ACTIVE=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -2625,6 +2659,71 @@ _link_local_llama_quantize_shim() {
 # `make` build or a flat-extracted release) or the CMake build/bin/llama-server.
 _has_local_llama_server() {
     [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
+}
+
+# UNSLOTH_LLAMA_KEEP_PREBUILT=1: keep an installed GPU prebuilt already matching the requested tag/fork.
+# The Docker Studio build sets it -- no GPU is visible there, so detection installs a CPU bundle over the baked CUDA one.
+_keep_installed_gpu_prebuilt() {
+    local install_dir=$1 requested_tag=$2 repo=$3 release_pin=${4:-}
+    case "$(printf '%s' "${UNSLOTH_LLAMA_KEEP_PREBUILT:-}" | awk '{$1=$1; print tolower($0)}')" in
+        1|true|yes|on) ;;
+        *) return 1 ;;
+    esac
+    # An explicitly requested backend must still be installed, or fail loudly, never kept over.
+    [ -z "${_explicit_llama_source_backend:-}" ] || return 1
+    _has_local_llama_server "$install_dir" || return 1
+    [ -f "$install_dir/UNSLOTH_PREBUILT_INFO.json" ] || return 1
+    python - "$install_dir/UNSLOTH_PREBUILT_INFO.json" "$requested_tag" "$repo" "$release_pin" <<'PY' 2>/dev/null
+import json
+import re
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+if not isinstance(payload, dict):
+    raise SystemExit(1)
+
+requested = sys.argv[2].strip()
+repo = sys.argv[3].strip()
+release_pin = sys.argv[4].strip() if len(sys.argv) > 4 else ""
+GPU_TOKENS = ("cuda", "rocm", "hip", "vulkan", "metal")
+# Fork bundles record only "platform"; install_llama_prebuilt.py also records "backend". Accept either.
+backend = str(payload.get("backend") or "").strip().lower()
+platform_kind = str(payload.get("platform") or payload.get("install_kind") or "").strip().lower()
+if payload.get("force_cpu") is True:
+    raise SystemExit(1)
+if backend not in GPU_TOKENS and not any(token in platform_kind for token in GPU_TOKENS):
+    raise SystemExit(1)
+if repo and str(payload.get("published_repo") or "").strip() != repo:
+    raise SystemExit(1)
+
+
+def base_build(tag: str) -> str:
+    """b10840 out of b10840-mix-d5c17a0, so the marker's normalized "tag" still matches."""
+    match = re.match(r"b(\d+)", tag.strip())
+    return f"b{match.group(1)}" if match else tag.strip()
+
+
+recorded = {str(payload.get(key) or "").strip() for key in ("release_tag", "tag", "upstream_tag")}
+recorded.discard("")
+if not recorded:
+    raise SystemExit(1)
+# UNSLOTH_LLAMA_RELEASE_TAG names one published release, so only that exact release_tag can be kept.
+if release_pin and str(payload.get("release_tag") or "").strip() != release_pin:
+    raise SystemExit(1)
+if requested and requested.lower() != "latest":
+    if re.fullmatch(r"b\d+", requested):
+        # A bare base build pin is satisfied by any mix release cut from that build.
+        if requested not in {base_build(t) for t in recorded}:
+            raise SystemExit(1)
+    elif requested not in recorded:
+        # b10840-mix-new and b10840-mix-old share a base build but are different bundles.
+        raise SystemExit(1)
+raise SystemExit(0)
+PY
 }
 
 _LOCAL_LLAMA_CPP_LINKED=false
@@ -2734,6 +2833,10 @@ elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     _NEED_LLAMA_SOURCE_BUILD=true
 elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
     substep "prebuilt install skipped -- falling back to source build"
+elif _keep_installed_gpu_prebuilt "$LLAMA_CPP_DIR" "$_REQUESTED_LLAMA_TAG" "$_HELPER_RELEASE_REPO" "${UNSLOTH_LLAMA_RELEASE_TAG:-}"; then
+    step "llama.cpp" "keeping the installed GPU prebuilt (UNSLOTH_LLAMA_KEEP_PREBUILT=1)"
+    print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
+    _LLAMA_KEEP_PREBUILT_ACTIVE=true
 else
     substep "installing prebuilt llama.cpp..."
     if [ -d "$LLAMA_CPP_DIR" ]; then
@@ -3466,6 +3569,7 @@ fi  # end _SKIP_GGUF_BUILD check
 # on a full disk: the retry fails the same way and buries the hint.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         && [ "$_LLAMA_CPP_NO_SPACE" != true ] \
+        && [ "$_LLAMA_KEEP_PREBUILT_ACTIVE" != true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
     substep "GPU source build unavailable; trying arm64 CPU prebuilt..."

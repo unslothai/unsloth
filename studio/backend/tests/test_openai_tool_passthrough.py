@@ -63,7 +63,9 @@ from routes.inference import (
     _normalize_openai_passthrough_sse_line,
     _openai_compat_stream_stall_timeout,
     _openai_llama_admission_capacity,
+    _image_bytes_to_png_b64,
     _openai_messages_for_gguf_chat,
+    _openai_messages_for_passthrough,
     _openai_passthrough_sse_line_terminal_state,
     _openai_passthrough_upstream_headers,
     _openai_passthrough_non_streaming,
@@ -3498,7 +3500,6 @@ class TestFriendlyErrorHttpx:
 from routes.inference import (  # noqa: E402
     _drop_empty_assistant_sentinels,
     _openai_messages_for_gguf_chat,
-    _openai_messages_for_passthrough,
 )
 
 
@@ -3880,6 +3881,10 @@ class TestGgufVisionToolRouting:
         url = SimpleNamespace(path = "/v1/chat/completions")
         method = "POST"
 
+        def __init__(self, ui_events = False):
+            # Tool cards and the approval handshake ride these frames.
+            self.headers = {"X-Unsloth-Events": "1"} if ui_events else {}
+
         async def is_disconnected(self):
             return False
 
@@ -4023,7 +4028,9 @@ class TestGgufVisionToolRouting:
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(
+                payload, request = self._Request(ui_events = True), current_subject = "test"
+            )
         )
         self._consume_response(response)
 
@@ -4070,7 +4077,9 @@ class TestGgufVisionToolRouting:
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(
+                payload, request = self._Request(ui_events = True), current_subject = "test"
+            )
         )
         self._consume_response(response)
 
@@ -4275,6 +4284,105 @@ class TestGgufVisionToolRouting:
             assert "confirm_tool_calls requires stream=true" in entry["error"]
         # Neither site may leave a row running.
         assert monitor.active_count() == 0
+
+    def test_streaming_confirm_gate_refuses_a_caller_that_hid_the_frames(self, monkeypatch):
+        # A stream without X-Unsloth-Events has nowhere to be asked, so the loop would park
+        # in wait_tool_decision for the full timeout (_confirm_gate_has_no_channel).
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        def _tools(**_kwargs):
+            raise AssertionError("the tool loop must not start with nowhere to confirm")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            supports_reasoning = True,
+            reasoning_always_on = True,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = lambda **_kwargs: "unused",
+            generate_chat_completion_with_tools = _tools,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["terminal"],
+            stream = True,
+            messages = [{"role": "user", "content": "run something"}],
+        )
+        with pytest.raises(HTTPException) as exc:
+            self._drive(
+                openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            )
+        assert exc.value.status_code == 400
+        message = exc.value.detail["error"]["message"]
+        assert "X-Unsloth-Events" in message
+        # Names the way out, or a client that cannot render a prompt is stuck.
+        assert "permission_mode" in message
+
+    def test_streaming_confirm_gate_admits_a_caller_that_opted_in(self, monkeypatch):
+        # Same request with the frames on runs the loop: the guard refuses no one else.
+        def _tools(**_kwargs):
+            yield {"type": "content", "text": "done"}
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+                "finish_reason": "stop",
+            }
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            tool_generate = _tools,
+            payload_kwargs = {
+                "stream": True,
+                "enable_tools": True,
+                "enabled_tools": ["terminal"],
+                "messages": [{"role": "user", "content": "run something"}],
+            },
+            request = self._Request(ui_events = True),
+        )
+        deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
+        assert "".join(d.get("content", "") for d in deltas) == "done"
+
+    def test_an_empty_selection_is_not_refused_for_a_prompt_it_can_never_show(self, monkeypatch):
+        # mcp_enabled arms _confirm_gate_needs_stream on intent, but discovery finds no MCP
+        # tool here, so the selection is empty and the loop is skipped. Refusing on intent
+        # would 400 a request that answers fine without ever prompting.
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        async def _no_tools(*_args, **_kwargs):
+            return []
+
+        monkeypatch.setattr(inf_mod, "_select_request_tools", _no_tools)
+
+        def _generate(**_kwargs):
+            yield "hi"
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                "finish_reason": "stop",
+            }
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            generate = _generate,
+            payload_kwargs = {
+                "stream": True,
+                "mcp_enabled": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
+        assert "".join(d.get("content", "") for d in deltas) == "hi"
 
     def test_standard_gguf_stream_splits_reasoning_content(self, monkeypatch):
         def _generate(**_kwargs):
@@ -4532,7 +4640,7 @@ class TestGgufVisionToolRouting:
             )
             response = await openai_chat_completions(
                 payload,
-                request = Request(),
+                request = Request(ui_events = True),
                 current_subject = "test",
             )
             iterator = response.body_iterator
@@ -4616,7 +4724,8 @@ class TestGgufVisionToolRouting:
             )
             response = await openai_chat_completions(
                 payload,
-                request = self._Request(),
+                # A gateable request has to opt in: tool_start carries the approval_id.
+                request = self._Request(ui_events = True),
                 current_subject = "test",
             )
             iterator = response.body_iterator
@@ -4693,7 +4802,7 @@ class TestGgufVisionToolRouting:
             )
             response = await openai_chat_completions(
                 payload,
-                request = self._Request(),
+                request = self._Request(ui_events = True),
                 current_subject = "test",
             )
             iterator = response.body_iterator
@@ -5100,6 +5209,8 @@ class TestGgufVisionToolRouting:
                 "enabled_tools": ["terminal"],
                 "messages": [{"role": "user", "content": "list files"}],
             },
+            # terminal is confirmable, so the gate needs the frames it asks on.
+            request = self._Request(ui_events = True),
         )
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
 
@@ -5129,6 +5240,8 @@ class TestGgufVisionToolRouting:
                 "enabled_tools": ["terminal"],
                 "messages": [{"role": "user", "content": "say literal"}],
             },
+            # terminal is confirmable, so the gate needs the frames it asks on.
+            request = self._Request(ui_events = True),
         )
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
 
@@ -10557,3 +10670,216 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
             payload = {}
             _apply_seeded_llama_request(payload, value)
             assert payload["cache_prompt"] is False, (seed, value)
+
+
+class TestPassthroughImageNormalization:
+    @staticmethod
+    def _data_url(fmt: str) -> str:
+        from io import BytesIO
+
+        from PIL import Image
+
+        buf = BytesIO()
+        Image.new("RGB", (2, 2), (0, 128, 255)).save(buf, format = fmt)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/{fmt.lower()};base64,{b64}"
+
+    def _req(self, url: str, **kwargs):
+        return ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this"},
+                        {"type": "image_url", "image_url": {"url": url}},
+                    ],
+                },
+            ],
+            **kwargs,
+        )
+
+    def test_webp_data_url_is_reencoded_to_png(self):
+        original = self._data_url("WEBP")
+        assert original.startswith("data:image/webp;base64,")
+
+        messages = _openai_messages_for_passthrough(self._req(original))
+
+        url = messages[0]["content"][1]["image_url"]["url"]
+        assert url.startswith("data:image/png;base64,")
+        assert url != original
+
+    def test_body_builder_forwards_png_with_tools_enabled(self):
+        req = self._req(
+            self._data_url("WEBP"),
+            tools = [
+                {
+                    "type": "function",
+                    "function": {"name": "noop", "parameters": {"type": "object"}},
+                }
+            ],
+        )
+
+        body = _build_openai_passthrough_body(req)
+
+        url = body["messages"][0]["content"][1]["image_url"]["url"]
+        assert url.startswith("data:image/png;base64,")
+
+    def test_requested_detail_survives_the_conversion(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": self._data_url("WEBP"), "detail": "high"},
+                        },
+                    ],
+                },
+            ],
+        )
+
+        part = _openai_messages_for_passthrough(req)[0]["content"][0]["image_url"]
+        assert part["url"].startswith("data:image/png;base64,")
+        assert part["detail"] == "high"
+
+    @staticmethod
+    def _gray16_ramp_png(width: int = 256) -> bytes:
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.new("I;16", (width, 2))
+        img.putdata([(x % width) * 257 for _ in range(2) for x in range(width)])
+        buf = BytesIO()
+        img.save(buf, format = "PNG")
+        return buf.getvalue()
+
+    def test_sixteen_bit_grayscale_keeps_its_levels(self):
+        # convert("RGB") reads a 16-bit source as 8-bit and clips: the whole ramp
+        # above 255 collapses to white. llama-server reading the same PNG itself
+        # scales instead, so re-encoding must not throw the picture away.
+        from io import BytesIO
+
+        from PIL import Image
+
+        raw = self._gray16_ramp_png()
+        out = base64.b64decode(_image_bytes_to_png_b64(raw))
+
+        row = [Image.open(BytesIO(out)).getpixel((x, 0))[0] for x in range(256)]
+        assert len(set(row)) == 256, f"levels collapsed to {len(set(row))}"
+        assert row.count(255) == 1, f"{row.count(255)} white pixels, expected 1"
+        assert row[0] == 0 and row[-1] == 255
+
+    def test_endian_tagged_sixteen_bit_mode_does_not_raise(self):
+        # I;16B rejects point() outright, and the caller turns any exception into
+        # a 400, so scaling without normalising the mode is worse than clipping.
+        # PNG cannot carry the tagged modes; a 16-bit TIFF reopens as I;16B.
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.new("I;16B", (256, 2))
+        img.putdata([(x % 256) * 257 for _ in range(2) for x in range(256)])
+        buf = BytesIO()
+        img.save(buf, format = "TIFF")
+        assert Image.open(BytesIO(buf.getvalue())).mode == "I;16B"
+
+        out = base64.b64decode(_image_bytes_to_png_b64(buf.getvalue()))
+        row = [Image.open(BytesIO(out)).getpixel((x, 0))[0] for x in range(256)]
+        assert len(set(row)) == 256, f"collapsed to {len(set(row))} levels"
+
+    def test_plain_int_mode_is_not_scaled(self):
+        # "I" and "F" declare no range. A 32-bit TIFF whose samples already sit
+        # in 0..255 must keep them: scaling it by 1/257 would black the picture
+        # out, which is worse than the clipping the scaling was added to fix.
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.new("I", (256, 2))
+        img.putdata([x % 256 for _ in range(2) for x in range(256)])
+        buf = BytesIO()
+        img.save(buf, format = "TIFF")
+        assert Image.open(BytesIO(buf.getvalue())).mode == "I"
+
+        out = base64.b64decode(_image_bytes_to_png_b64(buf.getvalue()))
+        row = [Image.open(BytesIO(out)).getpixel((x, 0))[0] for x in range(256)]
+        assert row == list(range(256)), f"0..255 ramp altered: max={max(row)}"
+
+    def test_eight_bit_images_are_unchanged_by_the_scaling_branch(self):
+        from io import BytesIO
+
+        from PIL import Image
+        for mode, colour in (("RGB", (10, 20, 30)), ("RGBA", (10, 20, 30, 255)), ("L", 77)):
+            buf = BytesIO()
+            Image.new(mode, (4, 4), colour).save(buf, format = "PNG")
+
+            out = base64.b64decode(_image_bytes_to_png_b64(buf.getvalue()))
+            px = Image.open(BytesIO(out)).getpixel((0, 0))
+            assert px == ((77, 77, 77) if mode == "L" else (10, 20, 30)), (mode, px)
+
+    def test_remote_url_is_forwarded_unchanged(self):
+        messages = _openai_messages_for_passthrough(self._req("https://x.example/a.webp"))
+        assert messages[0]["content"][1]["image_url"]["url"] == "https://x.example/a.webp"
+
+    def test_local_template_caller_leaves_a_payloadless_data_url_alone(self):
+        # The safetensors/MLX client-tools path only gets here when the turn has no
+        # decodable image, and flattens image parts away straight after. A payloadless
+        # data URL was ignored with a warning before; it must not become a 400.
+        req = self._req("data:image/png;base64,")
+
+        messages = _openai_messages_for_passthrough(req, normalize_images = False)
+
+        assert messages[0]["content"][1]["image_url"]["url"] == "data:image/png;base64,"
+
+    def test_the_local_template_call_site_opts_out_of_normalization(self):
+        # The guard that keeps the re-encode on llama-server bodies only. Reverting it
+        # brings the 400 above back to the safetensors/MLX client-tools path.
+        import inspect
+
+        import routes.inference as inference_mod
+
+        src = inspect.getsource(inference_mod)
+        _, _, after = src.partition("_flatten_content_parts_for_local_template(")
+        assert after, "the local-template call site moved"
+        assert "normalize_images = False" in after[:300]
+
+    def test_undecodable_data_url_raises_400(self):
+        with pytest.raises(HTTPException) as exc:
+            _openai_messages_for_passthrough(self._req("data:image/webp;base64,!!!nope!!!"))
+        assert exc.value.status_code == 400
+
+    def test_echoed_legacy_image_is_not_spliced_twice(self):
+        from io import BytesIO
+
+        from PIL import Image
+
+        buf = BytesIO()
+        Image.new("RGB", (2, 2), (1, 2, 3)).save(buf, format = "WEBP")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        req = ChatCompletionRequest(
+            model = "default",
+            image_base64 = b64,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/webp;base64,{b64}"},
+                        },
+                    ],
+                },
+            ],
+        )
+
+        messages = _openai_messages_for_passthrough(req)
+
+        parts = [p for p in messages[0]["content"] if p.get("type") == "image_url"]
+        assert len(parts) == 1
+        assert parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
