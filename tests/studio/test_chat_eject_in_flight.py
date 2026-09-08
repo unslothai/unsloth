@@ -219,9 +219,9 @@ def test_the_first_eject_click_shows_a_loading_toast_before_confirm():
             """
         )
     )
-    assert out["loading"] == ["Unloading model"], (
-        "the first click must toast before confirmStopRunningChatsIfNeeded returns"
-    )
+    assert out["loading"] == [
+        "Unloading model"
+    ], "the first click must toast before confirmStopRunningChatsIfNeeded returns"
     assert out["second"] is False
     assert out["firstResult"] is True
     assert out["unloads"] == 1
