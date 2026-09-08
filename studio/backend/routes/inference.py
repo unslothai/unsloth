@@ -20283,17 +20283,9 @@ async def _proxy_to_external_provider(
         api_key = api_key,
     )
 
-    # `top_k` / `min_p` / `repetition_penalty` carry non-None schema defaults (20, 0.01,
-    # 1.0) because the local path expects numbers, but the external-provider path treats
-    # "field omitted from JSON" as "use provider default" so callers sending only
-    # model/messages don't silently get different sampling than before this PR. Pydantic's
-    # `model_fields_set` tracks explicit-vs-default per request, so these three reads have
-    # to happen before ANY write to `payload`: a `setattr` adds the name to
-    # `model_fields_set`, turning an omission into an explicit request for the default.
-    # `_fill_recommended_sampling_openai` is the one helper that does that, and today it
-    # cannot reach this: the external branch returns long before its call site on the local
-    # path. Nothing enforces that ordering except this comment and the runtime coverage in
-    # tests/test_external_provider_sampling_over_the_wire.py.
+    # Schema defaults are non-None (20, 0.01, 1.0) for the local path, so only
+    # `model_fields_set` separates "asked for 20" from "said nothing", and the provider keeps
+    # its own default for the latter. Read before ANY write: a setattr marks a field explicit.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
     _min_p_explicit = payload.min_p if "min_p" in payload.model_fields_set else None
     _repetition_penalty_explicit = (

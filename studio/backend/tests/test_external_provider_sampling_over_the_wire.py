@@ -3,17 +3,13 @@
 
 """The same forwarding claims, but over a socket and through the real route.
 
-``test_external_provider_sampling_forwarding.py`` covers the body builder with an
-``httpx.MockTransport`` and covers the route by AST-parsing ``routes/inference.py`` and
-comparing the names handed to ``dict(...)`` against the strings ``"_top_k_explicit"`` and
-friends. That proves the source says the right words; it cannot fail on the runtime hazard
-those words exist to prevent, which is that pydantic v2 records every ``setattr`` in
-``model_fields_set``, so anything writing to the payload before those three reads turns
-"the caller omitted this" into "the caller asked for the schema default".
+``test_external_provider_sampling_forwarding.py`` mocks the transport and AST-parses the
+route, which proves the source says the right words but cannot fail on the runtime hazard
+those words prevent: pydantic v2 records every ``setattr`` in ``model_fields_set``, so a
+write before those reads turns an omission into a request for the schema default.
 
-So this drives ``_proxy_to_external_provider`` itself, and a real ``http.server`` on
-loopback records the bytes. Stdlib only, no fixtures, no external network: the same file
-has to pass on Linux, macOS and Windows runners.
+So this drives ``_proxy_to_external_provider`` itself against a loopback ``http.server``.
+Stdlib only, so it passes identically on the Linux, macOS and Windows runners.
 """
 
 from __future__ import annotations
@@ -61,8 +57,7 @@ class _Server:
     """A live OpenAI-compatible endpoint that keeps every body it was posted."""
 
     def __enter__(self) -> "_Server":
-        # Port 0 lets the OS assign, which closes the bind-then-lose race a scanning
-        # helper cannot, and needs no free-port range on a busy CI runner.
+        # Port 0: the OS assigns, so no free-port scan can lose the race on a busy runner.
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self._httpd.recorded = []  # type: ignore[attr-defined]
         self._thread = threading.Thread(target = self._httpd.serve_forever, daemon = True)
@@ -176,12 +171,8 @@ def _route_capture(**payload_fields) -> dict:
         return server.sampling()
 
 
-# ── the route's explicit-vs-default gate, executed rather than parsed ──────────────────
-
-
 def test_a_request_that_never_mentioned_them_forwards_nothing():
-    # Reading payload.min_p on such a request yields 0.01, not None; only
-    # model_fields_set can tell it from a caller who asked for 0.01.
+    # payload.min_p yields 0.01 here, not None; only model_fields_set separates the two.
     assert _route_capture() == {}
 
 
@@ -194,8 +185,7 @@ def test_the_route_forwards_explicit_values():
 
 
 def test_explicit_values_equal_to_the_schema_defaults_are_still_forwarded():
-    # 20 / 0.01 / 1.0 ARE the defaults, so a `!= default` shortcut would drop them and a
-    # user who deliberately set the panel's own numbers would get provider sampling.
+    # 20 / 0.01 / 1.0 ARE the defaults, so a `!= default` shortcut would drop them.
     assert _route_capture(top_k = 20, min_p = 0.01, repetition_penalty = 1.0) == {
         "top_k": 20,
         "min_p": 0.01,
@@ -220,15 +210,10 @@ def test_one_field_set_forwards_only_that_field(field, value):
 
 
 def test_writing_to_the_payload_would_make_an_omission_look_explicit():
-    # The hazard the route's comment names, demonstrated. Any helper that setattr'd the
-    # payload before those reads would silently start forwarding schema defaults.
     payload = ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}])
     assert "min_p" not in payload.model_fields_set
     payload.min_p = payload.min_p  # a no-op write, same value
     assert "min_p" in payload.model_fields_set
-
-
-# ── the body on the wire, for the providers the panel offers these on ──────────────────
 
 
 @pytest.mark.parametrize("provider_type", ["vllm", "openrouter"])
@@ -255,8 +240,7 @@ def test_ollama_receives_none_of_them_even_from_a_raw_api_caller():
 
 
 def test_the_tool_loop_continuation_keeps_the_same_sampling():
-    # OAICompatTransport captures **request_kwargs once and replays them every turn, so a
-    # conversation that calls a tool must not start sampling differently afterwards.
+    # OAICompatTransport replays **request_kwargs every turn; a tool call must not change it.
     from core.inference.external_tool_transport import OAICompatTransport
     with _Server() as server:
         client = ExternalProviderClient(

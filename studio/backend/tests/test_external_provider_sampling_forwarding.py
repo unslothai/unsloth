@@ -3,17 +3,12 @@
 
 """Min P / Repetition Penalty / Top K must reach a self-hosted OpenAI-compatible server.
 
-The Chat Settings panel offers all three on vLLM, llama.cpp and OpenRouter connections
-(and, before this PR narrowed them to the OpenAI-compatible baseline, on Ollama and custom
-ones too) and persists them per model and per thread, but the outbound body carried none
-of them: ``stream_chat_completion`` built ``temperature`` / ``top_p`` /
-``presence_penalty`` / ``max_tokens`` and dropped the rest, so moving either slider
-changed nothing.
+The panel offered all three and persisted them, but ``stream_chat_completion`` built only
+``temperature`` / ``top_p`` / ``presence_penalty`` / ``max_tokens``, so the sliders moved
+and nothing changed.
 
-They stay opt-in. ``ChatCompletionRequest`` gives top_k / min_p / repetition_penalty
-non-None schema defaults (20 / 0.01 / 1.0) for the local path, so forwarding them
-unconditionally would start sending sampling params to providers that never received
-any; the route reads ``model_fields_set`` and passes None for a field nobody set.
+They stay opt-in: the schema defaults (20 / 0.01 / 1.0) are non-None for the local path, so
+forwarding unconditionally would start sending sampling to providers that never got any.
 """
 
 from __future__ import annotations
@@ -39,7 +34,7 @@ def _capture_body(provider_type: str, **kwargs) -> dict:
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content.decode())
-        sse = 'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n' "data: [DONE]\n\n"
+        sse = 'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
         return httpx.Response(200, content = sse, headers = {"content-type": "text/event-stream"})
 
     mock_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
@@ -89,16 +84,12 @@ def test_a_request_that_set_none_of_them_sends_none(provider_type):
     body = _capture_body(provider_type)
     for field in ("top_k", "min_p", "repetition_penalty", "repeat_penalty"):
         assert field not in body, field
-    # the fields that always travelled are untouched
     assert body["temperature"] == 0.7
     assert body["top_p"] == 0.95
     assert body["presence_penalty"] == 0.0
 
 
 def test_llama_server_gets_repeat_penalty_not_repetition_penalty():
-    # llama-server reads "repeat_penalty" and ignores "repetition_penalty", so the
-    # documented name would leave the slider inert. Same rename the in-process
-    # llama.cpp client and the /v1/completions proxy already apply.
     body = _capture_body("llama_cpp", min_p = 0.07, repetition_penalty = 1.15, top_k = 40)
     assert body["repeat_penalty"] == 1.15
     assert "repetition_penalty" not in body
@@ -107,16 +98,13 @@ def test_llama_server_gets_repeat_penalty_not_repetition_penalty():
 
 
 def test_a_zero_value_is_forwarded_rather_than_read_as_unset():
-    # min_p 0 and top_k 0 both mean "disabled" to vLLM and llama-server; a truthiness
-    # gate would drop them and leave the provider's own default sampling in place.
+    # 0 means "disabled" here, so a truthiness gate would restore the server's default.
     body = _capture_body("vllm", top_k = 0, min_p = 0.0)
     assert body["top_k"] == 0
     assert body["min_p"] == 0.0
 
 
 def test_the_schema_defaults_are_not_none_so_the_route_cannot_test_for_none():
-    # The reason the route has to consult model_fields_set at all: reading payload.min_p
-    # on a request that never mentioned it yields 0.01, not None.
     bare = ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}])
     assert bare.top_k == 20
     assert bare.min_p == 0.01

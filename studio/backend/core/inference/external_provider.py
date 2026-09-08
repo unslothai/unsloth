@@ -52,8 +52,7 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 # which reports usage on its own.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 
-# llama-server names the knob "repeat_penalty" and ignores "repetition_penalty", so the
-# slider would read as off. Same rename as routes/inference._COMPLETIONS_SAMPLING_BODY_KEY.
+# llama-server reads repeat_penalty, not repetition_penalty (as routes/inference does).
 _REPETITION_PENALTY_BODY_KEY = {"llama_cpp": "repeat_penalty"}
 
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
@@ -1139,9 +1138,8 @@ class ExternalProviderClient:
         native Messages API SSE is translated to OpenAI format.
 
         ``top_k``, ``min_p``, ``repetition_penalty`` and ``presence_penalty``
-        are forwarded only when the caller supplies a value the provider
-        accepts; the frontend's provider-capability map already filters these
-        per provider, so they're opt-in here.
+        are opt-in: forwarded only when supplied, since the frontend's
+        capability map already filters them per provider.
 
         ``fast_mode`` only applies to Anthropic Opus 5 / Opus 4.8 (silently
         dropped elsewhere); adds the beta header and ``speed: "fast"``.

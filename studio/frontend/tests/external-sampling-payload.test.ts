@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Chat Settings panel renders Min P and Repetition Penalty off the provider's
-// capability flags, and both persist per model and per thread -- but the external
-// request body only ever spread temperature, top_p, max_tokens, top_k and
-// presence_penalty, so on OpenRouter / vLLM / llama.cpp the two sliders moved
-// and nothing changed. The local body has sent both unconditionally all along.
-//
-// The body is built inside a several-thousand-line function that cannot be called from
-// here, so read the capability-gated spreads out of it and evaluate those: a row that
-// stops existing, or that gates on the wrong flag, fails.
+// The external body never spread min_p / repetition_penalty, so the sliders did nothing.
+// Its function is too large to call here, so the gated spreads are extracted and evaluated.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -74,8 +67,7 @@ const gatedSpreads = externalBodyLiteral()
   .map((property) => property.expression.getText())
   .filter((text) => text.includes("externalCapabilities"));
 
-// A guard against the extraction silently matching nothing and every assertion below
-// passing vacuously.
+// Without this, an extraction that matched nothing would pass every assertion vacuously.
 assert.ok(gatedSpreads.length >= 4, `only ${gatedSpreads.length} gated spreads`);
 
 const buildSamplingFields = new Function(
@@ -96,7 +88,6 @@ for (const providerType of ["vllm", "openrouter", "llama_cpp"]) {
     const body = bodyFor(providerType);
     assert.equal(body.min_p, PARAMS.minP);
     assert.equal(body.repetition_penalty, PARAMS.repetitionPenalty);
-    // The rows that already worked must keep working.
     assert.equal(body.top_k, PARAMS.topK);
     assert.equal(body.presence_penalty, PARAMS.presencePenalty);
     assert.equal(body.temperature, PARAMS.temperature);
@@ -114,9 +105,6 @@ test("custom stays on the OpenAI-compatible baseline", () => {
 });
 
 test("ollama is sent none of the three its /v1 layer drops", () => {
-  // Ollama's OpenAI-compatibility layer reads only the OpenAI-documented fields; top_k,
-  // min_p and repeat_penalty are native /api/chat "options", so a body carrying them is
-  // answered with default sampling and no error. The panel hides all three instead.
   const body = bodyFor("ollama");
   assert.ok(!("min_p" in body));
   assert.ok(!("repetition_penalty" in body));
@@ -126,8 +114,6 @@ test("ollama is sent none of the three its /v1 layer drops", () => {
 });
 
 test("a hosted provider's body is unchanged by the new rows", () => {
-  // Anthropic, OpenAI, Gemini, Kimi and DeepSeek all declare minP and repetitionPenalty
-  // false, so nothing new can appear in their bodies.
   for (const providerType of [
     "anthropic",
     "openai",
@@ -146,8 +132,7 @@ test("a hosted provider's body is unchanged by the new rows", () => {
 });
 
 test("an unknown provider stays on the OpenAI-compatible shape", () => {
-  // A connection saved by a newer build lands on the default capability set, which must
-  // not start sending extensions a strict endpoint would 400 on.
+  // A connection saved by a newer build lands here, and a strict endpoint 400s on extensions.
   const body = bodyFor("some-provider-this-build-never-heard-of");
   assert.ok(!("min_p" in body));
   assert.ok(!("repetition_penalty" in body));
@@ -159,8 +144,7 @@ test("the panel and the request read the same capability flags", () => {
     new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url),
     "utf8",
   );
-  // The sliders are rendered off providerCapabilities.minP / .repetitionPenalty; a body
-  // gating on anything else is how the two drifted apart in the first place.
+  // Gating the body on anything but these flags is how panel and request drifted apart.
   assert.match(sheet, /Boolean\(providerCapabilities\?\.minP\)/);
   assert.match(sheet, /Boolean\(providerCapabilities\?\.repetitionPenalty\)/);
   assert.ok(
