@@ -2710,3 +2710,97 @@ def test_a_running_attempt_already_in_the_pending_map_is_not_counted_twice():
         inf._running_load_attempt = prior_running
         with inf._scoped_load_attempts_lock:
             inf._pending_load_attempts.pop(both.token, None)
+
+
+def _mk_attempt(inf, token, path = "owner/model"):
+    return inf._ScopedLoadAttempt(
+        token = token,
+        request_id = None,
+        model_path = path,
+        subject = "s",
+        cancel_event = threading.Event(),
+        cancel_complete = threading.Event(),
+    )
+
+
+def test_shutdown_closes_the_cancel_handshake_itself():
+    """Only /unload sets cancel_complete, and at shutdown there is none, so setting
+    cancel_event alone leaves _run_tracked_load_model_impl's finally waiting the full
+    handshake timeout in a to_thread. Those executor threads are non-daemon and hold
+    the process open, which is what the comment above the timeout warns about."""
+    import importlib
+
+    inf = importlib.import_module("routes.inference")
+    attempt = _mk_attempt(inf, "handshake-token")
+    with inf._scoped_load_attempts_lock:
+        inf._pending_load_attempts[attempt.token] = attempt
+    try:
+        inf.cancel_pending_loads()
+        assert attempt.cancel_event.is_set()
+        assert attempt.cancel_complete.is_set(), (
+            "shutdown left the handshake open, so the load waits the full timeout in a "
+            "non-daemon executor thread and delays process exit"
+        )
+    finally:
+        inf.begin_load_lifecycle()
+        with inf._scoped_load_attempts_lock:
+            inf._pending_load_attempts.pop(attempt.token, None)
+
+
+def test_a_load_registering_after_the_sweep_is_still_cancelled():
+    """uvicorn's should_exit stops new connections, not request tasks it already
+    admitted, so a /load can register after the shutdown snapshot was taken and
+    would otherwise never be cancelled by anything."""
+    import importlib
+
+    inf = importlib.import_module("routes.inference")
+    try:
+        assert inf.cancel_pending_loads() == 0  # latches with nothing to cancel
+
+        late = _mk_attempt(inf, "late-token")
+        with inf._scoped_load_attempts_lock:
+            inf._pending_load_attempts[late.token] = late
+            latched = inf._loads_shutting_down
+        assert latched is True, "the shutdown latch did not survive an empty sweep"
+        if latched:
+            inf._cancel_for_shutdown(late)
+        assert late.cancel_event.is_set(), "a load admitted during shutdown was not cancelled"
+    finally:
+        inf.begin_load_lifecycle()
+        with inf._scoped_load_attempts_lock:
+            inf._pending_load_attempts.pop("late-token", None)
+
+
+def test_the_latch_is_scoped_to_a_lifecycle_not_the_process():
+    """An embedded host calls run_server again. A permanent latch would refuse every
+    /load of the second session; the backend flag had exactly this bug."""
+    import importlib
+
+    inf = importlib.import_module("routes.inference")
+    try:
+        inf.cancel_pending_loads()
+        with inf._scoped_load_attempts_lock:
+            assert inf._loads_shutting_down is True
+
+        inf.begin_load_lifecycle()
+        with inf._scoped_load_attempts_lock:
+            assert inf._loads_shutting_down is False, (
+                "the second session would cancel every load it admitted"
+            )
+    finally:
+        inf.begin_load_lifecycle()
+
+
+def test_run_server_clears_the_route_latch_too():
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    tree = ast.parse(run_py)
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_server")
+    src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
+    assert "begin_load_lifecycle()" in src, (
+        "run_server resets the backend but not the route latch, so a restarted "
+        "server cancels every load it admits"
+    )

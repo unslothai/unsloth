@@ -2884,7 +2884,10 @@ def run_server(
     # the route module here would build the singleton ahead of the startup steps
     # above that must come first.
     try:
-        from routes.inference import _llama_cpp_backend
+        from routes.inference import _llama_cpp_backend, begin_load_lifecycle
+        # The route latch as well as the backend's: shutdown sets both, and a second
+        # session that cleared only one would refuse every /load it admitted.
+        begin_load_lifecycle()
         if _llama_cpp_backend is not None:
             _llama_cpp_backend._begin_server_lifecycle()
     except Exception as e:
