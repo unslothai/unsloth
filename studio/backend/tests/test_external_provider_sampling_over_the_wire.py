@@ -53,12 +53,37 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(sse)
 
 
+# What a gateway that validates its input accepts; the sampling extensions are absent.
+_OPENAI_DOCUMENTED = frozenset(
+    {
+        "model",
+        "messages",
+        "stream",
+        "stream_options",
+        "temperature",
+        "top_p",
+        "presence_penalty",
+        "frequency_penalty",
+        "max_tokens",
+        "max_completion_tokens",
+        "stop",
+        "seed",
+        "response_format",
+        "tools",
+        "tool_choice",
+    }
+)
+
+
 class _Server:
     """A live OpenAI-compatible endpoint that keeps every body it was posted."""
 
+    def __init__(self, handler = None) -> None:
+        self._handler = handler or _Handler
+
     def __enter__(self) -> "_Server":
         # Port 0: the OS assigns, so no free-port scan can lose the race on a busy runner.
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler)
         self._httpd.recorded = []  # type: ignore[attr-defined]
         self._thread = threading.Thread(target = self._httpd.serve_forever, daemon = True)
         self._thread.start()
@@ -290,3 +315,56 @@ def test_the_tool_loop_continuation_keeps_the_same_sampling():
         assert len(server.bodies) == 2
         assert server.sampling(0) == {"top_k": 40, "min_p": 0.07, "repetition_penalty": 1.15}
         assert server.sampling(1) == server.sampling(0)
+
+
+def test_a_stale_frontend_bundle_does_not_start_400ing_a_custom_gateway():
+    # The pre-PR bundle classified custom as ALL_SUPPORTED and spread top_k on EVERY
+    # request, so a tab left open across an upgrade sends `top_k` to a backend that now
+    # forwards it. Measured on a gateway that validates its input: without custom's
+    # registry guard the same body went 200 -> 400 and the turn failed outright.
+    class _Strict(_Handler):
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length).decode() or "{}")
+            self.server.recorded.append(body)  # type: ignore[attr-defined]
+            unknown = sorted(set(body) - _OPENAI_DOCUMENTED)
+            if unknown:
+                payload = json.dumps(
+                    {
+                        "error": {
+                            "message": f"Unrecognized request argument supplied: {', '.join(unknown)}",
+                            "type": "invalid_request_error",
+                        }
+                    }
+                ).encode()
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+            else:
+                payload = (
+                    'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    with _Server(handler = _Strict) as server:
+        client = ExternalProviderClient(
+            provider_type = "custom",
+            base_url = server.base_url,
+            api_key = "",
+        )
+        lines: list[str] = []
+
+        async def go() -> None:
+            async for line in client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "a-model",
+                top_k = 20,
+            ):
+                lines.append(line)
+
+        _run(go)
+        assert server.sampling() == {}, "custom leaked an extension the gateway rejects"
+        assert "Unrecognized request argument" not in "".join(lines)

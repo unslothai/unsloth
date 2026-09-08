@@ -66,7 +66,7 @@ def _capture_body(provider_type: str, **kwargs) -> dict:
     return captured["body"]
 
 
-@pytest.mark.parametrize("provider_type", ["vllm", "openrouter", "custom"])
+@pytest.mark.parametrize("provider_type", ["vllm", "openrouter"])
 def test_the_sliders_reach_the_server(provider_type):
     body = _capture_body(
         provider_type,
@@ -148,9 +148,14 @@ def test_the_proxy_hands_the_client_explicit_values_not_schema_defaults():
     }
 
 
-def test_ollama_strips_the_three_its_v1_layer_drops_even_from_a_raw_api_caller():
+@pytest.mark.parametrize("provider_type", ["ollama", "custom"])
+def test_the_registry_strips_the_three_for_providers_that_cannot_take_them(provider_type):
+    # Ollama's /v1 accepts and ignores them; an unknown gateway behind a Custom base URL
+    # 400s the whole turn instead. Both are registry-guarded, so neither can leave the box
+    # even when a caller names them: a browser tab left open across an upgrade still runs
+    # the bundle that spread top_k on every custom request.
     body = _capture_body(
-        "ollama",
+        provider_type,
         temperature = 0.31,
         top_k = 42,
         min_p = 0.07,
