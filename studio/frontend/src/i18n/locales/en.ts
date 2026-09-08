@@ -1904,6 +1904,37 @@ export const en = {
         hint: "Continued pretraining for new domains or languages.",
         note: "continued",
       },
+      grpo: {
+        label: "GRPO (RL)",
+        hint: "Reinforcement learning from preset reward functions.",
+        note: "RL",
+      },
+    },
+    grpo: {
+      settings: "GRPO settings",
+      rewardFunctions: "Reward functions",
+      rewardFunctionsLoading: "Loading reward functions...",
+      expectedColumns: "Needs dataset column(s): {columns}",
+      weight: "Weight",
+      numGenerations: "Generations per prompt",
+      numGenerationsTooltip:
+        "How many completions are sampled and scored for each prompt. Must divide batch size x gradient accumulation.",
+      maxPromptLength: "Max prompt length",
+      maxPromptLengthTooltip:
+        "Prompt tokens kept before generation. Longer prompts are truncated.",
+      maxCompletionLength: "Max completion length",
+      maxCompletionLengthTooltip:
+        "Maximum tokens generated per rollout. Prompt plus completion must fit the context length.",
+      temperature: "Sampling temperature",
+      temperatureTooltip:
+        "Higher values make rollouts more diverse, which GRPO needs to tell good answers from bad.",
+      topP: "Top-p",
+      topPTooltip: "Nucleus sampling cutoff for rollouts.",
+      beta: "KL coefficient (beta)",
+      betaTooltip:
+        "How hard the reference model pulls the policy back. 0 removes the KL term entirely.",
+      generationBackend: "Rollout backend",
+      generationBackendValue: "Transformers generate",
     },
     subtitles: {
       configure: "Configure and start training",
@@ -2339,6 +2370,8 @@ export const en = {
       lr: "LR",
       gradNorm: "Grad Norm",
       gradientNorm: "Gradient Norm",
+      reward: "Reward",
+      meanReward: "Mean Reward",
       step: "Step {step}",
       averageValue: "avg {value}",
       waitingForFirstEvaluationStep: "Waiting for first evaluation step...",

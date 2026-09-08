@@ -4,6 +4,16 @@
 import type { ModelInventoryFormat } from "@/features/hub";
 import type { S3Config } from "@/types/training";
 
+/** Catalog entry for a built-in GRPO reward function, from /api/train/reward-functions. */
+export interface RewardFunctionPreset {
+  id: string;
+  name: string;
+  description: string;
+  expected_columns: string[];
+  default_weight: number;
+  default_selected: boolean;
+}
+
 export interface TrainingStartRequest {
   model_name: string;
   actual_model_repo_id?: string | null;
@@ -65,6 +75,13 @@ export interface TrainingStartRequest {
   use_loftq: boolean;
   use_dora: boolean;
   train_on_completions: boolean;
+  reward_functions?: { id: string; weight: number }[];
+  num_generations?: number;
+  max_prompt_length?: number;
+  max_completion_length?: number;
+  grpo_temperature?: number;
+  grpo_top_p?: number;
+  grpo_beta?: number;
   finetune_vision_layers: boolean;
   finetune_language_layers: boolean;
   finetune_attention_modules: boolean;

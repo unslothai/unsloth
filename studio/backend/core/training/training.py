@@ -137,6 +137,17 @@ def _coerce_optional_bool(value, default: bool) -> bool:
     return bool(value)
 
 
+def _finite_float(value):
+    """Coerce a metric to float, or None when it is missing or non-finite."""
+    if value is None:
+        return None
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        return None
+    return coerced if math.isfinite(coerced) else None
+
+
 def _coerce_optional_nonneg_float(name: str, value):
     """Reject negatives and non-finite; `ge=0` misses raw callers, and inf never binds."""
     if value is None:
@@ -240,6 +251,14 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "use_loftq": values.get("use_loftq", False),
         "use_dora": values.get("use_dora", False),
         "train_on_completions": values.get("train_on_completions", False),
+        "reward_functions": values.get("reward_functions"),
+        "num_generations": values.get("num_generations", 4),
+        "max_prompt_length": values.get("max_prompt_length", 256),
+        "max_completion_length": values.get("max_completion_length", 512),
+        "grpo_temperature": values.get("grpo_temperature", 1.0),
+        "grpo_top_p": values.get("grpo_top_p", 1.0),
+        "grpo_beta": values.get("grpo_beta", 0.04),
+        "grpo_loss_type": values.get("grpo_loss_type"),
         "finetune_vision_layers": values.get("finetune_vision_layers", True),
         "finetune_language_layers": values.get("finetune_language_layers", True),
         "finetune_attention_modules": values.get("finetune_attention_modules", True),
@@ -623,6 +642,11 @@ class TrainingProgress:
     grad_norm: Optional[float] = None
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
+    reward: Optional[float] = None
+    reward_std: Optional[float] = None
+    reward_breakdown: Optional[dict] = None
+    kl: Optional[float] = None
+    completion_length: Optional[float] = None
     peak_memory_gb: Optional[float] = None
     output_dir: Optional[str] = None
     # The end-of-run record has no step loss, so the progress filter would drop it, and with it the only
@@ -1012,6 +1036,15 @@ class _MLXTrainerAdapter:
                 grad_norm = event.get("grad_norm", self.training_progress.grad_norm),
                 num_tokens = event.get("num_tokens", self.training_progress.num_tokens),
                 eval_loss = event.get("eval_loss", self.training_progress.eval_loss),
+                reward = event.get("reward", self.training_progress.reward),
+                reward_std = event.get("reward_std", self.training_progress.reward_std),
+                reward_breakdown = event.get(
+                    "reward_breakdown", self.training_progress.reward_breakdown
+                ),
+                kl = event.get("kl", self.training_progress.kl),
+                completion_length = event.get(
+                    "completion_length", self.training_progress.completion_length
+                ),
                 peak_memory_gb = event.get("peak_memory_gb", self.training_progress.peak_memory_gb),
             )
             return
@@ -1121,6 +1154,12 @@ class TrainingBackend:
         self.grad_norm_step_history: list = []
         self.eval_loss_history: list = []
         self.eval_step_history: list = []
+        # GRPO only; empty for every SFT run, which is how the UI knows to hide the chart.
+        self.reward_history: list = []
+        self.reward_step_history: list = []
+        self.reward_std_history: list = []
+        self.kl_history: list = []
+        self.completion_length_history: list = []
         self.eval_enabled: bool = False
         self.current_theme: str = "light"
 
@@ -1794,6 +1833,7 @@ class TrainingBackend:
             self.grad_norm_step_history.clear()
             self.eval_loss_history.clear()
             self.eval_step_history.clear()
+            self._clear_reward_history()
             self.eval_enabled = False
             self._output_dir = config.get("output_dir") if resume_source_run_id else None
             self._progress.output_dir = self._output_dir
@@ -1979,9 +2019,17 @@ class TrainingBackend:
                 self.step_history.clear()
                 self.grad_norm_history.clear()
                 self.grad_norm_step_history.clear()
+                self._clear_reward_history()
                 self._needs_xet_respawn = False
                 self._status_start_request_id = None
             return "reset"
+
+    def _clear_reward_history(self) -> None:
+        self.reward_history.clear()
+        self.reward_step_history.clear()
+        self.reward_std_history.clear()
+        self.kl_history.clear()
+        self.completion_length_history.clear()
 
     def _start_stop_watchdog(
         self,
@@ -2855,6 +2903,11 @@ class TrainingBackend:
                 self._progress.grad_norm = event.get("grad_norm")
                 self._progress.num_tokens = event.get("num_tokens")
                 self._progress.eval_loss = event.get("eval_loss")
+                self._progress.reward = event.get("reward")
+                self._progress.reward_std = event.get("reward_std")
+                self._progress.reward_breakdown = event.get("reward_breakdown")
+                self._progress.kl = event.get("kl")
+                self._progress.completion_length = event.get("completion_length")
                 _peak = event.get("peak_memory_gb")
                 if _peak is not None:
                     try:
@@ -2903,6 +2956,16 @@ class TrainingBackend:
                         self.eval_enabled = True
                     else:
                         eval_loss = None
+
+                reward = _finite_float(event.get("reward"))
+                if step > 0 and reward is not None:
+                    self.reward_history.append(reward)
+                    self.reward_step_history.append(step)
+                    self.reward_std_history.append(_finite_float(event.get("reward_std")) or 0.0)
+                    self.kl_history.append(_finite_float(event.get("kl")) or 0.0)
+                    self.completion_length_history.append(
+                        _finite_float(event.get("completion_length")) or 0.0
+                    )
 
                 self._metric_buffer.append(
                     {

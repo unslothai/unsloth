@@ -155,6 +155,18 @@ export const DEFAULT_HYPERPARAMS = {
   evalSteps: 0.0,
   packing: false,
   trainOnCompletions: false,
+  // GRPO (RL) rollout defaults, matching Gemma3_(1B)-GRPO / Llama3.1_(8B)-GRPO.
+  rewardFunctions: [
+    { id: "exact_answer_match", weight: 2 },
+    { id: "reasoning_format_match", weight: 1 },
+    { id: "think_tag_structure", weight: 0.5 },
+  ] as import("@/features/training/types/config").RewardFunctionSelection[],
+  numGenerations: 4,
+  maxPromptLength: 256,
+  maxCompletionLength: 512,
+  grpoTemperature: 1.0,
+  grpoTopP: 1.0,
+  grpoBeta: 0.04,
   gradientCheckpointing: "unsloth" as const,
   randomSeed: 3407,
   enableWandb: false,

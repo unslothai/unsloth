@@ -41,13 +41,14 @@ function buildS3PayloadConfig(config: TrainingConfigState) {
 export function trainingLoadsIn4Bit(
   config: Pick<TrainingConfigState, "trainingMethod" | "selectedModel">,
 ): boolean {
-  const isCpt = config.trainingMethod === "cpt";
+  const isCptOrGrpo =
+    config.trainingMethod === "cpt" || config.trainingMethod === "grpo";
   const adapterMethod = config.trainingMethod !== "full";
   const isQloraMethod = config.trainingMethod === "qlora";
   const isFourBitModel = (config.selectedModel ?? "")
     .toLowerCase()
     .includes("4bit");
-  return (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel);
+  return (adapterMethod && isQloraMethod) || (isCptOrGrpo && isFourBitModel);
 }
 
 export function buildTrainingStartPayload(
@@ -55,6 +56,7 @@ export function buildTrainingStartPayload(
   hfToken: string | null,
 ): TrainingStartRequest {
   const isCpt = config.trainingMethod === "cpt";
+  const isGrpo = config.trainingMethod === "grpo";
   const adapterMethod = config.trainingMethod !== "full";
   const _selectedModelLower = (config.selectedModel ?? "").toLowerCase();
   // DeepSeek OCR ignores user-selected image size; do not send it.
@@ -158,7 +160,16 @@ export function buildTrainingStartPayload(
     use_dora: adapterMethod && config.loraVariant === "dora",
     // CPT always trains on full sequences (no chat format masking)
     train_on_completions:
-      isEmbedding || isCpt || isRawText ? false : config.trainOnCompletions,
+      isEmbedding || isCpt || isRawText || isGrpo
+        ? false
+        : config.trainOnCompletions,
+    reward_functions: isGrpo ? config.rewardFunctions : [],
+    num_generations: config.numGenerations,
+    max_prompt_length: config.maxPromptLength,
+    max_completion_length: config.maxCompletionLength,
+    grpo_temperature: config.grpoTemperature,
+    grpo_top_p: config.grpoTopP,
+    grpo_beta: config.grpoBeta,
     finetune_vision_layers: config.finetuneVisionLayers,
     finetune_language_layers: config.finetuneLanguageLayers,
     finetune_attention_modules: config.finetuneAttentionModules,
