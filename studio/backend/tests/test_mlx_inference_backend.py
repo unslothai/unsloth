@@ -4755,7 +4755,13 @@ def _run_mlx_reasoning_stream(monkeypatch, pieces, special_ids, eos_id):
         def convert_ids_to_tokens(self, token_id):
             return pieces[token_id]
 
-        def decode(self, ids, *, skip_special_tokens = False, **_kwargs):
+        def decode(
+            self,
+            ids,
+            *,
+            skip_special_tokens = False,
+            **_kwargs,
+        ):
             skipped = special_ids if skip_special_tokens else set()
             return "".join(pieces[int(t)] for t in ids if t not in skipped)
 
@@ -4776,8 +4782,12 @@ def test_mlx_reasoning_reply_does_not_end_in_a_preserved_eos_control(monkeypatch
     """The non-reasoning branch trims a trailing stop id that is also an allowlisted
     control; the reasoning branch appended it, ending an ordinary reply in raw markup."""
     pieces = {
-        1: "<|channel>", 2: "thought", 3: "reasoned", 4: "<channel|>",
-        5: "Done.", 6: "<|end_message|>",
+        1: "<|channel>",
+        2: "thought",
+        3: "reasoned",
+        4: "<channel|>",
+        5: "Done.",
+        6: "<|end_message|>",
     }
     snapshots = _run_mlx_reasoning_stream(monkeypatch, pieces, {1, 4, 6}, 6)
     assert "<|end_message|>" not in snapshots[-1]
@@ -4787,8 +4797,12 @@ def test_mlx_reasoning_reply_does_not_end_in_a_preserved_eos_control(monkeypatch
 def test_mlx_reasoning_keeps_an_eos_control_that_closes_a_tool_envelope(monkeypatch):
     """The trim is envelope-aware: the same marker terminates a real Inkling call."""
     pieces = {
-        1: "<|channel>", 2: "thought", 3: "reasoned", 4: "<channel|>",
-        5: "<|content_invoke_tool_json|>", 6: '{"name":"terminal","args":{}}',
+        1: "<|channel>",
+        2: "thought",
+        3: "reasoned",
+        4: "<channel|>",
+        5: "<|content_invoke_tool_json|>",
+        6: '{"name":"terminal","args":{}}',
         7: "<|end_message|>",
     }
     snapshots = _run_mlx_reasoning_stream(monkeypatch, pieces, {1, 4, 5, 7}, 7)

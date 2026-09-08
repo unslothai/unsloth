@@ -356,7 +356,12 @@ def test_a_stop_token_is_named_by_decoding_when_conversion_cannot_name_it():
                 raise RuntimeError("adapter cannot name ids")
             return None
 
-        def decode(self, token_ids, skip_special_tokens = False, **kwargs):
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+            **kwargs,
+        ):
             out = []
             for i in token_ids:
                 if int(i) == 7:

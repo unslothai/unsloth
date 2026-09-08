@@ -328,8 +328,7 @@ def test_rehearsal_prefix_scan_stays_linear_in_the_tool_catalog():
     from core import tool_healing
 
     for name, call in (
-        ("safetensors",
-         lambda: safetensors_agentic._held_rehearsal_tail_len("x web_sea", tools)),
+        ("safetensors", lambda: safetensors_agentic._held_rehearsal_tail_len("x web_sea", tools)),
         ("gguf", lambda: llama_cpp._held_rehearsal_tail_len("x web_sea", tools)),
     ):
         counting = _CountingSet(tool_healing.EXECUTION_CLASS_TOOL_NAMES)
@@ -696,7 +695,8 @@ def test_the_provisional_card_skips_a_blocked_leading_object():
     assert [c["function"]["name"] for c in calls] == ["web_search"]
     # A benign leading object is not skipped, and neither is a non-call one.
     assert (
-        blocked_markerless_prefix_end('{"name": "web_search", "parameters": {}}', 0, EXEC_ENABLED) == 0
+        blocked_markerless_prefix_end('{"name": "web_search", "parameters": {}}', 0, EXEC_ENABLED)
+        == 0
     )
     assert blocked_markerless_prefix_end('{"answer": 1}', 0, EXEC_ENABLED) == 0
 
@@ -1185,8 +1185,10 @@ def test_the_gguf_card_is_named_after_the_call_that_will_actually_run():
         '{"name":"web_search","parameters":{"query":"y"}}',
         'call:terminal{c:<|"|>x<|"|>} call:web_search{q:<|"|>1<|"|>}',
     ):
-        runs = [c["function"]["name"]
-                for c in (parse_tool_calls_from_text(chain, enabled_tool_names = gate) or [])]
+        runs = [
+            c["function"]["name"]
+            for c in (parse_tool_calls_from_text(chain, enabled_tool_names = gate) or [])
+        ]
         assert runs == ["web_search"], chain
         assert _sniff_text_tool_name(chain, gate) in ("", "web_search"), chain
 
@@ -1203,8 +1205,7 @@ def test_a_nested_rehearsal_inside_a_blocked_body_is_arguments_not_a_sibling():
     sibling = 'terminal[ARGS]{"x":1} web_search[ARGS]{"q":"y"}'
     calls = parse_tool_calls_from_text(sibling, enabled_tool_names = gate)
     assert [c["function"]["name"] for c in calls] == ["web_search"]
-    assert "web_search[ARGS]" not in strip_tool_markup(
-        sibling, final = True, enabled_tool_names = gate)
+    assert "web_search[ARGS]" not in strip_tool_markup(sibling, final = True, enabled_tool_names = gate)
 
 
 def test_a_tool_name_longer_than_the_stream_overlap_is_still_found():
@@ -1212,7 +1213,8 @@ def test_a_tool_name_longer_than_the_stream_overlap_is_still_found():
     the ``call:`` opener behind the window, so the raw call streamed to the client before the
     end-of-turn parser promoted it."""
     from core.inference.safetensors_agentic import (
-        _earliest_tool_signal, _TOOL_SIGNAL_OVERLAP,
+        _earliest_tool_signal,
+        _TOOL_SIGNAL_OVERLAP,
     )
 
     assert _TOOL_SIGNAL_OVERLAP < 64, "the 64-char provider cap is what this must cover"
@@ -1223,22 +1225,23 @@ def test_a_tool_name_longer_than_the_stream_overlap_is_still_found():
         scanned, pos = 0, -1
         for i in range(1, len(text) + 1):
             pos = _earliest_tool_signal(
-                text[:i], (), tools, start = max(0, scanned - _TOOL_SIGNAL_OVERLAP))
+                text[:i], (), tools, start = max(0, scanned - _TOOL_SIGNAL_OVERLAP)
+            )
             scanned = i
         assert pos >= 0, f"streamed scan lost a {len(name)}-char name"
         assert parse_tool_calls_from_text(text, enabled_tool_names = gate)
 
     # An execution-class name is still not a boundary, whatever its length.
     tools = [{"function": {"name": "terminal"}}]
-    assert _earliest_tool_signal(
-        'x call:terminal{c:<|"|>ls<|"|>}', (), tools, start = 0) == -1
+    assert _earliest_tool_signal('x call:terminal{c:<|"|>ls<|"|>}', (), tools, start = 0) == -1
 
 
 def test_the_tool_catalogue_is_not_rebuilt_for_every_streamed_delta():
     """``_earliest_tool_signal`` runs per delta. Materializing a large MCP catalogue each
     time made an ordinary completion O(tokens x tools)."""
     from core.inference.safetensors_agentic import (
-        _earliest_tool_signal, _TOOL_SIGNAL_OVERLAP,
+        _earliest_tool_signal,
+        _TOOL_SIGNAL_OVERLAP,
     )
 
     built = []
@@ -1252,8 +1255,7 @@ def test_the_tool_catalogue_is_not_rebuilt_for_every_streamed_delta():
     prose = "The result you asked about is straightforward. " * 20
     scanned = 0
     for i in range(6, len(prose) + 6, 6):
-        _earliest_tool_signal(
-            prose[:i], (), tools, start = max(0, scanned - _TOOL_SIGNAL_OVERLAP))
+        _earliest_tool_signal(prose[:i], (), tools, start = max(0, scanned - _TOOL_SIGNAL_OVERLAP))
         scanned = i
     assert built == [], f"catalogue walked {len(built)} times over call-free prose"
 
@@ -1285,8 +1287,7 @@ def test_a_chain_separator_does_not_unanchor_the_peer_behind_a_blocked_call():
 
     # A separator does not turn ordinary prose into an anchor.
     prose = 'Here is prose; call:web_search{q:<|"|>1<|"|>}'
-    assert "call:web_search" in strip_tool_markup(
-        prose, final = True, enabled_tool_names = gate)
+    assert "call:web_search" in strip_tool_markup(prose, final = True, enabled_tool_names = gate)
 
 
 def test_an_mcp_name_is_not_held_as_a_rehearsal_prefix():
@@ -1294,10 +1295,12 @@ def test_an_mcp_name_is_not_held_as_a_rehearsal_prefix():
     active ``mcp__*`` name was withheld from the snapshot for a call that can never be
     promoted, and a cancel before the next chunk dropped that text."""
     from core.inference.safetensors_agentic import (
-        _is_rehearsal_prefix as sft_prefix, _held_rehearsal_tail_len as sft_held,
+        _is_rehearsal_prefix as sft_prefix,
+        _held_rehearsal_tail_len as sft_held,
     )
     from core.inference.llama_cpp import (
-        _is_rehearsal_prefix as gguf_prefix, _held_rehearsal_tail_len as gguf_held,
+        _is_rehearsal_prefix as gguf_prefix,
+        _held_rehearsal_tail_len as gguf_held,
     )
 
     mcp = "mcp__github__create_issue"
@@ -1328,7 +1331,9 @@ def _cancel_after_snapshot(snapshot: str):
         run_safetensors_tool_loop(
             single_turn = _single_turn,
             messages = [{"role": "user", "content": "go"}],
-            tools = [{"type": "function", "function": {"name": n}} for n in ("terminal", "web_search")],
+            tools = [
+                {"type": "function", "function": {"name": n}} for n in ("terminal", "web_search")
+            ],
             execute_tool = lambda *a, **k: "ok",
             nudge_tool_calls = False,
             max_tool_iterations = 2,
@@ -1338,10 +1343,13 @@ def _cancel_after_snapshot(snapshot: str):
     )
 
 
-@pytest.mark.parametrize("snapshot", [
-    'call:terminal{command:"id"}',
-    '{"name": "terminal", "arguments": {"command": "id"}}',
-])
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        'call:terminal{command:"id"}',
+        '{"name": "terminal", "arguments": {"command": "id"}}',
+    ],
+)
 def test_a_cancel_still_emits_a_blocked_call_held_as_prose(snapshot):
     """A blocked call buffers waiting for a promotable peer that may never arrive. The
     cancel checks returned before the end-of-stream resolution, so text the parser
@@ -1374,15 +1382,20 @@ def test_a_blocked_calls_body_is_opaque_to_every_other_pass(text):
     assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
 
 
-@pytest.mark.parametrize("text,expected", [
-    ('<|tool_call>call:terminal{command:<|"|>id<|"|>}<tool_call|>', "terminal"),
-    ('[TOOL_CALLS]terminal[ARGS]{"command":"id"}', "terminal"),
-    ('<tool_call>{"name":"python","arguments":{"code":"1"}}</tool_call>', "python"),
-    ('call:web_search{q:"x"}', "web_search"),
-    ('web_search[ARGS]{"q":"x"}', "web_search"),
-])
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ('<|tool_call>call:terminal{command:<|"|>id<|"|>}<tool_call|>', "terminal"),
+        ('[TOOL_CALLS]terminal[ARGS]{"command":"id"}', "terminal"),
+        ('<tool_call>{"name":"python","arguments":{"code":"1"}}</tool_call>', "python"),
+        ('call:web_search{q:"x"}', "web_search"),
+        ('web_search[ARGS]{"q":"x"}', "web_search"),
+    ],
+)
 def test_a_wrapped_or_benign_call_still_executes_alongside_the_body_mask(text, expected):
     """The mask keys off the name alone, so it must not fire behind a trusted wrapper: doing
     so blanked a real call's arguments and it stopped executing."""
-    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"terminal", "python", "web_search"})
+    calls = parse_tool_calls_from_text(
+        text, enabled_tool_names = {"terminal", "python", "web_search"}
+    )
     assert [call["function"]["name"] for call in calls] == [expected]

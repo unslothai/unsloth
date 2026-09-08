@@ -665,9 +665,7 @@ def _string_content_spans(text: str, start: int, end: int) -> list:
     i = start
     while i < end:
         if text.startswith(_tool_healing._GEMMA_QUOTE, i):
-            close = text.find(
-                _tool_healing._GEMMA_QUOTE, i + len(_tool_healing._GEMMA_QUOTE), end
-            )
+            close = text.find(_tool_healing._GEMMA_QUOTE, i + len(_tool_healing._GEMMA_QUOTE), end)
             if close < 0:
                 break
             spans.append((i + len(_tool_healing._GEMMA_QUOTE), close))
@@ -695,7 +693,11 @@ def _string_content_spans(text: str, start: int, end: int) -> list:
 # the passes that consume those wrappers, so without this check it blanked the arguments of a
 # real ``<|tool_call>call:terminal{..}`` and the call stopped executing.
 _MARKERLESS_TRUSTED_PREFIXES = (
-    "<|tool_call>", "[TOOL_CALLS]", "[CALL_ID]", "<tool_call>", "<|python_tag|>",
+    "<|tool_call>",
+    "[TOOL_CALLS]",
+    "[CALL_ID]",
+    "<tool_call>",
+    "<|python_tag|>",
 )
 
 
@@ -1080,8 +1082,10 @@ def strip_tool_markup(
     result = _tool_healing.strip_outside_think(masked, _strip_segment)
     if bodies:
         restored = _unmask_blocked_bodies(result, bodies)
-        result = restored if restored is not None else _tool_healing.strip_outside_think(
-            text, _strip_segment
+        result = (
+            restored
+            if restored is not None
+            else _tool_healing.strip_outside_think(text, _strip_segment)
         )
     return result.strip() if final else result
 
