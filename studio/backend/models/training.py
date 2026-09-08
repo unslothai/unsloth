@@ -210,21 +210,16 @@ class TrainingStartRequest(BaseModel):
     @field_validator("eval_steps", mode = "before")
     @classmethod
     def _normalize_eval_steps(cls, value: Any) -> Any:
-        # float is not strict, so `"eval_steps": true` would arrive as 1.0 and read as a cadence
-        # of every step. A bool is not a cadence; say so instead of guessing which one was meant.
+        # float is not strict, so `"eval_steps": true` would arrive as 1.0, a cadence of every step.
         if isinstance(value, bool):
             raise ValueError("eval_steps must be a number, not a boolean")
         # `1e309` is a plain JSON number that coerces to inf, which every gate reads as disabled.
-        # Store it as the disabled value it already means, so it never reaches config_json: json
-        # writes it as `Infinity` and Starlette renders responses with allow_nan = False, so the
-        # run's own detail view would then 500.
+        # Store it as that, so config_json never gets an `Infinity` literal Starlette then 500s on.
         try:
             if not math.isfinite(float(value)):
                 return 0.0
         except OverflowError:
-            # A JSON integer literal arrives as an arbitrary-precision int, and float() refuses one
-            # too large to represent. That is the same "not a usable cadence" case as inf, so it
-            # must not escape the validator as a 500.
+            # float() refuses a JSON int too large to represent: same unusable cadence as inf.
             return 0.0
         except (TypeError, ValueError):
             pass

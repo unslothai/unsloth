@@ -157,9 +157,8 @@ def extract_project_name(config: Any) -> Optional[str]:
 def drop_non_finite(value: Any) -> Any:
     """Replace inf and NaN with None, recursively.
 
-    ``json.dumps`` writes them as the non-standard ``Infinity`` / ``NaN`` literals and reads them
-    back happily, but Starlette renders responses with ``allow_nan = False``, so anything that
-    reaches a stored config this way makes the view that returns it 500.
+    json writes them as the non-standard ``Infinity`` / ``NaN`` literals, but Starlette renders
+    with ``allow_nan = False``, so a stored config carrying one 500s the view that returns it.
     """
     if isinstance(value, bool):
         return value

@@ -1334,9 +1334,7 @@ async def start_training(
             request.local_datasets = _validate_local_dataset_paths(
                 request.local_datasets, "Local dataset"
             )
-        # Not `eval_steps > 0`: `1e309` is a valid JSON number that pydantic coerces to inf, which
-        # passes that but reads as disabled everywhere in the trainer. The route has to agree, or
-        # it validates eval paths for a run that will not evaluate.
+        # Not `eval_steps > 0`: inf passes that but reads as disabled everywhere in the trainer.
         if request.local_eval_datasets and evaluation_enabled(request.eval_steps):
             request.local_eval_datasets = _validate_local_dataset_paths(
                 request.local_eval_datasets, "Local eval dataset"

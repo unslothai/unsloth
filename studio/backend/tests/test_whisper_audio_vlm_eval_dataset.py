@@ -518,8 +518,7 @@ def test_whisper_trainer_branch_omits_eval_for_an_empty_split(audio_trainer, tmp
 def test_whisper_trainer_branch_refuses_an_unusable_cadence(
     audio_trainer, tmp_path, monkeypatch, bad
 ):
-    """inf raised an OverflowError inside Seq2SeqTrainingArguments, NaN and 0 configured an
-    evaluation that never ran, and True evaluated every step."""
+    """inf raised inside Seq2SeqTrainingArguments, NaN and 0 never ran, True ran every step."""
     trainer = _drive_whisper_branch(
         audio_trainer,
         tmp_path,
@@ -535,8 +534,7 @@ def test_whisper_trainer_branch_refuses_an_unusable_cadence(
 def test_whisper_trainer_branch_normalises_a_numeric_string_cadence(
     audio_trainer, tmp_path, monkeypatch
 ):
-    """A numeric string is a usable cadence, but TrainingArguments compares eval_steps against
-    an int and raises TypeError on a str."""
+    """A numeric string is usable, but TrainingArguments compares eval_steps against an int."""
     trainer = _drive_whisper_branch(
         audio_trainer,
         tmp_path,
@@ -551,8 +549,8 @@ def test_whisper_trainer_branch_normalises_a_numeric_string_cadence(
 
 
 def test_whisper_carve_out_is_skipped_when_the_cadence_is_unusable(audio_trainer, monkeypatch):
-    """The 6% carve-out runs off eval_split, not off the cadence, so it used to feature-extract
-    rows for an evaluation the trainer branch then refuses."""
+    """The 6% carve-out keys off eval_split, not the cadence, so it used to feature-extract rows
+    for an evaluation the trainer branch then refuses."""
     seen = {}
 
     def fake(

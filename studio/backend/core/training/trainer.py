@@ -2368,18 +2368,14 @@ class UnslothTrainer:
         if eval_dataset is None:
             return None
         if self.should_stop:
-            # A stop during the train pass still returns its partial rows, so without this the
-            # eval pass starts anyway and reloads a codec model (DAC pulls Whisper Turbo) just
-            # to abort on its first row.
+            # A stopped train pass still returns partial rows, so eval would reload a codec model.
             logger.info("Stopped before eval preprocessing\n")
             return None
         try:
             return preprocess(eval_dataset, custom_format_mapping)
         except Exception as e:
             if self.should_stop:
-                # A stop empties the codec preprocessors' output, which they report as "no valid
-                # examples". That is the cancel, not the user's file: warning about their eval data
-                # here would be a false accusation on every cancelled run.
+                # A stop reads as "no valid examples": the cancel, not a bad eval file.
                 logger.info("Stopped during eval preprocessing\n")
                 return None
             self._record_warning(
@@ -2414,16 +2410,14 @@ class UnslothTrainer:
         eval_steps = training_args.get("eval_steps", 0.00)
         if eval_dataset is None:
             return {}, None
-        # evaluation_enabled rejects bools and non-finite values too: `eval_steps <= 0` alone lets
-        # True through as "every step", inf through to an OverflowError inside TrainingArguments,
-        # and NaN through to a cadence that never fires. It is what the MLX worker already uses.
+        # evaluation_enabled rejects bools and non-finite values, which `eval_steps <= 0` does not:
+        # True means "every step", inf raises inside TrainingArguments, NaN never fires.
         if not evaluation_enabled(eval_steps):
             logger.info(f"⚠️  Eval dataset provided but eval_steps={eval_steps} (disabled)\n")
             return {}, None
         rows = len(eval_dataset) if hasattr(eval_dataset, "__len__") else "?"
         if rows == 0:
-            # eval_strategy="steps" over an empty dataloader yields no eval_loss at all, so the run
-            # would claim evaluation and report none.
+            # An empty dataloader yields no eval_loss, so the run would report none.
             self._record_warning(
                 "The eval dataset is empty after preprocessing, so this run has no evaluation."
             )
@@ -2431,8 +2425,7 @@ class UnslothTrainer:
         logger.info(f"✅ Evaluation enabled: eval_steps={eval_steps}, eval rows={rows}\n")
         return {
             "eval_strategy": "steps",
-            # float(): a numeric string passes evaluation_enabled but TrainingArguments compares
-            # eval_steps against an int, which raises TypeError on a str.
+            # float(): a numeric string passes the gate but TrainingArguments needs a number.
             "eval_steps": float(eval_steps),
             # Avoid HF's default of 8, which can OOM audio runs.
             "per_device_eval_batch_size": training_args.get("batch_size") or 2,
@@ -2657,8 +2650,7 @@ class UnslothTrainer:
             eval_dataset = None
             dataset_attestation_source = None
             has_separate_eval_source = False
-            # Not `eval_steps > 0`: inf and NaN pass that and would have the whole eval
-            # split loaded and codec-encoded before _audio_eval_config discards it.
+            # Not `eval_steps > 0`: inf and NaN pass that and codec-encode a split later discarded.
             eval_enabled = evaluation_enabled(eval_steps)
             raw_text_mode = is_cpt or format_type == "raw"
             dataset_loaded_from_cache = False
@@ -3136,9 +3128,7 @@ class UnslothTrainer:
             elif self._audio_type == "whisper":
                 train_data, eval_data = self._preprocess_whisper_dataset(
                     dataset,
-                    # Whisper carves 6% off train whenever eval_split is set. Without the gate
-                    # it would do that, and feature-extract the rows, for a cadence the trainer
-                    # branch then refuses.
+                    # Whisper's 6% carve-out keys off eval_split, not the cadence, so gate it here.
                     eval_split = eval_split if eval_enabled else None,
                     custom_format_mapping = custom_format_mapping,
                     eval_dataset = eval_dataset,
@@ -3894,9 +3884,7 @@ class UnslothTrainer:
                 eval_steps_val = training_args.get("eval_steps", 5)
                 extra = {"remove_unused_columns": False, "label_names": ["labels"]}
                 if eval_dataset and not evaluation_enabled(eval_steps_val):
-                    # The named-split carve-out below runs off eval_split, not off the cadence, so
-                    # this branch is the only thing standing between an inf and an OverflowError
-                    # inside Seq2SeqTrainingArguments.
+                    # The carve-out keys off eval_split, not the cadence: only this gate stops inf.
                     logger.info(
                         f"⚠️  Eval dataset provided but eval_steps={eval_steps_val} (disabled)\n"
                     )
@@ -4133,8 +4121,7 @@ class UnslothTrainer:
             eval_steps_val = training_args.get("eval_steps", 0.00)
             if eval_dataset is not None:
                 eval_rows = len(eval_dataset) if hasattr(eval_dataset, "__len__") else None
-                # Same gate as _audio_eval_config. BiCodec and DAC land here rather than in an
-                # audio branch, so without this they would still hand inf to TrainingArguments.
+                # Same gate as _audio_eval_config: BiCodec and DAC land here, not an audio branch.
                 if not evaluation_enabled(eval_steps_val):
                     logger.info(
                         f"⚠️  Eval dataset provided but eval_steps={eval_steps_val} (disabled)\n"

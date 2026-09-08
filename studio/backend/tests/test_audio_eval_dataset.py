@@ -152,8 +152,7 @@ def test_no_eval_dataset_disables_evaluation(audio_trainer):
 
 @pytest.mark.parametrize("eval_steps", [True, float("inf"), float("nan"), "abc"])
 def test_hostile_eval_steps_disable_evaluation(audio_trainer, eval_steps):
-    """`eval_steps <= 0` alone lets these through: True evaluates every step, inf raises
-    OverflowError inside TrainingArguments, NaN never fires, a non-numeric str raises."""
+    """`eval_steps <= 0` lets these through: True is every step, inf raises, NaN never fires."""
     args, eval_dataset = audio_trainer._audio_eval_config(
         {"eval_dataset": ["a", "b"], "eval_steps": eval_steps, "batch_size": 2}
     )
@@ -185,8 +184,7 @@ def test_missing_batch_size_falls_back_instead_of_passing_none(audio_trainer):
 
 
 def test_a_stop_during_eval_preprocessing_is_not_reported_as_a_bad_eval_file(audio_trainer):
-    """The codec preprocessors report a stop as "no valid examples"; that is the cancel, not
-    the user's upload, so it must not raise a warning about their eval dataset."""
+    """A stop is reported as "no valid examples"; that is the cancel, not the user's upload."""
     audio_trainer.should_stop = True
 
     def stopped(dataset, custom_format_mapping = None):
@@ -214,8 +212,7 @@ def test_numeric_string_eval_steps_is_normalised(audio_trainer):
 
 
 def test_a_length_less_eval_split_still_enables_evaluation(audio_trainer):
-    """The empty-split guard reads a row count; a streaming split has none and must not be
-    mistaken for an empty one."""
+    """A streaming split has no row count and must not be mistaken for an empty one."""
 
     class _NoLen:
         pass
@@ -260,8 +257,7 @@ def test_transformers_accepts_the_produced_config(audio_trainer, tmp_path, eval_
 
 
 def test_a_stop_skips_the_eval_preprocessor_entirely(audio_trainer):
-    """A stop during the train pass still returns partial rows, so the eval pass would start
-    anyway and reload a codec model (DAC pulls Whisper Turbo) just to abort on its first row."""
+    """A stopped train pass returns partial rows, so eval would reload a codec model to abort."""
     audio_trainer.should_stop = True
     calls = []
 
@@ -279,8 +275,7 @@ def test_a_stop_skips_the_eval_preprocessor_entirely(audio_trainer):
 def test_an_invalid_cadence_never_preprocesses_the_eval_split(
     audio_trainer, tmp_path, monkeypatch, audio_type, eval_steps
 ):
-    """load_and_format_dataset used to gate on `eval_steps > 0`, so inf and NaN had the whole
-    eval split loaded and codec-encoded before _audio_eval_config discarded it."""
+    """Gating on `eval_steps > 0` let inf and NaN codec-encode a split _audio_eval_config drops."""
     audio_trainer._audio_type = audio_type
     monkeypatch.setattr(tmod, "ensure_audio_decoding", lambda: True)
     seen = []
@@ -309,8 +304,7 @@ def test_an_invalid_cadence_never_preprocesses_the_eval_split(
 def test_the_generic_sft_path_uses_the_same_cadence_gate(
     audio_trainer, tmp_path, monkeypatch, eval_steps, expect_enabled
 ):
-    """BiCodec and DAC deliberately fall through to the generic SFT path, so the gate there has
-    to match the one in _audio_eval_config or inf still reaches TrainingArguments for them."""
+    """BiCodec and DAC fall through here, so this gate must match the one in _audio_eval_config."""
     captured = {}
 
     class _FakeSFTConfig:
@@ -357,8 +351,8 @@ def test_the_generic_sft_path_uses_the_same_cadence_gate(
             output_dir = str(tmp_path),
         )
     except Exception:
-        # The generic path needs far more of a real model than this test provides; the eval
-        # decision is made before any of that, so the captured config is what matters.
+        # The generic path needs a real model; the eval decision happens before that, so only
+        # the captured config matters.
         pass
 
     if expect_enabled:

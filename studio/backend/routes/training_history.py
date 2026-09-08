@@ -311,8 +311,7 @@ async def get_training_run_detail(
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
 
     try:
-        # An older install could have written `Infinity` or `NaN` here, which json accepts on the
-        # way in but Starlette refuses on the way out, so drop them rather than 500 the view.
+        # An older install may have stored `Infinity` / `NaN`, which Starlette refuses to render.
         config = drop_non_finite(json.loads(run.get("config_json", "{}")))
     except (json.JSONDecodeError, TypeError):
         logger.debug("Failed to parse config_json for run %s", run_id)

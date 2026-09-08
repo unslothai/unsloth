@@ -3305,9 +3305,7 @@ def test_cache_local_paths_blank_normalizes_to_none():
 
 @pytest.mark.parametrize("value", [True, False])
 def test_boolean_eval_steps_is_rejected_by_the_request_model(value):
-    """`float` is not strict, so `"eval_steps": true` used to arrive as 1.0 and read as a
-    cadence of every step. Checking for a bool inside the trainer cannot see that, because the
-    coercion happens first."""
+    """`float` is not strict, so `"eval_steps": true` arrived as 1.0 before any trainer check."""
     with pytest.raises(ValidationError):
         _request(eval_steps = value)
 
@@ -3318,9 +3316,8 @@ def test_numeric_eval_steps_still_accepted(value):
 
 
 def test_a_json_number_too_large_for_a_float_arrives_as_infinity():
-    """Pins the library behaviour the gates exist for, so the premise cannot drift: `1e309` is a
-    plain JSON number, not one of the non-standard `Infinity` / `NaN` literals, so a
-    spec-conformant client can send it and pydantic's non-strict `float` coerces it to inf."""
+    """Pins the premise: `1e309` is a plain JSON number, not a non-standard `Infinity` literal,
+    and pydantic's non-strict `float` coerces it to inf."""
     from pydantic import BaseModel
 
     class _Bare(BaseModel):
@@ -3332,8 +3329,7 @@ def test_a_json_number_too_large_for_a_float_arrives_as_infinity():
 
 @pytest.mark.parametrize("cadence", [float("inf"), float("nan")])
 def test_a_disabled_cadence_does_not_validate_the_local_eval_paths(cadence):
-    """The trainer reads a non-finite cadence as evaluation off, so the route must not 400 a
-    run over eval paths it is never going to read."""
+    """A non-finite cadence is evaluation off, so the route must not 400 over unused paths."""
     route = _load_route_module("training_route_disabled_cadence_skips_eval_paths")
     request = _request(eval_steps = cadence, local_eval_datasets = [""])
 
@@ -3351,8 +3347,7 @@ def test_a_disabled_cadence_does_not_validate_the_local_eval_paths(cadence):
 
 
 def test_a_disabled_cadence_does_not_demand_a_separate_streaming_eval_split():
-    """`eval_steps > 0` let inf through, so a streaming run was rejected outright for lacking an
-    eval split it did not need."""
+    """`eval_steps > 0` let inf through, rejecting a streaming run over a split it did not need."""
     route = _load_route_module("training_route_disabled_cadence_streaming_eval_split")
     request = _request(
         dataset_streaming = True, max_steps = 10, eval_steps = float("inf"), eval_split = None
@@ -3381,9 +3376,8 @@ def test_a_usable_cadence_still_demands_a_separate_streaming_eval_split():
 
 @pytest.mark.parametrize("literal", ["1e309", "-1e309", "Infinity", "NaN"])
 def test_a_non_finite_cadence_is_stored_as_disabled(literal):
-    """inf and NaN survive `json.dumps` as the non-standard `Infinity` / `NaN` literals and parse
-    back fine, but Starlette renders with `allow_nan = False`, so a run that persisted one to
-    config_json would 500 its own detail view. Normalise at the boundary instead."""
+    """json writes inf/NaN as the non-standard `Infinity` / `NaN` literals but Starlette renders
+    with `allow_nan = False`, so a config_json carrying one 500s the run's detail view."""
     request = TrainingStartRequest.model_validate_json(
         '{"model_name": "unsloth/test", "training_type": "LoRA/QLoRA", '
         '"format_type": "alpaca", "hf_dataset": "org/dataset", '
@@ -3414,8 +3408,7 @@ def test_the_persisted_config_never_carries_a_non_finite_value():
 
 
 def test_a_run_stored_by_an_older_install_still_renders():
-    """An install from before this change can already have `Infinity` in config_json, and no
-    change to the request model repairs that row."""
+    """An older install can already hold `Infinity` in config_json; the request model cannot."""
     from utils.training_runs import drop_non_finite
 
     stored = json.dumps({"eval_steps": float("inf"), "model_name": "unsloth/test"})
@@ -3426,9 +3419,8 @@ def test_a_run_stored_by_an_older_install_still_renders():
 
 
 def test_a_json_integer_too_large_for_a_float_is_disabled_not_a_500():
-    """A JSON integer literal arrives as an arbitrary-precision int, and `float()` raises
-    OverflowError on one too large to represent. OverflowError is not a ValueError, so it would
-    escape the validator and the start endpoint would 500 instead of returning a request error."""
+    """`float()` on a huge JSON int raises OverflowError, which is not a ValueError, so it
+    escaped the validator and 500d the start endpoint."""
     huge = "1" + "0" * 310
     assert isinstance(json.loads(huge), int)
     with pytest.raises(OverflowError):
@@ -3443,7 +3435,6 @@ def test_a_json_integer_too_large_for_a_float_is_disabled_not_a_500():
 
 
 def test_the_shared_cadence_gate_survives_an_unrepresentable_integer():
-    """`evaluation_enabled` caught only TypeError and ValueError, so the same value took down
-    every caller of it, including the route gate and the MLX worker."""
+    """`evaluation_enabled` caught only TypeError and ValueError, so this took down every caller."""
     from core.training.eval_dataset import evaluation_enabled
     assert evaluation_enabled(int("1" + "0" * 310)) is False
