@@ -274,7 +274,7 @@ def main():
                 records.append(record)
             browser.close()
     (ROOT / ("browser-results-" + "-".join(engines) + ".json")).write_text(
-        json.dumps(records, indent = 2)
+        json.dumps(records, indent = 2), encoding = "utf-8"
     )
     raise SystemExit(any(r["status"] == "failed" for r in records))
 

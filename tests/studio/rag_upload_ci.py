@@ -223,6 +223,7 @@ if run("frontend-install", [npm, "ci"], cwd = frontend):
 (root / "summary.json").write_text(
     json.dumps(
         {"os": platform.platform(), "python": sys.version, "failed_steps": failures}, indent = 2
-    )
+    ),
+    encoding = "utf-8",
 )
 raise SystemExit(bool(failures))
