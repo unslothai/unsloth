@@ -3787,10 +3787,13 @@ class TestTheCompanionWheelsArePairedWithTorch:
                 f"{project} is still maximized independently of torch"
             )
 
-    def test_an_unpaired_companion_falls_back_rather_than_pinning(self):
-        """A pin the index cannot satisfy is worse than the floor it replaced."""
-        assert "if (-not $script:WoaVisionWheelVersion) {" in INSTALL_SRC
-        assert 'else { "torchvision>=0.19" }' in INSTALL_SRC
+    def test_an_unpaired_torchvision_is_a_gate_not_a_floor(self):
+        """A pin the index cannot satisfy is worse than the floor it replaced, and the floor
+        resolved against the wrong torch: the pairing now decides whether the index is used
+        at all (TestNativeNeedsAPairedTorchvision), so the trio only ever sees a paired pin."""
+        fn = _function_source(INSTALL_SRC, "Initialize-WoaNativeCudaTorch")
+        assert "if (-not $_woaVisionVersion) {" in fn
+        assert "$script:WoaVisionWheelVersion = $_woaVisionVersion" in fn
 
 
 class TestTheRepairPathPinsTheSameWayTheInstallDoes:
@@ -4924,6 +4927,240 @@ class TestTheMergedOverrideFileDoesNotOutliveTheRun:
         assert "[TAURI:ERROR] boom" in done.stdout, done.stdout + done.stderr
         assert "REACHED_UNREACHABLE" not in done.stdout
         assert not merged.exists()
+
+
+class TestNativeNeedsAPairedTorchvision:
+    """torchvision is part of the stack. An index whose torch had no torchvision paired with it
+    (a nightly that lags, a partial mirror) still took the native path and left torchvision to a
+    floor, so the exact torch pin and an unpaired torchvision resolved against each other after
+    the ARM64 venv existed. Now the pairing is part of the gate: the next index is tried, and
+    with none pairing the x64 stack is kept."""
+
+    GA = "https://pypi.nvidia.com/nvtorch_oot"
+    NIGHTLY = "https://pypi.nvidia.com/nvtorch_oot_nightly"
+
+    @classmethod
+    def _native(cls, torch_by_index, vision_by_index):
+        def table(d):
+            return "@{ " + "; ".join(f"'{k}' = '{v}'" for k, v in d.items()) + " }"
+
+        script = _script(
+            "$SkipTorch = $false",
+            "$script:Messages = @()",
+            "function substep { param($m, $c) $script:Messages += $m }",
+            "function Get-HostMachineArch { 'arm64' }",
+            "function Get-WoaAbiTag { param($PythonMinor, $FreeThreaded) 'cp313' }",
+            "function Test-WoaNvidiaPresent { $true }",
+            "function Test-WoaResolverPathsUsable { $true }",
+            "function Get-WoaDriverCudaLeaf { $null }",
+            "function Get-WoaDriverCudaVersion { @(13, 4) }",
+            f"$script:WoaNvidiaTorchIndexUrls = @('{cls.GA}', '{cls.NIGHTLY}')",
+            f"$script:Torch = {table(torch_by_index)}",
+            f"$script:Vision = {table(vision_by_index)}",
+            "function Test-WoaCudaWheel { param($IndexUrl, $PythonMinor, $AbiTag, $Project) [bool]$script:Torch[$IndexUrl] }",
+            "function Get-WoaCudaWheelVersion { param($IndexUrl, $PythonMinor, $AbiTag, $Project, $PairWith)",
+            "  if ($Project -eq 'torchvision') { return $script:Vision[$IndexUrl] }",
+            "  if ($Project -eq 'torchaudio') { return '' }",
+            "  return $script:Torch[$IndexUrl] }",
+            "function Get-WoaPyarrowSource { param($PythonMinor, $AbiTag) 'pypi' }",
+            "function Test-WoaWheelAvailable { $true }",
+            _function_source(INSTALL_SRC, "Test-WoaAudioMatchesTorch"),
+            _function_source(INSTALL_SRC, "Initialize-WoaNativeCudaTorch"),
+            "Initialize-WoaNativeCudaTorch -PythonMinor '3.13'",
+            "Write-Output ('NATIVE=' + $script:WoaNativeCudaTorch)",
+            "Write-Output ('INDEX=' + $script:WoaTorchIndexUrl)",
+            "Write-Output ('TORCH=' + $script:WoaTorchWheelVersion)",
+            "Write-Output ('VISION=' + $script:WoaVisionWheelVersion)",
+            "Write-Output ('MSG=' + ($script:Messages -join ' | '))",
+        )
+        return dict(l.split("=", 1) for l in _ps_ok(script).stdout.splitlines() if "=" in l)
+
+    @requires_pwsh
+    def test_a_paired_index_is_taken_with_both_pins(self):
+        out = self._native({self.GA: "2.14.0+cu134"}, {self.GA: "0.29.0+cu134"})
+        assert out["NATIVE"] == "True"
+        assert out["INDEX"] == self.GA
+        assert (out["TORCH"], out["VISION"]) == ("2.14.0+cu134", "0.29.0+cu134")
+
+    @requires_pwsh
+    def test_the_first_paired_index_wins(self):
+        """Order is the maintenance story: the official index retires the NVIDIA one by existing."""
+        out = self._native(
+            {self.GA: "2.14.0+cu134", self.NIGHTLY: "2.15.0.dev20260905+cu134"},
+            {self.GA: "0.29.0+cu134", self.NIGHTLY: "0.30.0.dev20260905+cu134"},
+        )
+        assert out["INDEX"] == self.GA
+        assert (out["TORCH"], out["VISION"]) == ("2.14.0+cu134", "0.29.0+cu134")
+
+    @requires_pwsh
+    def test_an_unpaired_index_yields_to_the_next(self):
+        out = self._native(
+            {self.GA: "2.14.0+cu134", self.NIGHTLY: "2.15.0.dev20260905+cu134"},
+            {self.GA: "", self.NIGHTLY: "0.30.0.dev20260905+cu134"},
+        )
+        assert out["NATIVE"] == "True"
+        assert out["INDEX"] == self.NIGHTLY, out["MSG"]
+        assert (out["TORCH"], out["VISION"]) == (
+            "2.15.0.dev20260905+cu134",
+            "0.30.0.dev20260905+cu134",
+        )
+        assert "no torchvision paired with it; trying the next index" in out["MSG"]
+
+    @requires_pwsh
+    def test_with_no_pairing_index_the_x64_stack_is_kept(self):
+        out = self._native(
+            {self.GA: "2.14.0+cu134", self.NIGHTLY: "2.15.0.dev20260905+cu134"},
+            {self.GA: "", self.NIGHTLY: ""},
+        )
+        assert out["NATIVE"] == "False"
+        assert out["INDEX"] == ""
+        assert "no index pairs a torchvision" in out["MSG"] and "x64 stack" in out["MSG"]
+
+    def test_the_vision_pin_is_the_gates_answer(self):
+        """One probe, not two: the pin the trio installs is the version the gate accepted."""
+        fn = _function_source(INSTALL_SRC, "Initialize-WoaNativeCudaTorch")
+        assert fn.count('-Project "torchvision"') == 1
+        assert "$script:WoaVisionWheelVersion = $_woaVisionVersion" in fn
+        assert "leaving torchvision unpinned" not in fn
+
+
+class TestAnUpdateKeepsTheInstalledPairWhenTheIndexLags:
+    """setup.ps1's fresh-shell probe pinned the index's newest torch and left torchvision at its
+    floor when no build paired with it. The venv already exists there, so the installed pair is
+    kept instead; with nothing installed to keep, the floor stays and the log says why."""
+
+    @staticmethod
+    def _block():
+        start = SETUP_SRC.index('$WinArm64TorchSpec = "torch>=2.4"')
+        end = SETUP_SRC.index("# <3.7 everywhere except Windows on ARM", start)
+        return SETUP_SRC[start:end]
+
+    def _run(self, tmp_path, installed_line):
+        venv = tmp_path / "venv"
+        venv.mkdir()
+        # Join-Path turns the "Scripts\python.exe" leaf into a nested path on this host.
+        (venv / "Scripts").mkdir()
+        shim = venv / "Scripts" / "python.exe"
+        shim.write_text(
+            "#!/bin/sh\n"
+            'case "$*" in *importlib.metadata*) '
+            + installed_line
+            + " ;; *) echo 'cp313|cp313' ;; esac\n",
+            encoding = "utf-8",
+        )
+        shim.chmod(0o755)
+        script = _script(
+            "$script:Messages = @()",
+            "function substep { param($m, $c) $script:Messages += $m }",
+            f"$VenvDir = '{venv}'",
+            "$WinArm64Venv = $true",
+            "$WinArm64NoAudio = $true",
+            "$WinArm64EffectiveTorchIndexUrl = 'https://i.test'",
+            "function Get-WoaCudaWheelVersionParity { param($IndexUrl, $PyTag, $AbiTag, $Project, $PairWith)",
+            "  if ($Project -eq 'torchvision') { return '' }",
+            "  if ($Project -eq 'torchaudio') { return '' }",
+            "  return '2.15.0.dev20260905+cu134' }",
+            _function_source(SETUP_SRC, "Test-WoaPairsWithTorchParity"),
+            _function_source(SETUP_SRC, "Test-WoaAudioMatchesTorchParity"),
+            self._block(),
+            "Write-Output ('TORCH=' + $WinArm64TorchSpec)",
+            "Write-Output ('VISION=' + $WinArm64VisionSpec)",
+            "Write-Output ('MSG=' + ($script:Messages -join ' | '))",
+        )
+        return dict(l.split("=", 1) for l in _ps_ok(script).stdout.splitlines() if "=" in l)
+
+    @requires_pwsh
+    def test_the_installed_pair_is_kept(self, tmp_path):
+        out = self._run(tmp_path, "echo '2.14.0+cu134|0.29.0+cu134'")
+        assert out["TORCH"] == "torch==2.14.0+cu134", out["MSG"]
+        assert out["VISION"] == "torchvision==0.29.0+cu134"
+        assert "keeping the installed torch 2.14.0+cu134 and torchvision 0.29.0+cu134" in out["MSG"]
+
+    @requires_pwsh
+    def test_an_installed_pair_that_does_not_pair_is_not_kept(self, tmp_path):
+        out = self._run(tmp_path, "echo '2.14.0+cu134|0.28.0+cu134'")
+        assert out["TORCH"] == "torch==2.15.0.dev20260905+cu134"
+        assert out["VISION"] == "torchvision>=0.19"
+        assert "no installed pair can be kept" in out["MSG"]
+
+    @requires_pwsh
+    def test_nothing_installed_leaves_the_floor_and_says_so(self, tmp_path):
+        out = self._run(tmp_path, "exit 1")
+        assert out["VISION"] == "torchvision>=0.19"
+        assert "no installed pair can be kept" in out["MSG"]
+
+
+class TestASuppliedWheelUnderAnotherNameIsReadFromItsArchive:
+    """UNSLOTH_PYARROW_WHEEL saved as .bin or with no extension was rejected by the probe on its
+    file name, although staging reads the wheel name from the archive and accepts that shape.
+    The probe now reconstructs the name the same way before the project and tag checks."""
+
+    @staticmethod
+    def _archive(path, dist_info, tag):
+        import zipfile
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr(
+                f"{dist_info}.dist-info/WHEEL",
+                f"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: false\nTag: {tag}\n",
+            )
+            zf.writestr(f"{dist_info}.dist-info/METADATA", "Metadata-Version: 2.1\nName: pyarrow\n")
+        return path
+
+    @staticmethod
+    def _probe(wheel):
+        script = _script(
+            "function substep { param($m, $c) }",
+            "function Join-UrlPath { param($Base, $Path) return $Base }",
+            "function Test-WoaWheelhouseIsLocal { $false }",
+            "function Invoke-RestMethod { throw 'no network in this test' }",
+            "function Test-WoaResolveReachesPyPI { $false }",
+            "$script:WoaWheelhouse = 'https://example.test/wheels'",
+            '$script:WoaPyarrowFloor = "21.0.0"',
+            _function_source(INSTALL_SRC, "Test-WoaWheelTags"),
+            _function_source(INSTALL_SRC, "Test-WoaWheelTagsUsable"),
+            _function_source(INSTALL_SRC, "Test-WoaVersionAtLeast"),
+            _function_source(INSTALL_SRC, "Test-WoaPyarrowWheelUsable"),
+            _function_source(INSTALL_SRC, "Test-ZipArchiveReadable"),
+            _function_source(INSTALL_SRC, "Get-WheelFileNameFromArchive"),
+            _function_source(INSTALL_SRC, "Get-WoaPyarrowSource"),
+            f"$env:UNSLOTH_PYARROW_WHEEL = '{wheel}'",
+            "Write-Output ('[' + (Get-WoaPyarrowSource -PythonMinor '3.13') + ']')",
+        )
+        return _ps_last(script)[1:-1]
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "name, tag, expected, why",
+        [
+            ("pyarrow.bin", "cp313-cp313-win_arm64", "local", "a .bin download of the right wheel"),
+            ("pyarrow_wheel", "cp313-cp313-win_arm64", "local", "no extension at all"),
+            (
+                "pyarrow.bin",
+                "cp313-cp313-win_amd64",
+                "",
+                "the archive says x64, whatever the file is called",
+            ),
+            ("pyarrow.bin", "cp312-cp312-win_arm64", "", "or another interpreter"),
+        ],
+    )
+    def test_the_name_comes_from_the_archive(self, tmp_path, name, tag, expected, why):
+        wheel = self._archive(tmp_path / name, "pyarrow-21.0.0", tag)
+        assert self._probe(str(wheel)) == expected, why
+
+    @requires_pwsh
+    def test_a_file_that_is_not_a_wheel_archive_is_still_ignored(self, tmp_path):
+        bogus = tmp_path / "pyarrow.bin"
+        bogus.write_bytes(b"not a zip at all")
+        assert self._probe(str(bogus)) == ""
+
+    @requires_pwsh
+    def test_a_real_wheel_name_still_passes(self, tmp_path):
+        wheel = self._archive(
+            tmp_path / "pyarrow-21.0.0-cp313-cp313-win_arm64.whl",
+            "pyarrow-21.0.0",
+            "cp313-cp313-win_arm64",
+        )
+        assert self._probe(str(wheel)) == "local"
 
 
 class TestTheNoAudioDecisionFollowsTheProbe:

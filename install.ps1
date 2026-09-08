@@ -896,6 +896,11 @@ function Install-UnslothStudio {
             $_paWheel = $env:UNSLOTH_PYARROW_WHEEL
             if (Test-Path -LiteralPath $_paWheel -PathType Leaf) {
                 $_paName = Split-Path -Leaf $_paWheel
+                # Saved under another name (.bin, no extension): the wheel name comes from the archive, as staging reads it.
+                if ($_paName -notlike "*.whl") {
+                    $_paFromArchive = Get-WheelFileNameFromArchive -Path $_paWheel
+                    if ($_paFromArchive) { $_paName = $_paFromArchive }
+                }
                 if (($_paName -like "pyarrow-*") -and (Test-WoaPyarrowWheelUsable -Name $_paName -PyTag $tag -AbiTag $AbiTag) -and
                     ($_paName -like "*win_arm64.whl")) {
                     # The whole archive: a truncated download still starts with "PK".
@@ -1160,16 +1165,32 @@ function Install-UnslothStudio {
             $candidates += $script:WoaNvidiaTorchIndexUrls
         }
         $torchIndex = $null
+        $_woaTorchVersion = $null
+        $_woaVisionVersion = $null
+        $_woaUnpairedIndex = $null
         foreach ($candidate in $candidates) {
-            if (Test-WoaCudaWheel -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag -Project "torch") {
-                $torchIndex = $candidate
-                break
+            if (-not (Test-WoaCudaWheel -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag -Project "torch")) { continue }
+            $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag
+            # torchvision is part of the stack, so an index qualifies only with a vision build PAIRED to that
+            # torch: a lagging nightly or a partial mirror would otherwise leave torchvision to resolve against
+            # a torch it was not built for, after the ARM64 venv exists.
+            $_woaVisionVersion = Get-WoaCudaWheelVersion -IndexUrl $candidate -PythonMinor $PythonMinor -Project "torchvision" -AbiTag $_woaAbiTag -PairWith $_woaTorchVersion
+            if (-not $_woaVisionVersion) {
+                substep "windows on arm: $candidate publishes torch $_woaTorchVersion but no torchvision paired with it; trying the next index." "Yellow"
+                if (-not $_woaUnpairedIndex) { $_woaUnpairedIndex = $candidate }
+                continue
             }
+            $torchIndex = $candidate
+            break
         }
-        if (-not $torchIndex) { return }
+        if (-not $torchIndex) {
+            if ($_woaUnpairedIndex) {
+                substep "windows on arm: no index pairs a torchvision with its win_arm64 CUDA torch; using the x64 stack instead." "Yellow"
+            }
+            return
+        }
         # A CUDA 13 runtime does not run on a CUDA 12 driver (no forward compatibility on Windows), and
         # the NVIDIA channel is accepted on tags alone, so the wheel's major is checked against the driver's.
-        $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -AbiTag $_woaAbiTag
         $_woaDriver = Get-WoaDriverCudaVersion
         if ($_woaDriver -and $_woaTorchVersion -match '\+cu(\d+)') {
             $_woaWheelMajor = [int]($Matches[1].Substring(0, $Matches[1].Length - 1))
@@ -1201,11 +1222,8 @@ function Install-UnslothStudio {
         # Kept so the install pins what the probe SELECTED: unsafe-best-match spans ALL indexes.
         $script:WoaTorchWheelVersion = $_woaTorchVersion
         $script:WoaAudioWheelVersion = $_woaAudioVersion
-        $script:WoaVisionWheelVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchvision" -AbiTag $_woaAbiTag -PairWith $_woaTorchVersion
-        if (-not $script:WoaVisionWheelVersion) {
-            # No vision wheel from this build: pinning the newest would be unsatisfiable.
-            substep "windows on arm: no torchvision wheel matching torch $_woaTorchVersion; leaving torchvision unpinned." "Yellow"
-        }
+        # Paired with that torch by the gate above, never merely the newest.
+        $script:WoaVisionWheelVersion = $_woaVisionVersion
         # Read off the wheel, not the URL: a mirror of the prerelease channel need not say "nightly".
         $script:WoaTorchIsPrerelease = [bool]($_woaTorchVersion -match '(?i)\d(a|b|rc)\d|\.dev\d')
         if ($_woaAudioVersion -and -not $script:WoaTorchAudio) {

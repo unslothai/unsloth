@@ -5420,7 +5420,27 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
             $WinArm64TorchSpec = "torch==$_woaTorchV"
             # Paired with that torch, never merely newest: two maximized pins can be unsatisfiable.
             $_woaVisionV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchvision" -PairWith $_woaTorchV
-            if ($_woaVisionV) { $WinArm64VisionSpec = "torchvision==$_woaVisionV" }
+            if ($_woaVisionV) {
+                $WinArm64VisionSpec = "torchvision==$_woaVisionV"
+            } else {
+                # install.ps1 takes the native path only with a torchvision paired to the torch. Here the venv
+                # already exists, so a lagging index keeps the installed pair rather than pinning a torch whose
+                # torchvision would resolve against a build it was not made for.
+                $_woaInstalledPair = ""
+                try {
+                    $_woaInstalledPair = (& (Join-Path $VenvDir "Scripts\python.exe") -c "import importlib.metadata as m; print(m.version('torch') + '|' + m.version('torchvision'))" 2>$null | Out-String).Trim()
+                } catch { $_woaInstalledPair = "" }
+                $_woaKeptTorch = ""; $_woaKeptVision = ""
+                if ($_woaInstalledPair -match '^(\S+)\|(\S+)$') { $_woaKeptTorch = $Matches[1]; $_woaKeptVision = $Matches[2] }
+                if ($_woaKeptTorch -and $_woaKeptVision -and (Test-WoaPairsWithTorchParity -TorchVersion $_woaKeptTorch -OtherVersion $_woaKeptVision -Project "torchvision")) {
+                    substep "windows on arm: this index pairs no torchvision with torch $_woaTorchV; keeping the installed torch $_woaKeptTorch and torchvision $_woaKeptVision" "Yellow"
+                    $_woaTorchV = $_woaKeptTorch
+                    $WinArm64TorchSpec = "torch==$_woaKeptTorch"
+                    $WinArm64VisionSpec = "torchvision==$_woaKeptVision"
+                } else {
+                    substep "windows on arm: this index pairs no torchvision with torch $_woaTorchV and no installed pair can be kept; leaving torchvision at its floor" "Yellow"
+                }
+            }
             $_woaAudioV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchaudio" -PairWith $_woaTorchV
             if ($_woaAudioV) { $WinArm64AudioSpec = "torchaudio==$_woaAudioV" }
             # This probe is the same one install.ps1 ran, so it decides: a fresh shell has no handoff, and
