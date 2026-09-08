@@ -1746,18 +1746,22 @@ export async function buildLocalTokenCountHistory(
   studio_tool_history?: true;
 }> {
   const survivingMessages = pruneOutboundHistory(messages, true);
+  const runtimeState = useChatRuntimeStore.getState();
+  const { params, artifactsEnabled, supportsTools } = runtimeState;
+  const activeModel = runtimeState.models.find(
+    (model) => model.id === runtimeState.params.checkpoint,
+  );
   // Bounded before it goes on the wire: the backend's cap runs after the body is
-  // parsed, so it cannot keep the request itself from growing without limit.
+  // parsed, so it cannot keep the request itself from growing without limit. Same
+  // target rule as the send path, or the count prices pictures the turn never sends.
   const outboundMessages = boundMcpImageEnvelopes(
     survivingMessages
       .flatMap((message) => toOpenAIMessages(message, true))
       .filter((message): message is NonNullable<typeof message> =>
         Boolean(message),
       ),
+    { localMarkers: activeModel?.isGguf === false },
   );
-
-  const { params, artifactsEnabled, supportsTools } =
-    useChatRuntimeStore.getState();
   const safeSystemPrompt =
     typeof params.systemPrompt === "string"
       ? resolveSystemPromptVariables(
@@ -4767,19 +4771,24 @@ export function createOpenAIStreamAdapter(
             externalSelection?.modelId,
           ) !== false
         : runtime.loadedIsMultimodal !== false;
+      // A local target that is not a GGUF renders replayed pictures as markers, one per
+      // tool batch, so the upload is bounded to what that path can use (the bound runs
+      // below, after the slice). Unknown format keeps the part paths' four per result.
+      const mcpImagesLocalMarkers =
+        !isExternalRequest &&
+        runtime.models.find((model) => model.id === runtime.params.checkpoint)
+          ?.isGguf === false;
       const survivingMessages = pruneOutboundHistory(
         messages,
         !isExternalRequest,
       );
       // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
       // translator rebuilds the functionCall/functionResponse parts.
-      let outboundMessages = boundMcpImageEnvelopes(
-        survivingMessages
-          .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
-          .filter((message): message is NonNullable<typeof message> =>
-            Boolean(message),
-          ),
-      );
+      let outboundMessages = survivingMessages
+        .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
+        .filter((message): message is NonNullable<typeof message> =>
+          Boolean(message),
+        );
       if (selectedImageEditReference) {
         const referenceMessage = toOpenAIImageEditReferenceMessage(
           selectedImageEditReference,
@@ -4807,9 +4816,13 @@ export function createOpenAIStreamAdapter(
           referenceMessage as unknown as SerializedMessage,
         );
       }
-      if (!targetReadsImages) {
-        outboundMessages = stripMcpImageEnvelopes(outboundMessages);
-      }
+      // Bounded before it goes on the wire: the backend's cap runs after the body is
+      // parsed, so it cannot keep the request itself from growing without limit.
+      outboundMessages = targetReadsImages
+        ? boundMcpImageEnvelopes(outboundMessages, {
+            localMarkers: mcpImagesLocalMarkers,
+          })
+        : stripMcpImageEnvelopes(outboundMessages);
 
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {

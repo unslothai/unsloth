@@ -56,6 +56,9 @@ export function mcpImagesEnvelope(images: McpImage[]): string {
 export const MAX_TOTAL_MCP_IMAGES = 8;
 // Mirrors the backend's per-result promotion limit.
 export const MAX_MODEL_IMAGES = 4;
+// Mirrors LOCAL_MAX_IMAGES_PER_TURN in studio/backend/core/inference/mcp_images.py: the
+// marker paths (safetensors, MLX) render a tool batch as one turn carrying one picture.
+export const LOCAL_MAX_IMAGES_PER_TURN = 1;
 // Spare candidates carried past that limit, because the backend's quota counts
 // images that DECODE and this side cannot tell which will. Bounded, so a result
 // of unreadable blobs still cannot grow the request without limit.
@@ -78,16 +81,37 @@ interface EnvelopeCarrier {
 
 export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
   messages: readonly T[],
+  { localMarkers = false }: { localMarkers?: boolean } = {},
 ): T[] {
   const out = messages.slice();
   let budget = MAX_TOTAL_MCP_IMAGES;
-  // Shared, so at most MAX_TOTAL_MCP_IMAGES + DECODE_FAILURE_ALLOWANCE candidates
-  // ever leave here however many results there are.
   let spare = DECODE_FAILURE_ALLOWANCE;
   let charsLeft = MAX_TOTAL_MCP_IMAGE_CHARS;
-  // Newest first: those are the ones the backend would have kept.
-  for (let i = out.length - 1; i >= 0; i--) {
-    const message = out[i];
+  // What one tool batch can put in front of the target. A marker target renders a
+  // batch -- consecutive tool results -- as one turn carrying one picture, so the
+  // batch is charged once and its further candidates are decode fallbacks; charging
+  // four per result there spent the budget on pictures the backend never sent and
+  // stripped older batches that still had room. The part paths take four per result.
+  const perResult = localMarkers ? LOCAL_MAX_IMAGES_PER_TURN : MAX_MODEL_IMAGES;
+  const isTool = (index: number) => out[index]?.role === "tool";
+  let i = out.length - 1;
+  while (i >= 0) {
+    if (!isTool(i)) {
+      i--;
+      continue;
+    }
+    let start = i;
+    if (localMarkers) {
+      while (start > 0 && isTool(start - 1)) start--;
+    }
+    const batch: number[] = [];
+    for (let j = i; j >= start; j--) batch.push(j);
+    i = start - 1;
+    const room = Math.min(budget, perResult);
+    let allowance = room > 0 || !localMarkers ? room + spare : 0;
+    let taken = 0;
+    for (const index of batch) {
+    const message = out[index];
     if (!message || message.role !== "tool") continue;
     if (typeof message.content !== "string") continue;
     const { text, images } = splitMcpImages(message.content);
@@ -100,27 +124,27 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
       message.name &&
       !message.name.startsWith(MCP_TOOL_PREFIX)
     ) {
-      out[i] = { ...message, content: text };
+      out[index] = { ...message, content: text };
       continue;
     }
-    // The backend promotes at most MAX_MODEL_IMAGES out of any one result, so a
-    // result carrying more must not spend history budget on images that will be
-    // dropped anyway -- that would evict older results which still had room.
+    // The backend promotes at most perResult out of any one result, so a result
+    // carrying more must not spend history budget on images that will be dropped
+    // anyway -- that would evict older results which still had room.
     //
     // But it counts SUCCESSFUL decodes, and this side cannot decode: cutting the
-    // first four entries would drop valid PNGs sitting behind formats Pillow
-    // rejects, which the first turn showed and the replay would then lose. Keep
-    // enough candidates for the backend to still find its quota, and let it pick.
-    // The slice is the remaining budget PLUS the spare candidates, not the budget
+    // first entries would drop valid PNGs sitting behind formats Pillow rejects,
+    // which the first turn showed and the replay would then lose. Keep enough
+    // candidates for the backend to still find its quota, and let it pick. The
+    // slice is the remaining budget PLUS the spare candidates, not the budget
     // alone: counting spares against it strands valid PNGs sitting behind corrupt
     // entries whenever a newer result has already taken part of the allowance.
-    const room = Math.min(budget, MAX_MODEL_IMAGES);
+    //
     // The allowance is spent across the CONVERSATION, not reset per result. Per
     // result it dies with the budget: four undecodable entries in the newest result
     // charge the full room, and the next result down then sees room 0 and loses its
     // envelope entirely -- so four valid PNGs are dropped while the allowance that
     // exists for exactly that case is still untouched.
-    const candidates = images.slice(0, room + spare);
+    const candidates = images.slice(0, allowance);
     // Newest first here too, so the pictures a request gives up under the byte
     // budget are the oldest ones -- the same ones every other cap here drops.
     const keep: McpImage[] = [];
@@ -133,21 +157,24 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
       charsLeft -= cost;
       keep.push(image);
     }
-    // Charged for what this result can actually contribute, never for room it did
-    // not use, and never for the spares -- those exist only so the backend has
-    // candidates to decode and must not evict an older result on their own account.
-    const charged = Math.min(keep.length, room);
-    budget -= charged;
-    spare -= keep.length - charged;
+    allowance -= keep.length;
+    taken += keep.length;
     if (keep.length === images.length) continue;
     // Carry the count the tool actually returned, or a prior bound's record of it,
     // so the backend's note does not describe this upload as the whole result.
     const returned = Math.max(images[0]?.returned ?? 0, images.length);
     const bounded = keep.length > 0 ? [{ ...keep[0], returned }, ...keep.slice(1)] : [];
-    out[i] = {
+    out[index] = {
       ...message,
       content: bounded.length > 0 ? text + mcpImagesEnvelope(bounded) : text,
     };
+    }
+    // Charged for what the batch can actually contribute, never for room it did
+    // not use, and never for the spares -- those exist only so the backend has
+    // candidates to decode and must not evict an older result on their own account.
+    const charged = Math.min(taken, room);
+    budget -= charged;
+    spare -= taken - charged;
   }
   return out;
 }

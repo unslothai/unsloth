@@ -3279,12 +3279,9 @@ from core.inference.llama_http import nonstreaming_client
 from core.inference.mcp_images import (
     MAX_MODEL_IMAGES as _MCP_MAX_MODEL_IMAGES,
     count_probably_decodable as _mcp_count_probably_decodable,
-    append_placeholder_turn as mark_mcp_image_turn_local,
     image_marker_parts as mcp_image_marker_parts,
-    DETACHED_IMAGE_TURN_TEXT as _MCP_DETACHED_IMAGE_TURN_TEXT,
     flattened_rgb as _mcp_flattened_rgb,
     resolve_tool_names as _mcp_resolve_tool_names,
-    insert_placeholder_turn as insert_mcp_image_turn_before,
     pixels_in_marker_order as mcp_pixels_in_marker_order,
     trim_image_turns as trim_mcp_image_turns,
     MAX_TOTAL_MODEL_IMAGES as _MCP_MAX_TOTAL_MODEL_IMAGES,
@@ -25380,60 +25377,45 @@ async def produce_openai_chat_completions(
         # Re-derive from payload.messages so tool_calls / role="tool" history
         # survives templating; fold system/developer into one leading system
         # message (templates reject "developer") and clear prompt to avoid a dup.
-        gen_kwargs["messages"] = _set_or_prepend_system_message(
+        #
+        # The envelopes stay on through the flatten (this is not a llama-server body,
+        # so it drops image parts) and are promoted afterwards under the server-tool
+        # path's rules: one marker per tool batch, at the batch's own position or
+        # merged into the user turn that follows it. Collecting every retained payload
+        # into one detached turn instead built the very shape the route refuses on a
+        # non-GGUF target -- a message carrying several images -- and, placed ahead of
+        # an attachment's turn, two user turns in a row.
+        _sf_rebuilt, _sf_rebuilt_images = await _promote_local_mcp_images_async(
             _structured_tool_history_for_local_template(
                 _flatten_content_parts_for_local_template(
-                    # Not a llama-server body: the flatten below drops image parts.
-                    _openai_messages_for_passthrough(payload, normalize_images = False)
+                    _openai_messages_for_passthrough(
+                        payload, normalize_images = False, promote_mcp_images = False
+                    )
                 )
             ),
-            system_prompt,
+            vision = _sf_renders_image,
         )
+        if image is not None and _sf_rebuilt_images:
+            # The attachment rides beside the replay and both reach the backend as
+            # one sequence, so its slot is reserved here as the server-tool path does.
+            trim_mcp_image_turns(
+                _sf_rebuilt, _sf_rebuilt_images, limit = _MCP_MAX_TOTAL_MODEL_IMAGES - 1
+            )
+        gen_kwargs["messages"] = _set_or_prepend_system_message(_sf_rebuilt, system_prompt)
+        gen_kwargs["images"] = _sf_rebuilt_images or None
         # Mark the turn that owns the image so the newest-user-turn scan does not move an
         # older picture onto a later question. Gated on _sf_renders_image, not on an image:
-        # a text-template render must not be handed part lists (#10092).
-        _sf_image_marker_idx = None
-        if _sf_renders_image:
+        # a text-template render must not be handed part lists (#10092). Not when pictures
+        # were replayed: the backends then place the attachment's marker themselves, by
+        # ordinal, from a snapshot of the replay's markers -- marked here first, it would
+        # sit in that snapshot and a replayed picture would bind to it.
+        if _sf_renders_image and not _sf_rebuilt_images:
             _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
             if _sf_image_ordinal is not None:
-                _sf_marked_at: list = []
                 gen_kwargs["messages"] = _mark_image_owner_turn(
-                    gen_kwargs["messages"], _sf_image_ordinal, marked_at = _sf_marked_at
+                    gen_kwargs["messages"], _sf_image_ordinal
                 )
-                _sf_image_marker_idx = _sf_marked_at[0] if _sf_marked_at else None
         gen_kwargs["system_prompt"] = ""
-        # That rebuild flattens every content part to text, so the markers the MCP
-        # promotion put in chat_messages are gone while gen_kwargs still holds their
-        # pixels. One marker per retained payload, or MLX raises on the count and the
-        # transformers fallback collapses the tool history away.
-        if gen_kwargs.get("images"):
-            _sf_replayed = len(gen_kwargs["images"])
-            # The flatten cost them their positions, so this block is one turn rather
-            # than one per source result. Interleaving them back is not open: a marker
-            # turn between an assistant tool_call and its result breaks the tool
-            # protocol. What it must not do is claim an adjacency it no longer has --
-            # the default wording says "the tool call above", and above is now whatever
-            # turn precedes the block.
-            if _sf_image_marker_idx is not None:
-                # Ahead of the turn carrying the attachment's marker: the pixels go
-                # history-first with the attachment last, and a positional processor
-                # binds them in document order, so appending here would hand the
-                # historical pixels to the attachment's marker and vice versa.
-                insert_mcp_image_turn_before(
-                    gen_kwargs["messages"],
-                    _sf_image_marker_idx,
-                    _sf_replayed,
-                    _sf_replayed,
-                    lead = _MCP_DETACHED_IMAGE_TURN_TEXT,
-                )
-            else:
-                mark_mcp_image_turn_local(
-                    gen_kwargs["messages"],
-                    _sf_replayed,
-                    _sf_replayed,
-                    lead = _MCP_DETACHED_IMAGE_TURN_TEXT,
-                    annotate_merge = True,
-                )
         # tool_choice="none": keep history templating but advertise no tools
         # (heal_gate is off, markup would relay as prose). A forced function
         # narrows templating to that one schema. Both mirror the GGUF path,
@@ -33853,6 +33835,7 @@ def _openai_messages_for_passthrough(
     payload,
     vision: bool = False,
     normalize_images: bool = True,
+    promote_mcp_images: bool = True,
 ) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
@@ -33883,14 +33866,13 @@ def _openai_messages_for_passthrough(
     against a reservation for one: 4417 reserved against 8466 charged, which overcommits
     the KV cache wherever the slot count lets that gap accumulate.
     """
-    messages = promote_mcp_history_images(
-        _strip_provider_synthetic_tool_history(
-            _drop_empty_assistant_sentinels(
-                [m.model_dump(exclude_none = True) for m in payload.messages]
-            )
-        ),
-        vision = vision,
+    messages = _strip_provider_synthetic_tool_history(
+        _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
     )
+    # Left on for the local-template rebuild, which promotes them itself once its
+    # flatten has run: promoted here, the flatten would drop the parts again.
+    if promote_mcp_images:
+        messages = promote_mcp_history_images(messages, vision = vision)
 
     if normalize_images:
         _normalize_openai_image_parts_to_png(messages)

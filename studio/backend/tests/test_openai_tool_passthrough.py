@@ -10220,11 +10220,17 @@ class TestMcpImagesOnTheClientToolPassthrough:
         branch = body[body.index("if _sf_client_tools:") :]
         assert "_flatten_content_parts_for_local_template" in branch
         rebuild = branch.index("_flatten_content_parts_for_local_template")
-        restore = branch.index("mark_mcp_image_turn_local(")
-        assert restore > rebuild, (
-            "the flattening rebuild must put one marker back per retained payload, "
-            "and it has to run after the flatten that removed them"
+        promote = branch.index("_promote_local_mcp_images_async(")
+        assert promote < rebuild, (
+            "the flatten has to run inside the promotion's argument, so the markers "
+            "are put back after the flatten that removed them"
         )
+        assert (
+            "promote_mcp_images = False" in branch
+        ), "the passthrough must leave the envelopes on for the promotion to find"
+        # One marker per batch at its own position, never one block of them all.
+        assert "mark_mcp_image_turn_local(" not in branch
+        assert "insert_mcp_image_turn_before(" not in branch
 
 
 class TestCodexVisionCapability:
@@ -10335,9 +10341,10 @@ class TestMcpImageAdmissionAndCaps:
         import routes.inference as inference_route
 
         body = inspect.getsource(inference_route.produce_openai_chat_completions)
-        assert (
-            body.count("trim_mcp_image_turns(") == 2
-        ), "both the tool-loop path and the plain path have to reserve the attachment's slot"
+        assert body.count("trim_mcp_image_turns(") == 3, (
+            "the tool-loop path, the plain path and the client-tool rebuild all have "
+            "to reserve the attachment's slot"
+        )
 
     def test_the_local_replay_promotion_is_off_the_event_loop(self):
         import inspect

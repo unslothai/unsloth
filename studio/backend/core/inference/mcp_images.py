@@ -179,7 +179,7 @@ def _decoded_urls_per_result(results: Sequence[Sequence[dict]]) -> list[str]:
     return [url for urls in reversed(chosen) for url in urls]
 
 
-def eligible_replay_images(messages: Sequence[dict]) -> dict:
+def eligible_replay_images(messages: Sequence[dict], *, local: bool = False) -> dict:
     """Which envelope entries can still be in the prompt once the cap has run.
 
     The decoders are the expensive part -- a permitted raster is 40 megapixels and
@@ -194,36 +194,65 @@ def eligible_replay_images(messages: Sequence[dict]) -> dict:
     result may be decoded. Mirrors the frontend's boundMcpImageEnvelopes, spare
     allowance included: this side cannot know which entries decode either, so a
     result whose images all fail must not strand the valid ones behind it.
+
+    *local* budgets the way the marker paths spend: a tool batch -- consecutive
+    results -- lands as one turn carrying one picture, so the batch is charged once
+    and its further candidates are decode fallbacks, not a charge. Budgeting four per
+    result here spent the conversation's allowance on pictures the local path never
+    sends and dropped older batches that still had room.
     """
     eligible: dict = {}
     budget = MAX_TOTAL_MODEL_IMAGES
     spare = DECODE_FAILURE_ALLOWANCE
+    per_result = LOCAL_MAX_IMAGES_PER_TURN if local else MAX_MODEL_IMAGES
     # Same provenance _promote applies. Reading only the explicit name let unnamed
     # results correlated to non-MCP calls spend the allowance first, so a genuine
     # older MCP result was left an eligibility of zero and nothing useful replayed.
     call_names = resolve_tool_names(messages)
-    for index in range(len(messages) - 1, -1, -1):
-        message = messages[index]
-        if not isinstance(message, dict) or message.get("role") != "tool":
-            continue
-        content = message.get("content")
+
+    def _is_tool(position: int) -> bool:
+        message = messages[position]
+        return isinstance(message, dict) and message.get("role") == "tool"
+
+    def _mcp_images_at(position: int) -> "list | None":
+        content = messages[position].get("content")
         if not isinstance(content, str):
-            continue
-        name = message.get("name") or call_names.get(index)
+            return None
+        name = messages[position].get("name") or call_names.get(position)
         if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
-            continue
+            return None
         _text, images = split_images(content)
-        if not images:
+        return images or None
+
+    index = len(messages) - 1
+    while index >= 0:
+        if not _is_tool(index):
+            index -= 1
             continue
-        room = min(budget, MAX_MODEL_IMAGES)
-        take = min(len(images), room + spare)
-        if take <= 0:
-            eligible[index] = 0
-            continue
-        eligible[index] = take
-        charged = min(take, room)
+        start = index
+        if local:
+            while start > 0 and _is_tool(start - 1):
+                start -= 1
+        # Newest first within the batch, the order the local decoder tries them.
+        batch = [position for position in range(index, start - 1, -1)]
+        index = start - 1
+        room = min(budget, per_result)
+        allowance = room + spare if (room > 0 or not local) else 0
+        taken = 0
+        for position in batch:
+            images = _mcp_images_at(position)
+            if images is None:
+                continue
+            take = min(len(images), allowance)
+            if take <= 0:
+                eligible[position] = 0
+                continue
+            eligible[position] = take
+            allowance -= take
+            taken += take
+        charged = min(taken, room)
         budget -= charged
-        spare -= take - charged
+        spare -= taken - charged
     return eligible
 
 
@@ -978,7 +1007,7 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
     # Resolved before a single decode runs: the trim at the bottom keeps the newest
     # eight, and decoding a whole replayed history to throw nearly all of it away is
     # work a caller's own message list gets to choose the size of.
-    eligible = eligible_replay_images(messages) if vision else {}
+    eligible = eligible_replay_images(messages, local = local) if vision else {}
     # One entry per tool result, not flattened: two parallel calls each returning
     # four images would otherwise share a single result's quota and replay only the
     # first call's four.

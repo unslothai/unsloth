@@ -1366,10 +1366,11 @@ def test_a_client_catalog_keeps_an_image_out_of_the_server_loop(monkeypatch):
     assert "images" not in backend.calls[0] or not backend.calls[0].get("images")
 
 
-def test_a_detached_replay_block_does_not_claim_the_turn_above_it(monkeypatch):
-    """The passthrough flatten costs the markers their positions, so the block lands
-    away from the result that produced it. It must not still say "the tool call above",
-    which names whatever turn happens to precede it."""
+def test_a_replayed_picture_sits_beside_the_result_that_produced_it(monkeypatch):
+    """The passthrough flatten costs the markers their positions. Promoting after it
+    puts each batch's turn straight after its result, so "the tool call above" names
+    the right call -- one detached block of every payload, placed wherever the
+    attachment's turn happened to be, did not."""
     import base64
     import io
     import json
@@ -1419,15 +1420,19 @@ def test_a_detached_replay_block_does_not_claim_the_turn_above_it(monkeypatch):
     _call(payload, monkeypatch, backend)
 
     [call] = backend.calls
-    leads = [
-        part["text"]
-        for message in call["messages"]
+    sent = call["messages"]
+    assert call["images"] and len(call["images"]) == 1
+    [marker_at] = [
+        index
+        for index, message in enumerate(sent)
         if isinstance(message.get("content"), list)
-        for part in message["content"]
-        if part.get("type") == "text" and part["text"].startswith("Images returned by")
+        and any(part.get("type") == "image" for part in message["content"])
     ]
-    assert leads, f"no replay block in {call['messages']}"
-    assert all(mcp_images.DETACHED_IMAGE_TURN_TEXT in text for text in leads), leads
+    assert sent[marker_at - 1]["role"] == "tool", [m["role"] for m in sent]
+    lead = next(part["text"] for part in sent[marker_at]["content"] if part.get("type") == "text")
+    assert lead.startswith(mcp_images.IMAGE_TURN_TEXT), lead
+    roles = [m["role"] for m in sent]
+    assert all(a != "user" or b != "user" for a, b in zip(roles, roles[1:])), roles
 
 
 def test_a_replay_only_image_turn_also_keeps_the_client_catalog(monkeypatch):

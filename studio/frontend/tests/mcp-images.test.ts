@@ -355,3 +355,71 @@ test("a text-only target is sent no envelopes at all", () => {
   assert.equal(stripped[0], messages[0], "non-tool messages are the same object");
   assert.equal(stripped[2], messages[2], "a tool result with no envelope is untouched");
 });
+
+const round = (n: number, results = 1, perResult = 3) => [
+  { role: "assistant", content: `call ${n}` },
+  ...Array.from({ length: results }, (_, k) => ({
+    role: "tool",
+    name: "mcp__fs__screenshot",
+    content:
+      `[${perResult} images returned]` +
+      mcpImagesEnvelope(
+        Array.from({ length: perResult }, (_, m) => ({
+          data: `R${n}K${k}M${m}`,
+          mimeType: "image/png",
+        })),
+      ),
+  })),
+  { role: "assistant", content: `answer ${n}` },
+];
+
+const imagesPerToolResult = (messages: { role?: string; content?: unknown }[]) =>
+  messages
+    .filter((m) => m.role === "tool" && typeof m.content === "string")
+    .map((m) => splitMcpImages(m.content as string).images.length);
+
+test("a marker target is charged one picture per round, so every round keeps one", () => {
+  // Eight rounds of three: the backend's local path replays one per round, eight in
+  // all. Four per result spent the budget on the newest rounds and stripped the rest.
+  const messages = Array.from({ length: 8 }, (_, n) => round(n)).flat();
+
+  const parts = imagesPerToolResult(boundMcpImageEnvelopes(messages));
+  assert.ok(parts.some((n) => n === 0), `default still strips old rounds: ${parts}`);
+
+  const markers = imagesPerToolResult(
+    boundMcpImageEnvelopes(messages, { localMarkers: true }),
+  );
+  assert.equal(markers.length, 8);
+  assert.ok(markers.every((n) => n >= 1), `every round keeps a candidate: ${markers}`);
+  // Spares ride with the newest rounds only; the rest carry exactly their one.
+  assert.equal(markers[markers.length - 1], 3);
+  assert.equal(markers[0], 1);
+});
+
+test("consecutive results are one batch on a marker target and share one charge", () => {
+  // Three parallel results land as one turn carrying one picture: charged once,
+  // not three times, so eight such rounds all keep a candidate.
+  const messages = Array.from({ length: 8 }, (_, n) => round(n, 3, 2)).flat();
+
+  const markers = imagesPerToolResult(
+    boundMcpImageEnvelopes(messages, { localMarkers: true }),
+  );
+  assert.equal(markers.length, 24);
+  for (let n = 0; n < 8; n++) {
+    const batch = markers.slice(n * 3, n * 3 + 3);
+    assert.ok(batch.some((k) => k >= 1), `round ${n} keeps a candidate: ${batch}`);
+  }
+});
+
+test("the send path bounds after the slice, to the target's own contribution", () => {
+  // Decided before the slice tests/studio executes standalone; applied after it, so the
+  // slice keeps only messages and isExternalRequest in scope.
+  assert.match(
+    adapter,
+    /const mcpImagesLocalMarkers =\n\s*!isExternalRequest &&\n\s*runtime\.models\.find\(\(model\) => model\.id === runtime\.params\.checkpoint\)\n\s*\?\.isGguf === false;/,
+  );
+  assert.match(
+    adapter,
+    /\? boundMcpImageEnvelopes\(outboundMessages, \{\n\s*localMarkers: mcpImagesLocalMarkers,\n\s*\}\)\n\s*: stripMcpImageEnvelopes\(outboundMessages\);/,
+  );
+});

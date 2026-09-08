@@ -1924,3 +1924,242 @@ def test_the_server_tool_route_placement_also_displaces_a_merged_replay_marker()
     ]
     marked = mcp_images.mark_last_user_turn(conversation, 1, ordinal = 1)
     assert sum(1 for p in marked[1]["content"] if p.get("type") == "image") == 1, marked[1]
+
+
+def _rounds(
+    count: int,
+    per_result: int,
+    *,
+    parallel: int = 1,
+) -> list[dict]:
+    history: list[dict] = [{"role": "user", "content": "start"}]
+    for r in range(count):
+        calls = [
+            {
+                "id": f"c{r}_{k}",
+                "type": "function",
+                "function": {"name": "mcp__s__shot", "arguments": "{}"},
+            }
+            for k in range(parallel)
+        ]
+        history.append({"role": "assistant", "content": "", "tool_calls": calls})
+        for k in range(parallel):
+            history.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": f"c{r}_{k}",
+                    "content": _envelope(f"[{per_result}]", *[_image() for _ in range(per_result)]),
+                }
+            )
+        history.append({"role": "assistant", "content": f"round {r}"})
+    history.append({"role": "user", "content": "compare them"})
+    return history
+
+
+def _one_marker_per_turn(conversation: list) -> list[int]:
+    counts = [
+        sum(1 for part in message["content"] if part.get("type") == "image")
+        for message in conversation
+        if isinstance(message.get("content"), list)
+    ]
+    assert all(count <= 1 for count in counts), counts
+    return counts
+
+
+def test_local_replay_keeps_every_picture_the_live_loop_kept():
+    """Eight rounds of four valid PNGs. The live loop keeps one per round, eight in
+    all; budgeting four per result for a path that sends one spent the allowance on
+    the newest two rounds and replayed three of the eight."""
+    history = _rounds(8, 4)
+    live = min(
+        sum(
+            len(mcp_images.png_payloads_per_result([[_image() for _ in range(4)]]))
+            for _ in range(8)
+        ),
+        mcp_images.MAX_TOTAL_MODEL_IMAGES,
+    )
+    assert live == 8
+
+    out, payloads = mcp_images.promote_history_local(history, vision = True)
+    assert len(payloads) == live
+    assert sum(_one_marker_per_turn(out)) == live
+
+    eligible = mcp_images.eligible_replay_images(history, local = True)
+    tool_positions = [i for i, m in enumerate(history) if m.get("role") == "tool"]
+    assert all(eligible.get(i, 0) >= 1 for i in tool_positions), eligible
+    # The part paths still take four per result: two rounds fill the budget and a
+    # third rides on the spare allowance, so only three results stay eligible there.
+    parts = mcp_images.eligible_replay_images(history)
+    assert sum(1 for n in parts.values() if n) == 3, parts
+
+
+def test_local_replay_charges_a_parallel_batch_once():
+    """Three parallel results land as one turn carrying one picture, so the batch is
+    charged one, not three: eight such rounds still replay eight pictures."""
+    history = _rounds(8, 2, parallel = 3)
+    out, payloads = mcp_images.promote_history_local(history, vision = True)
+    assert len(payloads) == 8
+    assert sum(_one_marker_per_turn(out)) == 8
+
+
+def _client_tool_route(monkeypatch, messages, *, tools):
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+    from core.inference.api_monitor import ApiMonitor
+    from models.inference import ChatCompletionRequest, ChatMessage
+    from state.tool_policy import reset_tool_policy
+
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+        scope: dict = {}
+        headers = {"X-Unsloth-Events": "1"}
+
+        async def is_disconnected(self):
+            return False
+
+    class Backend:
+        active_model_name = "vlm"
+
+        def __init__(self):
+            self.models = {
+                "vlm": {
+                    "chat_template_info": {
+                        "template": "<tool_call> chatml",
+                        "renders_image": True,
+                    },
+                    "context_length": 4096,
+                    "is_vision": True,
+                }
+            }
+            self.calls: list = []
+
+        def generate_chat_response(
+            self,
+            *,
+            messages,
+            tools = None,
+            stats_holder = None,
+            **kwargs,
+        ):
+            self.calls.append({"messages": messages, "tools": tools, **kwargs})
+            yield "ok"
+
+        def reset_generation_state(self, caller_cancel_event = None):
+            return None
+
+        def resize_image(self, image):
+            return image
+
+    backend = Backend()
+    reset_tool_policy()
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 8))
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = False, supports_tools = False, is_vision = False, context_length = None
+        ),
+    )
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(
+        inf, "_detect_safetensors_features", lambda *a, **k: {"supports_tools": True}
+    )
+    payload = ChatCompletionRequest(
+        model = "default",
+        stream = False,
+        tools = tools,
+        messages = [ChatMessage(**message) for message in messages],
+    )
+
+    async def run():
+        return await inf.openai_chat_completions(payload, request = Request(), current_subject = "u")
+
+    asyncio.run(run())
+    assert len(backend.calls) == 1, backend.calls
+    return backend.calls[0]
+
+
+_LOOKUP = {
+    "type": "function",
+    "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}},
+}
+
+
+def _shot_round(r: int, *images: dict) -> list[dict]:
+    return [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": f"call_{r}",
+                    "type": "function",
+                    "function": {"name": "mcp__fs__read_media_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": f"call_{r}", "content": _envelope("[1]", *images)},
+    ]
+
+
+def _no_adjacent_user_turns(messages: list) -> None:
+    roles = [message["role"] for message in messages]
+    assert all(a != "user" or b != "user" for a, b in zip(roles, roles[1:])), roles
+
+
+def test_the_client_tool_rebuild_keeps_one_picture_per_turn(monkeypatch):
+    """Two historical image results and a comparison question, with client tools:
+    the rebuilt history carries one marker per result at its own position, never two
+    on the final user message -- the shape the route refuses on a non-GGUF target."""
+    call = _client_tool_route(
+        monkeypatch,
+        [
+            {"role": "user", "content": "read a.png"},
+            *_shot_round(0, _image()),
+            {"role": "assistant", "content": "a is blue"},
+            {"role": "user", "content": "now b.png"},
+            *_shot_round(1, _image()),
+            {"role": "assistant", "content": "b is red"},
+            {"role": "user", "content": "compare them"},
+        ],
+        tools = [_LOOKUP],
+    )
+    assert len(call["images"]) == 2
+    assert sum(_one_marker_per_turn(call["messages"])) == 2, call["messages"]
+    _no_adjacent_user_turns(call["messages"])
+    assert isinstance(call["messages"][-1]["content"], str), "the question carries no marker"
+    assert call.get("image") is None
+
+
+def test_the_client_tool_rebuild_leaves_the_attachment_to_the_backend(monkeypatch):
+    """One replayed PNG and a new attachment on the question: no synthetic turn is
+    inserted beside the question (two user turns in a row), the replay keeps its
+    own marker, and the attachment's marker is the backend's to place by ordinal
+    from a snapshot that holds only the replay's."""
+    attachment = f"data:image/png;base64,{_png()}"
+    question = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "and this one?"},
+            {"type": "image_url", "image_url": {"url": attachment}},
+        ],
+    }
+    for history in (
+        [
+            {"role": "user", "content": "read a.png"},
+            *_shot_round(0, _image()),
+            {"role": "assistant", "content": "a is blue"},
+            question,
+        ],
+        [{"role": "user", "content": "read a.png"}, *_shot_round(0, _image()), question],
+    ):
+        call = _client_tool_route(monkeypatch, history, tools = [_LOOKUP])
+        assert len(call["images"]) == 1
+        assert call.get("image") is not None
+        assert call.get("image_ordinal") == 1
+        _no_adjacent_user_turns(call["messages"])
+        assert sum(_one_marker_per_turn(call["messages"])) == 1, call["messages"]
