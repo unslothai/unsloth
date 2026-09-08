@@ -1487,7 +1487,7 @@ class TestAStaleLoadIsDroppedAtTheSerialScope:
         # And the refusal has to stop the load rather than just log it.
         src = inspect.getsource(LlamaCppBackend.load_model)
         stale = src.index("_spawn_is_stale(_load_generation)")
-        assert "return False" in src[stale:stale + 300], "the stale-load branch does not return"
+        assert "return False" in src[stale : stale + 300], "the stale-load branch does not return"
 
 
 class TestAStaleLoadCannotPublishHealth:
