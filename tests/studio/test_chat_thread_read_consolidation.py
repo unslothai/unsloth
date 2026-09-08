@@ -37,7 +37,12 @@ def test_chat_run_reuses_one_thread_metadata_read() -> None:
     for call in (
         "resolveProjectId(resolvedThreadId,readThreadRecord",
         "resolveSandboxSessionId(resolvedThreadId,readThreadRecord",
-        "resolveChatInstructions(resolvedThreadId,params.systemPrompt,params.systemVariables,readThreadRecord",
         "resolveUseAdapter(resolvedThreadId,options,readThreadRecord",
     ):
         assert call in run
+
+    # Project instructions are now resolved by the backend's context snapshot.
+    # The client resolves only the user's prompt, without another metadata read
+    # or a second copy of the project instructions.
+    assert "resolveChatInstructions(" not in run
+    assert "resolveUserSystemPrompt(params.systemPrompt,params.systemVariables" in run

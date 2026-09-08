@@ -3,6 +3,8 @@
 
 """Crash-safe lifecycle for worktrees owned by Unsloth Studio."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import os

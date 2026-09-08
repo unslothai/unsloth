@@ -3,6 +3,8 @@
 
 """Durable SQLite state for project-agent features."""
 
+from __future__ import annotations
+
 from contextlib import contextmanager
 import json
 from pathlib import Path

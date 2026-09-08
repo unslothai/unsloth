@@ -3,6 +3,8 @@
 
 """Layered, scope-aware AGENTS.md loading for project runs."""
 
+from __future__ import annotations
+
 import errno
 import html
 import os

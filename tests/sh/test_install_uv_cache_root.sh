@@ -16,10 +16,14 @@ bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 HELPERS=$(awk '
     /^_configure_uv_cache\(\) \{/ { grab = 1 }
     /^_prepare_studio_uv_cache_for_launch\(\) \{/ { grab = 1 }
+    /^_record_uv_cache_choice\(\) \{/ { grab = 1 }
+    /^_absolutize_uv_cache_dir\(\) \{/ { grab = 1 }
+    /^_restore_uv_cache_marker\(\) \{/ { grab = 1 }
     grab { print }
     grab && /^}/ { grab = 0 }
 ' "$INSTALL_SH")
-for _helper in _configure_uv_cache _prepare_studio_uv_cache_for_launch; do
+for _helper in _configure_uv_cache _prepare_studio_uv_cache_for_launch _record_uv_cache_choice \
+    _restore_uv_cache_marker _absolutize_uv_cache_dir; do
     if ! printf '%s\n' "$HELPERS" | grep -q "^${_helper}() {"; then
         echo "  FAIL: could not extract $_helper from install.sh"
         exit 1
@@ -244,6 +248,215 @@ for shell in sh bash; do
             "reusing existing shared cache ($DEEP_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
             "$STUDIO_CACHE"
         chmod 755 "$DEEP_CACHE/archive-v0/aaa hidden" 2>/dev/null || true
+    fi
+
+    # The marker `unsloth studio update` reads: content cannot tell a Studio cache the
+    # installer filled from one a runtime install dropped a single wheel into.
+    MARKER="$ROOT/cache/uv-cache-dir"
+    check_marker() { # label, expected
+        if [ "$(cat "$MARKER" 2>/dev/null)" = "$2" ]; then
+            ok "$shell: $1"
+        else
+            bad "$shell: $1 (expected [$2], got [$(cat "$MARKER" 2>/dev/null)])"
+        fi
+    }
+
+    rm -f "$MARKER"
+    EMPTY_CACHE="$CASE/unrecorded/uv"
+    run_case "$shell" "studio mode still selects the Studio cache" unset "" false \
+        "$HOME_DIR" unset "" "$ROOT" "$EMPTY_CACHE" "$STUDIO_CACHE" studio \
+        "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+    check_marker "studio mode records the Studio cache" "$STUDIO_CACHE"
+
+    rm -f "$MARKER"
+    run_case "$shell" "shared mode still selects the shared cache" unset "" false \
+        "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$BUILDS_CACHE" shared \
+        "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+        "$STUDIO_CACHE"
+    check_marker "shared mode records the shared cache, not the Studio one" "$BUILDS_CACHE"
+
+    rm -f "$MARKER"
+    run_case "$shell" "isolation still forces the Studio cache" unset "" true \
+        "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$STUDIO_CACHE" isolated \
+        "forced Studio cache isolation ($STUDIO_CACHE); already-cached packages may download again" \
+        "$STUDIO_CACHE"
+    check_marker "isolated mode records the Studio cache" "$STUDIO_CACHE"
+
+    # A custom cache holds this install's wheels too, so it is recorded; the caller still
+    # wins on any run that sets the variable.
+    printf '%s\n' "$STUDIO_CACHE" > "$MARKER"
+    run_case "$shell" "custom mode is still preserved" value "$OVERRIDE" false \
+        "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$OVERRIDE" custom \
+        "preserving custom UV_CACHE_DIR ($OVERRIDE)" "$OVERRIDE"
+    check_marker "custom mode replaces an earlier install's marker" "$OVERRIDE"
+
+    # A symlinked marker is replaced, not followed: a redirection truncates its target.
+    rm -rf "$ROOT/cache"; mkdir -p "$ROOT/cache"
+    VICTIM="$CASE/someone elses file"
+    printf 'do not clobber\n' > "$VICTIM"
+    ln -s "$VICTIM" "$ROOT/cache/uv-cache-dir" 2>/dev/null && {
+        run_case "$shell" "a symlinked marker is replaced, not followed" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$EMPTY_CACHE" "$STUDIO_CACHE" studio \
+            "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+        if [ "$(cat "$VICTIM")" = "do not clobber" ] && [ ! -L "$ROOT/cache/uv-cache-dir" ]; then
+            ok "$shell: the symlink target was left alone"
+        else
+            bad "$shell: writing the marker followed a symlink"
+        fi
+    }
+
+    # One we cannot read is one we cannot put back, so leave it alone.
+    rm -rf "$ROOT/cache"; mkdir -p "$ROOT/cache"
+    printf '%s\n' "/previous/install/cache" > "$MARKER"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 200 "$MARKER" 2>/dev/null; then
+        run_case "$shell" "an unreadable marker does not fail the install" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$EMPTY_CACHE" "$STUDIO_CACHE" studio \
+            "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+        chmod 600 "$MARKER" 2>/dev/null || true
+        if [ "$(cat "$MARKER")" = "/previous/install/cache" ]; then
+            ok "$shell: an unreadable marker is left as it was"
+        else
+            bad "$shell: an unreadable marker was overwritten ([$(cat "$MARKER")])"
+        fi
+    fi
+
+    # uv resolves a relative cache against its own working directory, which --directory
+    # and UV_WORKING_DIR move.
+    rm -rf "$ROOT/cache"
+    WORKDIR_PROBE="$WORK/$shell workdir.sh"
+    {
+        printf '%s\n' "$HELPERS"
+        cat <<WORKDIR
+step() { :; }
+STUDIO_HOME='$ROOT'
+_UV_MARKER_SAVED=false
+cd '$CASE'
+UV_WORKING_DIR='$CASE/uvdir'; export UV_WORKING_DIR
+UV_CACHE_DIR='relcache'
+_record_uv_cache_choice
+cat '$MARKER'
+WORKDIR
+    } > "$WORKDIR_PROBE"
+    _wd=$($shell "$WORKDIR_PROBE")
+    if [ "$_wd" = "$CASE/uvdir/relcache" ]; then
+        ok "$shell: a relative cache is recorded against uv's working directory"
+    else
+        bad "$shell: recorded [$_wd], wanted [$CASE/uvdir/relcache]"
+    fi
+
+    # Which may itself be relative, against the directory the installer ran from.
+    rm -rf "$ROOT/cache"
+    REL_PROBE="$WORK/$shell relworkdir.sh"
+    {
+        printf '%s\n' "$HELPERS"
+        cat <<RELWD
+step() { :; }
+STUDIO_HOME='$ROOT'
+_UV_MARKER_SAVED=false
+cd '$CASE'
+UV_WORKING_DIR='uvdir'; export UV_WORKING_DIR
+UV_CACHE_DIR='relcache'
+_record_uv_cache_choice
+cat '$MARKER'
+RELWD
+    } > "$REL_PROBE"
+    _rw=$($shell "$REL_PROBE")
+    if [ "$_rw" = "$CASE/uvdir/relcache" ]; then
+        ok "$shell: a relative UV_WORKING_DIR is anchored before the cache is appended"
+    else
+        bad "$shell: recorded [$_rw], wanted [$CASE/uvdir/relcache]"
+    fi
+
+
+    # The marker describes the environment, so a rolled-back install puts it back.
+    ROLLBACK_PROBE="$WORK/$shell rollback.sh"
+    {
+        printf '%s\n' "$HELPERS"
+        cat <<ROLLBACK
+step() { :; }
+STUDIO_HOME='$ROOT'
+_UV_MARKER_SAVED=false
+_UV_MARKER_EXISTED=false
+_UV_MARKER_PREVIOUS=""
+UV_CACHE_DIR='$BUILDS_CACHE'
+_record_uv_cache_choice
+printf 'during=%s\n' "\$(cat '$MARKER')"
+_restore_uv_cache_marker
+if [ -f '$MARKER' ]; then printf 'after=%s\n' "\$(cat '$MARKER')"; else printf 'after=<gone>\n'; fi
+ROLLBACK
+    } > "$ROLLBACK_PROBE"
+
+    printf '%s\n' "$STUDIO_CACHE" > "$MARKER"
+    _rb=$($shell "$ROLLBACK_PROBE")
+    if [ "$_rb" = "$(printf 'during=%s\nafter=%s' "$BUILDS_CACHE" "$STUDIO_CACHE")" ]; then
+        ok "$shell: a rolled-back install restores the previous marker"
+    else
+        bad "$shell: rollback did not restore the marker (got [$_rb])"
+    fi
+
+    rm -f "$MARKER"
+    _rb=$($shell "$ROLLBACK_PROBE")
+    if [ "$_rb" = "$(printf 'during=%s\nafter=<gone>' "$BUILDS_CACHE")" ]; then
+        ok "$shell: a rolled-back first install leaves no marker behind"
+    else
+        bad "$shell: rollback left a marker on a first install (got [$_rb])"
+    fi
+
+    # Absolute, because the update resolves the marker against its own directory.
+    RELATIVE_PROBE="$WORK/$shell relative.sh"
+    {
+        printf '%s\n' "$HELPERS"
+        cat <<RELATIVE
+step() { :; }
+STUDIO_HOME='$ROOT'
+_UV_MARKER_SAVED=false
+cd '$CASE'
+UV_CACHE_DIR='relcache'
+_record_uv_cache_choice
+cat '$MARKER'
+RELATIVE
+    } > "$RELATIVE_PROBE"
+    rm -f "$MARKER"
+    _rel=$($shell "$RELATIVE_PROBE")
+    if [ "$_rel" = "$CASE/relcache" ]; then
+        ok "$shell: a relative cache is recorded absolute"
+    else
+        bad "$shell: relative cache recorded as [$_rel], wanted [$CASE/relcache]"
+    fi
+
+    # And the exported variable is absolute too, not only the marker: setup.sh changes
+    # into its own directory before the dependency pass, so a relative value would put
+    # that phase's artifacts somewhere neither the install phase nor the marker names.
+    EXPORT_PROBE="$WORK/$shell custom export.sh"
+    {
+        printf '%s\n' "$HELPERS"
+        cat <<EXPORTED
+step() { :; }
+substep() { :; }
+STUDIO_HOME='$ROOT'
+_UV_MARKER_SAVED=false
+cd '$CASE'
+UV_CACHE_DIR='relcache'
+_configure_uv_cache
+printf '%s\n' "\$UV_CACHE_DIR"
+EXPORTED
+    } > "$EXPORT_PROBE"
+    rm -f "$MARKER"
+    _exp=$($shell "$EXPORT_PROBE")
+    if [ "$_exp" = "$CASE/relcache" ]; then
+        ok "$shell: a relative custom cache is exported absolute"
+    else
+        bad "$shell: custom cache exported as [$_exp], wanted [$CASE/relcache]"
+    fi
+
+    # An unwritable STUDIO_HOME is a reason to skip the marker, never to fail the install.
+    rm -rf "$ROOT/cache"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && mkdir -p "$ROOT" && chmod 500 "$ROOT" 2>/dev/null; then
+        run_case "$shell" "an unwritable Studio root still installs" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$BUILDS_CACHE" shared \
+            "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+            "$STUDIO_CACHE"
+        chmod 755 "$ROOT" 2>/dev/null || true
     fi
 done
 

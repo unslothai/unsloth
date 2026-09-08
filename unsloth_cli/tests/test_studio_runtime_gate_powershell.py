@@ -88,7 +88,12 @@ def test_the_setup_handoff_spawns_the_resolved_interpreter(monkeypatch, tmp_path
 
     studio._run_setup_script(repo_root = repo_root)
 
-    assert spawned and spawned[0][0] == _RESOLVED, spawned
+    # The handoff, not merely the first spawn: _run_setup_script asks uv where its cache
+    # is before it hands over, and subprocess.run is built on Popen, so that probe lands
+    # here too. What this test is about is which interpreter the handoff itself uses.
+    handoffs = [argv for argv in spawned if argv and argv[-1].endswith("*>&1")]
+    assert len(handoffs) == 1, spawned
+    assert handoffs[0][0] == _RESOLVED, spawned
 
 
 def test_the_profile_probe_falls_back_to_the_resolved_interpreter(monkeypatch, tmp_path):

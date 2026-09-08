@@ -3047,7 +3047,7 @@ def test_deleting_a_project_takes_its_chats_sandboxes(tmp_path, monkeypatch):
     source = inspect.getsource(chat_history.delete_project)
     assert "_remove_sandboxes(member_ids" in source
     assert "_cancel_active_generations(member_ids)" in source
-    assert source.index("delete_chat_project(") < source.index(
+    assert source.index("_delete_project_row_with_snapshot_fence,") < source.index(
         "_cancel_active_generations(member_ids)"
     )
 
@@ -3444,7 +3444,10 @@ def test_a_project_delete_uses_the_membership_it_really_deleted():
     assert route.index("_cancel_active_generations(member_ids)") < route.index("_remove_sandboxes(")
     # And what survived is reported, or the folders are reachable from nothing.
     assert "sandboxes_kept = await _remove_sandboxes(member_ids" in route
-    assert "ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)" in route
+    assert "_public_deleted_project(project, sandboxes_kept)" in route
+    public_result = inspect.getsource(chat_history._public_deleted_project)
+    assert "sandboxes_kept = sandboxes_kept" in public_result
+    assert "ChatProject.model_fields" in public_result
 
 
 def test_closing_an_incognito_chat_cleans_up_its_sandbox():
@@ -3964,7 +3967,9 @@ def test_a_chat_moved_out_of_a_project_survives_its_deletion():
     route = inspect.getsource(chat_history.delete_project)
     assert "list_chat_threads(project_id" not in route
     assert 'member_ids = list(project.get("memberIds") or [])' in route
-    assert route.index("delete_chat_project(") < route.index("member_ids = list(")
+    assert route.index("_delete_project_row_with_snapshot_fence,") < route.index(
+        "member_ids = list("
+    )
 
 
 def test_the_client_reads_the_file_line_only_from_the_sandbox_tools():
@@ -4069,7 +4074,10 @@ def test_a_project_workspace_goes_after_its_tools_are_stopped():
     from routes import chat_history
 
     route = inspect.getsource(chat_history.delete_project)
-    assert "delete_chat_project(project_id, delete_files = False)" in route
+    row_delete = inspect.getsource(chat_history._delete_project_row_with_snapshot_fence)
+    assert "delete_chat_project(project_id, delete_files = False)" in row_delete
+    assert "fence_project_context_snapshots_for_deletion(project_id)" in row_delete
+    assert "_delete_project_row_with_snapshot_fence," in route
     assert route.index("_cancel_active_generations(member_ids)") < route.index(
         "delete_project_workspace"
     )
@@ -4368,9 +4376,13 @@ def test_a_workspace_is_kept_when_the_wait_ran_out():
 
     route = inspect.getsource(chat_history.delete_project)
     assert "run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])" in route
-    assert "if delete_files and idle and not referenced and not recreated:" in route
+    assert (
+        'delete_workspace_files = delete_files and project.get("workspaceKind", "managed") == "managed"'
+        in route
+    )
+    assert "if delete_workspace_files and idle and not referenced and not recreated:" in route
     assert route.index(
-        "if delete_files and idle and not referenced and not recreated:"
+        "if delete_workspace_files and idle and not referenced and not recreated:"
     ) < route.index("run_in_threadpool(delete_project_workspace, project)")
     # And a wait that ran out queues the finish rather than dropping it.
     assert "finish_workspace_delete_when_idle(project_id)" in route
@@ -4505,8 +4517,8 @@ def test_a_kept_workspace_is_recorded_even_when_nothing_was_deleted():
 
     route = inspect.getsource(chat_history.delete_project)
     assert 'if project.get("sandboxPath"):' in route
-    assert "if not delete_files:" in route
-    body = route[route.index("if not delete_files:") :]
+    assert "if not delete_workspace_files:" in route
+    body = route[route.index("if not delete_workspace_files:") :]
     assert "record_orphaned_project," in body[:400]
     assert "False," in body[:400], "a keep must not be recorded as pending deletion"
 
@@ -4791,6 +4803,8 @@ def _deleted_project(tmp_path, monkeypatch, project_id, workspace):
         "updatedAt": 1,
         "sandboxPath": str(workspace / "sandbox"),
         "rootPath": str(workspace),
+        "managedRootDeviceId": str(workspace.stat().st_dev),
+        "managedRootFileId": str(workspace.stat().st_ino),
         "memberIds": [],
         "activeResearchRunIds": [],
     }
@@ -5986,7 +6000,9 @@ def test_a_project_created_during_the_record_write_keeps_its_files(tmp_path, mon
     (workspace / "sandbox").mkdir(parents = True)
     (workspace / "sandbox" / "fresh.csv").write_text("a,b\n", encoding = "utf-8")
 
-    answers = [None, {"id": project_id}]
+    # The lifecycle wrapper reads the original row before the route checks for
+    # recreation on each side of the orphan-record write.
+    answers = [None, None, {"id": project_id}]
     monkeypatch.setattr(
         chat_history,
         "get_chat_project",

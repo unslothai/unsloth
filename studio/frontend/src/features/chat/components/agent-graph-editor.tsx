@@ -124,7 +124,7 @@ function flowNodes(
         borderRadius: 12,
         background: "var(--card)",
         color: "var(--foreground)",
-        fontSize: 12,
+        fontSize: "calc(12px * var(--ui-font-scale, 1))",
         width: 165,
         boxShadow: status === "running" ? `0 0 0 3px ${color}33` : undefined,
       },
@@ -606,7 +606,7 @@ export function AgentGraphEditor({
   return (
     <div className="grid gap-3 xl:grid-cols-[150px_minmax(0,1fr)_280px]">
       <aside className="rounded-xl border border-border/60 bg-background/45 p-2">
-        <p className="px-1 text-[11px] font-medium">Node palette</p>
+        <p className="px-1 text-ui-11 font-medium">Node palette</p>
         <div className="mt-2 grid gap-1.5">
           {NODE_TYPES.map((type) => (
             <Button
@@ -626,7 +626,7 @@ export function AgentGraphEditor({
             </Button>
           ))}
         </div>
-        <p className="mt-3 px-1 text-[10px] leading-relaxed text-muted-foreground">
+        <p className="mt-3 px-1 text-ui-10 leading-relaxed text-muted-foreground">
           Connect handles on the canvas. Sequential graphs reject joins, cycles,
           and unreachable nodes.
         </p>
@@ -678,7 +678,7 @@ export function AgentGraphEditor({
 
       <aside className="space-y-2 rounded-xl border border-border/60 bg-background/45 p-3">
         <div>
-          <label className="text-[11px] font-medium" htmlFor="sloth-graph-name">
+          <label className="text-ui-11 font-medium" htmlFor="sloth-graph-name">
             Graph name
           </label>
           <input
@@ -693,7 +693,7 @@ export function AgentGraphEditor({
         </div>
         <div>
           <label
-            className="text-[11px] font-medium"
+            className="text-ui-11 font-medium"
             htmlFor="sloth-graph-description"
           >
             Description
@@ -709,7 +709,7 @@ export function AgentGraphEditor({
           />
         </div>
         <div className="border-t border-border/60 pt-2">
-          <p className="text-[11px] font-medium">Graph budgets</p>
+          <p className="text-ui-11 font-medium">Graph budgets</p>
           <div className="mt-1 grid grid-cols-2 gap-2">
             {(
               [
@@ -720,7 +720,7 @@ export function AgentGraphEditor({
                 ["maxOutputBytes", "Output bytes"],
               ] as const
             ).map(([name, label]) => (
-              <label className="text-[10px] text-muted-foreground" key={name}>
+              <label className="text-ui-10 text-muted-foreground" key={name}>
                 {label}
                 <input
                   type="number"
@@ -734,7 +734,7 @@ export function AgentGraphEditor({
             ))}
           </div>
           <label
-            className="mt-2 block text-[10px] text-muted-foreground"
+            className="mt-2 block text-ui-10 text-muted-foreground"
             htmlFor="sloth-tool-servers"
           >
             Allowed tool server IDs
@@ -758,11 +758,11 @@ export function AgentGraphEditor({
             className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
           />
           <details className="mt-2">
-            <summary className="cursor-pointer text-[11px] font-medium">
+            <summary className="cursor-pointer text-ui-11 font-medium">
               Input and output schemas
             </summary>
             <label
-              className="mt-2 block text-[10px] text-muted-foreground"
+              className="mt-2 block text-ui-10 text-muted-foreground"
               htmlFor="sloth-input-schema"
             >
               Input schema
@@ -780,11 +780,11 @@ export function AgentGraphEditor({
                 }))
               }
               disabled={disabled}
-              className="mt-1 min-h-24 font-mono text-[10px]"
+              className="mt-1 min-h-24 font-mono text-ui-10"
               spellCheck={false}
             />
             <label
-              className="mt-2 block text-[10px] text-muted-foreground"
+              className="mt-2 block text-ui-10 text-muted-foreground"
               htmlFor="sloth-output-schema"
             >
               Output schema
@@ -802,11 +802,11 @@ export function AgentGraphEditor({
                 }))
               }
               disabled={disabled}
-              className="mt-1 min-h-24 font-mono text-[10px]"
+              className="mt-1 min-h-24 font-mono text-ui-10"
               spellCheck={false}
             />
             {schemaError ? (
-              <AgentGraphAlert className="mt-1 text-[10px] text-destructive">
+              <AgentGraphAlert className="mt-1 text-ui-10 text-destructive">
                 {schemaError}
               </AgentGraphAlert>
             ) : null}
@@ -844,7 +844,7 @@ export function AgentGraphEditor({
               </Button>
             </div>
             <label
-              className="mt-2 block text-[11px] font-medium"
+              className="mt-2 block text-ui-11 font-medium"
               htmlFor="sloth-node-label"
             >
               Label
@@ -862,7 +862,7 @@ export function AgentGraphEditor({
               className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
             />
             <div className="mt-2 grid grid-cols-2 gap-2">
-              <label className="text-[10px] text-muted-foreground">
+              <label className="text-ui-10 text-muted-foreground">
                 Attempts
                 <input
                   type="number"
@@ -886,7 +886,7 @@ export function AgentGraphEditor({
                   className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
                 />
               </label>
-              <label className="text-[10px] text-muted-foreground">
+              <label className="text-ui-10 text-muted-foreground">
                 Backoff ms
                 <input
                   type="number"
@@ -912,7 +912,7 @@ export function AgentGraphEditor({
               </label>
             </div>
             <label
-              className="mt-2 block text-[11px] font-medium"
+              className="mt-2 block text-ui-11 font-medium"
               htmlFor="sloth-node-config"
             >
               Node config and mappings
@@ -927,11 +927,11 @@ export function AgentGraphEditor({
                 }))
               }
               disabled={disabled}
-              className="mt-1 min-h-40 font-mono text-[10px]"
+              className="mt-1 min-h-40 font-mono text-ui-10"
               spellCheck={false}
             />
             {configError ? (
-              <AgentGraphAlert className="mt-1 text-[10px] text-destructive">
+              <AgentGraphAlert className="mt-1 text-ui-10 text-destructive">
                 {configError}
               </AgentGraphAlert>
             ) : null}
@@ -947,16 +947,16 @@ export function AgentGraphEditor({
             </Button>
           </div>
         ) : (
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-ui-11 text-muted-foreground">
             Select a node to configure it.
           </p>
         )}
       </aside>
 
       <div className="xl:col-start-2 xl:col-span-2 rounded-xl border border-border/60 bg-background/45 p-3">
-        <p className="text-[11px] font-medium">Edge mappings</p>
+        <p className="text-ui-11 font-medium">Edge mappings</p>
         <div className="mt-2 grid gap-2 rounded-lg bg-muted/25 p-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto]">
-          <label className="text-[10px] text-muted-foreground">
+          <label className="text-ui-10 text-muted-foreground">
             Source node
             <select
               aria-label="New edge source node"
@@ -975,7 +975,7 @@ export function AgentGraphEditor({
               ))}
             </select>
           </label>
-          <label className="text-[10px] text-muted-foreground">
+          <label className="text-ui-10 text-muted-foreground">
             Target node
             <select
               aria-label="New edge target node"
@@ -994,7 +994,7 @@ export function AgentGraphEditor({
               ))}
             </select>
           </label>
-          <label className="text-[10px] text-muted-foreground">
+          <label className="text-ui-10 text-muted-foreground">
             Branch
             <select
               aria-label="New edge branch"
@@ -1034,7 +1034,7 @@ export function AgentGraphEditor({
           </Button>
         </div>
         {edgeError ? (
-          <AgentGraphAlert className="mt-2 text-[10px] text-destructive">
+          <AgentGraphAlert className="mt-2 text-ui-10 text-destructive">
             {edgeError}
           </AgentGraphAlert>
         ) : null}
@@ -1044,7 +1044,7 @@ export function AgentGraphEditor({
             return (
               <div
                 key={`${graphEdgeId(edge)}:${index}`}
-                className="flex items-center gap-2 text-[11px]"
+                className="flex items-center gap-2 text-ui-11"
               >
                 <select
                   aria-label={`Source for edge ${index + 1}`}
@@ -1053,7 +1053,7 @@ export function AgentGraphEditor({
                     updateEdgeEndpoint(index, "from", event.target.value)
                   }
                   disabled={disabled}
-                  className="h-7 min-w-0 rounded-md border border-input bg-background px-2 text-[11px]"
+                  className="h-7 min-w-0 rounded-md border border-input bg-background px-2 text-ui-11"
                 >
                   {sourceNodes.map((node) => (
                     <option value={node.id} key={node.id}>
@@ -1069,7 +1069,7 @@ export function AgentGraphEditor({
                     updateEdgeEndpoint(index, "to", event.target.value)
                   }
                   disabled={disabled}
-                  className="h-7 min-w-0 rounded-md border border-input bg-background px-2 text-[11px]"
+                  className="h-7 min-w-0 rounded-md border border-input bg-background px-2 text-ui-11"
                 >
                   {targetNodes.map((node) => (
                     <option value={node.id} key={node.id}>
@@ -1088,7 +1088,7 @@ export function AgentGraphEditor({
                       )
                     }
                     disabled={disabled}
-                    className="h-7 rounded-md border border-input bg-background px-2 text-[11px]"
+                    className="h-7 rounded-md border border-input bg-background px-2 text-ui-11"
                   >
                     <option value="default">default</option>
                     <option value="true">true</option>
@@ -1117,12 +1117,12 @@ export function AgentGraphEditor({
             );
           })}
           {document.edges.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-ui-11 text-muted-foreground">
               Connect nodes on the canvas.
             </p>
           ) : null}
         </div>
-        <p className="mt-2 text-[10px] text-muted-foreground">
+        <p className="mt-2 text-ui-10 text-muted-foreground">
           Templates can read input, previous, and nodes.&lt;node-id&gt; paths,
           for example {"{input.task}"}.
         </p>

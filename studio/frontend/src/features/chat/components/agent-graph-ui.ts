@@ -33,7 +33,7 @@ export function AgentGraphDraftStatus({
     {
       "aria-live": "polite",
       "data-agent-graph-draft-status": status,
-      className: "text-[10px] text-muted-foreground",
+      className: "text-ui-10 text-muted-foreground",
     },
     text,
   );

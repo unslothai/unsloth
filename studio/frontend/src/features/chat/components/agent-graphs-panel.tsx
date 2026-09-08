@@ -979,7 +979,7 @@ export function AgentGraphsPanel({ projectId }: { projectId: string }) {
           <p className="mt-0.5 text-xs text-muted-foreground">
             Versioned project workflows built from the existing Loop runtime.
           </p>
-          <p className="mt-1 text-[11px] text-muted-foreground">
+          <p className="mt-1 text-ui-11 text-muted-foreground">
             Loop and model nodes need a durable runtime selection with a model
             before they can run.
           </p>
@@ -1019,7 +1019,7 @@ export function AgentGraphsPanel({ projectId }: { projectId: string }) {
               className={`w-full rounded-xl px-3 py-2 text-left text-xs ${selectedGraph?.id === graph.id ? "bg-muted" : "bg-muted/35"}`}
             >
               <span className="block truncate font-medium">{graph.name}</span>
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-ui-11 text-muted-foreground">
                 Revision {graph.currentRevision}
               </span>
             </button>
@@ -1080,7 +1080,7 @@ export function AgentGraphsPanel({ projectId }: { projectId: string }) {
                     onClick={() => selectRun(run)}
                     disabled={Boolean(busy)}
                     aria-pressed={selectedRun?.id === run.id}
-                    className="flex w-full items-center gap-2 rounded-lg bg-muted/35 px-2.5 py-2 text-left text-[11px]"
+                    className="flex w-full items-center gap-2 rounded-lg bg-muted/35 px-2.5 py-2 text-left text-ui-11"
                   >
                     <Badge variant={statusVariant(run.status)}>
                       {run.status}
@@ -1094,7 +1094,7 @@ export function AgentGraphsPanel({ projectId }: { projectId: string }) {
                   </button>
                 ))}
                 {runs.length === 0 ? (
-                  <p className="text-[11px] text-muted-foreground">
+                  <p className="text-ui-11 text-muted-foreground">
                     No runs yet.
                   </p>
                 ) : null}
@@ -1165,19 +1165,19 @@ export function AgentGraphsPanel({ projectId }: { projectId: string }) {
             }
           />
           {selectedGraph ? (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-ui-11 text-muted-foreground">
               Saving creates revision {selectedGraph.currentRevision + 1}.
               Existing runs keep their pinned revision.
             </p>
           ) : (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-ui-11 text-muted-foreground">
               The first save creates revision 1. The backend validates IDs,
               edges, cycles, reachability, node configs, permissions, and
               budgets.
             </p>
           )}
           <details className="rounded-xl border border-border/60 bg-background/45 p-3">
-            <summary className="cursor-pointer text-[11px] font-medium">
+            <summary className="cursor-pointer text-ui-11 font-medium">
               Advanced graph contract JSON
             </summary>
             <Textarea
@@ -1188,7 +1188,7 @@ export function AgentGraphsPanel({ projectId }: { projectId: string }) {
                 setValidation(null);
               }}
               aria-label="Graph revision JSON"
-              className="mt-2 min-h-[260px] font-mono text-[11px]"
+              className="mt-2 min-h-[260px] font-mono text-ui-11"
               spellCheck={false}
               disabled={Boolean(busy) || loadingGraph || !editorReady}
             />
@@ -1248,7 +1248,7 @@ export function AgentGraphsPanel({ projectId }: { projectId: string }) {
                 setInputDraftDirty(true);
               }}
               aria-label="Graph run input JSON"
-              className="mt-2 min-h-20 font-mono text-[11px]"
+              className="mt-2 min-h-20 font-mono text-ui-11"
               spellCheck={false}
               disabled={Boolean(busy) || loadingGraph}
             />
@@ -1326,12 +1326,12 @@ export function AgentGraphsPanel({ projectId }: { projectId: string }) {
                 ) : null}
               </div>
               {selectedRun.error ? (
-                <p className="mt-2 text-[11px] text-destructive">
+                <p className="mt-2 text-ui-11 text-destructive">
                   {selectedRun.error}
                 </p>
               ) : null}
               {activeApproval ? (
-                <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-[11px]">
+                <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-ui-11">
                   <p className="font-medium">{activeApproval.title}</p>
                   {activeApproval.description ? (
                     <p className="mt-1 text-muted-foreground">
@@ -1360,14 +1360,14 @@ export function AgentGraphsPanel({ projectId }: { projectId: string }) {
                 </div>
               ) : null}
               <details className="mt-2" open={true}>
-                <summary className="cursor-pointer text-[11px] font-medium">
+                <summary className="cursor-pointer text-ui-11 font-medium">
                   Node executions ({runNodes.length})
                 </summary>
                 <div className="mt-1 space-y-1">
                   {runNodes.map((node) => (
                     <div
                       key={String(node.id)}
-                      className="flex items-center gap-2 rounded bg-muted/35 px-2 py-1.5 text-[11px]"
+                      className="flex items-center gap-2 rounded bg-muted/35 px-2 py-1.5 text-ui-11"
                     >
                       <Badge variant={statusVariant(String(node.status))}>
                         {String(node.status)}
@@ -1378,15 +1378,15 @@ export function AgentGraphsPanel({ projectId }: { projectId: string }) {
                 </div>
               </details>
               <details className="mt-2">
-                <summary className="cursor-pointer text-[11px] font-medium">
+                <summary className="cursor-pointer text-ui-11 font-medium">
                   Event log ({runEvents.length})
                 </summary>
-                <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/35 p-2 font-mono text-[10px] text-muted-foreground">
+                <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/35 p-2 font-mono text-ui-10 text-muted-foreground">
                   {pretty(runEvents)}
                 </pre>
               </details>
               {selectedRun.output !== null ? (
-                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/35 p-2 font-mono text-[10px]">
+                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/35 p-2 font-mono text-ui-10">
                   {pretty(selectedRun.output)}
                 </pre>
               ) : null}

@@ -2794,6 +2794,7 @@ class FastLlamaModel:
             trust_remote_code = trust_remote_code,
             fix_tokenizer = fix_tokenizer,
             revision = tokenizer_revision,
+            config = getattr(model, "config", None),
             **_tokenizer_cache_kwargs,
         )
 

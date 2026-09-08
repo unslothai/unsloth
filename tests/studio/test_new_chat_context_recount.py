@@ -308,6 +308,12 @@ function findLatestUserAudioBase64(_messages: any): string | null {
   return null;
 }
 
+// These recount fixtures have no project-bound threads; use the thread's own
+// sandbox identity, as the real resolver does for standalone chats.
+async function resolveSandboxSessionId(threadId?: string | null): Promise<string | undefined> {
+  return threadId ?? undefined;
+}
+
 // refresh-context-usage.ts declines to price a prompt carrying video, the same way
 // it declines audio and images. The emulator replays that module's body with its
 // imports stripped, so every name it imports has to exist here or the bail throws
