@@ -272,6 +272,12 @@ def _mtp_backend(**overrides):
     return backend
 
 
+def _ngram_mod_backend(*args, _spec_draft_n_max = None, _speculative_type = "ngram-mod", **kwargs):
+    """_mtp_backend already sitting on ngram-mod with no draft cap."""
+    return _mtp_backend(*args, _spec_draft_n_max = _spec_draft_n_max, _speculative_type = _speculative_type, **kwargs)
+
+
+
 def _mtp_backend_default(*args, _speculative_type = "default", **kwargs):
     """_mtp_backend left on the default speculative type."""
     return _mtp_backend(*args, _speculative_type = _speculative_type, **kwargs)
@@ -1253,11 +1259,7 @@ def test_partial_offload_stand_down_follows_the_draft_depth(decided_at, requeste
 def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
     # ngram-mod backend; spec_draft_n_max is MTP-only and must not force
     # a reload against a non-MTP active spec.
-    backend = _mtp_backend(
-        _speculative_type = "ngram-mod",
-        _requested_spec_mode = "ngram",
-        _spec_draft_n_max = None,
-    )
+    backend = _ngram_mod_backend(_requested_spec_mode = "ngram")
     assert _draft_n_max_matches(backend, 8, speculative_type = "ngram-mod")
 
 
@@ -1294,11 +1296,7 @@ def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(m
     # 0.8B MTP request -- load_model would have promoted to ngram-mod (no MTP
     # head); reload check must match a ngram-mod backend.
     _patch_probe(monkeypatch, ngram_supported = True)
-    backend = _mtp_backend(
-        _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
-        _speculative_type = "ngram-mod",
-        _spec_draft_n_max = None,
-    )
+    backend = _ngram_mod_backend(_model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF")
     assert (
         _matches_mtp(backend, model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF")
         is True
@@ -1308,11 +1306,10 @@ def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(m
 def test_already_in_target_state_sub_3b_falls_back_to_off_when_no_ngram(monkeypatch):
     # 0.8B + binary lacks ngram-mod -> fall back to off.
     _patch_probe(monkeypatch, ngram_supported = False)
-    backend = _mtp_backend(
-        _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
-        _speculative_type = None,
-        _spec_draft_n_max = None,
-    )
+    backend = _ngram_mod_backend(
+                  _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
+                  _speculative_type = None,
+              )
     assert (
         _matches_mtp(backend, model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF")
         is True
@@ -1322,11 +1319,10 @@ def test_already_in_target_state_sub_3b_falls_back_to_off_when_no_ngram(monkeypa
 def test_already_in_target_state_4b_mtp_request_promotes_as_before(monkeypatch):
     # 4B is above the 3B threshold -> auto-promote still applies.
     _patch_probe(monkeypatch, ngram_supported = True)
-    backend = _mtp_backend(
-        _model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
-        _speculative_type = "draft-mtp",
-        _spec_draft_n_max = None,
-    )
+    backend = _ngram_mod_backend(
+                  _model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
+                  _speculative_type = "draft-mtp",
+              )
     assert (
         _matches_mtp(backend, model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF")
         is True
@@ -1337,11 +1333,7 @@ def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypa
     # 2.0B is below the 3B threshold -> ngram-mod fallback, not draft-mtp.
     # Clean-bench shows 2B regresses with draft-mtp.
     _patch_probe(monkeypatch, ngram_supported = True)
-    backend = _mtp_backend(
-        _model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
-        _speculative_type = "ngram-mod",
-        _spec_draft_n_max = None,
-    )
+    backend = _ngram_mod_backend(_model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF")
     assert (
         _matches_mtp(backend, model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF")
         is True
@@ -3136,26 +3128,25 @@ def _stub_caps(monkeypatch, **caps):
     )
 
 
+def _stub_found_caps(*args, found = True, mtp_probe_inconclusive = False, **kwargs):
+    """_stub_caps for a binary whose probe found a conclusive answer."""
+    return _stub_caps(*args, found = found, mtp_probe_inconclusive = mtp_probe_inconclusive, **kwargs)
+
+
+
 def test_apply_reloads_once_an_inconclusive_probe_starts_answering(monkeypatch):
     # The retry window is worth nothing if Apply dedupes against the fallback: nothing
     # re-probes, so MTP stays off for the life of the process, which is the symptom the
     # window exists to end (#8317).
-    _stub_caps(
-        monkeypatch,
-        found = True,
-        mtp_token = "draft-mtp",
-        supports_mtp = True,
-        mtp_probe_inconclusive = False,
-    )
+    _stub_found_caps(monkeypatch, mtp_token = "draft-mtp", supports_mtp = True)
     assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is False
 
 
 def test_apply_still_dedupes_while_the_probe_keeps_hanging(monkeypatch):
     # A binary that hangs for a permanent reason must not relaunch an identical server on
     # every Apply. Only a probe that has actually turned conclusive earns the reload.
-    _stub_caps(
+    _stub_found_caps(
         monkeypatch,
-        found = True,
         mtp_token = None,
         supports_mtp = False,
         mtp_probe_inconclusive = True,
@@ -3167,13 +3158,7 @@ def test_apply_reloads_once_even_when_the_build_turns_out_to_have_no_mtp(monkeyp
     # Conclusive-and-negative still earns exactly one reload: the degradation has to be
     # re-derived from a real answer rather than from a probe that never returned. That
     # reload records the conclusive probe, clearing the flag, so it does not loop.
-    _stub_caps(
-        monkeypatch,
-        found = True,
-        mtp_token = None,
-        supports_mtp = False,
-        mtp_probe_inconclusive = False,
-    )
+    _stub_found_caps(monkeypatch, mtp_token = None, supports_mtp = False)
     assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is False
     # Cleared flag (what the reload leaves behind) dedupes from then on.
     settled = _mtp_backend(_speculative_type = "default", _gguf_path = None)
@@ -3186,13 +3171,11 @@ def test_a_slot_clamp_from_an_inconclusive_probe_is_also_retried(monkeypatch):
     # 1 while _requested_n_parallel keeps the ASK. The two then compare equal and Apply
     # would never restore the slots once the probe recovers. No speculative decoding is
     # involved, so the spec-only version of this guard missed it entirely.
-    _stub_caps(
+    _stub_found_caps(
         monkeypatch,
-        found = True,
         mtp_token = "draft-mtp",
         supports_mtp = True,
         supports_kv_unified = True,
-        mtp_probe_inconclusive = False,
     )
     clamped = _mtp_backend_default(
                   _capability_probe_inconclusive = True,
@@ -3250,13 +3233,7 @@ def test_a_diffusion_runtime_is_never_reloaded_by_the_capability_recovery(monkey
     # A diffusion runner consumes no llama-server capability, so it cannot be degraded by
     # one. A marker left over from an earlier llama-server load must not make every
     # otherwise identical diffusion Apply tear it down and start it again.
-    _stub_caps(
-        monkeypatch,
-        found = True,
-        mtp_token = "draft-mtp",
-        supports_mtp = True,
-        mtp_probe_inconclusive = False,
-    )
+    _stub_found_caps(monkeypatch, mtp_token = "draft-mtp", supports_mtp = True)
     diffusion = _mtp_backend_default(
                     _capability_probe_inconclusive = True,
                     _is_diffusion = True,

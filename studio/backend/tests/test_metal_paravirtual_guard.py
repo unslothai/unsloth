@@ -381,12 +381,11 @@ def test_the_drafter_pin_falls_back_before_it_gives_up(caps, expected):
 
 def test_a_failed_probe_does_not_cost_the_user_their_drafter():
     """The drop half of the same decision: an unanswered probe must not drop."""
-    drafter, _extras, _warnings = _drafter_gate(
-        paravirtual = True,
-        caps = {"spec_draft_ngl_flag": None, "mtp_probe_inconclusive": True},
-        drafter = "/m/mtp-model.gguf",
-        extra_args = None,
-    )
+    drafter, _extras, _warnings = _paravirtual_gate(
+                                      caps = {"spec_draft_ngl_flag": None, "mtp_probe_inconclusive": True},
+                                      drafter = "/m/mtp-model.gguf",
+                                      extra_args = None,
+                                  )
     assert drafter == "/m/mtp-model.gguf"
 
 
@@ -714,6 +713,12 @@ def _drafter_gate(
     return scope["launch_mtp_draft_path"], scope["extra_args"], log.warnings
 
 
+def _paravirtual_gate(*args, caps = {}, drafter = None, paravirtual = True, **kwargs):
+    """_drafter_gate on a paravirtual host with no drafter and no probed caps."""
+    return _drafter_gate(*args, caps = caps, drafter = drafter, paravirtual = paravirtual, **kwargs)
+
+
+
 @pytest.fixture(autouse = True)
 def _no_inherited_draft_env(monkeypatch):
     """The drafter parsers fall back to os.environ, so a stray var on the host must not
@@ -744,17 +749,13 @@ def test_a_drafter_that_cannot_be_pinned_is_dropped(monkeypatch):
     # the caller's own speculative tuning for nothing.
     monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/models/env.gguf")
     tuning = ["--spec-draft-n-max", "6"]
-    drafter, extras, warnings = _drafter_gate(
-        paravirtual = True, caps = {}, drafter = None, extra_args = tuning
-    )
+    drafter, extras, warnings = _paravirtual_gate(extra_args = tuning)
     assert warnings == []
     assert extras == tuning
     # But an env drafter the extras DO keep alive still drops: their --spec-type is what
     # stops the scrub.
     owned = ["--spec-type", "draft-simple"]
-    drafter, _extras, warnings = _drafter_gate(
-        paravirtual = True, caps = {}, drafter = None, extra_args = owned
-    )
+    drafter, _extras, warnings = _paravirtual_gate(extra_args = owned)
     assert any("draft-layer flag" in w for w in warnings), warnings
 
 
@@ -762,9 +763,7 @@ def test_the_drop_takes_a_user_owned_drafter_with_it():
     """A user --spec-type makes _build_speculative_flags emit nothing, so clearing only
     Unsloth's resolved path would leave their --model-draft on the device."""
     extras = ["--spec-type", "draft-simple", "--model-draft", "/models/d.gguf", "--top-k", "40"]
-    drafter, out, warnings = _drafter_gate(
-        paravirtual = True, caps = {}, drafter = None, extra_args = extras
-    )
+    drafter, out, warnings = _paravirtual_gate(extra_args = extras)
     assert drafter is None
     assert warnings
     assert llama_cpp._extra_args_mtp_draft_path(out, {}) is None
@@ -833,12 +832,7 @@ def test_an_inherited_drafter_env_is_not_exempted_by_a_drafter_free_mode(monkeyp
     """Same through the env the child reads directly: the drafter loads whatever
     --spec-type says, so it cannot ride out the drop on the mode alone."""
     monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/models/env.gguf")
-    drafter, _out, warnings = _drafter_gate(
-        paravirtual = True,
-        caps = {},
-        drafter = None,
-        extra_args = ["--spec-type", "ngram-mod"],
-    )
+    drafter, _out, warnings = _paravirtual_gate(extra_args = ["--spec-type", "ngram-mod"])
     assert drafter is None
     assert warnings
 
@@ -1019,9 +1013,7 @@ def test_a_load_with_no_separate_drafter_is_unaffected():
     --gpu-layers 0."""
     for caps in ({}, {"spec_draft_ngl_flag": "--spec-draft-ngl"}):
         extras = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
-        drafter, out, warnings = _drafter_gate(
-            paravirtual = True, caps = caps, drafter = None, extra_args = extras
-        )
+        drafter, out, warnings = _paravirtual_gate(caps = caps, extra_args = extras)
         assert drafter is None
         assert out == extras
         assert warnings == []

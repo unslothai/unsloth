@@ -206,6 +206,12 @@ def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     monkeypatch.setattr(inference_route, "_preflight_speech_codec_for_switch", lambda *_a: None)
 
 
+def _wire_on(*args, enabled = True, **kwargs):
+    """_wire with auto-switch enabled."""
+    return _wire(*args, enabled = enabled, **kwargs)
+
+
+
 def _wired(monkeypatch, backend, resolves_to, *, enabled = True, fail = False):
     """Load recorder + _wire around a backend: the setup nearly every test below repeats."""
     rec = _LoadRecorder(backend, fail = fail)
@@ -272,9 +278,8 @@ def test_a_late_cancel_keeps_the_completed_switch_metadata(monkeypatch):
         backend.is_loaded = True
         cancel_event.set()
 
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/models/B.gguf", "Q4_K_M", "unsloth/B-GGUF"),
         backend = backend,
         recorder = _load,
@@ -476,10 +481,9 @@ def test_same_repo_different_variant_switches(monkeypatch):
 def test_same_repo_same_variant_does_not_reload(monkeypatch):
     backend = _FakeBackend("unsloth/B-GGUF", hf_variant = "Q4_K_M")
     rec = _LoadRecorder(backend)
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
-        resolves_to = ("unsloth/B-GGUF", "q4_k_m", "unsloth/B-GGUF"),  # case-insensitive
+        resolves_to = ("unsloth/B-GGUF", "q4_k_m", "unsloth/B-GGUF"),
         backend = backend,
         recorder = rec,
     )
@@ -2645,9 +2649,8 @@ def test_already_serving_by_path_records_advertised_alias(monkeypatch):
     path = "/cache/models--org--Repo-GGUF/snapshots/abc"
     backend = _FakeBackend(path, hf_variant = "Q4_K_M")  # loaded by path, no advertised id
     rec = _LoadRecorder(backend)
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = (path, "Q4_K_M", "org/Repo-GGUF"),
         backend = backend,
         recorder = rec,
@@ -2666,9 +2669,8 @@ def test_already_serving_requested_by_path_records_advertised_alias(monkeypatch)
     path = "/models/lmstudio/TheBloke/weights-file-01.gguf"
     backend = _FakeBackend(path)  # loaded by path, no advertised id
     rec = _LoadRecorder(backend)
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = (path, None, "Qwen3-4B-Instruct-GGUF"),
         backend = backend,
         recorder = rec,
@@ -2907,9 +2909,8 @@ def test_auto_switch_waits_when_unsloth_stream_active(monkeypatch):
 
     backend = _FakeBackend(None)  # no GGUF loaded
     rec = _LoadRecorder(backend)
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
         backend = backend,
         recorder = rec,
@@ -3390,9 +3391,8 @@ def test_embeddings_rejects_missing_input_before_switch(monkeypatch):
 
     backend = _FakeBackend("org/A-GGUF")  # loaded
     rec = _LoadRecorder(backend)
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
         backend = backend,
         recorder = rec,
@@ -3721,9 +3721,8 @@ def test_omitted_model_does_not_resolve_to_a_named_gguf(monkeypatch):
     # resolver here would switch to B if it ran; it must not.
     backend = _FakeBackend("org/A-GGUF")  # a model is already loaded
     rec = _LoadRecorder(backend)
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
         backend = backend,
         recorder = rec,
@@ -6174,9 +6173,8 @@ def test_no_restore_when_different_model_loads(monkeypatch, tmp_path):
     restored = []
     backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
     rec = _LoadRecorder(backend)
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
         backend = backend,
         recorder = rec,
@@ -8410,9 +8408,8 @@ def test_an_idle_restored_model_is_api_provenance(monkeypatch):
     backend.is_loaded = False
     backend.model_identifier = None
     rec = _LoadRecorder(backend)
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
         backend = backend,
         recorder = rec,
@@ -9168,9 +9165,8 @@ def test_auto_switch_loads_an_unloaded_mlx_model(monkeypatch):
         orchestrator.active_model_name = request.model_path
         return None
 
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/srv/models/Qwen3-MLX", None, "unsloth/Qwen3-MLX"),
         backend = llama,
         recorder = _load,
@@ -9206,9 +9202,8 @@ def test_auto_switch_does_not_reload_a_resident_mlx_model(monkeypatch):
         calls.append(request)
         return None
 
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/srv/models/Qwen3-MLX", None, "unsloth/Qwen3-MLX"),
         backend = llama,
         recorder = _load,
@@ -9253,9 +9248,8 @@ def test_a_gguf_only_endpoint_refuses_a_non_gguf_target_before_loading(monkeypat
         calls.append(request)
         return None
 
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/srv/models/Qwen3-MLX", None, "unsloth/Qwen3-MLX"),
         backend = llama,
         recorder = _load,
@@ -9298,9 +9292,8 @@ def test_two_scan_roots_sharing_a_basename_do_not_answer_for_each_other(monkeypa
         orchestrator.active_model_name = "/root2/model"
         return None
 
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/root2/model", None, "model"),
         backend = llama,
         recorder = _load,
@@ -9333,9 +9326,8 @@ def test_the_resident_path_still_short_circuits_its_own_request(monkeypatch):
         calls.append(request)
         return None
 
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/root1/model", None, "model"),
         backend = llama,
         recorder = _load,
@@ -9367,9 +9359,8 @@ def test_a_repo_id_resident_still_matches_a_path_request_through_the_alias(monke
         calls.append(request)
         return None
 
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/cache/snapshots/abc", None, "mlx-community/Qwen3-8B-4bit"),
         backend = llama,
         recorder = _load,
@@ -9808,9 +9799,8 @@ def test_a_prior_turn_image_does_not_block_a_non_gguf_audio_switch(monkeypatch):
         calls.append(request)
         orchestrator.active_model_name = request.model_path
 
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/srv/models/Whisper", None, "org/Whisper"),
         backend = llama,
         recorder = _load,
@@ -9879,9 +9869,8 @@ def test_invalid_non_gguf_images_are_rejected_before_switch(monkeypatch, image_p
         calls.append(request)
         orchestrator.active_model_name = request.model_path
 
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/srv/models/Vision", None, "org/Vision"),
         backend = llama,
         recorder = _load,
@@ -9910,9 +9899,8 @@ def test_invalid_non_gguf_images_are_rejected_before_switch(monkeypatch, image_p
 def test_a_malformed_gguf_image_is_rejected_before_switch(monkeypatch):
     llama = _FakeBackend("org/A-GGUF")
     recorder = _LoadRecorder(llama)
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/srv/models/B.gguf", "Q4_K_M", "org/B-GGUF"),
         backend = llama,
         recorder = recorder,
@@ -9991,9 +9979,8 @@ def _wire_image_switch_target(monkeypatch, *, target_is_gguf):
     backend = _FakeBackend("org/A-GGUF")
     recorder = _LoadRecorder(backend)
     target_path = "/srv/models/B.gguf" if target_is_gguf else "/srv/models/B"
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = (target_path, None, "org/B-GGUF"),
         backend = backend,
         recorder = recorder,
@@ -10187,9 +10174,8 @@ def test_mixed_audio_and_image_is_rejected_before_a_non_gguf_switch(monkeypatch)
         models: dict = {}
 
     recorder = _LoadRecorder(llama)
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/srv/models/Audio-VLM", None, "org/Audio-VLM"),
         backend = llama,
         recorder = recorder,
@@ -10267,9 +10253,8 @@ def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
 def test_non_audio_bytes_are_rejected_before_a_gguf_switch(monkeypatch):
     llama = _FakeBackend("org/A-GGUF")
     recorder = _LoadRecorder(llama)
-    _wire(
+    _wire_on(
         monkeypatch,
-        enabled = True,
         resolves_to = ("/srv/models/B.gguf", "Q4_K_M", "org/B-GGUF"),
         backend = llama,
         recorder = recorder,

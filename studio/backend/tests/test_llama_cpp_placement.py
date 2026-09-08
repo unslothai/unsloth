@@ -148,6 +148,12 @@ def _launch(backend, gguf, **load_kwargs):
     return captured
 
 
+def _launch_auto_8k(*args, n_ctx = 8192, speculative_type = "auto", **kwargs):
+    """_launch at 8k context with auto speculation."""
+    return _launch(*args, n_ctx = n_ctx, speculative_type = speculative_type, **kwargs)
+
+
+
 def _launch_auto_spec(*args, n_ctx = 4096, n_parallel = 4, speculative_type = "auto", **kwargs):
     """_launch with the 4k/4-slot auto-speculative load the placement cases share."""
     return _launch(*args, n_ctx = n_ctx, n_parallel = n_parallel, speculative_type = speculative_type, **kwargs)
@@ -679,6 +685,12 @@ def _recorded_mtp_reserve(backend, gguf, **load_kwargs):
     return charged
 
 
+def _recorded_mtp_reserve_std(*args, extra_args = ["--spec-type", "draft-mtp"], n_ctx = 8192, n_parallel = 4, speculative_type = "auto", **kwargs):
+    """_recorded_mtp_reserve for the forced draft-mtp 8k/4-slot load."""
+    return _recorded_mtp_reserve(*args, extra_args = extra_args, n_ctx = n_ctx, n_parallel = n_parallel, speculative_type = speculative_type, **kwargs)
+
+
+
 def _recorded_mtp_reserve_and_callbacks(backend, gguf, **load_kwargs):
     """The reserve the fit saw, plus the callback objects it was handed."""
     charged = []
@@ -704,15 +716,13 @@ def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
     # spills.
     backend, gguf, sidecar = _hybrid_reserve_backend(tmp_path)
 
-    charged = _recorded_mtp_reserve(
-        backend,
-        gguf,
-        dflash_draft_path = str(sidecar),
-        speculative_type = "dflash",
-        n_ctx = 8192,
-        n_parallel = 4,
-        extra_args = ["--spec-draft-ngl", "0"],
-    )
+    charged = _recorded_mtp_reserve_std(
+                  backend,
+                  gguf,
+                  dflash_draft_path = str(sidecar),
+                  speculative_type = "dflash",
+                  extra_args = ["--spec-draft-ngl", "0"],
+              )
 
     # After the launch: the GGUF dims land when the load reads the metadata.
     expected = backend._mamba_recurrent_state_bytes(n_parallel = 4) * 2
@@ -798,15 +808,7 @@ def test_a_pass_through_spec_block_budgets_the_depth_the_build_defaults_to(
             "supports_kv_unified": True,
         },
     )
-    charged = _recorded_mtp_reserve(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        spec_draft_n_max = requested_depth,
-        n_ctx = 8192,
-        n_parallel = 4,
-        extra_args = ["--spec-type", "draft-mtp"],
-    )
+    charged = _recorded_mtp_reserve_std(backend, gguf, spec_draft_n_max = requested_depth)
 
     base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
     assert base > 0
@@ -829,14 +831,7 @@ def test_a_legacy_build_inherits_its_own_draft_depth_variable(tmp_path, monkeypa
     )
     monkeypatch.setenv("LLAMA_ARG_DRAFT_MAX", "32")
 
-    charged = _recorded_mtp_reserve(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        n_ctx = 8192,
-        n_parallel = 4,
-        extra_args = ["--spec-type", "draft-mtp"],
-    )
+    charged = _recorded_mtp_reserve_std(backend, gguf)
 
     base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
     assert base > 0
@@ -860,14 +855,7 @@ def test_a_post_rename_build_ignores_the_legacy_depth_variable(tmp_path, monkeyp
     monkeypatch.delenv("LLAMA_ARG_SPEC_DRAFT_N_MAX", raising = False)
     monkeypatch.setenv("LLAMA_ARG_DRAFT_MAX", "32")
 
-    charged = _recorded_mtp_reserve(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        n_ctx = 8192,
-        n_parallel = 4,
-        extra_args = ["--spec-type", "draft-mtp"],
-    )
+    charged = _recorded_mtp_reserve_std(backend, gguf)
 
     base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
     assert base > 0
@@ -888,14 +876,7 @@ def test_an_unreadable_help_budgets_the_deepest_shipped_draft_depth(tmp_path):
         },
     )
 
-    charged = _recorded_mtp_reserve(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        n_ctx = 8192,
-        n_parallel = 4,
-        extra_args = ["--spec-type", "draft-mtp"],
-    )
+    charged = _recorded_mtp_reserve_std(backend, gguf)
 
     base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
     assert base > 0
@@ -974,13 +955,7 @@ def test_auto_drops_the_drafter_when_only_the_target_fits(tmp_path):
     """
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 8192,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar))
 
     cmd = result["cmd"]
     assert "--model-draft" not in cmd
@@ -997,13 +972,7 @@ def test_auto_keeps_a_drafter_that_fits(tmp_path):
     """The drop is scoped to the shortfall: with room for both, nothing changes."""
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 1.5)
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 8192,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar))
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
@@ -1016,13 +985,12 @@ def test_forcing_the_drafter_overrides_the_vram_drop(tmp_path):
     lets the existing context reduction pay for it."""
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "dspark",
-        n_ctx = 8192,
-    )
+    result = _launch_auto_8k(
+                 backend,
+                 gguf,
+                 dspark_draft_path = str(sidecar),
+                 speculative_type = "dspark",
+             )
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
@@ -1086,14 +1054,12 @@ def test_a_standalone_model_draft_in_extras_is_not_auto_dropped(tmp_path):
     user_draft = tmp_path / "my-drafter.gguf"
     user_draft.write_bytes(b"draft")
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 8192,
-        extra_args = ["--model-draft", str(user_draft)],
-    )
+    result = _launch_auto_8k(
+                 backend,
+                 gguf,
+                 dspark_draft_path = str(sidecar),
+                 extra_args = ["--model-draft", str(user_draft)],
+             )
 
     cmd = result["cmd"]
     assert "ngram-mod" not in cmd
@@ -1118,13 +1084,7 @@ def test_a_busy_second_gpu_does_not_condemn_a_drafter_the_first_one_holds(tmp_pa
     ]
     backend._get_gpu_free_memory = lambda _binary = None: [(0, 24_576), (1, 800)]
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 8192,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar))
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
@@ -1157,12 +1117,10 @@ def test_a_cpu_offloaded_sidecar_releases_the_byte_accurate_reserve(tmp_path):
 
     backend._fit_context_to_vram = recording_fit
 
-    _launch(
+    _launch_auto_8k(
         backend,
         gguf,
         dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 8192,
         extra_args = ("--spec-draft-ngl", "0"),
     )
 
@@ -1208,14 +1166,12 @@ def test_tensor_parallel_keeps_its_own_sizing(tmp_path):
     backend._get_gpu_free_memory = lambda _binary = None: [(0, 12_288), (1, 12_288)]
     backend._tensor_split_aborts = lambda *args, **kwargs: False
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        tensor_parallel = True,
-        n_ctx = 8192,
-    )
+    result = _launch_auto_8k(
+                 backend,
+                 gguf,
+                 dspark_draft_path = str(sidecar),
+                 tensor_parallel = True,
+             )
 
     assert backend.spec_fallback_reason != "drafter_no_vram"
     assert "--model-draft" in result["cmd"]
@@ -1229,14 +1185,12 @@ def test_a_tensor_request_that_aborted_before_is_probed_as_the_layer_load_it_is(
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
     backend._tensor_split_aborts = lambda *args, **kwargs: True
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        tensor_parallel = True,
-        n_ctx = 8192,
-    )
+    result = _launch_auto_8k(
+                 backend,
+                 gguf,
+                 dspark_draft_path = str(sidecar),
+                 tensor_parallel = True,
+             )
 
     cmd = result["cmd"]
     assert "--split-mode" not in cmd
@@ -1251,14 +1205,12 @@ def test_a_single_gpu_tensor_request_is_probed_as_the_layer_load_it_is(tmp_path)
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
     backend._tensor_split_aborts = lambda *args, **kwargs: False
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        tensor_parallel = True,
-        n_ctx = 8192,
-    )
+    result = _launch_auto_8k(
+                 backend,
+                 gguf,
+                 dspark_draft_path = str(sidecar),
+                 tensor_parallel = True,
+             )
 
     cmd = result["cmd"]
     assert "--split-mode" not in cmd
@@ -1342,14 +1294,7 @@ def test_the_probe_prices_the_drafter_at_a_context_the_weakest_card_can_hold(tmp
     assert 1024 + 8192 * 83_886 / mib > 1_546 * 0.97
     assert 1024 + 5888 * 83_886 / mib <= 1_546 * 0.97
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        # 0 = Auto context (the branch that caps); the native 8192 above is the target.
-        n_ctx = 0,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar), n_ctx = 0)
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
@@ -1386,13 +1331,7 @@ def test_the_drop_actually_releases_the_reserve_the_fit_charges(tmp_path):
         "spec_draft_n_max_flag": "--spec-draft-n-max",
     }
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 0,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar), n_ctx = 0)
 
     cmd = result["cmd"]
     # 16 GB + a 4 GB KV at 8192 clears the 23.3 GB pin budget; + 6 GB does not.
@@ -1415,14 +1354,12 @@ def test_a_cpu_offloaded_sidecar_is_not_probed_because_a_head_also_exists(tmp_pa
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
     backend._read_gguf_metadata = lambda _path: setattr(backend, "_nextn_predict_layers", 1)
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 8192,
-        extra_args = ["--spec-draft-ngl", "0"],
-    )
+    result = _launch_auto_8k(
+                 backend,
+                 gguf,
+                 dspark_draft_path = str(sidecar),
+                 extra_args = ["--spec-draft-ngl", "0"],
+             )
 
     assert backend.spec_fallback_reason != "drafter_no_vram"
     assert "--model-draft" in result["cmd"]
@@ -1447,11 +1384,10 @@ def test_a_cpu_offloaded_sidecar_reserves_no_gpu_despite_an_embedded_head(tmp_pa
         reserved.append(k.get("mtp_engaged")) or requested
     )
 
-    _launch(
+    _launch_auto_8k(
         backend,
         gguf,
         dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
         n_ctx = 0,
         extra_args = ["--spec-draft-ngl", "0"],
     )
@@ -1522,13 +1458,7 @@ def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_p
         mtp_mib_per_tok = 0.25,
     )
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 0,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar), n_ctx = 0)
 
     cmd = result["cmd"]
     assert "--model-draft" not in cmd
@@ -1563,13 +1493,7 @@ def test_widening_beats_shrinking_below_the_fit_floor(tmp_path):
         mtp_mib_per_tok = 0.75,
     )
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 0,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar), n_ctx = 0)
 
     cmd = result["cmd"]
     assert "--model-draft" in cmd

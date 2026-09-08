@@ -99,6 +99,12 @@ def _info(
     )
 
 
+def _gguf_info(*args, model_format = "gguf", **kwargs):
+    """_info for a GGUF model entry."""
+    return _info(*args, model_format = model_format, **kwargs)
+
+
+
 def _gguf_image_info(*args, model_format = "gguf", source = "hf_cache", task = mas.IMAGE_TASK, **kwargs):
     """_info for a cached GGUF image model."""
     return _info(*args, model_format = model_format, source = source, task = task, **kwargs)
@@ -383,11 +389,10 @@ def two_bpw(catalog, tmp_path):
     for bpw in ("3.53", "3.97"):
         (tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf").write_bytes(b"")
         catalog.append(
-            _info(
+            _gguf_info(
                 f"z-IQ4_XS-{bpw}bpw",
                 tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf",
                 task = mas.IMAGE_TASK,
-                model_format = "gguf",
             )
         )
     return tmp_path
@@ -603,11 +608,10 @@ def test_a_sibling_loose_gguf_is_not_treated_as_already_serving(
     for quant in ("Q4_K_M", "Q8_0"):
         (tmp_path / f"z-image-{quant}.gguf").write_bytes(b"")
         catalog.append(
-            _info(
+            _gguf_info(
                 f"z-image-{quant}",
                 tmp_path / f"z-image-{quant}.gguf",
                 task = mas.IMAGE_TASK,
-                model_format = "gguf",
             )
         )
     backend.repo_id = str(tmp_path)
@@ -1127,11 +1131,10 @@ def test_a_ref2va_checkpoint_expects_its_own_partition(catalog, enabled, tmp_pat
     # keyframe default rejected the checkpoint that had just loaded.
     (tmp_path / "minimax_h3_ref2va-Q4_K_M.gguf").write_bytes(b"")
     catalog.append(
-        _info(
+        _gguf_info(
             "minimax_h3_ref2va-Q4_K_M",
             tmp_path / "minimax_h3_ref2va-Q4_K_M.gguf",
             task = mas.VIDEO_TASK,
-            model_format = "gguf",
         )
     )
     backend.repo_id = str(tmp_path)
@@ -2220,11 +2223,10 @@ def test_a_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path):
     # present, so half a split set would evict the resident model and then fail at startup.
     (tmp_path / "z-image-Q4_K_M-00001-of-00002.gguf").write_bytes(b"")
     catalog.append(
-        _info(
+        _gguf_info(
             "z-image",
             tmp_path / "z-image-Q4_K_M-00001-of-00002.gguf",
             task = mas.IMAGE_TASK,
-            model_format = "gguf",
         )
     )
 
@@ -2424,12 +2426,7 @@ def test_two_h3_partitions_of_one_quant_are_told_apart(catalog, enabled, tmp_pat
         name = f"minimax_h3_{partition}-Q4_K_M.gguf"
         (tmp_path / name).write_bytes(b"")
         catalog.append(
-            _info(
-                f"minimax_h3_{partition}-Q4_K_M",
-                tmp_path / name,
-                task = mas.VIDEO_TASK,
-                model_format = "gguf",
-            )
+            _gguf_info(f"minimax_h3_{partition}-Q4_K_M", tmp_path / name, task = mas.VIDEO_TASK)
         )
     backend.repo_id = str(tmp_path)
     backend.gguf_variant = "Q4_K_M"
@@ -2509,12 +2506,7 @@ def test_a_non_h3_sibling_stays_in_the_ambiguity_group(catalog, enabled, tmp_pat
     for name in ("minimax_h3_fl2va-Q4_K_M.gguf", "wan-Q4_K_M.gguf"):
         (tmp_path / name).write_bytes(b"")
         catalog.append(
-            _info(
-                name.removesuffix(".gguf"),
-                tmp_path / name,
-                task = mas.VIDEO_TASK,
-                model_format = "gguf",
-            )
+            _gguf_info(name.removesuffix(".gguf"), tmp_path / name, task = mas.VIDEO_TASK)
         )
     backend.repo_id = str(tmp_path)
     backend.gguf_variant = "Q4_K_M"
