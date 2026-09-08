@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { XIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  XIcon,
+} from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
-import { type FC, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import {
   DropdownMenu,
@@ -23,22 +26,6 @@ import type { KnowledgeBase } from "../types/rag";
 import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 
 // Matches the Thinking/MCP pill chevron.
-const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
-  </svg>
-);
-
 // Picks the retrieval source. Shown whenever retrieval is on; dims but stays
 // interactive (so it can be turned off) while the loaded model can't run it.
 export function KnowledgeBaseComposerButton({
@@ -132,7 +119,7 @@ export function KnowledgeBaseComposerButton({
               <XIcon className="composer-pill-x" />
             </span>
             <span>RAG</span>
-            <ArrowDownStandardIcon className="composer-pill-caret size-[15px]" />
+            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[15px]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent

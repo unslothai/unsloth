@@ -9,11 +9,11 @@
  * this one, which put this panel's header, its Close button and its drag
  * handle underneath a window the user can resize across the whole viewport.
  *
- * Avoidance rather than a z-index, because it is what Studio already does in
- * this corner: the notification stack does not outrank the monitor, it steps
- * over it (monitor-frame-store's stackGeometry, whose gap and inset this file
- * matches so the three surfaces line up on one grid). This panel reads the same
- * published boxes and does the same thing one rung further in.
+ * Avoidance rather than a z-index, because both are windows the user drags,
+ * resizes and closes, and the one underneath loses controls it needs. The
+ * notification rail is the opposite case, settled by z-order: it is passive
+ * status, it never moves, and the panels paint over it. The gap and inset here
+ * match the rail's so the three surfaces line up on one grid.
  *
  * Pure, and separate from the component, because the interesting part is what
  * happens when there is nowhere clear to go.

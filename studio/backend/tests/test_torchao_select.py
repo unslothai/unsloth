@@ -100,6 +100,9 @@ def test_windows_first_hop_uses_einx_wheel_without_shared_test_tree():
     [
         (True, False),
         (False, True),
+        # Both signals agree: the ordinary Windows ROCm host, and the case a
+        # two-mixed-only parametrization never covered.
+        (True, True),
     ],
 )
 def test_skips_torchao_on_windows_rocm(
@@ -134,17 +137,45 @@ def test_skips_torchao_on_windows_rocm(
     monkeypatch.setattr(
         mod, "_installed_torch_is_windows_rocm", lambda: installed_torch_is_windows_rocm
     )
+    # #10053 added a require_present gate to install_python_stack: after the core phase
+    # it refuses when a managed distribution is not installed at all, which SKIP_STUDIO_BASE
+    # guarantees here. Unstubbed, this test asks whether unsloth happens to be installed in
+    # whatever environment runs it -- it passes on a developer machine that has it and fails
+    # in CI, which is not what the test is about. Stubbed like every other installer side
+    # effect below.
+    monkeypatch.setattr(mod, "_repair_damaged_core_payload", lambda *a, **k: True)
     monkeypatch.setattr(mod, "_bootstrap_uv", lambda: False)
     monkeypatch.setattr(mod, "_repair_bad_anyio", lambda: None)
     monkeypatch.setattr(mod, "_ensure_rocm_torch", lambda: None)
     monkeypatch.setattr(mod, "_ensure_cuda_torch", lambda: None)
-    monkeypatch.setattr(mod, "_has_usable_nvidia_gpu", lambda: True)
+    # A Windows ROCm box has no usable NVIDIA GPU. Claiming one here described a
+    # machine that cannot exist, and _expected_torch_flavor_tag reads exactly this
+    # flag to decide whether a CUDA expectation exists at all: with it True, the
+    # Windows flavor invariant demanded a cu* build, found the runner's CPU torch,
+    # and failed the whole install long after the torchao branch under test.
+    monkeypatch.setattr(mod, "_has_usable_nvidia_gpu", lambda: False)
+    # The installed torch is ambient, so leaving it unpatched made the verdict depend
+    # on the developer's machine: a CUDA workstation passed and a CPU-only CI runner
+    # failed, on identical code.
+    monkeypatch.setattr(mod, "_RECORDED_TORCH_TAG", "")
+    monkeypatch.setattr(
+        mod, "_probe_torch_runtime", lambda *args, **kwargs: (True, True, "2.9.1+cpu", "", "")
+    )
     monkeypatch.setattr(mod, "run", lambda *args, **kwargs: None)
     monkeypatch.setattr(mod, "pip_install", _record_pip_install)
     monkeypatch.setattr(mod, "_progress", lambda label: progress_labels.append(label))
     monkeypatch.setattr(mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin)
     monkeypatch.setattr(mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin)
     monkeypatch.setattr(mod.subprocess, "run", lambda *args, **kwargs: subprocess_result)
+
+    # Checked BEFORE the install so a regression names its cause here rather than as
+    # an opaque `assert 1 == 0` on the line below, which is how this surfaced: the run
+    # returned 1 on a CPU-only runner and 0 on a CUDA workstation, on identical code.
+    assert mod._expected_torch_flavor_tag() == "", (
+        "no CUDA expectation may exist on a Windows ROCm host: a non-empty tag means "
+        "the Windows flavor invariant will demand a cu* build, not find one, and fail "
+        "the install long after the torchao branch this test is about"
+    )
 
     assert mod.install_python_stack() == 0
 

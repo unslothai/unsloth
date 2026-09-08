@@ -32,24 +32,23 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Spawn, never fork: a forked CUDA context is unusable, and Windows/macOS have no fork.
+# spawn, never fork: a forked CUDA context is unusable, and Windows/macOS have no fork
 _CTX = mp.get_context("spawn")
 
 _BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
 
-# Both bounds only break a hang: a cold-disk large-v3 load and a 30 minute
-# transcription are both legitimately slow.
+# both bounds only break a hang: a cold-disk large-v3 load and a 30 minute transcription are legitimately slow
 _LOAD_TIMEOUT_SECONDS = 600.0
 _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
-# How long a cancelled command gets before the child is killed. Generation stops
-# within a token, but a load inside from_pretrained never sees the cancel, and
-# training is waiting for that memory.
+# generation stops within a token, but a load inside from_pretrained never sees the cancel
+# How long a cancelled command gets before the child is killed. Generation stops within a token, but a load inside
+# from_pretrained never sees the cancel, and training is waiting for that memory.
 _CANCEL_GRACE_SECONDS = 10.0
 _SHUTDOWN_TIMEOUT_SECONDS = 10.0
 _POLL_SECONDS = 0.1
 
-# Errors the child may report that the parent must re-raise as themselves; any
-# other failure crosses as a RuntimeError carrying the child's message.
+# Errors the child may report that the parent must re-raise as themselves; any other failure crosses as a RuntimeError
+# carrying the child's message.
 _FORWARDED_ERRORS = (
     "SttLoadCancelledError",
     "SttTranscriptionCancelledError",
@@ -71,8 +70,6 @@ class SttWorkerSpawnError(SttWorkerError):
     """
 
 
-# ---------------------------------------------------------------------------
-# Child process
 # ---------------------------------------------------------------------------
 
 
@@ -114,8 +111,8 @@ def load_whisper(
     dtype = getattr(torch, dtype_name, None) or torch.float32
     processor = WhisperProcessor.from_pretrained(snapshot_path, local_files_only = True)
     _raise_if_cancelled(cancel_event)
-    # use_safetensors forces the pickle-free load path even if a pytorch_model.bin
-    # reached the cache; the selector and completeness check exclude them upstream.
+    # use_safetensors forces the pickle-free load path even if a pytorch_model.bin reached the cache; the selector and
+    # completeness check exclude them upstream.
     model = WhisperForConditionalGeneration.from_pretrained(
         snapshot_path, torch_dtype = dtype, local_files_only = True, use_safetensors = True
     )
@@ -213,16 +210,13 @@ def run_stt_worker(
     except Exception as exc:  # noqa: BLE001 - logging setup must not fail dictation
         logger.debug("STT worker logging setup failed: %s", exc)
 
-    # Say this interpreter is up before any model work. Without it the parent has
-    # only the exit code, and Windows has no signals: a native crash inside the model
-    # load ends the child with a positive status there exactly as a child that never
-    # bootstrapped does, and reading that crash as a host that cannot spawn moves the
-    # same crashing load into the backend, which the backend does not survive.
-    #
-    # An Event, not a queue message: Queue.put only hands the object to a feeder
-    # thread, so a child that faults before that thread drains the buffer never
-    # delivers it (measured here, the queued word was lost in 17 of 20 runs). An
-    # Event is shared memory, set the moment it returns, and was lost in none.
+    # Say this interpreter is up before any model work. Without it the parent has only the exit code, and Windows has no
+    # signals: a native crash inside the model load ends the child with a positive status there exactly as a child that
+    # never bootstrapped does, and reading that crash as a host that cannot spawn moves the same crashing load into the
+    # backend, which the backend does not survive. An Event, not a queue message: Queue.put only hands the object to a
+    # feeder thread, so a child that faults before that thread drains the buffer never delivers it (measured here, the
+    # queued word was lost in 17 of 20 runs). An Event is shared memory, set the moment it returns, and was lost in
+    # none.
     if ready_event is not None:
         ready_event.set()
 
@@ -288,13 +282,10 @@ def run_stt_worker(
         except BaseException as exc:  # noqa: BLE001 - every failure is reported, then handled
             _send(resp_queue, _error_response(exc))
             if kind == "load":
-                # Nothing is resident after a failed load, and the attempt may
-                # already have taken a context; exiting returns it.
+                # nothing is resident after a failed load, and the attempt may already have taken a context
                 return
 
 
-# ---------------------------------------------------------------------------
-# Parent process
 # ---------------------------------------------------------------------------
 
 
@@ -321,18 +312,18 @@ class WhisperWorker:
         self._cmd_queue = None
         self._resp_queue = None
         self._cancel_event = None
-        # Set by the child before any model work, so this separates a host that
-        # cannot bring a child up from a child that failed at something.
+        # set by the child before any model work, so this separates a host that cannot bring a child up from a child
+        # that failed at something
         self._ready_event = None
         self._answered = False
-        # Set once close() found a child that outlived terminate and kill. The handle
-        # is kept so its memory stays accounted, but a child that answered neither
-        # signal answers no later command either, and its terminate left the queues
-        # liable to corruption, so it must never be handed to a later dictation.
+        # a child that answered neither terminate nor kill answers no later command either
+        # Set once close() found a child that outlived terminate and kill. The handle is kept so its memory stays
+        # accounted, but a child that answered neither signal answers no later command either, and its terminate left
+        # the queues liable to corruption, so it must never be handed to a later dictation.
         self.survived_kill = False
         self.device: Optional[str] = None
-        # Read by the sidecar the way it read the model's, so an English-only
-        # checkpoint still drops the task/language kwargs it rejects.
+        # Read by the sidecar the way it read the model's, so an English-only checkpoint still drops the task/language
+        # kwargs it rejects.
         self.generation_config = SimpleNamespace(is_multilingual = None)
 
     def start(
@@ -361,8 +352,8 @@ class WhisperWorker:
                 self._cancel_event = _CTX.Event()
                 self._ready_event = _CTX.Event()
                 self._process = _CTX.Process(
-                    # The shared shim binds the child to this process's lifetime and
-                    # applies the Hub cache environment before any import.
+                    # the shared shim binds the child to this process's lifetime and applies the Hub cache environment
+                    # before any import
                     target = run_without_native_path_secret,
                     args = ("core.inference.stt_transformers_worker", "run_stt_worker", cache_env),
                     kwargs = {
@@ -376,7 +367,6 @@ class WhisperWorker:
                 )
                 self._process.start()
         except Exception as exc:  # noqa: BLE001 - any refusal to spawn reads the same
-            # Nothing was started, so nothing to kill; raise a class the caller can act on.
             self._process = None
             self._close_queues()
             raise SttWorkerSpawnError(
@@ -507,9 +497,9 @@ class WhisperWorker:
                     "pid record so the sweep can still reach it",
                     process.pid,
                 )
-                # Recorded on the handle, not just returned: a cancelled or timed-out
-                # command closes the worker from inside _await and raises over this
-                # answer, so the sidecar would keep offering the wedged child otherwise.
+                # Recorded on the handle, not just returned: a cancelled or timed-out command closes the worker from
+                # inside _await and raises over this answer, so the sidecar would keep offering the wedged child
+                # otherwise.
                 self.survived_kill = True
                 return False
             try:
@@ -553,10 +543,6 @@ class WhisperWorker:
                 if cancel_deadline is None:
                     cancel_deadline = time.monotonic() + _CANCEL_GRACE_SECONDS
                 elif time.monotonic() >= cancel_deadline:
-                    # A load inside from_pretrained never sees the event and the memory
-                    # is wanted now, so end the process. The grace WAS the graceful
-                    # shutdown, and a child too busy to read the cancel will not read a
-                    # shutdown, so terminate rather than wait _SHUTDOWN_TIMEOUT_SECONDS more.
                     self.close(graceful_timeout = 0.0)
                     self._raise_cancelled(phase)
             try:
@@ -566,9 +552,8 @@ class WhisperWorker:
                     raise SttWorkerError(self._crash_message(phase))
                 if time.monotonic() >= deadline:
                     if cancel_deadline is not None:
-                        # A cancel landing near the end of the timeout is still a cancel:
-                        # the caller is owed the phase's own error (409 load, 499
-                        # transcription), and a child that ignored it ignores a shutdown.
+                        # A cancel landing near the end of the timeout is still a cancel: the caller is owed the phase's
+                        # own error (409 load, 499 transcription), and a child that ignored it ignores a shutdown.
                         self.close(graceful_timeout = 0.0)
                         self._raise_cancelled(phase)
                     self.close()

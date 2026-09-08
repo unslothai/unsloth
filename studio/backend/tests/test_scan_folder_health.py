@@ -395,7 +395,7 @@ def test_the_hub_scan_probes_off_the_event_loop(tmp_path: Path):
     Every other filesystem step in ``_collect_models_from_default_sources`` is
     already wrapped in ``asyncio.to_thread``. This one opens up to 64 directories
     per registered folder, and on a stalled network mount ``scandir`` sits in the
-    kernel with nothing to yield to, so the whole Studio server stops answering.
+    kernel with nothing to yield to, so the whole Unsloth server stops answering.
     """
     import asyncio as _asyncio
 

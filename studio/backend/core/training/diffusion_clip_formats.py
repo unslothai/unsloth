@@ -3,7 +3,7 @@
 
 """The one list of video container extensions a training dataset may hold.
 
-Studio's diffusion dataset layer grew up image-only, so the routes carry their own
+Unsloth's diffusion dataset layer grew up image-only, so the routes carry their own
 ``_DIFFUSION_DATASET_IMAGE_EXTS``. Clips need the same treatment, but a clip dataset is read
 by the trainer and written by the upload endpoint, and those live on opposite sides of the
 backend. Putting the set in either one makes the other import it across a layer it has no
@@ -17,8 +17,7 @@ not count is a dataset that uploads fine and then trains on nothing.
 
 from __future__ import annotations
 
-# Containers the video decode path (PyAV) opens. Lowercase, with the leading dot, so a
-# ``Path.suffix.lower()`` can be tested against the set directly.
+# Lowercase, with the leading dot, so a Path.suffix.lower() can be tested against the set directly.
 CLIP_EXTS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"})
 
 __all__ = ["CLIP_EXTS"]

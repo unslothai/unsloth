@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ChatGPT/Codex public-client OAuth owned by the Studio backend.
+"""ChatGPT/Codex public-client OAuth owned by the Unsloth backend.
 
 OAuth transient material never crosses the API boundary: callers receive only an
 opaque flow id and safe user-facing authorization metadata.
@@ -42,7 +42,10 @@ OPENAI_CODEX_DEVICE_REDIRECT_URI = f"{OPENAI_CODEX_ISSUER}/deviceauth/callback"
 OPENAI_CODEX_ORIGINATOR = "unsloth_studio"
 OPENAI_CODEX_API_BASE = "https://chatgpt.com/backend-api"
 OPENAI_CODEX_RESPONSES_URL = f"{OPENAI_CODEX_API_BASE}/codex/responses"
+OPENAI_CODEX_MODELS_URL = f"{OPENAI_CODEX_API_BASE}/codex/models"
 OPENAI_CODEX_USER_AGENT = "unsloth-studio/1"
+# /codex/models hides any slug whose minimal_client_version exceeds this.
+OPENAI_CODEX_CLIENT_VERSION = "0.156.0"
 OPENAI_CODEX_COMPATIBILITY_INSTRUCTIONS = (
     "You are operating inside Unsloth Studio. Follow the user's instructions, "
     "use only tools supplied in this request, and return concise, accurate results."
@@ -108,7 +111,7 @@ def _provider_file_lock(provider_id: str) -> FileLock:
 
 @asynccontextmanager
 async def provider_oauth_write_guard(provider_id: str):
-    """Serialize refresh and deletion across Studio workers without blocking the event loop."""
+    """Serialize refresh and deletion across Unsloth workers without blocking the event loop."""
     file_lock = _provider_file_lock(provider_id)
     try:
         await asyncio.to_thread(file_lock.acquire)
@@ -227,11 +230,47 @@ def _validate_token_payload(body: Any, previous_refresh_token: str = "") -> dict
 
 
 def save_oauth_bundle(provider_id: str, bundle: dict[str, Any]) -> None:
+    previous = load_oauth_bundle(provider_id)
     credential_secrets.upsert_secret(
         credential_secrets.OPENAI_CODEX_OAUTH_KIND,
         provider_id,
         json.dumps(bundle, separators = (",", ":")),
     )
+    if previous and previous.get("account_id") != bundle.get("account_id"):
+        # Rebound to a different ChatGPT account, whose plan lists different slugs. No later request is guaranteed to
+        # notice: the picker only refreshes while its form is open, and the chat gate only refetches a catalog it does
+        # not already have. Imported here because the client module imports this one at load time.
+        from core.inference.openai_codex_client import (
+            forget_subscription_models,
+            mark_subscription_catalog_stale,
+        )
+        forget_subscription_models(provider_id)
+        # deliberate, not a cold start: until this account's catalog is read, the saved models still describe the
+        # previous one
+        mark_subscription_catalog_stale(provider_id)
+
+
+async def remember_catalog_account(provider_id: str, account_id: str) -> None:
+    """Record, next to the credentials, which account the saved models were proven for.
+
+    The in-memory mark does not survive a restart or reach a cold worker, and a rebind
+    replaces the bundle wholesale, so keeping the proof here is what makes "these saved
+    models belong to some other account" outlive this process.
+
+    Written under the same guard the refresh path uses, and re-read inside it: an
+    unguarded read-modify-write here could put stale tokens back over a rotation that
+    landed in between, which would cost the connection its credentials.
+    """
+    if load_oauth_bundle(provider_id) is None:
+        return
+    async with provider_oauth_write_guard(provider_id):
+        bundle = load_oauth_bundle(provider_id)
+        if not bundle or bundle.get("account_id") != account_id:
+            return
+        if bundle.get("catalog_account_id") == account_id:
+            return
+        bundle["catalog_account_id"] = account_id
+        save_oauth_bundle(provider_id, bundle)
 
 
 def load_oauth_bundle(provider_id: str) -> dict[str, Any] | None:
@@ -250,8 +289,8 @@ def auth_status(provider_id: str) -> str:
     bundle = load_oauth_bundle(provider_id)
     if not bundle:
         return "disconnected"
-    # An expired access token is still usable after refresh. Only a permanent
-    # refresh rejection should ask the user to reconnect.
+    # An expired access token is still usable after refresh. Only a permanent refresh rejection should ask the user to
+    # reconnect.
     return "reauthorization_required" if bundle.get("reauthorization_required") else "connected"
 
 
@@ -387,11 +426,11 @@ async def _start_browser_flow(
             break
         except OSError:
             continue
-    # The callback URL must match the verifier exchange even when no listener
-    # can bind. Manual completion remains valid with the canonical URL.
+    # The callback URL must match the verifier exchange even when no listener can bind. Manual completion remains valid
+    # with the canonical URL.
     callback_port = bound_port or OPENAI_CODEX_LOOPBACK_PORTS[0]
-    # OpenAI registers localhost redirect URIs; the listener itself remains
-    # pinned to 127.0.0.1 so it can never accept non-loopback traffic.
+    # OpenAI registers localhost redirect URIs; the listener itself remains pinned to 127.0.0.1 so it can never accept
+    # non-loopback traffic.
     flow.redirect_uri = f"http://localhost:{callback_port}{OPENAI_CODEX_CALLBACK_PATH}"
     flow.authorization_url = (
         OPENAI_CODEX_AUTHORIZE_URL
@@ -654,6 +693,12 @@ def delete_oauth_bundle(provider_id: str) -> None:
         credential_secrets.OPENAI_CODEX_OAUTH_KIND,
         provider_id,
     )
+    # Disconnecting erases the account identity that a later save would be compared against, so the next authorization
+    # cannot tell it is a different account. The saved models outlive the bundle, so mark them unproven now rather than
+    # letting them read as cold-start evidence under whoever connects next.
+    from core.inference.openai_codex_client import mark_subscription_catalog_stale
+
+    mark_subscription_catalog_stale(provider_id)
 
 
 def _oauth_flow_record(provider_id: str) -> dict[str, Any] | None:
@@ -737,8 +782,8 @@ async def _persist_terminal_flow(flow: OAuthFlow) -> None:
         async with provider_oauth_write_guard(flow.provider_id):
             set_oauth_flow_marker_status(flow.provider_id, flow.marker, flow.status, flow.message)
     except CodexAuthError:
-        # Keep the originating worker's terminal state even if another credential
-        # write holds the cross-worker lock long enough for this best-effort update.
+        # Keep the originating worker's terminal state even if another credential write holds the cross-worker lock long
+        # enough for this best-effort update.
         return
 
 
@@ -818,8 +863,7 @@ async def resolve_access(
         if not force_refresh and bundle["expires_at"] > time.time() + _REFRESH_SKEW_SECONDS:
             return bundle["access_token"], bundle["account_id"]
 
-        # Multiple Studio workers may share the installation DB. Serialize with
-        # disconnect/delete and re-read so a completed refresh is reused.
+        # multiple workers may share the installation DB
         async with provider_oauth_write_guard(provider_id):
             bundle = load_oauth_bundle(provider_id)
             if not bundle:
@@ -852,5 +896,11 @@ async def resolve_access(
                 raise CodexAuthError("ChatGPT connection was disconnected during refresh.")
             if current.get("refresh_token") != previous_refresh_token:
                 return current["access_token"], current["account_id"]
+            # a refresh rotates credentials without rebinding the connection
+            # A refresh rotates credentials, it does not rebind the connection, so the record of which account the saved
+            # models were proven for carries over. _validate_token_payload only knows about the token fields.
+            proof = current.get("catalog_account_id")
+            if proof is not None and refreshed.get("account_id") == current.get("account_id"):
+                refreshed["catalog_account_id"] = proof
             save_oauth_bundle(provider_id, refreshed)
             return refreshed["access_token"], refreshed["account_id"]

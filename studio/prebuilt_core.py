@@ -89,6 +89,8 @@ USER_AGENT = "unsloth-studio-prebuilt"
 GITHUB_AUTH_HOSTS = {"api.github.com", "github.com"}
 HF_AUTH_HOSTS = {"huggingface.co", "www.huggingface.co"}
 RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
+# What an exceeded GitHub API rate limit (primary or secondary) answers with.
+GITHUB_RATE_LIMIT_STATUS = {403, 429}
 HTTP_FETCH_ATTEMPTS = 4
 HTTP_FETCH_BASE_DELAY_SECONDS = 0.75
 JSON_FETCH_ATTEMPTS = 3
@@ -392,13 +394,12 @@ def is_github_api_url(url: str | None) -> bool:
 
 def is_retryable_url_error(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
-        # GitHub returns 403 (not 429) on API rate-limit; anonymous calls share a
-        # 60-req/hour bucket per runner IP that CI fleets exhaust. Treat 403
-        # against api.github.com as retryable so we get a backoff cycle or two
-        # (honouring Retry-After / X-RateLimit-Reset) before the source-build
-        # fallback fires. 403s on other hosts (private downloads, auth) stay non-retryable.
+        # A GitHub API 403 is a rate limit; only retry when the reset is close enough to wait for.
         if exc.code == 403:
-            return is_github_api_url(getattr(exc, "url", None))
+            return (
+                is_github_api_url(getattr(exc, "url", None))
+                and _http_error_retry_delay(exc) is not None
+            )
         return exc.code in RETRYABLE_HTTP_STATUS
     if isinstance(exc, urllib.error.URLError):
         return True
@@ -687,11 +688,15 @@ def fetch_json(ops: ModuleOps, url: str) -> Any:
                 else ops.auth_headers(url),
             )
         except urllib.error.HTTPError as exc:
-            if exc.code == 403 and is_github_api_url(url):
+            # Both codes: GitHub answers an exceeded primary or secondary rate
+            # limit with 403 or 429 (docs.github.com/rest/using-the-rest-api/
+            # rate-limits-for-the-rest-api), and a bare "HTTP Error 429: Too Many
+            # Requests" carries none of the token guidance.
+            if exc.code in GITHUB_RATE_LIMIT_STATUS and is_github_api_url(url):
                 hint = ""
                 if not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
                     hint = "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
-                raise RuntimeError(f"GitHub API returned 403 for {url}{hint}") from exc
+                raise RuntimeError(f"GitHub API returned {exc.code} for {url}{hint}") from exc
             raise
         if not data:
             last_decode_exc = RuntimeError(f"downloaded empty JSON payload from {url}")
@@ -2192,6 +2197,8 @@ def validate_staged_server(ops: ModuleOps, staged_root: Path, host: Any) -> None
             [str(server), "--help"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 60,
             env = env,
             **ops.windows_hidden_subprocess_kwargs(),

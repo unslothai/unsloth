@@ -76,7 +76,7 @@ def test_generate_title_passes_first_assistant_reply_after_first_user():
     )
 
     assert 'const firstUserIndex = messages.findIndex((m) => m.role === "user");' in block
-    assert '.find((m, i) => m.role === "assistant" && i > firstUserIndex)' in block
+    assert 'm.role === "assistant" && i > firstUserIndex' in block
     assert "const assistantText = extractTextParts(firstAssistant);" in block
     assert "generateTitleWithModel({" in block
     assert "userText," in block
@@ -92,9 +92,8 @@ def test_tool_call_only_first_assistant_still_uses_first_user_message():
         '.filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")'
         in extract_block
     )
-    # titleTextOf wraps extractTextParts and appends an attachment sample for a
-    # user turn (#8472), so the first user message is still what titles the
-    # thread; only the spelling of "read that message's text" changed.
+    # titleTextOf wraps extractTextParts and appends an attachment sample for a user turn (#8472), so the first user
+    # message is still what titles the thread; only the spelling of "read that message's text" changed.
     assert (
         "const userText = titleTextOf(firstUser) || defaultTitle; const assistantText = extractTextParts(firstAssistant);"
         in generate_block

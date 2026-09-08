@@ -24,6 +24,7 @@ import json
 import os
 from pathlib import Path
 
+from utils.models.model_config import _is_imatrix_path
 from utils.paths.path_utils import is_appledouble_metadata
 
 _backend_root = Path(__file__).resolve().parent.parent
@@ -52,6 +53,10 @@ def _load_has_downloaded_model():
         "os": os,
         "json": json,
         "is_appledouble_metadata": is_appledouble_metadata,
+        # The real one, like is_appledouble_metadata above: importing it costs no more
+        # than the module it lives in, and a stub here would let the imatrix exclusion
+        # this function depends on regress without the test noticing.
+        "_is_imatrix_path": _is_imatrix_path,
     }
     exec(compile(module, f"<extracted {_models_src}>", "exec"), ns)
     return ns["_dir_has_downloaded_model"]
