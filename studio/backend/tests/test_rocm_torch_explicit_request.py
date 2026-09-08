@@ -1683,9 +1683,7 @@ def test_a_mask_past_the_last_device_is_not_a_viable_route(stack, monkeypatch):
     route lets _ensure_cuda_torch stand down and replaces a working CUDA stack for a card the
     runtime never hands torch. install.sh fails closed on the same input."""
     assert (
-        _viable_masked(
-            stack, monkeypatch, devices = ["gfx1100", "gfx1010"], HIP_VISIBLE_DEVICES = "7"
-        )
+        _viable_masked(stack, monkeypatch, devices = ["gfx1100", "gfx1010"], HIP_VISIBLE_DEVICES = "7")
         is False
     )
 
@@ -1710,9 +1708,7 @@ def test_an_in_range_mask_past_the_first_device_is_still_viable(stack, monkeypat
     set mask -- or that read the first device rather than the selected one -- would answer
     False here and remove the feature for every user who pins a card."""
     assert (
-        _viable_masked(
-            stack, monkeypatch, devices = ["gfx1010", "gfx1100"], HIP_VISIBLE_DEVICES = "1"
-        )
+        _viable_masked(stack, monkeypatch, devices = ["gfx1010", "gfx1100"], HIP_VISIBLE_DEVICES = "1")
         is True
     )
 
@@ -1728,9 +1724,7 @@ def test_an_unresolvable_mask_does_not_answer_for_the_next_host(stack, monkeypat
     return is what the reset is for, and an explicit arch is the one that outranks masks in
     both halves of the installer."""
     assert (
-        _viable_masked(
-            stack, monkeypatch, devices = ["gfx1100", "gfx1010"], HIP_VISIBLE_DEVICES = "7"
-        )
+        _viable_masked(stack, monkeypatch, devices = ["gfx1100", "gfx1010"], HIP_VISIBLE_DEVICES = "7")
         is False
     )
     monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1100")
