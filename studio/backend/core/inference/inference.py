@@ -2961,9 +2961,9 @@ class InferenceBackend:
                     token = None
                 if isinstance(token, str) and token and text.endswith(token):
                     if closes_an_open_envelope(text, token):
-                        # A native CLOSER that is also the stop token still closes the
-                        # envelope strict parsing is about to read. Its own opener must be
-                        # present, or an orphan closer stays on screen.
+                        # A native CLOSER that is also the stop token still closes the envelope
+                        # strict parsing is about to read. Its opener must be present, or an
+                        # orphan closer stays on screen.
                         continue
                     text = text[: -len(token)]
                 elif (

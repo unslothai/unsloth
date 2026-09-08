@@ -3073,15 +3073,15 @@ class MLXInferenceBackend:
                         # invalid byte sequence can revise characters already shown.
                         # Predates stop handling and affects plain replies too.
                         if native_token_decoder is not None:
-                            # The decoder keeps allowlisted controls, and some runtimes stop
-                            # on one (TML Inkling's <|end_message|>). Drop only the TRAILING
-                            # stop id, so the marker still closes a real tool envelope.
+                            # Some runtimes stop on an allowlisted control (TML Inkling's
+                            # <|end_message|>). Drop only the TRAILING stop id, so the marker
+                            # still closes a real tool envelope.
                             _ids = list(token_ids)
                             if _ids and _ids[-1] in _mlx_stop_token_ids(
                                 self._tokenizer, self._model
                             ):
-                                # Only with no tool markup in the turn: the same marker can be
-                                # the closer strict parsing needs.
+                                # Only when the turn has no tool markup: the same marker can
+                                # be the closer strict parsing needs.
                                 _whole = native_token_decoder.decode(_ids)
                                 _closer = _whole[len(native_token_decoder.decode(_ids[:-1])) :]
                                 if not closes_an_open_envelope(_whole, _closer):
@@ -3369,10 +3369,9 @@ class MLXInferenceBackend:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
         # Same provenance the text path recovers: mlx-vlm's ``response.text`` has dropped the
-        # native tool controls, so a genuine wrapped call would reach the parser markerless
-        # and be refused. Text-only requests on a VLM come through here too, and reasoning
-        # delimiters that are special ids need preserving as well, since
-        # ``decode_stream_token`` drops any special id outside the preserved set.
+        # native tool controls, so a genuine wrapped call would reach the parser markerless and
+        # be refused. Text-only requests on a VLM come here too, and reasoning delimiters that
+        # are special ids need preserving as well.
         vlm_token_decoder = (
             NativeToolTokenDecoder(
                 self._tokenizer,
