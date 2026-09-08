@@ -12,6 +12,7 @@ import ast
 import argparse
 import io
 import os
+import stat
 import sys
 import tempfile
 import tokenize
@@ -29,6 +30,15 @@ def _atomic_write_text(path: Path, data: str, encoding: str) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        # mkstemp creates 0600 and os.replace carries the temp file's mode onto the
+        # target, so every rewrite here silently reset the file's permissions: an
+        # executable script came back 0600, and git recorded the 100755 -> 100644 the
+        # hook then committed. Copied rather than umask-derived, because the point is
+        # that the file keeps what it had.
+        try:
+            os.chmod(tmp_path, stat.S_IMODE(os.stat(path).st_mode))
+        except OSError:
+            pass
         os.replace(tmp_path, path)
     except Exception:
         try:
