@@ -5689,7 +5689,7 @@ def _resolve_model_identifier_for_gpu_estimate(
         return model_name
 
 
-_TORCH_BOOKKEEPING_PREFIXES = (
+_TRAINER_BOOKKEEPING_PREFIXES = (
     "optimizer.",
     "optimizer_",
     "scheduler.",
@@ -5699,6 +5699,8 @@ _TORCH_BOOKKEEPING_PREFIXES = (
     "trainer_state.",
 )
 _WEIGHT_SHARD_SUFFIX = re.compile(r"(-\d+-of-\d+|\.\d+)$")
+# model.fp16.safetensors is a precision variant of model.safetensors; a loader opens one.
+_WEIGHT_VARIANT_SUFFIX = re.compile(r"\.(fp16|bf16|fp32|non_ema)$")
 # pytorch_model.bin is the torch spelling of model.safetensors; consolidated.* is a
 # whole-model copy shipped beside the sharded transformers weights (Mistral, Meta).
 _WEIGHT_FAMILY_ALIASES = {"pytorch_model": "model", "consolidated": "model"}
@@ -5725,16 +5727,18 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
         rel = file.relative_to(model_path)
         if any(part.startswith(skip_prefixes) for part in rel.parts):
             continue
-        name = file.name
-        stem, ext = os.path.splitext(name)
+        if file.name.startswith(_TRAINER_BOOKKEEPING_PREFIXES):
+            continue
+        stem, ext = os.path.splitext(file.name)
         if ext == ".safetensors":
             kind = "safetensors"
-        elif ext in (".bin", ".pt", ".pth") and not name.startswith(_TORCH_BOOKKEEPING_PREFIXES):
+        elif ext in (".bin", ".pt", ".pth"):
             kind = "torch"
         else:
             continue
         stem = _WEIGHT_SHARD_SUFFIX.sub("", stem)
-        family = _WEIGHT_FAMILY_ALIASES.get(stem, stem)
+        base = _WEIGHT_VARIANT_SUFFIX.sub("", stem)
+        family = _WEIGHT_FAMILY_ALIASES.get(base, base)
         # A top-level original/ holds the vendor's copy of the root weights (Meta).
         directory = rel.parent
         vendor_copy = directory.parts[:1] == ("original",)

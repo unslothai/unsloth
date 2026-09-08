@@ -107,6 +107,32 @@ def test_uppercase_extension_is_not_a_loadable_weight(tmp_path):
     assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
 
 
+def test_safetensors_optimizer_sidecar_is_bookkeeping(tmp_path):
+    _write(tmp_path / "model-00001-of-00002.safetensors", 4000)
+    _write(tmp_path / "model-00002-of-00002.safetensors", 3000)
+    _write(tmp_path / "optimizer.safetensors", 8000)
+    _write(tmp_path / "scheduler.safetensors", 100)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 7000
+
+
+def test_precision_variant_beside_canonical_weights_charges_one_copy(tmp_path):
+    _write(tmp_path / "model.safetensors", 1000)
+    _write(tmp_path / "model.fp16.safetensors", 500)
+    _write(tmp_path / "unet" / "diffusion_pytorch_model.safetensors", 3440)
+    _write(tmp_path / "unet" / "diffusion_pytorch_model.fp16.safetensors", 1720)
+    _write(tmp_path / "unet" / "diffusion_pytorch_model.bin", 3440)
+    _write(tmp_path / "unet" / "diffusion_pytorch_model.fp16.bin", 1720)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 4440
+
+
+def test_sharded_precision_variant_is_one_family(tmp_path):
+    _write(tmp_path / "model-00001-of-00002.safetensors", 600)
+    _write(tmp_path / "model-00002-of-00002.safetensors", 400)
+    _write(tmp_path / "model.fp16-00001-of-00002.safetensors", 300)
+    _write(tmp_path / "model.fp16-00002-of-00002.safetensors", 200)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+
+
 def test_same_directory_dual_format_still_charges_one_copy(tmp_path):
     _write(tmp_path / "model.safetensors", 1000)
     _write(tmp_path / "pytorch_model.bin", 1000)
