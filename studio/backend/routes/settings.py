@@ -1198,8 +1198,7 @@ def post_xet_notice_reserve(
 
 @router.post("/igpu-carveout-notice/dismiss", response_model = IgpuCarveoutNoticeResponse)
 def post_igpu_carveout_notice_dismiss(
-    payload: IgpuCarveoutNoticeDismissPayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: IgpuCarveoutNoticeDismissPayload, current_subject: str = Depends(get_current_subject)
 ) -> IgpuCarveoutNoticeResponse:
     """Stop offering the integrated-GPU memory advice at this allocation.
 
@@ -1208,6 +1207,7 @@ def post_igpu_carveout_notice_dismiss(
     notice every time the port moved.
     """
     from utils.igpu_carveout_notice_settings import dismiss_notice
+
     try:
         stored = dismiss_notice(payload.current_gb)
     except Exception as exc:

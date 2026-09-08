@@ -116,7 +116,13 @@ class TestRecordingItOnALoad:
     """The launch-site wiring: what actually reaches the client."""
 
     @staticmethod
-    def _backend(monkeypatch, *, is_igpu = True, carve_bytes = 32 * _GB, total_mib = 95 * 1024):
+    def _backend(
+        monkeypatch,
+        *,
+        is_igpu = True,
+        carve_bytes = 32 * _GB,
+        total_mib = 95 * 1024,
+    ):
         # __new__ so no real server, config or filesystem is involved: the method
         # under test only reads the stubs below and writes one attribute.
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -127,7 +133,9 @@ class TestRecordingItOnALoad:
             LlamaCppBackend, "_integrated_cuda_unified_memory", staticmethod(lambda _i = None: False)
         )
         monkeypatch.setattr(
-            LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(lambda _i = None: carve_bytes)
+            LlamaCppBackend,
+            "_igpu_dedicated_memory_bytes",
+            staticmethod(lambda _i = None: carve_bytes),
         )
         monkeypatch.setattr(
             LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: total_mib)
@@ -160,6 +168,7 @@ class TestRecordingItOnALoad:
 
     def test_a_dismissed_notice_is_not_recorded_again(self, monkeypatch):
         from utils.igpu_carveout_notice_settings import dismiss_notice
+
         backend = self._backend(monkeypatch)
         dismiss_notice(32.0)
         backend._record_carveout_advice(None, gb(42.90))
@@ -168,20 +177,18 @@ class TestRecordingItOnALoad:
     def test_a_raised_allocation_speaks_again_after_dismissal(self, monkeypatch):
         # Dismissed at 32 GB, user raised it to 64 GB, still short: say it once more.
         from utils.igpu_carveout_notice_settings import dismiss_notice
+
         dismiss_notice(32.0)
-        backend = self._backend(
-            monkeypatch, carve_bytes = 64 * _GB, total_mib = int(63.78 * 1024)
-        )
+        backend = self._backend(monkeypatch, carve_bytes = 64 * _GB, total_mib = int(63.78 * 1024))
         backend._record_carveout_advice(None, gb(67.56))
         assert backend.last_carveout_advice is not None
 
     def test_a_broken_reading_never_breaks_the_load(self, monkeypatch):
         def boom(_i = None):
             raise RuntimeError("driver went away")
+
         backend = self._backend(monkeypatch)
-        monkeypatch.setattr(
-            LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(boom)
-        )
+        monkeypatch.setattr(LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(boom))
         backend._record_carveout_advice(None, gb(42.90))  # must not raise
         assert backend.last_carveout_advice is None
 
@@ -192,8 +199,8 @@ class TestTheMessage:
     def test_it_names_the_numbers_and_the_cost(self):
         msg = _message(_advice(gb(42.90), gb(32), gb(95.78), is_igpu = True))
         assert "43 GB" in msg and "32 GB" in msg and "48 GB" in msg
-        assert "128 GB" in msg          # the machine
-        assert "80 GB" in msg           # what the host keeps: the trade-off, stated
+        assert "128 GB" in msg  # the machine
+        assert "80 GB" in msg  # what the host keeps: the trade-off, stated
 
     def test_it_sends_the_user_to_their_own_documentation(self):
         # The control is firmware on one machine and a driver panel on the next,

@@ -10795,6 +10795,7 @@ class LlamaCppBackend:
             # Asked last, so a dismissed notice still costs only the cheap readings
             # above and never a database round trip on the common path.
             from utils.igpu_carveout_notice_settings import notice_already_dismissed
+
             if notice_already_dismissed(advice.get("current_gb")):
                 return
             advice["message"] = self._igpu_carveout_advice_message(advice)
@@ -10802,7 +10803,9 @@ class LlamaCppBackend:
             logger.info(
                 "Integrated GPU has %.0f GB dedicated but this model needs about "
                 "%.0f GB; suggesting %d GB.",
-                advice["current_gb"], advice["needed_gb"], advice["suggested_gb"],
+                advice["current_gb"],
+                advice["needed_gb"],
+                advice["suggested_gb"],
             )
         except Exception:
             logger.debug("Carve-out advice declined", exc_info = True)
