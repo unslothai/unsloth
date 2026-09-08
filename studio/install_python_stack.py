@@ -514,7 +514,10 @@ def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
 _TORCH_ACCELERATOR_TAG_RE = re.compile(r"cpu|cu\d+|xpu|rocm\d+(\.\d+)?")
 
 
-def _torch_accelerator_index_url(torch_version: "str | None", tag: str = "") -> "str | None":
+def _torch_accelerator_index_url(
+    torch_version: "str | None",
+    substitutions: "dict[str, str] | None" = None,
+) -> "str | None":
     """The download.pytorch.org leaf serving the resident torch's build, or None.
 
     Companion wheels (torchcodec, torchao) are published per accelerator exactly the way
@@ -529,16 +532,27 @@ def _torch_accelerator_index_url(torch_version: "str | None", tag: str = "") -> 
     """
     if not torch_version:
         return None
-    local = tag or str(torch_version).partition("+")[2].strip().lower()
+    substitutions = substitutions or {}
+    local = str(torch_version).partition("+")[2].strip().lower()
     if not _TORCH_ACCELERATOR_TAG_RE.fullmatch(local):
         return None
-    # An explicit pin wins, as it does for the torch repair helpers: synthesising the public
+    # An explicit URL wins, as it does for the torch repair helpers: synthesising the public
     # URL from the local tag sent authenticated, corporate and air-gapped mirrors to
     # download.pytorch.org, and the --index-url also makes _install_env_for_cmd drop the
-    # inherited index config, so the install fails outright there. _PYTORCH_WHL_BASE rather
-    # than a literal, since UNSLOTH_PYTORCH_MIRROR redirects every other index this module
-    # builds.
-    return _explicit_torch_index_url() or f"{_PYTORCH_WHL_BASE}/{local}"
+    # inherited index config, so the install fails outright there. It is taken verbatim: its
+    # path belongs to whoever configured it and rewriting a leaf inside it would be a guess.
+    url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
+    if url:
+        return _trim_index_path_slashes(url)
+    # A FAMILY override names a leaf under our own base, so a per-package substitution still
+    # applies to it -- otherwise UNSLOTH_TORCH_INDEX_FAMILY=xpu would send torchcodec to the
+    # xpu leaf, which publishes no codec below 0.13.
+    family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip().strip("/")
+    if family:
+        return f"{_PYTORCH_WHL_BASE}/{substitutions.get(family.lower(), family)}"
+    # _PYTORCH_WHL_BASE rather than a literal, since UNSLOTH_PYTORCH_MIRROR redirects every
+    # other index this module builds.
+    return f"{_PYTORCH_WHL_BASE}/{substitutions.get(local, local)}"
 
 
 def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str | None":
@@ -562,14 +576,18 @@ def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str |
         _, ceiling = _torchcodec_spec_bounds(spec)
         if ceiling is not None and ceiling <= _TORCHCODEC_MIN_ON_TORCH_INDEX:
             return None  # window sits entirely below what any torch index publishes
-    return _torch_accelerator_index_url(torch_version, _torchcodec_index_tag(torch_version))
+    return _torch_accelerator_index_url(torch_version, _TORCHCODEC_INDEX_TAGS)
 
 
 def _torchcodec_index_tag(torch_version: "str | None") -> str:
     """The local tag of the codec build the index pin will fetch, which is NOT always the
-    resident torch's own tag: an xpu torch is served the cpu wheel. The provenance check
-    below compares against this, so it must come from the same place the URL does."""
-    local = str(torch_version or "").partition("+")[2].strip().lower()
+    resident torch's own tag: an xpu torch is served the cpu wheel, and a FAMILY override
+    names a leaf of its own. The provenance check below compares against this, so it has to
+    be derived the same way the URL is. An explicit URL is opaque, so it claims no tag."""
+    if os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip():
+        return ""
+    family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip().strip("/").lower()
+    local = family or str(torch_version or "").partition("+")[2].strip().lower()
     return _TORCHCODEC_INDEX_TAGS.get(local, local)
 
 
@@ -4293,16 +4311,27 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
     if _release_moved or _cuda_moved:
         try:
             _spec = _select_torchao_spec(_label_after)
-            if not _exact_distribution_spec_is_installed(_spec):
+            # The same index pin step 4 uses. Without it this call reinstalls PyPI's CUDA-12
+            # wheel straight over the correctly pinned one, and _pin_needs_reinstall rather
+            # than an exact compare because the pinned wheel carries a local tag that
+            # ==0.18.0 never equals, which would make this fire on every repair.
+            _ao_index = _torch_accelerator_index_url(_label_after)
+            _ao_args = ["--force-reinstall", "--no-deps", "--no-cache-dir"]
+            if _pin_needs_reinstall(_spec, _label_after if _ao_index else None):
                 _note(f"torch {_label_after} after repair -- reinstalling {_spec}")
                 _touched_torch = True
-                if not pip_install_try(
+                _ao_ok = pip_install_try(
                     "Re-matching torchao to the repaired torch",
-                    "--force-reinstall",
-                    "--no-deps",
-                    "--no-cache-dir",
+                    *_ao_args,
+                    *(("--index-url", _ao_index) if _ao_index else ()),
                     _spec,
-                ):
+                )
+                if not _ao_ok and _ao_index:
+                    # Same starved-leaf fallback as step 4; see the note there.
+                    _ao_ok = pip_install_try(
+                        "Re-matching torchao to the repaired torch", *_ao_args, _spec
+                    )
+                if not _ao_ok:
                     # Across a CUDA-major move the resident build is not merely slower:
                     # _select_torchao_spec exists because a torchao compiled for CUDA 12
                     # cannot load its cpp under cu130. Remove it, the way the xFormers arm
@@ -7959,10 +7988,18 @@ def install_python_stack() -> int:
                 f"{_strip_index_url_credentials(_codec_index)} did not serve {_codec_spec} "
                 "-- retrying from the default index"
             )
+            # Drop only the pin. --force-reinstall has to survive: it is set when the
+            # installed codec is inside the version window but built by another index, and
+            # without it pip calls the requirement satisfied, fetches nothing, and leaves
+            # that same incompatible wheel in place.
+            _codec_retry_args = [
+                a for i, a in enumerate(_codec_args)
+                if a != "--index-url" and _codec_args[i - 1] != "--index-url"
+            ]
             # _codec_index stays set on purpose: the wheel PyPI serves for a cuNNN host is
             # still a CUDA build, so it still dlopens NPP and the step below still applies.
             _codec_ok = pip_install_try(
-                "Installing torchcodec", "--no-deps", "--no-cache-dir", _codec_spec
+                "Installing torchcodec", *_codec_retry_args, _codec_spec
             )
         if not _codec_ok:
             _note(

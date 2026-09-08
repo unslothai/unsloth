@@ -386,11 +386,15 @@ def test_the_installer_retries_without_the_index_when_the_pin_finds_nothing():
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
     step = source.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
     assert "retrying from the default index" in step
-    # The retry must drop the pin and nothing else: --no-deps still matters, since a
-    # torchcodec that re-resolves torch would undo the repair two steps above.
+    # The retry must drop the pin and NOTHING else. --no-deps still matters, since a
+    # torchcodec that re-resolves torch would undo the repair two steps above, and
+    # --force-reinstall still matters: it is set when the installed codec is inside the
+    # window but built by another index, and without it pip calls the requirement satisfied
+    # and leaves that same incompatible wheel in place.
     retry = step.split("retrying from the default index", 1)[1]
-    assert '"--no-deps", "--no-cache-dir", _codec_spec' in retry
-    assert "--index-url" not in retry
+    assert "_codec_retry_args = [" in retry
+    assert 'a != "--index-url" and _codec_args[i - 1] != "--index-url"' in retry
+    assert "*_codec_retry_args, _codec_spec" in retry
 
 
 def test_an_accelerator_with_no_codec_build_of_its_own_takes_the_cpu_one():
@@ -412,6 +416,61 @@ def test_an_accelerator_with_no_codec_build_of_its_own_takes_the_cpu_one():
     )
     # torchao is unaffected: its xpu leaf really does carry +xpu builds.
     assert ips._torch_accelerator_index_url("2.14.0+xpu") == "https://download.pytorch.org/whl/xpu"
+
+
+def test_an_explicit_family_override_still_gets_the_substituted_leaf(monkeypatch):
+    """UNSLOTH_TORCH_INDEX_FAMILY names a leaf under our own base, so the xpu-to-cpu
+    substitution has to apply to it as well. Without that, setting the family to xpu sent
+    the codec to the xpu leaf, which publishes nothing below 0.13, and the retry then
+    installed PyPI's CUDA build -- exactly the case the substitution exists to avoid.
+
+    A full UNSLOTH_TORCH_INDEX_URL is different and is taken verbatim: its path belongs to
+    whoever configured the mirror, and rewriting a leaf inside it would be a guess."""
+    ips = _load_install_python_stack()
+    base = "https://download.pytorch.org/whl/"
+
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "xpu")
+    for version in ("2.9.0+xpu", "2.14.0+xpu"):
+        spec = ips._select_torchcodec_spec(version)
+        assert ips._torchcodec_index_url(version, spec) == base + "cpu", version
+        assert ips._torchcodec_index_tag(version) == "cpu"
+    # torchao has no substitution, so its own leaf is unchanged by the same override.
+    assert ips._torch_accelerator_index_url("2.14.0+xpu") == base + "xpu"
+
+    # A family with no substitution passes straight through.
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
+    assert ips._torchcodec_index_url("2.11.0+cu128", "torchcodec>=0.11.0,<0.12.0") == base + "cu126"
+
+    # An explicit URL is opaque: taken as-is, and it claims no provenance tag.
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/whl/xpu/")
+    assert ips._torchcodec_index_url("2.14.0+xpu", "torchcodec>=0.12.0") == (
+        "https://mirror.corp.example/whl/xpu"
+    )
+    assert ips._torchcodec_index_tag("2.14.0+xpu") == ""
+
+
+def test_no_cuda_13_index_relies_on_the_unpinned_torchao_fallback():
+    """The fallback installs PyPI's torchao, which is the CUDA-12 build. That is harmless
+    wherever its cpp is skipped or the host is CUDA 12, and every starved cell today is one
+    of those. It would NOT be harmless on a CUDA-13 leaf whose torch matches the selected
+    release, so this fails if such a cell ever appears."""
+    ips = _load_install_python_stack()
+    # torchao releases each CUDA-13 leaf carries, and the torch minors it serves, read off
+    # the live listings. A leaf is only reachable for the torch it actually publishes.
+    published = {
+        "cu130": ({"0.14.0", "0.14.1", "0.15.0", "0.16.0", "0.17.0", "0.18.0"}, range(9, 15)),
+        "cu132": ({"0.18.0"}, range(12, 15)),
+    }
+    for leaf, (releases, torch_minors) in published.items():
+        for minor in torch_minors:
+            version = f"2.{minor}.0+{leaf}"
+            assert ips._cuda_major_from_torch_version(version) >= 13, version
+            wanted = ips._select_torchao_spec(version).split("==", 1)[1]
+            assert wanted in releases, (
+                f"{version} selects torchao {wanted}, which {leaf} does not publish, so the "
+                f"fallback would put PyPI's CUDA-12 wheel on a CUDA-13 host"
+            )
 
 
 def test_the_provenance_check_compares_against_the_tag_the_pin_will_fetch():

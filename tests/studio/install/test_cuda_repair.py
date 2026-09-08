@@ -1593,10 +1593,19 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
 
         with (
             patch.object(stack_mod, "_probe_installed_torch_version", return_value = after),
+            # The resync asks _pin_needs_reinstall, which reads the installed version and
+            # compares its local tag against the index it is about to pin. So "already
+            # matching" means the exact wheel that pin would fetch, tag included -- an
+            # untagged 0.16.0 beside a cu130 pin is precisely the case it must NOT skip.
             patch.object(
                 stack_mod,
-                "_exact_distribution_spec_is_installed",
-                return_value = installed_spec,
+                "_installed_distribution_version",
+                side_effect = lambda name: (
+                    stack_mod._select_torchao_spec(after).split("==", 1)[1]
+                    + ("+" + after.partition("+")[2] if after.partition("+")[2] else "")
+                    if (installed_spec and name == "torchao")
+                    else None
+                ),
             ),
             patch.object(
                 stack_mod,
