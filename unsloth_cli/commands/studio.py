@@ -1194,6 +1194,18 @@ def _launch_publishes_tunnel(
     return is_wildcard_host(host) and not api_only
 
 
+def _bind_is_wildcard(host: str) -> bool:
+    """Whether this bind really is every interface, rather than one address.
+
+    Only used to word the prompt. `_launch_publishes_tunnel` above has already
+    called `is_wildcard_host` on this same launch, so the getaddrinfo it does for
+    a non-literal host is not a new cost on the path.
+    """
+    from unsloth_cli._tool_policy import is_wildcard_host
+
+    return is_wildcard_host(host)
+
+
 def _should_prompt_password_change(
     *, cloudflare: Optional[bool], host: str, secure: bool, api_only: bool
 ) -> bool:
@@ -1673,7 +1685,29 @@ def _enforce_password_change_before_exposure(
     tunnel_will_start = _launch_publishes_tunnel(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     )
-    exposure = "on a public Cloudflare URL" if tunnel_will_start else "on every network interface"
+    if not tunnel_will_start and os.environ.get(_UNATTENDED_PROMPT_DONE_ENV):
+        # An outer CLI already sat at this terminal for the full deadline and
+        # nobody typed. `unsloth studio run` re-execs into the studio venv and
+        # re-enters this gate, so without this the SAME unattended pty is waited
+        # on again: 30s becomes 60s before the backend gate even gets its turn,
+        # which is long enough to trip a startup watchdog. The default admin was
+        # committed by the parent before it set this, so there is nothing left to
+        # do here. Peeked, never popped: run.py pops it, and consuming it here
+        # would hand the backend a fresh 30s wait instead.
+        #
+        # Never for a tunnel. That launch fails closed, and a marker set by some
+        # earlier raw-bind attempt must not buy a public URL a free pass.
+        return
+    if tunnel_will_start:
+        exposure = "on a public Cloudflare URL"
+    elif _bind_is_wildcard(host):
+        exposure = "on every network interface"
+    else:
+        # A concrete bind such as `-H 192.168.1.50` or `-H myhost.local` listens on
+        # that address ONLY, so "every network interface" is simply untrue. The gate
+        # widened to is_external_host and routes these here too; naming what the
+        # operator actually typed is both accurate and more useful than a category.
+        exposure = f"at {host}, which other machines on the network can reach"
     # Before public exposure we must PROVE the admin password is no longer the
     # seeded default. If we cannot (auth DB won't open, or a fresh admin cannot be
     # seeded + committed below), an old studio-venv child could regenerate a fresh
@@ -1822,9 +1856,18 @@ def _enforce_password_change_before_exposure(
                 _pbkdf2_hex(candidate, password_salt.encode("utf-8")), password_hash
             )
 
+        # Ctrl+C aborts a TUNNEL launch and only a tunnel launch. On a raw bind it
+        # declines the prompt and the launch continues, because that launch worked
+        # before this gate existed and must not start failing now. Saying "abort"
+        # there would leave an operator believing they had stopped a server that is
+        # in fact up on the network with the auto-generated password.
+        refusal = (
+            "Ctrl+C to abort."
+            if tunnel_will_start
+            else "Ctrl+C to skip, and Unsloth starts with the auto-generated password."
+        )
         typer.echo(
-            f"Unsloth Studio will be reachable {exposure}, so set a "
-            "password now. Ctrl+C to abort.",
+            f"Unsloth Studio will be reachable {exposure}, so set a password now. {refusal}",
             err = True,
         )
         try:

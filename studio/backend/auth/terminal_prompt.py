@@ -277,11 +277,16 @@ def prompt_for_password_change(
     out: "TextIO | None" = None,
     exposure: str = "on the public internet",
     first_key_timeout: "float | None" = None,
+    refusal_aborts: bool = True,
 ) -> bool:
     """Force a new admin password before exposure; True on success.
 
     Loops until a valid, confirmed password is committed via ``apply_change``.
-    Ctrl-C / EOF returns False; the caller must then abort the launch.
+    Ctrl-C / EOF returns False. What that means is the caller's decision, and
+    ``refusal_aborts`` says which one it made so the banner can say the same
+    thing: True for a tunnel, where the caller aborts the launch, False for a raw
+    bind, where the launch proceeds because it worked before this prompt existed.
+    Promising an abort that will not happen is worse than not asking at all.
 
     ``exposure`` names where this launch will be reachable. A tunnel really is
     the public internet; a raw ``-H 0.0.0.0`` bind is every network interface,
@@ -296,10 +301,15 @@ def prompt_for_password_change(
     """
     if out is None:
         out = sys.stderr
+    refusal = (
+        "Ctrl+C to abort."
+        if refusal_aborts
+        else "Ctrl+C to skip, and Unsloth starts with the auto-generated password."
+    )
     out.write(
         "\n"
         f"Unsloth Studio will be reachable {exposure}, so set a\n"
-        "password now. Ctrl+C to abort.\n\n"
+        f"password now. {refusal}\n\n"
     )
     out.flush()
     # Only the first read is deadlined; once a key arrives someone is there.
@@ -340,7 +350,11 @@ def prompt_for_password_change(
         out.flush()
         return False
     except (KeyboardInterrupt, EOFError):
-        out.write("Password change aborted; not exposing Unsloth.\n")
+        out.write(
+            "Password change aborted; not exposing Unsloth.\n"
+            if refusal_aborts
+            else "Password change skipped; leaving the auto-generated admin password in place.\n"
+        )
         out.flush()
         return False
 

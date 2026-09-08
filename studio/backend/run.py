@@ -2175,6 +2175,21 @@ def _prompt_owns_the_terminal() -> bool:
         return True
 
 
+def _exposure_phrase(*, tunnel_will_start: bool, host: str) -> str:
+    """Name where this launch will actually be reachable.
+
+    A tunnel really is the public internet. A wildcard bind really is every
+    interface. A CONCRETE bind such as `-H 192.168.1.50` is neither: uvicorn
+    listens on that one address, so claiming every interface is untrue, and the
+    operator is more likely to act on the address they typed than on a category.
+    """
+    if tunnel_will_start:
+        return "on the public internet"
+    if is_wildcard_host(host):
+        return "on every network interface"
+    return f"at {host}, which other machines on the network can reach"
+
+
 def _terminal_password_gate(
     *,
     tunnel_will_start: bool,
@@ -2336,7 +2351,11 @@ def _terminal_password_gate(
         is_current_password = _is_current_password,
         apply_change = _apply_change,
         out = sys.stderr,
-        exposure = ("on the public internet" if tunnel_will_start else "on every network interface"),
+        exposure = _exposure_phrase(tunnel_will_start = tunnel_will_start, host = host),
+        # Ctrl+C aborts a tunnel launch and only a tunnel launch. On a raw bind it
+        # declines the prompt and the launch continues, so the banner must not
+        # promise an abort that will not happen.
+        refusal_aborts = tunnel_will_start,
         # A raw bind must never block a launch that used to start. A detached pty
         # (`tmux new -d`, `screen -dmS`, `docker run -dt`) passes every isatty and
         # process-group test yet nobody will ever type, so an undeadlined read

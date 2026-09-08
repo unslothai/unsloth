@@ -32,6 +32,20 @@ def _studio():
 
 
 _BASE = ["--model", "unsloth/Qwen3-1.7B-GGUF"]
+
+
+@pytest.fixture(autouse = True)
+def _no_leaked_unattended_marker(monkeypatch):
+    """Start every test with the unattended marker unset.
+
+    The gate writes it straight into os.environ, which is exactly right in
+    production (it is inherited across the re-exec and nowhere else) and exactly
+    wrong in a test process, where it then survives into every later test and
+    silently suppresses the very prompt they are asserting on.
+    """
+    import unsloth_cli.commands.studio as studio_mod
+
+    monkeypatch.delenv(studio_mod._UNATTENDED_PROMPT_DONE_ENV, raising = False)
 _NEW_PW = "brand-new-password"
 
 
@@ -2146,3 +2160,110 @@ def test_a_tunnel_ctrl_c_still_aborts(monkeypatch, tmp_path):
         studio_mod._enforce_password_change_before_exposure(
             cloudflare = None, host = "127.0.0.1", secure = True, api_only = False
         )
+
+
+def test_a_second_cli_gate_does_not_re_wait_the_same_dead_terminal(monkeypatch, tmp_path):
+    """`unsloth studio run` re-execs and re-enters this gate on the SAME pty.
+
+    The parent waits its deadline, nobody types, and it marks the terminal as
+    already tried. Without honouring that mark the child waits the whole deadline
+    over again, so 30s becomes 60s before the backend gate has even had its turn,
+    which is long enough to trip a startup watchdog. The mark is peeked, never
+    popped: run.py is what consumes it.
+    """
+    studio_mod = _studio()
+    calls = []
+
+    def _fake_prompt(verify_current, out = None, **kw):
+        calls.append(kw)
+        raise studio_mod._password_prompt.PromptUnattended
+
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _fake_prompt)
+    monkeypatch.setattr(studio_mod, "_prompt_owns_the_terminal", lambda: True)
+    _seed_auth(studio_mod)
+
+    # Parent: waits, gets nothing, marks the terminal.
+    _invoke_studio_default(monkeypatch, events, ["-H", "0.0.0.0"])
+    assert len(calls) == 1
+    import os as _os
+    assert _os.environ.get(studio_mod._UNATTENDED_PROMPT_DONE_ENV) == "1"
+
+    # Child, after the re-exec: same terminal, must not sit on it again.
+    _invoke_studio_default(monkeypatch, events, ["-H", "0.0.0.0"])
+    assert len(calls) == 1, "the re-executed gate waited on the dead terminal again"
+    assert _os.environ.get(studio_mod._UNATTENDED_PROMPT_DONE_ENV) == "1", "popped, not peeked"
+
+
+def test_the_mark_never_lets_a_tunnel_skip_its_prompt(monkeypatch, tmp_path):
+    """A public URL fails closed, mark or no mark."""
+    studio_mod = _studio()
+    calls = []
+
+    def _fake_prompt(verify_current, out = None, **kw):
+        calls.append(kw)
+        return _NEW_PW
+
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _fake_prompt)
+    monkeypatch.setattr(studio_mod, "_prompt_owns_the_terminal", lambda: True)
+    monkeypatch.setenv(studio_mod._UNATTENDED_PROMPT_DONE_ENV, "1")
+    _seed_auth(studio_mod)
+
+    _invoke_studio_default(monkeypatch, events, ["--secure"])
+    assert len(calls) == 1, "a tunnel launch skipped its prompt because of the mark"
+
+
+def _banner(monkeypatch, tmp_path, args):
+    """Run the gate far enough to capture the banner it prints, then bail out.
+
+    Clears the unattended mark first: bailing out with an interrupt SETS it on a
+    raw bind, so a second call in the same test would skip the prompt and capture
+    no banner at all.
+    """
+    import os as _os
+
+    studio_mod = _studio()
+    _os.environ.pop(studio_mod._UNATTENDED_PROMPT_DONE_ENV, None)
+
+    def _fake_prompt(verify_current, out = None, **kw):
+        raise KeyboardInterrupt
+
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _fake_prompt)
+    monkeypatch.setattr(studio_mod, "_prompt_owns_the_terminal", lambda: True)
+    _seed_auth(studio_mod)
+    result = _invoke_studio_default(monkeypatch, events, args)
+    return (result.output or "") + (getattr(result, "stderr", "") or "")
+
+
+def test_the_banner_does_not_promise_an_abort_a_raw_bind_will_not_perform(
+    monkeypatch, tmp_path,
+):
+    """`Ctrl+C to abort` is true for a tunnel and false for a raw bind.
+
+    On a raw bind the interrupt declines the prompt and the launch continues, by
+    design, because that launch worked before this gate existed. An operator who
+    reads "abort", presses Ctrl+C and walks away would be leaving a server up on
+    the network with the auto-generated password.
+    """
+    raw = _banner(monkeypatch, tmp_path, ["-H", "0.0.0.0"])
+    assert "Ctrl+C to abort" not in raw
+    assert "Ctrl+C to skip" in raw
+
+    tunnel = _banner(monkeypatch, tmp_path, ["--secure"])
+    assert "Ctrl+C to abort" in tunnel
+
+
+def test_a_concrete_bind_is_not_described_as_every_interface(monkeypatch, tmp_path):
+    """`-H 192.168.1.50` listens on one address, so say so.
+
+    The gate widened to is_external_host, which routes concrete non-loopback
+    hosts down the same path as the wildcard, and they inherited its wording.
+    """
+    concrete = _banner(monkeypatch, tmp_path, ["-H", "192.168.1.50"])
+    assert "on every network interface" not in concrete
+    assert "192.168.1.50" in concrete
+
+    wildcard = _banner(monkeypatch, tmp_path, ["-H", "0.0.0.0"])
+    assert "on every network interface" in wildcard
