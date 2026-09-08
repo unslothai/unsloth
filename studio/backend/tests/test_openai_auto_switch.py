@@ -47,6 +47,11 @@ import routes.models as model_routes
 import state.tool_policy as _tp
 
 
+async def _boom(*a, **k):
+    raise _Reached()
+
+
+
 def _reset_keepwarm():
     """Clear the keep-warm counters and mark the model long idle."""
     kw._inflight = 0
@@ -3864,9 +3869,6 @@ def test_responses_invalid_function_tool_rejected_before_switch(monkeypatch):
 def test_responses_valid_and_builtin_tools_pass_validation(monkeypatch):
     # A well-formed function tool and a built-in (non-function) tool must pass the
     # pre-switch check. Stub the hook so the test stops right after validation.
-    async def _boom(*a, **k):
-        raise _Reached()
-
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _boom)
     payload = _responses_payload(
         tools = [{"type": "function", "name": "ok", "parameters": {}}, {"type": "web_search"}]
@@ -3946,9 +3948,6 @@ def test_chat_confirm_without_stream_rejected_before_switch(monkeypatch):
 def test_chat_confirm_with_bypass_permissions_reaches_hook(monkeypatch):
     # bypass_permissions suppresses the confirm gate, so the pre-check must not fire;
     # the request should reach the switch hook (stubbed here to a sentinel).
-    async def _boom(*a, **k):
-        raise _Reached()
-
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _boom)
     payload = _chat_request_b(
@@ -5493,9 +5492,6 @@ def test_chat_rejects_malformed_tool_choice_before_switch(monkeypatch):
 
 def test_chat_valid_tool_choice_reaches_hook(monkeypatch):
     # A well-formed forcing object must pass the pre-check and reach the hook.
-    async def _boom(*a, **k):
-        raise _Reached()
-
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _boom)
     payload = _chat_request_b(tool_choice = {"type": "function", "function": {"name": "ok"}})
