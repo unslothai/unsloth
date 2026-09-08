@@ -342,8 +342,8 @@ def test_the_powershell_probe_collects_honestly_and_never_installs_from_run():
     # Only "nothing matched" is an empty window; any other query failure is recorded and fatal.
     assert "NoMatchingEventsFound*" in ps1 and "events-collection-error.txt" in ps1
     assert 'Write-Warning "no CodeIntegrity events in the window' not in ps1
-    # Each Defender preference is restored on its own.
-    assert "foreach ($r in $restores)" in ps1 and ps1.count("Set-MpPreference @params") == 1
+    # Each Defender preference is raised, and restored, on its own.
+    assert "foreach ($r in $restores)" in ps1 and ps1.count("Set-MpPreference @params") == 2
 
 
 def test_the_new_guard_runs_in_the_unfiltered_lint_job():
@@ -790,7 +790,7 @@ def test_sample_submission_is_opt_in():
         )
     ]
     assert raise_block.index("if ($SendSamples) {") < raise_block.index(
-        "Set-MpPreference -SubmitSamplesConsent SendAllSamples"
+        "$wanted['SubmitSamplesConsent'] = 'SendAllSamples'"
     )
     assert raise_block.count("SubmitSamplesConsent") == 1
 
@@ -813,7 +813,7 @@ def test_the_venv_inventory_comes_from_the_running_interpreter_and_cannot_be_emp
     # The event scoping in collect must resolve the venv the same way the
     # inventory does, or a custom-home venv is counted as somebody else's.
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
-    assert "$venvTail = (Resolve-VenvDir) -replace" in collect
+    assert "$venvTail = " in collect and "((Resolve-VenvDir) -replace" in collect
     assert "$VENV_DIR -replace" not in collect
 
 
@@ -857,3 +857,179 @@ def test_the_app_control_audit_keeps_its_positive_control():
     # Audit, never enforcement: an enforcing policy could brick the runner.
     assert "SmartAppControlAuditNoISG" in body
     assert "--remove-policy" in body
+
+
+def test_the_inventory_root_is_the_selected_runtime_not_the_binary_directory():
+    """<root>\\build\\bin\\Release is a supported layout
+    (llama_cpp_path_settings.llama_server_candidates), so taking the parent of
+    resolved_binary inventoried Release\\ alone and scoped every sibling PE
+    under the selected root out into 'other'."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    resolve = ps1[ps1.index("function Resolve-LlamaDir") : ps1.index("$PE_EXT = ")]
+    assert resolve.index("Test-Path -LiteralPath $sel.path -PathType Container") < resolve.index(
+        "return (Split-Path -Parent $sel.resolved_binary)"
+    ), "the selected root wins; the binary's parent is only the direct-binary fallback"
+    assert "return $sel.path" in resolve
+
+
+def test_event_scoping_matches_path_tails_literally():
+    """-like reads [ and ] as pattern syntax, and a directory called [llama] is
+    legal and supported (tests/test_installer_system32_guard.py), so an
+    unescaped tail matched none of its events and dropped its 3076/3077 records
+    out of the Unsloth headline."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    for name in ("$tail = ", "$venvTail = "):
+        line = collect[collect.index(name) : collect.index(name) + 200]
+        assert "WildcardPattern]::Escape" in line, name
+    workflow = WORKFLOW.read_text(encoding = "utf-8")
+    verdict = workflow[workflow.index("$dir = $env:RUNTIME_DIR") :]
+    assert "WildcardPattern]::Escape" in verdict
+    assert "-replace '^[A-Za-z]:', ''" in verdict, "device-form paths are matched on the tail"
+    assert '$_.Message -like "*$dir*"' not in workflow
+
+
+def test_installer_trees_under_a_custom_studio_home_are_recorded_for_revert():
+    """setup.ps1 resolves $NodeParent from UNSLOTH_STUDIO_HOME/STUDIO_HOME and
+    $UnslothHome from the parent of the managed llama.cpp dir, so hard coding
+    %USERPROFILE%\\.unsloth left the custom-home trees administrator-owned with
+    no ACL repair."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    init = ps1[ps1.index("function Initialize-Studio") : ps1.index("function Save-Baseline")]
+    assert "$installRoots = @($unslothHome, $override, (Split-Path -Parent (Get-LlamaDir)))" in init
+    for tree in ("'node'", "'whisper.cpp'", "'.cache'"):
+        assert f"(Join-Path $_ {tree})" in init
+        assert f"(Join-Path $unslothHome {tree})" not in init
+
+
+def test_trees_the_installer_created_are_recorded_even_when_the_install_fails():
+    """A run that created node\\ or .cache\\ and then died before the managed
+    interpreter existed still left administrator-owned trees; returning early
+    left StudioInstalledByProbe false and revert skipped their ACL repair."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    init = ps1[ps1.index("function Initialize-Studio") : ps1.index("function Save-Baseline")]
+    assert init.index("$created = @($absentBefore") < init.index(
+        "Write-Warning 'Studio still not found after the installer ran."
+    )
+    assert init.index("$b.StudioInstallRoots = $created") < init.index(
+        "Write-Warning 'Studio still not found after the installer ran."
+    )
+
+
+def test_prepare_fails_when_a_running_studio_cannot_be_restarted():
+    """The existing process loaded its venv native modules before the policy and
+    the window existed, and run deliberately does not restart a responsive
+    Studio, so a silent return let prepare report completion for a cell whose
+    startup loads can never be observed."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    init = ps1[ps1.index("function Initialize-Studio") : ps1.index("function Save-Baseline")]
+    assert "if (-not (Stop-Studio $Port)) { return }" not in init
+    stop = init[init.index("if (-not (Stop-Studio $Port))") :]
+    assert stop[: stop.index("}")].count("throw") == 1
+
+
+def test_each_defender_preference_is_applied_on_its_own_and_deviations_recorded():
+    """One shared try meant the first policy-controlled setting threw and every
+    later Set-MpPreference was never called, so the cell ran without the
+    documented cloud-block and PUA baseline with nothing in the evidence."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    raise_block = ps1[
+        ps1.index("Write-Section 'Raise security settings'") : ps1.index(
+            "Write-Section 'CodeIntegrity log'"
+        )
+    ]
+    assert "foreach ($name in $wanted.Keys)" in raise_block
+    for name in ("DisableRealtimeMonitoring", "MAPSReporting", "CloudBlockLevel", "PUAProtection"):
+        assert name in raise_block
+    # Written when a setting did not take, and cleared on the success path, so a
+    # retry of the label cannot leave a marker contradicting its own evidence.
+    assert "$mpErrorPath = Join-Path $dir 'defender-preference-errors.txt'" in raise_block
+    assert "Remove-Item -LiteralPath $mpErrorPath" in raise_block
+    stale = ps1[ps1.index("foreach ($stale in @(") :]
+    assert "events-collection-error.txt" in stale[: stale.index(")) {")]
+
+
+def test_an_efi_dismount_failure_is_never_reported_as_a_completed_stage():
+    """The next stage's Mount-Efi finds the EFI tree already there, returns
+    $false and so never retries the unmount, leaving S: exposed for good."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    dismount = ps1[ps1.index("function Dismount-Efi") : ps1.index("function Test-PolicyActive")]
+    assert "$script:EfiStillMounted = $true" in dismount
+    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    assert "if ($script:EfiStillMounted) {" in prepare
+    revert = ps1[ps1.index("function Invoke-Revert") :]
+    assert "-or $script:EfiStillMounted" in revert
+
+
+def test_revert_exits_nonzero_when_a_studio_tree_acl_repair_failed():
+    """The ACL loop sat outside the aggregate failure accounting, so revert
+    printed 'revert complete' and exited zero while the user's own Studio tree
+    was still unreadable."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    revert = ps1[ps1.index("function Invoke-Revert") :]
+    assert revert.count("$aclFailures++") == 2, "both the nonzero icacls and the catch count"
+    assert "$aclFailures -gt 0" in revert
+    assert revert.index("$aclFailures = 0") < revert.index("$aclFailures -gt 0")
+
+
+def test_a_partial_inventory_says_so_in_the_evidence():
+    """Get-ChildItem discarded the error for a subtree it could not read and
+    the caller only rejects a completely empty result, so a partial inventory
+    was described as every PE under the tree."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    assert "-ErrorAction SilentlyContinue -ErrorVariable enumErrors" in ps1
+    assert "$script:InventoryErrors += " in ps1
+    run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
+    assert "inventory-enumeration-errors.txt" in run
+    assert "$script:InventoryErrors.Count -gt 0" in run
+
+
+def test_a_partial_collection_is_marked_inside_the_zip():
+    """A console warning does not travel with the archive, so a zip missing the
+    raw evtx or a core artifact read as a complete evidence package."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    assert collect.count("$collectionProblems += ") == 2, "evtx export and staging both record"
+    # Written into the STAGED tree, after the copy loop, or it never reaches the zip.
+    warn = collect.index("Set-Content -LiteralPath (Join-Path $stage 'collection-warnings.txt')")
+    assert collect.index("foreach ($item in Get-ChildItem -LiteralPath $dir -Recurse -File)") < warn
+    assert warn < collect.index("Compress-Archive -Path (Join-Path $stage '*')")
+    # And a retry that succeeded clears the failed attempt's marker.
+    assert (
+        collect.index("Remove-Item -LiteralPath (Join-Path $dir 'events-collection-error.txt')")
+        > collect.index("could not read $CI_LOG, so the event window was not collected")
+    )
+
+
+def test_the_app_control_verdict_cannot_pass_on_an_unread_channel():
+    """SilentlyContinue turned a failed query into an empty array and the job
+    reported that no runtime binary would be refused."""
+    workflow = WORKFLOW.read_text(encoding = "utf-8")
+    verdict = workflow[workflow.index("      - name: Verdict\n        if: always()") :]
+    verdict = verdict[: verdict.index("      - name: Export the CodeIntegrity events")]
+    assert "-ErrorAction Stop" in verdict
+    assert "NoMatchingEventsFound" in verdict
+    assert "::error::could not read the CodeIntegrity channel" in verdict
+
+
+def test_the_code_integrity_artifact_carries_the_events_it_is_named_for():
+    workflow = WORKFLOW.read_text(encoding = "utf-8")
+    assert "- name: Export the CodeIntegrity events" in workflow
+    upload = workflow[workflow.index("name: code-integrity-events") :]
+    assert "code-integrity-events.json" in upload
+    assert "CodeIntegrity-Operational.evtx" in upload
+    # Unconditional: a control that did not fire is when the records matter most.
+    export = workflow[workflow.index("- name: Export the CodeIntegrity events") :]
+    assert export[: export.index("run: |")].count("if: always()") == 1
+    assert "control_fired" not in export[: export.index("run: |")]
+
+
+def test_the_audit_channel_resize_is_verified_not_assumed():
+    """A channel that was already enabled reads back enabled even when the
+    resize failed, and the 1 MB default can wrap between the positive control
+    and the verdict."""
+    workflow = WORKFLOW.read_text(encoding = "utf-8")
+    step = workflow[workflow.index("- name: Require a runner that can host a policy") :]
+    step = step[: step.index("- name: Fetch the Smart App Control audit policies")]
+    assert "if ($LASTEXITCODE -ne 0) { throw \"wevtutil sl $log exited" in step
+    assert "$maxSize -lt 67108864" in step

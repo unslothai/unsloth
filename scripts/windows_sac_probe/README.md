@@ -24,11 +24,20 @@ C:\Users\...\.unsloth\llama.cpp\build\bin\Release\llama-common.dll is either not
 designed to run on Windows or it contains an error. Error status 0xc0e90002.
 ```
 
-`0xc0e90002` is a code integrity refusal, not a corrupt file. Every PE we ship in
-the Windows bundles is unsigned today (47 of 47 in the CUDA bundle, 51 of 52 in
-the CPU bundle, the one exception being Microsoft's own OpenMP runtime), and
-VirusTotal has never seen any of them, so they carry no cloud reputation either.
-Smart App Control decides per file, on signature first and reputation second.
+`0xc0e90002` is a code integrity refusal, not a corrupt file. On the affected
+releases every PE we shipped in the Windows bundles was unsigned (47 of 47 in the
+CUDA bundle, 51 of 52 in the CPU bundle, the one exception being Microsoft's own
+OpenMP runtime), and VirusTotal had never seen any of them, so they carried no
+cloud reputation either. Smart App Control decides per file, on signature first
+and reputation second.
+
+**The current release is signed**: `b10830-mix-d5c17a0` is 992 of 992 across all
+seventeen Windows bundles, which is why `.github/workflows/windows-llama-signature-audit.yml`
+now fails on an unsigned PE rather than warning. So a probe run against a current
+bundle measures the signed baseline, not the unsigned surface above; use
+`UNSLOTH_LLAMA_RELEASE_TAG` (see "The matrix") to pin an affected release when
+reproducing the original report. The reputation half is unchanged either way: a
+freshly published hash carries no ISG reputation whether or not it is signed.
 
 So far this rests on one screenshot. This probe is how it becomes a measurement.
 

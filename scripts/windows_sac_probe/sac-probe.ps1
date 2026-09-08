@@ -122,6 +122,14 @@ function Resolve-LlamaDir([string] $dir) {
         $sel = Get-Content -LiteralPath $selection -Raw | ConvertFrom-Json
         if ($sel.resolved_binary) {
             Write-Host ("runtime selected by Studio ({0}): {1}" -f $sel.source, $sel.resolved_binary)
+            # The selected root, not the binary's directory. <root>\build\bin\Release
+            # is a supported layout (llama_cpp_path_settings.llama_server_candidates),
+            # so the binary's parent would inventory Release\ alone and file every
+            # sibling PE under the selected root as somebody else's.
+            if ($sel.path -and (Test-Path -LiteralPath $sel.path -PathType Container)) {
+                return $sel.path
+            }
+            # A direct LLAMA_SERVER_PATH selection: path IS the binary.
             return (Split-Path -Parent $sel.resolved_binary)
         }
         Write-Warning "Studio reported no resolvable llama-server (source $($sel.source), path $($sel.path)); inventorying $(Get-LlamaDir)"
@@ -171,10 +179,19 @@ function Mount-Efi {
     return $true
 }
 
+# Set when a dismount failed, and read by prepare and revert before either
+# reports success. A warning was not enough: the next stage's Mount-Efi finds
+# the EFI tree already there, returns $false, and so never retries the unmount,
+# leaving the EFI system partition exposed as S: for good.
+$script:EfiStillMounted = $false
+
 function Dismount-Efi([bool] $Mounted) {
     if ($Mounted) {
         & mountvol.exe S: /D
-        if ($LASTEXITCODE -ne 0) { Write-Warning "could not unmount S: (mountvol exited $LASTEXITCODE)" }
+        if ($LASTEXITCODE -ne 0) {
+            $script:EfiStillMounted = $true
+            Write-Warning "could not unmount S: (mountvol exited $LASTEXITCODE)"
+        }
     }
 }
 
@@ -415,7 +432,13 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
             return
         }
         Write-Host "Studio is already answering on port $Port; restarting it so its startup loads land inside the window"
-        if (-not (Stop-Studio $Port)) { return }
+        # Not a silent return. prepare's whole premise is that the venv's native
+        # modules load inside the window and under the audit policy; a restart
+        # that failed leaves them outside it, and the empty window that follows
+        # reads exactly like a clean allow.
+        if (-not (Stop-Studio $Port)) {
+            throw "Studio is still answering on port $Port and could not be restarted, so its startup loads cannot be observed in this window. Stop it by hand and run prepare again."
+        }
     }
 
     $python = Get-StudioPython
@@ -441,27 +464,41 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
         # Studio unable to read its own node runtime. The README already named
         # them; the candidate list did not.
         $unslothHome = Join-Path $env:USERPROFILE '.unsloth'
+        # node and whisper.cpp do NOT always live under %USERPROFILE%\.unsloth.
+        # setup.ps1 resolves $NodeParent from UNSLOTH_STUDIO_HOME / STUDIO_HOME
+        # (line 3140-3166) and $UnslothHome from the parent of the managed
+        # llama.cpp dir (line 1886), so a custom home moves both. Hard coding the
+        # legacy root left the custom-home trees out of StudioInstallRoots and
+        # revert then never repaired their ACLs.
+        $override = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $env:STUDIO_HOME }
+        $installRoots = @($unslothHome, $override, (Split-Path -Parent (Get-LlamaDir))) |
+            Where-Object { $_ } | Select-Object -Unique
         $candidates = @(
             $unslothHome,
             (Get-StudioHome),
-            (Get-LlamaDir),
-            (Join-Path $unslothHome 'node'),
-            (Join-Path $unslothHome 'whisper.cpp'),
-            (Join-Path $unslothHome '.cache')
-        ) | Where-Object { $_ } | Select-Object -Unique
+            (Get-LlamaDir)
+        ) + @($installRoots | ForEach-Object {
+            (Join-Path $_ 'node')
+            (Join-Path $_ 'whisper.cpp')
+            (Join-Path $_ '.cache')
+        }) | Where-Object { $_ } | Select-Object -Unique
         $absentBefore = @($candidates | Where-Object { -not (Test-Path -LiteralPath $_) })
         $python = Install-Studio
-        if (-not $python) {
-            Write-Warning 'Studio still not found after the installer ran. Install it by hand, then re-run this stage.'
-            return
-        }
+        # Recorded before the failure check, not after it. An installer that
+        # created node\ or .cache\ and then died before producing the managed
+        # interpreter still left administrator-owned trees behind, and returning
+        # early used to leave StudioInstalledByProbe false so revert skipped them.
         $created = @($absentBefore | Where-Object { Test-Path -LiteralPath $_ })
         $baselinePath = Join-Path $dir 'baseline.json'
-        if (Test-Path -LiteralPath $baselinePath) {
+        if ($created.Count -gt 0 -and (Test-Path -LiteralPath $baselinePath)) {
             $b = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
             $b.StudioInstalledByProbe = $true
             $b.StudioInstallRoots = $created
             $b | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
+        }
+        if (-not $python) {
+            Write-Warning 'Studio still not found after the installer ran. Install it by hand, then re-run this stage.'
+            return
         }
     }
     Write-Host "managed interpreter: $python"
@@ -568,20 +605,42 @@ function Invoke-Prepare {
 
     Write-Section 'Raise security settings'
     # Deliberately only the reversible ones. revert restores each from baseline.
-    try {
-        Set-MpPreference -DisableRealtimeMonitoring $false
-        Set-MpPreference -MAPSReporting Advanced
-        Set-MpPreference -CloudBlockLevel High
-        Set-MpPreference -PUAProtection Enabled
-        Write-Host 'Defender: real-time on, MAPS advanced, cloud block level high, PUA on'
-        if ($SendSamples) {
-            # Opt-in only: revert puts the setting back but cannot recall a
-            # sample Defender uploaded in the meantime.
-            Set-MpPreference -SubmitSamplesConsent SendAllSamples
-            Write-Host 'Defender: sample submission set to SendAllSamples (-SendSamples)'
+    # One try per preference, the way revert already does it: they used to share
+    # a single try, so the first policy-controlled setting threw and every later
+    # Set-MpPreference was never called at all, leaving the cell running without
+    # the cloud-block and PUA configuration whose reputation behaviour it
+    # measures, and saying so only in one warning.
+    $wanted = [ordered]@{
+        DisableRealtimeMonitoring = $false
+        MAPSReporting             = 'Advanced'
+        CloudBlockLevel           = 'High'
+        PUAProtection             = 'Enabled'
+    }
+    if ($SendSamples) {
+        # Opt-in only: revert puts the setting back but cannot recall a sample
+        # Defender uploaded in the meantime.
+        $wanted['SubmitSamplesConsent'] = 'SendAllSamples'
+    }
+    $mpFailed = @()
+    foreach ($name in $wanted.Keys) {
+        try {
+            $params = @{ $name = $wanted[$name] }
+            Set-MpPreference @params
+        } catch {
+            $mpFailed += "${name}: $_"
+            Write-Warning "could not set Defender $name : $_"
         }
-    } catch {
-        Write-Warning "could not set Defender preferences: $_"
+    }
+    $mpErrorPath = Join-Path $dir 'defender-preference-errors.txt'
+    if ($mpFailed.Count -gt 0) {
+        # In the evidence, not just the console: the zip is what a reader gets,
+        # and a cell measured without the documented baseline has to say so.
+        $mpFailed -join "`n" | Set-Content -LiteralPath $mpErrorPath -Encoding UTF8
+        Write-Warning "$($mpFailed.Count) Defender preference(s) were NOT applied; this cell does not carry the documented baseline. See defender-preference-errors.txt."
+    } else {
+        Remove-Item -LiteralPath $mpErrorPath -Force -ErrorAction SilentlyContinue
+        Write-Host 'Defender: real-time on, MAPS advanced, cloud block level high, PUA on'
+        if ($SendSamples) { Write-Host 'Defender: sample submission set to SendAllSamples (-SendSamples)' }
     }
 
     Write-Section 'CodeIntegrity log'
@@ -636,6 +695,9 @@ function Invoke-Prepare {
         } finally {
             Dismount-Efi $mounted
         }
+        if ($script:EfiStillMounted) {
+            throw "the EFI system partition is still mounted as S: and could not be unmounted; the next stage would see it as already mounted and never retry, so run 'mountvol S: /D' by hand before continuing"
+        }
         Write-Host "applied $(Split-Path $AuditPolicy -Leaf) as $NOISG_GUID and refreshed policy"
 
         Write-Section 'Policy state after applying'
@@ -681,7 +743,8 @@ function Invoke-Prepare {
         'venv-signature-inventory.json', 'venv-signature-inventory.csv',
         'code-integrity-events.json', 'code-integrity-events.txt',
         'CodeIntegrity-Operational.evtx', 'defender-detections.json',
-        'defender-query-error.txt', 'sac-state-after.json'
+        'defender-query-error.txt', 'sac-state-after.json',
+        'events-collection-error.txt', 'inventory-enumeration-errors.txt'
     )) {
         Remove-Item -LiteralPath (Join-Path $dir $stale) -Force -ErrorAction SilentlyContinue
     }
@@ -697,12 +760,18 @@ function Invoke-Prepare {
     Write-Host "prepare complete. Next: .\sac-probe.ps1 -Stage run -Label $Label"
 }
 
+# Subtrees Get-ChildItem could not read, accumulated across both inventories so
+# run can put them in the evidence. Without this the enumeration errors were
+# discarded and a partial inventory was described as every PE under the tree.
+$script:InventoryErrors = @()
+
 function Get-SignatureInventory([string] $root) {
     if (-not (Test-Path -LiteralPath $root)) {
         Write-Warning "nothing to inventory at $root"
         return @()
     }
-    Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
+    $enumErrors = @()
+    Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue -ErrorVariable enumErrors |
         Where-Object { $PE_EXT -contains $_.Extension.ToLowerInvariant() } |
         ForEach-Object {
             $sig = Get-AuthenticodeSignature -LiteralPath $_.FullName
@@ -720,6 +789,13 @@ function Get-SignatureInventory([string] $root) {
                 TimeStamped = if ($sig.TimeStamperCertificate) { $true } else { $false }
             }
         }
+    if ($enumErrors.Count -gt 0) {
+        # A subtree that could not be read is exactly where the access-denied
+        # native module being investigated would sit, and the caller only
+        # rejects a completely empty result.
+        $script:InventoryErrors += @($enumErrors | ForEach-Object { "${root}: $_" })
+        Write-Warning "$($enumErrors.Count) path(s) under $root could not be enumerated; this inventory is PARTIAL. See inventory-enumeration-errors.txt."
+    }
 }
 
 function Invoke-Run {
@@ -834,6 +910,16 @@ function Invoke-Run {
             Select-Object Name, Status | Format-Table -AutoSize | Out-String | Write-Host
     }
 
+    # Both inventories are done, so any subtree either of them could not read
+    # goes into the evidence rather than scrolling past in the console.
+    $enumPath = Join-Path $dir 'inventory-enumeration-errors.txt'
+    if ($script:InventoryErrors.Count -gt 0) {
+        $script:InventoryErrors -join "`n" | Set-Content -LiteralPath $enumPath -Encoding UTF8
+        Write-Warning "$($script:InventoryErrors.Count) path(s) could not be enumerated; the inventories in this cell are PARTIAL and inventory-enumeration-errors.txt names them. Do not read an absent file as an absent PE."
+    } else {
+        Remove-Item -LiteralPath $enumPath -Force -ErrorAction SilentlyContinue
+    }
+
     Write-Host ''
     if (-not $SkipStudio -and $scenarioStatus.ExitCode -ne 0) {
         # A scenario that never authenticated or never loaded a model produces
@@ -859,6 +945,11 @@ function Invoke-Collect {
     $start = [datetime]::Parse((Get-Content -LiteralPath $startPath -Raw).Trim())
     Write-Section "Events since $($start.ToString('o'))"
 
+    # Everything that went wrong while gathering evidence. Written into the
+    # staged copy below, because a console warning does not travel with the zip
+    # and its recipient would otherwise read a package missing a core artifact
+    # as a complete one.
+    $collectionProblems = @()
     $events = @()
     try {
         $events = @(Get-WinEvent -FilterHashtable @{
@@ -876,6 +967,10 @@ function Invoke-Collect {
             throw "could not read $CI_LOG, so the event window was not collected: $_"
         }
     }
+    # A retry that got through clears the earlier attempt's marker; leaving it
+    # put an artifact claiming this window was never collected into a zip that
+    # collected it. defender-query-error.txt is cleaned the same way.
+    Remove-Item -LiteralPath (Join-Path $dir 'events-collection-error.txt') -Force -ErrorAction SilentlyContinue
 
     # The CodeIntegrity channel is machine-wide. An unrelated Git Bash session
     # contributed msys-2.0.dll, head.exe and tail.exe to one run, so a raw count
@@ -887,8 +982,16 @@ function Invoke-Collect {
     # letters in this channel, so match on the tail rather than anchoring at
     # the root. Resolved the same way the inventory resolves it, so a runtime
     # chosen in Studio settings is scoped in rather than counted as foreign.
-    $tail = (Resolve-LlamaDir $dir) -replace '^[A-Za-z]:', ''
-    $venvTail = (Resolve-VenvDir) -replace '^[A-Za-z]:', ''
+    #
+    # Escaped, because -like reads [ and ] as pattern syntax rather than as the
+    # literal path characters they are here. A directory really called [llama]
+    # is legal and supported (tests/test_installer_system32_guard.py), and an
+    # unescaped tail matched none of its events, filing its 3076/3077 records
+    # under 'other' and dropping them out of the Unsloth headline.
+    $tail = [Management.Automation.WildcardPattern]::Escape(
+        ((Resolve-LlamaDir $dir) -replace '^[A-Za-z]:', ''))
+    $venvTail = [Management.Automation.WildcardPattern]::Escape(
+        ((Resolve-VenvDir) -replace '^[A-Za-z]:', ''))
     $shaped = @($events | ForEach-Object {
         $msg = $_.Message
         $scope =
@@ -980,7 +1083,10 @@ function Invoke-Collect {
     $query = "*[System[TimeCreated[@SystemTime>='$windowStart']]]"
     try {
         Invoke-Native 'wevtutil.exe' @('epl', $CI_LOG, (Join-Path $dir 'CodeIntegrity-Operational.evtx'), "/q:$query", '/ow:true')
-    } catch { Write-Warning "evtx export failed: $_" }
+    } catch {
+        $collectionProblems += "raw evtx export failed, so CodeIntegrity-Operational.evtx is missing from this zip: $_"
+        Write-Warning "evtx export failed: $_"
+    }
 
     try {
         # Captured into an array first: a clean machine yields nothing, and a
@@ -1065,8 +1171,16 @@ function Invoke-Collect {
                 try { $src.CopyTo($dst) } finally { $dst.Dispose() }
             } finally { $src.Dispose() }
         } catch {
+            $collectionProblems += "${rel} could not be staged and is missing from this zip: $_"
             Write-Warning "could not stage $($item.FullName): $_"
         }
+    }
+    if ($collectionProblems.Count -gt 0) {
+        # Into the staged copy, after the loop, so it is inside the archive the
+        # operator attaches rather than only in a console they will not send.
+        $collectionProblems -join "`n" |
+            Set-Content -LiteralPath (Join-Path $stage 'collection-warnings.txt') -Encoding UTF8
+        Write-Warning "this collection is INCOMPLETE: $($collectionProblems.Count) problem(s), recorded in collection-warnings.txt inside the zip"
     }
 
     $zip = Join-Path $WorkDir ("unsloth-sac-{0}-{1}-{2}.zip" -f $env:COMPUTERNAME, $Label, (Get-Date -Format 'yyyyMMdd-HHmmss'))
@@ -1253,14 +1367,25 @@ function Invoke-Revert {
     if ($trees.Count -eq 0) {
         Write-Host 'nothing to repair: this run did not install Studio'
     }
+    # Counted, not just warned about. This loop is outside the Defender
+    # accounting above, so revert used to print "revert complete" and exit zero
+    # while the user's own Studio tree was still unreadable, which is the exact
+    # failure the loop was added for. icacls returns nonzero when any object in
+    # the tree failed even under /C, so a partial repair counts as a failure
+    # here on purpose.
+    $aclFailures = 0
     foreach ($tree in $trees) {
         try {
             # Grants the invoking user only. Nothing here widens access for
             # anyone else or touches ownership.
             & icacls.exe $tree /grant "${user}:(OI)(CI)F" /T /C /Q | Out-Null
             if ($LASTEXITCODE -eq 0) { Write-Host "restored $user access to $tree" }
-            else { Write-Warning "icacls exited $LASTEXITCODE for $tree" }
+            else {
+                $aclFailures++
+                Write-Warning "icacls exited $LASTEXITCODE for $tree"
+            }
         } catch {
+            $aclFailures++
             Write-Warning "could not restore access to ${tree}: $_"
         }
     }
@@ -1272,11 +1397,14 @@ function Invoke-Revert {
     # Every restoration is attempted first, then the failures decide the exit
     # status. Reporting success here while settings stayed raised is the same
     # class of bug as collect implying evidence it did not have.
-    if ($restoreFailures -gt 0 -or $null -ne $ciRestoreError) {
+    if ($restoreFailures -gt 0 -or $null -ne $ciRestoreError -or $aclFailures -gt 0 -or $script:EfiStillMounted) {
         if ($null -ne $ciRestoreError) {
             Write-Warning "the $CI_LOG channel settings were not restored: $ciRestoreError"
         }
-        throw "revert did not fully restore this machine: $restoreFailures Defender preference(s) and $(if ($null -ne $ciRestoreError) { 'the CodeIntegrity log settings' } else { 'no log settings' }) still differ from the baseline. See the warnings above."
+        if ($script:EfiStillMounted) {
+            Write-Warning "the EFI system partition is still mounted as S:; run 'mountvol S: /D' by hand"
+        }
+        throw "revert did not fully restore this machine: $restoreFailures Defender preference(s), $aclFailures Studio tree ACL repair(s), $(if ($null -ne $ciRestoreError) { 'the CodeIntegrity log settings' } else { 'no log settings' })$(if ($script:EfiStillMounted) { ' and the EFI mount' }) still differ from the baseline. See the warnings above."
     }
     Write-Host 'revert complete. Smart App Control itself was never changed by this script.'
 }
