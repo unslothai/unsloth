@@ -1788,3 +1788,27 @@ def test_the_unattended_tool_turns_never_wait_on_an_approval_nobody_reads():
         encoding = "utf-8"
     )
     assert 'if mode in ("off", "full"):' in backend
+
+
+def test_a_runtime_at_the_root_of_a_volume_is_refused_not_matched_against_everything():
+    r"""UNSLOTH_LLAMA_CPP_PATH=D:\ is returned verbatim by Get-LlamaDir, and a
+    llama-server.exe at a volume root resolves to the same place. Stripping the
+    drive letter and the trailing separator then leaves nothing, so the tail was
+    a lone separator, which every path in this machine-wide channel contains:
+    the Git Bash msys-2.0.dll events this scoping exists to keep in 'other' were
+    counted as Unsloth 3076s and the cell reported blocks it never saw."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    fn = ps1[ps1.index("function Get-ScopeTail") : ps1.index("function Get-EventDataMap")]
+    assert "if (-not $trimmed) {" in fn
+    # Refused before the pattern is built, not warned about afterwards.
+    assert fn.index("if (-not $trimmed) {") < fn.index("WildcardPattern]::Escape($trimmed)")
+    assert "throw" in fn[fn.index("if (-not $trimmed) {") : fn.index("return (")]
+    # The ordinary shapes are untouched: the drive letter still goes (device
+    # paths carry none) and the tail still ends at a separator.
+    assert "($root -replace '^[A-Za-z]:', '').TrimEnd('\\', '/')" in fn
+    assert "WildcardPattern]::Escape($trimmed) + '\\'" in fn
+    # Both scoping call sites go through it, so neither tree can be graded on a
+    # volume-wide match.
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    assert "$tail = Get-ScopeTail (Resolve-LlamaDir $dir)" in collect
+    assert "$venvTail = Get-ScopeTail (Resolve-VenvDir $dir)" in collect

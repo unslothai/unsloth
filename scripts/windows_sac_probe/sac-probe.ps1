@@ -493,6 +493,17 @@ function Test-StudioResponding([int] $port) {
 # scenario actually drove.
 function Get-ScopeTail([string] $root) {
     $trimmed = ($root -replace '^[A-Za-z]:', '').TrimEnd('\', '/')
+    # A runtime at the root of a volume trims to nothing, and the tail would
+    # then be a lone separator, which every path in this machine-wide channel
+    # contains. The Git Bash msys-2.0.dll events this scoping exists to keep in
+    # 'other' would be counted as Unsloth verdicts and the cell would report
+    # enforced blocks it never saw. UNSLOTH_LLAMA_CPP_PATH is returned verbatim
+    # by Get-LlamaDir, so 'D:\' reaches here directly, and a llama-server.exe at
+    # a volume root resolves to the same place. No tail can scope a whole
+    # volume, so refuse rather than grade a window against one.
+    if (-not $trimmed) {
+        throw "cannot scope CodeIntegrity events to '${root}': a runtime or venv at the root of a volume leaves no path tail, so every event on this machine would be counted as an Unsloth verdict. Move it into a subdirectory, point UNSLOTH_LLAMA_CPP_PATH or LLAMA_SERVER_PATH at that, and run this label again from prepare."
+    }
     return ([Management.Automation.WildcardPattern]::Escape($trimmed) + '\')
 }
 
