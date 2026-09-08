@@ -1718,6 +1718,13 @@ _OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
 # have not started"; these say "you started, and the text on screen is not lost".
 _OPENAI_PREEMPT_SSE_PAUSED = ": preempt-paused\n\n"
 _OPENAI_PREEMPT_SSE_RESUMED = ": preempt-resumed\n\n"
+# Still paused. Ignored by the frontend, renewed on by a durable run's lease.
+_OPENAI_PREEMPT_SSE_KEEPALIVE = ": preempt-keepalive\n\n"
+_OPENAI_PREEMPT_SSE_BY_STATE = {
+    "paused": _OPENAI_PREEMPT_SSE_PAUSED,
+    "resumed": _OPENAI_PREEMPT_SSE_RESUMED,
+    "keepalive": _OPENAI_PREEMPT_SSE_KEEPALIVE,
+}
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # Cap on waiting for a cancelled teardown task. Request.is_disconnected() can swallow
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
@@ -22389,10 +22396,8 @@ async def produce_openai_chat_completions(
                             # The pause, made visible on the surface the GUI actually uses: this
                             # consumer fell through to the content diff, and nine logged pauses
                             # showed the line zero times.
-                            yield (
-                                _OPENAI_PREEMPT_SSE_PAUSED
-                                if event.get("state") == "paused"
-                                else _OPENAI_PREEMPT_SSE_RESUMED
+                            yield _OPENAI_PREEMPT_SSE_BY_STATE.get(
+                                event.get("state"), _OPENAI_PREEMPT_SSE_RESUMED
                             )
                             continue
 
@@ -23083,10 +23088,8 @@ async def produce_openai_chat_completions(
                             elif cumulative.get("type") == "preempt":
                                 # The spin-wait, made visible. Without it a half-written answer
                                 # stops dead and starts again minutes later.
-                                yield (
-                                    _OPENAI_PREEMPT_SSE_PAUSED
-                                    if cumulative.get("state") == "paused"
-                                    else _OPENAI_PREEMPT_SSE_RESUMED
+                                yield _OPENAI_PREEMPT_SSE_BY_STATE.get(
+                                    cumulative.get("state"), _OPENAI_PREEMPT_SSE_RESUMED
                                 )
                             elif cumulative.get("type") == "context_truncated":
                                 yield _context_truncated_sse_chunk(

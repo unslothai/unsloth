@@ -50,18 +50,6 @@ def resolve_preempt_mode(server_preempts: bool) -> str:
     return PREEMPT_MODE_SERVER if server_preempts else PREEMPT_MODE_STUDIO
 
 
-def _float_env(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = float(raw.strip())
-    except ValueError:
-        return default
-    # Outside (0, 0.5) is a typo, not a policy: zero removes the margin entirely.
-    return value if 0.0 < value < 0.5 else default
-
-
 def _int_env(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None:
@@ -73,8 +61,6 @@ def _int_env(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
-# Legacy knob. A fraction of the cache is the wrong shape; see `preemption_buffer_tokens`.
-DEFAULT_PREEMPT_BUFFER_RATIO = _float_env("UNSLOTH_LLAMA_PREEMPT_BUFFER_RATIO", 0.15)
 # Reaction headroom for ONE decoding slot: what it generates between the sweep and the stop.
 DEFAULT_PREEMPT_BUFFER_PER_SLOT = 192
 DEFAULT_PREEMPT_BUFFER_MIN_TOKENS = 256
@@ -1206,7 +1192,9 @@ class ControllerPreemptionPolicy:
                 # reclaimed when the lease is finally released either way.
                 pass
 
-    def await_resume(self, timeout: Optional[float] = None) -> bool:
+    def await_resume(
+        self, timeout: Optional[float] = None, *, cancel_event = None
+    ) -> bool:
         # None means "caller stated no preference", NOT "wait forever".
         if timeout is None:
             timeout = DEFAULT_RESUME_WAIT_TIMEOUT_S
@@ -1262,6 +1250,11 @@ class ControllerPreemptionPolicy:
         # try_grant_resume, not room_for: the room has to be BOOKED at the instant it is found,
         # or two chats waiting at once both find the same space and both take it.
         while not self._controller.try_grant_resume(self._gen_id, want):
+            if cancel_event is not None and cancel_event.is_set():
+                # Stop pressed during the pause: nothing to resume, and the worker must not
+                # sit here until room appears for a chat nobody is reading.
+                _log.info("llama preemption cancelled-while-paused: gen_id=%s", self._gen_id)
+                return False
             self._controller.refresh_residency()
             now = time.monotonic()
             current = self._controller.progress_signature()

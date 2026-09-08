@@ -45,11 +45,17 @@ class TestTheSignalsLineUp:
             "_OPENAI_ADMISSION_SSE_DONE",
             "_OPENAI_PREEMPT_SSE_PAUSED",
             "_OPENAI_PREEMPT_SSE_RESUMED",
+            "_OPENAI_PREEMPT_SSE_KEEPALIVE",
         ):
             assert (
                 routes.count(name) >= 2
             ), f"{name} is defined but never yielded, so the client is told nothing"
-            assert f"yield {name}" in routes or f"{name}\n" in routes
+            assert (
+                f"yield {name}" in routes
+                or f"{name}\n" in routes
+                or f"{name},\n" in routes
+            )
+        assert "yield _OPENAI_PREEMPT_SSE_BY_STATE.get(" in routes
 
     def test_the_pause_signal_has_a_producer_in_the_generator(self):
         llama_cpp = (BACKEND / "core" / "inference" / "llama_cpp.py").read_text(encoding = "utf-8")

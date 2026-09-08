@@ -285,7 +285,11 @@ class TestTheStreamRelaysAServerPark:
         )
         text, marks = _client_view(events)
         assert text == "Once upon a time"
-        assert marks == [("paused", len("Once upon")), ("resumed", len("Once upon"))]
+        assert marks == [
+            ("paused", len("Once upon")),
+            ("keepalive", len("Once upon")),
+            ("resumed", len("Once upon")),
+        ]
         assert policy.events == [
             "server-parked",
             "server-resumed",
@@ -304,7 +308,7 @@ class TestTheStreamRelaysAServerPark:
         )
         text, marks = _client_view(events)
         assert text == "Once upon a time"
-        assert [m[0] for m in marks] == ["paused", "resumed"]
+        assert [m[0] for m in marks] == ["paused", "keepalive", "resumed"]
 
     def test_an_upstream_stream_without_comments_is_bytewise_todays(self, monkeypatch):
         script = [c for c in self._SCRIPT if not c.startswith(":")]
@@ -357,7 +361,7 @@ class TestTheStreamRelaysAServerParkInTheToolLoop:
             )
         )
         preempts = [e for e in events if isinstance(e, dict) and e.get("type") == "preempt"]
-        assert [e["state"] for e in preempts] == ["paused", "resumed"]
+        assert [e["state"] for e in preempts] == ["paused", "keepalive", "resumed"]
         assert all(e.get("source") == "server" for e in preempts)
         texts = [e["text"] for e in events if isinstance(e, dict) and e.get("type") == "content"]
         assert texts and texts[-1].endswith("Once upon a time")
