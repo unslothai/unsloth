@@ -5707,9 +5707,13 @@ def _extra_args_cache_ram(
             pass
     args = [str(a) for a in extra_args] if extra_args else []
     for i, arg in enumerate(args):
-        name, _, inline = arg.partition("=")
-        if name != "--cache-ram":
+        # Every spelling the child accepts: the -cram short form and llama.cpp's
+        # underscore normalisation of the long one, through the same normaliser
+        # the strippers use. Matching the literal --cache-ram read "-cram 0" as
+        # unset and priced the 8 GiB default for a cache the child disables.
+        if _flag_name(arg) not in _CACHE_RAM_FLAGS:
             continue
+        _, _, inline = arg.partition("=")
         value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
         try:
             found = int(value.strip())
@@ -21708,10 +21712,18 @@ class LlamaCppBackend:
                     # after every flag emitted here and llama.cpp is last-wins, so a
                     # clamp appended below would be overridden by it, and the RAM
                     # rule has to price the value the child actually runs with.
+                    # Precedence is the child's: the extras land after the field's
+                    # own flag, so a typed value beats it, and the field's flag beats
+                    # LLAMA_ARG_CACHE_RAM, which llama.cpp reads only for a flag argv
+                    # never set. Pricing the field with both present reserved 1 GiB
+                    # for a cache the extras let grow to 16.
+                    _cache_ram_typed = _extra_args_cache_ram(extra_args, {})
                     _cache_ram_in_force = (
-                        cache_ram
+                        _cache_ram_typed
+                        if _cache_ram_typed is not None
+                        else cache_ram
                         if cache_ram is not None
-                        else _extra_args_cache_ram(extra_args, os.environ)
+                        else _extra_args_cache_ram(None, os.environ)
                     )
                     if (
                         _planner_owns_fit
@@ -21877,7 +21889,11 @@ class LlamaCppBackend:
                         ),
                         "cache_ram_user_set": _cache_ram_in_force is not None,
                         # Context is reduced LAST, and only when Auto owns it.
-                        "context_policy_fit_only": bool(_spill_ctx_request),
+                        # A pass-through "-c 0" is the user's pin on the native window,
+                        # and it is appended after the -c a plan rewrites, so a shrunk
+                        # context would launch at native anyway, with --fit off and a
+                        # cache the plan never priced. Asked at native, never reduced.
+                        "context_policy_fit_only": bool(_spill_ctx_request) and ctx_override != 0,
                         "min_ctx": int(_AUTO_OFFLOAD_CTX),
                         # The prompt shape the cost gate prices. Per slot, capped at the
                         # depth the dense win was measured at (1.48x at PP 8192) and the

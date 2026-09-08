@@ -658,3 +658,51 @@ def test_a_projector_already_on_the_cpu_is_host_ram_the_planner_admits_against(
     monkeypatch.setitem(globals(), "_backend", hooked)
     _cmd, _b, seen = _launch_with(tmp_path, monkeypatch, plan)
     assert seen["inputs"]["host_ram_unpriced_bytes"] >= 3 * 1024 * MIB
+
+
+def test_every_cache_ram_spelling_the_child_accepts_is_priced():
+    """-cram is the short form and llama.cpp folds --cache_ram to --cache-ram, so
+    both select the bound in the child; read as unset, the launch priced the 8 GiB
+    default for a cache the extras had disabled and appended a clamp they override."""
+    from core.inference.llama_cpp import _extra_args_cache_ram
+
+    assert _extra_args_cache_ram(["-cram", "0"], {}) == 0
+    assert _extra_args_cache_ram(["--cache_ram=4096"], {}) == 4096
+    assert _extra_args_cache_ram(["--cache-ram", "1024", "-cram", "2048"], {}) == 2048
+    assert _extra_args_cache_ram(["--cache-ram-x", "7"], {}) is None
+    assert _extra_args_cache_ram(["-cram", "512"], {"LLAMA_ARG_CACHE_RAM": "8192"}) == 512
+
+
+def test_a_typed_cache_ram_outranks_the_field_and_the_field_outranks_the_env(
+    tmp_path, monkeypatch
+):
+    """The field's flag is emitted before the extras and llama.cpp is last-wins, so
+    a typed --cache-ram is what the child allocates; priced from the field, the RAM
+    rule reserved 1 GiB for a cache the child grows to 16."""
+    plan = Plan(changed = False, n_ctx = 8192)
+    _cmd, _backend, seen = _launch_with(
+        tmp_path, monkeypatch, plan, cache_ram = 1024, extra_args = ["--cache-ram", "16384"]
+    )
+    assert seen["inputs"]["host_ram_unpriced_bytes"] >= 16384 * MIB
+    monkeypatch.setenv("LLAMA_ARG_CACHE_RAM", "16384")
+    _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan, cache_ram = 1024)
+    assert seen["inputs"]["host_ram_unpriced_bytes"] < 16384 * MIB
+
+
+def test_a_pass_through_zero_context_pins_the_native_window_the_plan_is_priced_at(
+    tmp_path, monkeypatch
+):
+    """"-c 0" is Auto to the cap (it runs) and the planner was asked FIT_ONLY at the
+    context Auto wanted. A shrunk context rewrote the emitted -c, but the extras
+    append "-c 0" after it and llama.cpp is last-wins, so the child ran at native
+    with --fit off and a cache the plan never priced. The pin is the user's: priced
+    at native and never reduced, the rewritten -c and the trailing zero agree."""
+    plan = Plan(changed = True, n_ctx = NATIVE_CTX, ot_patterns = ("x",), spilled_blocks = (1,))
+    cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan, extra_args = ["-c", "0"])
+    assert seen["inputs"]["n_ctx"] == NATIVE_CTX
+    assert seen["inputs"]["context_policy_fit_only"] is False
+    assert _flag(cmd, "-c") == str(NATIVE_CTX)
+    assert cmd[-2:] == ["-c", "0"]
+    # Without the pin the same launch is Auto, and the planner may shrink it last.
+    _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan)
+    assert seen["inputs"]["context_policy_fit_only"] is True
