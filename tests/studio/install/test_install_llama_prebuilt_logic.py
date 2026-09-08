@@ -1051,11 +1051,14 @@ def test_replace_with_busy_retry_waits_out_a_transient_windows_lock(
     assert (destination / "payload.txt").read_text() == "payload\n"
 
 
-def test_blocked_replace_hint_only_blames_a_scanner_for_a_sharing_violation(tmp_path: Path):
-    """5 and 145 are not sharing violations and must not be reported as one.
+def test_blocked_replace_hint_offers_the_acl_repair_only_for_access_denied(tmp_path: Path):
+    """Only WinError 5 carries the ACL repair, and it keeps the lock cause too.
 
     A reporter chased a scanner that did not exist while the real cause was ACLs
-    on the install tree that denied icacls and Get-Acl themselves.
+    on the install tree that denied icacls and Get-Acl themselves. The reverse is
+    just as wrong: is_busy_lock_error, activate_staged_dir and the Node installer
+    all record 5 as a held handle, so the hint must not diagnose broken ACLs and
+    send a user into takeown /R + icacls /reset /T over a transient Defender lock.
     """
     target = tmp_path / "llama.cpp"
 
@@ -1064,8 +1067,8 @@ def test_blocked_replace_hint_only_blames_a_scanner_for_a_sharing_violation(tmp_
     assert "takeown" not in sharing_violation
 
     denied = blocked_replace_hint(5, target)
-    assert "scanner" not in denied
     assert "access is denied" in denied
+    assert "scanner" in denied
     assert f'takeown /F "{target}" /R /D Y' in denied
     assert f'icacls "{target}" /reset /T' in denied
     # Each repair command sits on its own line so it can be pasted as-is,
@@ -1076,6 +1079,7 @@ def test_blocked_replace_hint_only_blames_a_scanner_for_a_sharing_violation(tmp_
 
     not_empty = blocked_replace_hint(145, target)
     assert "scanner" not in not_empty
+    assert "takeown" not in not_empty
     assert "not empty" in not_empty
 
 
@@ -1111,7 +1115,6 @@ def test_replace_with_busy_retry_reports_denied_access_as_permissions(
     retry_lines = [line for line in logged if "blocked (5)" in line]
     assert retry_lines, logged
     assert "takeown" in retry_lines[0]
-    assert "scanner" not in retry_lines[0]
     # The ACL hint names the tree being renamed (src). The aside-move's dst is
     # a freshly generated path that does not exist yet, so repairing it could
     # never unblock the rename.

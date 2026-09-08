@@ -4234,19 +4234,21 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
 def blocked_replace_hint(winerror: object, path: Path) -> str:
     """Why a replace was blocked, chosen by the error Windows actually returned.
 
-    Only 32 (ERROR_SHARING_VIOLATION) means another process holds a handle. 5 is
-    ERROR_ACCESS_DENIED, which on this tree is usually broken ACLs, and 145 is
-    ERROR_DIR_NOT_EMPTY. Offering the scanner theory for all three sent a
-    reporter hunting a scanner that did not exist while ``icacls`` and
-    ``Get-Acl`` were themselves being denied on the directory; ``takeown`` plus
-    ``icacls /reset`` was the fix. install.ps1 already prints that hint for a
-    denied *read*, so this only brings the prebuilt installer in line with it.
+    32 (ERROR_SHARING_VIOLATION) is always a held handle, and 145 is
+    ERROR_DIR_NOT_EMPTY. 5 (ERROR_ACCESS_DENIED) is either: Defender or the
+    indexer holding a handle reports 5 too (``activate_staged_dir`` below,
+    install_node_prebuilt ``_replace_with_retry``, and ``is_busy_lock_error``
+    all treat it as busy), while broken ACLs raise it as well -- the case in
+    #9928, where ``icacls`` and ``Get-Acl`` were themselves denied on the
+    directory. So 5 names both causes and carries the repair for the second.
     Printed, never run -- repairing permissions is the user's call.
     """
     if winerror == 5:
         return (
-            "access is denied -- if it does not clear, this tree's permissions are broken. "
-            "In an elevated PowerShell, run each command:\n"
+            "access is denied -- usually a scanner, indexer or running process still "
+            "holding a handle, which clears on its own. If the retries do not clear it, "
+            "this tree's permissions are broken; in an elevated PowerShell, run each "
+            "command:\n"
             f'takeown /F "{path}" /R /D Y\n'
             f'icacls "{path}" /reset /T\n'
             "Antivirus or Controlled folder access can deny it too"
@@ -4264,9 +4266,9 @@ def replace_with_busy_retry(
 ) -> None:
     """``os.replace``, retried against transient Windows sharing violations.
 
-    WinError 5/32/145 blocks the rename; 32 means a scanner still holds a handle
-    inside the tree and clears in a second or two, while 5 and 145 have their own
-    causes (see ``blocked_replace_hint``). Without a backoff that turns an update
+    WinError 5/32/145 blocks the rename and usually clears in a second or two,
+    but the cause differs per code, so the retry line says which (see
+    ``blocked_replace_hint``). Without a backoff that turns an update
     into a failure, and on the aside-move of the *existing* install that is the
     failure this installer most needs to avoid. Mirrors the Node installer's
     ``_replace_with_retry``. Other errors raise at once, and POSIX never
