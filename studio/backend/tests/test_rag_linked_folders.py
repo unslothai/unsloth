@@ -2393,9 +2393,8 @@ def test_retirement_leaves_a_folder_linked_after_the_ownership_check(rag_home):
 def test_the_ownership_bound_survives_a_clock_that_cannot_separate_the_two(rag_home, monkeypatch):
     """Windows reads its clock in ~15.6ms steps, so both links can share one timestamp.
 
-    This froze `_now` outright, which is that quantisation taken to its limit: any bound
-    derived from the clock has to guess here, and guessing that the second link predates the
-    check retires the folders of a project recreated with the same id, permanently.
+    Freezing `_now` is that quantisation at its limit: any clock-derived bound has to guess,
+    and guessing wrong retires the folders of a project recreated with the same id, for good.
     """
     scope = store.project_scope("p1")
     monkeypatch.setattr(folder_sync, "_now", lambda: "2026-01-01T00:00:00+00:00")
@@ -2453,11 +2452,7 @@ def test_the_ownership_bound_is_applied_past_the_sqlite_parameter_cap(rag_home, 
 
 @requires_sqlite_vec
 def test_the_ownership_snapshot_survives_an_unloadable_vector_extension(rag_home, monkeypatch):
-    """Retirement is the delete path, and it already runs without sqlite-vec loaded.
-
-    The snapshot the bound is built from has to hold to that too, or a project delete starts
-    failing exactly when the extension is missing, which is when it least can.
-    """
+    """Retirement already runs without sqlite-vec loaded, so the snapshot must too."""
     scope = store.project_scope("p1")
     source = rag_home / "linked"
     source.mkdir()
@@ -2466,8 +2461,8 @@ def test_the_ownership_snapshot_survives_an_unloadable_vector_extension(rag_home
     def unavailable():
         raise sqlite3.OperationalError("cannot load sqlite-vec")
 
-    # scoped, not monkeypatch.undo(): rag_home patches through the same fixture, and undoing
-    # it here would put the database path back before the assertions read it
+    # scoped, not monkeypatch.undo(): rag_home patches through the same fixture, so undoing
+    # here would restore the database path before the assertions read it
     with monkeypatch.context() as no_vec:
         no_vec.setattr(folder_sync.rag_db, "get_connection", unavailable)
         owned = folder_sync.linked_folder_ids(scope)

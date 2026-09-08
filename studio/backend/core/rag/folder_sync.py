@@ -571,8 +571,8 @@ def _id_chunks(folder_ids: list[str]) -> list[list[str]]:
 def linked_folder_ids(scope: str) -> list[str]:
     """The folders a scope owns right now, for bounding a later retirement to them.
 
-    Metadata connection, like retirement itself: the caller runs on the delete path, which
-    has to finish even when the vector extension cannot load.
+    Metadata connection, like retirement itself: the delete path has to finish even when the
+    vector extension cannot load.
     """
     with closing(rag_db.get_metadata_connection()) as conn:
         if not _metadata_table_exists(conn, "linked_folders"):
@@ -594,12 +594,10 @@ def _retire_scope_rows(
         "INSERT OR IGNORE INTO linked_folder_retired_scopes(scope, retired_at) VALUES(?, ?)",
         (scope, _now()),
     )
-    # The ownership check and this write cannot share a transaction across two databases, so
-    # the caller bounds the write to the folders it saw. Identity, not a timestamp: Windows
-    # reads its clock in ~15.6ms steps, so a folder linked by another process just after the
-    # check carries the check's own created_at, and any comparison has to guess which side of
-    # the boundary it belongs on. Guessing wrong here retires the new folders of a project
-    # recreated with the same id, and nothing ever puts them back.
+    # The ownership check and this write cannot share a transaction across two databases, so the
+    # caller bounds the write to the folders it saw. Identity, not created_at: Windows reads its
+    # clock in ~15.6ms steps, so a folder linked just after the check carries the check's own
+    # timestamp, and retiring it disables RAG for a project recreated with the same id, for good.
     # None means no bound at all; an empty list means the caller saw no folders.
     batches = [None] if folder_ids is None else _id_chunks(folder_ids)
     for batch in batches:
