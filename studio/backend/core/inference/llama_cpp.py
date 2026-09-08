@@ -32325,6 +32325,9 @@ class LlamaCppBackend:
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
         stream_payload["max_tokens"] = _final_max_tokens
+        # What this attempt may write before the admission bound: kept apart from the
+        # payload so a re-cost that raises the allowance is not held under the last cap.
+        _final_attempt_cap = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop
         _apply_seeded_llama_request(stream_payload, seed)
@@ -32359,7 +32362,7 @@ class LlamaCppBackend:
                 _refit_tail_merged = True
 
         def _refit_final_after_respawn() -> None:
-            nonlocal conversation
+            nonlocal conversation, _final_attempt_cap
             _before_respawn_fit = conversation
             if (
                 _final_preflight_context_length is None
@@ -32371,7 +32374,10 @@ class LlamaCppBackend:
             ):
                 return
             if max_tokens is None:
-                stream_payload["max_tokens"] = self._effective_context_length
+                # The replacement window is the new base: a later re-cost must not
+                # restore a cap the dead server's window allowed.
+                _final_attempt_cap = self._effective_context_length
+                stream_payload["max_tokens"] = _final_attempt_cap
                 if admission_output_allowance is not None:
                     stream_payload["max_tokens"] = min(
                         stream_payload["max_tokens"], admission_output_allowance
@@ -32584,11 +32590,11 @@ class LlamaCppBackend:
                         admission_output_allowance = _final_recosted_allowance
                 except Exception:  # accounting must never break a run in progress
                     logger.debug("tool loop final recost failed", exc_info = True)
-            # After it, so a continuation that rewrote the cap is bounded too.
+            # After it, so a continuation that rewrote the cap is bounded too. Rebuilt from
+            # the attempt cap, not narrowed from the last payload: a continuation whose
+            # prompt reached its share earns the flat allowance the re-cost above paid for.
             if admission_output_allowance is not None:
-                stream_payload["max_tokens"] = min(
-                    stream_payload["max_tokens"], admission_output_allowance
-                )
+                stream_payload["max_tokens"] = min(_final_attempt_cap, admission_output_allowance)
             try:
                 with self._open_chat_stream_with_respawn_retry(
                     stream_payload,
@@ -32799,6 +32805,7 @@ class LlamaCppBackend:
                             stream_payload["continue_final_message"] = True
                             stream_payload["add_generation_prompt"] = False
                             if _next_cap is not None:
+                                _final_attempt_cap = _next_cap
                                 stream_payload["max_tokens"] = _next_cap
                             # Folded in only now, else the reported usage counts the last
                             # fragment alone.
@@ -32922,6 +32929,7 @@ class LlamaCppBackend:
                                 stream_payload.pop("continue_final_message", None)
                                 stream_payload.pop("add_generation_prompt", None)
                                 if _next_cap_r is not None:
+                                    _final_attempt_cap = _next_cap_r
                                     stream_payload["max_tokens"] = _next_cap_r
                                 if _off_kw is not None:
                                     stream_payload["chat_template_kwargs"] = _off_kw

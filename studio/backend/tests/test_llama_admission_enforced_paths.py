@@ -328,6 +328,36 @@ class TestTheGeneratorsSendIt:
         assert seen[1] >= seen[0], "the retry should carry at least the first attempt's prompt"
         assert _caps(payloads)[1:] == [_SHARE - 100, _SHARE - 700]
 
+    def test_a_continuation_that_earned_a_bigger_allowance_gets_it(self, monkeypatch):
+        """The re-cost is the cap, not a ceiling the previous attempt keeps lowering.
+
+        Replaying a truncated answer moves the prompt to or above its share, where the
+        allowance stops being `share - prompt` and becomes the flat unstated figure. The
+        lease is re-costed for it before the hook returns, so a continuation held to the
+        previous attempt's smaller cap stops short of an answer already paid for.
+        """
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _tool_call("web_search", {"query": "kernel"}, "c1"),
+                [_sse({"content": "6.10 and then some"}), _finish("length"), _done()],
+                [_sse({"content": " more"}), _done()],
+            ],
+            payloads,
+        )
+        monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 10)
+        recosted = iter([None, _SHARE - 900, _SHARE - 100])
+        _run_tool_loop(
+            monkeypatch,
+            payloads,
+            backend = backend,
+            admission_output_allowance = _SHARE,
+            on_conversation_grew = lambda _messages, _tools: next(recosted, None),
+        )
+
+        assert _caps(payloads)[1:] == [_SHARE - 900, _SHARE - 100], _caps(payloads)
+
 
 def _backend_stub(*, window, total, slots):
     return SimpleNamespace(
@@ -973,6 +1003,45 @@ class TestTheAnthropicSurface:
         assert captured["max_tokens"] is not None
         assert captured["max_tokens"] <= 16384 // 4, captured
         assert captured["allowance"] == captured["max_tokens"]
+
+    def test_the_plain_chat_is_reserved_from_the_finalized_prompt(self, monkeypatch):
+        """Charged and permitted must be the same prompt, as the GGUF chat paths do.
+
+        The date prompt is spliced in after the payload, so a raw prompt just under its
+        share is sent at or above one, where the bound is the flat unstated allowance
+        rather than `share - prompt`. Reserving from the raw payload charged one share for
+        a request the wire lets write a share plus another 1024.
+        """
+        seen: dict = {}
+        self._install(monkeypatch, seen)
+        monkeypatch.setattr(
+            inf_mod, "current_date_prompt_line", lambda *_a, **_k: "Today's date is 2026-09-08."
+        )
+        charged: list[int] = []
+        _tokens = inf_mod._openai_llama_admission_tokens
+
+        def _spy(payload, **kwargs):
+            value = _tokens(payload, **kwargs)
+            charged.append(value)
+            return value
+
+        monkeypatch.setattr(inf_mod, "_openai_llama_admission_tokens", _spy)
+        share = 16384 // 4
+        # Sized so the raw payload sits under its share and the finalized prompt over it.
+        payload = AnthropicMessagesRequest(
+            max_tokens = 16384,
+            messages = [{"role": "user", "content": "word " * 3260}],
+        )
+        raw = _openai_llama_admission_prompt_tokens(payload)
+
+        asyncio.run(anthropic_messages(payload, request = _AnthropicRequest(), current_subject = "t"))
+
+        sent = seen["plain"]["messages"]
+        prompt = _openai_llama_admission_wire_prompt_tokens(sent)
+        allowance = seen["plain"]["admission_output_allowance"]
+        assert raw < share <= prompt, (raw, share, prompt)
+        assert allowance == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, allowance
+        assert charged and charged[0] >= prompt + allowance, (charged, prompt, allowance)
 
     def test_the_tool_generator_is_bounded(self, monkeypatch):
         seen: dict = {}

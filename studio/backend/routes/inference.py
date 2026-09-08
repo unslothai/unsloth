@@ -31225,15 +31225,23 @@ async def anthropic_messages(
             cancel_event = cancel_event,
         )
 
-    async def _admitted_anthropic(coro, *, tool_loop: bool = False):
+    async def _admitted_anthropic(
+        coro,
+        *,
+        tool_loop: bool = False,
+        wire_tools = None,
+    ):
         try:
             reservation, admission_config = _openai_llama_admission_reserve(
                 request = request,
                 llama_backend = llama_backend,
                 payload = payload,
                 tool_loop = tool_loop,
-                # Only the tool branch resolves a catalogue; the plain branch sends none.
-                injected_tools = openai_tools if tool_loop else None,
+                # The messages and catalogue actually sent, as the GGUF paths reserve from:
+                # the date prompt spliced in here can carry a prompt to its share, where the
+                # wire bound becomes the flat allowance, and the raw payload charged a share.
+                conversation = openai_messages,
+                injected_tools = wire_tools,
             )
             if tool_loop:
                 _anthropic_admission_hold["reservation"] = reservation
@@ -31369,7 +31377,9 @@ async def anthropic_messages(
                     auto_heal_tool_calls = payload.auto_heal_tool_calls,
                     parse_think = _think_parsing_expected(llama_backend, payload),
                     **_anthropic_reasoning_args(payload),
-                )
+                ),
+                # Forwarded verbatim, so the reservation must carry them too.
+                wire_tools = openai_tools,
             )
         return await _admitted_anthropic(
             _anthropic_passthrough_non_streaming(
@@ -31397,7 +31407,8 @@ async def anthropic_messages(
                 # Not `max_tokens` above: the retry needs to know whether a bound applies.
                 admission_output_allowance = _anthropic_passthrough_allowance,
                 **_anthropic_reasoning_args(payload),
-            )
+            ),
+            wire_tools = openai_tools,
         )
 
     # Shared provenance: the generator counts the leading <think> wraps it
@@ -31558,6 +31569,7 @@ async def anthropic_messages(
                 ),
                 # Same server-side loop the chat route runs, up to 25 rounds on one lease.
                 tool_loop = True,
+                wire_tools = openai_tools,
             )
         return await _admitted_anthropic(
             _anthropic_tool_non_streaming(
@@ -31572,6 +31584,7 @@ async def anthropic_messages(
                 cancel_event = cancel_event,
             ),
             tool_loop = True,
+            wire_tools = openai_tools,
         )
 
     # ── No-tool path ──────────────────────────────────────────
