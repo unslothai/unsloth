@@ -808,17 +808,23 @@ _claim_studio_root() {
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
        && ! _claim_sentinel "$VENV_DIR/.unsloth-studio-owned" \
        && ! _claim_sentinel "$STUDIO_HOME/share/studio.conf"; then
-        # The globs are the whole emptiness check, so a caller's `sh -f` would make every
-        # workspace look empty and get it claimed. Saved and restored like _dir_has_entries.
-        _claim_glob=on
-        case $- in *f*) _claim_glob=off ;; esac
-        set +f
-        _claim_empty=true
-        for _claim_entry in "$STUDIO_HOME"/* "$STUDIO_HOME"/.[!.]* "$STUDIO_HOME"/..?*; do
-            if [ -e "$_claim_entry" ] || [ -L "$_claim_entry" ]; then _claim_empty=false; break; fi
-        done
-        [ "$_claim_glob" = off ] && set -f
-        [ "$_claim_empty" = true ] || return 0
+        if [ -d "$STUDIO_HOME" ]; then
+            # Not enumerable: the globs cannot expand without read and every test below fails
+            # without search, so an occupied workspace would read as empty. Fail closed like
+            # _dir_has_entries; this answer authorizes a marker that authorizes a delete.
+            { [ -r "$STUDIO_HOME" ] && [ -x "$STUDIO_HOME" ]; } || return 0
+            # The globs are the whole emptiness check, so a caller's `sh -f` would make every
+            # workspace look empty and get it claimed. Saved and restored like _dir_has_entries.
+            _claim_glob=on
+            case $- in *f*) _claim_glob=off ;; esac
+            set +f
+            _claim_empty=true
+            for _claim_entry in "$STUDIO_HOME"/* "$STUDIO_HOME"/.[!.]* "$STUDIO_HOME"/..?*; do
+                if [ -e "$_claim_entry" ] || [ -L "$_claim_entry" ]; then _claim_empty=false; break; fi
+            done
+            [ "$_claim_glob" = off ] && set -f
+            [ "$_claim_empty" = true ] || return 0
+        fi
     fi
     mkdir -p "$STUDIO_HOME" 2>/dev/null || true
     # Unlink first, then confirm it. The redirection follows a symlink at that path and
@@ -3001,8 +3007,12 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
     # not blocked. Sentinels must be regular files: -f follows symlinks
     # to files (the legitimate ln -s shim shape) but rejects directories
     # and broken/dir-targeted symlinks.
+    # The root marker goes through _claim_sentinel, not -f: the claim refuses to write one
+    # through a link, so reading one through a link here would let a foreign workspace past the
+    # very guard that decision exists to back. The older sentinels keep -f on purpose, since
+    # bin/unsloth is legitimately a symlink into the venv.
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
-       && [ ! -f "$STUDIO_HOME/.unsloth-studio-owned" ] \
+       && ! _claim_sentinel "$STUDIO_HOME/.unsloth-studio-owned" \
        && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
        && [ ! -f "$STUDIO_HOME/share/studio.conf" ] \
        && [ ! -f "$STUDIO_HOME/bin/unsloth" ]; then

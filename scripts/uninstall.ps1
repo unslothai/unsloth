@@ -944,7 +944,13 @@ Environment:
     }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    $stopRoots = @($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
+    # $ownedRoots, not $knownRoots. _StopProcessesLockingRoots force-stops every process running
+    # from under what it is given, and it runs before the gates, so a root this run then refuses
+    # would have processes killed for a tree left standing. That reaches further than a mistyped
+    # variable: a stale studio.conf can name a directory another application has since taken
+    # over, and _RootFromConf only started resolving one when Split-Path stopped throwing.
+    # $knownRoots stays whole for _StopByPortFile, which uses it to VERIFY a port file's owner.
+    $stopRoots = @($ownedRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
     # Reparse expansion is gated on ownership too, and for the same reason: following a link
     # turns one path into generic subdirectories of wherever it points -- node, bin,
     # unsloth_studio -- and on a stale root that is a relative symlink, that is somebody's

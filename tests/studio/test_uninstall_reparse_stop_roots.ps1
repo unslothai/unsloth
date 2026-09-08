@@ -53,6 +53,11 @@ Check "and that list is filtered by the ownership gate" `
 # processes killed for a tree that is then left standing.
 Check "and by the deny list, which the removal loop also refuses on" `
     ($ps1Text -match '(?s)\$ownedRoots = @\(\).*?-not \(_IsUnsafeRoot \$defaultStudioHome\)')
+# The plain roots too, and for the same reason: _RootFromConf only started resolving a root from
+# studio.conf when Split-Path stopped throwing, and a stale conf can name a directory another
+# application has taken over. $knownRoots stays whole for _StopByPortFile, which only verifies.
+Check "the stop scan is given the gated roots, not every known one" `
+    ($ps1Text -match '(?m)^\s*\$stopRoots = @\(\$ownedRoots\) \+')
 # The legacy <parent>\stable-diffusion.cpp sibling is derived from the same corrected
 # Split-Path, and the scan that receives it also runs before the gates.
 Check "the legacy sd.cpp stop root is gated the same way" `

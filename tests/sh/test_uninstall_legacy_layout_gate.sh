@@ -253,6 +253,23 @@ else
                 *) echo "  PASS: and the caller's globbing setting is restored"; PASS=$((PASS+1)) ;;
     esac
 
+    # Writable and searchable but not readable: the globs cannot enumerate it, so an occupied
+    # workspace would read as empty and be claimed.
+    STUDIO_HOME="$_TMP_ROOT/claim_unreadable"
+    # shellcheck disable=SC2034  # read by the extracted _claim_studio_root
+    VENV_DIR="$STUDIO_HOME/unsloth_studio"
+    _STUDIO_HOME_REDIRECT="env"
+    mkdir -p "$STUDIO_HOME"
+    : > "$STUDIO_HOME/notes.txt"
+    chmod 300 "$STUDIO_HOME"
+    _claim_studio_root
+    chmod 700 "$STUDIO_HOME"
+    if [ -f "$STUDIO_HOME/.unsloth-studio-owned" ]; then
+        echo "  FAIL: an unreadable workspace read as empty and was claimed"; FAIL=$((FAIL+1))
+    else
+        echo "  PASS: an unreadable workspace is treated as occupied"; PASS=$((PASS+1))
+    fi
+
     # Called twice per install: the second call must not unlink a marker the first one wrote.
     STUDIO_HOME="$_TMP_ROOT/claim_twice"
     VENV_DIR="$STUDIO_HOME/unsloth_studio"
@@ -311,6 +328,14 @@ fi
 # it reads the root marker the same run wrote. Structural, because the guard is a condition in
 # the middle of the install and running one here is not practical.
 _guard=$(sed -n '/why: matching guard to the .venv branch below/,/Move it aside or choose an empty/p' "$INSTALL_SH")
+# ... and reads it the same way the claim writes it, or a link gets a foreign workspace past the
+# guard the claim's own refusal exists to back.
+_guard_pat2="_claim_sentinel \"[\$]STUDIO_HOME/[.]unsloth-studio-owned\""
+if printf '%s' "$_guard" | grep -q "$_guard_pat2"; then
+    echo "  PASS: and through _claim_sentinel, not -f"; PASS=$((PASS+1))
+else
+    echo "  FAIL: the retry guard reads the root marker with -f, which follows a link"; FAIL=$((FAIL+1))
+fi
 # Built, not written literally, so the dollar stays a character rather than reading as an
 # expansion here: the guard's SOURCE text is what is being searched.
 _guard_pat="[\$]STUDIO_HOME/[.]unsloth-studio-owned"

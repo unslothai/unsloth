@@ -4494,7 +4494,10 @@ exit 0
         # ours. Content-checked, never by name -- this guard gates a recursive delete.
         if (
             $StudioRedirectMode -eq 'env' -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome ".unsloth-studio-owned") -PathType Leaf) -and
+            # Test-StudioPlainFile, not Test-Path: the claim refuses to write a marker through a
+            # link, so reading one through a link here would let a foreign workspace past the
+            # very guard that decision exists to back. The older sentinels keep Test-Path.
+            -not (Test-StudioPlainFile -Path (Join-Path $StudioHome ".unsloth-studio-owned")) -and
             -not (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf) -and

@@ -280,6 +280,10 @@ try {
     Check "install.ps1 has an env-mode replacement guard" ($guard.Length -gt 0)
     Check "and it reads the root marker" `
         ($guard -match [regex]::Escape('Join-Path $StudioHome ".unsloth-studio-owned"'))
+    # ... the same way the claim writes it, or a link gets a foreign workspace past the guard
+    # the claim's own refusal exists to back.
+    Check "and through Test-StudioPlainFile, not Test-Path" `
+        ($guard -match [regex]::Escape('Test-StudioPlainFile -Path (Join-Path $StudioHome ".unsloth-studio-owned")'))
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
