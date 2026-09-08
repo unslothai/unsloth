@@ -521,10 +521,20 @@ function Start-Studio([string] $python, [int] $port, [string] $logPath) {
 
 function Stop-Studio([int] $port) {
     <# Stop the Studio answering on $port, children (llama-server, workers) first. #>
+    # Only the listeners that can be serving the endpoint Test-StudioResponding
+    # actually verified, which is http://127.0.0.1:$port. -LocalPort on its own
+    # returns every listener holding that port on any local address, and this
+    # function force-stops each owner AND its children: a process listening on
+    # ::1 or on a LAN address would have been killed as an unverified stranger,
+    # which is the same mistake the /api/liveness identity check exists to
+    # prevent. IPV6_V6ONLY defaults to enabled on Windows, so an IPv6 listener
+    # cannot be the one that answered 127.0.0.1 (Microsoft, "Dual-Stack Sockets
+    # for IPv6 Winsock Applications"); 0.0.0.0 can be, and is kept.
     $owners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+        Where-Object { $_.LocalAddress -eq '127.0.0.1' -or $_.LocalAddress -eq '0.0.0.0' } |
         Select-Object -ExpandProperty OwningProcess -Unique)
     if (-not $owners) {
-        Write-Warning "Studio answers on port $port but no local process listens there; it cannot be restarted from here"
+        Write-Warning "Studio answers on http://127.0.0.1:$port but no local process listens on 127.0.0.1 or 0.0.0.0 there; it cannot be restarted from here"
         return $false
     }
     foreach ($owner in $owners) {
@@ -737,7 +747,15 @@ function Save-Baseline([string] $dir) {
 #
 # Returns $true (fired), $false (did not fire) or $null (no control could be
 # built, so the question was not asked).
-function Test-AuditPolicyEvaluating {
+#
+# $AcceptIds is what counts as the control firing, and the two callers do not
+# want the same answer. Under an installed audit policy a 3076 is the expected
+# result and a 3077 is the stronger one, so both count. For Smart App Control
+# with no audit policy the claim being tested is that unsigned code is REFUSED,
+# and only a 3077 shows that: Smart App Control in evaluation mode logs nothing
+# to this channel, so a 3076 there was written by some other audit policy on the
+# machine and says nothing about enforcement.
+function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077)) {
     $dir = Join-Path $WorkDir ".control-$Label"
     Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -774,9 +792,10 @@ function Test-AuditPolicyEvaluating {
             $fired = @(Get-WinEvent -FilterHashtable @{
                 LogName = $CI_LOG; StartTime = $since
             } -ErrorAction SilentlyContinue |
-                Where-Object { ($_.Id -eq 3076 -or $_.Id -eq 3077) -and $_.Message -like '*unsigned-control*' })
+                Where-Object { $AcceptIds -contains $_.Id -and $_.Message -like '*unsigned-control*' })
             if ($fired.Count -gt 0) {
-                Write-Host "positive control raised $($fired[0].Id): the policy is evaluating loads on this machine"
+                $what = if ($fired[0].Id -eq 3077) { 'refused on this machine' } else { 'evaluated on this machine' }
+                Write-Host "positive control raised $($fired[0].Id): unsigned code is $what"
                 return $true
             }
         }
@@ -1010,9 +1029,12 @@ function Invoke-Prepare {
         $sacBefore = Get-SacState
         if ($sacBefore.Mode -eq 'enforcement') {
             Write-Section 'Positive control'
-            $sacFired = Test-AuditPolicyEvaluating
+            # 3077 only. A 3076 here would have been logged by some other audit
+            # policy on the machine, and an audit is by definition not the
+            # refusal this cell's allow verdict rests on.
+            $sacFired = Test-AuditPolicyEvaluating -AcceptIds @(3077)
             if ($false -eq $sacFired) {
-                throw "Smart App Control reads as 'enforcement' but an unsigned control binary ran here without raising a 3076 or 3077, so nothing is refusing unsigned code on this boot and a window with no events would be meaningless. Re-run prepare with -AuditPolicy, or on a machine where enforcement is live."
+                throw "Smart App Control reads as 'enforcement' but an unsigned control binary ran here without being refused with a 3077, so nothing is enforcing against unsigned code on this boot and a window with no events would be meaningless. Re-run prepare with -AuditPolicy, or on a machine where enforcement is live."
             }
             # Add-Member, not an assignment: a baseline reused from an earlier
             # prepare of this label predates the field, and setting a property a
@@ -1157,9 +1179,11 @@ function Invoke-Run {
             if (($bootedAt -and $preparedAt -and $bootedAt -gt $preparedAt) -or
                 ($true -ne $runBaseline.SacControlFired)) {
                 Write-Host 'confirming on this boot that unsigned code is actually refused here'
-                $sacFired = Test-AuditPolicyEvaluating
+                # 3077 only, for the reason prepare gives: an audit event is not
+                # a refusal, and a 3076 here belongs to somebody else's policy.
+                $sacFired = Test-AuditPolicyEvaluating -AcceptIds @(3077)
                 if ($false -eq $sacFired) {
-                    throw "Smart App Control reads as 'enforcement' but an unsigned control ran on this boot without raising a 3076 or 3077, so it is not refusing unsigned code and this run would be meaningless. Run revert and prepare again."
+                    throw "Smart App Control reads as 'enforcement' but an unsigned control ran on this boot without being refused with a 3077, so it is not enforcing against unsigned code and this run would be meaningless. Run revert and prepare again."
                 }
                 $runBaseline | Add-Member -NotePropertyName SacControlFired -NotePropertyValue $sacFired -Force
                 $runBaseline | ConvertTo-Json -Depth 6 |

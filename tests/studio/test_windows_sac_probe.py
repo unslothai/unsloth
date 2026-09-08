@@ -1083,8 +1083,10 @@ def test_prepare_proves_the_audit_policy_actually_evaluates_loads():
     ]
     assert "-OutputType ConsoleApplication" in fn
     # An enforcing machine refuses the control outright: that 3077 is stronger
-    # evidence of evaluation than the 3076 an audit-only machine produces.
-    assert "$_.Id -eq 3076 -or $_.Id -eq 3077" in fn
+    # evidence of evaluation than the 3076 an audit-only machine produces, and
+    # under an installed audit policy either answers the question.
+    assert "function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077)) {" in fn
+    assert "$AcceptIds -contains $_.Id" in fn
     # Polled, not slept once, and never staged into the evidence.
     assert "foreach ($attempt in 1..10)" in fn
     assert "Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue" in fn
@@ -1553,3 +1555,43 @@ def test_a_spent_baseline_is_never_written_back_over_the_machine():
     assert revert.index("Clear-EfiOwnership") < guard
     assert guard < revert.index("Write-Section 'Restore CodeIntegrity log'")
     assert guard < revert.index("if ($baseline.AuditPolicyApplied) {")
+
+
+def test_the_sac_positive_control_counts_only_an_enforced_refusal():
+    """The audit-policy path wants a 3076 or a 3077; the Smart App Control path
+    is testing that unsigned code is REFUSED, and only a 3077 shows that.
+    Evaluation mode logs nothing to this channel, so a 3076 there was written by
+    some other audit policy and says nothing about enforcement."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    assert "function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077)) {" in ps1
+    fn = ps1[ps1.index("function Test-AuditPolicyEvaluating") : ps1.index("function Invoke-Prepare")]
+    assert "$AcceptIds -contains $_.Id" in fn
+    assert "$_.Id -eq 3076 -or $_.Id -eq 3077" not in fn
+    # Both Smart App Control call sites pin 3077; the audit-policy ones do not.
+    assert ps1.count("Test-AuditPolicyEvaluating -AcceptIds @(3077)") == 2
+    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    assert "$controlFired = Test-AuditPolicyEvaluating\n" in prepare
+    assert "$sacFired = Test-AuditPolicyEvaluating -AcceptIds @(3077)" in prepare
+    run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
+    assert "$controlFired = Test-AuditPolicyEvaluating\n" in run
+    assert "$sacFired = Test-AuditPolicyEvaluating -AcceptIds @(3077)" in run
+    # And neither refusal message still offers a 3076 as proof of enforcement.
+    for msg in (prepare, run):
+        assert "without raising a 3076 or 3077, so nothing is refusing" not in msg
+    assert ps1.count("without being refused with a 3077") == 2
+
+
+def test_only_the_verified_loopback_listener_is_ever_stopped():
+    """Test-StudioResponding verifies http://127.0.0.1:$port, but -LocalPort on
+    its own returns every listener holding that port on any local address, and
+    this function force-stops each owner and its children. A process on ::1 or a
+    LAN address would have been killed as an unverified stranger."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    stop = ps1[ps1.index("function Stop-Studio") : ps1.index("function Initialize-Studio")]
+    assert "$_.LocalAddress -eq '127.0.0.1' -or $_.LocalAddress -eq '0.0.0.0'" in stop
+    # Filtered before any owner is collected, let alone stopped.
+    assert stop.index("LocalAddress") < stop.index("Stop-Process")
+    # No owner that can serve the verified endpoint means refuse, not kill all.
+    assert stop.index("LocalAddress") < stop.index("if (-not $owners) {")
+    # The endpoint the liveness check actually verified.
+    assert "http://127.0.0.1:$port/api/liveness" in ps1
