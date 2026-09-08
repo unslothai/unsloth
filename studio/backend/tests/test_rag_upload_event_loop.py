@@ -111,7 +111,12 @@ def _files() -> dict:
     return {"file": ("notes.txt", PAYLOAD, "text/plain")}
 
 
-def _assert_loop_stayed_free(response, served: int, worst: float, what: str = "upload") -> None:
+def _assert_loop_stayed_free(
+    response,
+    served: int,
+    worst: float,
+    what: str = "upload",
+) -> None:
     assert response.status_code == 200
     assert served >= SERVED_FLOOR, (
         f"only {served} of the polled requests completed during the {what}; "
