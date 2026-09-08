@@ -6725,12 +6725,11 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
 def _live_carveout_advice(llama_backend: LlamaCppBackend) -> Optional[dict]:
     """The recorded carve-out advice, unless it has been dismissed since the load.
 
-    The launch-time dismissal gate cannot cover the already-resident path: picking a
-    model that is still up answers from ``_reuse_loaded_gguf`` without launching
-    anything, so the response carried whatever the ORIGINAL launch recorded and a
-    dismissal taken in between was ignored -- the notice came straight back. Re-read
-    here rather than cleared on dismissal, since the settings route holds no
-    reference to the backend.
+    The launch-time gate cannot cover the already-resident path: picking a model that
+    is still up answers from ``_reuse_loaded_gguf`` without launching, so a dismissal
+    taken in between was ignored and the notice came straight back. Re-read here
+    rather than cleared on dismissal, since the settings route holds no reference to
+    the backend.
     """
     advice = getattr(llama_backend, "last_carveout_advice", None)
     if not advice:
@@ -6740,8 +6739,8 @@ def _live_carveout_advice(llama_backend: LlamaCppBackend) -> Optional[dict]:
         if notice_already_dismissed(advice.get("current_gb")):
             return None
     except Exception:
-        # Same rule as the rest of this feature: a failure here must not affect a
-        # load that succeeded, and showing the notice once more is the safe side.
+        # A failure here must not affect a load that succeeded, and showing the notice
+        # once more is the safe side.
         pass
     return advice
 
@@ -6771,10 +6770,9 @@ def _gguf_load_response(
         # weights outgrow fast memory, so the client can say why generation is slow.
         # getattr: older/custom backend doubles predate this additive field.
         memory_warning = getattr(llama_backend, "last_load_warning", None),
-        # Also advisory and also usually None: the integrated GPU's dedicated memory
-        # is smaller than this model's weights, which the user can change and we
-        # cannot. Re-checked against the dismissal store, since this response is also
-        # what the already-resident path returns.
+        # Also advisory and usually None: the integrated GPU's dedicated memory is
+        # smaller than the weights. Re-checked against the dismissal store, since the
+        # already-resident path returns this response too.
         carveout_advice = _live_carveout_advice(llama_backend),
         **_llama_runtime_fields(llama_backend),
     )

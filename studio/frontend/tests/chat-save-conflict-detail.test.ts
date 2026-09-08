@@ -67,9 +67,8 @@ function harness(response: ReturnType<typeof jsonResponse>) {
       "./gguf-variants-request": {},
       "./padded-response": { assertCompletedPaddedBody: () => {} },
       "@/features/hf-auth": { prepareHfTokenForUse: async () => undefined },
-      // loadModel hands every load's advice field to the notice, including the
-      // loads that carry none. This harness names chat-api's imports exactly, so
-      // the stub has to exist even though nothing here raises a toast.
+      // loadModel calls the notice on every load, and this harness names chat-api's
+      // imports exactly, so the stub must exist even though no toast is raised here.
       "@/features/igpu-carveout": {
         dismissCarveoutAdviceForModel: () => {},
         showCarveoutAdvice: () => {},

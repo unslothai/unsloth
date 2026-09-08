@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// bundler-resolver's two rules, plus two redirects the carve-out notice needs at
-// once: "@/lib/toast" -> toast-stub.mjs, which records the whole options bag (the
-// id, the duration and the action the dismissal hangs on, none of which the
-// store-stubs toast keeps), and "@/features/auth" -> the store stub, so the
-// dismissal POST is observed instead of reaching the network.
+// bundler-resolver's two rules, plus the two redirects this notice needs at once:
+// "@/lib/toast" -> toast-stub.mjs, which records the whole options bag (id, duration,
+// action -- none of which the store-stubs toast keeps), and "@/features/auth" -> the
+// store stub, so the dismissal POST never reaches the network.
 //
 // Its own resolver rather than registering the toast and store-stub ones together:
-// whichever runs first resolves "@/..." to a real path, and the other never sees
-// the bare specifier to redirect.
+// whichever ran first would resolve "@/..." to a real path, hiding the bare specifier
+// from the other.
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 

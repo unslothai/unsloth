@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The dialog quotes numbers back at the user, so a partial or hostile payload
-// must produce no dialog at all rather than one reading "undefined GB".
+// The notice quotes numbers back at the user, so a partial or hostile payload must
+// produce nothing at all rather than something reading "undefined GB".
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -32,8 +32,7 @@ test("a complete payload parses", () => {
 });
 
 test("absent advice is not an error", () => {
-  // The field is missing on nearly every load, so the caller passes it through
-  // unconditionally and this must simply say "nothing to show".
+  // Missing on nearly every load, and the caller passes it through unconditionally.
   for (const empty of [null, undefined, "", 0, false]) {
     assert.equal(parseCarveoutAdvice(empty), null);
   }

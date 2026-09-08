@@ -1,30 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The integrated-GPU memory advice, as a toast rather than a modal.
+// The integrated-GPU memory advice, as a toast rather than a modal: the model has
+// already loaded, nothing is being asked, and there is no decision to block on, so a
+// modal would dim the app and eat the next click for a setting the user cannot change
+// from here. Every other "worth knowing, carry on" notice in Studio is a toast.
 //
-// It was an AlertDialog first, which was wrong for what this is: the model has
-// already loaded, nothing is being asked, and there is no decision to block on. A
-// modal dims the app and takes the next click no matter what the user was doing,
-// for a notice about a setting they cannot change from here anyway. Every other
-// "worth knowing, carry on" notice in Studio is a toast (the download start, the
-// Xet 0% explanation, the kept-sandbox offer), so this is one too.
-//
-// No store and no mounted component: the toast owns its own text for as long as it
-// is up, so there is no state to keep or to invalidate, which is what the dialog's
-// store existed for.
+// No store and no mounted component either: the toast owns its text for as long as it
+// is up, so there is no state to keep or invalidate.
 
 import { toast } from "@/lib/toast";
 
 import { dismissCarveoutNotice } from "./api/igpu-carveout-notice";
 import { parseCarveoutAdvice } from "./types";
 
-/** One id for the notice, so a second load REPLACES rather than stacks.
- *
- * The dialog deliberately refused to swap its text under the user's cursor. A toast
- * is the other way round: it is transient and it describes the model that just
- * loaded, so the newest load is the one worth showing, and a stack of two would sit
- * over the composer describing a model that is no longer resident. */
+/** One id for the notice, so a second load REPLACES rather than stacks: it is
+ *  transient and describes the model that just loaded, so a stack of two would sit
+ *  over the composer describing a model that is no longer resident. */
 export const IGPU_CARVEOUT_TOAST_ID = "igpu-carveout-notice";
 
 /** Longer than the Toaster's 5s default, like the other explanatory toasts, and
@@ -35,59 +27,43 @@ export const IGPU_CARVEOUT_NOTICE_TITLE = "This model could run faster";
 
 /** The action, outlined and right-aligned rather than sonner's filled default.
  *
- * Two things it fixes, both visible in a screenshot before anything else. A solid
- * button reads as the thing to do, and the thing to do here is nothing: the model
- * has loaded, and the setting is in someone's firmware. An outline says "a control"
- * without saying "act now".
- *
- * And the shared toast CSS puts an action at `justify-self: start`, which is right
- * when the description is one line and wrong under six: the button ends up floating
- * mid-toast, aligned to neither edge. `!justify-self-end` walks it out to the text
- * column's right edge. Overriding here rather than in that shared rule on purpose:
- * every other toast's action IS the thing to do. */
+ * A solid button reads as the thing to do, and the thing to do here is nothing. And
+ * the shared toast CSS puts an action at `justify-self: start`, which under six lines
+ * of description floats it mid-toast, aligned to neither edge. Overridden here rather
+ * than in that shared rule because every other toast's action IS the thing to do. */
 export const IGPU_CARVEOUT_ACTION_CLASS =
   "!justify-self-end !h-[26px] !border !border-border !bg-transparent !px-3 " +
   "!font-medium !text-foreground hover:!bg-accent";
 
 /** The model the notice on screen is about, so an unload can take it down.
  *
- * Paths rather than a flag: several models can be resident, and unloading one of
- * the others leaves this notice true. More than one, because a load is known by
- * two identities and they are not always equal: a cached Hub candidate is
+ * Paths rather than a flag: several models can be resident, and unloading another
+ * leaves this notice true. More than one path, because a cached Hub candidate is
  * requested by its `loadId` while the runtime stores the checkpoint the backend
- * echoes back, and the unload is issued with the second. Matching on either is
- * what keeps the notice from outliving the model on exactly those loads.
- *
- * Empty when the caller did not say which, and an unload then clears it, because
- * a notice that cannot be matched to a model is worse left up. */
+ * echoes back, and the unload is issued with the second. Empty when the caller named
+ * none, and an unload then clears it: an unmatchable notice is worse left up. */
 let advisedModelPaths: string[] = [];
 
-/** Take the notice down when the model it describes is unloaded.
- *
- * The toast lives 12 seconds and says "this model could run faster" beside an
- * offer to remember the dismissal for the current allocation. Both stop being
- * true the moment the model is gone, and the load path cannot clear it because no
- * load happened. */
+/** Take the notice down when the model it describes is unloaded: it says "this model
+ *  could run faster" beside an offer to remember the dismissal, and both stop being
+ *  true the moment the model is gone, with no load happening to clear them. */
 export function dismissCarveoutAdviceForModel(modelPath?: string | null): void {
   if (advisedModelPaths.length > 0 && modelPath && !advisedModelPaths.includes(modelPath)) return;
   advisedModelPaths = [];
   toast.dismiss(IGPU_CARVEOUT_TOAST_ID);
 }
 
-/** Hand a load response's advice field to the notice. Safe to call on every load.
- *
- * Absent on nearly every load, so callers pass the field through unconditionally
- * and anything malformed is treated as no advice at all: the notice quotes numbers,
- * and a partial payload must produce no toast rather than one reading "undefined
- * GB". */
+/** Hand a load response's advice field to the notice. Safe to call on every load:
+ *  the field is absent on nearly every one, and anything malformed is treated as no
+ *  advice, since the notice quotes numbers and a partial payload must produce no
+ *  toast rather than one reading "undefined GB". */
 export function showCarveoutAdvice(
   value: unknown,
   ...modelPaths: (string | null | undefined)[]
 ): void {
   const advice = parseCarveoutAdvice(value);
   if (!advice) {
-    // This load has nothing to advise, so the previous load's numbers have stopped
-    // being true. Same moment the store used to clear its copy.
+    // This load has nothing to advise, so the previous load's numbers are stale.
     advisedModelPaths = [];
     toast.dismiss(IGPU_CARVEOUT_TOAST_ID);
     return;
@@ -100,9 +76,8 @@ export function showCarveoutAdvice(
     classNames: { actionButton: IGPU_CARVEOUT_ACTION_CLASS },
     action: {
       label: "Don't show again",
-      // Fire and forget: the toast is gone by the time this resolves, and
-      // dismissCarveoutNotice swallows its own failures. Worst case the notice
-      // returns on a later load.
+      // Fire and forget: dismissCarveoutNotice swallows its own failures, and the
+      // worst case is the notice returning on a later load.
       onClick: () => {
         void dismissCarveoutNotice(advice.current_gb);
       },

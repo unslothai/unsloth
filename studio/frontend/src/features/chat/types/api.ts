@@ -208,10 +208,9 @@ export interface LoadModelResponse {
   is_lora: boolean;
   is_gguf?: boolean;
   is_local_model?: boolean;
-  /** Advisory, absent on nearly every load: this machine's integrated GPU has less
-   *  memory dedicated to it than the weights need. Unknown-shaped on purpose, so an
-   *  older or proxied backend cannot make the dialog render "undefined GB"; narrowed
-   *  by parseCarveoutAdvice at the point of use. */
+  /** Advisory, absent on nearly every load: the integrated GPU has less memory
+   *  dedicated to it than the weights need. Unknown-shaped on purpose so an older or
+   *  proxied backend cannot render "undefined GB"; narrowed by parseCarveoutAdvice. */
   carveout_advice?: unknown;
   is_diffusion?: boolean;
   /** GPU-layer count the diffusion runner was ASKED for, when it differs from what it applied: a shim

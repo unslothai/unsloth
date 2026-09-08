@@ -294,11 +294,9 @@ export async function loadModel(
         signal: options?.signal,
       });
       const loaded = await parseJsonOrThrow<LoadModelResponse>(response, "Model load");
-      // Absent on nearly every load, and the store ignores anything malformed, so
-      // this is unconditional rather than guarded. Never blocks: the model is
-      // already resident by the time this runs.
-      // Both identities: the request path, and the checkpoint the backend echoes
-      // back. A cached Hub candidate is requested by its loadId while the runtime
+      // Unconditional: absent on nearly every load, anything malformed is ignored,
+      // and the model is already resident by the time this runs. Both identities are
+      // passed -- a cached Hub candidate is requested by its loadId while the runtime
       // keeps `loaded.model`, and the unload is issued with the second.
       showCarveoutAdvice(loaded.carveout_advice, loaded.model, payload.model_path);
       return loaded;
@@ -444,9 +442,8 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
     body: JSON.stringify(payload),
   });
   await parseJsonOrThrow<unknown>(response, "Model unload");
-  // Only after the unload is known to have happened: a rejected one leaves the
-  // model resident and the notice true. The advice describes a model, so a
-  // different model's unload leaves it standing.
+  // Only after the unload is known to have happened: a rejected one leaves the model
+  // resident and the notice true. A different model's unload leaves it standing.
   dismissCarveoutAdviceForModel(payload.model_path);
 }
 

@@ -2,9 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """Dismissal of the integrated-GPU memory notice.
 
-Once dismissed it must stay dismissed -- but only for the allocation it was
-dismissed at. A user who acts on the advice and raises the allocation, then later
-loads a model too big for the new one, is in a new situation and worth telling.
+Once dismissed it must stay dismissed, but only for the allocation it was dismissed
+at: a user who acts on the advice, raises the allocation and later runs short again
+is in a new situation and worth telling.
 """
 
 import sys
@@ -39,14 +39,12 @@ class TestDismissal:
         assert notice.notice_already_dismissed(32.0) is True
 
     def test_it_speaks_again_after_the_user_raises_the_allocation(self):
-        # Dismissed at 32 GB, now running 64 GB and still short: they acted on the
-        # advice and hit the ceiling again, which is worth one more mention.
+        # Acted on the advice and hit the ceiling again: worth one more mention.
         notice.dismiss_notice(32.0)
         assert notice.notice_already_dismissed(64.0) is False
 
     def test_a_driver_rounding_difference_does_not_re_show_it(self):
-        # The allocation is a driver-reported byte count: 95.83 against a 96.00
-        # setting on the development machine. Re-showing on that would look broken.
+        # A driver-reported byte count reads 95.83 against a 96.00 setting.
         notice.dismiss_notice(95.83)
         assert notice.notice_already_dismissed(95.9) is True
 
@@ -83,10 +81,9 @@ class TestCorruptRows:
 
 
 class TestAHostileDismissalValue:
-    """`current_gb` arrives in a POST body, so it is client-controlled. Python's
-    json accepts `Infinity` even though the spec does not, so a value no machine
-    will ever exceed really can reach this -- and storing it would silence the
-    notice permanently, the opposite of the fail-toward-showing rule above."""
+    """`current_gb` arrives in a client-controlled POST body, and Python's json accepts
+    `Infinity`, so a value no machine will ever exceed really can reach this -- and
+    storing it would silence the notice permanently."""
 
     @pytest.mark.parametrize(
         "value",
@@ -124,12 +121,9 @@ class TestTheToleranceBoundary:
     """The slack is a tenth of a GB, and both sides arrive rounded to a tenth."""
 
     def test_a_reading_exactly_one_tenth_above_stays_dismissed(self):
-        # The client dismisses at what the advice SHOWED it, which is
-        # round(current_gb, 1) -- so 95.8, not the 95.83 the driver reported. A later
-        # boot reading 95.9 is one tenth away, the case this slack exists for, and
-        # binary floats put 95.8 + 0.1 at 95.89999999999999: the float comparison
-        # called it not-dismissed and the notice came back on an allocation nobody
-        # changed.
+        # The client dismisses at the rounded value the advice showed (95.8), and a
+        # later boot reading 95.9 is one tenth away. Binary floats put 95.8 + 0.1 at
+        # 95.89999999999999, so the float comparison called it not dismissed.
         assert 95.8 + 0.1 == pytest.approx(95.9), "the float is only 1 ulp off"
         assert (95.9 <= 95.8 + 0.1) is False, "which is what the old comparison read"
         notice.dismiss_notice(95.8)

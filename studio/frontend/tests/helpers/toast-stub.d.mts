@@ -11,8 +11,7 @@ export interface ToastCall {
     description?: string;
     duration?: number;
     classNames?: Record<string, string>;
-    // The notice's dismissal hangs off this, so a test that never reads it cannot
-    // check what the button does.
+    // The notice's dismissal hangs off this.
     action?: { label?: string; onClick: () => void };
   };
   id?: string;
