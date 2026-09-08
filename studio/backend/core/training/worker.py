@@ -1775,13 +1775,7 @@ _TVM_FFI_BROKEN_VERSIONS = ("0.1.10", "0.1.11")
 
 
 def _guard_fla_tilelang() -> None:
-    """Steer a user-supplied pip fla away from TileLang where TileLang cannot work.
-
-    Two cases, both `setdefault` so an explicit FLA_TILELANG always wins: a ROCm
-    torch (TileLang has no HIP GEMM; AMD SDK / Radeon wheels can leave
-    `torch.version.hip` unset but still tag `torch.__version__`), and an
-    apache-tvm-ffi known to fault with "CUDA: misaligned address" on sm_100.
-    """
+    """Default FLA_TILELANG to 0 on ROCm torch and on an apache-tvm-ffi that faults on sm_100."""
     try:
         import torch as _torch_for_fla
         if (
