@@ -191,8 +191,12 @@ def _read_password(prompt: str, *, out: "TextIO | None" = None) -> str:
 
 
 def should_prompt_password_change(
-    *, tunnel_will_start: bool, requires_change: bool, stdin_isatty: bool,
-    stderr_isatty: bool, bind_is_exposed: bool = False,
+    *,
+    tunnel_will_start: bool,
+    requires_change: bool,
+    stdin_isatty: bool,
+    stderr_isatty: bool,
+    bind_is_exposed: bool = False,
 ) -> bool:
     """Whether to block startup on an interactive terminal password change.
 

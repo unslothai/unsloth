@@ -107,9 +107,7 @@ def test_launch_publishes_tunnel_matrix(cloudflare, host, secure, api_only, expe
 def test_should_prompt_password_change_matrix(
     monkeypatch, cloudflare, host, secure, api_only, interactive, expected
 ):
-    monkeypatch.setattr(
-        _studio(), "_prompt_streams_interactive", lambda: interactive
-    )
+    monkeypatch.setattr(_studio(), "_prompt_streams_interactive", lambda: interactive)
     assert (
         _studio()._should_prompt_password_change(
             cloudflare = cloudflare, host = host, secure = secure, api_only = api_only

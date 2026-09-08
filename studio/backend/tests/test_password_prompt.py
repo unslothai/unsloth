@@ -352,14 +352,16 @@ def test_resolve_supplied_password_off_by_default(monkeypatch):
 
 def test_a_raw_exposed_bind_prompts_when_a_terminal_is_attached():
     from auth.terminal_prompt import should_prompt_password_change
-
-    assert should_prompt_password_change(
-        tunnel_will_start = False,
-        bind_is_exposed = True,
-        requires_change = True,
-        stdin_isatty = True,
-        stderr_isatty = True,
-    ) is True
+    assert (
+        should_prompt_password_change(
+            tunnel_will_start = False,
+            bind_is_exposed = True,
+            requires_change = True,
+            stdin_isatty = True,
+            stderr_isatty = True,
+        )
+        is True
+    )
 
 
 def test_a_raw_exposed_bind_stays_silent_without_a_terminal():
@@ -372,52 +374,60 @@ def test_a_raw_exposed_bind_stays_silent_without_a_terminal():
     keep the bootstrap deadline as their protection instead.
     """
     from auth.terminal_prompt import should_prompt_password_change
-
     for stdin_tty, stderr_tty in ((False, False), (True, False), (False, True)):
-        assert should_prompt_password_change(
-            tunnel_will_start = False,
-            bind_is_exposed = True,
-            requires_change = True,
-            stdin_isatty = stdin_tty,
-            stderr_isatty = stderr_tty,
-        ) is False
+        assert (
+            should_prompt_password_change(
+                tunnel_will_start = False,
+                bind_is_exposed = True,
+                requires_change = True,
+                stdin_isatty = stdin_tty,
+                stderr_isatty = stderr_tty,
+            )
+            is False
+        )
 
 
 def test_a_loopback_launch_is_untouched():
     """Plain `unsloth studio` must be completely unaffected."""
     from auth.terminal_prompt import should_prompt_password_change
-
-    assert should_prompt_password_change(
-        tunnel_will_start = False,
-        bind_is_exposed = False,
-        requires_change = True,
-        stdin_isatty = True,
-        stderr_isatty = True,
-    ) is False
+    assert (
+        should_prompt_password_change(
+            tunnel_will_start = False,
+            bind_is_exposed = False,
+            requires_change = True,
+            stdin_isatty = True,
+            stderr_isatty = True,
+        )
+        is False
+    )
 
 
 def test_an_already_changed_password_never_prompts():
     from auth.terminal_prompt import should_prompt_password_change
-
-    assert should_prompt_password_change(
-        tunnel_will_start = True,
-        bind_is_exposed = True,
-        requires_change = False,
-        stdin_isatty = True,
-        stderr_isatty = True,
-    ) is False
+    assert (
+        should_prompt_password_change(
+            tunnel_will_start = True,
+            bind_is_exposed = True,
+            requires_change = False,
+            stdin_isatty = True,
+            stderr_isatty = True,
+        )
+        is False
+    )
 
 
 def test_the_default_keeps_old_callers_tunnel_only():
     """bind_is_exposed defaults False, so an old caller behaves as before."""
     from auth.terminal_prompt import should_prompt_password_change
-
-    assert should_prompt_password_change(
-        tunnel_will_start = False,
-        requires_change = True,
-        stdin_isatty = True,
-        stderr_isatty = True,
-    ) is False
+    assert (
+        should_prompt_password_change(
+            tunnel_will_start = False,
+            requires_change = True,
+            stdin_isatty = True,
+            stderr_isatty = True,
+        )
+        is False
+    )
 
 
 def test_the_prompt_banner_does_not_claim_the_internet_for_a_lan_bind(monkeypatch):

@@ -1588,10 +1588,7 @@ def _enforce_password_change_before_exposure(
     # the internet on a cloud box. Naming the wrong one in an error trains people
     # to ignore it, and would be plainly wrong for `unsloth studio -H 0.0.0.0`.
     tunnel_will_start = secure or cloudflare is True
-    exposure = (
-        "on a public Cloudflare URL" if tunnel_will_start
-        else "on every network interface"
-    )
+    exposure = "on a public Cloudflare URL" if tunnel_will_start else "on every network interface"
     # Before public exposure we must PROVE the admin password is no longer the
     # seeded default. If we cannot (auth DB won't open, or a fresh admin cannot be
     # seeded + committed below), an old studio-venv child could regenerate a fresh

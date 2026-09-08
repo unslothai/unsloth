@@ -2186,10 +2186,7 @@ def _terminal_password_gate(
     # publishes this" with "the socket itself is reachable". Here only the second
     # question matters; the first is already tunnel_will_start.
     bind_is_exposed = (
-        _is_exposed_bind(host, False)
-        and frontend_served
-        and not api_only
-        and not is_colab
+        _is_exposed_bind(host, False) and frontend_served and not api_only and not is_colab
     )
     if not tunnel_will_start and not bind_is_exposed:
         return True, False
@@ -2286,10 +2283,7 @@ def _terminal_password_gate(
         is_current_password = _is_current_password,
         apply_change = _apply_change,
         out = sys.stderr,
-        exposure = (
-            "on the public internet" if tunnel_will_start
-            else "on every network interface"
-        ),
+        exposure = ("on the public internet" if tunnel_will_start else "on every network interface"),
     )
     return (True, True) if changed else (False, False)
 
