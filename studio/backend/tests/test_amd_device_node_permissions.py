@@ -647,7 +647,7 @@ def test_a_mask_is_reported_alongside_the_permission_hint(monkeypatch, linux):
 
     _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
     monkeypatch.setenv("USER", "ada")
-    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "-1")
     monkeypatch.setattr(
         LlamaCppBackend,
         "_installed_ggml_backends",
@@ -655,7 +655,7 @@ def test_a_mask_is_reported_alongside_the_permission_hint(monkeypatch, linux):
     )
     reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
     assert "usermod -a -G render,video ada" in reason
-    assert "HIP_VISIBLE_DEVICES is empty" in reason
+    assert "HIP_VISIBLE_DEVICES='-1'" in reason
 
 
 def test_no_mask_leaves_the_hint_alone(monkeypatch, linux):
@@ -771,6 +771,12 @@ def _stat_nodes(monkeypatch, modes: dict, names: dict):
         # Real device nodes are root-owned, and POSIX consults the owner class first, so a
         # fake without st_uid would take the owner branch on whatever uid the runner has.
         uid = _entry[2] if len(_entry) > 2 else 0
+        # ... and root IS the uid a CI runner often has, which would send every test below
+        # down that same owner branch and assert nothing about the group classification it
+        # names. No caller here is testing owner precedence -- the tests that do build real
+        # files under tmp_path -- so the synthetic owner is simply moved off the runner.
+        if uid == amd.os.getuid():
+            uid += 1
         return type("st", (), {"st_gid": gid, "st_mode": mode, "st_uid": uid})()
 
     def _getgrgid(gid):
@@ -1055,11 +1061,15 @@ def test_a_selector_that_still_exposes_a_device_is_not_a_second_blocker(monkeypa
 
 
 def test_a_mask_that_hides_everything_is_still_reported(monkeypatch, linux):
-    """The control that keeps the test above honest: an empty value exposes no device at
-    all, so that host really does need both fixes and must still be told both."""
-    reason = _reason_with_mask(monkeypatch, "HIP_VISIBLE_DEVICES", "", {"hip"})
+    """The control that keeps the test above honest: -1 names no device, so that host
+    really does need both fixes and must still be told both.
+
+    Not an EMPTY value, which is the one thing clr's parser is never entered on: the
+    guard is on the first byte, so an empty HIP mask is not a filter and is not the
+    variable clr reads either."""
+    reason = _reason_with_mask(monkeypatch, "HIP_VISIBLE_DEVICES", "-1", {"hip"})
     assert "usermod -a -G render,video ada" in reason
-    assert "HIP_VISIBLE_DEVICES is empty" in reason
+    assert "HIP_VISIBLE_DEVICES='-1'" in reason
 
 
 def test_a_negative_first_entry_hides_everything(monkeypatch, linux):
@@ -1081,15 +1091,15 @@ def test_a_leading_valid_entry_survives_a_later_invalid_one(monkeypatch, linux):
 def test_a_vulkan_build_is_not_told_about_a_mask_it_never_reads(monkeypatch, linux):
     """A Vulkan-only install reads none of these four, so an inherited HIP or CUDA mask
     is not a blocker for it at any value -- the render node it cannot open is."""
-    reason = _reason_with_mask(monkeypatch, "HIP_VISIBLE_DEVICES", "", {"vulkan"})
+    reason = _reason_with_mask(monkeypatch, "HIP_VISIBLE_DEVICES", "-1", {"vulkan"})
     assert "usermod -a -G render,video ada" in reason
     assert "visibility mask" not in reason
 
 
-def test_the_same_empty_mask_still_counts_for_a_hip_build(monkeypatch, linux):
+def test_the_same_hiding_mask_still_counts_for_a_hip_build(monkeypatch, linux):
     """The control for the arm above, one backend apart: the identical environment must
     still report the mask when the install is one that actually reads it."""
-    reason = _reason_with_mask(monkeypatch, "HIP_VISIBLE_DEVICES", "", {"hip"})
+    reason = _reason_with_mask(monkeypatch, "HIP_VISIBLE_DEVICES", "-1", {"hip"})
     assert "visibility mask is also in force" in reason
 
 
@@ -1345,7 +1355,7 @@ def test_an_ordinal_that_hides_everything_is_still_reported(monkeypatch, linux):
 
 
 def test_an_empty_cuda_mask_behind_a_valid_hip_one_is_not_consulted(monkeypatch, linux):
-    """clr reads HIP_VISIBLE_DEVICES when it is set and CUDA_VISIBLE_DEVICES only
+    """clr reads HIP_VISIBLE_DEVICES when it is non-empty and CUDA_VISIBLE_DEVICES
     otherwise, so an empty CUDA mask underneath a valid HIP one is never looked at.
     Naming it sends the user after a variable that hides nothing.
 
@@ -2372,6 +2382,15 @@ def test_the_installer_also_adds_the_account_for_unnamed_gids(tmp_path):
     assert "create a group for each" in out
 
 
+def test_the_installer_unnamed_gid_repair_says_to_start_a_new_session(tmp_path):
+    """The installer twin of the session-refresh rule: same usermod, same reason to open a
+    new session before retrying, and the same silence. Its own sentence rather than the
+    named-group one, which this fixture does not reach at all."""
+    out = _install_sh_hint("/dev/dri/renderD128", repairs = "gid:993")
+    assert "sudo groupadd -g 993 amdgpu993" in out
+    assert "log out and back in" in out
+
+
 def _install_sh_classify(stat_line: str, *, self_uid: str = "4242") -> str:
     """One classified line from the real _amd_node_repairs, for a synthetic stat record.
 
@@ -3189,3 +3208,61 @@ def test_the_passwd_stub_answers_a_positional_read(monkeypatch):
     for _var in ("LOGNAME", "USER", "LNAME", "USERNAME"):
         monkeypatch.delenv(_var, raising = False)
     assert getpass.getuser() == "ada"
+
+
+def test_an_empty_hip_mask_defers_to_the_cuda_one_below_it(monkeypatch, linux):
+    """The precedence test in clr is on the first BYTE of the value, not on whether the
+    variable exists: its flag defaults to the empty string, so an empty HIP mask reads
+    exactly like an unset one and the CUDA value below it is what selects devices. That
+    value names a device here, so nothing is hidden and no mask is a second blocker.
+
+    Fails before the fix, which took an empty HIP mask as the winner of the chain and
+    reported it as hiding every device."""
+    reason = _reason_with_masks(
+        monkeypatch,
+        {"HIP_VISIBLE_DEVICES": "", "CUDA_VISIBLE_DEVICES": "0"},
+        {"hip"},
+    )
+    assert "usermod -a -G render,video ada" in reason
+    assert "visibility mask" not in reason
+
+
+def test_the_cuda_mask_under_an_empty_hip_one_still_blocks_when_it_hides(monkeypatch, linux):
+    """The control, one value apart: deferring to CUDA is only right if CUDA is then
+    judged on its own merits, so the same shape with a CUDA value that names no device
+    must still be reported. Without this the fix could be "an empty HIP mask silences the
+    whole chain"."""
+    reason = _reason_with_masks(
+        monkeypatch,
+        {"HIP_VISIBLE_DEVICES": "", "CUDA_VISIBLE_DEVICES": "-1"},
+        {"hip"},
+    )
+    assert "CUDA_VISIBLE_DEVICES='-1'" in reason
+    assert "visibility mask is also in force" in reason
+
+
+def test_the_group_derivation_survives_a_root_test_runner(monkeypatch, linux):
+    """CI commonly runs as root, and the fakes in this file give their nodes the root
+    owner a real device node has. POSIX resolves the owner class exclusively once the uid
+    matches, so a harness that let the two coincide would answer every group test with
+    "this account owns it" and assert nothing about the classification under test.
+
+    Fails before the fix with os.getuid patched to 0, which is what a root runner is."""
+    monkeypatch.setattr(amd.os, "getuid", lambda: 0)
+    _stat_nodes(monkeypatch, {"/dev/kfd": (44, 0o660, 0)}, {44: "render"})
+    joinable, unnamed, no_group, acl, owned, privileged = amd._groups_that_own(["/dev/kfd"])
+    assert joinable == ["render"]
+    assert owned == []
+
+
+def test_the_unnamed_gid_repair_says_to_start_a_new_session(monkeypatch, linux):
+    """usermod changes /etc/group, not the groups the running login already holds, so the
+    named-group branch has always ended "then log out and back in". The unnamed-GID branch
+    prescribes the same usermod and said nothing, so an immediate retry fails and the
+    command reads as the one that did not work."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_has_an_access_acl", lambda path: False)
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993], [], [], [], []))
+    hint = amd.amd_node_permission_hint()
+    assert "groupadd -g 993 amdgpu993" in hint
+    assert "log out and back in" in hint

@@ -5717,7 +5717,7 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
             *)   substep "  Some of those nodes belong to GID $_closed_amd_gids, which has no" "$C_WARN"
                  substep "  group entry here, so usermod cannot name it: create a group for it" ;;
         esac
-        substep "  and add yourself to every one of them:"
+        substep "  and add yourself to every one of them, then log out and back in:"
         for _amd_gid in $(printf '%s' "$_closed_amd_gids" | tr ',' ' '); do
             # Generated, not a <name> placeholder: this is a command to paste, and angle
             # brackets are redirection operators, so `groupadd -g 993 <name>` is a syntax

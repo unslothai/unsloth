@@ -1092,8 +1092,9 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             )
             parts.append(
                 f"Some of those nodes belong to {_noun} {_gids}, {_verb} no group entry on "
-                f"this system, so usermod cannot name them: create a group for {_each} and "
-                f"add the account to it ({_pairs}), or recreate the container passing "
+                f"this system, so usermod cannot name them: create a group for {_each}, "
+                f"add the account to it and then log out and back in ({_pairs}), or "
+                f"recreate the container passing "
                 f"{_adds}."
             )
         if no_group:

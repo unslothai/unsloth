@@ -9966,10 +9966,12 @@ class LlamaCppBackend:
             # Which of the four this host actually reads, per variable rather than one
             # rule applied to all of them alike. Reaching a node hint at all means an
             # AMD-capable install and a closed AMD node, so the runtime being explained
-            # is HIP, and clr's own precedence holds: Device::init reads
-            # HIP_VISIBLE_DEVICES when it is set and CUDA_VISIBLE_DEVICES only
+            # is HIP, and clr's own precedence holds: rocdevice.cpp reads
+            # HIP_VISIBLE_DEVICES when its FIRST BYTE is not NUL and CUDA_VISIBLE_DEVICES
             # otherwise, so an empty CUDA mask behind a valid HIP one is never consulted
-            # and naming it sends the user after a change that fixes nothing. ROCr sits
+            # and naming it sends the user after a change that fixes nothing -- while an
+            # empty HIP mask does not win, since clr's flag defaults to "" and cannot tell
+            # it from unset, so the CUDA value below it is what runs. ROCr sits
             # BELOW that layer and composes with it rather than deferring
             # (_rocm_visibility_masks_are_stacked), so an empty ROCr mask does blind the
             # runtime while HIP wins above it; Windows has no ROCr layer at all.
@@ -9980,7 +9982,7 @@ class LlamaCppBackend:
             # llama-server sitting beside the CPU torch wheel this host tends to have.
             _hip_layer_var = (
                 "HIP_VISIBLE_DEVICES"
-                if os.environ.get("HIP_VISIBLE_DEVICES") is not None
+                if os.environ.get("HIP_VISIBLE_DEVICES", "")
                 else "CUDA_VISIBLE_DEVICES"
             )
             _rocr_filters = (
