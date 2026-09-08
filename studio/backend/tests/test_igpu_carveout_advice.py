@@ -621,14 +621,26 @@ class TestWhichAdapterTheAllocationBelongsTo:
         )
         assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) is None
 
-    def test_an_intel_igpu_alone_is_still_readable(self, monkeypatch):
-        # Declining on the ambiguity must not turn into declining on Intel: an Arc
-        # or iGPU host with no AMD adapter has exactly one candidate.
+    def test_an_intel_only_host_is_counted_but_never_quoted(self, monkeypatch):
+        # Intel is read for the COUNT, which is what makes the attribution above
+        # safe, and never for the answer. On Intel UMA graphics the DirectX value is
+        # a small dedicated block beside memory the driver hands out dynamically, so
+        # quoting it would advise reserving gigabytes in a setting that need not
+        # exist and promise residency it cannot deliver.
         import utils.hardware.hardware as hw
         self._with_records(
             monkeypatch, {hw._INTEL_PCI_VENDOR_ID: {2: {"dedicated_memory_bytes": 8 * _GB}}}
         )
-        assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) == 8 * _GB
+        assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) is None
+
+    def test_no_registry_record_at_all_falls_through_to_rocm(self, monkeypatch):
+        # The Linux path: no adapter records, so the reading is the ROCm pool, and
+        # the vendor rule above must not swallow it.
+        self._with_records(monkeypatch, {})
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_selected_pool_mib", staticmethod(lambda _i = None: 32 * 1024)
+        )
+        assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) == 32 * _GB
 
 
 class TestTheRoutingIsDeterministic:

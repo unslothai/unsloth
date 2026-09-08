@@ -198,3 +198,24 @@ test("every dismissal names this notice and only this notice", () => {
     assert.equal(call.id, IGPU_CARVEOUT_TOAST_ID);
   }
 });
+
+test("either identity the load was known by takes the notice down", () => {
+  // A cached Hub candidate is requested by its loadId while the runtime keeps the
+  // checkpoint the backend echoed back, and the unload is issued with the second.
+  // Matching one identity only left the toast up for a model that was gone.
+  reset();
+  showCarveoutAdvice(ADVICE, "unsloth/Qwen3-30B-GGUF", "/cache/hub/qwen3-30b.gguf");
+  dismissCarveoutAdviceForModel("unsloth/Qwen3-30B-GGUF");
+  assert.equal(calls.filter((call) => call.kind === "dismiss").length, 1);
+
+  reset();
+  showCarveoutAdvice(ADVICE, "unsloth/Qwen3-30B-GGUF", "/cache/hub/qwen3-30b.gguf");
+  dismissCarveoutAdviceForModel("/cache/hub/qwen3-30b.gguf");
+  assert.equal(calls.filter((call) => call.kind === "dismiss").length, 1);
+
+  // And a third model is still not this one.
+  reset();
+  showCarveoutAdvice(ADVICE, "unsloth/Qwen3-30B-GGUF", "/cache/hub/qwen3-30b.gguf");
+  dismissCarveoutAdviceForModel("unsloth/gemma-3-27b");
+  assert.equal(calls.filter((call) => call.kind === "dismiss").length, 0);
+});

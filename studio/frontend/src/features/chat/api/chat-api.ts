@@ -297,7 +297,10 @@ export async function loadModel(
       // Absent on nearly every load, and the store ignores anything malformed, so
       // this is unconditional rather than guarded. Never blocks: the model is
       // already resident by the time this runs.
-      showCarveoutAdvice(loaded.carveout_advice, payload.model_path ?? null);
+      // Both identities: the request path, and the checkpoint the backend echoes
+      // back. A cached Hub candidate is requested by its loadId while the runtime
+      // keeps `loaded.model`, and the unload is issued with the second.
+      showCarveoutAdvice(loaded.carveout_advice, loaded.model, payload.model_path);
       return loaded;
     },
   );

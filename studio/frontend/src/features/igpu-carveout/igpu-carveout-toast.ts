@@ -51,11 +51,16 @@ export const IGPU_CARVEOUT_ACTION_CLASS =
 
 /** The model the notice on screen is about, so an unload can take it down.
  *
- * A path rather than a flag: several models can be resident, and unloading one of
- * the others leaves this notice true. Null when the caller did not say which, and
- * an unload then clears it, because a notice that cannot be matched to a model is
- * worse left up. */
-let advisedModelPath: string | null = null;
+ * Paths rather than a flag: several models can be resident, and unloading one of
+ * the others leaves this notice true. More than one, because a load is known by
+ * two identities and they are not always equal: a cached Hub candidate is
+ * requested by its `loadId` while the runtime stores the checkpoint the backend
+ * echoes back, and the unload is issued with the second. Matching on either is
+ * what keeps the notice from outliving the model on exactly those loads.
+ *
+ * Empty when the caller did not say which, and an unload then clears it, because
+ * a notice that cannot be matched to a model is worse left up. */
+let advisedModelPaths: string[] = [];
 
 /** Take the notice down when the model it describes is unloaded.
  *
@@ -64,8 +69,8 @@ let advisedModelPath: string | null = null;
  * true the moment the model is gone, and the load path cannot clear it because no
  * load happened. */
 export function dismissCarveoutAdviceForModel(modelPath?: string | null): void {
-  if (advisedModelPath !== null && modelPath && modelPath !== advisedModelPath) return;
-  advisedModelPath = null;
+  if (advisedModelPaths.length > 0 && modelPath && !advisedModelPaths.includes(modelPath)) return;
+  advisedModelPaths = [];
   toast.dismiss(IGPU_CARVEOUT_TOAST_ID);
 }
 
@@ -75,16 +80,19 @@ export function dismissCarveoutAdviceForModel(modelPath?: string | null): void {
  * and anything malformed is treated as no advice at all: the notice quotes numbers,
  * and a partial payload must produce no toast rather than one reading "undefined
  * GB". */
-export function showCarveoutAdvice(value: unknown, modelPath?: string | null): void {
+export function showCarveoutAdvice(
+  value: unknown,
+  ...modelPaths: (string | null | undefined)[]
+): void {
   const advice = parseCarveoutAdvice(value);
   if (!advice) {
     // This load has nothing to advise, so the previous load's numbers have stopped
     // being true. Same moment the store used to clear its copy.
-    advisedModelPath = null;
+    advisedModelPaths = [];
     toast.dismiss(IGPU_CARVEOUT_TOAST_ID);
     return;
   }
-  advisedModelPath = modelPath ?? null;
+  advisedModelPaths = [...new Set(modelPaths.filter((path): path is string => !!path))];
   toast.info(IGPU_CARVEOUT_NOTICE_TITLE, {
     id: IGPU_CARVEOUT_TOAST_ID,
     description: advice.message,
