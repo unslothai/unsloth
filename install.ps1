@@ -735,10 +735,8 @@ function Install-UnslothStudio {
     # able to complete, over a package it will not install.
     if ($SkipTorch) { $PythonSkip = @() }
 
-    # ── How this run was launched ──
-    # "true", "false", or "unknown" when the token cannot be read. An elevated
-    # run writes the install root as Administrators, so the same account cannot
-    # read it back afterwards. Keep in step with studio/setup.ps1.
+    # An elevated run writes the install root as Administrators and the same account cannot
+    # read it back afterwards. Twin in studio/setup.ps1.
     function Get-ElevationState {
         try {
             $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -752,14 +750,12 @@ function Install-UnslothStudio {
         }
     }
 
-    # Record it either way, and warn only when it will cause the problem. The
-    # marker reaches the desktop support report via install.rs record_diag_marker.
+    # Recorded either way; install.rs record_diag_marker puts it in the support report.
     function Write-ElevationNotice {
         param(
             [Parameter(Mandatory = $true)][string]$State,
             [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Root,
-            # $env:UNSLOTH_TAURI_MODE is not set until setup.ps1 is invoked far
-            # below, so the desktop's own --tauri flag is what is readable here.
+            # UNSLOTH_TAURI_MODE is not assigned until the setup call far below; --tauri is.
             [switch]$Tauri
         )
 
@@ -777,9 +773,6 @@ function Install-UnslothStudio {
         Write-StudioLine ""
     }
 
-    # Expand a leading ~ and normalize separators and .. segments, so an override
-    # spelled differently still compares equal to the legacy default. GetFullPath
-    # alone keeps a literal ~ and resolves it against the cwd.
     function Get-CanonicalRootPath {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
@@ -790,19 +783,9 @@ function Install-UnslothStudio {
             $_rest = $_p.Substring(1).TrimStart('/', '\')
             $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
         }
-        # GetUnresolvedProviderPathFromPSPath, not GetFullPath: a relative override is
-        # anchored by GetFullPath to [Environment]::CurrentDirectory, which PowerShell does
-        # NOT move on Set-Location (documented, PowerShell#10278 closed as by-design). The
-        # downstream resolver reaches it through Resolve-Path, which DOES follow the provider
-        # location, so after a `cd` the two disagreed and the comparison missed a legacy root
-        # it should have collapsed -- naming the studio child and sending the user past the
-        # admin-owned llama.cpp beside it. Resolve-StudioUvCachePath in this same file
-        # already carries the same warning about GetFullPath.
-        #
-        # "Unresolved" is the literal-path form: it normalizes separators and .. segments for
-        # a path that need not exist, and does not treat [ ] as wildcards. Still wrapped: an
-        # unresolvable override must cost the comparison, not the install, and a non-FileSystem
-        # provider location falls back to the old behaviour rather than throwing.
+        # GetFullPath anchors a relative path to [Environment]::CurrentDirectory, which
+        # Set-Location does not move, so it disagreed with the Resolve-Path based resolver
+        # (PowerShell#10278, by design). It stays as the fallback, never the first answer.
         try {
             $_p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($_p)
         } catch {
@@ -811,17 +794,8 @@ function Install-UnslothStudio {
         return $_p.TrimEnd('\', '/')
     }
 
-    # The resolver below creates and write-probes a custom root, so warn first or
-    # an elevated run leaves behind the very folder this is about. That means
-    # mirroring its override precedence here rather than reusing $StudioHome.
-    # llama.cpp is a sibling of studio under ~/.unsloth on a default install, so
-    # name the parent; a custom root holds every artefact itself.
-    # USERPROFILE is absent in some service and CI contexts. The resolver below has its own
-    # fallback for that, but this runs ABOVE it, so a bare Join-Path would abort the install
-    # under ErrorActionPreference=Stop before the banner -- and on the env-override path,
-    # which never needs USERPROFILE, that is a run that used to succeed. Guarded the same way
-    # the temp-root scan and the llama.cpp resolver already guard it. The literal keeps the
-    # warning readable when there is no answer to substitute.
+    # Warn before the resolver below creates and probes the root, so mirror its precedence
+    # rather than reuse the unassigned $StudioHome. USERPROFILE can be unset (service, CI).
     $UnslothRoot = if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
         '%USERPROFILE%\.unsloth'
     } else {
@@ -834,8 +808,8 @@ function Install-UnslothStudio {
     } else {
         $UnslothRoot
     }
-    # An override equal to the legacy default is not a custom root downstream:
-    # llama.cpp and node stay siblings under ~/.unsloth, so name that parent.
+    # A legacy-equal override is not a custom root: llama.cpp and node stay siblings of
+    # studio under ~/.unsloth, so name that parent.
     if ((Get-CanonicalRootPath $ElevationRoot) -ieq
         (Get-CanonicalRootPath (Join-Path $UnslothRoot "studio"))) {
         $ElevationRoot = $UnslothRoot
@@ -6553,13 +6527,9 @@ sys.exit(2 if conflict else (0 if installed else 1))
         Write-StudioLine "        Re-run the installer to rebuild the environment." -ForegroundColor Yellow
         return (Exit-InstallFailure "managed Python is missing at $VenvPython")
     }
-    # Tell setup.ps1 to skip base package installation (install.ps1 already did it).
-    # Saved and restored below: `irm | iex` runs in the caller's shell, and a
-    # leaked "1" makes a later direct setup or update look like an installer child.
-    # Every capture happens before the try, so the finally always sees a real
-    # answer rather than reading an unset $hadPrevious* as "there was nothing".
-    # The try then opens before the first mutation, so the --with-llama-cpp-dir
-    # bail restores too.
+    # `irm | iex` runs in the caller's shell, so every handoff variable is saved and restored.
+    # Captures sit above the try, or a finally reached first reads the unset $hadPrevious* as
+    # "there was nothing here" and clears a value it never set.
     $previousSkipStudioBase = $env:SKIP_STUDIO_BASE
     $hadPreviousSkipStudioBase = ($null -ne $previousSkipStudioBase)
     # Propagate UNSLOTH_STUDIO_HOME only for env-override installs; otherwise
@@ -6574,11 +6544,8 @@ sys.exit(2 if conflict else (0 if installed else 1))
     $hadPreviousProxyHandoff = ($null -ne $previousProxyHandoff)
     $previousRocmGfxHandoff = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF
     $hadPreviousRocmGfxHandoff = ($null -ne $previousRocmGfxHandoff)
-    # The rest of the handoff table, saved for the same reason and on the same terms. These
-    # are as session-visible as SKIP_STUDIO_BASE under `irm | iex`, and SKIP_STUDIO_FRONTEND
-    # is the one with teeth: a leaked "1" from a desktop install makes the next direct
-    # `unsloth studio setup` in that console report "frontend: bundled (Tauri)" and skip the
-    # build entirely, which on a local/source install leaves Studio with no web UI.
+    # SKIP_STUDIO_FRONTEND is the one with teeth: a leaked "1" makes the next direct
+    # `unsloth studio setup` skip the frontend build, leaving a source install with no web UI.
     $previousStudioPackageName = $env:STUDIO_PACKAGE_NAME
     $hadPreviousStudioPackageName = ($null -ne $previousStudioPackageName)
     $previousNoTorch = $env:UNSLOTH_NO_TORCH
@@ -6591,13 +6558,8 @@ sys.exit(2 if conflict else (0 if installed else 1))
     $hadPreviousStudioLocalInstall = ($null -ne $previousStudioLocalInstall)
     $previousStudioLocalRepo = $env:STUDIO_LOCAL_REPO
     $hadPreviousStudioLocalRepo = ($null -ne $previousStudioLocalRepo)
-    # These three were CLEARED unconditionally by the finally rather than restored, which was
-    # survivable only while the finally could not be reached without having set them. The try
-    # now opens above the first mutation, so the --with-llama-cpp-dir bail reaches the finally
-    # having assigned none of them, and cleared whatever the caller had. UNSLOTH_LOCAL_LLAMA_CPP_DIR
-    # is not an internal handoff either: install.ps1 reads it itself as a user-facing input, so a
-    # caller having it set is the ordinary case, and a mistyped --with-llama-cpp-dir silently
-    # destroyed it. Saved like the rest, which also stops a successful install clearing it.
+    # Cleared unconditionally before, which the --with-llama-cpp-dir bail reaches without
+    # having set them. UNSLOTH_LOCAL_LLAMA_CPP_DIR is a user-facing input this script reads.
     $previousLocalLlamaCppDir = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR
     $hadPreviousLocalLlamaCppDir = ($null -ne $previousLocalLlamaCppDir)
     $previousInstallRollbackManaged = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED

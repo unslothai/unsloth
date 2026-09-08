@@ -1859,10 +1859,8 @@ function Clear-WebViewCaches {
     if ($wvCleared) { substep "cleared stale WebView caches (ai.unsloth.studio); settings and data kept" }
 }
 
-# ── How this run was launched ──
-# install.ps1 (SKIP_STUDIO_BASE=1) already reported this for the install it
-# drives; this covers direct 'unsloth studio setup', 'update', and desktop
-# repair. Keep in step with the copies in install.ps1.
+# install.ps1 (SKIP_STUDIO_BASE=1) already reported this for the install it drives, so this
+# covers direct setup, update and desktop repair. Keep in step with the copies in install.ps1.
 if ($env:SKIP_STUDIO_BASE -ne "1") {
     $ElevationState = "unknown"
     try {
@@ -1876,9 +1874,6 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
         [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$ElevationState")
         [Console]::Out.Flush()
     }
-    # Expand a leading ~ and normalize separators and .. segments, so an override
-    # spelled differently still compares equal to the legacy default. GetFullPath
-    # alone keeps a literal ~ and resolves it against the cwd.
     function Get-CanonicalRootPath {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
@@ -1889,19 +1884,9 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
             $_rest = $_p.Substring(1).TrimStart('/', '\')
             $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
         }
-        # GetUnresolvedProviderPathFromPSPath, not GetFullPath: a relative override is
-        # anchored by GetFullPath to [Environment]::CurrentDirectory, which PowerShell does
-        # NOT move on Set-Location (documented, PowerShell#10278 closed as by-design). The
-        # downstream resolver reaches it through Resolve-Path, which DOES follow the provider
-        # location, so after a `cd` the two disagreed and the comparison missed a legacy root
-        # it should have collapsed -- naming the studio child and sending the user past the
-        # admin-owned llama.cpp beside it. Resolve-StudioUvCachePath in this same file
-        # already carries the same warning about GetFullPath.
-        #
-        # "Unresolved" is the literal-path form: it normalizes separators and .. segments for
-        # a path that need not exist, and does not treat [ ] as wildcards. Still wrapped: an
-        # unresolvable override must cost the comparison, not the install, and a non-FileSystem
-        # provider location falls back to the old behaviour rather than throwing.
+        # GetFullPath anchors a relative path to [Environment]::CurrentDirectory, which
+        # Set-Location does not move, so it disagreed with the Resolve-Path based resolver
+        # (PowerShell#10278, by design). It stays as the fallback, never the first answer.
         try {
             $_p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($_p)
         } catch {
@@ -1911,11 +1896,8 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
     }
 
     if ($ElevationState -eq "true") {
-        # $StudioHome is resolved much later, so mirror its override precedence
-        # here for the message only. llama.cpp is a sibling of studio under
-        # ~/.unsloth on a default install, so name the parent.
-        # Guarded for the same reason as the copy in install.ps1: USERPROFILE can be absent
-        # in service and CI contexts, and a bare Join-Path throws under Stop.
+        # $StudioHome is resolved much later, so mirror its precedence for the message only.
+        # USERPROFILE can be unset (service, CI), where a bare Join-Path throws under Stop.
         $_unslothRoot = if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
             '%USERPROFILE%\.unsloth'
         } else {
@@ -1928,8 +1910,7 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
         } else {
             $_unslothRoot
         }
-        # An override equal to the legacy default is not a custom root downstream:
-        # llama.cpp and node stay siblings under ~/.unsloth, so name that parent.
+        # A legacy-equal override is not a custom root: name the parent that holds llama.cpp.
         if ((Get-CanonicalRootPath $_elevRoot) -ieq
             (Get-CanonicalRootPath (Join-Path $_unslothRoot "studio"))) {
             $_elevRoot = $_unslothRoot
@@ -6859,10 +6840,8 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
     # footer just said complete. [TAURI:PROGRESS] (not [TAURI:STEP], which would
     # push the frontend step counter past the seven INSTALL_STEPS entries) reaches
     # the user as install-progress-detail text.
-    #
-    # DIAG as well: progress detail is cleared by the next install-step and is gone
-    # once the install screen closes, so it cannot answer "why is GGUF missing"
-    # afterwards. record_diag_marker keeps this in the support report.
+    # DIAG as well: the progress detail is cleared by the next install-step, so only the
+    # marker can still answer "why is GGUF missing" afterwards.
     if (@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) {
         [Console]::Out.WriteLine("[TAURI:PROGRESS] llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds")
         [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")
@@ -6872,9 +6851,8 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
     }
 }
 
-# A desktop repair runs update.rs, which sets UNSLOTH_TAURI_UPDATE alone, so the
-# block above is skipped and a degraded repair recorded nothing. update.rs parses
-# [TAURI:DIAG] the same way. Marker only: the update contract stays successful.
+# A desktop repair runs update.rs, which sets UNSLOTH_TAURI_UPDATE alone, so the block above
+# is skipped and a degraded repair recorded nothing. Marker only: the update stays successful.
 if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -ne "1" -and
     (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
     [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")

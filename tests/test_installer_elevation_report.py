@@ -52,7 +52,6 @@ def _repair_block(path: Path) -> str:
     return src[src.index("# A desktop repair runs update.rs") :]
 
 
-# ── The marker channel these rely on ──
 
 
 def test_diag_marker_prefix_is_still_parsed_and_reported():
@@ -65,7 +64,6 @@ def test_diag_marker_prefix_is_still_parsed_and_reported():
     ), "the support report no longer prints markers"
 
 
-# ── Elevation ──
 
 
 def test_install_ps1_reports_elevation():
@@ -73,8 +71,7 @@ def test_install_ps1_reports_elevation():
     assert "function Get-ElevationState" in src
     assert "WindowsBuiltInRole]::Administrator" in src, "elevation must come from the process token"
     assert "[TAURI:DIAG] elevated=$State" in src, "the state must reach the support report"
-    # Recorded on every run, not only the bad one: "false" is the answer that
-    # rules elevation out, and absence would be ambiguous.
+    # Recorded on every run: "false" rules elevation out, absence would be ambiguous.
     notice = src[src.index("function Write-ElevationNotice") :]
     diag_idx = notice.index("[TAURI:DIAG] elevated=$State")
     warn_idx = notice.index('if ($State -ne "true") { return }')
@@ -139,8 +136,7 @@ def test_install_ps1_warning_names_the_root_actually_written():
     notice = src[src.index("function Write-ElevationNotice") : src.index("-Tauri:$TauriMode")]
     assert "$Root" in notice, "the warning must name the resolved root, not a fixed path"
     assert "outlives an uninstall" in notice, "the warning must say reinstalling does not clear it"
-    # Anchored on the assignment, not on the expression: the right-hand side has to stay free
-    # to change (it is now a guarded if/else) without breaking a test about the MESSAGE.
+    # Anchored on the assignment: the right-hand side must stay free to change.
     root = src[src.index("$UnslothRoot =") : src.index("-Tauri:$TauriMode")]
     assert '".unsloth"' in root, "a default install must name the parent that also holds llama.cpp"
     # The notice runs before the resolver, so $StudioHome does not exist yet and
@@ -185,12 +181,8 @@ def test_the_legacy_root_comparison_is_canonical():
         assert (
             "[System.IO.Path]::GetFullPath" in body
         ), f"{path.name} must normalize separators and .. segments"
-        # ...but not as the FIRST answer. GetFullPath anchors a relative override to
-        # [Environment]::CurrentDirectory, which PowerShell does not move on Set-Location,
-        # while the downstream resolver reaches it through Resolve-Path, which does. After a
-        # `cd` the two disagreed and the comparison missed a legacy root it should have
-        # collapsed. The provider-aware resolver has to be tried first, with GetFullPath
-        # left as the fallback.
+        # ...but not FIRST: GetFullPath uses [Environment]::CurrentDirectory, which
+        # Set-Location does not move, so it disagreed with the Resolve-Path resolver.
         assert (
             "GetUnresolvedProviderPathFromPSPath" in body
         ), f"{path.name} must resolve a relative override against the PowerShell location"
@@ -233,8 +225,7 @@ def test_every_handoff_variable_is_restored_not_just_skip_studio_base():
     the frontend build, which on a local/source install leaves Studio with no web UI."""
     src = _read(INSTALL_PS1)
     restore = src[src.index("} finally {") :]
-    # The handoff try specifically -- install.ps1 opens several, and the first one is
-    # hundreds of lines above this block.
+    # The handoff try specifically; install.ps1 opens several.
     handoff_try = src.index('\n    try {\n        $env:SKIP_STUDIO_BASE')
     for var, saved in (
         ("SKIP_STUDIO_BASE", "$previousSkipStudioBase"),
@@ -244,11 +235,8 @@ def test_every_handoff_variable_is_restored_not_just_skip_studio_base():
         ("SKIP_STUDIO_FRONTEND", "$previousSkipStudioFrontend"),
         ("STUDIO_LOCAL_INSTALL", "$previousStudioLocalInstall"),
         ("STUDIO_LOCAL_REPO", "$previousStudioLocalRepo"),
-        # These three used to be cleared unconditionally instead of restored. That was
-        # survivable only while the finally could not be reached without having set them;
-        # once the try opens above the first mutation, the --with-llama-cpp-dir bail reaches
-        # it having assigned none of them. UNSLOTH_LOCAL_LLAMA_CPP_DIR is a user-facing input
-        # install.ps1 reads itself, so clearing it destroys the caller's own setting.
+        # Cleared unconditionally before, which the --with-llama-cpp-dir bail now reaches
+        # without having set them. UNSLOTH_LOCAL_LLAMA_CPP_DIR is a user-facing input.
         ("UNSLOTH_LOCAL_LLAMA_CPP_DIR", "$previousLocalLlamaCppDir"),
         ("UNSLOTH_INSTALL_ROLLBACK_MANAGED", "$previousInstallRollbackManaged"),
         ("UNSLOTH_SETUP_PYTHON", "$previousSetupPython"),
@@ -306,9 +294,8 @@ def test_both_scripts_resolve_the_warning_root_the_same_way():
         "IsNullOrWhiteSpace($env:STUDIO_HOME)",
         "$env:STUDIO_HOME.Trim()",
         'Join-Path $env:USERPROFILE ".unsloth"',
-        # Both copies run above the resolver and its USERPROFILE fallback, so both must
-        # guard it themselves. Dropping the guard in one file is the drift this test exists
-        # to catch, and it aborts the install rather than merely naming the wrong folder.
+        # Both copies run above the resolver's own USERPROFILE fallback, so both must guard
+        # it; dropping it in one file aborts the install rather than misnaming a folder.
         "IsNullOrWhiteSpace($env:USERPROFILE)",
     ):
         assert fragment in install_root, f"install.ps1 root resolution lost {fragment!r}"
@@ -357,7 +344,6 @@ def test_setup_ps1_warning_names_the_root_actually_written():
     ), "this test is only meaningful while the notice precedes the resolver"
 
 
-# ── Degraded llama.cpp ──
 
 
 def test_degraded_llama_cpp_is_recorded_not_only_flashed():
