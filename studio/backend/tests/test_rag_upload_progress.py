@@ -253,6 +253,56 @@ def test_failed_orphan_retry_retires_the_document_it_replaced(
         conn.close()
 
 
+def test_orphan_retry_losing_its_lease_still_retires_the_orphan(
+    rag_home, stub_embeddings, monkeypatch, tmp_path
+):
+    """A lost lease ends the retry for good: only ``_new_job`` claims an ingestion lease, so
+    nothing relaunches the work and the orphan would keep the scope indexing."""
+    path = tmp_path / "reclaimed.txt"
+    path.write_text("Revenue doubled this quarter.")
+    scope = store.thread_scope("orphan-reclaimed")
+    conn = rag_db.get_connection()
+    try:
+        original = store.create_document(
+            conn,
+            scope = scope,
+            filename = path.name,
+            sha256 = ingestion._sha256_file(str(path)),
+            status = "running",
+            stored_path = str(path),
+        )
+    finally:
+        conn.close()
+
+    def reclaimed(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(ingestion.job_leases, "renew_owned", reclaimed)
+    replacement, _ = ingestion.start_ingestion(
+        scope,
+        None,
+        "orphan-reclaimed",
+        path.name,
+        str(path),
+        background = False,
+    )
+    assert replacement != original
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, original) is None
+    finally:
+        conn.close()
+    # The replacement still holds a non-terminal job, so startup repair reaches it; the orphan
+    # held none, which is the whole reason it had to be retired here.
+    rag_db.reconcile_orphaned_ingestion_jobs()
+    conn = rag_db.get_connection()
+    try:
+        rows = conn.execute("SELECT status FROM documents WHERE scope=?", (scope,)).fetchall()
+    finally:
+        conn.close()
+    assert not any(row["status"] in {"pending", "running"} for row in rows)
+
+
 def test_failed_reindex_keeps_the_completed_document_it_replaced(
     rag_home, stub_embeddings, monkeypatch, tmp_path
 ):

@@ -271,7 +271,6 @@ def _run(
     replaces: tuple[str, str | None] | None = None,
 ) -> None:
     conn = None
-    reclaimed = False
     try:
         conn = rag_db.get_connection()
         _progress(conn, job_id, "parsing", 0.1)
@@ -381,8 +380,6 @@ def _run(
         _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
     except job_leases.JobLeaseLost:
-        # The reclaiming owner re-runs with the same ``replaces``, so the orphan is still its job.
-        reclaimed = True
         logger.info("ingestion job %s stopped after its lease was reclaimed", job_id)
     except Exception as exc:  # noqa: BLE001 - report any failure to the client
         logger.exception("ingestion job %s failed", job_id)
@@ -396,9 +393,9 @@ def _run(
         _emit(job_id, {"type": "error", "stage": "error", "error": str(exc)})
     finally:
         if conn is not None:
-            # Every exit but a completed one, which already retired its orphan.
-            if not reclaimed:
-                _retire_orphan_after_failure(conn, replaces, stored_path)
+            # Every exit but a completed one, which already retired its orphan. Nothing relaunches
+            # ingestion, so a lost lease ends the work too: only _new_job ever claims one.
+            _retire_orphan_after_failure(conn, replaces, stored_path)
             conn.close()
         job_leases.release(job_leases.INGESTION, job_id)
         with _jobs_lock:
