@@ -1414,7 +1414,12 @@ def test_a_rocm_pin_is_still_honoured_over_an_nvidia_card(stack, monkeypatch):
 
 
 def _viable_masked(
-    stack, monkeypatch, *, devices: list, masked: "list | None" = None, **mask: str
+    stack,
+    monkeypatch,
+    *,
+    devices: list,
+    masked: "list | None" = None,
+    **mask: str,
 ) -> bool:
     """_forced_rocm_route_is_viable on a masked host, with the resolution left live.
 
@@ -1952,7 +1957,6 @@ def test_the_presence_rule_is_unchanged_for_a_host_that_did_not_ask(stack):
     assert out.strip().endswith("/cpu"), out
 
 
-
 def test_a_repeated_rocr_ordinal_does_not_invent_a_device(stack, monkeypatch):
     """ROCr terminates on an index that "maps to a device that has been previously selected"
     (ROCR-Runtime, core/inc/amd_filter_device.h), so ROCR_VISIBLE_DEVICES=0,0 surfaces ONE
@@ -2025,9 +2029,7 @@ def test_a_declared_arch_resolves_its_mask_against_the_unmasked_list(stack, monk
     )
 
 
-def test_the_same_declared_host_with_a_mask_past_its_last_device_still_declines(
-    stack, monkeypatch
-):
+def test_the_same_declared_host_with_a_mask_past_its_last_device_still_declines(stack, monkeypatch):
     """The control: the unmasked list is asked for so the ordinals can be judged, not so that
     every ordinal passes. ROCR_VISIBLE_DEVICES=7 is out of range on the whole two-GPU machine,
     so it surfaces nothing and the declared arch has no runtime to build for."""
