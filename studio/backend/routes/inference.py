@@ -5343,9 +5343,8 @@ def _prepend_current_date_to_messages(
             msg["content"] = [{"type": "text", "text": date_line}, *copied_parts]
             return copied
     if provider_type in _MODELFILE_SYSTEM_PROVIDERS:
-        # Synthesizing here is what costs an Ollama caller the Modelfile SYSTEM (#10436). Callers
-        # must not claim this exemption when something later will synthesize a system turn anyway:
-        # the date would be given up for a prompt that is displaced regardless.
+        # Synthesizing here is what costs an Ollama caller the Modelfile SYSTEM (#10436). Do not
+        # claim this exemption when something later will synthesize a system turn regardless.
         return messages
     return [{"role": "system", "content": date_line}, *copied]
 
@@ -20751,12 +20750,9 @@ async def _proxy_to_external_provider(
         _reject_confirm_gate_without_channel(
             payload, _ui_events, monitor_id, _catalog_names(external_studio_tools)
         )
-    # Built before the date is applied, not after, because whether it exists decides whether the
-    # Modelfile exemption is worth claiming: _append_to_system_message below synthesizes its own
-    # system turn, which costs an Ollama caller the Modelfile SYSTEM whatever the date does. The
-    # date can only be withheld to save that prompt when nothing after this will displace it.
-    # Full access disables the sandbox at execution time, so the schemas must say so too rather
-    # than describing a sandbox the model will not get.
+    # Built before the date, because whether a nudge exists decides whether the Modelfile
+    # exemption is worth claiming: _append_to_system_message below displaces that prompt anyway.
+    # Full access disables the sandbox at execution time, so the schemas must say so too.
     _external_nudge = ""
     if run_studio_tool_loop and payload.bypass_permissions:
         _external_nudge = _build_tool_action_nudge(
