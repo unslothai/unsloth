@@ -27,6 +27,9 @@ from pathlib import Path
 import pytest
 
 from core.inference.diffusion_torchao_patches import (
+    _TORCHAO_INTMM_MODULES,
+    _TorchaoIntmmLoader,
+    _TorchaoIntmmPatchFinder,
     _patch_torchao_intmm_module,
     install_torchao_int_mm_patch,
 )
@@ -149,13 +152,56 @@ def test_patch_refuses_an_unrecognised_body():
     assert module.safe_int_mm is rewritten_upstream
 
 
+def test_finder_answers_for_both_torchao_homes(monkeypatch):
+    """torchao main moved ``safe_int_mm`` into the int8 workflow module (pytorch/ao#4718) with the
+    probe intact, so the finder must wrap both names. The table is also pinned against the
+    canonical copy so the two homes cannot disagree on WHICH modules they cover."""
+    import importlib.machinery
+    import importlib.util
+
+    assert _TORCHAO_INTMM_MODULES == (
+        "torchao.kernel.intmm",
+        "torchao.quantization.quantize_.workflows.int8.kernels",
+    )
+    if _IMPORT_FIXES.is_file():
+        text = _IMPORT_FIXES.read_text(encoding = "utf-8")
+        for name in _TORCHAO_INTMM_MODULES:
+            assert f'"{name}"' in text, f"unsloth/import_fixes.py does not list {name}"
+
+    class _Loader:
+        def exec_module(self, module):
+            pass
+
+    monkeypatch.setattr(
+        importlib.util, "find_spec",
+        lambda fullname, *a, **k: importlib.machinery.ModuleSpec(fullname, _Loader()),
+    )
+    finder = _TorchaoIntmmPatchFinder()
+    for name in _TORCHAO_INTMM_MODULES:
+        spec = finder.find_spec(name)
+        assert spec is not None and isinstance(spec.loader, _TorchaoIntmmLoader), name
+    assert finder.find_spec("torchao.kernel.other") is None
+
 def test_real_torchao_int_mm_is_patched_and_bit_identical():
     """With torchao installed: the patch lands on every binding that matters, and the copy
     returns exactly what the original returned. The shapes cover both cuBLAS guards (a good j
     and k, a j that is not a nonzero multiple of 8) and the silent-wrong-answer contiguity fix
     on mat2."""
-    intmm = pytest.importorskip("torchao.kernel.intmm")
+    pytest.importorskip("torchao")
     torch = pytest.importorskip("torch")
+    import importlib
+
+    intmm = None
+    for name in _TORCHAO_INTMM_MODULES:
+        try:
+            candidate = importlib.import_module(name)
+        except ImportError:
+            continue
+        if callable(getattr(candidate, "safe_int_mm", None)):
+            intmm = candidate
+            break
+    if intmm is None:
+        pytest.skip("torchao does not define safe_int_mm under any known module name")
 
     install_torchao_int_mm_patch()
     patched = intmm.safe_int_mm

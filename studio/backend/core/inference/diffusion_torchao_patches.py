@@ -40,13 +40,18 @@ logger = logging.getLogger(__name__)
 
 
 # torchao's int8 GEMM asks "am I being traced?" with `"FakeTensor" in input.__repr__()`
-# (torchao/kernel/intmm.py::safe_int_mm, 0.17.0 and still v0.18.0). On a real CUDA tensor
-# __repr__ formats the element values, so it calls .item(): a full device sync on EVERY eager
-# int8 linear, and cudaErrorStreamCaptureUnsupported the moment that lands inside a
-# torch.cuda.graph capture. Replacing the string probe with the question it was approximating
-# (is this tensor fake?) was measured bit-identical on the GEMM itself, on a compiled Linear and
-# on a whole compiled DiT, and lets int8 capture.
-_TORCHAO_INTMM_MODULE = "torchao.kernel.intmm"
+# (torchao/kernel/intmm.py::safe_int_mm, same body from 0.10.0 through v0.18.0; on main after
+# pytorch/ao#4718 the function lives in torchao/quantization/quantize_/workflows/int8/kernels.py
+# with the probe intact). On a real CUDA tensor __repr__ formats the element values, so it calls
+# .item(): a full device sync on EVERY eager int8 linear, and cudaErrorStreamCaptureUnsupported
+# the moment that lands inside a torch.cuda.graph capture. Replacing the string probe with the
+# question it was approximating (is this tensor fake?) was measured bit-identical on the GEMM
+# itself, on a compiled Linear and on a whole compiled DiT, and lets int8 capture.
+_TORCHAO_INTMM_MODULES = (
+    "torchao.kernel.intmm",  # every release up to and including 0.18.0
+    "torchao.quantization.quantize_.workflows.int8.kernels",  # main after the int8 workflow move
+)
+_TORCHAO_INTMM_MODULE = _TORCHAO_INTMM_MODULES[0]  # kept for callers that named the old home
 _TORCHAO_INTMM_SENTINEL = "__unsloth_torchao_intmm_patch__"
 _TORCHAO_INT_MM_ENV = "UNSLOTH_TORCHAO_INT_MM_FIX"
 
@@ -155,7 +160,7 @@ def _make_safe_int_mm(mod, original):
 
 
 def _patch_torchao_intmm_module(mod):
-    """Rebind ``safe_int_mm`` on an imported ``torchao.kernel.intmm``.
+    """Rebind ``safe_int_mm`` on an imported module that defines it (either torchao home).
 
     Returns True when this call installed the replacement, False when there is
     nothing to do: already patched, or a body this fix declines to recognise.
@@ -235,12 +240,12 @@ class _TorchaoIntmmLoader(importlib.abc.Loader):
 
 
 class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
-    """Patches ``torchao.kernel.intmm`` at the instant something imports it.
+    """Patches the module that defines ``safe_int_mm`` the instant something imports it.
 
     Inserted at the FRONT of sys.meta_path, unlike the appended alias finders
     next to it: this module really exists, so PathFinder would answer first and
-    a finder at the back would never be consulted. It answers only for that one
-    dotted name and hands back the real spec with the loader wrapped, so the
+    a finder at the back would never be consulted. It answers only for the two
+    dotted names torchao has kept the function under and hands back the real spec with the loader wrapped, so the
     import is byte for byte the one that would have happened. The re-entrancy
     flag is for the find_spec below, which walks sys.meta_path again.
     """
@@ -252,7 +257,7 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
         self._finding = False
 
     def find_spec(self, fullname, path = None, target = None):
-        if fullname != _TORCHAO_INTMM_MODULE or self._finding:
+        if fullname not in _TORCHAO_INTMM_MODULES or self._finding:
             return None
         self._finding = True
         try:
@@ -289,15 +294,20 @@ def install_torchao_int_mm_patch():
             return None
     except Exception:
         return None
-    module = sys.modules.get(_TORCHAO_INTMM_MODULE)
-    if module is not None:
+    patched_now = False
+    for name in _TORCHAO_INTMM_MODULES:
+        module = sys.modules.get(name)
+        if module is None:
+            continue
         try:
-            return _patch_torchao_intmm_module(module)
+            patched_now = _patch_torchao_intmm_module(module) or patched_now
         except Exception:
             # A stubbed or half-built torchao is not worth an import error in the caller.
-            return False
+            pass
+    if all(name in sys.modules for name in _TORCHAO_INTMM_MODULES):
+        return patched_now  # nothing left for a finder to catch
     for finder in sys.meta_path:
         if getattr(finder, _TORCHAO_INTMM_SENTINEL, False):
-            return False
+            return patched_now
     sys.meta_path.insert(0, _TorchaoIntmmPatchFinder())
     return True
