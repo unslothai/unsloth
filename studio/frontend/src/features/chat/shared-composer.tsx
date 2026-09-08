@@ -28,6 +28,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
@@ -2566,9 +2567,16 @@ export function SharedComposer({
         <div className="ml-auto mr-0.5 flex items-center gap-1.5">
           {showReasoningControl ? (
             isEffort || supportsPreserveThinking ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild={true}>
+              <NonModalDropdownMenu
+                side="top"
+                align="end"
+                className={cn(
+                  "unsloth-plus-menu",
+                  narrowEffortMenu ? "min-w-40" : "min-w-44",
+                )}
+                trigger={(triggerRef) => (
                   <button
+                    ref={triggerRef}
                     type="button"
                     disabled={reasoningDisabled}
                     className="unsloth-thinking-pill"
@@ -2593,129 +2601,121 @@ export function SharedComposer({
                     ) : null}
                     <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[15px]" />
                   </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  side="top"
-                  align="end"
-                  className={cn(
-                    "unsloth-plus-menu",
-                    narrowEffortMenu ? "min-w-40" : "min-w-44",
-                  )}
-                >
-                  {isEffort ? (
-                    <>
-                      {effectiveSupportsReasoningOff && (
-                        <DropdownMenuItem
-                          onSelect={() => {
-                            setReasoningEnabled(false);
-                            applyQwenThinkingParams(false);
-                            // Preserve thinking needs thinking on, so turn it off too.
-                            setPreserveThinking(false);
-                          }}
-                        >
-                          <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
-                            className={cn(
-                              "unsloth-tick size-4",
-                              effectiveReasoningVisualEnabled && "opacity-0",
-                            )}
-                          />
-                          {formatReasoningDisabledLabel(
-                            effectiveSupportsReasoningOff,
-                            isExternalOpenAIReasoning,
-                            checkpoint,
-                          )}
-                        </DropdownMenuItem>
-                      )}
-                      {effectiveReasoningEffortLevels
-                        .filter((level) => level !== "none")
-                        .map((level) => (
-                          <DropdownMenuItem
-                            key={level}
-                            onSelect={() => {
-                              setReasoningEffort(level);
-                              setReasoningEnabled(true);
-                              applyQwenThinkingParams(true);
-                              // Mutual exclusion: turning thinking on for a Kimi model forces its
-                              // web_search builtin off.
-                              if (isKimiExternal && toolsEnabled) {
-                                setToolsEnabled(false, { persist: false });
-                              }
-                            }}
-                          >
-                            <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
-                              className={cn(
-                                "unsloth-tick size-4",
-                                !(
-                                  effectiveReasoningVisualEnabled &&
-                                  reasoningEffort === level
-                                ) && "opacity-0",
-                              )}
-                            />
-                            {formatReasoningEffortLabel(
-                              level,
-                              externalSelection?.modelId,
-                            )}
-                          </DropdownMenuItem>
-                        ))}
-                    </>
-                  ) : (
-                    effectiveSupportsReasoningOff &&
-                    !reasoningLockedOn && (
+                )}
+              >
+                {isEffort ? (
+                  <>
+                    {effectiveSupportsReasoningOff && (
                       <DropdownMenuItem
                         onSelect={() => {
-                          const next = !reasoningEnabled;
-                          setReasoningEnabled(next);
-                          applyQwenThinkingParams(next);
-                          // Preserve thinking cannot run without thinking.
-                          if (!next) setPreserveThinking(false);
-                          if (isKimiExternal && next && toolsEnabled) {
-                            setToolsEnabled(false, { persist: false });
-                          }
+                          setReasoningEnabled(false);
+                          applyQwenThinkingParams(false);
+                          // Preserve thinking needs thinking on, so turn it off too.
+                          setPreserveThinking(false);
                         }}
                       >
                         <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                  icon={Tick02Icon}
+                  strokeWidth={2}
                           className={cn(
                             "unsloth-tick size-4",
-                            !effectiveReasoningEnabled && "opacity-0",
+                            effectiveReasoningVisualEnabled && "opacity-0",
                           )}
                         />
-                        Thinking
+                        {formatReasoningDisabledLabel(
+                          effectiveSupportsReasoningOff,
+                          isExternalOpenAIReasoning,
+                          checkpoint,
+                        )}
                       </DropdownMenuItem>
-                    )
-                  )}
-                  {supportsPreserveThinking && (
+                    )}
+                    {effectiveReasoningEffortLevels
+                      .filter((level) => level !== "none")
+                      .map((level) => (
+                        <DropdownMenuItem
+                          key={level}
+                          onSelect={() => {
+                            setReasoningEffort(level);
+                            setReasoningEnabled(true);
+                            applyQwenThinkingParams(true);
+                            // Mutual exclusion: turning thinking on for a Kimi model forces its
+                            // web_search builtin off.
+                            if (isKimiExternal && toolsEnabled) {
+                              setToolsEnabled(false, { persist: false });
+                            }
+                          }}
+                        >
+                          <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                            className={cn(
+                              "unsloth-tick size-4",
+                              !(
+                                effectiveReasoningVisualEnabled &&
+                                reasoningEffort === level
+                              ) && "opacity-0",
+                            )}
+                          />
+                          {formatReasoningEffortLabel(
+                            level,
+                            externalSelection?.modelId,
+                          )}
+                        </DropdownMenuItem>
+                      ))}
+                  </>
+                ) : (
+                  effectiveSupportsReasoningOff &&
+                  !reasoningLockedOn && (
                     <DropdownMenuItem
-                      disabled={!modelLoaded}
-                      onSelect={(e) => {
-                        e.preventDefault();
-                        const next = !preserveThinking;
-                        setPreserveThinking(next);
-                        // Preserve thinking requires thinking on.
-                        if (next) {
-                          setReasoningEnabled(true);
-                          applyQwenThinkingParams(true);
+                      onSelect={() => {
+                        const next = !reasoningEnabled;
+                        setReasoningEnabled(next);
+                        applyQwenThinkingParams(next);
+                        // Preserve thinking cannot run without thinking.
+                        if (!next) setPreserveThinking(false);
+                        if (isKimiExternal && next && toolsEnabled) {
+                          setToolsEnabled(false, { persist: false });
                         }
                       }}
                     >
                       <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                  icon={Tick02Icon}
+                  strokeWidth={2}
                         className={cn(
                           "unsloth-tick size-4",
-                          !preserveThinking && "opacity-0",
+                          !effectiveReasoningEnabled && "opacity-0",
                         )}
                       />
-                      Preserve thinking
+                      Thinking
                     </DropdownMenuItem>
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
+                  )
+                )}
+                {supportsPreserveThinking && (
+                  <DropdownMenuItem
+                    disabled={!modelLoaded}
+                    onSelect={(e) => {
+                      e.preventDefault();
+                      const next = !preserveThinking;
+                      setPreserveThinking(next);
+                      // Preserve thinking requires thinking on.
+                      if (next) {
+                        setReasoningEnabled(true);
+                        applyQwenThinkingParams(true);
+                      }
+                    }}
+                  >
+                    <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                      className={cn(
+                        "unsloth-tick size-4",
+                        !preserveThinking && "opacity-0",
+                      )}
+                    />
+                    Preserve thinking
+                  </DropdownMenuItem>
+                )}
+              </NonModalDropdownMenu>
             ) : (
               <button
                 type="button"
