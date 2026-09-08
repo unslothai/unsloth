@@ -1,6 +1,6 @@
 # Unsloth Studio agent workspace QA matrix
 
-Snapshot date: 2026-08-27
+Snapshot date: 2026-09-08
 
 Local branch: `feat/codex-agent-workspace`
 
@@ -24,6 +24,12 @@ Status meanings:
 - `MANUAL`: packaged or physical platform evidence is required.
 - `NOT CERTIFIED`: implementation exists, but the full release gate has not passed.
 
+## Real MLX follow-up gate
+
+The stacked `feat/agent-workspace-mlx-runtime` follow-up adds a physical Apple Silicon gate to `.github/workflows/mlx-ci.yml`. The gate loads `unsloth/gemma-3-270m-it` through Studio's real MLX inference worker and runs one durable project task through `core.agent_workspace.inference_executor.execute_background_agent`. It records JSON evidence that the same runtime received project instructions, the snapshotted goal and plan, root and nested `AGENTS.md` layers, selected-path metadata, the bounded coding-tool catalog, the background-task session binding, a durable completed result, and a clean Git worktree.
+
+A row below that refers to the real MLX gate is `PASS` only when `MLX CI on Mac M1 / dispatch` succeeds on the same commit. A source-only or Linux run cannot satisfy it. This does not certify external providers, ChatGPT subscription transport, GGUF, Windows execution, or packaged desktop behavior.
+
 ## Release gates
 
 | Gate | Result | Evidence or remaining gate |
@@ -34,7 +40,7 @@ Status meanings:
 | G3: backend, frontend, and Tauri wiring | PASS locally | Native folder selection, signed grants, persistence, project context, agent workflow routes, and the Agent Workspace panel are connected. |
 | G4: feature-specific automation | PASS for the merged feature suites | Exact local counts are recorded below. Full repository, remote CI, packaged app, and live runtime results are not implied. |
 | G5: native platform certification | MANUAL | Packaged macOS, Windows, and Linux runs have not been recorded. |
-| G6: full Codex parity | NOT CERTIFIED | Windows handle-verified repository and instruction traversal exists, but arbitrary Windows project edits and command execution remain fail-closed. Real model, provider, Codex, GitHub product handoff, packaged app, and physical platform checks remain unrun. |
+| G6: full Codex parity | NOT CERTIFIED | Windows handle-verified repository and instruction traversal exists, but arbitrary Windows project edits and command execution remain fail-closed. The same-head macOS MLX gate now certifies one real local model path; external providers, Codex subscription transport, GitHub product handoff, packaged app, and the remaining physical platform checks remain unrun. |
 
 ## 1. Repository workspace
 
@@ -63,7 +69,7 @@ Status meanings:
 | --- | --- | --- |
 | INS-01 to INS-10 | PASS | Root and nested files resolve by target scope from ancestor to descendant. No-follow descriptor reads, size bounds, UTF-8 fallback, refresh on each run, and stable composition with project goal are covered. |
 | INS-11 | PASS | User system text, project instructions, goal, and repository instructions have a deterministic tested order. |
-| INS-12 | PARTIAL | Chat Completions, Responses, Anthropic, local, provider, and Codex runtime adapters share resolved project context in focused tests. Real runtime and provider calls remain unrun. |
+| INS-12 | PARTIAL | Chat Completions, Responses, Anthropic, local, provider, and Codex runtime adapters share resolved project context in focused tests. The same-head macOS MLX gate checks the real local worker receives the resolved project context; hosted provider and Codex calls remain unrun. |
 
 ## 4. Repository discovery and context selection
 
@@ -112,7 +118,7 @@ Status meanings:
 | BG-11 | PASS in focused automation | Missing or removed repositories fail without recreation or false success. Packaged removable-volume behavior remains manual. |
 | BG-12 | PASS | The contract is process-local. App shutdown cancels active execution and restart reconciliation marks unfinished work interrupted, never successful. |
 
-The background executor has production paths for local GGUF, local MLX-compatible runtime routing, external providers, and Codex subscription transport. Focused tests exercise the production seams with controlled runtimes. No real model, provider, or Codex call is claimed.
+The background executor has production paths for local GGUF, local MLX-compatible runtime routing, external providers, and Codex subscription transport. Focused tests exercise every production seam with controlled runtimes. The same-head macOS MLX gate additionally claims one real local-model call through the durable executor; no hosted provider or Codex call is claimed.
 
 ## 9. Parallel agents and worktrees
 
@@ -139,12 +145,23 @@ Process-local writer slots coordinate Studio operations. They do not serialize a
 
 | IDs | Result | Evidence or remaining gap |
 | --- | --- | --- |
-| PORT-01 to PORT-05 | PARTIAL | One project harness routes local GGUF, MLX-compatible local runtimes, OpenAI-compatible providers, Codex subscription transport, Anthropic, and Gemini-style providers. Controlled adapter tests pass, but real runtime and provider calls remain unrun. |
-| PORT-06 | PASS in focused automation | Tool-call healing retains the bound project session, cwd, goal, and instruction context. No real small-model quality run is claimed. |
+| PORT-01 to PORT-05 | PARTIAL | One project harness routes local GGUF, MLX-compatible local runtimes, OpenAI-compatible providers, Codex subscription transport, Anthropic, and Gemini-style providers. Controlled adapter tests pass, and the same-head macOS gate certifies one real MLX local runtime; GGUF and hosted provider calls remain unrun. |
+| PORT-06 | PASS in focused automation | Tool-call healing retains the bound project session, cwd, goal, and instruction context. The real MLX gate proves context delivery and generation, but intentionally does not score autonomous tool selection by the 270M model. |
 | PORT-07 | PASS | Model changes do not mutate workspace, goal, plan, or task identity. |
 | PORT-08 | PASS | Goal, plan, verify, status, and review administration works with no model loaded. |
 | PORT-09 | PASS in focused automation | Both compare panes receive the same resolved project contract. Packaged compare UI smoke remains unrun. |
 | PORT-10 | PASS | Queued prompts and background tasks carry exact project and worktree session identity without cross-project fallback. |
+
+## 11A. Physical MLX agent-runtime certification
+
+| IDs | Result | Evidence or remaining gap |
+| --- | --- | --- |
+| MLX-RT-01 and MLX-RT-02 | PASS on same-head macOS CI | A fresh process runs on Darwin arm64, loads the public Gemma 3 270M checkpoint through `InferenceOrchestrator`, and requires the worker's mirrored model entry to publish `is_mlx=true`. |
+| MLX-RT-03 and MLX-RT-04 | PASS on same-head macOS CI | A folder-backed Git project and durable plan are stored through the production database path, then queued through `BackgroundTaskManager` with the production `execute_background_agent` adapter. |
+| MLX-RT-05 | PASS on same-head macOS CI | The exact messages handed to the real orchestrator must contain project instructions, the snapshotted goal and plan, root and nested `AGENTS.md` rules, the targeted repository path, and the expected four-tool catalog. |
+| MLX-RT-06 and MLX-RT-07 | PASS on same-head macOS CI | The task must complete with `engine=local`, `providerType=local`, the reserved background-task session ID, non-empty bounded output, and a durable completed database row. |
+| MLX-RT-08 | PASS on same-head macOS CI | The no-edit scenario requires an empty `git status --porcelain` result after generation and always unloads and tears down the real worker. |
+| MLX-RT-09 | GAP | The certification deliberately does not require the 270M model to choose and execute a tool. Model-quality and tool-selection conformance across Qwen, DeepSeek, GLM, Kimi, and larger MLX models remains a separate benchmark. |
 
 ## 12. Security and destructive operations
 
@@ -180,4 +197,4 @@ These are source and local integration results. They do not imply remote CI, pac
 
 ## Release decision
 
-The source implementation is committed and can enter review while fork CI awaits maintainer approval, but merge readiness still requires the pushed head and approved remote CI to pass. The release remains not certified. Arbitrary Windows project edits and execution, real runtimes, providers, Codex transport, the product's live GitHub connector handoff, packaged builds, and physical platform smokes remain unrun. Do not merge or describe the product as release-ready until the remaining gates have recorded evidence.
+The source implementation is committed and can enter review while fork CI awaits maintainer approval, but merge readiness still requires the pushed head and approved remote CI to pass. The release remains not certified. The same-head macOS gate can certify the real MLX local-model path; arbitrary Windows project edits and execution, real GGUF and hosted-provider paths, Codex transport, the product's live GitHub connector handoff, packaged builds, and the other physical platform smokes remain unrun. Do not merge or describe the product as release-ready until the remaining gates have recorded evidence.
