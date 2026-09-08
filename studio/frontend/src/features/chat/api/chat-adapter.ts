@@ -45,8 +45,8 @@ import {
 import { apiUrl } from "@/lib/api-base";
 import { isMcpToolName } from "../utils/mcp-tool-name";
 import {
-  boundMcpImageEnvelopes,
-  stripMcpImageEnvelopes,
+  type McpImage,
+  planMcpImageBound,
   mcpImagesEnvelope,
   splitMcpImages,
 } from "./mcp-images";
@@ -1737,6 +1737,69 @@ export const CANVAS_TOOL_INSTRUCTION =
 export const CANVAS_FALLBACK_INSTRUCTION =
   "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
 
+/** The MCP image bound applied to the run's own tool results, BEFORE they are
+ *  serialized. Bounding the OpenAI history afterwards meant every result's image
+ *  array was stringified into an envelope on the main thread and then parsed again
+ *  to be cut or dropped -- on every send, for pictures the request would not carry.
+ *  A result that keeps no picture becomes its plain text, which is what the
+ *  serializer emits for a stripped envelope. */
+function boundMcpImageResults(
+  messages: RunMessages,
+  { readsImages, localMarkers }: { readsImages: boolean; localMarkers: boolean },
+): RunMessages {
+  type Carrier = { message: number; part: number; images: McpImage[] };
+  // One entry per message: the results one model turn produced, which the marker
+  // paths render as one batch.
+  const perMessage: Carrier[][] = [];
+  messages.forEach((message, m) => {
+    const parts = message.content;
+    if (!Array.isArray(parts)) return;
+    const batch: Carrier[] = [];
+    parts.forEach((part, p) => {
+      if (part.type !== "tool-call") return;
+      const tc = part as { toolName?: string; result?: unknown };
+      if (!isMcpImageToolResult(tc.result) || !isMcpToolName(tc.toolName)) return;
+      batch.push({ message: m, part: p, images: tc.result.images });
+    });
+    if (batch.length > 0) perMessage.push(batch);
+  });
+  if (perMessage.length === 0) return messages;
+  const batches = localMarkers
+    ? perMessage
+    : perMessage.flatMap((batch) => batch.map((carrier) => [carrier]));
+  const plan = readsImages
+    ? planMcpImageBound(
+        batches.map((batch) => batch.map((carrier) => carrier.images)),
+        { localMarkers },
+      )
+    : batches.map((batch) => batch.map((): McpImage[] => []));
+  const edits = new Map<number, Map<number, McpImage[]>>();
+  batches.forEach((batch, b) =>
+    batch.forEach((carrier, r) => {
+      const kept = plan[b][r];
+      if (kept.length === carrier.images.length) return;
+      const forMessage = edits.get(carrier.message) ?? new Map<number, McpImage[]>();
+      forMessage.set(carrier.part, kept);
+      edits.set(carrier.message, forMessage);
+    }),
+  );
+  if (edits.size === 0) return messages;
+  return messages.map((message, m) => {
+    const forMessage = edits.get(m);
+    if (!forMessage || !Array.isArray(message.content)) return message;
+    const content = message.content.map((part, p) => {
+      const kept = forMessage.get(p);
+      if (!kept) return part;
+      const result = (part as { result: McpImageToolResult }).result;
+      return {
+        ...part,
+        result: kept.length > 0 ? { ...result, images: kept } : result.text,
+      };
+    });
+    return { ...message, content } as typeof message;
+  }) as RunMessages;
+}
+
 /** Whether the loaded local model reads an MCP picture: its vision flag, not
  *  loadedIsMultimodal alone, which an audio-only model also sets. Unknown keeps them. */
 function localTargetReadsImages(
@@ -1752,33 +1815,31 @@ function localTargetReadsImages(
 /** The OpenAI-form history a completion would send. The tool catalog is priced server-side,
  *  since --enable-tools can inject schemas the client cannot see. */
 export async function buildLocalTokenCountHistory(
-  messages: RunMessages,
+  rawMessages: RunMessages,
   threadId: string | undefined,
 ): Promise<{
   messages: OpenAIChatMessage[];
   studio_tool_history?: true;
 }> {
-  const survivingMessages = pruneOutboundHistory(messages, true);
   const runtimeState = useChatRuntimeStore.getState();
   const { params, artifactsEnabled, supportsTools } = runtimeState;
   const activeModel = runtimeState.models.find(
     (model) => model.id === runtimeState.params.checkpoint,
   );
-  const history = survivingMessages
+  // Same target rules as the send path, applied to the run's own results before
+  // anything is serialized: the backend's cap runs after the body is parsed, so it
+  // cannot keep the request from growing, and this recount runs in the background on
+  // every turn -- envelopes the count would strip anyway must not be built at all.
+  const messages = boundMcpImageResults(rawMessages, {
+    readsImages: localTargetReadsImages(runtimeState),
+    localMarkers: activeModel?.isGguf === false,
+  });
+  const survivingMessages = pruneOutboundHistory(messages, true);
+  const outboundMessages = survivingMessages
     .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
     );
-  // Same target rules as the send path. Bounded before it goes on the wire: the
-  // backend's cap runs after the body is parsed, so it cannot keep the request from
-  // growing without limit. And stripped for a text-only target: the count strips them
-  // before rendering, and this recount runs in the background on every turn, so the
-  // envelopes were serialized and uploaded for nothing each time.
-  const outboundMessages = localTargetReadsImages(runtimeState)
-    ? boundMcpImageEnvelopes(history, {
-        localMarkers: activeModel?.isGguf === false,
-      })
-    : stripMcpImageEnvelopes(history);
   const safeSystemPrompt =
     typeof params.systemPrompt === "string"
       ? resolveSystemPromptVariables(
@@ -4019,7 +4080,7 @@ export function createOpenAIStreamAdapter(
 ): ChatModelAdapter {
   const adapter = {
     async *run({
-      messages,
+      messages: rawMessages,
       runConfig,
       abortSignal,
       unstable_threadId,
@@ -4207,9 +4268,9 @@ export function createOpenAIStreamAdapter(
           .reverse()
           .find((m) => m.role === "user");
         if (!userMessage) throw new Error("Research requires a user message.");
-        const userMessageIndex = messages.indexOf(userMessage);
+        const userMessageIndex = rawMessages.indexOf(userMessage);
         const userMessageParentId =
-          userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
+          userMessageIndex > 0 ? rawMessages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
         await persistResolvedQueuedModel(
           params.checkpoint,
@@ -4797,6 +4858,12 @@ export function createOpenAIStreamAdapter(
         !isExternalRequest &&
         runtime.models.find((model) => model.id === runtime.params.checkpoint)
           ?.isGguf === false;
+      // Bounded on the run's own results, before any envelope is built: what the
+      // request will not carry is never stringified, and never parsed back.
+      const messages = boundMcpImageResults(rawMessages, {
+        readsImages: targetReadsImages,
+        localMarkers: mcpImagesLocalMarkers,
+      });
       const survivingMessages = pruneOutboundHistory(
         messages,
         !isExternalRequest,
@@ -4835,13 +4902,6 @@ export function createOpenAIStreamAdapter(
           referenceMessage as unknown as SerializedMessage,
         );
       }
-      // Bounded before it goes on the wire: the backend's cap runs after the body is
-      // parsed, so it cannot keep the request itself from growing without limit.
-      outboundMessages = targetReadsImages
-        ? boundMcpImageEnvelopes(outboundMessages, {
-            localMarkers: mcpImagesLocalMarkers,
-          })
-        : stripMcpImageEnvelopes(outboundMessages);
 
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {

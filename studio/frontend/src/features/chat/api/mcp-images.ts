@@ -85,54 +85,29 @@ interface EnvelopeCarrier {
   content?: unknown;
 }
 
-export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
-  messages: readonly T[],
+/** The bound itself, over batches of results in document order (oldest first): what
+ *  each result may still carry. A batch is the results one model turn produced in
+ *  parallel; the marker paths render it as one turn carrying one picture, so with
+ *  localMarkers the batch is charged once and its further candidates are decode
+ *  fallbacks. The part paths take MAX_MODEL_IMAGES per result, each result its own batch.
+ *
+ *  Both carriers of an envelope -- the serialized OpenAI history and the run's own tool
+ *  results -- plan through here, so the two never drift. */
+export function planMcpImageBound(
+  batches: readonly (readonly (readonly McpImage[])[])[],
   { localMarkers = false }: { localMarkers?: boolean } = {},
-): T[] {
-  const out = messages.slice();
+): McpImage[][][] {
   let budget = MAX_TOTAL_MCP_IMAGES;
+  // Shared, so at most MAX_TOTAL_MCP_IMAGES + DECODE_FAILURE_ALLOWANCE candidates
+  // ever leave here however many results there are.
   let spare = DECODE_FAILURE_ALLOWANCE;
   let charsLeft = MAX_TOTAL_MCP_IMAGE_CHARS;
-  // What one tool batch can put in front of the target. A marker target renders a
-  // batch -- consecutive tool results -- as one turn carrying one picture, so the
-  // batch is charged once and its further candidates are decode fallbacks; charging
-  // four per result there spent the budget on pictures the backend never sent and
-  // stripped older batches that still had room. The part paths take four per result.
   const perResult = localMarkers ? LOCAL_MAX_IMAGES_PER_TURN : MAX_MODEL_IMAGES;
-  const isTool = (index: number) => out[index]?.role === "tool";
-  let i = out.length - 1;
-  while (i >= 0) {
-    if (!isTool(i)) {
-      i--;
-      continue;
-    }
-    let start = i;
-    if (localMarkers) {
-      while (start > 0 && isTool(start - 1)) start--;
-    }
-    const batch: number[] = [];
-    for (let j = i; j >= start; j--) batch.push(j);
-    i = start - 1;
+  const out: McpImage[][][] = batches.map((batch) => batch.map(() => []));
+  // Newest first: those are the ones the backend would have kept.
+  for (let b = batches.length - 1; b >= 0; b--) {
+    const batch = batches[b];
     const room = Math.min(budget, perResult);
-    let allowance = room + spare;
-    let taken = 0;
-    for (const index of batch) {
-    const message = out[index];
-    if (!message || message.role !== "tool") continue;
-    if (typeof message.content !== "string") continue;
-    const { text, images } = splitMcpImages(message.content);
-    if (images.length === 0) continue;
-    // A named non-MCP result is never promoted, and the backend strips its envelope
-    // regardless -- so drop it here too. Left alone it bypassed both bounds below,
-    // and its base64 was re-uploaded whole on every later turn.
-    if (
-      typeof message.name === "string" &&
-      message.name &&
-      !message.name.startsWith(MCP_TOOL_PREFIX)
-    ) {
-      out[index] = { ...message, content: text };
-      continue;
-    }
     // The backend promotes at most perResult out of any one result, so a result
     // carrying more must not spend history budget on images that will be dropped
     // anyway -- that would evict older results which still had room.
@@ -150,34 +125,35 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     // charge the full room, and the next result down then sees room 0 and loses its
     // envelope entirely -- so four valid PNGs are dropped while the allowance that
     // exists for exactly that case is still untouched.
-    // Newest first here too, so the pictures a request gives up under the byte
-    // budget are the oldest ones -- the same ones every other cap here drops.
-    // Scanned until the allowance is actually MET, not sliced to it first: with a
-    // newer result holding most of the byte budget, the first candidates can all be
-    // too large while a later one fits, and slicing first dropped the whole envelope.
-    const keep: McpImage[] = [];
-    for (const image of images) {
-      if (keep.length >= allowance) break;
-      if (image.mimeType.length > MAX_MCP_IMAGE_MIME_CHARS) continue;
-      const cost = image.data.length;
-      // Skip the one that does not fit and keep looking: breaking here threw away
-      // three 1MB pictures sitting behind a 5MB one, which the backend could have
-      // replayed. The live-result budget already skips rather than stops.
-      if (charsLeft - cost < 0) continue;
-      charsLeft -= cost;
-      keep.push(image);
-    }
-    allowance -= keep.length;
-    taken += keep.length;
-    if (keep.length === images.length) continue;
-    // Carry the count the tool actually returned, or a prior bound's record of it,
-    // so the backend's note does not describe this upload as the whole result.
-    const returned = Math.max(images[0]?.returned ?? 0, images.length);
-    const bounded = keep.length > 0 ? [{ ...keep[0], returned }, ...keep.slice(1)] : [];
-    out[index] = {
-      ...message,
-      content: bounded.length > 0 ? text + mcpImagesEnvelope(bounded) : text,
-    };
+    let allowance = room + spare;
+    let taken = 0;
+    for (let r = batch.length - 1; r >= 0; r--) {
+      const images = batch[r];
+      // Scanned until the allowance is actually MET, not sliced to it first: with a
+      // newer result holding most of the byte budget, the first candidates can all be
+      // too large while a later one fits, and slicing first dropped the whole envelope.
+      const keep: McpImage[] = [];
+      for (const image of images) {
+        if (keep.length >= allowance) break;
+        if (image.mimeType.length > MAX_MCP_IMAGE_MIME_CHARS) continue;
+        const cost = image.data.length;
+        // Skip the one that does not fit and keep looking: breaking here threw away
+        // three 1MB pictures sitting behind a 5MB one, which the backend could have
+        // replayed. The live-result budget already skips rather than stops.
+        if (charsLeft - cost < 0) continue;
+        charsLeft -= cost;
+        keep.push(image);
+      }
+      allowance -= keep.length;
+      taken += keep.length;
+      if (keep.length === images.length) {
+        out[b][r] = images.slice();
+        continue;
+      }
+      // Carry the count the tool actually returned, or a prior bound's record of it,
+      // so the backend's note does not describe this upload as the whole result.
+      const returned = Math.max(images[0]?.returned ?? 0, images.length);
+      out[b][r] = keep.length > 0 ? [{ ...keep[0], returned }, ...keep.slice(1)] : [];
     }
     // Charged for what the batch can actually contribute, never for room it did
     // not use, and never for the spares -- those exist only so the backend has
@@ -186,6 +162,68 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     budget -= charged;
     spare -= taken - charged;
   }
+  return out;
+}
+
+/** The bound over an already serialized OpenAI history. The send path bounds the
+ *  run's own tool results before serializing them (chat-adapter's
+ *  boundMcpImageResults), so a discarded envelope is never even built; this form
+ *  serves callers that only hold the wire shape. */
+export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
+  messages: readonly T[],
+  { localMarkers = false }: { localMarkers?: boolean } = {},
+): T[] {
+  const out = messages.slice();
+  type Carrier = { index: number; text: string; images: McpImage[] };
+  const carriers: Carrier[] = [];
+  for (let i = 0; i < out.length; i++) {
+    const message = out[i];
+    if (!message || message.role !== "tool") continue;
+    if (typeof message.content !== "string") continue;
+    const { text, images } = splitMcpImages(message.content);
+    if (images.length === 0) continue;
+    // A named non-MCP result is never promoted, and the backend strips its envelope
+    // regardless -- so drop it here too. Left alone it bypassed both bounds below,
+    // and its base64 was re-uploaded whole on every later turn.
+    if (
+      typeof message.name === "string" &&
+      message.name &&
+      !message.name.startsWith(MCP_TOOL_PREFIX)
+    ) {
+      out[i] = { ...message, content: text };
+      continue;
+    }
+    carriers.push({ index: i, text, images });
+  }
+  // Consecutive tool results are one batch on a marker target.
+  const batches: Carrier[][] = [];
+  for (const carrier of carriers) {
+    const previous = batches[batches.length - 1];
+    const last = previous?.[previous.length - 1];
+    let sameBatch = localMarkers && last !== undefined;
+    for (let j = (last?.index ?? 0) + 1; sameBatch && j < carrier.index; j++) {
+      if (out[j]?.role !== "tool") sameBatch = false;
+    }
+    if (sameBatch && previous) previous.push(carrier);
+    else batches.push([carrier]);
+  }
+  const plan = planMcpImageBound(
+    batches.map((batch) => batch.map((carrier) => carrier.images)),
+    { localMarkers },
+  );
+  batches.forEach((batch, b) =>
+    batch.forEach((carrier, r) => {
+      const kept = plan[b][r];
+      if (kept.length === carrier.images.length) return;
+      out[carrier.index] = {
+        ...out[carrier.index],
+        content:
+          kept.length > 0
+            ? carrier.text + mcpImagesEnvelope(kept)
+            : carrier.text,
+      };
+    }),
+  );
   return out;
 }
 

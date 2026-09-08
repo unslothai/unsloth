@@ -11,6 +11,7 @@ import {
   MAX_TOTAL_MCP_IMAGES,
   MAX_MCP_IMAGE_MIME_CHARS,
   MAX_TOTAL_MCP_IMAGE_CHARS,
+  planMcpImageBound,
   MCP_IMAGES_MARKER,
   boundMcpImageEnvelopes,
   mcpImagesEnvelope,
@@ -413,17 +414,19 @@ test("consecutive results are one batch on a marker target and share one charge"
   }
 });
 
-test("the send path bounds after the slice, to the target's own contribution", () => {
-  // Decided before the slice tests/studio executes standalone; applied after it, so the
-  // slice keeps only messages and isExternalRequest in scope.
+test("the send path bounds the run's own results before serializing them", () => {
+  // Decided before the slice tests/studio executes standalone, applied to the raw
+  // results, so no envelope the request will not carry is ever built or parsed back.
   assert.match(
     adapter,
     /const mcpImagesLocalMarkers =\n\s*!isExternalRequest &&\n\s*runtime\.models\.find\(\(model\) => model\.id === runtime\.params\.checkpoint\)\n\s*\?\.isGguf === false;/,
   );
   assert.match(
     adapter,
-    /\? boundMcpImageEnvelopes\(outboundMessages, \{\n\s*localMarkers: mcpImagesLocalMarkers,\n\s*\}\)\n\s*: stripMcpImageEnvelopes\(outboundMessages\);/,
+    /const messages = boundMcpImageResults\(rawMessages, \{\n\s*readsImages: targetReadsImages,\n\s*localMarkers: mcpImagesLocalMarkers,\n\s*\}\);\n\s*const survivingMessages = pruneOutboundHistory\(\n\s*messages,/,
   );
+  assert.doesNotMatch(adapter, /boundMcpImageEnvelopes\(outboundMessages/);
+  assert.doesNotMatch(adapter, /stripMcpImageEnvelopes\(outboundMessages/);
 });
 
 test("the upload gate is the backend's external MCP gate, not provider-level vision", () => {
@@ -447,7 +450,7 @@ test("both local paths read the model's vision flag, not just multimodal", () =>
   assert.match(adapter, /: localTargetReadsImages\(runtime\);/);
   assert.match(
     adapter,
-    /const outboundMessages = localTargetReadsImages\(runtimeState\)\n\s*\? boundMcpImageEnvelopes\(history, \{[\s\S]*?: stripMcpImageEnvelopes\(history\);/,
+    /const messages = boundMcpImageResults\(rawMessages, \{\n\s*readsImages: localTargetReadsImages\(runtimeState\),/,
   );
   assert.match(
     adapter,
@@ -520,4 +523,24 @@ test("the byte filter scans past candidates that do not fit", () => {
   const bounded = boundMcpImageEnvelopes(messages);
   const older = splitMcpImages(bounded[0].content).images;
   assert.deepEqual(older.map((image) => image.data), ["tiny"]);
+});
+
+test("the planner is the bound the envelope form applies", () => {
+  // Both carriers plan through one function, so the raw-result bound the send path
+  // takes and the envelope bound agree result for result.
+  const rounds = Array.from({ length: 8 }, (_, n) => round(n, 3, 2)).flat();
+  const envelopes = boundMcpImageEnvelopes(rounds, { localMarkers: true });
+  const viaEnvelopes = imagesPerToolResult(envelopes);
+  const batches = Array.from({ length: 8 }, (_, n) =>
+    rounds
+      .slice(n * 5 + 1, n * 5 + 4)
+      .map((m) => splitMcpImages(m.content as string).images),
+  );
+  const viaPlanner = planMcpImageBound(batches, { localMarkers: true })
+    .flat()
+    .map((kept) => kept.length);
+  assert.deepEqual(viaPlanner, viaEnvelopes);
+  // A result that keeps nothing is an empty plan, which the raw bound turns into text.
+  const dropped = planMcpImageBound([[[{ data: "x", mimeType: "image/png" }]], [[Array.from({ length: 12 }, (_, i) => ({ data: `${i}`, mimeType: "image/png" }))].flat()]]);
+  assert.equal(dropped[0][0].length, 1);
 });
