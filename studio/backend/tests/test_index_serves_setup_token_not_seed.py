@@ -343,8 +343,12 @@ def test_a_rebound_dns_name_is_refused_the_setup_token():
 
     app = _A()
     # Hostile names, including one that merely contains a loopback label.
-    for hostile in ("attacker.example", "evil.test:8000", "localhost.attacker.example",
-                    "127.0.0.1.attacker.example"):
+    for hostile in (
+        "attacker.example",
+        "evil.test:8000",
+        "localhost.attacker.example",
+        "127.0.0.1.attacker.example",
+    ):
         assert studio_main._host_is_safe_from_rebinding(_Req(hostile), app) is False, hostile
     # Loopback, however spelled.
     for ok in ("localhost:8000", "127.0.0.1:8000", "[::1]:8000", "LOCALHOST"):
@@ -353,14 +357,13 @@ def test_a_rebound_dns_name_is_refused_the_setup_token():
     # typed. This is what keeps `-H 0.0.0.0` usable from another machine.
     for ok in ("192.168.1.50:8000", "10.0.0.5:8000", "[fe80::1]:8000"):
         assert studio_main._host_is_safe_from_rebinding(_Req(ok), app) is True, ok
+
     # A name is allowed only when it is the host this launch was configured with.
     class _Named:
         state = type("S", (), {"bind_host": "studio.internal"})()
 
-    assert studio_main._host_is_safe_from_rebinding(
-        _Req("studio.internal:8000"), _Named()) is True
-    assert studio_main._host_is_safe_from_rebinding(
-        _Req("attacker.example"), _Named()) is False
+    assert studio_main._host_is_safe_from_rebinding(_Req("studio.internal:8000"), _Named()) is True
+    assert studio_main._host_is_safe_from_rebinding(_Req("attacker.example"), _Named()) is False
 
 
 def test_a_missing_host_header_is_refused():
