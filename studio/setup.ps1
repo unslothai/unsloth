@@ -6324,7 +6324,13 @@ if ($LocalLlamaCppLinked) {
                     }
                 $_nvidiaEvidence = $HasNvidiaSmi -or ((Test-WinArm64Venv) -and $_woaEvidenceIndex -and
                     (Test-WoaPersistableIndex $_woaEvidenceIndex))
-                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip", "windows-vulkan") } elseif ($_nvidiaEvidence) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64", "windows-vulkan") }
+                # No ROCm bundle exists for Windows ARM64: upstream's is hip-radeon-x64 and we
+                # publish none, so the selector falls through to the ARM64 CPU bundle. Without
+                # that kind here the gate deletes and refetches it on every single update.
+                $_rocmKinds = if (Test-WinArm64Venv) {
+                    @("windows-rocm", "windows-hip", "windows-arm64", "windows-vulkan")
+                } else { @("windows-rocm", "windows-hip", "windows-vulkan") }
+                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { $_rocmKinds } elseif ($_nvidiaEvidence) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64", "windows-vulkan") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
