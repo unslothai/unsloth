@@ -52,7 +52,7 @@ function harness(
     filename: options.filename ?? "report.pdf",
   };
   const lister = async () => [];
-  const scope: RagDocumentScope = { type: "thread", threadId: "thread" };
+  let scope: RagDocumentScope | null = { type: "thread", threadId: "thread" };
   const react = {
     useRef(value: unknown) {
       const index = cursor++;
@@ -86,7 +86,7 @@ function harness(
   };
   const { useRagDocuments: runHook } = loadWithStubs<{
     useRagDocuments: (
-      scope: RagDocumentScope,
+      scope: RagDocumentScope | null,
       lister: () => Promise<RagDocument[]>,
     ) => Hook;
   }>(
@@ -112,7 +112,6 @@ function harness(
       "./vision-overrides": { resolveVisionOverrides: async () => ({}) },
       "../api/rag-api": {
         uploadThreadDocument: async (threadId: string) => {
-          assert.equal(threadId, "thread");
           uploads.push(threadId);
           return uploaded;
         },
@@ -131,6 +130,9 @@ function harness(
     errors,
     infos,
     uploads,
+    setScope(next: RagDocumentScope | null) {
+      scope = next;
+    },
     render() {
       cursor = 0;
       const result = runHook(scope, lister);
@@ -268,6 +270,29 @@ test("an original job failure is preserved after its event stream ends", async (
     await flush();
     assert.deepEqual(app.render().documents, []);
     assert.deepEqual(app.errors, ["Couldn't index report.pdf"]);
+  } finally {
+    app.dispose();
+  }
+});
+
+test("an upload begun without a scope stops at the chat the user left", async () => {
+  const app = harness();
+  try {
+    app.setScope(null);
+    let hook = app.render();
+    await flush();
+    const materialized = deferred<RagDocumentScope>();
+    const pending = hook.upload([report()], async () => materialized.promise);
+    await flush();
+    // The user picks an existing chat while the new one is still materializing.
+    app.setScope({ type: "thread", threadId: "other" });
+    hook = app.render();
+    await flush();
+    materialized.resolve({ type: "thread", threadId: "abandoned" });
+    await pending;
+    await flush();
+    assert.deepEqual(app.uploads, [], "posted into a chat the user had left");
+    assert.deepEqual(app.render().documents, []);
   } finally {
     app.dispose();
   }

@@ -38,10 +38,6 @@ export interface TrackedDocument extends RagDocument {
  * within one period of appearing. */
 const FOLDER_RECONCILE_INTERVAL_MS = 30_000;
 
-// Leave HTTP/1.1 connections available for uploads and status requests.
-const MAX_JOB_STREAMS = 4;
-let activeJobStreams = 0;
-
 /** A browser File, or a desktop drop addressed by its native path token. */
 export type RagUploadItem =
   | { kind: "file"; file: File }
@@ -210,43 +206,40 @@ export function useRagDocuments(
       };
 
       (async () => {
-        if (activeJobStreams < MAX_JOB_STREAMS) {
-          activeJobStreams += 1;
-          try {
-            for await (const ev of streamJobEvents(jobId, controller.signal)) {
-              if (stale()) return forget();
-              if (ev.type === "progress") {
-                patchDoc(documentId, {
-                  status: "running",
-                  progress: ev.progress ?? null,
-                  stage: ev.stage ?? null,
-                });
-              } else if (ev.type === "complete") {
-                finish("completed", null, ev.num_chunks);
-                return;
-              } else if (ev.type === "error") {
-                finish(
-                  ev.stage === "cancelled" ? "cancelled" : "failed",
-                  ev.error ?? "Indexing failed",
-                );
-                return;
-              }
-            }
-            // Stream ended with no terminal frame: reconcile.
+        // Past the shared budget in rag-api, streamJobEvents throws and this falls
+        // through to the poll below.
+        try {
+          for await (const ev of streamJobEvents(jobId, controller.signal)) {
             if (stale()) return forget();
-            const job = await getJob(jobId, controller.signal);
-            const terminal = terminalJobStatus(job.status);
-            if (terminal) {
-              finish(terminal, job.error, job.numChunks);
+            if (ev.type === "progress") {
+              patchDoc(documentId, {
+                status: "running",
+                progress: ev.progress ?? null,
+                stage: ev.stage ?? null,
+              });
+            } else if (ev.type === "complete") {
+              finish("completed", null, ev.num_chunks);
+              return;
+            } else if (ev.type === "error") {
+              finish(
+                ev.stage === "cancelled" ? "cancelled" : "failed",
+                ev.error ?? "Indexing failed",
+              );
               return;
             }
-          } catch {
-            if (stale()) {
-              forget();
-              return;
-            }
-          } finally {
-            activeJobStreams -= 1;
+          }
+          // Stream ended with no terminal frame: reconcile.
+          if (stale()) return forget();
+          const job = await getJob(jobId, controller.signal);
+          const terminal = terminalJobStatus(job.status);
+          if (terminal) {
+            finish(terminal, job.error, job.numChunks);
+            return;
+          }
+        } catch {
+          if (stale()) {
+            forget();
+            return;
           }
         }
         // Poll until the persisted job reaches a terminal state.
@@ -647,6 +640,23 @@ export function useRagDocuments(
           toast.error("Couldn't attach documents", {
             description: err instanceof Error ? err.message : String(err),
           });
+          return;
+        }
+
+        // A batch begun with no scope is exempt from the generation bump, so materializing
+        // a thread cannot abort it. That exemption also covers navigating away mid-flight,
+        // so compare destinations here: another chat on screen means this one was left. A
+        // null key is still materializing, not a navigation.
+        const resolvedKey =
+          activeScope.type === "kb"
+            ? `kb:${activeScope.kbId}`
+            : activeScope.type === "project"
+              ? `project:${activeScope.projectId}`
+              : `thread:${activeScope.threadId}`;
+        const liveKey = liveScopeKeyRef.current;
+        if (knownScope === null && liveKey !== null && liveKey !== resolvedKey) {
+          const tempIds = new Set(fresh.map((f) => f.tempId));
+          setDocuments((rows) => rows.filter((row) => !tempIds.has(row.id)));
           return;
         }
 

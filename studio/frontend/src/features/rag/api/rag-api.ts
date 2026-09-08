@@ -743,28 +743,50 @@ async function openEventStream(
   return response.body;
 }
 
+// One budget for every RAG stream: HTTP/1.1 allows six connections per origin, so counting
+// only document jobs let folder syncs fill the pool and stall the upload POSTs anyway.
+// Both callers already poll when a stream throws.
+const MAX_RAG_STREAMS = 4;
+let activeRagStreams = 0;
+
+async function* boundedEventStream<T>(
+  path: string,
+  signal?: AbortSignal,
+  stallMs?: number,
+): AsyncGenerator<T> {
+  if (activeRagStreams >= MAX_RAG_STREAMS) {
+    throw new Error("RAG stream capacity reached");
+  }
+  activeRagStreams += 1;
+  try {
+    const body = await openEventStream(`${RAG_BASE}${path}`, signal);
+    yield* readSseJsonEvents<T>(body, stallMs);
+  } finally {
+    activeRagStreams -= 1;
+  }
+}
+
 // sse; returns on [DONE]. transport errors propagate so callers can poll getJob
-export async function* streamJobEvents(
+export function streamJobEvents(
   jobId: string,
   signal?: AbortSignal,
 ): AsyncGenerator<JobEvent> {
   // no stall bound: this consumer reads an early end as a finished job
-  const body = await openEventStream(
-    `${RAG_BASE}/jobs/${encodeURIComponent(jobId)}/events`,
+  return boundedEventStream<JobEvent>(
+    `/jobs/${encodeURIComponent(jobId)}/events`,
     signal,
   );
-  yield* readSseJsonEvents<JobEvent>(body);
 }
 
-export async function* streamFolderSyncJobEvents(
+export function streamFolderSyncJobEvents(
   jobId: string,
   signal?: AbortSignal,
 ): AsyncGenerator<FolderSyncJobEvent> {
-  const body = await openEventStream(
-    `${RAG_BASE}/linked-folder-jobs/${encodeURIComponent(jobId)}/events`,
+  return boundedEventStream<FolderSyncJobEvent>(
+    `/linked-folder-jobs/${encodeURIComponent(jobId)}/events`,
     signal,
+    SSE_STALL_MS,
   );
-  yield* readSseJsonEvents<FolderSyncJobEvent>(body, SSE_STALL_MS);
 }
 
 export function getPreviewTarget(
