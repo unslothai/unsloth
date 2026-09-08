@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit and regression tests for CORS origin policies in Unsloth Studio.
-
-Covers Issue #9880: CORS support for external loopback clients in desktop mode,
-UNSLOTH_CORS_ORIGINS environment overrides, and origin isolation boundaries.
-"""
+"""CORS origin policy: the desktop lockdown, its two opt-ins, and issue #9880."""
 
 from __future__ import annotations
 
@@ -34,8 +30,7 @@ def _middleware(
     secure = False,
     cloudflare_url = None,
 ):
-    """The middleware main.py actually mounts, fed the policy main.py actually passes it.
-    A local stand-in class would keep passing after the real wiring stopped matching."""
+    """The class main.py mounts, not a stand-in: a copy keeps passing once the two drift."""
     from main import RemoteAccessCORSMiddleware
     return RemoteAccessCORSMiddleware(
         lambda *_: None,
@@ -86,10 +81,8 @@ def test_cors_origins_for_mode_env_override(monkeypatch):
 
 @pytest.mark.parametrize("api_only,secure", [(False, False), (False, True), (True, True)])
 def test_cors_origins_env_never_narrows_any_origin_modes(monkeypatch, api_only, secure):
-    # Secure api-only serves the desktop webview AND remote browsers over the tunnel, and
-    # is_allowed_origin only waves origins through while a Cloudflare URL is published. If
-    # the env list replaced ["*"] here, a dropped tunnel would 400 tauri://localhost and the
-    # desktop app would lose its own backend.
+    # is_allowed_origin only waves origins through while a Cloudflare URL is published, so
+    # an env list replacing ["*"] would 400 tauri://localhost the moment the tunnel drops.
     monkeypatch.setenv("UNSLOTH_CORS_ORIGINS", "http://localhost:8080")
     assert cors_origins_for_mode(api_only = api_only, secure = secure) == ["*"]
 
@@ -107,8 +100,6 @@ def test_cors_origins_env_never_narrows_any_origin_modes(monkeypatch, api_only, 
     ],
 )
 def test_cors_origin_regex_for_mode_default_none(api_only, secure):
-    # Regex matching is disabled by default across all modes to prevent unauthorized
-    # credentialed requests from arbitrary local ports in desktop api-only mode.
     regex = cors_origin_regex_for_mode(api_only = api_only, secure = secure)
     assert regex is None
 
@@ -137,11 +128,9 @@ def test_main_passes_the_origin_regex_to_the_mounted_middleware():
 @pytest.mark.parametrize(
     "origin,should_allow",
     [
-        # Internal Tauri schemes (allowed by default)
         ("tauri://localhost", True),
         ("http://tauri.localhost", True),
         ("http://localhost:5173", True),
-        # External loopback origins (must be blocked by default without opt-in)
         ("http://localhost:3000", False),
         ("http://localhost:8080", False),
         ("http://127.0.0.1:3000", False),
@@ -149,7 +138,6 @@ def test_main_passes_the_origin_regex_to_the_mounted_middleware():
         ("http://[::1]:3000", False),
         ("https://localhost:8443", False),
         ("https://127.0.0.1:8443", False),
-        # Remote origins (blocked)
         ("http://malicious-site.com", False),
         ("https://evil.org", False),
     ],

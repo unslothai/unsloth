@@ -244,17 +244,15 @@ _LOOPBACK_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5
 
 
 def _is_desktop_cors_lockdown(api_only: bool, secure: bool) -> bool:
-    """The one mode CORS is not any-origin in: the desktop app on a local backend.
-    Secure mode publishes the API over Cloudflare and must stay reachable from
-    remote browser origins."""
+    """The one mode CORS is not any-origin in. Secure publishes the API over Cloudflare,
+    so it must stay reachable from remote browser origins."""
     return api_only and not secure
 
 
 def cors_origins_for_mode(*, api_only: bool, secure: bool) -> list[str]:
-    """Allowed CORS origins. Default is any-origin (["*"]); api-only locks down
-    to the Tauri desktop app. UNSLOTH_CORS_ORIGINS only ever extends that lockdown
-    list: narrowing a mode that already allows every origin would take the desktop
-    webview's own origin away the moment a secure-mode tunnel drops."""
+    """Allowed CORS origins: the Tauri desktop app under lockdown, else any origin.
+    UNSLOTH_CORS_ORIGINS only ever extends the lockdown list: narrowing ["*"] would drop
+    the webview's own origin the moment a secure-mode tunnel drops."""
     if not _is_desktop_cors_lockdown(api_only, secure):
         return ["*"]
     custom = [
@@ -266,9 +264,8 @@ def cors_origins_for_mode(*, api_only: bool, secure: bool) -> list[str]:
 
 
 def cors_origin_regex_for_mode(*, api_only: bool, secure: bool) -> str | None:
-    """Origin regex for the desktop lockdown, off by default so a page served on any
-    other local port cannot make credentialed calls to the backend. Opt in with
-    UNSLOTH_CORS_ALLOW_LOOPBACK=1, or supply UNSLOTH_CORS_ORIGIN_REGEX."""
+    """Origin regex for the lockdown, off by default so no page on another local port can
+    make credentialed calls. UNSLOTH_CORS_ALLOW_LOOPBACK=1 or a custom regex opts in."""
     if not _is_desktop_cors_lockdown(api_only, secure):
         return None
     if custom_regex := os.environ.get("UNSLOTH_CORS_ORIGIN_REGEX"):
