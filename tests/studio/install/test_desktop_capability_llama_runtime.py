@@ -549,7 +549,9 @@ def test_an_explicit_runtime_override_outranks_a_stale_stored_folder(tmp_path, m
     default_managed_llama_dir points at exactly the override, so it is ours to grade."""
     active = _active_helper()
     override = tmp_path / "relocated" / "llama.cpp"
-    server = override / "build" / "bin" / ("llama-server.exe" if os.name == "nt" else "llama-server")
+    server = (
+        override / "build" / "bin" / ("llama-server.exe" if os.name == "nt" else "llama-server")
+    )
     server.parent.mkdir(parents = True)
     server.write_text("", encoding = "utf-8")
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
@@ -564,9 +566,7 @@ def test_an_explicit_runtime_override_outranks_a_stale_stored_folder(tmp_path, m
     assert active() is False
 
 
-def test_an_override_that_holds_no_server_does_not_outrank_the_stored_folder(
-    tmp_path, monkeypatch
-):
+def test_an_override_that_holds_no_server_does_not_outrank_the_stored_folder(tmp_path, monkeypatch):
     """Codex 3960069962, P2. _scan_pinned finds no candidate under an empty or missing
     UNSLOTH_LLAMA_CPP_PATH and walks on to the stored folder, so treating the override as
     final graded a directory nobody loads, answered "not installed", and left the runtime the

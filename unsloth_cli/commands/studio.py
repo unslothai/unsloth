@@ -5026,7 +5026,6 @@ def _llama_runtime_to_grade() -> Path | None:
         # No settings module means no stored selection to honour, and no way to
         # ask whether a folder holds a server, so the managed root stands.
         from studio.install_llama_prebuilt import default_managed_llama_dir
-
         return default_managed_llama_dir()
     # UNSLOTH_LLAMA_CPP_PATH outranks the stored folder in the finder (1b before
     # 2), and default_managed_llama_dir points at exactly that tree, so it is ours
@@ -5035,9 +5034,7 @@ def _llama_runtime_to_grade() -> Path | None:
     # The managed marker is the exception: the finder skips the override when the
     # desktop set it, so the stored folder wins again.
     override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
-    desktop_set_the_override = (
-        os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
-    )
+    desktop_set_the_override = os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
     if override and not desktop_set_the_override:
         # Only a folder that holds a server stops discovery. _scan_pinned finds no
         # candidate under an empty or missing override and walks on, so returning

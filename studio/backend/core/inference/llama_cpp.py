@@ -7695,9 +7695,7 @@ class LlamaCppBackend:
             # unexpanded, and the literal form made this search a folder named ~
             # beside the working directory, walk past it, and load a different
             # runtime than every other component was reporting on.
-            hit, locked = _scan_pinned(
-                _layout_candidates(Path(custom_llama_cpp).expanduser())
-            )
+            hit, locked = _scan_pinned(_layout_candidates(Path(custom_llama_cpp).expanduser()))
             if locked is not None:
                 return _unavailable(locked)
             if hit:
