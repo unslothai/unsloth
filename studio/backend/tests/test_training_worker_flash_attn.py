@@ -908,9 +908,9 @@ def test_rebind_does_not_trigger_module_getattr(monkeypatch):
             old_obj = original,
             new_obj = replacement,
         )
-        assert not _GetattrTripwire.getattr_called, (
-            "Rebind sweep invoked __getattr__ - should use __dict__ probe"
-        )
+        assert (
+            not _GetattrTripwire.getattr_called
+        ), "Rebind sweep invoked __getattr__ - should use __dict__ probe"
     finally:
         sys.modules.pop("_lazy_test_module", None)
 
