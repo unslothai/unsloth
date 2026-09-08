@@ -7953,13 +7953,18 @@ def _request_has_replayed_mcp_images(payload) -> bool:
     return _messages_mention_mcp_images(payload.messages)
 
 
-def _request_has_promotable_mcp_images(payload) -> bool:
+def _request_has_promotable_mcp_images(payload, *, exact: bool = True) -> bool:
     """Envelopes generation would really promote.
 
     ``_promote`` preserves a named non-MCP result verbatim, so treating its
     trailing suffix as images here refuses a countable prompt and can buy a
     model-catalog fetch nothing needs.
+
+    ``exact=False`` is the substring form, for a decision made on the event loop:
+    the exact check json-loads the whole array, and a permitted envelope is 12 MB.
+    A false positive there costs a catalog fetch; the worker validates for real.
     """
+    present = mcp_images_sentinel_in if exact else mcp_images_mentioned_in
     # The same positional correlation generation applies: an unnamed result whose
     # call was a non-MCP tool is never promoted, and reading it as promotable here
     # refused a countable prompt and bought a catalog fetch for nothing.
@@ -7968,7 +7973,7 @@ def _request_has_promotable_mcp_images(payload) -> bool:
         if getattr(message, "role", None) != "tool":
             continue
         content = getattr(message, "content", None)
-        if not isinstance(content, str) or not mcp_images_sentinel_in(content):
+        if not isinstance(content, str) or not present(content):
             continue
         name = getattr(message, "name", None) or names.get(index)
         if isinstance(name, str) and name and not name.startswith("mcp__"):
@@ -20481,7 +20486,12 @@ def _build_external_messages(
             if isinstance(entry.get("tool_call_id"), str):
                 entry["tool_call_id"] = replay_ids.get(entry["tool_call_id"], entry["tool_call_id"])
     promote = supports_vision if promote_mcp_images is None else promote_mcp_images
-    return promote_mcp_history_images(result, vision = promote, promoted_out = promoted_out)
+    # A provider applies its own per-request cap in document order, so the replay
+    # leaves the caller's own pictures room; llama-server is bounded by its context
+    # window instead, and the GGUF callers keep the full allowance.
+    return promote_mcp_history_images(
+        result, vision = promote, promoted_out = promoted_out, reserve_for_caller = True
+    )
 
 
 async def _promote_mcp_history_images_async(
@@ -20769,8 +20779,9 @@ async def _proxy_to_external_provider(
             or bool(getattr(payload, "mcp_enabled", False))
             # ...and a conversation that already carries one needs the capability
             # resolved even when MCP has since been switched off, or the replay is
-            # stripped from a model that could have read it.
-            or _request_has_promotable_mcp_images(payload)
+            # stripped from a model that could have read it. Substring form: this
+            # runs on the loop, and the exact check parses the whole envelope.
+            or _request_has_promotable_mcp_images(payload, exact = False)
         )
         if _may_receive_image and model not in capabilities and listed_model is None:
             # Admitted straight off the saved row, so no catalog read happened this
@@ -30812,7 +30823,13 @@ async def chat_count_tokens(
     # counting would underreport the prompt by every image-embedding token -- the same
     # reason a direct attachment is refused above. Checked ahead of the MLX dispatch,
     # which returns its own count and would otherwise never reach the guard.
-    if _request_has_promotable_mcp_images(payload) and await _resident_model_reads_images():
+    # The exact check parses the envelope, so it runs off the loop, and only once the
+    # substring form says there is one to parse.
+    if (
+        _request_has_promotable_mcp_images(payload, exact = False)
+        and await asyncio.to_thread(_request_has_promotable_mcp_images, payload)
+        and await _resident_model_reads_images()
+    ):
         raise HTTPException(
             status_code = 503,
             detail = "Cannot count tokens for messages containing images.",

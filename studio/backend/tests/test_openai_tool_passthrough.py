@@ -10261,7 +10261,7 @@ class TestCodexVisionCapability:
         assert "mcp_enabled" in predicate
         # The promotable form, so a named non-MCP result ending in a valid envelope
         # does not buy a catalog fetch nothing needs.
-        assert "_request_has_promotable_mcp_images(payload)" in predicate
+        assert "_request_has_promotable_mcp_images(payload, exact = False)" in predicate
 
 
 _MCP_ADMISSION_PNG = (

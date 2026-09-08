@@ -1359,7 +1359,7 @@ def test_replay_leaves_room_for_the_pictures_the_caller_attached():
         }
     )
 
-    out = promote_history(history, vision = True)
+    out = promote_history(history, vision = True, reserve_for_caller = True)
     urls = [
         part["image_url"]["url"]
         for message in out
@@ -2163,3 +2163,111 @@ def test_the_client_tool_rebuild_leaves_the_attachment_to_the_backend(monkeypatc
         assert call.get("image_ordinal") == 1
         _no_adjacent_user_turns(call["messages"])
         assert sum(_one_marker_per_turn(call["messages"])) == 1, call["messages"]
+
+
+def test_a_gguf_replay_keeps_its_allowance_beside_the_attachment():
+    """llama-server is bounded by its context window, not a per-request image cap:
+    the live GGUF loop never reserved the attachment's slot, so the replay of the
+    same conversation must not lose a picture to it. A provider reserves it."""
+    history = [{"role": "user", "content": "start"}]
+    for r in range(9):
+        history += [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"c{r}",
+                        "type": "function",
+                        "function": {"name": "mcp__s__shot", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": f"c{r}", "content": _envelope("[1]", _image())},
+            {"role": "assistant", "content": f"round {r}"},
+        ]
+    history.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "and this one?"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_png()}"}},
+            ],
+        }
+    )
+
+    def promoted_parts(out):
+        parts = mcp_images._all_image_url_parts(out)
+        return sum(1 for part in parts if part["image_url"]["url"].startswith("data:image/png"))
+
+    gguf = promote_history(history, vision = True)
+    assert promoted_parts(gguf) == mcp_images.MAX_TOTAL_MODEL_IMAGES + 1
+    provider = promote_history(history, vision = True, reserve_for_caller = True)
+    assert promoted_parts(provider) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+
+
+def test_a_legacy_attachment_displaces_a_merged_replay_marker():
+    """No ordinal (the top-level image field has no part to locate) and a replay
+    marker already merged into the newest user turn: appending built a two-image
+    message. The attachment takes the turn, as the ordinal branch does."""
+    conversation = [
+        {"role": "user", "content": "read a.png"},
+        {"role": "tool", "content": "[1 image returned]"},
+        {
+            "role": "user",
+            "content": [{"type": "image"}, {"type": "text", "text": "and this one?"}],
+        },
+    ]
+    prior = mcp_images.image_marker_parts(conversation)
+    topped = mcp_images.top_up_image_markers(conversation, 2, ordinal = None)
+
+    markers = [part for part in topped[2]["content"] if part.get("type") == "image"]
+    assert len(markers) == 1, topped[2]
+    assert markers[0] is not prior[0], "the replay's marker was displaced, not kept"
+    assert isinstance(topped[0]["content"], str)
+    ordered = mcp_images.pixels_in_marker_order(topped, prior, ["REPLAY"], "ATTACHMENT")
+    assert ordered == ["ATTACHMENT"]
+
+
+def test_a_legacy_attachment_skips_a_synthetic_turn():
+    """The newest user turn can be a replay's own placeholder; the attachment goes on
+    the question, not on the replay's turn."""
+    conversation = [
+        {"role": "user", "content": "the question"},
+        {"role": "tool", "content": "[1 image returned]"},
+        mcp_images.placeholder_turn(1, 1),
+    ]
+    topped = mcp_images.top_up_image_markers(conversation, 2, ordinal = None)
+    assert isinstance(topped[0]["content"], list), topped
+    assert sum(1 for part in topped[2]["content"] if part.get("type") == "image") == 1
+
+
+def test_the_catalog_predicate_never_parses_the_envelope():
+    """The dispatch predicate runs on the event loop; the exact check json-loads a
+    12 MB envelope. The substring form must not touch the parser."""
+    import routes.inference as inference_route
+    from models.inference import ChatCompletionRequest, ChatMessage
+
+    payload = ChatCompletionRequest(
+        model = "default",
+        messages = [
+            ChatMessage(role = "user", content = "look"),
+            ChatMessage(
+                role = "tool",
+                tool_call_id = "c0",
+                name = "mcp__fs__shot",
+                content = _envelope("[1]", _image()),
+            ),
+        ],
+    )
+
+    def boom(_content):
+        raise AssertionError("parsed on the loop")
+
+    original = inference_route.mcp_images_sentinel_in
+    inference_route.mcp_images_sentinel_in = boom
+    try:
+        assert inference_route._request_has_promotable_mcp_images(payload, exact = False)
+    finally:
+        inference_route.mcp_images_sentinel_in = original
+    assert inference_route._request_has_promotable_mcp_images(payload)

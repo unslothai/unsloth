@@ -788,14 +788,28 @@ def top_up_image_markers(
                     }
                 return out
             seen += 1
-    for index in range(len(out) - 1, -1, -1):
+    # No ordinal: the legacy top-level image field, which has no part to locate.
+    # Same rules as above -- the newest REAL user turn, not a replay's synthetic
+    # one, and a replay marker merged into it is displaced rather than joined: a
+    # non-GGUF message takes one image, and appending here built the two-image turn
+    # the route refuses.
+    candidates = [
+        index
+        for index in range(len(out) - 1, -1, -1)
+        if isinstance(out[index], dict) and out[index].get("role") == "user"
+    ]
+    real = [index for index in candidates if not is_synthetic_image_turn(out[index])]
+    for index in real or candidates:
         message = out[index]
-        if not isinstance(message, dict) or message.get("role") != "user":
-            continue
         content = message.get("content", "")
         markers = [{"type": "image"} for _ in range(missing)]
         if isinstance(content, list):
-            out[index] = {**message, "content": [*content, *markers]}
+            kept = [
+                part
+                for part in content
+                if not (isinstance(part, dict) and part.get("type") == "image")
+            ]
+            out[index] = {**message, "content": [*kept, *markers]}
         else:
             out[index] = {
                 **message,
@@ -925,6 +939,7 @@ def promote_history(
     *,
     vision: bool,
     promoted_out: "list | None" = None,
+    reserve_for_caller: bool = False,
 ) -> list[dict]:
     """Rebuild image turns from replayed envelopes. The envelope leaves the tool
     text either way: a text-only model must not be shown its base64.
@@ -933,7 +948,9 @@ def promote_history(
     resuming the conversation can seed its own cap with them instead of starting
     from zero and letting the history's images through uncounted.
     """
-    out, _payloads, promoted = _promote(messages, vision, local = False)
+    out, _payloads, promoted = _promote(
+        messages, vision, local = False, reserve_for_caller = reserve_for_caller
+    )
     if promoted_out is not None:
         promoted_out.extend(promoted)
     return out
@@ -995,7 +1012,13 @@ def _returned_count(images: Sequence[dict]) -> int:
     return len(images)
 
 
-def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[str], list[dict]]:
+def _promote(
+    messages,
+    vision: bool,
+    *,
+    local: bool,
+    reserve_for_caller: bool = False,
+) -> tuple[list[dict], list[str], list[dict]]:
     out: list[dict] = []
     # Resolved once for the whole conversation, so the provenance gate below works on
     # every wire format rather than only the ones that happen to send ``name``.
@@ -1101,16 +1124,18 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
     if local:
         trim_image_turns(out, payloads)
     else:
-        # Replay is trimmed to leave the caller's own pictures room, the way the
-        # local route reserves the attachment's slot before interleaving it.
-        #
         # The cap says attachments are never counted against it, which is right for
-        # what THIS cap protects. But providers apply their own per-request cap in
-        # document order, and promotion prepends the replay to the user turn: on
-        # Gemini (8 images, later ones dropped silently) eight replayed screenshots
-        # therefore evicted the picture the current question was about, and the model
-        # answered it from stale tool output.
-        _caller_parts = len(_all_image_url_parts(out)) - len(promoted)
+        # what THIS cap protects, and llama-server is bounded by its context window
+        # rather than a fixed image count: a GGUF replay keeps the full allowance
+        # beside the caller's picture, as its live loop did.
+        #
+        # A provider is different. It applies its own per-request cap in document
+        # order, and promotion prepends the replay to the user turn: on Gemini (8
+        # images, later ones dropped silently) eight replayed screenshots evicted the
+        # picture the current question was about, and the model answered it from
+        # stale tool output. So the external caller reserves the attachment's room,
+        # the way the local route reserves its slot before interleaving it.
+        _caller_parts = len(_all_image_url_parts(out)) - len(promoted) if reserve_for_caller else 0
         trim_image_url_turns(
             out,
             limit = max(0, MAX_TOTAL_MODEL_IMAGES - _caller_parts),

@@ -103,6 +103,7 @@ import {
   parseExternalModelId,
   providerModelSupportsStudioTools,
   providerModelSupportsVision,
+  providerModelTakesMcpImages,
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
@@ -1736,6 +1737,18 @@ export const CANVAS_TOOL_INSTRUCTION =
 export const CANVAS_FALLBACK_INSTRUCTION =
   "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
 
+/** Whether the loaded local model reads an MCP picture: its vision flag, not
+ *  loadedIsMultimodal alone, which an audio-only model also sets. Unknown keeps them. */
+function localTargetReadsImages(
+  state: Pick<ChatRuntimeState, "models" | "params" | "loadedIsMultimodal">,
+): boolean {
+  const activeModel = state.models.find(
+    (model) => model.id === state.params.checkpoint,
+  );
+  if (activeModel?.isVision === false) return false;
+  return state.loadedIsMultimodal !== false;
+}
+
 /** The OpenAI-form history a completion would send. The tool catalog is priced server-side,
  *  since --enable-tools can inject schemas the client cannot see. */
 export async function buildLocalTokenCountHistory(
@@ -1751,17 +1764,21 @@ export async function buildLocalTokenCountHistory(
   const activeModel = runtimeState.models.find(
     (model) => model.id === runtimeState.params.checkpoint,
   );
-  // Bounded before it goes on the wire: the backend's cap runs after the body is
-  // parsed, so it cannot keep the request itself from growing without limit. Same
-  // target rule as the send path, or the count prices pictures the turn never sends.
-  const outboundMessages = boundMcpImageEnvelopes(
-    survivingMessages
-      .flatMap((message) => toOpenAIMessages(message, true))
-      .filter((message): message is NonNullable<typeof message> =>
-        Boolean(message),
-      ),
-    { localMarkers: activeModel?.isGguf === false },
-  );
+  const history = survivingMessages
+    .flatMap((message) => toOpenAIMessages(message, true))
+    .filter((message): message is NonNullable<typeof message> =>
+      Boolean(message),
+    );
+  // Same target rules as the send path. Bounded before it goes on the wire: the
+  // backend's cap runs after the body is parsed, so it cannot keep the request from
+  // growing without limit. And stripped for a text-only target: the count strips them
+  // before rendering, and this recount runs in the background on every turn, so the
+  // envelopes were serialized and uploaded for nothing each time.
+  const outboundMessages = localTargetReadsImages(runtimeState)
+    ? boundMcpImageEnvelopes(history, {
+        localMarkers: activeModel?.isGguf === false,
+      })
+    : stripMcpImageEnvelopes(history);
   const safeSystemPrompt =
     typeof params.systemPrompt === "string"
       ? resolveSystemPromptVariables(
@@ -4761,16 +4778,18 @@ export function createOpenAIStreamAdapter(
       }
 
       // Resolved ahead of the outbound build, which tests/studio runs as a standalone slice
-      // with only messages and isExternalRequest in scope: a target KNOWN to read no images
-      // gets no envelopes at all, since the backend strips them without sending a pixel and
-      // bounding them only re-uploaded megabytes of base64 on every text turn after a switch.
-      // Unknown (null) keeps them, and so does a vision target.
+      // with only messages and isExternalRequest in scope: a target the backend would hand
+      // no MCP picture gets no envelopes at all, since it strips them without sending a
+      // pixel and bounding them only re-uploaded megabytes of base64 on every turn after a
+      // switch. The backend's own rules on both sides: its external gate per provider and
+      // model, and for a local model its vision flag rather than "multimodal", which an
+      // audio-only model also is.
       const targetReadsImages = isExternalRequest
-        ? providerModelSupportsVision(
+        ? providerModelTakesMcpImages(
             externalProvider?.providerType,
             externalSelection?.modelId,
-          ) !== false
-        : runtime.loadedIsMultimodal !== false;
+          )
+        : localTargetReadsImages(runtime);
       // A local target that is not a GGUF renders replayed pictures as markers, one per
       // tool batch, so the upload is bounded to what that path can use (the bound runs
       // below, after the slice). Unknown format keeps the part paths' four per result.

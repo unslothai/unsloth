@@ -16,6 +16,7 @@ import {
   splitMcpImages,
   stripMcpImageEnvelopes,
 } from "../src/features/chat/api/mcp-images.ts";
+import { providerModelTakesMcpImages } from "../src/features/chat/external-providers.ts";
 import { isMcpToolName } from "../src/features/chat/utils/mcp-tool-name.ts";
 
 const IMAGES = [{ data: "QUJD", mimeType: "image/png" }];
@@ -421,5 +422,34 @@ test("the send path bounds after the slice, to the target's own contribution", (
   assert.match(
     adapter,
     /\? boundMcpImageEnvelopes\(outboundMessages, \{\n\s*localMarkers: mcpImagesLocalMarkers,\n\s*\}\)\n\s*: stripMcpImageEnvelopes\(outboundMessages\);/,
+  );
+});
+
+test("the upload gate is the backend's external MCP gate, not provider-level vision", () => {
+  // A mixed catalog says nothing about most models: the backend sends no picture
+  // there, so uploading the envelopes only had it strip 12 MB again on every turn.
+  assert.equal(providerModelTakesMcpImages("openrouter", "some/unknown-model"), false);
+  assert.equal(providerModelTakesMcpImages("huggingface", "org/unknown"), false);
+  assert.equal(providerModelTakesMcpImages("qwen", "qwen2.5-72b-instruct"), false);
+  // Known text-only endpoints stay a no; a vision family with a plain catalog is a yes.
+  assert.equal(providerModelTakesMcpImages("mistral", "mistral-large"), false);
+  assert.equal(providerModelTakesMcpImages("anthropic", "claude-x"), true);
+  // Unknown provider type keeps them: the backend decides.
+  assert.equal(providerModelTakesMcpImages(undefined, undefined), true);
+});
+
+test("both local paths read the model's vision flag, not just multimodal", () => {
+  assert.match(
+    adapter,
+    /function localTargetReadsImages\([\s\S]*?if \(activeModel\?\.isVision === false\) return false;\n\s*return state\.loadedIsMultimodal !== false;/,
+  );
+  assert.match(adapter, /: localTargetReadsImages\(runtime\);/);
+  assert.match(
+    adapter,
+    /const outboundMessages = localTargetReadsImages\(runtimeState\)\n\s*\? boundMcpImageEnvelopes\(history, \{[\s\S]*?: stripMcpImageEnvelopes\(history\);/,
+  );
+  assert.match(
+    adapter,
+    /\? providerModelTakesMcpImages\(\n\s*externalProvider\?\.providerType,\n\s*externalSelection\?\.modelId,\n\s*\)/,
   );
 });
