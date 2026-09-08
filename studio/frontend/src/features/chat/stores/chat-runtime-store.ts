@@ -187,7 +187,7 @@ export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
 // OCR scanned/image-only PDF pages at ingest; off skips the extra vision pass (only matters with a vision chat model).
 export const DEFAULT_RAG_OCR = true;
 // Describe figures/charts in PDFs at ingest so they become searchable; no-op without a vision model.
-export const DEFAULT_RAG_CAPTION = true;
+export const DEFAULT_RAG_CAPTION = false;
 export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
   allowedDomains: [],
   blockedDomains: [],
