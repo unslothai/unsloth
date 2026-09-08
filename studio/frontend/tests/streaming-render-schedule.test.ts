@@ -239,6 +239,23 @@ test("a definition that spans lines still moves the render key", () => {
   }
 });
 
+// The scope decides which text the cache commits, so it cannot depend on which
+// line ending the reply used. A label of 999 characters after normalisation is
+// 1000 raw with CRLF, and Marked registers it either way.
+test("the render scope does not depend on the reply's line ending", () => {
+  const label = `foo${" ".repeat(995)}`;
+  const usage = `Before [reference][foo].\n\n${paragraphs(20)}`;
+
+  const source = `${usage}[${label}\n]: https://example.com/reference`;
+  for (const newline of ["\n", "\r\n", "\r"]) {
+    assert.equal(
+      markdownRenderScope(source.replaceAll("\n", newline)),
+      "document",
+      JSON.stringify(newline),
+    );
+  }
+});
+
 test("a transient marker imbalance can recover incremental parsing", () => {
   const cache = new IncrementalMarkdownCache();
   const unbalanced = `Match *.py files here.\n\n${paragraphs(20)}`;

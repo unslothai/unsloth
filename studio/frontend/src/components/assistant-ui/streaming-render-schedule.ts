@@ -139,19 +139,24 @@ function hasGlobalLinkReference(markdown: string): boolean {
   return LINK_REFERENCE_RE.test(markdown) && LINK_DEFINITION_RE.test(markdown);
 }
 
+// Normalising here and not at each caller is what keeps the three of them
+// agreeing: `IncrementalMarkdownCache.update` passes text it already normalised,
+// the other two pass `processedText` with whatever line ending the reply used,
+// and a `\r` counts against `{1,999}` while an `\n` in its place does not. So a
+// label that is 999 characters after normalisation, which Marked registers, was
+// 1000 raw and missed. `normalizeLineEndings` short-circuits on the replies that
+// have no `\r`, which is nearly all of them.
 export function markdownRenderScope(markdown: string): "blocks" | "document" {
-  return hasGlobalLinkReference(markdown) ? "document" : "blocks";
+  return hasGlobalLinkReference(normalizeLineEndings(markdown))
+    ? "document"
+    : "blocks";
 }
 
 export function markdownRenderKey(markdown: string): string {
-  if (markdownRenderScope(markdown) === "blocks") {
+  const normalized = normalizeLineEndings(markdown);
+  if (markdownRenderScope(normalized) === "blocks") {
     return "blocks";
   }
-  // The cache normalises its own input, but this runs on `processedText`, which
-  // still holds whatever line ending the reply used, and Marked reads all three.
-  // Normalising costs an `includes` on the LF replies that are nearly all of
-  // them, and it is only reached once a reference and a definition are both here.
-  const normalized = normalizeLineEndings(markdown);
   return `document:${(normalized.match(LINK_DEFINITION_KEY_RE) ?? []).join("\n")}`;
 }
 
