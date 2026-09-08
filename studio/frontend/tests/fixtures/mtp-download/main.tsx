@@ -10,7 +10,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 /* eslint-disable no-restricted-imports -- the harness exercises these internal boundaries directly */
 import { AUTH_TOKEN_KEY } from "@/features/auth/session";
 import { wantsDownloadManagerStaging } from "@/features/chat/utils/model-download-staging";
-import { pendingDrafterPresentation } from "./src/features/model-picker/components/model-selector/variant-download-presentation";
+import { pendingDrafterPresentation } from "../../../src/features/model-picker/components/model-selector/variant-download-presentation";
 import {
   DownloadManagerPanel,
   __resetDownloadManagerForTests,
@@ -27,11 +27,13 @@ import {
 } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import "./src/index.css";
+import "../../../src/index.css";
 
 const REPO_ID = "unsloth/Qwen3.8-Flash-Next-GGUF";
 
 type Variant = {
+  filename: string;
+  size_bytes: number;
   quant: string;
   downloaded: boolean;
 } & Record<"download_size_bytes", number> &

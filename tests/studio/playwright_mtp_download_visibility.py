@@ -7,6 +7,12 @@ Run this identical driver once with ``PW_REPO_DIR`` at the base checkout and
 once at the fix checkout. The backend under test evaluates a real seeded HF
 cache; the browser then runs the real picker predicate and Downloads panel.
 No model bytes or GPU are required.
+
+Install the frontend dependencies in both checkouts and run with a Python
+environment containing the Studio backend dependencies, Playwright (including
+Chromium), and Pillow. PW_BACKEND_PYTHON optionally selects a separate backend
+interpreter; otherwise the running interpreter is used. Browser fixtures live
+under studio/frontend/tests/fixtures/mtp-download.
 """
 
 from __future__ import annotations
@@ -109,7 +115,7 @@ def _backend_payload_here() -> dict[str, object]:
 def _backend_payload() -> dict[str, object]:
     backend_python = os.environ.get(
         "PW_BACKEND_PYTHON",
-        "/home/samle/.unsloth/studio/unsloth_studio/bin/python",
+        sys.executable,
     )
     output = subprocess.check_output(
         [backend_python, str(Path(__file__).resolve()), "--backend-payload"],
@@ -172,7 +178,7 @@ def main() -> None:
             "dev",
             "--",
             "--config",
-            "vite.mtp-download.config.ts",
+            "tests/fixtures/mtp-download/vite.config.ts",
             "--host",
             "127.0.0.1",
             "--port",
@@ -187,7 +193,7 @@ def main() -> None:
     )
     page_errors: list[str] = []
     try:
-        _wait_for_vite(f"{base_url}/smoke-mtp-download.html", vite)
+        _wait_for_vite(f"{base_url}/", vite)
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless = True)
             context = browser.new_context(
@@ -211,7 +217,7 @@ def main() -> None:
             page = context.new_page()
             page.on("pageerror", lambda exc: page_errors.append(str(exc)))
             page.goto(
-                f"{base_url}/smoke-mtp-download.html?side={SIDE}",
+                f"{base_url}/?side={SIDE}",
                 wait_until = "networkidle",
             )
             page.wait_for_function("window.__mtpDownloadSmoke !== undefined")
