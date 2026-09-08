@@ -273,7 +273,6 @@ class SparkRouter:
         self.routed_keyless = 0
         self.rejected = 0
 
-
     def add_backend(
         self,
         name: str,
@@ -356,7 +355,6 @@ class SparkRouter:
     def healthy_backends(self) -> List[Backend]:
         return [b for b in self.backends if b.healthy]
 
-
     async def start(self, *, listen: bool = True) -> None:
         if self._started:
             return
@@ -414,7 +412,6 @@ class SparkRouter:
         if self.listen_port is None:
             return None
         return f"http://{self.listen_host}:{self.listen_port}"
-
 
     async def _health_loop(self) -> None:
         while self._started:
@@ -498,7 +495,6 @@ class SparkRouter:
         except Exception:
             logger.warning("spark router: backend callback failed", exc_info = True)
 
-
     def _ring(self, candidates: List[Backend]) -> List[Tuple[int, Backend]]:
         names = tuple(b.name for b in candidates)
         cached = self._rings.get(names)
@@ -531,7 +527,6 @@ class SparkRouter:
                     return backend
             return ring[0][1]
         return min(candidates, key = lambda b: (b.in_flight + b.queued, b.name))
-
 
     def _has_room(self, backend: Backend) -> bool:
         return backend.in_flight < backend.capacity
@@ -587,7 +582,6 @@ class SparkRouter:
             if others:
                 target = min(others, key = lambda b: (b.in_flight + b.queued, b.name))
         return target
-
 
     async def dispatch(
         self, method: str, path: str, headers: Dict[str, str], body: bytes
@@ -686,7 +680,6 @@ class SparkRouter:
             backend = backend,
             close = _close,
         )
-
 
     def status(self) -> Dict[str, Any]:
         backends = [b.snapshot() for b in self.backends]

@@ -1464,7 +1464,6 @@ class SparkServing:
             self._lock = asyncio.Lock()
         return self._lock
 
-
     def decide(
         self, *, model_bytes: Optional[float], users: int, kv_bytes_per_user: Optional[float]
     ) -> Dict[str, Any]:
@@ -1478,7 +1477,6 @@ class SparkServing:
                 f"{plan.get('reason', '')}"
             )
         return plan
-
 
     @staticmethod
     def _request_with(request: Any, updates: Dict[str, Any]) -> Any:
@@ -1890,7 +1888,6 @@ class SparkServing:
             self.reason,
         )
         self._ensure_supervisor()
-
 
     def route_base_url(self, llama_backend: Any) -> Optional[str]:
         """The router's URL for this backend's requests, or None to go direct."""
