@@ -320,7 +320,7 @@ class TestTheWiringIsThere:
         for step in (
             "preempt_policy.on_preempted(",
             '{"type": "preempt", "state": "paused"}',
-            "preempt_policy.await_resume()",
+            "_await_resume(preempt_policy, cancel_event)",
             "preempt_policy.on_resumed()",
             "self._assemble_preempt_resume(",
         ):

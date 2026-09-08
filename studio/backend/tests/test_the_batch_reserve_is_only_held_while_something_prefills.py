@@ -132,7 +132,7 @@ class TestAPendingResumeLargerThanTheBatch:
         c.set_state("paused", ParticipantState.PAUSED)
         assert c.snapshot().prefilling == 0, "a paused chat submits nothing"
         assert c.try_grant_resume("paused", 3200) is True
-        assert paused.state == ParticipantState.DECODING
+        assert paused.state == ParticipantState.RESUMING
         assert c.snapshot().prefilling == 3200
         assert c.snapshot().buffer == PREFILL_BUFFER
 

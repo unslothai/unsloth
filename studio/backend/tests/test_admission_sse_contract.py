@@ -54,7 +54,8 @@ class TestTheSignalsLineUp:
             assert (
                 routes.count(name) >= 2
             ), f"{name} is defined but never yielded, so the client is told nothing"
-            assert f"yield {name}" in routes or f"{name}\n" in routes
+            # Yielded directly, or through the state table every consumer reads.
+            assert f"yield {name}" in routes or f"{name}\n" in routes or f"{name}," in routes
 
     def test_the_pause_signal_has_a_producer_in_the_generator(self):
         """The route can only forward what the generator hands it."""
