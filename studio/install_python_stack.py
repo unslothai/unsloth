@@ -420,6 +420,22 @@ def _macos_release_major() -> "int | None":
         return None
 
 
+# The pinned MLX versions publish macosx_14_0_arm64 wheels, no sdist and no cp39, so
+# macOS 13 and Python 3.9 have nothing to resolve to (`uv pip install --python-platform
+# aarch64-apple-darwin mlx==0.32.1`). Asked before the install, like
+# _torchcodec_spec_is_installable: pip_install exits on failure, so trying would end an
+# install that today just comes up chat-only.
+_MLX_MIN_PYTHON = (3, 10)
+_MLX_MIN_MACOS_MAJOR = 14
+
+
+def _mlx_pins_are_installable() -> bool:
+    """Wheel for the pinned MLX versions here? An unreadable macOS reads as too old."""
+    if sys.version_info < _MLX_MIN_PYTHON:
+        return False
+    return (_macos_release_major() or 0) >= _MLX_MIN_MACOS_MAJOR
+
+
 # The supported Python range moves three times across the lines we select from.
 # Transcribed from upstream's published table (README / PyPI):
 #
@@ -7349,7 +7365,7 @@ def install_python_stack() -> int:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
         else:
             base_total += 1  # torch flavor invariant (step 13w), Windows
-    if IS_MAC_ARM and not skip_base and not NO_TORCH:
+    if IS_MAC_ARM and not NO_TORCH:
         base_total += 1  # MLX stack, same gate as the step itself
     base_requirements = _shared_base_requirements() if skip_base else None
     # Core packages and shared base requirements occupy one progress slot. A
@@ -7427,21 +7443,32 @@ def install_python_stack() -> int:
     if not _repair_damaged_core_payload(_core_package_names(package_name), local_repo = local_repo):
         return 1
 
-    # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
-    # mlx-vlm / mlx-lm transformers pin -- set at module load).
-    # Not on a --no-torch install: it declined the training stack, and the runtime's
-    # no_torch verdict tells the user an update will not put it back.
-    if IS_MAC_ARM and not skip_base and not NO_TORCH:
-        _progress("MLX stack (Apple Silicon)")
-        pip_install(
-            "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
-            "--no-cache-dir",
-            "--upgrade",
-            "mlx",
-            "mlx-metal",
-            "mlx-lm",
-            "mlx-vlm",
-        )
+    # macOS arm64: not keyed off skip_base, because a fresh install skips core packages
+    # and still needs MLX. Not on --no-torch: it declined the training stack. Pins stay
+    # aligned with utils/mlx_repair.py and unsloth-zoo; UV_OVERRIDE (set at module load)
+    # relaxes the mlx-vlm / mlx-lm transformers pin.
+    if IS_MAC_ARM and not NO_TORCH:
+        # Both branches spend the slot, so the denominator does not depend on the host.
+        if _mlx_pins_are_installable():
+            _progress("MLX stack (Apple Silicon)")
+            pip_install(
+                "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
+                "--no-cache-dir",
+                "--upgrade",
+                "mlx==0.32.1",
+                "mlx-metal==0.32.1",
+                "mlx-lm==0.31.3",
+                "mlx-vlm>=0.4.4,<0.7.0",
+            )
+        else:
+            _progress("MLX stack (skipped, no wheel for this macOS or Python)")
+            _note(
+                f"macOS {_macos_release_major() or 'unknown'} on Python "
+                f"{sys.version_info.major}.{sys.version_info.minor} publishes no wheel for the "
+                f"supported MLX versions (needs macOS {_MLX_MIN_MACOS_MAJOR}+ and Python "
+                f"{_MLX_MIN_PYTHON[0]}.{_MLX_MIN_PYTHON[1]}+) -- leaving Train/Export disabled "
+                "rather than failing the install"
+            )
 
     # gfx906: the base install below resolves unsloth's unconditional bitsandbytes
     # dep to a generic CUDA wheel (no gfx906 kernels). Record bnb's presence now so
