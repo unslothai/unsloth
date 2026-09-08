@@ -138,6 +138,40 @@ def test_portable_mode_moves_the_hf_and_torch_caches_under_the_root(monkeypatch,
         assert value.startswith(root), f"{key} escaped the portable root: {value}"
 
 
+def test_portable_mode_keeps_an_explicit_legacy_assets_cache(monkeypatch, tmp_path):
+    """HUGGINGFACE_ASSETS_CACHE is deprecated, not removed, and huggingface_hub reads
+    HF_ASSETS_CACHE ahead of it. Pinning the modern name in portable mode therefore
+    overrode an explicitly chosen assets cache silently: the alias stayed in the
+    environment and simply stopped meaning anything."""
+    chosen = tmp_path / "chosen-assets"
+    monkeypatch.setenv("HUGGINGFACE_ASSETS_CACHE", str(chosen))
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "portable"))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert "HF_ASSETS_CACHE" not in os.environ, (
+        "the modern name was pinned over an explicit legacy alias"
+    )
+    assert os.environ["HUGGINGFACE_ASSETS_CACHE"] == str(chosen)
+
+
+@pytest.mark.parametrize("value", ("", "   "))
+def test_a_blank_legacy_assets_alias_does_not_block_the_pin(monkeypatch, tmp_path, value):
+    # Blank counts as unset here as it does everywhere else, or an inherited empty alias
+    # would leave the assets cache outside the root the run promises holds everything.
+    monkeypatch.setenv("HUGGINGFACE_ASSETS_CACHE", value)
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    master = tmp_path / "portable"
+    monkeypatch.setenv("UNSLOTH_HOME", str(master))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert os.environ["HF_ASSETS_CACHE"].startswith(str(master))
+
+
 def test_portable_mode_still_leaves_hf_home_alone(monkeypatch, tmp_path):
     # HF_HOME owns the token path; credentials stay off a removable volume.
     home = tmp_path / "home"

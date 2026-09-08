@@ -1015,7 +1015,16 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
     defaults["HF_DATASETS_CACHE"] = str(root / "huggingface" / "datasets")
     # Derived as <HF_HOME>/assets otherwise, which is the host copy we leave
     # behind, so the one HF root that would still write outside the volume.
-    defaults["HF_ASSETS_CACHE"] = str(root / "huggingface" / "assets")
+    #
+    # Skipped when the caller set the deprecated HUGGINGFACE_ASSETS_CACHE. The
+    # blank-counts-as-unset guard below only protects the name it is keyed on, and
+    # huggingface_hub reads HF_ASSETS_CACHE in preference to the alias, so pinning
+    # it here overrode an explicitly chosen assets cache without saying so -- the
+    # alias stayed in the environment and stopped meaning anything. Deprecated is
+    # not removed; someone who set it meant it, the same way an explicit
+    # UV_CACHE_DIR is honoured.
+    if not (os.environ.get("HUGGINGFACE_ASSETS_CACHE") or "").strip():
+        defaults["HF_ASSETS_CACHE"] = str(root / "huggingface" / "assets")
     return defaults
 
 
