@@ -1619,9 +1619,7 @@ def test_the_offline_autoconfig_read_is_denied_to_an_anonymous_caller(monkeypatc
     reset_repo_access_cache()
     monkeypatch.setattr(model_config_module, "_env_offline", lambda: True)
     monkeypatch.setattr(model_config_module, "active_hf_hub_cache", lambda: None, raising = False)
-    monkeypatch.setattr(
-        model_config_module, "_config_json_already_cached", lambda *_a, **_k: True
-    )
+    monkeypatch.setattr(model_config_module, "_config_json_already_cached", lambda *_a, **_k: True)
     reached = {"n": 0}
 
     def _from_pretrained(_name, **_kwargs):
@@ -2124,7 +2122,8 @@ def test_an_offline_request_still_honours_a_memoized_authorization(monkeypatch):
     monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
     probes = {"n": 0}
     monkeypatch.setattr(
-        hf_tokens, "_probe_repo_access",
+        hf_tokens,
+        "_probe_repo_access",
         lambda *_a, **_k: probes.__setitem__("n", probes["n"] + 1) or True,
     )
 

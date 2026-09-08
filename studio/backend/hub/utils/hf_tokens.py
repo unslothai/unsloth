@@ -245,7 +245,10 @@ def _cached_repo_access(key: tuple[str, str, str], now: float) -> Optional[bool]
 
 
 def _explicit_token_reaches_repo(
-    repo_id: str, token: str, repo_type: str, offline: bool = False
+    repo_id: str,
+    token: str,
+    repo_type: str,
+    offline: bool = False,
 ) -> bool:
     key = (
         repo_id.casefold(),
