@@ -186,6 +186,14 @@ jobs:
           def upload_args(seg):
               """twine's positional arguments, or None when seg is not an upload."""
               head = list(seg)
+              # A command may be preceded by variable assignments, and twine's
+              # own credential story drives people straight to it
+              # (TWINE_USERNAME=__token__ python -m twine upload dist/*.whl).
+              # Reading the assignment as the command hid the whole invocation:
+              # a wheel-only build.sh failed with "no twine upload line", and an
+              # sdist upload alongside a visible wheel one went uncounted.
+              while head and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\+?=.*", head[0], re.S):
+                  head = head[1:]
               if head[:3] == ["python", "-m", "twine"] or (
                   head and re.fullmatch(r"python[0-9.]*", head[0]) and head[1:3] == ["-m", "twine"]
               ):

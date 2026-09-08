@@ -75,6 +75,10 @@ PROLOGUE = "#!/bin/bash\nset -euo pipefail\npython -m build\n"
         "python -m twine upload dist/a-1-py3-none-any.whl dist/b-1-py3-none-any.whl",
         # -s is store_true, so the wheel after it is an artifact, not its value.
         "python -m twine upload -s dist/*.whl",
+        # A command may be preceded by variable assignments; twine's credential
+        # env vars are the obvious reason build.sh would do that.
+        "TWINE_USERNAME=__token__ python -m twine upload dist/*.whl",
+        "TWINE_USERNAME=__token__ TWINE_PASSWORD=x twine upload dist/*.whl",
         # These two do consume a value, and the value is not an artifact.
         "python -m twine upload --sign-with gpg2 dist/*.whl",
         "python -m twine upload -i me@example.com dist/*.whl",
@@ -100,6 +104,7 @@ def test_wheel_only_uploads_pass(tmp_path, upload_line):
         # swallowed the tarball, leaving only the wheel visible, so the guard
         # passed while twine uploaded both.
         "python -m twine upload -s dist/*.tar.gz dist/*.whl",
+        "TWINE_REPOSITORY_URL=https://example.invalid python -m twine upload dist/*",
     ],
 )
 def test_non_wheel_uploads_fail(tmp_path, upload_line):
@@ -120,6 +125,8 @@ def test_missing_upload_line_fails(tmp_path):
         ": twine upload dist/*.whl",
         "true twine upload dist/*.whl",
         "echo twine upload dist/*.whl",
+        # Stripping the assignment prefix must stop at the real command.
+        "X=1 : twine upload dist/*.whl",
     ],
 )
 def test_a_shell_no_op_is_not_an_upload(tmp_path, no_op):
@@ -342,3 +349,16 @@ def test_a_chained_non_upload_is_not_an_artifact(tmp_path, upload_line):
     """Segmenting must not turn the other side of an operator into artifacts."""
     r = _run_guard(tmp_path, PROLOGUE + upload_line + "\n")
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_an_assignment_prefix_does_not_hide_a_second_upload(tmp_path):
+    """An assignment-prefixed sdist upload ran, but read as a non-twine command.
+
+    The visible wheel-only line kept `uploads` nonempty, so the guard passed
+    while twine published the tarball as well.
+    """
+    body = PROLOGUE + "python -m twine upload dist/*.whl\n"
+    body += "TWINE_REPOSITORY_URL=https://example.invalid twine upload dist/*.tar.gz\n"
+    r = _run_guard(tmp_path, body)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "non-wheel" in r.stdout
