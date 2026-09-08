@@ -738,6 +738,10 @@ def test_reauthorizing_same_path_refreshes_root_identity_and_retains_mappings(
 
 @pytest.mark.parametrize("source_name", ["source", "source "])
 def test_directory_lease_contract_preserves_path_and_purpose(rag_home, source_name):
+    if source_name.endswith(" ") and os.name == "nt":
+        # Win32 strips a trailing space from a path component, so the two names are one
+        # directory there and the pair this case contrasts cannot be created at all.
+        pytest.skip("Windows cannot hold a directory whose name ends in a space")
     source = rag_home / source_name
     source.mkdir()
     if source_name.endswith(" "):
