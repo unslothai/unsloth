@@ -861,6 +861,61 @@ class TestNudgeRetryOpenai:
 
         asyncio.run(_run())
 
+    def test_expected_cancel_during_nudge_retry_is_not_absorbed(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class ImmediateClient:
+                async def post(self, *_args, **_kwargs):
+                    return httpx.Response(200, json = _upstream_message(GARBAGE_SIGNAL))
+
+                async def aclose(self):
+                    return None
+
+            class HangingClient:
+                def __init__(self):
+                    self.started = asyncio.Event()
+                    self.closed = asyncio.Event()
+
+                async def post(self, *_args, **_kwargs):
+                    self.started.set()
+                    await self.closed.wait()
+                    raise httpx.ReadError("client closed")
+
+                async def aclose(self):
+                    self.closed.set()
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            hanging = HangingClient()
+            clients = iter((ImmediateClient(), hanging))
+            monkeypatch.setattr(
+                inf_mod,
+                "_cancelable_nonstreaming_client",
+                lambda: next(clients),
+            )
+            cancel_event = threading.Event()
+            task = asyncio.create_task(
+                inf_mod._openai_passthrough_non_streaming_upstream(
+                    _llama_backend(),
+                    _payload(nudge_tool_calls = True),
+                    "gguf",
+                    request = Request(),
+                    cancel_event = cancel_event,
+                )
+            )
+            await asyncio.wait_for(hanging.started.wait(), 0.2)
+            cancel_event.set()
+
+            with pytest.raises(inf_mod._NonStreamingRequestCancelled):
+                await asyncio.wait_for(task, 0.5)
+
+            assert hanging.closed.is_set()
+
+        asyncio.run(_run())
+
     def test_default_off_single_post(self, monkeypatch):
         async def _run():
             client, _ = await _drive_non_streaming(
