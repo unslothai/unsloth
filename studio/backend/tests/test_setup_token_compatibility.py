@@ -83,9 +83,9 @@ def _authenticates(username: str, candidate: str) -> bool:
 
 # ── upgrading an install that predates link tokens ───────────────────
 #
-# There is no migration framework and no PRAGMA user_version in this repo; the
-# schema is (re)declared by get_connection() on every open. These tests pin that,
-# because it is the entire reason an old auth.db keeps working.
+# No migration framework and no PRAGMA user_version: get_connection() re-declares
+# the schema on every open, which is the entire reason an old auth.db keeps
+# working. These tests pin that.
 
 
 _PRE_LINK_TOKEN_SCHEMA = """
@@ -153,9 +153,9 @@ def test_an_old_auth_db_gains_the_table_on_first_open():
 
 
 def test_an_old_auth_db_gains_the_back_filled_columns_too():
-    # The same open runs the ALTER ladder; a token flow reads must_change_password
+    # The same open runs the ALTER ladder. A token flow reads must_change_password
     # and a desktop session reads is_desktop, so a half-migrated DB would fail
-    # somewhere less obvious than here.
+    # somewhere less obvious.
     _write_ancient_auth_db(storage.DB_PATH)
     conn = storage.get_connection()
     try:
@@ -173,9 +173,8 @@ def test_first_login_completes_on_a_migrated_old_database():
     """The whole point: an upgraded install can still finish first boot."""
     _write_ancient_auth_db(storage.DB_PATH)
     admin = storage.DEFAULT_ADMIN_USERNAME
-    # An old row has no must_change_password, so the column back-fills to 0 and
-    # the install reads as already set up. Put it back into first-boot state the
-    # way an operator forced to change would be.
+    # An old row has no must_change_password, so it back-fills to 0 and the install
+    # reads as set up. Put it back into first-boot state.
     conn = storage.get_connection()
     try:
         conn.execute("UPDATE auth_user SET must_change_password = 1 WHERE username = ?", (admin,))
@@ -562,16 +561,12 @@ def test_the_auth_import_graph_pulls_in_no_hardware_module():
     assert not forbidden, f"auth now imports hardware machinery: {forbidden}"
 
 
-# --------------------------------------------------------------------------
-# The mint/rotation race, with real threads on real connections.
-#
-# The monkeypatched version in test_index_serves_setup_token_not_seed.py forces
-# one exact interleaving. This one does not force anything: it runs rotation and
-# minting concurrently against SQLite's own writer lock, many times, and asserts
-# the invariant holds however the two land. Either the token was recorded while
-# setup was still pending, or it was refused; never a row surviving a completed
-# setup.
-# --------------------------------------------------------------------------
+# The mint/rotation race, with real threads on real connections. The
+# monkeypatched version in test_index_serves_setup_token_not_seed.py forces one
+# exact interleaving; this forces nothing, running rotation and minting
+# concurrently against SQLite's writer lock many times. Either the token was
+# recorded while setup was pending or it was refused, never a row surviving a
+# completed setup.
 
 
 def test_minting_never_outlives_a_concurrent_rotation(tmp_path, monkeypatch):
@@ -641,16 +636,14 @@ def test_minting_never_outlives_a_concurrent_rotation(tmp_path, monkeypatch):
         finally:
             conn.close()
 
-        # Setup always completes here, so any surviving row is a token that
-        # outlived it. update_password deletes link_tokens, so a row can only
-        # survive by having been written after that delete.
+        # Setup always completes here, and update_password deletes link_tokens, so
+        # a surviving row can only have been written after that delete.
         assert pending == 0, f"round {round_no}: rotation did not complete"
         if rows:
             recorded_after_rotation += 1
-        # Only one direction is an invariant. True with no rows is the SAFE
-        # outcome: the mint won the lock, wrote while setup was still pending,
-        # and the rotation then deleted it, which is what update_password is
-        # supposed to do. A refusal that somehow left a row behind is not.
+        # Only one direction is an invariant. True with no rows is SAFE: the mint
+        # won the lock and wrote while setup was pending, then the rotation deleted
+        # it. A refusal that left a row behind is not.
         if not saved[0]:
             assert rows == 0, f"round {round_no}: save_link_token refused but left {rows} row(s)"
 

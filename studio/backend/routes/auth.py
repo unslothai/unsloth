@@ -525,13 +525,10 @@ async def desktop_login(payload: DesktopLoginRequest) -> Token:
     )
 
 
-# Sync def (not async), like /identity: every step here is blocking SQLite work
-# (token lookup, single-use consume, refresh-token insert) that can wait out the
-# connection busy timeout while another writer holds the auth DB. On an async
-# handler that wait pins the event loop and stalls every other request; FastAPI
-# runs a sync handler in its threadpool instead. The failure buckets this route
-# shares with /login are guarded by _LOGIN_BUCKETS_LOCK, so threadpool execution
-# is safe.
+# Sync def (not async), like /identity: every step is blocking SQLite work that
+# can wait out the busy timeout, which would pin the event loop on an async
+# handler. FastAPI runs a sync handler in its threadpool, and the failure buckets
+# shared with /login are guarded by _LOGIN_BUCKETS_LOCK.
 @router.post("/link-exchange", response_model = Token)
 def link_exchange(payload: LinkTokenRequest, request: Request) -> Token:
     """Exchange a one-time, short-TTL link token for normal session tokens.
@@ -553,8 +550,7 @@ def link_exchange(payload: LinkTokenRequest, request: Request) -> Token:
     if blocked_for > 0:
         raise HTTPException(
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
-            # IP not interpolated into the body; behind a proxy/NAT it's
-            # misleading or an info leak.
+            # No IP in the body; behind a proxy/NAT it's misleading or a leak.
             detail = (f"Too many failed link-token exchanges. Try again in {blocked_for} seconds."),
             headers = {"Retry-After": str(blocked_for)},
         )
@@ -567,37 +563,27 @@ def link_exchange(payload: LinkTokenRequest, request: Request) -> Token:
             detail = "Invalid, expired, or already-used link token",
         )
     username, secret_at_exchange = exchanged
-    # link = True marks this session as link-minted so it may set the FIRST password
-    # without presenting the seeded one (see /link-initial-password). Deliberately
-    # not stamped on the refresh token: the claim must not outlive the exchange, so
-    # refreshing drops the privilege and leaves an ordinary session.
+    # link = True lets this session set the FIRST password without the seeded one
+    # (see /link-initial-password).
     access_token = create_access_token(subject = username, link = True)
-    # No refresh token. The setup page keeps only the access token, and minting
-    # one wrote a seven-day refresh_tokens row per exchange on a route that is
-    # unauthenticated by design while setup is pending, so a client that simply
-    # reloaded could grow that table without bound and make every later
-    # refresh-token scan and password-time revocation more expensive. Refreshing
-    # was never useful here either: the claim is deliberately not stamped on the
-    # refresh token, so a refresh drops the setup privilege anyway.
+    # No refresh token: this route is unauthenticated by design while setup is
+    # pending, so minting one let a client grow refresh_tokens without bound by
+    # reloading. The link claim is not stamped on refresh tokens anyway, so a
+    # refresh would drop the setup privilege.
     refresh_token = ""
-    # Bind session issuance to the JWT secret the link token validated against. A
-    # concurrent password change rotates that secret (and revokes refresh tokens)
-    # to invalidate every outstanding session; if it rotated between the single-use
-    # consumption above and this issuance, revoke the tokens we just minted and
-    # reject, so a pre-change link token cannot mint a session that survives the
-    # change (consume-before-rotation TOCTOU). A rotation that lands after this
-    # recheck is caught by that same refresh-token revocation and the JWT signature
-    # change, so no issued session outlives the password change.
+    # Bind issuance to the secret the link token validated against. If a password
+    # change rotated it between the single-use consume above and here, reject, so a
+    # pre-change token cannot mint a session that survives the change
+    # (consume-before-rotation TOCTOU). A later rotation is caught by the refresh
+    # revocation and the JWT signature change.
     if storage.get_jwt_secret(username) != secret_at_exchange:
-        # Nothing to revoke: no refresh token was minted above, and the access
-        # token cannot outlive the rotation because it is signed with the old
-        # secret, which update_password has already replaced.
+        # Nothing to revoke: no refresh token was minted, and the access token is
+        # signed with the secret update_password has already replaced.
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid, expired, or already-used link token",
         )
-    # A valid single-use token proves legitimacy: reset this IP's failure throttle,
-    # exactly as a successful /login does.
+    # A valid single-use token proves legitimacy: reset the throttle, as /login does.
     _clear_login_bucket(ip_key)
     return Token(
         access_token = access_token,
@@ -743,12 +729,10 @@ async def set_link_initial_password(
             status_code = status.HTTP_400_BAD_REQUEST,
             detail = "New password cannot contain spaces",
         )
-    # The seeded passphrase is not a password the operator chose: it was printed
-    # to a terminal and written to auth/.bootstrap_password. Accepting it here
-    # would clear must_change_password and delete that file while leaving the
-    # account on exactly the credential setup exists to replace, and it would
-    # report success. /change-password already refuses this; the two routes set
-    # the same flag, so they cannot disagree about what finishing setup means.
+    # The seeded passphrase was printed to a terminal and written to
+    # auth/.bootstrap_password, not chosen. Accepting it would report success while
+    # leaving the account on the very credential setup exists to replace.
+    # /change-password already refuses it, and both routes clear the same flag.
     if hashing.verify_password(payload.new_password, _salt, pwd_hash):
         raise HTTPException(
             status_code = status.HTTP_400_BAD_REQUEST,

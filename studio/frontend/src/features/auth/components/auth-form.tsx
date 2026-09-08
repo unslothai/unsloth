@@ -19,10 +19,10 @@ import {
 } from "../bootstrap-deadline";
 
 // One-time setup token injected into index.html by the backend (only present
-// while default admin must_change_password is true). This used to carry the
-// seeded password itself; it now carries a single-use, short-TTL link token
-// that can do nothing but set the first password. `password` is kept optional
-// so an older backend paired with this bundle still works.
+// while default admin must_change_password is true). This carried the seeded
+// password itself; it now carries a single-use, short-TTL link token that can do
+// nothing but set the first password. `password` stays optional so an older
+// backend paired with this bundle still works.
 declare global {
   interface Window {
     __UNSLOTH_BOOTSTRAP__?: {
@@ -60,21 +60,16 @@ type TokenResponse = {
 
 type SetupExchange = { access: string | null; status: number | null };
 
-/** Redeem the one-time setup token for an access token.
- *
- * Never throws: a failure just means the page keeps showing the ordinary form
- * and the operator can reload to be issued a fresh token. The status comes back
- * with it so a failure can say what actually happened rather than guess.
- */
-// The setup exchange belongs to the PAGE, not to a mount. The token in the
-// served HTML is SINGLE USE, and two things spend it twice if this lives in
-// component state: a genuine remount (the form's own "Back to login" link goes
-// to /login, which bounces straight back while must_change_password is set) and
-// a submit that races the still-in-flight mount exchange. Both then get a 401 on
-// a token the first attempt had already redeemed, and no reload short of a full
-// page load can recover, because a remount reuses the same spent token from the
-// same HTML. Keyed by the token, so a genuine page reload with a freshly minted
-// one starts a new exchange rather than replaying this result.
+// Module scope, not a ref: the exchange belongs to the PAGE, not a mount. The
+// token in the served HTML is SINGLE USE, and in component state two things
+// spend it twice: a genuine remount ("Back to login" goes to /login, which
+// bounces straight back while must_change_password is set) and a submit racing
+// the in-flight mount exchange. Either then 401s on an already-redeemed token,
+// unrecoverable short of a full page load, since a remount reuses the same spent
+// token from the same HTML. Keyed by the token, so a real reload with a freshly
+// minted one starts a new exchange instead of replaying this result. Returns the
+// status too, so a failure can say what happened rather than guess; never throws
+// -- the page just keeps showing the ordinary form.
 const setupExchanges = new Map<string, Promise<SetupExchange>>();
 
 function startSetupExchange(linkToken: string): Promise<SetupExchange> {
@@ -137,8 +132,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const username = HIDDEN_LOGIN_USERNAME;
   const [password, setPassword] = useState("");
-  // Access token from redeeming the injected one-time setup token, held in memory
-  // only: it is a first-boot credential, not a session to persist.
+  // In memory only: a first-boot credential, not a session to persist.
   const [setupSession, setSetupSession] = useState<string | null>(null);
   const [setupError, setSetupError] = useState<number | null>(null);
   const [newPassword, setNewPassword] = useState("");
@@ -238,9 +232,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     window.dispatchEvent(new Event("unsloth:app-shell-ready"));
   }, [statusLoading]);
 
-  // Seed password from bootstrap credentials injected into HTML by web CLI.
-  // Only an older backend still sends one; the current one sends a link token,
-  // which the setup-session effect below exchanges instead.
+  // Seed password from bootstrap credentials injected into HTML by web CLI. Only
+  // an older backend sends one; the current one sends a link token, exchanged by
+  // the effect below.
   useEffect(() => {
     function loadBootstrap() {
       const bootstrap = window.__UNSLOTH_BOOTSTRAP__;
@@ -251,22 +245,20 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     loadBootstrap();
   }, []);
 
-  // Redeem the injected one-time setup token as soon as the setup page loads,
-  // rather than waiting for the operator to submit. The token is short lived and
-  // single use by design, so redeeming it seconds after it was minted is what it
-  // is built for. Doing it at submit time instead put expiry, the shared login
-  // rate limiter and any transient error on the click itself, where the failure
-  // is least recoverable and most confusing.
+  // Redeem on page load, not on submit: the token is short lived by design, so
+  // redeeming it seconds after minting is what it is for. Exchanging at submit
+  // time put expiry, the shared login rate limiter and any transient error on the
+  // click itself, where a failure is least recoverable.
   useEffect(() => {
     const token = window.__UNSLOTH_BOOTSTRAP__?.link_token;
     if (!token || isLoginMode) return;
     // One exchange per token for the life of the page, so StrictMode's
-    // setup/cleanup/setup replay, a remount and a racing submit all await the
-    // same request instead of each spending the single-use token again.
+    // setup/cleanup/setup replay, a remount and a racing submit await the same
+    // request instead of each spending the single-use token again.
     void (async () => {
       const { access, status } = await startSetupExchange(token);
-      // No cancelled check: the session belongs to the page, not to this mount,
-      // and dropping it on unmount is what made the replay unrecoverable.
+      // No cancelled check: the session belongs to the page, not this mount, and
+      // dropping it on unmount is what made the replay unrecoverable.
       if (access) setSetupSession(access);
       else setSetupError(status);
     })();
@@ -296,10 +288,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const switchLinkText = "Back to login";
   const currentPassword = password || window.__UNSLOTH_BOOTSTRAP__?.password || "";
   // On first boot the backend injects __UNSLOTH_BOOTSTRAP__ and setup runs off
-  // it, so the Current password input is only rendered for the admin-forced
-  // must_change_password path where no bootstrap is available. Unchanged from
-  // when the injected value was the password itself: the rendered form is the
-  // same either way, only what backs it differs.
+  // it, so the Current password input renders only for the admin-forced
+  // must_change_password path, where no bootstrap is available. Same rendered
+  // form as when the injected value was the password itself.
   const setupToken = window.__UNSLOTH_BOOTSTRAP__?.link_token;
   const hasBootstrapPassword = Boolean(
     setupToken || window.__UNSLOTH_BOOTSTRAP__?.password,
@@ -325,10 +316,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
     if (!isLoginMode) {
       // Mirror the disable gate: Enter / autofill can bypass the button.
-      // Both must skip the current-password rules on the setup-token path, where
-      // there is no current password to supply and the form never renders a field
-      // for one. Keep the two in step: a gate here that the button does not have
-      // shows an error on a click the UI said was fine, with no request made.
+      // Both skip the current-password rules on the setup-token path, where there
+      // is none and no field renders for one. A gate here the button lacks shows
+      // an error on a click the UI said was fine, with no request made.
       if (!setupToken && currentPassword.length < 8) {
         setError(
           currentPassword
@@ -362,15 +352,14 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       if (isLoginMode) {
         token = await loginWithPassword(username, password);
       } else if (setupToken) {
-        // First-boot setup. The token was already exchanged for a session when
-        // the page loaded (see the setup-session effect above), so this only has
-        // to set the first password, through the route that does not ask for the
-        // current one. Same two fields on screen as before.
+        // First-boot setup. The effect above already exchanged the token for a
+        // session, so this only sets the first password, via the route that does
+        // not ask for the current one.
         let setupAccess = setupSession;
         if (!setupAccess) {
-          // The same promise the mount effect is awaiting, not a second
-          // exchange: submitting before that request settles used to spend the
-          // token again and lose the session the first one was about to deliver.
+          // The same promise the mount effect awaits, not a second exchange:
+          // submitting before it settles used to spend the token again and lose
+          // the session the first request was about to deliver.
           const retry = await startSetupExchange(setupToken);
           setupAccess = retry.access;
           if (!setupAccess) {
@@ -397,13 +386,11 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             .catch(() => null)) as { detail?: string } | null;
           if (errorPayload?.detail) message = errorPayload.detail;
           if (response.status === 401 || response.status === 403) {
-            // The setup session is redeemed when the page loads, and its access
-            // token expires on the ordinary schedule, which can be shorter than
-            // the window the setup token itself is good for. Someone who opened
-            // this page and came back later would otherwise get a bare "could
-            // not validate credentials" and no way forward: the token in this
-            // HTML is already spent, so retrying cannot help and only a reload,
-            // which mints a fresh one, will.
+            // The access token minted at page load expires on the ordinary
+            // schedule, which can be shorter than the setup token's own window.
+            // Someone who came back later would otherwise see a bare "could not
+            // validate credentials" with no way forward: the token in this HTML
+            // is spent, so only a reload, which mints a fresh one, helps.
             message =
               "This setup session expired. Reload the page and set the password again.";
           }

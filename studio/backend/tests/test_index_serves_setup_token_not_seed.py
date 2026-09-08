@@ -102,8 +102,7 @@ def test_injected_payload_is_a_usable_single_use_token():
 
 
 def test_two_page_loads_get_independent_tokens():
-    # Minted per response, so two browsers opening setup do not race for one
-    # token and burn each other's.
+    # Minted per response, so two browsers opening setup do not burn each other's.
     _seed_admin()
     first, _ = studio_main._inject_bootstrap(_HTML, _App(bootstrap_password = _SEED))
     second, _ = studio_main._inject_bootstrap(_HTML, _App(bootstrap_password = _SEED))
@@ -353,8 +352,8 @@ def test_a_rebound_dns_name_is_refused_the_setup_token():
     # Loopback, however spelled.
     for ok in ("localhost:8000", "127.0.0.1:8000", "[::1]:8000", "LOCALHOST"):
         assert studio_main._host_is_safe_from_rebinding(_Req(ok), app) is True, ok
-    # An IP literal is not rebindable: a browser only sends one the operator
-    # typed. This is what keeps `-H 0.0.0.0` usable from another machine.
+    # An IP literal is not rebindable: a browser sends one only when typed, which
+    # is what keeps `-H 0.0.0.0` usable from another machine.
     for ok in ("192.168.1.50:8000", "10.0.0.5:8000", "[fe80::1]:8000"):
         assert studio_main._host_is_safe_from_rebinding(_Req(ok), app) is True, ok
 
@@ -405,8 +404,8 @@ def test_colab_notebook_proxy_still_gets_the_setup_token(monkeypatch):
 
     monkeypatch.setattr(studio_main, "_IS_COLAB", True)
     assert studio_main._host_is_safe_from_rebinding(proxy, app) is True
-    # A shareable Cloudflare link marks its visitors, and they are not the owner
-    # of the notebook. Withheld even on loopback, exactly as the merge base did.
+    # A shareable Cloudflare link marks its visitors, who are not the notebook's
+    # owner. Withheld even on loopback, as at the merge base.
     tunnel = _Req("localhost:8000", {"cf-connecting-ip": "203.0.113.7"})
     assert studio_main._host_is_safe_from_rebinding(tunnel, app) is False
 

@@ -79,8 +79,8 @@ def _link_session(client: TestClient, admin: str) -> str:
     resp = client.post("/api/auth/link-exchange", json = {"link_token": token})
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    # The exchange must NOT clear the flag: the seeded password is still the live
-    # one until the operator picks a replacement.
+    # The exchange must NOT clear the flag: the seed is still live until the
+    # operator picks a replacement.
     assert body["must_change_password"] is True
     return body["access_token"]
 
@@ -108,8 +108,7 @@ def test_link_session_sets_the_first_password_without_the_seed():
 
 
 def test_the_returned_session_is_no_longer_link_scoped():
-    # The privilege is spent: the session handed back is an ordinary one, so it
-    # cannot be replayed against this route.
+    # The privilege is spent: an ordinary session, unusable against this route.
     admin = _seed_admin()
     client = _client()
     access = _link_session(client, admin)
@@ -155,7 +154,7 @@ def test_route_refuses_once_a_password_is_already_set():
         headers = {"Authorization": f"Bearer {access}"},
     )
     # 401: rotating the password rotates the JWT secret, so the link session no
-    # longer verifies at all. Either way the write must not land.
+    # longer verifies. Either way the write must not land.
     assert resp.status_code in (401, 409), resp.text
     assert _authenticates(admin, "chosen-elsewhere-789")
     assert not _authenticates(admin, _NEW)
@@ -194,8 +193,8 @@ def test_an_ordinary_access_token_is_not_link_scoped():
 
 
 def test_a_link_token_is_not_a_bearer_token_and_vice_versa():
-    # The link token is a two-segment HMAC blob under a domain-separated key; an
-    # access token is a three-segment JWT. Neither may validate on the other path.
+    # A link token is a two-segment HMAC blob under a domain-separated key, an
+    # access token a three-segment JWT. Neither may validate on the other path.
     admin = _seed_admin()
     link_token = authentication.create_link_token(admin)
     access = authentication.create_access_token(subject = admin)
@@ -229,6 +228,6 @@ def test_the_seeded_passphrase_is_refused_as_the_first_password():
     )
     assert resp.status_code == 400, resp.text
     assert "different" in resp.json()["detail"].lower()
-    # And setup is still pending, so the operator is asked again rather than
-    # being left on the seed with the flag cleared.
+    # Setup is still pending, so the operator is asked again rather than left on
+    # the seed with the flag cleared.
     assert storage.requires_password_change(admin) is True

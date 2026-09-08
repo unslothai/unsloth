@@ -1067,9 +1067,8 @@ def _connect_auth_db() -> sqlite3.Connection:
         );
         """
     )
-    # Carried so _cli_update_password can clear it. The backend creates this too
-    # (auth/storage.py get_connection), but the CLI reaches auth.db on its own
-    # connection and may well get there first, on a DB an older Studio wrote.
+    # Carried so _cli_update_password can clear it. The backend creates it too
+    # (auth/storage.py get_connection), but the CLI may reach auth.db first.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS link_tokens (
@@ -1260,11 +1259,9 @@ def _cli_update_password(
             (password_salt, password_hash, secrets.token_urlsafe(64), username),
         )
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
-        # Mirrors the backend's rotation (auth/storage.py update_password). The
-        # jwt_secret rotated above is what actually invalidates these, since the
-        # link-token HMAC key is derived from it, so this is hygiene rather than
-        # the control: it stops rows for a password that no longer exists from
-        # sitting there until their TTL runs out.
+        # Mirrors auth/storage.py update_password. Hygiene, not the control: the
+        # jwt_secret rotated above already invalidates these (the link-token HMAC
+        # key derives from it); this just drops the dead rows before their TTL.
         conn.execute("DELETE FROM link_tokens WHERE username = ?", (username,))
         conn.execute(
             "DELETE FROM app_secrets WHERE key IN (?, ?)",

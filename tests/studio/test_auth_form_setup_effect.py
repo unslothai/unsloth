@@ -78,8 +78,8 @@ def _slice_setup_exchange_cache(src: str) -> str:
     end = src.index("\n}", src.index("function startSetupExchange")) + len("\n}")
     sliced = src[start:end]
     # The harness runs plain JS (node -e, no --experimental-strip-types), so drop
-    # the TypeScript annotations. Only the shapes this slice actually uses: a
-    # generic on the Map, and the parameter/return types on the one function.
+    # the TypeScript annotations this slice uses: the Map generic and the one
+    # function's parameter/return types.
     sliced = re.sub(r"new Map<[^>]*>+\(\)", "new Map()", sliced)
     sliced = re.sub(
         r"function startSetupExchange\([^)]*\)[^{]*\{",

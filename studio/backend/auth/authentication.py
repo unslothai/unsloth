@@ -193,14 +193,11 @@ class _BearerOrKeyless(HTTPBearer):
         return await super().__call__(request)
 
 
-# Domain-separation label for the link-token signing key. The key is derived from
-# the user's JWT secret (so a password change, which rotates that secret,
-# invalidates outstanding link tokens) but is NOT the JWT secret itself: a link
-# token must never be accepted as a bearer access token, so it is signed with a
-# different key and can't validate on the access-token path. That separation now
-# also has to hold against the keyless schemes above: _BearerOrKeyless only ever
-# yields KEYLESS_SCHEME or a real Bearer credential, and neither path consults
-# this key, so a link token has no way onto the access-token path.
+# Domain-separation label for the link-token signing key: derived from the user's
+# JWT secret (so a password change invalidates outstanding link tokens) but not
+# equal to it, so a link token can never validate on the access-token path.
+# _BearerOrKeyless yields only KEYLESS_SCHEME or a real Bearer credential, and
+# neither consults this key.
 _LINK_TOKEN_KEY_LABEL = b"unsloth-studio-link-token-v1"
 
 
@@ -250,7 +247,7 @@ def create_access_token(
     if desktop:
         to_encode["desktop"] = True
     if link:
-        # Marks a session minted from a one-time link token. It is NOT a general
+        # Marks a session minted from a one-time link token. Not a general
         # privilege: its only extra power is /link-set-password, and only while
         # must_change_password is still set. See is_link_access_token.
         to_encode["link"] = True
@@ -367,9 +364,7 @@ def reload_secret() -> None:
     load_jwt_secret()
 
 
-# ---------------------------------------------------------------------------
 # One-time link tokens (the first-boot setup token in the served page)
-# ---------------------------------------------------------------------------
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -507,8 +502,8 @@ def exchange_link_token_with_secret(token: str) -> Optional[Tuple[str, str]]:
     if not payload_b64 or not sig_b64:
         return None
 
-    # Read the claimed subject from the (still-unverified) payload only to select
-    # the signing key; the signature check below is what actually authenticates it.
+    # The unverified subject only selects the signing key; the signature check
+    # below is what authenticates it.
     claims = _decode_link_payload(payload_b64)
     if not isinstance(claims, dict):
         return None
@@ -516,16 +511,15 @@ def exchange_link_token_with_secret(token: str) -> Optional[Tuple[str, str]]:
     if not isinstance(subject, str) or not subject:
         return None
 
-    # Capture the secret (not just the derived key) so the caller can detect a
-    # rotation that races issuance; None means an unknown user -> reject.
+    # Capture the secret, not just the derived key, so the caller can detect a
+    # rotation racing issuance. None means unknown user -> reject.
     secret = get_jwt_secret(subject)
     if secret is None:
         return None
     key = hmac.new(secret.encode("utf-8"), _LINK_TOKEN_KEY_LABEL, hashlib.sha256).digest()
     expected_sig = hmac.new(key, payload_b64.encode("ascii"), hashlib.sha256).digest()
-    # Canonical decode: a permissive base64url decode would accept three sibling
-    # spellings of the same signature bytes, so a tampered trailing character
-    # could still verify (see _b64url_decode_canonical).
+    # Canonical decode: a permissive base64url decode accepts sibling spellings of
+    # the same bytes, so a tampered trailing character could verify.
     provided_sig = _b64url_decode_canonical(sig_b64)
     if provided_sig is None:
         return None
@@ -536,10 +530,9 @@ def exchange_link_token_with_secret(token: str) -> Optional[Tuple[str, str]]:
     expires_iso = claims.get("exp")
     if not isinstance(jti, str) or not isinstance(expires_iso, str):
         return None
-    # Expiry is defense-in-depth; consume_link_token also drops expired rows.
-    # TypeError as well as ValueError: comparing an aware now() against a naive
-    # timestamp raises TypeError, and a signed-but-naive "exp" would otherwise
-    # escape this function instead of being rejected as unusable.
+    # Defense-in-depth; consume_link_token also drops expired rows. TypeError too:
+    # a signed-but-naive "exp" raises when compared against an aware now(), and
+    # must be rejected rather than escape this function.
     try:
         if datetime.now(timezone.utc) > datetime.fromisoformat(expires_iso):
             return None

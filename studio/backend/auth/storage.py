@@ -328,9 +328,8 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
-    # One-time, short-TTL link tokens (the first-boot setup token). The row is
-    # the single-use nonce: a token is exchangeable only while its jti is present,
-    # and consuming it deletes the row so a replay finds nothing.
+    # One-time, short-TTL link tokens (the first-boot setup token). The row is the
+    # single-use nonce: consuming a token deletes it, so a replay finds nothing.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS link_tokens (
@@ -340,8 +339,7 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
-    # Expiry-ordered purges (on mint and on consume) scan by expires_at; index it
-    # so reclaiming stale rows stays cheap as tokens are minted.
+    # Purges on mint and on consume scan by expires_at.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_link_tokens_expires_at ON link_tokens (expires_at)"
     )
@@ -809,10 +807,9 @@ def update_password(
                 (salt, pwd_hash, jwt_secret, username, expect_password_hash),
             )
         if cursor.rowcount > 0:
-            # Same transaction as the rotation: a link token authenticates without
-            # the password and is keyed off the JWT secret rotated above, so a
-            # separate delete that failed after the commit would leave a
-            # pre-change token able to mint a session against the new password.
+            # Same transaction as the rotation: a delete that failed after the
+            # commit would leave a pre-change token, which authenticates without
+            # the password, able to mint a session against the new password.
             conn.execute("DELETE FROM link_tokens WHERE username = ?", (username,))
         if revoke_refresh_tokens and cursor.rowcount > 0:
             conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
@@ -957,9 +954,7 @@ def revoke_user_refresh_tokens(username: str) -> None:
         conn.close()
 
 
-# ---------------------------------------------------------------------------
 # One-time link tokens (the first-boot setup token)
-# ---------------------------------------------------------------------------
 
 # Short window: the token only has to survive the trip from the served page into
 # the UI's first request.
@@ -1035,9 +1030,8 @@ def save_link_token(
                 "INSERT INTO link_tokens (jti, username, expires_at) VALUES (?, ?, ?)",
                 (jti, username, expires_at),
             )
-        # rowid, not expires_at: a burst mints tokens with near-identical
-        # expiries, so insertion order is the only thing that actually orders
-        # them.
+        # rowid, not expires_at: a burst mints near-identical expiries, so
+        # insertion order is the only real ordering.
         conn.execute(
             """
             DELETE FROM link_tokens
@@ -1071,7 +1065,7 @@ def consume_link_token(jti: str, username: str) -> bool:
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
-        # Opportunistically reclaim expired rows so the table can't grow unbounded.
+        # Reclaim expired rows so the table can't grow unbounded.
         conn.execute("DELETE FROM link_tokens WHERE expires_at < ?", (now,))
         cur = conn.execute(
             """

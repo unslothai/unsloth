@@ -386,11 +386,10 @@ def recover_or_replace_page(
 # ─────────────────────────────────────────────────────────────────────
 
 
-# The endpoint the first-boot change-password form submits to. It depends on what
-# the backend put in the page: a seeded password means /change-password, a one-time
-# setup token means /link-initial-password, which takes no current password. A
-# driver must accept either, so it works against both an older and a newer backend
-# and does not have to know which one it is talking to.
+# Where the first-boot form submits, which depends on what the backend put in the
+# page: a seeded password means /change-password, a setup token means
+# /link-initial-password. A driver accepts either, so it works against an older or
+# a newer backend without knowing which.
 FIRST_BOOT_SUBMIT_ENDPOINTS = (
     "/api/auth/change-password",
     "/api/auth/link-initial-password",
@@ -427,9 +426,9 @@ def report_first_boot_form(page: Any, *, info: Callable[[str], None] | None = No
             f"first-boot form: __UNSLOTH_BOOTSTRAP__ keys={injected!r} current-password visible={shown}"
         )
 
-        # The setup handshake is its own request, so a failure there is invisible
-        # to a caller waiting on the submit endpoint: the click produces no
-        # matching response and looks like a dead button. Report its status.
+        # The setup handshake is its own request, so a failure there is
+        # invisible to a caller waiting on the submit endpoint and looks like
+        # a dead button. Report its status.
         def _on_response(response: Any) -> None:
             if "/api/auth/link-exchange" in response.url:
                 info(f"link-exchange -> {response.status}")

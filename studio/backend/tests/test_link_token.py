@@ -57,8 +57,8 @@ def test_link_token_round_trips_once():
 
 
 def test_consume_link_token_is_single_use():
-    # Storage-level single-use: the conditional DELETE (no DELETE ... RETURNING,
-    # which would need SQLite >= 3.35) consumes a matching row exactly once.
+    # Storage-level single-use: the conditional DELETE (not DELETE ... RETURNING,
+    # which needs SQLite >= 3.35) consumes a matching row exactly once.
     from datetime import datetime, timedelta, timezone
 
     admin = _seed_admin()
@@ -76,17 +76,16 @@ def test_consume_link_token_is_single_use():
 
 
 def test_save_link_token_purges_expired_rows_on_mint():
-    # The frontend is not yet wired to exchange link tokens, so consume_link_token
-    # (the other purge site) may never run; without a purge on mint the table
-    # would grow without bound across reruns. Minting reclaims stale rows in the
-    # same transaction as the insert.
+    # consume_link_token (the other purge site) may never run, so without a purge
+    # on mint the table would grow without bound. Minting reclaims stale rows in
+    # the same transaction as the insert.
     from datetime import datetime, timedelta, timezone
 
     admin = _seed_admin()
     past = (datetime.now(timezone.utc) - timedelta(seconds = 5)).isoformat()
     future = (datetime.now(timezone.utc) + timedelta(seconds = 600)).isoformat()
 
-    # An already-expired row lands on disk when minted (purge runs before insert).
+    # An already-expired row lands on disk: the purge runs before the insert.
     storage.save_link_token("stale", admin, past)
     conn = storage.get_connection()
     try:
@@ -108,10 +107,9 @@ def test_save_link_token_purges_expired_rows_on_mint():
 
 
 def test_password_change_deletes_outstanding_link_tokens():
-    # A password change must invalidate outstanding link tokens atomically:
-    # update_password() deletes the user's link_tokens rows in the SAME
-    # transaction that rotates the JWT secret, closing the race where an in-flight
-    # exchange read the old derived key before the rotation.
+    # update_password() deletes the user's link_tokens rows in the SAME transaction
+    # that rotates the JWT secret, closing the race where an in-flight exchange
+    # read the old derived key before the rotation.
     admin = _seed_admin()
     token = authentication.create_link_token(admin)
     jti = authentication._decode_link_payload(token.split(".", 1)[0])["jti"]
@@ -131,20 +129,20 @@ def test_password_change_deletes_outstanding_link_tokens():
         assert conn.execute("SELECT 1 FROM link_tokens WHERE jti = ?", (jti,)).fetchone() is None
     finally:
         conn.close()
-    # User-facing: the exchange is rejected (defense in depth, the key also rotated).
+    # User-facing: the exchange is rejected; the key rotated too.
     assert authentication.exchange_link_token(token) is None
 
 
 def test_link_token_is_not_a_valid_access_bearer_token():
-    # Domain separation: a link token is signed with a derived key, so it must NOT
-    # validate as a normal bearer JWT (which would sidestep single-use).
+    # Domain separation: signed with a derived key, so it must not validate as a
+    # normal bearer JWT, which would sidestep single-use.
     import jwt as _jwt
 
     admin = _seed_admin()
     token = authentication.create_link_token(admin)
     jwt_secret = storage.get_jwt_secret(admin)
-    # The compact link token is not a JWT (two segments, derived signing key), so
-    # the access-token path cannot accept it as a bearer credential.
+    # Two segments and a derived key, so it is not a JWT and the access-token path
+    # cannot accept it as a bearer credential.
     with pytest.raises(_jwt.InvalidTokenError):
         _jwt.decode(token, jwt_secret, algorithms = ["HS256"])
 
@@ -162,8 +160,7 @@ def test_link_token_expired_is_rejected(monkeypatch):
 
     admin = _seed_admin()
     token = authentication.create_link_token(admin)
-    # Sanity: valid right now. Without this the test could pass because the token
-    # was never mintable in the first place.
+    # Sanity: valid now, so the test cannot pass on an unmintable token.
     peek = authentication._decode_link_payload(token.split(".", 1)[0])
     assert peek is not None
 
@@ -183,8 +180,8 @@ def test_link_token_tampered_signature_is_rejected():
     token = authentication.create_link_token(admin)
     payload_b64, sig_b64 = token.split(".", 1)
     # Flip a signature BYTE and re-encode canonically, so the tampering always
-    # changes the decoded bytes (flipping the last base64 character only alters
-    # pad bits about 1 in 16 times, which is what made this test flaky).
+    # changes the decoded bytes. Flipping the last base64 character only alters
+    # pad bits about 1 in 16 times, which is what made this test flaky.
     raw_sig = bytearray(authentication._b64url_decode(sig_b64))
     raw_sig[0] ^= 0x01
     tampered = f"{payload_b64}.{authentication._b64url_encode(bytes(raw_sig))}"
@@ -195,14 +192,13 @@ def test_link_token_tampered_signature_is_rejected():
 
 
 def test_link_token_non_canonical_signature_is_rejected():
-    # base64url is not injective under a permissive decoder: the final character of
-    # a 32-byte signature carries 2 unused pad bits, so 'A', 'B', 'C' and 'D' all
-    # decode to the same trailing byte (RFC 4648 s3.5 puts the zero-pad-bits MUST on
-    # encoders only), and urlsafe_b64decode also accepts extra "=" and silently
-    # drops non-alphabet characters. Before the canonical re-encode check, rewriting
-    # a canonical trailing 'A' as 'B' still passed compare_digest and exchanged
-    # successfully -- roughly 1 token in 16. Mint until a token exhibits the
-    # trailing-'A' case rather than relying on chance.
+    # base64url is not injective under a permissive decoder: the last character of
+    # a 32-byte signature carries 2 unused pad bits, so 'A'..'D' decode to the same
+    # byte (RFC 4648 s3.5 puts the zero-pad-bits MUST on encoders only), and
+    # urlsafe_b64decode also accepts extra "=" and drops non-alphabet characters.
+    # Before the canonical re-encode check, rewriting a trailing 'A' as 'B' passed
+    # compare_digest and exchanged -- roughly 1 token in 16. Mint until a token
+    # shows the trailing-'A' case rather than relying on chance.
     admin = _seed_admin()
     token = None
     for _ in range(500):
@@ -222,14 +218,13 @@ def test_link_token_non_canonical_signature_is_rejected():
     ]
     for variant in variants:
         assert authentication.exchange_link_token(variant) is None, variant
-    # None of the rejected variants consumed the jti: the real token still works once.
+    # No rejected variant consumed the jti: the real token still works once.
     assert authentication.exchange_link_token(token) == admin
     assert authentication.exchange_link_token(token) is None
 
 
 def test_link_token_non_canonical_payload_is_rejected():
-    # The signature covers the payload TEXT, so a re-spelled payload cannot verify;
-    # assert it explicitly so the canonical decode stays in place.
+    # The signature covers the payload TEXT, so a re-spelled payload cannot verify.
     admin = _seed_admin()
     token = authentication.create_link_token(admin)
     payload_b64, sig_b64 = token.split(".", 1)
@@ -254,8 +249,7 @@ def test_link_token_tampered_payload_is_rejected():
     admin = _seed_admin()
     token = authentication.create_link_token(admin)
     _payload_b64, sig_b64 = token.split(".", 1)
-    # Re-sign a different subject claim is impossible without the secret; a swapped
-    # payload no longer matches the signature.
+    # Re-signing another subject needs the secret; a swapped payload will not match.
     forged_payload = authentication._b64url_encode(b'{"sub":"unsloth","jti":"x","exp":"z"}')
     forged = f"{forged_payload}.{sig_b64}"
     assert authentication.exchange_link_token(forged) is None
@@ -281,11 +275,10 @@ def _deeply_nested_token(depth: int = 1000) -> str:
 
 
 def test_link_token_deeply_nested_payload_is_rejected():
-    # An unauthenticated caller can craft a canonical payload of ~1000 nested
-    # arrays that still fits under LINK_TOKEN_MAX_LENGTH. On Python 3.10/3.11 the
-    # json scanner raises RecursionError (not a ValueError) at that depth, which
-    # used to escape the decoder and turn the request into a 500 that never
-    # reached the failure counter, so it was repeatable without throttling.
+    # ~1000 nested arrays still fit under LINK_TOKEN_MAX_LENGTH. On Python
+    # 3.10/3.11 the json scanner raises RecursionError (not ValueError) at that
+    # depth, which used to escape the decoder and turn the request into a 500 that
+    # never reached the failure counter, so it was repeatable without throttling.
     from models.auth import LINK_TOKEN_MAX_LENGTH
 
     _seed_admin()
@@ -295,9 +288,9 @@ def test_link_token_deeply_nested_payload_is_rejected():
 
 
 def test_decode_link_payload_treats_recursion_error_as_a_bad_token(monkeypatch):
-    # Version-independent form of the above: whatever depth the running
-    # interpreter draws the line at, a RecursionError from the parser must be a
-    # rejected token, never an exception that escapes to the route.
+    # Version-independent form of the above: whatever depth the interpreter draws
+    # the line at, a parser RecursionError must be a rejected token, not an
+    # exception escaping to the route.
     import json as _json
 
     def _boom(*_a, **_k):
@@ -335,9 +328,8 @@ def test_link_exchange_route_issues_jwt_once():
     body = resp.json()
     assert body["token_type"] == "bearer"
     assert body["access_token"]
-    # No refresh token by design: the setup page keeps only the access token, and
-    # minting one wrote a seven-day refresh_tokens row per exchange on a route
-    # that is unauthenticated while setup is pending.
+    # No refresh token by design: minting one wrote a seven-day refresh_tokens row
+    # per exchange on a route unauthenticated while setup is pending.
     assert body["refresh_token"] == ""
     assert body["must_change_password"] is False
 
@@ -351,11 +343,10 @@ def test_link_exchange_route_issues_jwt_once():
 
 
 def test_link_exchange_route_is_sync_so_fastapi_offloads_it():
-    # Every step of the handler is blocking SQLite work (token lookup, single-use
-    # consume, refresh-token insert) that can wait out the connection busy timeout
-    # while another writer holds the auth DB. FastAPI runs `async def` handlers on
-    # the event loop, so that wait would stall every other request; a `def` handler
-    # is dispatched to the threadpool instead (same reason /identity is sync).
+    # Every step of the handler is blocking SQLite work that can wait out the busy
+    # timeout behind another writer. FastAPI runs `async def` on the event loop, so
+    # that wait would stall every other request; a `def` handler goes to the
+    # threadpool instead (same reason /identity is sync).
     import inspect
     assert not inspect.iscoroutinefunction(_load_auth_route().link_exchange)
 
@@ -368,12 +359,11 @@ def test_link_exchange_route_rejects_garbage():
 
 
 def test_link_exchange_rejects_when_password_rotates_mid_issuance(monkeypatch):
-    # TOCTOU: a link token consumed just BEFORE a concurrent password change commits
-    # would otherwise mint a session under the freshly rotated JWT secret and survive
-    # the change (cf. Keycloak CVE-2026-1035 / Omni GHSA-5x9f-6vg5-qg4m: non-atomic
-    # single-use enforcement undermining rotation). The route binds issuance to the
-    # secret the token validated against and rejects if it rotated, revoking the
-    # tokens it just minted.
+    # TOCTOU: a token consumed just BEFORE a concurrent password change commits
+    # would otherwise mint a session under the freshly rotated JWT secret and
+    # survive the change (cf. Keycloak CVE-2026-1035 / Omni GHSA-5x9f-6vg5-qg4m).
+    # The route binds issuance to the secret the token validated against and
+    # rejects if it rotated.
     admin = _seed_admin()
     token = authentication.create_link_token(admin)
     auth_route = _load_auth_route()
@@ -384,9 +374,8 @@ def test_link_exchange_rejects_when_password_rotates_mid_issuance(monkeypatch):
     minted: list = []
     _real_create_access_token = auth_route.create_access_token
 
-    # The seam is the ACCESS token, because the route no longer mints a refresh
-    # token to hook. Same instant either way: after the single-use consumption,
-    # before the secret recheck.
+    # The seam is the ACCESS token, the route no longer minting a refresh token to
+    # hook: after the single-use consumption, before the secret recheck.
     def _rotating_create_access_token(*args, **kwargs):
         tok = _real_create_access_token(*args, **kwargs)
         minted.append(tok)
@@ -401,8 +390,7 @@ def test_link_exchange_rejects_when_password_rotates_mid_issuance(monkeypatch):
     # Rejected rather than issuing a session that outlives the password change.
     assert resp.status_code == 401, resp.text
     assert len(minted) == 1
-    # The token minted mid-race is signed with the OLD secret, which
-    # update_password has since replaced, so it authenticates nothing.
+    # Signed with the OLD secret, since replaced, so it authenticates nothing.
     import jwt as _jwt
 
     with pytest.raises(_jwt.InvalidTokenError):
@@ -413,10 +401,9 @@ def test_link_exchange_rejects_when_password_rotates_mid_issuance(monkeypatch):
 
 
 def test_link_exchange_rate_limits_repeated_failures():
-    # Regression (Codex 3644647557, P2): /api/auth/link-exchange is unauthenticated
-    # and each attempt performs a SQLite lookup + HMAC/base64 processing. Without a
-    # limiter an attacker sprays invalid tokens and pins the event loop. Apply the
-    # same per-IP failure bound as /login, checked BEFORE any storage work.
+    # /api/auth/link-exchange is unauthenticated and each attempt costs a SQLite
+    # lookup plus HMAC/base64 work, so an attacker could spray invalid tokens.
+    # Same per-IP failure bound as /login, checked BEFORE any storage work.
     admin = _seed_admin()
     auth_route = _load_auth_route()
     app = FastAPI()
@@ -428,19 +415,18 @@ def test_link_exchange_rate_limits_repeated_failures():
         resp = client.post("/api/auth/link-exchange", json = {"link_token": "not-a-token"})
         assert resp.status_code == 401, resp.text
 
-    # Now blocked: a VALID token is rejected with 429 too, proving the limiter runs
-    # BEFORE exchange_link_token_with_secret rather than after the storage work.
+    # Now blocked: even a VALID token gets 429, so the limiter runs BEFORE the
+    # exchange rather than after the storage work.
     valid = authentication.create_link_token(admin)
     blocked = client.post("/api/auth/link-exchange", json = {"link_token": valid})
     assert blocked.status_code == 429, blocked.text
     assert blocked.headers.get("Retry-After")
-    # The valid token was NOT consumed while blocked (the gate short-circuited before
-    # the exchange), so it still works once the throttle is cleared below.
+    # Not consumed while blocked, so it still works once the throttle is cleared.
 
 
 def test_link_exchange_success_clears_rate_limit_bucket():
-    # A successful exchange resets the IP's failure throttle, exactly as a successful
-    # /login does, so a legitimate click after a few earlier failures is not blocked.
+    # A success resets the IP's throttle, as /login does, so a legitimate click
+    # after a few earlier failures is not blocked.
     admin = _seed_admin()
     auth_route = _load_auth_route()
     app = FastAPI()
@@ -458,8 +444,7 @@ def test_link_exchange_success_clears_rate_limit_bucket():
     )
     assert ok.status_code == 200, ok.text  # clears the bucket
 
-    # Prior failures were reset: another full batch below the threshold stays 401,
-    # never 429 (without the clear, the accumulated count would trip the limit).
+    # Prior failures were reset: another sub-threshold batch stays 401, never 429.
     for _ in range(threshold - 1):
         resp = client.post("/api/auth/link-exchange", json = {"link_token": "not-a-token"})
         assert resp.status_code == 401, resp.text
@@ -469,9 +454,8 @@ def test_link_exchange_success_clears_rate_limit_bucket():
 
 
 def test_link_token_schema_caps_length():
-    # /api/auth/link-exchange is unauthenticated and public; a well-formed token is
-    # only a few hundred bytes, so the schema bounds it. This rejects an oversized
-    # token before exchange_link_token_with_secret() scans/decodes/HMACs it.
+    # A well-formed token is only a few hundred bytes, so the schema bounds it and
+    # rejects an oversized one before the exchange scans, decodes and HMACs it.
     from pydantic import ValidationError
 
     from models.auth import LINK_TOKEN_MAX_LENGTH, LinkTokenRequest
@@ -485,10 +469,9 @@ def test_link_token_schema_caps_length():
 
 
 def test_link_exchange_route_rejects_deeply_nested_payload():
-    # Route level: a nesting bomb that fits under the length cap must come back as
-    # a plain 401 (and count as a failure for the limiter), not a 500. The
-    # TestClient re-raises server exceptions, so a RecursionError escaping the
-    # decoder fails this test on the affected interpreters.
+    # A nesting bomb under the length cap must return a plain 401 (counting as a
+    # limiter failure), not a 500. TestClient re-raises server exceptions, so a
+    # RecursionError escaping the decoder fails this test.
     _seed_admin()
     client = _auth_client()
     resp = client.post("/api/auth/link-exchange", json = {"link_token": _deeply_nested_token()})
@@ -496,8 +479,8 @@ def test_link_exchange_route_rejects_deeply_nested_payload():
 
 
 def test_link_exchange_route_rejects_oversized_token():
-    # The route enforces the cap: an oversized token is a 422 validation error, not
-    # a 401, so the exchange path never runs on attacker-sized input.
+    # An oversized token is a 422, not a 401, so the exchange path never runs on
+    # attacker-sized input.
     _seed_admin()
     from models.auth import LINK_TOKEN_MAX_LENGTH
 

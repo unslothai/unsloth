@@ -95,7 +95,7 @@ def _evaluate(src: str, payload) -> dict:
         """
     )
     derivations = _slice_derivations(src)
-    # A bundle that predates the setup token never declares it; give the shim a
+    # A bundle predating the setup token never declares it; give the shim a
     # binding so the same probe runs against both versions.
     shim = "" if "const setupToken" in derivations else "const setupToken = undefined;"
     script = (

@@ -183,10 +183,8 @@ class TestMaxBodyMiddleware:
         )
 
     def test_auth_routes_are_body_capped(self, main_module):
-        # The public /api/auth routes (login, refresh, link-exchange) take only small
-        # JSON, so they sit behind their own small cap and are in the protected
-        # prefixes -- bounding the buffered body before FastAPI reads it, well below
-        # the upload-sized default.
+        # Public /api/auth routes take only small JSON, so they get their own cap,
+        # well below the upload-sized default, applied before FastAPI reads the body.
         assert "/api/auth" in main_module._BODY_PROTECTED_PREFIXES
         assert (
             main_module._get_request_body_max_bytes("/api/auth/link-exchange")

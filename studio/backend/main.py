@@ -1136,11 +1136,9 @@ from utils.upload_limits import (  # noqa: E402
     upload_request_limit_bytes,
 )
 
-# Public auth routes (/api/auth/login, /refresh, /link-exchange, ...) are
-# unauthenticated and take only small JSON bodies, so cap them well below the
-# default upload-sized limit: /api/auth/link-exchange in particular accepts an
-# attacker-controlled token that FastAPI buffers and exchange_link_token_with_secret
-# then scans/decodes/HMACs, so bound the buffered body here before it is read.
+# Public auth routes are unauthenticated and take only small JSON, so cap them
+# well below the upload-sized default. /link-exchange in particular buffers an
+# attacker-controlled token that is then scanned, decoded and HMACed.
 AUTH_REQUEST_BODY_MAX_BYTES = 64 * 1024
 
 _BODY_PROTECTED_PREFIXES = (
@@ -2286,12 +2284,10 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
     return html.encode("utf-8")
 
 
-# Restored deliberately, and only this half. The loopback/Host/proxy-header
-# helpers that sat beside these stay deleted: a same-host reverse proxy sends
-# byte-identical requests to a local browser, so that question cannot be
-# answered. Which ORIGIN is asking is a different question, the browser answers
-# it truthfully, and script cannot forge it -- which is what keeps a hostile
-# page from reading the setup token out of the index.
+# Restored deliberately, and only this half. The loopback/proxy-header helpers
+# beside these stay deleted: a same-host reverse proxy is byte-identical to a
+# local browser. Which ORIGIN is asking is answerable, the browser answers it
+# truthfully, and script cannot forge it.
 _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 
@@ -2364,19 +2360,16 @@ def _host_is_safe_from_rebinding(request: Request, app: FastAPI) -> bool:
     Host have been chosen by someone other than the operator.
     """
     if _IS_COLAB:
-        # Colab serves Studio through Google's own single-user proxy: run_server
-        # binds 0.0.0.0 and the browser sends the PROXY's hostname in Host, so
-        # neither the loopback names nor the configured bind can ever match and a
-        # fresh notebook would be left hunting for .bootstrap_password inside the
-        # runtime. Rebinding is not the exposure there, because the listener is
-        # reachable only through that authenticated proxy. This restores what the
-        # merge base did, including its one exception: a shareable Cloudflare link
-        # marks its visitors with cf-connecting-ip, and those are not the owner.
+        # Colab serves Studio through Google's single-user proxy, so Host carries
+        # the PROXY's hostname and neither the loopback names nor the configured
+        # bind can ever match. Rebinding is not the exposure there: the listener
+        # is reachable only through that authenticated proxy. As at the merge
+        # base, with its one exception -- a shareable Cloudflare link marks its
+        # visitors with cf-connecting-ip, and those are not the owner.
         return request.headers.get("cf-connecting-ip") is None
     host_header = request.headers.get("host")
     if not host_header:
-        # HTTP/1.1 requires Host; something that omits it is not a browser
-        # completing setup.
+        # HTTP/1.1 requires Host; something omitting it is not a browser.
         return False
     hostname = host_header.rsplit(":", 1)[0] if host_header.count(":") == 1 else host_header
     if hostname.startswith("["):
@@ -2391,8 +2384,8 @@ def _host_is_safe_from_rebinding(request: Request, app: FastAPI) -> bool:
     except ValueError:
         pass
     else:
-        # A literal cannot be rebound: the browser only sends one the operator
-        # typed, and a hostile name always arrives as a name.
+        # A literal cannot be rebound: a browser sends one only when typed, and a
+        # hostile name always arrives as a name.
         return True
     configured = str(getattr(app.state, "bind_host", "") or "").strip().lower()
     return bool(configured) and hostname == configured
@@ -2432,10 +2425,9 @@ def _is_same_origin_request(request: Request) -> bool:
     return origin_canon == self_canon
 
 
-# A launch with no bootstrap deadline never shuts itself down, so the seed this
-# token replaces would have stayed usable for the life of the process. Long
-# enough that no first login reaches it, finite so the nonce row is still
-# reclaimed.
+# With no bootstrap deadline the process never shuts itself down, so the seed
+# this token replaces would have stayed usable for its whole life. Long enough
+# that no first login reaches it, finite so the nonce row is still reclaimed.
 SETUP_TOKEN_TTL_WITHOUT_DEADLINE = 7 * 24 * 60 * 60
 
 
@@ -2467,28 +2459,23 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
         return html_bytes, None
 
-    # Inject exactly where the seed used to be injected, and nowhere else. This
-    # is a payload swap, not a widening: everything that used to stop the seed
-    # reaching the page must still stop the token, because a token that sets the
-    # first password IS an admin credential, just a shorter-lived one.
-    #
-    # app.state.bootstrap_password is that signal, and it already carries both
-    # existing defences for a headless PUBLIC launch:
-    #   - run.py's pre-bind gate nulls it and sets suppress_bootstrap_injection
-    #     when a public Cloudflare URL is about to serve;
-    #   - unsloth_cli deletes .bootstrap_password before a public re-exec, so
-    #     lifespan reads None. That one is deliberately version-independent
-    #     ("Removal IS the protection"), and gating on the seed's availability
-    #     rather than on an in-process flag is what keeps it that way: no seed on
-    #     disk, no token in the page, whatever version the child happens to be.
-    # Reading app.state here, not a Request, so this stays a process-wide launch
-    # property. A per-request gate is what could not be written correctly.
+    # A payload swap, not a widening: a token that sets the first password IS an
+    # admin credential, so everything that stopped the seed must still stop it.
+    # app.state.bootstrap_password is that signal and already carries both
+    # defences for a headless PUBLIC launch: run.py's pre-bind gate nulls it
+    # (and sets suppress_bootstrap_injection) when a public Cloudflare URL is
+    # about to serve, and unsloth_cli deletes .bootstrap_password before a public
+    # re-exec so lifespan reads None. Gating on the seed's availability rather
+    # than an in-process flag keeps the latter version-independent: no seed on
+    # disk, no token in the page, whatever version the child is. Read off
+    # app.state, not the Request, so this stays a launch property -- the
+    # per-request gate is the one that could not be written correctly.
     if getattr(app.state, "bootstrap_password", None) is None:
         return html_bytes, None
 
-    # Minted per page load, not cached: two browsers opening the setup page must
-    # not race for one token. The nonce table self-purges expired rows on every
-    # mint, so the row count is bounded by the TTL rather than by uptime.
+    # Minted per page load, not cached, so two browsers cannot race for one
+    # token. The nonce table purges expired rows on every mint, so the row count
+    # is bounded by the TTL rather than by uptime.
     try:
         from auth.authentication import create_link_token
         from auth.bootstrap_timeout import (
@@ -2496,27 +2483,17 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
             should_arm_bootstrap_timeout,
         )
 
-        # Live as long as the seeded credential itself would have been useful.
-        # This token is minted when the setup page LOADS and redeemed when the
-        # operator submits the form, which can be much later, so the TTL has to
-        # follow whether this launch is going to shut itself down.
-        #
-        # Deadline armed: bound by it. Studio exits at that point, so the token
-        # cannot outlive the window the seed occupied, and a shorter life is free.
-        #
-        # Deadline NOT armed (the ordinary loopback `unsloth studio`): the
-        # process runs until stopped and the seed would have kept working the
-        # whole time, so an hour here would be a bound protecting nothing while
-        # turning "left the setup tab open over lunch" into an error the seed
-        # never produced. A week instead: no operator crosses it, and it still
-        # expires rather than persisting in the nonce table forever.
-        #
-        # should_arm_bootstrap_timeout is the same pure decision run.py makes, so
-        # the two cannot drift. Recomputed rather than read off the live deadline
-        # because run.py arms it AFTER the socket binds, so an early page load
-        # would otherwise read "no deadline" on a launch that is about to arm one.
-        # api_only/frontend_served are fixed here: reaching this code means the
-        # index is being served.
+        # Live as long as the seed would have been useful. Minted on page LOAD but
+        # redeemed on form submit, possibly much later, so the TTL follows whether
+        # this launch shuts itself down. Deadline armed: bound by it, since Studio
+        # exits then anyway. Not armed (ordinary loopback `unsloth studio`): the
+        # seed would have worked until the process stopped, so a short TTL would
+        # protect nothing while turning "left the setup tab open over lunch" into
+        # an error; a week instead, which no operator crosses and which still
+        # expires. should_arm_bootstrap_timeout is run.py's own pure decision, so
+        # the two cannot drift; recomputed rather than read off the live deadline
+        # because run.py arms it AFTER the bind. api_only/frontend_served are fixed:
+        # reaching here means the index is being served.
         setup_ttl = SETUP_TOKEN_TTL_WITHOUT_DEADLINE
         if should_arm_bootstrap_timeout(
             host = getattr(app.state, "bind_host", "127.0.0.1"),
@@ -2528,20 +2505,18 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
             timeout_seconds = bootstrap_timeout_seconds(),
         ):
             setup_ttl = bootstrap_timeout_seconds()
-        # require_pending_setup closes the gap between the guard at the top of
-        # this function and the write below: a rotation committing in between
-        # would otherwise mint against the NEW secret, after update_password had
-        # cleared the old nonces, leaving a token that still exchanges once setup
-        # is finished and yields an ordinary session. The refusal surfaces as the
-        # except below, which injects nothing.
+        # require_pending_setup closes the gap between the guard at the top of this
+        # function and this write: a rotation committing in between would mint
+        # against the NEW secret after update_password cleared the old nonces,
+        # leaving a token still exchangeable once setup is finished. A refusal
+        # raises into the except below, which injects nothing.
         link_token = create_link_token(
             storage.DEFAULT_ADMIN_USERNAME,
             expires_in = setup_ttl,
             require_pending_setup = True,
         )
     except Exception:
-        # No token means the page simply shows the ordinary login form; never
-        # fall back to serving the seed.
+        # No token means the ordinary login form; never fall back to the seed.
         return html_bytes, None
 
     payload = _json.dumps(
@@ -2653,24 +2628,22 @@ def setup_frontend(
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
         # Same-origin only. Studio's default CORS is allow_origins=["*"] with
-        # credentials, so ANY page the operator visits can fetch this index and
-        # READ the body; without this check a hostile origin lifts the setup
-        # token, exchanges it and sets the admin password. Measured end to end in
-        # Chromium against a real install: cross-origin GET / -> link-exchange 200
-        # -> link-initial-password 200, and the attacker's password then logged in.
+        # credentials, so any page the operator visits can fetch this index and
+        # read the body. Measured end to end in Chromium against a real install:
+        # cross-origin GET / -> link-exchange 200 -> link-initial-password 200,
+        # and the attacker's password then logged in.
         #
-        # This is NOT the loopback/Host gate that was removed, and the reason that
-        # one could not be written does not carry over. That one tried to tell a
-        # same-host reverse proxy from a local browser, which is impossible because
-        # the two send identical bytes. This asks a question the browser answers
-        # honestly and cannot be forged from script: which origin is asking.
+        # NOT the removed loopback/Host gate. That one tried to tell a same-host
+        # reverse proxy from a local browser, which is impossible since the two
+        # send identical bytes. This asks which origin is asking, which the
+        # browser answers honestly and script cannot forge.
         if _is_same_origin_request(request) and _host_is_safe_from_rebinding(request, app):
             content, nonce = _inject_bootstrap(content, app)
         else:
             nonce = None
         headers = {
             "Cache-Control": "no-cache, no-store, must-revalidate",
-            # The body now varies by Origin, so a shared cache must not serve one
+            # The body varies by Origin, so a shared cache must not serve one
             # origin's response to another.
             "Vary": "Origin",
         }
@@ -2686,11 +2659,10 @@ def setup_frontend(
     async def serve_root(request: Request):
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
-        # Threadpool, not the loop. While setup is pending this reads index.html
-        # off disk AND mints a link token, which opens SQLite under BEGIN
-        # IMMEDIATE; if another auth writer holds the lock that waits out the
-        # busy timeout, and on the event loop it would stall every unrelated
-        # request with it. Same reason /link-exchange is a sync endpoint.
+        # Threadpool, not the loop: while setup is pending this mints a link
+        # token, which opens SQLite under BEGIN IMMEDIATE and can wait out the
+        # busy timeout behind another auth writer, stalling every unrelated
+        # request. Same reason /link-exchange is a sync endpoint.
         return await run_in_threadpool(_build_index_response, request)
 
     @app.get("/{full_path:path}")
@@ -2718,8 +2690,7 @@ def setup_frontend(
         if is_engine_probe_path(full_path):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
-        # Serve index.html as bytes - avoids Content-Length mismatch. Off the
-        # loop for the same reason as serve_root above.
+        # Bytes avoid a Content-Length mismatch; off the loop as in serve_root.
         return await run_in_threadpool(_build_index_response, request)
 
     # The catch-all above is what 404s a GET probe. The lifespan reads this to decide
