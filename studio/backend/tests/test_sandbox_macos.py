@@ -40,7 +40,7 @@ _PRIVATE_TMP = "/tmp/us-seatbelt-xyz789"
 _READ_PREFIX = '(allow file-read* file-test-existence (literal "/") '
 _OPTIONAL_PREFIX = '(allow file-read* file-test-existence (literal "/etc/gitconfig")'
 # The devices rule and the /dev/fd regex rules share the file-write* operation.
-_WRITE_PREFIX = '(allow file-write* (literal '
+_WRITE_PREFIX = "(allow file-write* (literal "
 
 
 @pytest.fixture
@@ -50,9 +50,7 @@ def profile(monkeypatch) -> str:
     named = {_WORKDIR, _PRIVATE_TMP}
     monkeypatch.setattr(os.path, "exists", lambda path: path in named or real_exists(path))
     monkeypatch.setattr(os.path, "isdir", lambda path: path in named or real_isdir(path))
-    return backend.build_profile(
-        workdir = _WORKDIR, private_tmp = _PRIVATE_TMP, runtime_paths = ()
-    )
+    return backend.build_profile(workdir = _WORKDIR, private_tmp = _PRIVATE_TMP, runtime_paths = ())
 
 
 @pytest.fixture
@@ -192,9 +190,7 @@ def test_optional_read_literals_never_follow_a_symlink(tmp_path):
     target.write_text("")
     link = tmp_path / "link"
     link.symlink_to(target)
-    assert backend._literal_filters((str(link),), resolve = False) == [
-        f'(literal "{link}")'
-    ]
+    assert backend._literal_filters((str(link),), resolve = False) == [f'(literal "{link}")']
     assert f'(literal "{target}")' in backend._literal_filters((str(link),))
 
 
@@ -221,12 +217,7 @@ def test_ancestor_metadata_rules_are_emitted(profile):
 
 def test_workdir_and_private_tmp_are_the_only_writable_subpaths(profile):
     writable = _subpaths(_rule(profile, _WRITE_PREFIX))
-    assert writable == {
-        _WORKDIR,
-        f"/private{_WORKDIR}",
-        _PRIVATE_TMP,
-        f"/private{_PRIVATE_TMP}",
-    }
+    assert writable == {_WORKDIR, f"/private{_WORKDIR}", _PRIVATE_TMP, f"/private{_PRIVATE_TMP}"}
     for forbidden in ("/", "/usr", "/tmp", "/private/tmp", str(Path.home())):
         assert forbidden not in writable
     # Devices get file-write-data by literal, never a writable subpath.
@@ -298,8 +289,12 @@ def test_runtime_read_paths_cover_the_interpreter_and_the_site_shim():
         assert any(backend._within(prefix, root) for root in paths), prefix
     # lib-dynload hangs off the exec pair; a uv interpreter spells it through an
     # alias symlink that base_prefix alone never names.
-    dynload = os.path.join(sys.base_exec_prefix, "lib", f"python{sys.version_info.major}."
-                           f"{sys.version_info.minor}", "lib-dynload")
+    dynload = os.path.join(
+        sys.base_exec_prefix,
+        "lib",
+        f"python{sys.version_info.major}." f"{sys.version_info.minor}",
+        "lib-dynload",
+    )
     if os.path.isdir(dynload):
         assert any(backend._within(dynload, root) for root in paths), dynload
 
@@ -350,7 +345,7 @@ def test_prepare_refuses_a_workdir_that_does_not_exist(tmp_path, launchable):
 
 
 def test_prepare_refuses_the_filesystem_root_as_a_workdir(launchable):
-    """"/" as the workdir would make the writable set the whole host."""
+    """ "/" as the workdir would make the writable set the whole host."""
     plan = ToolLaunchPlan(argv = ("/bin/echo",), workdir = "/", env = {})
     with pytest.raises(SandboxUnavailableError, match = "filesystem root"):
         backend.prepare(plan)

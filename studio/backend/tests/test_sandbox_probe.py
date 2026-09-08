@@ -112,7 +112,13 @@ exec(compile({payload!r}, "<probe-payload>", "exec"), {{"__name__": "__main__"}}
 """
 
 
-def _wrap(plan: ToolLaunchPlan, name: str, *, resolve = True, leak_writes = False):
+def _wrap(
+    plan: ToolLaunchPlan,
+    name: str,
+    *,
+    resolve = True,
+    leak_writes = False,
+):
     """A backend whose launch really does refuse to leave the workdir.
 
     The confinement is a builtins.open guard rather than a kernel namespace,
@@ -298,6 +304,7 @@ def test_a_wedged_backend_times_out_instead_of_hanging(monkeypatch):
 def test_a_backend_that_only_prints_the_token_is_not_believed():
     """Exit 0 plus the token is not enough on its own: the controls have to have
     run. A payload replaced by a bare print must not qualify."""
+
     def liar(plan):
         return PreparedSandboxLaunch(
             argv = (sys.executable, "-I", "-S", "-c", f"print({sandbox_probe.PROBE_TOKEN!r})"),
@@ -445,11 +452,14 @@ def test_this_host_reports_unavailable_with_something_actionable():
     assert capability.backend == "none"
     assert capability.limitations == ("no_os_isolation",)
     assert capability.remediation
-    blocked = subprocess.run(
-        ["unshare", "--user", "--map-root-user", "true"],
-        stdin = subprocess.DEVNULL,
-        stdout = subprocess.DEVNULL,
-        stderr = subprocess.DEVNULL,
-    ).returncode != 0
+    blocked = (
+        subprocess.run(
+            ["unshare", "--user", "--map-root-user", "true"],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+        ).returncode
+        != 0
+    )
     if blocked and os.path.exists("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"):
         assert "apparmor_restrict_unprivileged_userns" in capability.remediation

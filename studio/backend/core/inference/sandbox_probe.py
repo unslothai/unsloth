@@ -151,7 +151,7 @@ def _negative_controls(sentinel: str, escape: str, outside: str, interpreter_wri
             '\nmust_raise("opened the interpreter for writing", '
             'lambda: open(sys.executable, "ab").close())\n'
         )
-    return f'''
+    return f"""
 must_raise("read the host sentinel", lambda: open({sentinel!r}, "rb").close())
 must_raise("followed a workdir symlink to the host sentinel",
            lambda: open({escape!r}, "rb").close())
@@ -163,7 +163,7 @@ try:
         handle.write({_OUTSIDE_WRITE_TOKEN!r})
 except OSError:
     pass
-'''
+"""
 
 
 def _positive_controls(workdir: str) -> str:
@@ -173,7 +173,7 @@ def _positive_controls(workdir: str) -> str:
     a file, fork a worker, shell out to python -- and a sandbox that breaks any of
     them is not usable no matter how well it confines.
     """
-    return f'''
+    return f"""
 private = os.path.join({workdir!r}, "private.txt")
 with open(private, "w", encoding = "utf-8") as handle:
     handle.write("sandbox-write-ok")
@@ -208,15 +208,11 @@ child = subprocess.run(
 )
 if child.returncode != 0 or child.stdout.strip() != b"42":
     raise AssertionError("a python child could not run: " + repr(child.stderr[-200:]))
-'''
+"""
 
 
 def _payload(
-    workdir: str,
-    sentinel: str,
-    escape: str,
-    outside: str,
-    interpreter_writable: bool,
+    workdir: str, sentinel: str, escape: str, outside: str, interpreter_writable: bool
 ) -> str:
     """The full program that runs INSIDE the sandbox.
 
@@ -288,12 +284,7 @@ def _probe_base() -> str:
     return tempfile.mkdtemp(prefix = "unsloth-probe-")
 
 
-def _host_positive_controls(
-    workdir: str,
-    sentinel: str,
-    outside: str,
-    env: dict[str, str],
-) -> str:
+def _host_positive_controls(workdir: str, sentinel: str, outside: str, env: dict[str, str]) -> str:
     """Prove on the host that every control would otherwise come out the other way.
 
     Returns "" when the host is sane, or the reason the probe cannot conclude
@@ -349,7 +340,6 @@ def probe(backend: Any, *, force: bool = False) -> tuple[bool, str]:
     backend_name = str(getattr(backend, "BACKEND_NAME", "unknown"))
     try:
         from .os_sandbox import ToolLaunchPlan, _runtime_identity
-
         key = (backend_name, _runtime_identity())
     except Exception as exc:  # noqa: BLE001 - a probe never breaks its caller
         return False, f"the sandbox probe could not identify this runtime: {exc}"
@@ -448,7 +438,11 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
                 f"the {backend_name} live probe wrote through to the host: a file created "
                 "outside the sandbox workdir arrived on the real filesystem"
             )
-        caveat = "" if interpreter_writable else " (the interpreter is not host-writable, so that leg was skipped)"
+        caveat = (
+            ""
+            if interpreter_writable
+            else " (the interpreter is not host-writable, so that leg was skipped)"
+        )
         return True, f"the {backend_name} live isolation probe passed{caveat}"
     except subprocess.TimeoutExpired:
         return False, f"the {backend_name} live probe timed out after {PROBE_TIMEOUT_SECONDS:.0f}s"

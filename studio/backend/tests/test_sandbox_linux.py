@@ -35,7 +35,11 @@ from core.inference import sandbox_linux, sandbox_seccomp  # noqa: E402
 from core.inference.os_sandbox import SandboxUnavailableError, ToolLaunchPlan  # noqa: E402
 
 
-def _plan(workdir, argv = ("/bin/true",), **kwargs):
+def _plan(
+    workdir,
+    argv = ("/bin/true",),
+    **kwargs,
+):
     return ToolLaunchPlan(argv = argv, workdir = str(workdir), env = {"PATH": "/usr/bin"}, **kwargs)
 
 
@@ -103,9 +107,7 @@ def test_capabilities_are_dropped_and_the_filter_arrives_as_an_inherited_descrip
 
 
 def test_identity_is_synthesised_rather_than_bound_from_the_host(prepared):
-    binds = {
-        destination: source for source, destination in _pairs(prepared.argv, "--ro-bind")
-    }
+    binds = {destination: source for source, destination in _pairs(prepared.argv, "--ro-bind")}
     passwd, group = binds["/etc/passwd"], binds["/etc/group"]
     assert passwd != "/etc/passwd" and group != "/etc/group"
     assert prepared.cleanup_paths == [os.path.dirname(passwd)]
@@ -227,9 +229,7 @@ def test_the_outer_setsid_preexec_is_preserved(tmp_path):
 
 
 def test_the_plan_policy_fields_survive_preparation(tmp_path):
-    launch = sandbox_linux.prepare(
-        _plan(tmp_path, timeout_seconds = 42, terminate_descendants = False)
-    )
+    launch = sandbox_linux.prepare(_plan(tmp_path, timeout_seconds = 42, terminate_descendants = False))
     try:
         assert launch.timeout_seconds == 42
         assert launch.terminate_descendants is False
@@ -321,9 +321,7 @@ def test_the_workdir_itself_being_a_mount_point_is_allowed(tmp_path, monkeypatch
     assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
 
 
-def test_a_workdir_too_large_to_check_is_refused_rather_than_scanned_forever(
-    tmp_path, monkeypatch
-):
+def test_a_workdir_too_large_to_check_is_refused_rather_than_scanned_forever(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox_linux, "_WORKDIR_SCAN_ENTRIES", 2)
     for name in ("a", "b", "c", "d"):
         (tmp_path / name).write_text("")
@@ -373,8 +371,7 @@ def test_every_interpreter_path_this_python_imports_from_is_bound(prepared, tmp_
     needed |= {
         entry
         for entry in sys.path
-        if entry
-        and any(sandbox_linux._within(entry, os.path.join(p, "lib")) for p in prefixes)
+        if entry and any(sandbox_linux._within(entry, os.path.join(p, "lib")) for p in prefixes)
     }
     for path in sorted(needed):
         if not os.path.exists(path):
@@ -459,7 +456,13 @@ if _AUDIT_ARCH == 0:
     pytest.skip(f"no seccomp ABI for {platform.machine()}", allow_module_level = True)
 
 
-def _evaluate(instructions, *, nr, arch = _AUDIT_ARCH, args = (0,) * 6):
+def _evaluate(
+    instructions,
+    *,
+    nr,
+    arch = _AUDIT_ARCH,
+    args = (0,) * 6,
+):
     """Interpret the classic BPF program the way the kernel would."""
     data = struct.pack("=IIQ6Q", nr, arch, 0, *args)
     accumulator, counter = 0, 0
@@ -518,9 +521,7 @@ def test_a_foreign_abi_is_killed_rather_than_evaluated(program):
     assert _evaluate(program, nr = 1, arch = 0xDEADBEEF) == _KILL
 
 
-@pytest.mark.skipif(
-    platform.machine().lower() not in ("x86_64", "amd64"), reason = "x32 is x86 only"
-)
+@pytest.mark.skipif(platform.machine().lower() not in ("x86_64", "amd64"), reason = "x32 is x86 only")
 def test_the_x32_syscall_table_is_killed(program):
     assert _evaluate(program, nr = 1 | 0x40000000) == _KILL
 

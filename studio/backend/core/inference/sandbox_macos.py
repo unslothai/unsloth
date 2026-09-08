@@ -120,8 +120,15 @@ _TLS_TRUST_PATHS = (
 # tool found through PATH would fail process-exec without these. Read-only, and
 # only the trees that exist on the host.
 _OPTIONAL_READ_ROOTS = (
-    "/usr/local/bin", "/usr/local/lib", "/usr/local/sbin", "/usr/local/opt", "/usr/local/Cellar",
-    "/opt/homebrew/bin", "/opt/homebrew/lib", "/opt/homebrew/sbin", "/opt/homebrew/opt",
+    "/usr/local/bin",
+    "/usr/local/lib",
+    "/usr/local/sbin",
+    "/usr/local/opt",
+    "/usr/local/Cellar",
+    "/opt/homebrew/bin",
+    "/opt/homebrew/lib",
+    "/opt/homebrew/sbin",
+    "/opt/homebrew/opt",
     "/opt/homebrew/Cellar",
 )
 # HAZARD 3, optional literals. Files git and other tools probe on every run and
@@ -647,9 +654,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         # A runtime root inside the session workdir is dropped rather than
         # listed twice: the workdir rules already make it readable, and this
         # keeps the read set to paths the sandbox reaches for outside it.
-        runtime_paths = tuple(
-            path for path in runtime_read_paths() if not _within(path, workdir)
-        )
+        runtime_paths = tuple(path for path in runtime_read_paths() if not _within(path, workdir))
         profile = build_profile(
             workdir = workdir,
             private_tmp = private_tmp,

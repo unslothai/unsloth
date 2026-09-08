@@ -146,12 +146,15 @@ class TestAutoFallsBackOnAHostThatCannotIsolate:
         if sys.platform == "linux" and os.path.exists(
             "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
         ):
-            blocked = subprocess.run(
-                ["unshare", "--user", "--map-root-user", "true"],
-                stdin = subprocess.DEVNULL,
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
-            ).returncode != 0
+            blocked = (
+                subprocess.run(
+                    ["unshare", "--user", "--map-root-user", "true"],
+                    stdin = subprocess.DEVNULL,
+                    stdout = subprocess.DEVNULL,
+                    stderr = subprocess.DEVNULL,
+                ).returncode
+                != 0
+            )
             if blocked:
                 # The condition itself, not just "it did not work": an operator
                 # can act on the profile name and cannot act on a refusal.
@@ -262,9 +265,7 @@ def test_sandbox_preexec_runs_no_imports_after_the_fork():
     for function in (tools._sandbox_preexec, tools._bypass_preexec):
         tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
         offenders = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.Import, ast.ImportFrom))
+            node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
         ]
         assert not offenders, f"{function.__name__} imports after the fork"
 
@@ -321,7 +322,9 @@ def _echoing_prepare(recorder, **overrides):
             backend = "test-double",
             **overrides,
         )
-        prepared.cleanup_callbacks.append(lambda: setattr(recorder, "cleaned", recorder.cleaned + 1))
+        prepared.cleanup_callbacks.append(
+            lambda: setattr(recorder, "cleaned", recorder.cleaned + 1)
+        )
         return prepared
 
     return prepare
@@ -357,6 +360,7 @@ def test_the_launch_is_released_when_the_spawn_raises(monkeypatch):
 def test_the_launch_is_released_when_required_refuses(monkeypatch):
     """Nothing is prepared in that case, so the point is that the finally block
     does not itself raise on a launch that never existed."""
+
     def refuse(plan):
         raise SandboxUnavailableError("OS_ISOLATION_UNAVAILABLE: nope", remediation = "install it")
 
@@ -407,6 +411,7 @@ def test_pass_fds_and_owned_files_reach_the_spawn(monkeypatch):
 def test_auto_still_runs_when_the_planner_itself_breaks(monkeypatch):
     """A backend module that is not importable on this build, a probe raising
     something nobody anticipated: auto's promise is that the tool still runs."""
+
     def explode(plan):
         raise ImportError("no module named sandbox_linux")
 
@@ -421,6 +426,7 @@ def test_auto_still_runs_when_the_planner_itself_breaks(monkeypatch):
 def test_full_access_keeps_its_own_label_even_when_the_planner_breaks(monkeypatch):
     """A record saying "software safeguards" about a launch that skipped the
     analysis and the rlimits would be a badge claiming more than the run got."""
+
     def explode(plan):
         raise RuntimeError("planner down")
 
@@ -436,6 +442,7 @@ def test_full_access_keeps_its_own_label_even_when_the_planner_breaks(monkeypatc
 def test_a_backend_that_drops_the_pre_exec_has_it_put_back(monkeypatch):
     """Silent until the first timeout, and then fatal: without setsid the child
     shares Unsloth's process group and killpg takes the server with it."""
+
     def forgetful(plan):
         return PreparedSandboxLaunch(
             argv = plan.argv,
@@ -501,9 +508,7 @@ def test_a_platform_with_no_backend_still_refuses_in_required(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     with pytest.raises(SandboxUnavailableError):
         os_sandbox.prepare_tool_launch(
-            ToolLaunchPlan(
-                argv = ("prog",), workdir = "/work", env = {}, requested_mode = "required"
-            )
+            ToolLaunchPlan(argv = ("prog",), workdir = "/work", env = {}, requested_mode = "required")
         )
 
 

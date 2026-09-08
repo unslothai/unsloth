@@ -398,13 +398,20 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             # bwrap 0.6.1 (Ubuntu 22.04) predates this; there the seccomp filter
             # refuses nested user namespaces instead.
             *(("--disable-userns",) if disable_userns else ()),
-            "--cap-drop", "ALL",
-            "--seccomp", str(seccomp.fileno()),
-            "--proc", "/proc",
-            "--dev", "/dev",
-            "--dir", "/dev/shm",
-            "--dir", "/tmp",
-            "--dir", "/etc",
+            "--cap-drop",
+            "ALL",
+            "--seccomp",
+            str(seccomp.fileno()),
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--dir",
+            "/dev/shm",
+            "--dir",
+            "/tmp",
+            "--dir",
+            "/etc",
         ]
         for root in system_roots:
             argv += ["--ro-bind-try", root, root]

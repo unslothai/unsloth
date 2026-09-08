@@ -75,7 +75,12 @@ class SandboxUnavailableError(RuntimeError):
     rather than refusing.
     """
 
-    def __init__(self, message: str = "", *, remediation: str = "") -> None:
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        remediation: str = "",
+    ) -> None:
         super().__init__(message)
         self.remediation = remediation
 
@@ -259,9 +264,7 @@ def descendant_sweep_supported() -> bool:
 # ── host diagnosis ───────────────────────────────────────────────────
 
 _LINUX_REQUIRED_BINARIES = ("bwrap",)
-_FALLBACK_NOTE = (
-    "Python and Terminal still run, with software safeguards only and no OS isolation."
-)
+_FALLBACK_NOTE = "Python and Terminal still run, with software safeguards only and no OS isolation."
 
 
 def _linux_userns_blocked_by_apparmor() -> bool:
@@ -355,11 +358,9 @@ def capability_snapshot(*, force: bool = False) -> SandboxCapability:
     identity = _runtime_identity()
     if sys.platform == "linux":
         from . import sandbox_linux
-
         backend = sandbox_linux
     elif sys.platform == "darwin":
         from . import sandbox_macos
-
         backend = sandbox_macos
     else:
         # Windows and everything else keep main's behaviour exactly.
@@ -419,9 +420,7 @@ def _record(
         probe_generation = capability.probe_generation,
         os_isolation = os_isolation,
         retained_safeguards = tuple(
-            item
-            for item in safeguards
-            if item != "timeout" or plan.timeout_seconds is not None
+            item for item in safeguards if item != "timeout" or plan.timeout_seconds is not None
         ),
         limitations = limitations,
     )
