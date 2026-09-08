@@ -509,6 +509,14 @@ def _llama_only_status(
         except Exception as exc:  # pragma: no cover - network defensive
             logger.debug("llama update: size lookup failed", error = str(exc))
 
+    # An automatic install whose detection now resolves elsewhere; nothing else surfaces
+    # it. Skipped while a job runs, and when an update is offered: that update re-detects.
+    to_backend = (
+        None
+        if job_running or update_available
+        else _pending_backend_migration(binary, marker, force_refresh = force_refresh)
+    )
+
     with _job_lock:
         job = dict(_job)
 
@@ -523,6 +531,9 @@ def _llama_only_status(
         "age_days": freshness.get("age_days"),
         "source_build": False,
         "update_size_bytes": update_size_bytes,
+        "backend_migration_available": to_backend is not None,
+        "from_backend": marker_backend(marker) if to_backend else None,
+        "to_backend": to_backend,
         "job": job,
     }
 
@@ -536,8 +547,14 @@ def _resolve_backends_for_host(
     *,
     force_refresh: bool = False,
     published_repo: Optional[str] = None,
+    rocm_gfx: Optional[str] = None,
 ) -> Optional[dict]:
-    """Ask the installer which backends it could install here. None on any failure."""
+    """Ask the installer which backends it could install here. None on any failure.
+
+    ``rocm_gfx`` replays the marker's arch, as _run_llama_phase does for the install: this
+    subprocess re-probes from scratch, so a host whose arch only Windows setup could infer
+    resolves "auto" to CPU. The REMEMBERED spelling, so a live probe still wins.
+    """
     args: list[str] = []
     if install_dir is not None:
         args.extend(("--install-dir", str(install_dir)))
@@ -550,6 +567,7 @@ def _resolve_backends_for_host(
         log_message = "llama backend: resolve-backends failed",
         mode = ("--resolve-backends", "latest"),
         extra_args = tuple(args),
+        extra_env = {"UNSLOTH_ROCM_GFX_REMEMBERED": rocm_gfx} if rocm_gfx else None,
     )
 
 
@@ -619,6 +637,65 @@ def _selection_applied(
     return resolved is None or installed_backend is None or resolved == installed_backend
 
 
+def _remembered_rocm_gfx(marker: Optional[dict]) -> Optional[str]:
+    """The arch to replay when re-resolving, falling back to the installed asset's name.
+
+    The marker carries rocm_gfx only when the install resolved one, and a host whose probe
+    never named an arch is the one that needs the replay. The bundle it runs names the
+    family, which is the record setup.sh reads too.
+    """
+    recorded = (marker or {}).get("rocm_gfx")
+    if recorded:
+        return recorded
+    args = _flow.rocm_install_args((marker or {}).get("asset"))
+    return args[1] if len(args) == 2 and args[0] == "--rocm-gfx" else None
+
+
+def _pending_backend_migration(
+    binary: Optional[str],
+    marker: Optional[dict],
+    *,
+    force_refresh: bool = False,
+) -> Optional[str]:
+    """The backend a re-applied AUTOMATIC selection would install, when it differs.
+
+    The one drift an install can develop untouched: "auto" recorded what detection chose
+    then, and a default can move later (AMD integrated GPUs now route to Vulkan). NOT
+    computed for a concrete recorded choice, which is a decision by hand this must never
+    offer to undo -- which also makes the offer self-limiting, since picking a backend in
+    Settings ends the drift. None on anything unresolved. Shares _backends_memo with
+    get_backend_status, so this costs a subprocess a day.
+    """
+    if marker is None or _switch_support(binary, marker) is not None:
+        return None
+    _override = _env_backend_override()
+    if _override is not None and _override != "auto":
+        # The environment owns the backend, so an offer could not be applied. "auto" is
+        # the exception: it asks for the detection the migration re-applies.
+        return None
+    if marker_backend_request(marker) != "auto":
+        return None
+    repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
+    resolved = _resolve_backends_for_host(
+        _install_dir_for(binary),
+        force_refresh = force_refresh,
+        published_repo = repo,
+        rocm_gfx = _remembered_rocm_gfx(marker),
+    )
+    if not resolved:
+        return None
+    options = _backend_options(resolved)
+    if _selection_applied("auto", marker_backend(marker), options):
+        return None
+    auto = next((option for option in options if option["backend"] == "auto"), None)
+    target = (auto or {}).get("resolved_backend")
+    if target == "cpu" and marker_backend(marker) not in (None, "cpu"):
+        # An empty probe and a host that really lost its GPU look identical from here, and
+        # moving a working GPU install onto CPU is the costly side of that. Settings can.
+        return None
+    return target
+
+
 def get_backend_status(*, force_refresh: bool = False) -> dict:
     """Return the installed backend and host-compatible alternatives."""
     binary = _find_binary()
@@ -646,7 +723,13 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
         return status
     repo = (marker or {}).get("published_repo") or DEFAULT_PUBLISHED_REPO
     resolved = _resolve_backends_for_host(
-        _install_dir_for(binary), force_refresh = force_refresh, published_repo = repo
+        _install_dir_for(binary),
+        force_refresh = force_refresh,
+        published_repo = repo,
+        # The same recovery the update-status path uses, or the picker describes a
+        # different host: no arch here reads an AMD box with no probes as CPU-only,
+        # so Settings offers an Automatic that installs something else.
+        rocm_gfx = _remembered_rocm_gfx(marker),
     )
     if not resolved:
         # Keep showing the installed backend without guessing alternatives.
@@ -676,6 +759,7 @@ def _run_llama_phase(
     llama_backend: Optional[str] = None,
     rocm_gfx: Optional[str] = None,
     backend_request: Optional[str] = None,
+    migration_target: Optional[str] = None,
 ) -> dict:
     """The llama phase of a chained update: put the backend into a maintenance
     state, run the installer for the latest prebuilt, then refresh caches so the
@@ -795,14 +879,23 @@ def _run_llama_phase(
                 )
 
         kept_existing = backend_request is None and new_tag is not None and new_tag == prior_tag
+        # A migration asks for "auto", so it can land back where it started (the ROCm
+        # fallback behind the preference), which would read as applied and be re-offered.
+        migration_kept = bool(migration_target) and new_backend != migration_target
         logger.info(
             "llama update: success",
             to_tag = new_tag,
             backend = new_backend,
             kept_existing = kept_existing,
+            migration_applied = None if not migration_target else not migration_kept,
         )
         reload_hint = " Reload your model to use it." if model_was_active else ""
-        if backend_request is not None:
+        if migration_kept:
+            message = (
+                f"llama.cpp could not be moved to {migration_target} right now, so the "
+                f"existing {new_backend or 'installed'} build was kept. Try again later."
+            )
+        elif backend_request is not None:
             message = f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
         elif kept_existing:
             # The phase only runs when a newer release was offered, so naming the kept
@@ -818,6 +911,7 @@ def _run_llama_phase(
             "backend": new_backend,
             "reload_required": model_was_active,
             "kept_existing": kept_existing,
+            "migration_applied": None if not migration_target else not migration_kept,
             "message": message,
         }
     except _flow.InstallerExit as exc:
@@ -961,6 +1055,8 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         # start an install when the latest is not actually newer (force a fresh
         # check so a stale 24h cache can't wrongly block a real update either).
         # A switch replaces the backend at the same release.
+        migration = False
+        migration_target = None
         status = (
             {}
             if backend_request is not None
@@ -970,21 +1066,33 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             )
         )
         if backend_request is None and not status.get("update_available"):
-            return {
-                "skip_reason": "up_to_date",
-                "refusal": {
-                    "started": False,
-                    "reason": "up_to_date",
-                    "message": "The installed llama.cpp build is already at the latest prebuilt.",
-                },
-            }
+            # Nothing newer to install, but "auto" can resolve elsewhere now. Re-asking for
+            # "auto" keeps it automatic, so rocm_gfx and the crash recovery survive.
+            migration_target = _pending_backend_migration(binary, marker)
+            if migration_target is None:
+                return {
+                    "skip_reason": "up_to_date",
+                    "refusal": {
+                        "started": False,
+                        "reason": "up_to_date",
+                        "message": (
+                            "The installed llama.cpp build is already at the latest prebuilt."
+                        ),
+                    },
+                }
+            backend_request = "auto"
+            migration = True
         install_dir = _install_dir_for(binary)
         repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
         from_tag = marker.get("tag") or marker.get("release_tag")
         asset = marker.get("asset")
         # Updates let the installer preserve the marker's recorded choice.
         llama_backend = marker.get("llama_backend")
-        rocm_gfx = marker.get("rocm_gfx")
+        # Recovered, not read: the status path offers the migration through
+        # _remembered_rocm_gfx, so an apply reading the bare field would re-resolve
+        # without the arch on exactly the host the recovery exists for, and refuse
+        # the offer it just made as already_selected.
+        rocm_gfx = _remembered_rocm_gfx(marker)
         # Install exactly the release the banner offered: the installer's own
         # "latest" is commit-date ordered and can lag the published_at pick
         # above, reinstalling the current build in a loop (the #6219 class).
@@ -1051,6 +1159,8 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         # No pin: source-build detection resolves via --resolve-prebuilt latest,
         # the same resolver the unpinned apply uses, so the two already agree.
         pin_release_tag = None
+        migration = False
+        migration_target = None
 
     if install_dir is None:
         return {
@@ -1072,6 +1182,11 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             "llama_backend": llama_backend,
             "rocm_gfx": rocm_gfx,
             "backend_request": backend_request,
+            # So the caller keeps presenting this as the update it is, not the switch its
+            # backend_request would make it look like.
+            "migration": migration,
+            # The backend the offer named, so the phase can say whether it landed.
+            "migration_target": migration_target,
         }
     }
 
@@ -1120,11 +1235,40 @@ def start_backend_switch(backend: str) -> dict:
     return _start_llama_job(backend_request = normalized)
 
 
+def _update_can_move_the_backend(llama_will_run: bool) -> bool:
+    """Whether an update that names no backend could still land on a different one.
+
+    Detection re-runs, so a default can move under it; only an automatic install is
+    exposed. Read from the marker rather than resolved, since resolving costs a subprocess
+    at planning time, and over-answering is cheap: the repair phase does nothing when the
+    backend did not move.
+    """
+    if not llama_will_run:
+        return False
+    return marker_backend_request(read_install_marker(_find_binary())) == "auto"
+
+
+def _repair_pairing_plan_or_empty(llama_will_run: bool, llama_skip_reason: Optional[str]) -> dict:
+    """The slim re-pair plan, or {} when there is nothing to re-pair against."""
+    try:
+        from utils import whisper_cpp_update
+        if not llama_will_run:
+            if llama_skip_reason != "already_selected":
+                return {}
+            if not whisper_cpp_update.slim_pairing_is_stale():
+                return {}
+        return whisper_cpp_update.repair_pairing_plan()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("llama switch: whisper repair probe failed", error = str(exc))
+        return {}
+
+
 def _whisper_phase_plan(
     backend_request: Optional[str],
     *,
     llama_will_run: bool,
     llama_skip_reason: Optional[str] = None,
+    migration: bool = False,
 ) -> dict:
     """Whisper's half of the chained job: catch up on releases for an update, or
     re-pair with the new backend for a switch.
@@ -1141,21 +1285,22 @@ def _whisper_phase_plan(
     away and back. So allow a repair-only job for that one refusal, and only while the
     pairing is genuinely stale, which keeps an ordinary already-selected request a
     refusal rather than a no-op job reporting success."""
-    if backend_request is None:
-        return (
+    # A migration is switch-shaped but update-behaved, so whisper needs the chained plan:
+    # the repair-only branch has no phase for a self-contained install and drops updates.
+    if backend_request is None or migration:
+        chained = (
             _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}
         )
-    try:
-        from utils import whisper_cpp_update
-        if not llama_will_run:
-            if llama_skip_reason != "already_selected":
-                return {}
-            if not whisper_cpp_update.slim_pairing_is_stale():
-                return {}
-        return whisper_cpp_update.repair_pairing_plan()
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("llama switch: whisper repair probe failed", error = str(exc))
-        return {}
+        if chained.get("phase") is not None:
+            return chained
+        if backend_request is None:
+            if not _update_can_move_the_backend(llama_will_run):
+                return chained
+            # Whisper has nothing to catch up on, so the chained answer stands unless a
+            # re-pair is owed.
+            repair = _repair_pairing_plan_or_empty(llama_will_run, llama_skip_reason)
+            return repair if repair.get("phase") is not None else chained
+    return _repair_pairing_plan_or_empty(llama_will_run, llama_skip_reason)
 
 
 def _claim_operation(backend_request: Optional[str]) -> bool:
@@ -1226,17 +1371,28 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
             }
 
     handed_to_worker = False
+    migration = False
     try:
         # The operation reservation starts before any marker read or resolver
         # call. A second update/switch cannot change the install between this
         # plan and the worker that applies it.
         llama_plan = _plan_llama_phase(backend_request)
         llama_spec = llama_plan.get("spec")
+        if llama_spec is not None and llama_spec.get("migration"):
+            # The planner turned an up-to-date update into a re-application of "auto";
+            # adopt its request, and keep the claimed operation the offered "update".
+            migration = True
+            backend_request = llama_spec["backend_request"]
+            with _job_lock:
+                _job.update(requested_backend = backend_request)
         if backend_request is not None and llama_spec is not None:
             resolved = _resolve_backends_for_host(
                 llama_spec["install_dir"],
                 force_refresh = True,
                 published_repo = llama_spec["repo"],
+                # Same replay the status path uses: without it this re-probe resolves
+                # "auto" to CPU and the offered migration refuses as already_selected.
+                rocm_gfx = llama_spec.get("rocm_gfx"),
             )
             if not resolved:
                 return _finish_planning_refusal(
@@ -1272,6 +1428,7 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
             backend_request,
             llama_will_run = llama_spec is not None,
             llama_skip_reason = llama_plan.get("skip_reason"),
+            migration = migration,
         )
         whisper_spec = (whisper_plan or {}).get("phase")
         if llama_spec is None and whisper_spec is None:
@@ -1302,7 +1459,7 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                 "weight": _LLAMA_PHASE_WEIGHT,
                 "failure_message": (
                     f"Could not switch llama.cpp to {backend_request}."
-                    if backend_request is not None
+                    if backend_request is not None and not migration
                     else "llama.cpp update failed."
                 ),
                 "skip_reason": llama_plan.get("skip_reason"),
@@ -1318,6 +1475,7 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                             llama_backend = llama_spec.get("llama_backend"),
                             rocm_gfx = llama_spec.get("rocm_gfx"),
                             backend_request = llama_spec.get("backend_request"),
+                            migration_target = llama_spec.get("migration_target"),
                         )
                     )
                     if llama_spec

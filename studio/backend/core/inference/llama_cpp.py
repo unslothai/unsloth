@@ -50,6 +50,7 @@ from typing import (
 
 import httpx
 
+from core.inference.chat_template_helpers import build_dac_tts_prompt
 from core.inference.context_window import (
     _COMPACTION_HEADROOM_RATIO,
     clamp_compaction_headroom_ratio,
@@ -77,6 +78,7 @@ from core.inference.llama_server_args import (
     _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
     _MOE_OFFLOAD_FLAGS,
+    _PARALLEL_FLAGS,
     _SPLIT_MODE_FLAGS,
     _TENSOR_SPLIT_FLAGS,
     _effective_tensor_parallel,
@@ -442,6 +444,7 @@ from state.tool_approvals import (
     wait_tool_decision,
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
+from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
 
 # The leaf module, not utils.models: importing anything from that package runs its __init__,
 # which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
@@ -517,6 +520,7 @@ class GgufLoadIntent:
     hf_repo: Optional[str] = None
     hf_variant: Optional[str] = None
     hf_token: Optional[str] = None
+    audio_codec_path: Optional[str] = None
     is_vision: bool = False
     # Load a vision GGUF as text-only: no projector on the GPU and none on the CPU
     # either. The projector's VRAM is left for the model, and image input is off
@@ -7058,7 +7062,8 @@ class LlamaCppBackend:
     @property
     def reasoning_effort_levels(self) -> list:
         """Discrete reasoning_effort levels the template offers (e.g. GLM-5.2's
-        ['high', 'max']). Empty unless reasoning_style == 'enable_thinking_effort'."""
+        ['high', 'max']). Empty unless the style is 'enable_thinking_effort' or
+        'reasoning_effort' over a ladder wider than low/medium/high."""
         return self._reasoning_effort_levels
 
     @property
@@ -7119,7 +7124,12 @@ class LlamaCppBackend:
                 if not thinking_off and effort_on:
                     kwargs["reasoning_effort"] = reasoning_effort
             elif self._reasoning_style == "reasoning_effort":
-                if reasoning_effort in ("none", "low", "medium", "high"):
+                # The advertised ladder widens this list, never replaces it: a template
+                # exposing only ['high', 'max'] must keep gpt-oss's own levels and 'none'.
+                _levels = getattr(self, "_reasoning_effort_levels", None) or ()
+                if reasoning_effort in ("none", "low", "medium", "high") or (
+                    reasoning_effort in _levels
+                ):
                     kwargs["reasoning_effort"] = reasoning_effort
                 elif reasoning_effort == "minimal":
                     kwargs["reasoning_effort"] = "low"
@@ -7818,8 +7828,10 @@ class LlamaCppBackend:
     # Nanoseconds and size, not int(st_mtime): an update landing in the same second as
     # the probe kept the key identical and got the old build's capabilities.
     _CAPABILITY_PROBE_RETRY_SECONDS = 30.0
+    _CAPABILITY_PROBE_RETRY_MAX_SECONDS = 600.0
     _capability_cache: dict[tuple[str, int, int], dict[str, object]] = {}
     _capability_retry_after: dict[tuple[str, int, int], float] = {}
+    _capability_retry_backoff: dict[tuple[str, int, int], float] = {}
     _capability_cache_lock = threading.Lock()
 
     # The value form of the flash-attention flag. Newer llama.cpp declares it
@@ -7981,6 +7993,7 @@ class LlamaCppBackend:
                 # compile exceeds this probe's timeout; no device is needed to
                 # enumerate the command-line flags.
                 probe_env["GGML_METAL_DEVICES"] = "0"
+            code_integrity_blocked: Optional[str] = None
             result = subprocess.run(
                 [bin_path, "--help"],
                 capture_output = True,
@@ -7990,9 +8003,22 @@ class LlamaCppBackend:
                 timeout = 10,
                 check = False,
                 env = probe_env,
+                # Else the probe flashes a console window on every status poll.
+                **_windows_hidden_subprocess_kwargs(),
             )
             probe_ok = result.returncode == 0
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
+            if not probe_ok:
+                # The LOADER kills the created process: the NTSTATUS arrives as
+                # a return code, or in the output when a DLL was refused.
+                code_integrity_blocked = code_integrity_block_reason(
+                    result.returncode
+                ) or code_integrity_block_reason(help_text)
+                if code_integrity_blocked is not None:
+                    logger.warning(
+                        "llama-server is blocked by Windows code integrity policy: "
+                        f"{code_integrity_blocked}. Binary: {bin_path}"
+                    )
             # Split into per-flag blocks (each --flag line + its indented
             # continuation), so the "argument has been removed" description
             # sits with its flag.
@@ -8178,7 +8204,16 @@ class LlamaCppBackend:
                     spec_draft_cache_v_flag = _alias
                     break
         except (OSError, subprocess.SubprocessError) as exc:
-            logger.debug(f"llama-server --help probe failed: {exc}")
+            blocked = code_integrity_block_reason(exc)
+            code_integrity_blocked = blocked
+            if blocked is not None:
+                # Warning, not debug: the only other symptom is a silent probe.
+                logger.warning(
+                    f"llama-server is blocked by Windows code integrity policy: {blocked}. "
+                    f"Binary: {bin_path}"
+                )
+            else:
+                logger.debug(f"llama-server --help probe failed: {exc}")
             saw_spec_type = False
             probe_ok = False
             help_text = ""
@@ -8274,11 +8309,22 @@ class LlamaCppBackend:
                 # Bound both failure modes: do not pin a transient failure for
                 # the process lifetime, and do not make every caller repeat a
                 # 10-second timeout while a persistent failure remains (#8317).
-                cls._capability_retry_after[cache_key] = (
-                    time.monotonic() + cls._CAPABILITY_PROBE_RETRY_SECONDS
-                )
+                # Only a CONFIRMED block doubles, being permanent; escalating on
+                # an inconclusive probe would strand a busy machine on stale caps.
+                if code_integrity_blocked is not None:
+                    delay = cls._capability_retry_backoff.get(
+                        cache_key, cls._CAPABILITY_PROBE_RETRY_SECONDS
+                    )
+                    cls._capability_retry_backoff[cache_key] = min(
+                        delay * 2.0, cls._CAPABILITY_PROBE_RETRY_MAX_SECONDS
+                    )
+                else:
+                    delay = cls._CAPABILITY_PROBE_RETRY_SECONDS
+                    cls._capability_retry_backoff.pop(cache_key, None)
+                cls._capability_retry_after[cache_key] = time.monotonic() + delay
             else:
                 cls._capability_retry_after.pop(cache_key, None)
+                cls._capability_retry_backoff.pop(cache_key, None)
             return info
 
     @staticmethod
@@ -16297,6 +16343,12 @@ class LlamaCppBackend:
         """
         lowered = (output or "").lower()
 
+        # First: every branch below advises reinstall, memory or administrator,
+        # none of which lift a refusal to load a file that is present.
+        blocked = code_integrity_block_reason(returncode) or code_integrity_block_reason(output)
+        if blocked is not None:
+            return code_integrity_user_message(binary or "the llama.cpp runtime", blocked)
+
         # The dynamic loader kills llama-server before main(), so nothing below
         # matches and the fallback blames the file or memory instead. The Linux
         # prebuilt links libgomp.so.1, which a stock container does not ship.
@@ -17823,6 +17875,79 @@ class LlamaCppBackend:
         """
         return env.pop("LLAMA_ARG_FLASH_ATTN", None) is not None
 
+    # On the wording, not an architecture name, so the next model needs no list.
+    # glm5next spells it as the GGML_ASSERT of ggml-org/llama.cpp#27754.
+    _KV_UNIFIED_REFUSED_MARKERS = (
+        "a unified kv cache is only supported with a single sequence",
+        "needs one sequence per stream",
+    )
+
+    @staticmethod
+    def _is_kv_unified_refused(output: str) -> bool:
+        low = (output or "").lower()
+        return any(marker in low for marker in LlamaCppBackend._KV_UNIFIED_REFUSED_MARKERS)
+
+    @staticmethod
+    def _with_single_sequence(cmd: list[str]) -> Optional[list[str]]:
+        """Return cmd re-run as one sequence, or None when it already is one.
+
+        Studio adds --kv-unified itself above one slot, so this reverses Studio's
+        choice, not the user's. Every alias goes, from _PARALLEL_FLAGS so it cannot
+        drift from the denylist; llama.cpp is last-wins.
+        """
+        out: list[str] = []
+        saw_kv_unified = False
+        multi_slot = False
+        skip_value = False
+        for i, tok in enumerate(cmd):
+            if skip_value:
+                skip_value = False
+                continue
+            name = _flag_name(tok)
+            if name in ("--kv-unified", "-kvu"):
+                saw_kv_unified = True
+                # The flag is bare, but an inline "=1" or a separate "1" reach us.
+                if (
+                    "=" not in tok
+                    and cmd[i + 1 : i + 2]
+                    # Case-sensitive, like llama.cpp's own bool parse.
+                    and cmd[i + 1] in _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES
+                ):
+                    skip_value = True
+                continue
+            if name in _PARALLEL_FLAGS:
+                if "=" in tok:
+                    value = tok.partition("=")[2]
+                elif tok != name:
+                    # The attached short, -np8, which _flag_name peels to -np.
+                    value = tok[len(name) :]
+                else:
+                    # Valueless --parallel: eating the next token would delete a flag.
+                    value = cmd[i + 1] if i + 1 < len(cmd) else ""
+                    skip_value = _flag_name(value) is None
+                try:
+                    multi_slot = multi_slot or int(value.strip()) > 1
+                except (AttributeError, TypeError, ValueError):
+                    pass
+                out.extend([name, "1"])
+                continue
+            out.append(tok)
+        if not saw_kv_unified and not multi_slot:
+            return None
+        if not any(_flag_name(tok) in _PARALLEL_FLAGS for tok in out):
+            out.extend(["--parallel", "1"])
+        return out
+
+    @staticmethod
+    def _drop_env_single_sequence(env: MutableMapping[str, str]) -> bool:
+        """Drop inherited unified-cache and slot-count env before that retry.
+
+        llama.cpp reads its environment before argv. Dropped, not negated with
+        --no-kv-unified, which needs every build reaching here to know it.
+        """
+        dropped = env.pop("LLAMA_ARG_KV_UNIFIED", None) is not None
+        return env.pop("LLAMA_ARG_N_PARALLEL", None) is not None or dropped
+
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
         """Return cmd without the '--mmproj <path>' pair (text-only retry).
@@ -18610,7 +18735,12 @@ class LlamaCppBackend:
                     except Exception as exc:
                         logger.debug("Fast-path audio probe failed: %s", exc)
                         detected = None
-                    if not self._apply_detected_audio(detected):
+                    applied_audio = (
+                        self._apply_detected_audio(detected)
+                        if intent.audio_codec_path is None
+                        else self._apply_detected_audio(detected, intent.audio_codec_path)
+                    )
+                    if not applied_audio:
                         return False
                 if not self._healthy:
                     return False
@@ -24221,8 +24351,14 @@ class LlamaCppBackend:
                             return True
                         if getattr(self, "_health_wait_cancelled", False):
                             return False
+                        # Read once, like the wait itself: a cleared reference is a
+                        # teardown, not a startup crash, and re-reading the
+                        # attribute per term would race the shutdown thread again.
+                        _crashed_proc = self._process
                         _startup_crashed = (
-                            self._process.poll() is not None and self._process.returncode != 0
+                            _crashed_proc is not None
+                            and _crashed_proc.poll() is not None
+                            and _crashed_proc.returncode != 0
                         )
                         # A split-axis abort (#6415) is fit-independent: skip the
                         # --fit off retry and let the caller latch it. So is a
@@ -24235,6 +24371,11 @@ class LlamaCppBackend:
                             _startup_output
                         ) or self._is_tensor_quant_kv_unsupported(_startup_output)
                         _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
+                        # No fit retry reaches it, and the rung below needs this
+                        # launch's argv. Whole buffer: it arrives with a backtrace.
+                        _capability_crash = _tensor_capability_crash or self._is_kv_unified_refused(
+                            "\n".join(self._stdout_lines)
+                        )
                         if (
                             not _did_rocm_retry
                             and _startup_crashed
@@ -24256,7 +24397,7 @@ class LlamaCppBackend:
                                     "because a bundled ROCm library could not resolve a "
                                     "symbol against the system ROCm; retrying once "
                                     "with the bundled runtime only. Crash log: %s",
-                                    self._process.returncode,
+                                    _crashed_proc.returncode,
                                     self._llama_log_path,
                                 )
                                 env["LD_LIBRARY_PATH"] = _retry_ld
@@ -24265,7 +24406,7 @@ class LlamaCppBackend:
                         if (
                             not _did_fit_retry
                             and _startup_crashed
-                            and not _tensor_capability_crash
+                            and not _capability_crash
                             and not _hip_rocr_mismatch
                         ):
                             # A spill-planned launch that crashed on startup. The
@@ -24286,7 +24427,7 @@ class LlamaCppBackend:
                                     "with a tensor-spill plan; the plan was optimistic, "
                                     "retrying once with --fit on so llama.cpp can place "
                                     "the model itself. Crash log: %s",
-                                    self._process.returncode,
+                                    _crashed_proc.returncode,
                                     self._llama_log_path,
                                 )
                                 run_cmd = _reverted
@@ -24297,7 +24438,7 @@ class LlamaCppBackend:
                             not _did_fit_retry
                             and fully_gpu_offloaded
                             and _startup_crashed
-                            and not _tensor_capability_crash
+                            and not _capability_crash
                             and not _hip_rocr_mismatch
                         ):
                             # We forced --fit off because Unsloth's (conservative) VRAM
@@ -24311,7 +24452,7 @@ class LlamaCppBackend:
                                 "with forced --fit off; the fit estimate was optimistic, "
                                 "retrying once with --fit on so it can offload. "
                                 "Crash log: %s",
-                                self._process.returncode,
+                                _crashed_proc.returncode,
                                 self._llama_log_path,
                             )
                             # Flip Unsloth's own --fit off (added first, before any
@@ -24365,7 +24506,7 @@ class LlamaCppBackend:
                             not _did_fit_retry
                             and _fit_retry_allowed
                             and _startup_crashed
-                            and not _tensor_capability_crash
+                            and not _capability_crash
                             and not _hip_rocr_mismatch
                         ):
                             logger.warning(
@@ -24373,7 +24514,7 @@ class LlamaCppBackend:
                                 "with the default memory-fit step enabled; Unsloth "
                                 "already verified the model fits, retrying once "
                                 "with --fit off. Crash log: %s",
-                                self._process.returncode,
+                                _crashed_proc.returncode,
                                 self._llama_log_path,
                             )
                             run_cmd = [*run_cmd, "--fit", "off"]
@@ -25060,6 +25201,34 @@ class LlamaCppBackend:
                             # the respawn runs, and the record has to match it.
                             self._memory_state = resolve_effective_memory_state(cmd, env)
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
+
+                # Studio adds --kv-unified itself above one slot, so nothing the user
+                # changes reaches it: retry at one slot, context intact. It aborts, so
+                # this MUST stay ahead of the flash-attn rung, which takes any signal
+                # crash; on the message, not the exit, so Windows lands here too.
+                if not healthy and not _load_cancelled():
+                    _kvu_cmd = (
+                        self._with_single_sequence(_last_spawn_cmd)
+                        if self._is_kv_unified_refused("\n".join(self._stdout_lines))
+                        else None
+                    )
+                    if _kvu_cmd is not None:
+                        logger.warning(
+                            "llama-server refused a unified KV cache with more than "
+                            "one sequence; retrying with one slot and --kv-unified "
+                            "dropped. Concurrent requests will queue."
+                        )
+                        self._kill_process()
+                        if self._drop_env_single_sequence(env):
+                            logger.info(
+                                "Dropped inherited LLAMA_ARG_KV_UNIFIED / "
+                                "LLAMA_ARG_N_PARALLEL for the single-sequence retry."
+                            )
+                        cmd = _kvu_cmd
+                        # Read by admission control; left as-is Studio over-admits.
+                        n_parallel = 1  # allow-slot-clamp: llama-server refused more
+                        kv_cache_unified = False
+                        healthy = _spawn_and_wait(_kvu_cmd, label = "-single-seq")
 
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU
                 # builds (frequently inside the vision tower). Disabling FA keeps
@@ -25765,7 +25934,12 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.debug("Audio probe failed: %s", exc)
                 detected = None
-            if not self._apply_detected_audio(detected):
+            applied_audio = (
+                self._apply_detected_audio(detected)
+                if intent.audio_codec_path is None
+                else self._apply_detected_audio(detected, intent.audio_codec_path)
+            )
+            if not applied_audio:
                 return False
 
             if not self._healthy:
@@ -28505,8 +28679,16 @@ class LlamaCppBackend:
             # Cleared before probing so output during the request stays latched for
             # the fallback wait below.
             health_probe_event.clear()
+            # Read once: shutdown clears the reference from another thread (#10353).
+            process = self._process
+            if process is None:
+                logger.info("llama-server was torn down while waiting for it to become healthy")
+                # Terminal like a cancel: the caller must not read the cleared
+                # reference, nor respawn a server shutdown just killed.
+                self._health_wait_cancelled = True
+                return False
             # Process crashed?
-            if self._process.poll() is not None:
+            if process.poll() is not None:
                 # Let the drain thread collect final output.
                 if self._stdout_thread is not None:
                     self._stdout_thread.join(timeout = 2)
@@ -28520,7 +28702,7 @@ class LlamaCppBackend:
                     else ""
                 )
                 logger.error(
-                    f"llama-server exited with code {self._process.returncode}. "
+                    f"llama-server exited with code {process.returncode}. "
                     f"Output (tail): {output[-2000:]}{_log_hint}"
                 )
                 return False
@@ -33732,7 +33914,11 @@ class LlamaCppBackend:
             logger.debug(f"Audio type detection failed: {e}")
             return None
 
-    def _apply_detected_audio(self, detected: Optional[str]) -> bool:
+    def _apply_detected_audio(
+        self,
+        detected: Optional[str],
+        audio_codec_path: Optional[str] = None,
+    ) -> bool:
         """Apply a probed audio codec under self._lock. Returns True to continue
         the load (codec inited OK, or nothing to init), False to abort (server
         unhealthy or codec init failed). Shared by the fast-path retry and the
@@ -33742,7 +33928,7 @@ class LlamaCppBackend:
                 if not self._healthy:
                     return False
                 try:
-                    self.init_audio_codec(detected)
+                    self.init_audio_codec(detected, audio_codec_path)
                     self._is_audio = True
                     self._audio_type = detected
                 except Exception as exc:
@@ -33818,7 +34004,7 @@ class LlamaCppBackend:
             False,
         ),
         "dac": (
-            "<|im_start|>\n<|text_start|>{text}<|text_end|>\n<|audio_start|><|global_features_start|>\n",
+            build_dac_tts_prompt("{text}"),
             ["<|im_end|>", "<|audio_end|>"],
             False,
         ),
@@ -33837,7 +34023,11 @@ class LlamaCppBackend:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def init_audio_codec(self, audio_type: str) -> None:
+    def init_audio_codec(
+        self,
+        audio_type: str,
+        audio_codec_path: Optional[str] = None,
+    ) -> None:
         """Load the audio codec at model load time (mirrors the non-GGUF path)."""
         import torch
         from core.inference.audio_codecs import AudioCodecManager
@@ -33849,15 +34039,13 @@ class LlamaCppBackend:
         # load is classified as not holding, which is what lets the route skip
         # arbitration and survive training.
         device = "cuda" if torch.cuda.is_available() and not self.holds_no_vram else "cpu"
-        model_repo_path = None
+        model_repo_path = audio_codec_path
 
         # BiCodec needs a repo with BiCodec/ weights -- download canonical SparkTTS
-        if audio_type == "bicodec":
-            from huggingface_hub import snapshot_download
-            import os
-
-            repo_path = snapshot_download("unsloth/Spark-TTS-0.5B")
-            model_repo_path = os.path.abspath(repo_path)
+        if audio_type == "bicodec" and model_repo_path is None:
+            from core.inference.audio_codecs import resolve_bicodec_repo_path
+            from utils.utils import hf_env_offline
+            model_repo_path = resolve_bicodec_repo_path(local_files_only = hf_env_offline())
 
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")

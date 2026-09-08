@@ -42,7 +42,7 @@ try:
 except ImportError:
     FileLock = None
     FileLockTimeout = None
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Callable, Iterable, Iterator, Union
 
 # Shared component-agnostic machinery lives in prebuilt_core (same directory);
@@ -105,6 +105,10 @@ WINDOWS_HIP_PREBUILT_GFX_TARGETS = frozenset(
 )
 # Family labels forwarded by update markers / --rocm-gfx (gfx110X.zip assets).
 WINDOWS_ROCM_FAMILY_GFX_LABELS = frozenset({"gfx103x", "gfx110x", "gfx120x"})
+
+# HIP builds these, but Vulkan measurably wins (gfx1151 prefill +22.9%, decode +8.3%) and
+# cannot reach the managed-memory faults. An allowlist because CDNA ships no Vulkan ICD.
+VULKAN_PREFERRED_GFX_TARGETS = frozenset({"gfx1150", "gfx1151"})
 
 # APUs that lead HIP enumeration and shadow a discrete card (#7776). Mirrors
 # install_python_stack.py / setup.ps1 (TestShadowingIntegratedGfxParity keeps them in step);
@@ -586,7 +590,8 @@ def github_api_headers(url: str | None = None) -> dict[str, str]:
 
 is_github_api_url = _core.is_github_api_url
 is_retryable_url_error = _core.is_retryable_url_error
-_RATE_LIMIT_WAIT_CAP_SECONDS = 60.0
+# Alias, not a copy: _http_error_retry_delay reads prebuilt_core's global, so a literal here does nothing.
+_RATE_LIMIT_WAIT_CAP_SECONDS = _core._RATE_LIMIT_WAIT_CAP_SECONDS
 _http_error_retry_delay = _core._http_error_retry_delay
 sleep_backoff = _core.sleep_backoff
 atomic_write_bytes = _core.atomic_write_bytes
@@ -1568,14 +1573,9 @@ def parse_approved_release_checksums(
     )
 
 
-def load_approved_release_checksums(repo: str, release_tag: str) -> ApprovedReleaseChecksums:
-    try:
-        release = github_release(repo, release_tag)
-    except Exception as exc:
-        raise PrebuiltFallback(
-            f"approved prebuilt release {repo}@{release_tag} was not available"
-        ) from exc
-    assets = release_asset_map(release)
+def load_approved_release_checksums(
+    repo: str, release_tag: str, assets: dict[str, str]
+) -> ApprovedReleaseChecksums:
     checksum_url = assets.get(DEFAULT_PUBLISHED_SHA256_ASSET)
     if not checksum_url:
         raise PrebuiltFallback(
@@ -1962,7 +1962,7 @@ def _validate_checksums_against_bundle(
 def validated_checksums_for_bundle(
     repo: str, bundle: PublishedReleaseBundle
 ) -> ApprovedReleaseChecksums:
-    checksums = load_approved_release_checksums(repo, bundle.release_tag)
+    checksums = load_approved_release_checksums(repo, bundle.release_tag, bundle.assets)
     return _validate_checksums_against_bundle(repo, bundle, checksums)
 
 
@@ -6941,11 +6941,47 @@ def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
     return tree if isinstance(tree, str) and tree else None
 
 
+# ggml-org/llama.cpp#23462 split per-binary entry code into ``lib<binary>-impl``
+# libraries between b9279 and b9283; an older archive is monolithic and healthy
+# without llama-server-impl.dll, so requiring it there forces a source build.
+LLAMA_SERVER_IMPL_SPLIT_BUILD = 9283
+
+
+def _release_build_number(tag: str | None) -> int | None:
+    """Build number of a ``bNNNN`` tag, also matching the fork's ``bNNNN-mix-<sha>``.
+    None for a branch or commit pin, which callers treat as "assume current"."""
+    if not isinstance(tag, str):
+        return None
+    match = re.match(r"b(\d+)(?:[-.]|$)", tag.strip())
+    return int(match.group(1)) if match else None
+
+
+def _windows_shared_groups(source_label: str | None, tag: str | None = None) -> list[list[str]]:
+    """Runtime files every Windows install kind owes, before its backend DLL.
+
+    Requiring only ``llama.dll`` let a truncated extract validate then fail at exec.
+    Prebuilt sources only: ``setup.ps1`` links statically and ships none of these.
+    """
+    groups: list[list[str]] = [["llama.dll"]]
+    if source_label in {"published", "upstream"}:
+        groups.append(["llama-common.dll"])
+        groups.append(["llama-server.exe"])
+        build = _release_build_number(tag)
+        if build is None or build >= LLAMA_SERVER_IMPL_SPLIT_BUILD:
+            groups.append(["llama-server-impl.dll"])
+        groups.append(["ggml.dll"])
+        groups.append(["ggml-base.dll"])
+        groups.append(["ggml-cpu*.dll"])
+        groups.append(["mtmd.dll"])
+    return groups
+
+
 def runtime_payload_health_groups(
     install_kind: str,
     *,
     source_label: str | None = None,
     runtime_name: str | None = None,
+    tag: str | None = None,
 ) -> list[list[str]]:
     """Return required runtime file groups for an install kind."""
     if install_kind in {"linux-cpu", "linux-arm64"}:
@@ -7001,9 +7037,9 @@ def runtime_payload_health_groups(
             groups.append(["llama-diffusion-gemma-visual-server"])
         return groups
     if install_kind in {"windows-cpu", "windows-arm64"}:
-        return [["llama.dll"]]
+        return _windows_shared_groups(source_label, tag)
     if install_kind == "windows-cuda":
-        groups = [["llama.dll"], ["ggml-cuda.dll"]]
+        groups = _windows_shared_groups(source_label, tag) + [["ggml-cuda.dll"]]
         # Require the complete cudart trio only when it was paired with this install.
         if runtime_name:
             groups.append(["cudart64_*.dll"])
@@ -7011,9 +7047,9 @@ def runtime_payload_health_groups(
             groups.append(["cublasLt64_*.dll"])
         return groups
     if install_kind in {"windows-hip", "windows-rocm"}:
-        return [["llama.dll"], ["*hip*.dll"]]
+        return _windows_shared_groups(source_label, tag) + [["*hip*.dll"]]
     if install_kind == "windows-vulkan":
-        groups = [["llama.dll"], ["ggml-vulkan.dll"]]
+        groups = _windows_shared_groups(source_label, tag) + [["ggml-vulkan.dll"]]
         if source_label == "published":
             groups.append(["llama-diffusion-gemma-visual-server.exe"])
         return groups
@@ -7049,6 +7085,7 @@ def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetC
             choice.install_kind,
             source_label = choice.source_label,
             runtime_name = choice.runtime_name,
+            tag = choice.tag,
         ),
     )
 
@@ -7069,12 +7106,16 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     # A backend can map to multiple kinds, so require only their shared payload.
     runtime_asset = (marker or {}).get("runtime_asset")
     source_label = (marker or {}).get("source")
+    marker_tag = (marker or {}).get("tag")
     shared = set.intersection(
         *(
             {
                 tuple(group)
                 for group in runtime_payload_health_groups(
-                    kind, source_label = source_label, runtime_name = runtime_asset
+                    kind,
+                    source_label = source_label,
+                    runtime_name = runtime_asset,
+                    tag = marker_tag if isinstance(marker_tag, str) else None,
                 )
             }
             for kind in kinds
@@ -7317,10 +7358,14 @@ def validate_prebuilt_choice(
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
     server_path, quantize_path = install_from_archives(choice, host, install_dir, work_dir)
-    if choice.install_kind in VULKAN_INSTALL_KINDS and not runtime_payload_is_healthy(
-        install_dir, host, choice
-    ):
-        raise PrebuiltFallback(f"Vulkan bundle {choice.name} omitted a required runtime component")
+    # Every WINDOWS kind: gating only Vulkan activated a fresh tree missing
+    # llama-common.dll and reported success.
+    if (
+        choice.install_kind in VULKAN_INSTALL_KINDS or choice.install_kind.startswith("windows-")
+    ) and not runtime_payload_is_healthy(install_dir, host, choice):
+        raise PrebuiltFallback(
+            f"{choice.install_kind} bundle {choice.name} omitted a required runtime component"
+        )
     preflight_linux_installed_binaries((server_path, quantize_path), install_dir, host)
     preflight_macos_installed_binaries((server_path, quantize_path), install_dir, host)
     ensure_repo_shape(install_dir)
@@ -7620,6 +7665,13 @@ def _hip_visible_device_mask_set() -> bool:
     )
 
 
+def _vulkan_visible_device_mask_set() -> bool:
+    """Whether GGML_VK_VISIBLE_DEVICES is set, which can leave the Vulkan bundle with
+    nothing to enumerate. Presence is the whole test, as for the HIP masks: the ordinals
+    are Vulkan's own, so which device an index names is unknowable here."""
+    return os.environ.get("GGML_VK_VISIBLE_DEVICES") is not None
+
+
 def _windows_hip_gfx_targets(published_repo: str | None) -> frozenset[str]:
     """gfx targets the Windows HIP bundle of ``published_repo`` is actually built for.
 
@@ -7689,6 +7741,226 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
         return False
     targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), active]))
     return not any(_gfx_is_windows_hip_supported(target, published_repo) for target in targets)
+
+
+# 64-bit only: WOW6432Node holds 32-bit registrations windows-x64-vulkan cannot load.
+_VULKAN_ICD_REGISTRY_KEYS = (r"SOFTWARE\Khronos\Vulkan\Drivers",)
+# RADV radeon_icd.x86_64.json, AMDVLK amd_icd64 / amd_pro_icd64 / amdvlk64, Adrenalin
+# amd-vulkan64.json. Matched on the basename ("amd" names directories too) with "-" folded
+# to "_", without which the ordinary Adrenalin host answered False.
+_AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro", "amd_vulkan")
+# The 32-bit halves a 64-bit llama-server cannot load; a host left with only those keeps ROCm.
+_AMD_VULKAN_ICD_32_BIT_NEEDLES = ("i686", "i386")
+
+
+def _vulkan_glob_matches(pattern: str, name: str) -> bool:
+    """The loader's four driver-filter globs, case-insensitively: "s", "s*", "*s", "*s*"."""
+    pattern, name = pattern.lower(), name.lower()
+    starts, ends = pattern.startswith("*"), pattern.endswith("*")
+    core = pattern[1 if starts else 0 : len(pattern) - 1 if ends else len(pattern)]
+    if starts and ends:
+        return core in name
+    if starts:
+        return name.endswith(core)
+    if ends:
+        return name.startswith(core)
+    return name == core
+
+
+def _vulkan_loader_allows(path: str) -> bool:
+    """Whether the loader's own driver filters leave this manifest loadable.
+
+    They apply to every driver the loader knows, a force list included, and match the
+    manifest's basename. A manifest filtered out is registered and never loaded, so
+    counting it hands an integrated host a Vulkan build with no AMD device.
+
+    Disable is read before select precisely so "disable everything, then name one back"
+    works, hence select answering alone when it is set.
+    """
+
+    def _globs(env_name: str) -> list[str]:
+        value = os.environ.get(env_name) or ""
+        return [entry.strip() for entry in value.split(",") if entry.strip()]
+
+    name = PurePath(path).name
+    select = _globs("VK_LOADER_DRIVERS_SELECT")
+    if select:
+        return any(_vulkan_glob_matches(pattern, name) for pattern in select)
+    disable = _globs("VK_LOADER_DRIVERS_DISABLE")
+    return not any(_vulkan_glob_matches(pattern, name) for pattern in disable)
+
+
+# Per call, not at import: Path.home() raises with no USERPROFILE.
+def _vulkan_icd_search_dirs() -> list[Path]:
+    """The icd.d directories the loader would search, in its own order.
+
+    From the XDG variables, since the loader falls back to the defaults only when one is
+    unset: reading the defaults regardless both misses a custom layout's only AMD manifest
+    and counts stale ones the loader would never read.
+    """
+
+    def _paths(var: str, default: str) -> list[Path]:
+        value = os.environ.get(var)
+        raw = value if (value or "").strip() else default
+        return [Path(entry) for entry in raw.split(os.pathsep) if entry.strip()]
+
+    def _home(var: str, default: str) -> list[Path]:
+        value = os.environ.get(var)
+        if (value or "").strip():
+            return [Path(value)]
+        try:
+            return [Path.home() / default]
+        except Exception:
+            return []
+
+    dirs: list[Path] = []
+    # Loader order: XDG_CONFIG_HOME, XDG_CONFIG_DIRS, then XDG_DATA_HOME, XDG_DATA_DIRS.
+    for base in (
+        *_home("XDG_CONFIG_HOME", ".config"),
+        *_paths("XDG_CONFIG_DIRS", "/etc/xdg"),
+    ):
+        dirs.append(base / "vulkan/icd.d")
+    dirs.append(Path("/etc/vulkan/icd.d"))
+    for base in (
+        *_home("XDG_DATA_HOME", ".local/share"),
+        *_paths("XDG_DATA_DIRS", "/usr/local/share" + os.pathsep + "/usr/share"),
+    ):
+        dirs.append(base / "vulkan/icd.d")
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for directory in dirs:
+        key = str(directory)
+        if key not in seen:
+            seen.add(key)
+            unique.append(directory)
+    return unique
+
+
+def _amd_vulkan_icd_manifest_paths() -> list[str]:
+    """Vulkan ICD manifests this host has registered, by loader search order.
+
+    A file list or a registry key, both readable in-process: vulkaninfo is absent on most
+    Windows hosts and libvulkan on a headless ROCm box, the case being tested for.
+    """
+    # Force lists, not hints: on every platform the loader reads only these, and
+    # VK_DRIVER_FILES supersedes VK_ICD_FILENAMES rather than joining it.
+    for env_name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+        value = os.environ.get(env_name)
+        if not (value or "").strip():
+            continue
+        forced = []
+        for entry in value.split(os.pathsep):
+            if not entry:
+                continue
+            try:
+                if os.path.isfile(entry):
+                    forced.append(entry)
+            except OSError:
+                continue
+        return forced
+    if sys.platform == "win32":
+        try:
+            import winreg
+        except ImportError:
+            return []
+        paths: list[str] = []
+        for key_path in _VULKAN_ICD_REGISTRY_KEYS:
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
+                    for index in range(winreg.QueryInfoKey(key)[1]):
+                        try:
+                            name, value, kind = winreg.EnumValue(key, index)
+                        except OSError:
+                            continue
+                        # Name is the path, DWORD data the enable flag, 0 loads.
+                        if kind != winreg.REG_DWORD or value != 0:
+                            continue
+                        # And present, or an uninstall's leftover answers for it.
+                        try:
+                            if not os.path.isfile(name):
+                                continue
+                        except OSError:
+                            continue
+                        paths.append(name)
+            except OSError:
+                continue
+        return paths
+    paths = []
+    for directory in _vulkan_icd_search_dirs():
+        try:
+            paths.extend(str(entry) for entry in sorted(directory.glob("*.json")))
+        except OSError:
+            continue
+    return paths
+
+
+def _amd_vulkan_icd_usable(path: str) -> bool:
+    """Whether a manifest still points at a driver library that is there: a leftover JSON
+    is a registration with no device behind it. A bare name is accepted, since the loader
+    resolves it through a search path this cannot see."""
+    try:
+        with open(path, "r", encoding = "utf-8") as handle:
+            manifest = json.load(handle)
+        library = (manifest.get("ICD") or {}).get("library_path")
+    except Exception:
+        return False
+    if not isinstance(library, str) or not library.strip():
+        return False
+    library = library.strip()
+    if not (os.path.isabs(library) or "/" in library or "\\" in library):
+        return True
+    if not os.path.isabs(library):
+        # Relative to the manifest's directory, per the loader's interface document.
+        library = os.path.join(os.path.dirname(path), library)
+    try:
+        return os.path.isfile(library)
+    except OSError:
+        return False
+
+
+def _amd_vulkan_icd_present() -> bool:
+    """Whether an AMD Vulkan driver is installed, so the Vulkan bundle has a device.
+
+    What makes the route safe by construction rather than by allowlist alone: no AMD ICD
+    keeps ROCm rather than silently running on CPU, and it fails towards the status quo.
+    """
+
+    def _is_amd_64_bit(name: str) -> bool:
+        stem = PurePath(name).stem.lower().replace("-", "_")
+        if stem.endswith("32") or any(n in stem for n in _AMD_VULKAN_ICD_32_BIT_NEEDLES):
+            return False
+        return any(needle in stem for needle in _AMD_VULKAN_ICD_NEEDLES)
+
+    try:
+        return any(
+            _is_amd_64_bit(PurePath(path).name)
+            and _vulkan_loader_allows(path)
+            and _amd_vulkan_icd_usable(path)
+            for path in _amd_vulkan_icd_manifest_paths()
+        )
+    except Exception:
+        return False
+
+
+def _should_prefer_vulkan_for_amd_igpu(host: HostInfo) -> bool:
+    """True when every AMD GPU here is an integrated part Vulkan serves better.
+
+    A preference, not a fallback: unlike _should_auto_vulkan_for_amd_windows these archs
+    have a working HIP prebuilt, just slower. Both platforms, the Linux fault being worse.
+    Every guard that fallback applies is applied here for the same reasons, over every
+    PHYSICAL gfx so a masked-off discrete card is not moved.
+    """
+    active = _active_rocm_gfx_target(host)
+    if not active:
+        return False
+    if not (host.has_rocm and not host.has_physical_nvidia):
+        return False
+    if _hip_visible_device_mask_set() or _vulkan_visible_device_mask_set():
+        return False
+    targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), active]))
+    if not all(target in VULKAN_PREFERRED_GFX_TARGETS for target in targets):
+        return False
+    return _amd_vulkan_icd_present()
 
 
 def _has_no_vulkan_prebuilt(host: HostInfo) -> bool:
@@ -7762,6 +8034,8 @@ def _route_to_vulkan_prebuilt(
       * ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan`` / ``UNSLOTH_FORCE_VULKAN`` /
         ``--llama-backend vulkan`` forces Vulkan over the detected CUDA/ROCm backend;
       * Windows AMD with no HIP-prebuilt gfx arch auto-falls back to Vulkan (#7357);
+      * an AMD host whose every GPU is an integrated part Vulkan serves better prefers
+        Vulkan over the HIP bundle it could otherwise run;
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm, the purpose of the
         has_intel_gpu probe.
     Applied by BOTH the install path and the --resolve-prebuilt probe so the "is a prebuilt
@@ -7775,16 +8049,18 @@ def _route_to_vulkan_prebuilt(
     # Host-only test, so a forced Vulkan run can still tell this box would have
     # routed itself to Vulkan anyway.
     amd_no_hip_host = _should_auto_vulkan_for_amd_windows(host, published_repo)
+    amd_igpu_host = _should_prefer_vulkan_for_amd_igpu(host)
     # Auto-fall back only when the run named no accelerator: an explicit hip/cpu/cuda is
     # the opt-out. "auto" names detection itself, so it keeps both automatic routes.
     detecting = explicit_backend in (None, "auto")
     auto_no_hip = detecting and amd_no_hip_host
+    auto_igpu = detecting and amd_igpu_host
     # No PHYSICAL NVIDIA, not merely no usable one: Vulkan ignores CUDA_VISIBLE_DEVICES, so
     # auto-routing a host that hides its NVIDIA card would let it grab the reserved GPU.
     auto_intel = (
         detecting and host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
     )
-    if force_cpu or not (forced or auto_intel or auto_no_hip):
+    if force_cpu or not (forced or auto_intel or auto_no_hip or auto_igpu):
         return host, published_repo, published_release_tag, None
     if host.is_macos:
         if forced:
@@ -7808,6 +8084,16 @@ def _route_to_vulkan_prebuilt(
         )
         host = _vulkan_only_host(host)
         persist_backend = "auto"
+    elif auto_igpu:
+        log(
+            "AMD integrated GPU detected "
+            f"({_active_rocm_gfx_target(host) or 'unknown'}); installing the Vulkan "
+            "llama.cpp prebuilt, which is faster on these parts than ROCm"
+        )
+        host = _vulkan_only_host(host)
+        # Automatic, so the marker keeps rocm_gfx, re-selecting ROCm finds its bundle,
+        # and the Vulkan CPU crash recovery stays armed.
+        persist_backend = "auto"
     elif forced:
         log(
             "Vulkan llama.cpp backend requested; installing the Vulkan "
@@ -7817,7 +8103,7 @@ def _route_to_vulkan_prebuilt(
         # A host with no HIP-capable AMD GPU routes here anyway, so the bundle is the
         # same. Persist it as automatic so pre-#8050 installs (and the --llama-backend
         # vulkan every update re-asserts) stay eligible for the CPU crash recovery.
-        persist_backend = "auto" if amd_no_hip_host else "vulkan"
+        persist_backend = "auto" if (amd_no_hip_host or amd_igpu_host) else "vulkan"
     else:
         log("Intel GPU detected; installing the Vulkan llama.cpp prebuilt")
         persist_backend = None
@@ -8019,6 +8305,9 @@ class BackendRoute:
     published_release_tag: str
     persist_llama_backend: str | None
     persist_rocm_gfx: str | None
+    # The pre-route host when Vulkan was preferred over a working HIP bundle, so the plan
+    # falls back to it rather than to CPU. None on #7357, where no HIP build fits.
+    rocm_fallback_host: HostInfo | None = None
 
 
 def route_backend_request(
@@ -8074,7 +8363,93 @@ def route_backend_request(
         published_release_tag = release_tag,
         persist_llama_backend = persist_llama_backend,
         persist_rocm_gfx = persist_rocm_gfx,
+        # Only the integrated-GPU preference turns away from a runnable HIP bundle.
+        rocm_fallback_host = (
+            resolved_host
+            if (
+                resolved_host.has_rocm
+                and not routed_host.has_rocm
+                and _should_prefer_vulkan_for_amd_igpu(resolved_host)
+            )
+            else None
+        ),
     )
+
+
+def _with_rocm_behind_vulkan(
+    plans: list[InstallReleasePlan],
+    llama_tag: str,
+    rocm_host: HostInfo,
+    published_repo: str,
+    published_release_tag: str,
+) -> list[InstallReleasePlan]:
+    """Put this host's ROCm bundle behind Vulkan and ahead of the generic CPU fallback.
+
+    _vulkan_only_host clears has_rocm, so the selectors read the box as Intel/CPU and end
+    the plan in a CPU attempt: a Vulkan asset that fails validation would then replace a
+    working ROCm install with CPU inference. A named backend request is filtered
+    afterwards, so this cannot smuggle ROCm into an explicit --llama-backend vulkan.
+    """
+    # A source build is slow and a CPU prebuilt is silent, so fail towards the visible one.
+    _NO_GPU_BUNDLE = (
+        "no published release carries a Vulkan or matching ROCm bundle for this host, "
+        "and a CPU prebuilt would replace a working ROCm install"
+    )
+    cpu_kinds = install_kinds_for_backend("cpu")
+
+    def _without_cpu(plan: InstallReleasePlan) -> InstallReleasePlan | None:
+        """Drop the CPU tail from a plan with no ROCm attempt behind Vulkan: a failed
+        Vulkan install is recoverable, a silent CPU one is "it got slow". A release that
+        published neither bundle is only its CPU fallback, so it drops out whole."""
+        attempts = [attempt for attempt in plan.attempts if attempt.install_kind not in cpu_kinds]
+        if len(attempts) == len(plan.attempts):
+            return plan
+        return dataclasses_replace(plan, attempts = attempts) if attempts else None
+
+    def _drop_cpu_only(candidates: list[InstallReleasePlan]) -> list[InstallReleasePlan]:
+        """Apply _without_cpu across releases, or fail rather than install CPU."""
+        kept = [narrowed for plan in candidates if (narrowed := _without_cpu(plan)) is not None]
+        if candidates and not kept:
+            raise PrebuiltFallback(_NO_GPU_BUNDLE)
+        return kept
+
+    try:
+        _tag, rocm_plans = resolve_simple_install_release_plans(
+            llama_tag, rocm_host, published_repo, published_release_tag
+        )
+    except Exception:
+        # Not a reason to fail the Vulkan install, but a reason to drop the CPU tail.
+        return _drop_cpu_only(plans)
+    rocm_attempts = {plan.release_tag: plan.attempts for plan in rocm_plans}
+    out: list[InstallReleasePlan] = []
+    for plan in plans:
+        present = {attempt.install_kind for attempt in plan.attempts}
+        candidates = rocm_attempts.get(plan.release_tag, [])
+        extra = [
+            attempt
+            for attempt in candidates
+            if attempt.install_kind not in present and attempt.install_kind not in cpu_kinds
+        ]
+        if not extra:
+            # Either the plan already carries this host's ROCm attempt, or none resolved
+            # for this release; only the second is the hazard above.
+            if any(attempt.install_kind in present for attempt in candidates):
+                out.append(plan)
+            else:
+                narrowed = _without_cpu(plan)
+                if narrowed is not None:
+                    out.append(narrowed)
+            continue
+        at = next(
+            (i for i, a in enumerate(plan.attempts) if a.install_kind in cpu_kinds),
+            len(plan.attempts),
+        )
+        out.append(
+            dataclasses_replace(plan, attempts = [*plan.attempts[:at], *extra, *plan.attempts[at:]])
+        )
+    if plans and not out:
+        raise PrebuiltFallback(_NO_GPU_BUNDLE)
+    return out
 
 
 def select_backend_install(
@@ -8103,6 +8478,14 @@ def select_backend_install(
     requested_tag, release_plans = resolve_simple_install_release_plans(
         llama_tag, route.host, route.published_repo, route.published_release_tag
     )
+    if route.rocm_fallback_host is not None:
+        release_plans = _with_rocm_behind_vulkan(
+            release_plans,
+            llama_tag,
+            route.rocm_fallback_host,
+            route.published_repo,
+            route.published_release_tag,
+        )
     # macOS publishes one universal Metal bundle, so there is nothing to hold a
     # request to; setup.sh says as much for cpu and vulkan there rather than failing.
     if route.backend in CONCRETE_BACKENDS and not route.host.is_macos:

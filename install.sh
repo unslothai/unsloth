@@ -1745,8 +1745,13 @@ LAUNCHER_EOF
     # Try to find rounded-512.png from installed package (site-packages) or local repo
     _css_found_icon=""
     _css_venv_dir=$(dirname "$(dirname "$_css_exe")")
-    # Check site-packages
-    for _sp in "$_css_venv_dir"/lib/python*/site-packages/unsloth/studio/frontend/public; do
+    # Check site-packages. `studio` is a top-level package in the wheel (see
+    # top_level.txt), not a subpackage of `unsloth`, so the old
+    # site-packages/unsloth/studio/... glob never matched and every install fell
+    # through to the network download below. Read it out of frontend/dist rather
+    # than frontend/public: Vite copies public/ into dist/ at build time, so the
+    # file is in both in a checkout, but only dist/ ships in the wheel.
+    for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/frontend/dist; do
         if [ -f "$_sp/rounded-512.png" ]; then
             _css_found_icon="$_sp/rounded-512.png"
         fi
