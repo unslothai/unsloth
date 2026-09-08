@@ -1407,7 +1407,9 @@ class TestAPriorLifecycleLoadCannotSpawn:
         with mock.patch.object(subprocess, "Popen", lambda *a, **k: spawned.append(1)):
             assert (
                 b._start_llama_process(
-                    ["llama-server"], {}, child_gpu_physical_ids = None,
+                    ["llama-server"],
+                    {},
+                    child_gpu_physical_ids = None,
                     load_generation = stale,
                 )
                 is False
