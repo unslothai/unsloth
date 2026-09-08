@@ -1635,9 +1635,13 @@ def _remember_key(cache: Path, base: str, key: str, source: str) -> None:
         pass  # worst case the next launch mints another key
 
 
-def _key_works(base: str, key: str) -> bool:
+def _key_works(
+    base: str,
+    key: str,
+    timeout: float = 30,
+) -> bool:
     try:
-        _http_json("GET", f"{base}/v1/models", key)
+        _http_json("GET", f"{base}/v1/models", key, timeout = timeout)
         return True
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
@@ -1678,8 +1682,15 @@ def _startup_api_key(base: str) -> Optional[str]:
     cache = _key_cache_path()
     try:
         for key in _cached_keys(cache, base, "minted"):
-            if _key_works(base, key):
-                return key
+            try:
+                # /v1/models builds the local model catalog off the filesystem, which the
+                # download saturating that disk can stall. A check that doesn't complete
+                # says nothing about the key, so mint a fresh one rather than give up on
+                # a startup this exists to keep alive.
+                if _key_works(base, key, timeout = 10):
+                    return key
+            except Exception:
+                break
         token = _studio_token()
         if token is None:
             return None

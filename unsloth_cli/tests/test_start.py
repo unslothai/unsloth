@@ -6473,8 +6473,7 @@ def test_startup_api_key_is_silent_when_identity_fails(fake_studio, monkeypatch,
     assert capsys.readouterr().err == ""
 
 
-def test_startup_api_key_swallows_a_server_outage(fake_studio, tmp_path, monkeypatch, capsys):
-    start._remember_key(tmp_path / "agent_api_key.json", BASE, "sk-unsloth-cached", "minted")
+def _outage_on(urls, monkeypatch, exc):
     inner = start._http_json
 
     def http_json(
@@ -6485,14 +6484,58 @@ def test_startup_api_key_swallows_a_server_outage(fake_studio, tmp_path, monkeyp
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models"):
-            raise urllib.error.HTTPError(url, 503, "Service Unavailable", None, None)
+        if any(url.endswith(suffix) for suffix in urls):
+            raise exc(url)
         return inner(method, url, token, payload, timeout, error)
 
     monkeypatch.setattr(start, "_http_json", http_json)
 
+
+def test_startup_api_key_swallows_a_server_outage(fake_studio, tmp_path, monkeypatch, capsys):
+    start._remember_key(tmp_path / "agent_api_key.json", BASE, "sk-unsloth-cached", "minted")
+    _outage_on(
+        ("/v1/models", "/api/auth/api-keys"),
+        monkeypatch,
+        lambda url: urllib.error.HTTPError(url, 503, "Service Unavailable", None, None),
+    )
+
     assert start._startup_api_key(BASE) is None
     assert capsys.readouterr().err == ""
+
+
+def test_startup_api_key_mints_when_the_catalog_check_stalls(fake_studio, tmp_path, monkeypatch):
+    # /v1/models scans the filesystem, and the download this runs beside is what
+    # saturates that disk. A cached key that can't be checked must not retire the mint.
+    start._remember_key(tmp_path / "agent_api_key.json", BASE, "sk-unsloth-cached", "minted")
+    _outage_on(("/v1/models",), monkeypatch, lambda url: TimeoutError("timed out"))
+
+    assert start._startup_api_key(BASE) == "sk-unsloth-feedfacefeedface"
+
+
+def test_startup_api_key_checks_a_cached_key_on_a_short_timeout(fake_studio, tmp_path, monkeypatch):
+    # The readiness loop is waiting on this, so the catalog check gets the same 10s
+    # budget the progress requests use, not the 30s default the ready path can afford.
+    start._remember_key(tmp_path / "agent_api_key.json", BASE, "sk-unsloth-cached", "minted")
+    inner = start._http_json
+    timeouts = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        timeouts.append((url, timeout))
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    assert start._startup_api_key(BASE) == "sk-unsloth-cached"
+    assert timeouts == [(f"{BASE}/v1/models", 10)]
+    assert start._key_accepted(BASE, "sk-unsloth-cached")
+    assert timeouts[-1] == (f"{BASE}/v1/models", 30)
 
 
 def test_session_config_no_launch_preserves_existing_state(fake_studio, tmp_path):
