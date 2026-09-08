@@ -92,13 +92,11 @@ def is_anonymous(hf_token: HfTokenArg) -> bool:
 def qualify_cache_identity(hf_token: HfTokenArg, digest: str) -> str:
     """Tag a token digest with the caller class that produced it.
 
-    Two callers can hold the SAME token value and still have different cache
-    authorization: a UI session is entitled to ambient, an sk-unsloth API key is not.
-    The digest alone collides, so any cache keyed on it can hand one caller the other's
-    verdict, and any in-flight coalescer keyed on it merges their scans into one whose
-    authorization was decided by whichever arrived first.
-
-    This is the same reason the forced-anonymous sentinel already takes its own identity.
+    Two callers can hold the SAME token value and still have different cache authorization:
+    a UI session is entitled to ambient, an sk-unsloth API key is not. The digest alone
+    collides, so a cache keyed on it hands one caller the other's verdict, and an in-flight
+    coalescer merges their scans into one decided by whichever arrived first. Same reason
+    the forced-anonymous sentinel already takes its own identity.
     """
     return (
         f"{UI_CACHE_IDENTITY_PREFIX}{digest}"
@@ -177,21 +175,17 @@ def cache_reads_authorized(
 
     ``is_anonymous`` authenticates the caller class, not the credential: any token-shaped
     string leaves the sentinel and would otherwise take the disk fast paths. ``repo_info``
-    is not enough to replace the probe, since gated public metadata still returns for an
-    invalid token.
+    cannot replace the probe, since gated public metadata still returns for an invalid token.
 
-    A ``True`` here does NOT mean "this token is valid": /auth-check answers "is this repo
-    reachable", and a public repo returns 200 for any string and for no credential at all.
-    It discriminates on private and gated repos, which is where the cached reads are.
+    ``True`` does NOT mean "this token is valid": /auth-check answers "is this repo
+    reachable", and a public repo returns 200 for any string. It discriminates on private and
+    gated repos, which is where the cached reads are.
 
     Offline an explicit token is denied unless a recent probe is memoized: fail closed
-    without wire proof. Ambient ``None`` still reads the cache offline.
-
-    ``offline`` is the CALLER's own offline flag, for a request that asked for cache-only
-    service. Without it this only sees the process-level env, so such a request still put
-    the caller's token and repo id on the wire and could stall for the probe timeout before
-    reaching a branch that was never going to use the network. A memoized decision is still
-    honoured, since that costs no request.
+    without wire proof. Ambient ``None`` still reads the cache offline. ``offline`` is the
+    CALLER's own flag, for a request that asked for cache-only service; without it such a
+    request still put its token and repo id on the wire and could stall for the probe
+    timeout before reaching a branch that was never going to use the network.
     """
     if is_anonymous(hf_token):
         return False
@@ -228,11 +222,10 @@ def cached_read_refused(
     An uncached repo has nothing to leak, so refusing it protects nothing and costs a
     legitimate caller its answer whenever the probe is merely unavailable rather than
     negative (a mirror without the undocumented /auth-check, one transient failure). Uncached
-    goes to the Hub, which enforces its own access.
-
-    ``is_cached`` is asked FIRST, so nothing on disk means no probe, and must fail closed or
-    the guard's own failure opens the path it guards. Each reader passes its own predicate:
-    "cached" means a file at a revision, a dataset in either cache, or a repo dir, per site.
+    goes to the Hub, which enforces its own access. ``is_cached`` is asked FIRST, so nothing
+    on disk means no probe, and must fail closed or the guard's own failure opens the path it
+    guards. Each reader passes its own predicate: a file at a revision, a dataset in either
+    cache, or a repo dir, per site.
     """
     if not is_cached():
         return False
