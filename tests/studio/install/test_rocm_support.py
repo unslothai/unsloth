@@ -2719,7 +2719,8 @@ class TestInstallShStructure:
         # the probe it guards, and continuation lines are then joined, since the guard
         # and the probe sit either side of a backslash.
         lines = [
-            line for line in body[:no_nvidia_branch].splitlines()
+            line
+            for line in body[:no_nvidia_branch].splitlines()
             if not line.lstrip().startswith("#")
         ]
         statement, guarded = [], []
