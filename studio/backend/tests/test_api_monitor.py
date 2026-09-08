@@ -15,12 +15,22 @@ from core.inference.api_monitor import ApiMonitor, _trim
 import routes.inference as inference_route
 
 
+def _start(monitor, **overrides):
+    """Begin a monitored request, defaulting the fields a test does not vary."""
+    return monitor.start(**{
+        "endpoint": "/v1/chat/completions",
+        "method": "POST",
+        "model": "m",
+        "prompt": "hi",
+        **overrides,
+    })
+
+
 def test_terminal_api_usage_receipt_is_immutable_and_emitted_once():
     receipts = []
     monitor = ApiMonitor(terminal_callback = receipts.append)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
+    entry_id = _start(
+        monitor,
         model = "org/model",
         prompt = "do not persist this",
         subject = "alice",
@@ -53,10 +63,9 @@ def test_terminal_api_usage_receipt_is_immutable_and_emitted_once():
 def test_partial_terminal_api_usage_is_emitted_once(terminal, status):
     receipts = []
     monitor = ApiMonitor(terminal_callback = receipts.append)
-    entry_id = monitor.start(
+    entry_id = _start(
+        monitor,
         endpoint = "/v1/responses",
-        method = "POST",
-        model = "m",
         prompt = "private",
         subject = "alice",
         via_api_key = True,
@@ -81,10 +90,9 @@ def test_terminal_callback_runs_outside_monitor_lock():
         assert monitor.snapshot()
 
     monitor.set_terminal_callback(callback)
-    entry_id = monitor.start(
+    entry_id = _start(
+        monitor,
         endpoint = "/v1/messages",
-        method = "POST",
-        model = "m",
         prompt = "private",
         subject = "alice",
         via_api_key = True,
@@ -99,10 +107,9 @@ def test_terminal_callback_failure_is_logged_and_swallowed(caplog):
         raise RuntimeError("storage unavailable")
 
     monitor = ApiMonitor(terminal_callback = broken)
-    entry_id = monitor.start(
+    entry_id = _start(
+        monitor,
         endpoint = "/v1/completions",
-        method = "POST",
-        model = "m",
         prompt = "private",
         subject = "alice",
         via_api_key = True,
@@ -123,10 +130,9 @@ def test_overlapping_callback_leases_do_not_disable_the_live_owner():
 
     # Lifespan A exits while the later lifespan B remains live.
     monitor.release_terminal_callback(older)
-    entry_id = monitor.start(
+    entry_id = _start(
+        monitor,
         endpoint = "/v1/responses",
-        method = "POST",
-        model = "m",
         prompt = "private",
         subject = "alice",
         via_api_key = True,
@@ -158,24 +164,11 @@ def test_non_external_and_non_request_rows_never_emit_usage_receipts():
     receipts = []
     monitor = ApiMonitor(terminal_callback = receipts.append)
 
-    studio = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "studio",
-        subject = "alice",
-        via_api_key = False,
-    )
+    studio = _start(monitor, prompt = "studio", subject = "alice", via_api_key = False)
     monitor.set_usage(studio, total_tokens = 10)
     monitor.finish(studio)
 
-    anonymous = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "anonymous",
-        via_api_key = True,
-    )
+    anonymous = _start(monitor, prompt = "anonymous", via_api_key = True)
     monitor.set_usage(anonymous, total_tokens = 10)
     monitor.finish(anonymous)
 
@@ -185,10 +178,9 @@ def test_non_external_and_non_request_rows_never_emit_usage_receipts():
     monitor.finish(lifecycle)
     monitor.record_lifecycle(event = "unload", model = "m", subject = "alice", via_api_key = True)
 
-    discarded = monitor.start(
+    discarded = _start(
+        monitor,
         endpoint = "/v1/responses",
-        method = "POST",
-        model = "m",
         prompt = "private",
         subject = "alice",
         via_api_key = True,
@@ -220,13 +212,7 @@ def _get_monitor(monkeypatch, *, enabled: bool):
 def test_api_monitor_tracks_reply_usage_and_context():
     monitor = ApiMonitor(max_entries = 3)
 
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-        context_length = 100,
-    )
+    entry_id = _start(monitor, model = "local-model", prompt = "user: hello", context_length = 100)
     monitor.append_reply(entry_id, "hi")
     monitor.append_reply(entry_id, " there")
     monitor.set_usage(
@@ -246,12 +232,7 @@ def test_api_monitor_tracks_reply_usage_and_context():
 
 def test_api_monitor_summary_omits_full_prompt_and_reply():
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "p" * 500,
-    )
+    entry_id = _start(monitor, model = "local-model", prompt = "p" * 500)
     monitor.set_reply(entry_id, "r" * 500)
 
     [summary] = monitor.snapshot(include_details = False)
@@ -270,20 +251,8 @@ def test_api_monitor_summary_omits_full_prompt_and_reply():
 
 def test_api_monitor_filters_entries_by_subject():
     monitor = ApiMonitor(max_entries = 3)
-    alice = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "alice prompt",
-        subject = "alice",
-    )
-    bob = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "bob prompt",
-        subject = "bob",
-    )
+    alice = _start(monitor, prompt = "alice prompt", subject = "alice")
+    bob = _start(monitor, prompt = "bob prompt", subject = "bob")
     monitor.finish(bob)
 
     alice_entries = monitor.snapshot(subject = "alice")
@@ -297,24 +266,9 @@ def test_api_monitor_filters_entries_by_subject():
 def test_api_monitor_keeps_bounded_recent_history():
     monitor = ApiMonitor(max_entries = 2)
 
-    first = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "first",
-    )
-    second = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "second",
-    )
-    third = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "third",
-    )
+    first = _start(monitor, prompt = "first")
+    second = _start(monitor, prompt = "second")
+    third = _start(monitor, prompt = "third")
     monitor.finish(first)
     monitor.finish(second)
     monitor.finish(third)
@@ -330,19 +284,9 @@ def test_api_monitor_keeps_bounded_recent_history():
 def test_api_monitor_keeps_running_entries_beyond_history_limit():
     monitor = ApiMonitor(max_entries = 1)
 
-    running = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "running",
-    )
+    running = _start(monitor, prompt = "running")
     for prompt in ("done-1", "done-2", "done-3"):
-        entry_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "m",
-            prompt = prompt,
-        )
+        entry_id = _start(monitor, prompt = prompt)
         monitor.finish(entry_id)
 
     entries = monitor.snapshot()
@@ -359,12 +303,7 @@ def test_api_monitor_keeps_running_entries_beyond_history_limit():
 
 def test_api_monitor_finish_is_idempotent():
     monitor = ApiMonitor(max_entries = 2)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-    )
+    entry_id = _start(monitor)
     monitor.finish(entry_id)
     first = monitor.snapshot()[0]
     monitor.finish(entry_id)
@@ -375,12 +314,7 @@ def test_api_monitor_finish_is_idempotent():
 
 def test_api_monitor_preserves_authoritative_total_tokens():
     monitor = ApiMonitor(max_entries = 2)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-    )
+    entry_id = _start(monitor)
     monitor.set_usage(
         entry_id,
         prompt_tokens = 10,
@@ -394,12 +328,7 @@ def test_api_monitor_preserves_authoritative_total_tokens():
 
 def test_api_monitor_recomputes_derived_total_tokens():
     monitor = ApiMonitor(max_entries = 2)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-    )
+    entry_id = _start(monitor)
     monitor.set_usage(entry_id, prompt_tokens = 10)
     assert monitor.snapshot()[0]["total_tokens"] == 10
 
@@ -416,12 +345,7 @@ def test_api_monitor_duration_non_negative_under_clock_step(monkeypatch):
     fake_now = [1000.0]
     monkeypatch.setattr(m.time, "time", lambda: fake_now[0])
     monitor = ApiMonitor(max_entries = 1)
-    entry_id = monitor.start(
-        endpoint = "/x",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-    )
+    entry_id = _start(monitor, endpoint = "/x")
     fake_now[0] = 500.0
     monitor.finish(entry_id)
     assert monitor.snapshot()[0]["duration_ms"] >= 0
@@ -439,12 +363,7 @@ def test_api_monitor_append_reply_caps_without_regrowing():
     import core.inference.api_monitor as m
 
     monitor = ApiMonitor(max_entries = 1)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "go",
-    )
+    entry_id = _start(monitor, prompt = "go")
     monitor.append_reply(entry_id, "x" * (m._MAX_REPLY_CHARS + 500))
     capped = monitor.snapshot()[0]["reply"]
     assert len(capped) == m._MAX_REPLY_CHARS and capped.endswith("...")
@@ -458,12 +377,7 @@ def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
     import core.inference.api_monitor as m
 
     monitor = ApiMonitor(max_entries = 1)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "go",
-    )
+    entry_id = _start(monitor, prompt = "go")
     # A reply landing exactly on the cap has no "..." marker yet.
     monitor.append_reply(entry_id, "x" * m._MAX_REPLY_CHARS)
     assert not monitor.snapshot()[0]["reply"].endswith("...")
@@ -478,21 +392,9 @@ def test_clear_keeps_the_callers_own_request_that_is_still_running():
     loses the request outright: the active count falls to zero and the finish that follows
     has no entry left to land on, so a completed call never appears at all."""
     monitor = ApiMonitor(max_entries = 4)
-    done = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "finished",
-        subject = "alice",
-    )
+    done = _start(monitor, prompt = "finished", subject = "alice")
     monitor.finish(done)
-    live = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "in flight",
-        subject = "alice",
-    )
+    live = _start(monitor, prompt = "in flight", subject = "alice")
 
     monitor.clear(subject = "alice")
 
@@ -506,20 +408,8 @@ def test_clear_keeps_the_callers_own_request_that_is_still_running():
 def test_api_monitor_clear_is_scoped_to_one_subject():
     # Every other read is subject-scoped; an unscoped clear would erase another's history.
     monitor = ApiMonitor(max_entries = 4)
-    alice = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "alice prompt",
-        subject = "alice",
-    )
-    bob = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "bob prompt",
-        subject = "bob",
-    )
+    alice = _start(monitor, prompt = "alice prompt", subject = "alice")
+    bob = _start(monitor, prompt = "bob prompt", subject = "bob")
     # Finished first: a running row is a request in flight, not history, and clear keeps
     # it. This test is about the subject scoping, so it clears history and nothing else.
     monitor.finish(alice)
@@ -538,21 +428,8 @@ def test_api_monitor_clear_is_scoped_to_one_subject():
 def test_api_monitor_records_whether_the_caller_used_an_api_key():
     # Unsloth's chat hits these endpoints on a JWT, and the panel auto-opens off this flag.
     monitor = ApiMonitor(max_entries = 4)
-    ui = monitor.start(
-        endpoint = "/api/inference/chat",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-        subject = "u",
-    )
-    api = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-        subject = "u",
-        via_api_key = True,
-    )
+    ui = _start(monitor, endpoint = "/api/inference/chat", subject = "u")
+    api = _start(monitor, subject = "u", via_api_key = True)
     by_id = {entry["id"]: entry for entry in monitor.snapshot(subject = "u")}
     assert by_id[ui]["via_api_key"] is False
     assert by_id[api]["via_api_key"] is True
@@ -561,13 +438,7 @@ def test_api_monitor_records_whether_the_caller_used_an_api_key():
 def test_api_monitor_disabled_is_noop():
     monitor = ApiMonitor(max_entries = 3, enabled = False)
 
-    request_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-        context_length = 100,
-    )
+    request_id = _start(monitor, model = "local-model", prompt = "user: hello", context_length = 100)
     load_id = monitor.record_lifecycle(
         event = "load",
         model = "local-model",
@@ -647,13 +518,7 @@ def test_lifecycle_unload_row_is_terminal_on_arrival():
 def test_lifecycle_rows_are_visible_to_every_subject():
     # A load is server-wide, so it must not vanish for other API keys like a request does.
     monitor = ApiMonitor(max_entries = 5)
-    monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-        subject = "alice",
-    )
+    _start(monitor, subject = "alice")
     event_id = monitor.record_lifecycle(event = "unload", model = "org/A-GGUF")
 
     bob = monitor.snapshot(subject = "bob")
@@ -664,13 +529,7 @@ def test_lifecycle_rows_are_visible_to_every_subject():
 
 def test_request_rows_stay_private_to_their_subject():
     monitor = ApiMonitor(max_entries = 5)
-    rid = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-        subject = "alice",
-    )
+    rid = _start(monitor, subject = "alice")
     assert monitor.snapshot(subject = "bob") == []
     assert monitor.get(rid, subject = "bob") is None
 
@@ -720,13 +579,7 @@ def test_clear_hides_shared_lifecycle_rows_for_that_caller_only():
     an option either, since that erases another caller's history.
     """
     monitor = ApiMonitor(max_entries = 10)
-    mine = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "org/A",
-        prompt = "user: hi",
-        subject = "alice",
-    )
+    mine = _start(monitor, model = "org/A", prompt = "user: hi", subject = "alice")
     monitor.finish(mine)
     shared = monitor.record_lifecycle(event = "unload", model = "org/A")
 
@@ -882,13 +735,7 @@ def test_monitor_route_disabled_still_hides_recorded_rows(monkeypatch):
     """A disabled monitor records nothing, so the route reports an empty list
     even after traffic that would otherwise have shown up."""
     monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(enabled = False))
-    inference_route.api_monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-        subject = "test-user",
-    )
+    _start(inference_route.api_monitor, subject = "test-user")
     app = FastAPI()
     app.include_router(inference_route.studio_router)
     app.dependency_overrides = {get_current_subject: lambda: "test-user"}
@@ -900,12 +747,7 @@ def test_monitor_route_disabled_still_hides_recorded_rows(monkeypatch):
 
 def test_set_perf_records_stats_and_snapshot_reports_them():
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
+    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
     # set_reply never stamps TTFT; this is the case the prompt_ms fallback exists for.
     monitor.set_reply(entry_id, "hi")
     monitor.set_perf(
@@ -927,12 +769,7 @@ def test_set_perf_records_stats_and_snapshot_reports_them():
 def test_measured_ttft_wins_over_engine_prefill():
     # Queue wait precedes llama-server, so prefill-only prompt_ms under-reports TTFT.
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
+    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
     entry = next(e for e in monitor._entries if e.id == entry_id)
     entry.started_monotonic -= 2.0
     monitor.append_reply(entry_id, "hi")
@@ -945,12 +782,7 @@ def test_measured_ttft_wins_over_engine_prefill():
 
 def test_set_perf_rejects_non_finite_values():
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
+    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
     monitor.set_perf(
         entry_id,
         tok_per_sec = float("nan"),
@@ -968,12 +800,7 @@ def test_set_perf_rejects_non_finite_values():
 
 def test_full_response_reply_does_not_stamp_ttft():
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
+    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
     monitor.set_reply(entry_id, "full response")
     monitor.append_reply(entry_id, " tail", stamp_first_token = False)
     monitor.finish(entry_id)
@@ -985,12 +812,7 @@ def test_full_response_reply_does_not_stamp_ttft():
 
 def test_set_usage_rejects_malformed_token_counts():
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
+    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
     monitor.append_reply(entry_id, "hi")
     monitor.set_usage(
         entry_id,
@@ -1009,24 +831,14 @@ def test_set_usage_rejects_malformed_token_counts():
 
 def test_mark_first_token_stamps_ttft_for_reasoning_only_streams():
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
+    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
     monitor.mark_first_token(entry_id)
     monitor.finish(entry_id)
 
     [entry] = monitor.snapshot()
     assert entry["ttft_ms"] is not None
 
-    entry_id2 = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
+    entry_id2 = _start(monitor, model = "local-model", prompt = "user: hello")
     monitor.mark_first_token(entry_id2)
     first = monitor._find_locked(entry_id2).first_token_monotonic
     monitor.append_reply(entry_id2, "visible")
@@ -1063,9 +875,9 @@ def test_non_streaming_responses_reports_its_finish_reason(monkeypatch):
 
     monitor = ApiMonitor(max_entries = 3)
     monkeypatch.setattr(inf, "api_monitor", monitor)
-    entry_id = monitor.start(
+    entry_id = _start(
+        monitor,
         endpoint = "/v1/responses",
-        method = "POST",
         model = "local-model",
         prompt = "user: hello",
     )
@@ -1155,12 +967,7 @@ def test_set_perf_survives_an_out_of_range_engine_number():
     user's response.
     """
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
+    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
     huge = int("9" * 400)
     monitor.set_perf(entry_id, tok_per_sec = huge, prompt_ms = huge, stop_reason = "stop")
     monitor.finish(entry_id)
@@ -1190,12 +997,7 @@ def test_monitor_chunk_never_raises_on_a_malformed_upstream_chunk(monkeypatch, c
 
     monitor = ApiMonitor(max_entries = 3)
     monkeypatch.setattr(inf, "api_monitor", monitor)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
+    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
     inf._monitor_openai_chunk(entry_id, chunk, 4096, streaming = True)
     # snapshot() divides by the recorded counts, so it has to survive them too.
     assert monitor.snapshot()
@@ -1397,12 +1199,7 @@ def test_top_level_provider_tool_event_stamps_first_token(monkeypatch):
 
     monitor = ApiMonitor(max_entries = 3)
     monkeypatch.setattr(inf, "api_monitor", monitor)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "provider/model",
-        prompt = "hi",
-    )
+    entry_id = _start(monitor, model = "provider/model")
     inf._monitor_openai_chunk(
         entry_id,
         {
@@ -1427,12 +1224,7 @@ def test_disagreeing_choice_finish_reasons_report_no_stop_reason(monkeypatch):
     monkeypatch.setattr(inf, "api_monitor", monitor)
 
     def row_for(reasons):
-        entry_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "m",
-            prompt = "hi",
-        )
+        entry_id = _start(monitor)
         inf._monitor_openai_chunk(
             entry_id,
             {
@@ -1459,12 +1251,7 @@ def test_streamed_choice_finish_reasons_are_compared_across_chunks(monkeypatch):
     monkeypatch.setattr(inf, "api_monitor", monitor)
 
     def row_for(reasons):
-        entry_id = monitor.start(
-            endpoint = "/v1/completions",
-            method = "POST",
-            model = "m",
-            prompt = "hi",
-        )
+        entry_id = _start(monitor, endpoint = "/v1/completions")
         for i, reason in enumerate(reasons):
             inf._monitor_openai_sse_line(
                 entry_id,
@@ -1484,12 +1271,7 @@ def test_streamed_stop_reason_is_withheld_until_the_request_finishes(monkeypatch
     # An n > 1 stream finishes its choices in separate chunks, so publishing the first one
     # would state a request-level verdict while the rest are still running, then retract it.
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/completions",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-    )
+    entry_id = _start(monitor, endpoint = "/v1/completions")
 
     def row():
         return next(r for r in monitor.snapshot() if r["id"] == entry_id)
@@ -1513,12 +1295,7 @@ def test_stop_reason_is_kept_only_by_completed_requests(writer, status, expected
     # them, and several local streams record "stop" through set_perf on the way out of a
     # cancelled loop, before the cancellation is stamped. Neither describes how it ended.
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/completions",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-    )
+    entry_id = _start(monitor, endpoint = "/v1/completions")
     if writer == "set_perf":
         monitor.set_perf(entry_id, stop_reason = "stop")
     else:
@@ -1536,12 +1313,7 @@ def test_non_streaming_stop_reason_survives_the_finish(monkeypatch):
     # Nothing accumulates on that path, so resolving at finish must not clear what
     # set_perf already recorded.
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/completions",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-    )
+    entry_id = _start(monitor, endpoint = "/v1/completions")
     monitor.set_perf(entry_id, stop_reason = "stop")
     monitor.finish(entry_id)
     assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] == "stop"
@@ -1599,12 +1371,7 @@ def test_tool_card_starts_ttft_but_not_the_token_rate_clock(monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-    )
+    entry_id = _start(monitor)
 
     monitor.mark_first_token(entry_id, decoded = False)
     clock[0] = 160.0  # a minute of tool run / human confirmation
@@ -1626,12 +1393,7 @@ def test_a_decoded_first_token_starts_both_clocks(monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-    )
+    entry_id = _start(monitor)
 
     # Reasoning tokens are decoded output, so they start the rate clock as before.
     monitor.mark_first_token(entry_id)
@@ -1647,12 +1409,7 @@ def test_a_stop_reason_written_after_finish_escapes_the_clearing():
     # terminal transition, so a later write would put a natural stop reason back onto a
     # cancelled row.
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
-    )
+    entry_id = _start(monitor)
     monitor.set_perf(entry_id, stop_reason = "stop")
     monitor.finish(entry_id, "cancelled")
     assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] is None
@@ -1733,12 +1490,7 @@ def test_the_decode_span_comes_only_from_engine_timings(monkeypatch):
     """duration_ms carries the queue wait, which read a 50 tok/s model as 5. decode_ms must not."""
     monitor = ApiMonitor(max_entries = 3)
     monkeypatch.setattr(inference_route, "api_monitor", monitor)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
+    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
     inference_route._monitor_usage(
         entry_id,
         {"prompt_tokens": 11, "completion_tokens": 50},
@@ -1762,9 +1514,9 @@ def test_a_timings_only_final_chunk_still_sets_the_decode_span(monkeypatch):
     """llama-server can end a stream with timings and no usage."""
     monitor = ApiMonitor(max_entries = 3)
     monkeypatch.setattr(inference_route, "api_monitor", monitor)
-    entry_id = monitor.start(
+    entry_id = _start(
+        monitor,
         endpoint = "/v1/completions",
-        method = "POST",
         model = "local-model",
         prompt = "user: hello",
     )
@@ -1777,12 +1529,7 @@ def test_a_timings_only_final_chunk_still_sets_the_decode_span(monkeypatch):
 def test_a_streamed_reply_alone_reports_no_decode_span():
     """Timing the stream misses the first chunk and reasoning tokens, so report nothing."""
     monitor = ApiMonitor(max_entries = 3)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
+    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
     monitor.append_reply(entry_id, "hi")
     monitor.append_reply(entry_id, " there")
     monitor.finish(entry_id)
@@ -1801,12 +1548,7 @@ def test_a_bad_predicted_ms_is_dropped_rather_than_raising(monkeypatch, predicte
     """json.loads accepts a bare Infinity; a raise in a streaming generator truncates the reply."""
     monitor = ApiMonitor(max_entries = 3)
     monkeypatch.setattr(inference_route, "api_monitor", monitor)
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
+    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
     inference_route._monitor_usage(
         entry_id,
         {"completion_tokens": 50},
