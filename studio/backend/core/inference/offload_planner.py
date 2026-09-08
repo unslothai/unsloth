@@ -720,6 +720,18 @@ def _select_units(
     return chosen, freed
 
 
+def _ordered_rungs(opts: PlanOptions) -> list[SpillClass]:
+    """``ffn_rung_order`` as the ladder walks it: known classes, first occurrence
+    only. Each rung pass re-reads its units from the layout, so a class listed
+    twice would be counted twice toward the deficit while ``_patterns_for``
+    emits it once, and the plan would claim a fit the override does not free."""
+    seen: list[SpillClass] = []
+    for cls in opts.ffn_rung_order:
+        if cls in FFN_SPILL_CLASSES and cls not in seen:
+            seen.append(cls)
+    return seen
+
+
 def _grade_the_boundary_block(
     layout: ModelLayout, opts: PlanOptions, taken: list[SpillUnit], freed: int, deficit: int
 ) -> tuple[list[SpillUnit], int]:
@@ -754,7 +766,7 @@ def _grade_the_boundary_block(
         return taken, freed
 
     without = freed - boundary.nbytes
-    rungs = [cls for cls in opts.ffn_rung_order if cls in FFN_SPILL_CLASSES]
+    rungs = _ordered_rungs(opts)
     kept: list[SpillUnit] = []
     running = without
     for cls in rungs:
@@ -847,9 +859,7 @@ def _rung_classes(layout: ModelLayout, opts: PlanOptions) -> tuple[Optional[Spil
     spillable = [b for b in layout.blocks if b.spillable_bytes > 0]
     graded = bool(spillable) and all(b.graded for b in spillable)
     if _effective_granularity(layout, opts) is FfnGranularity.ALL and graded:
-        rungs: list[Optional[SpillClass]] = [
-            cls for cls in opts.ffn_rung_order if cls in FFN_SPILL_CLASSES
-        ]
+        rungs: list[Optional[SpillClass]] = list(_ordered_rungs(opts))
     else:
         # WHOLE, BOUNDARY, and any ungraded layout all walk the coarse rung here.
         # BOUNDARY's graded piece is not a rung at all -- it applies to the ONE

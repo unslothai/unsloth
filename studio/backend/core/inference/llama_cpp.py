@@ -5683,6 +5683,37 @@ def _extra_args_n_parallel(
     return found
 
 
+def _extra_args_cache_ram(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """The prompt-cache bound a pass-through sets, in MiB, or None when nothing does.
+
+    Same precedence as ``_extra_args_n_parallel``: extras are appended after every
+    flag Studio emits and llama.cpp is last-wins, so a typed --cache-ram (-1 for
+    unbounded, 0 to disable) beats both the emitted clamp and LLAMA_ARG_CACHE_RAM.
+    The launch's RAM arithmetic has to see the value the child will run with.
+    """
+    source_env = os.environ if env is None else env
+    found: Optional[int] = None
+    raw = source_env.get("LLAMA_ARG_CACHE_RAM")
+    if raw:
+        try:
+            found = int(str(raw).strip())
+        except (TypeError, ValueError):
+            pass
+    args = [str(a) for a in extra_args] if extra_args else []
+    for i, arg in enumerate(args):
+        name, _, inline = arg.partition("=")
+        if name != "--cache-ram":
+            continue
+        value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
+        try:
+            found = int(value.strip())
+        except (TypeError, ValueError):
+            continue
+    return found
+
+
 def _extra_args_n_ubatch(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
@@ -21543,9 +21574,18 @@ class LlamaCppBackend:
                     # an uncounted 8 GiB. Only when the user typed none and the planner
                     # owns the fit; the value is emitted on the --fit on path below and
                     # handed to the planner as the ceiling it may clamp further.
+                    # A --cache-ram typed into the extras is the user's too: it lands
+                    # after every flag emitted here and llama.cpp is last-wins, so a
+                    # clamp appended below would be overridden by it, and the RAM
+                    # rule has to price the value the child actually runs with.
+                    _cache_ram_in_force = (
+                        cache_ram
+                        if cache_ram is not None
+                        else _extra_args_cache_ram(extra_args, os.environ)
+                    )
                     if (
                         _planner_owns_fit
-                        and cache_ram is None
+                        and _cache_ram_in_force is None
                         and server_caps.get("supports_cache_ram")
                     ):
                         _auto_cache_ram_mib = self._clamped_cache_ram_mib(
@@ -21700,10 +21740,12 @@ class LlamaCppBackend:
                         "cache_ram_default_mib": int(
                             _auto_cache_ram_mib
                             if _auto_cache_ram_mib is not None
-                            else self._effective_prompt_cache_bytes(cache_ram, server_caps)
+                            else self._effective_prompt_cache_bytes(
+                                _cache_ram_in_force, server_caps
+                            )
                             // (1024 * 1024)
                         ),
-                        "cache_ram_user_set": cache_ram is not None,
+                        "cache_ram_user_set": _cache_ram_in_force is not None,
                         # Context is reduced LAST, and only when Auto owns it.
                         "context_policy_fit_only": bool(_spill_ctx_request),
                         "min_ctx": int(_AUTO_OFFLOAD_CTX),
@@ -21940,8 +21982,8 @@ class LlamaCppBackend:
                             else 0
                         )
                         + (
-                            self._effective_prompt_cache_bytes(cache_ram, server_caps)
-                            if cache_ram is not None
+                            self._effective_prompt_cache_bytes(_cache_ram_in_force, server_caps)
+                            if _cache_ram_in_force is not None
                             else 0
                         ),
                     )
@@ -22496,7 +22538,7 @@ class LlamaCppBackend:
                             _mtp_will_engage = False
                         if (
                             _spill.cache_ram_mib >= 0
-                            and cache_ram is None
+                            and _cache_ram_in_force is None
                             and server_caps.get("supports_cache_ram")
                         ):
                             if "--cache-ram" in cmd:
@@ -24057,6 +24099,16 @@ class LlamaCppBackend:
                     # Placement is llama.cpp's again, so the all-on-GPU answer the
                     # plan justified goes with it.
                     _spill_keeps_every_layer_on_gpu = False
+                    # So does the plan's load mode: once a plan is taken the fit's
+                    # --load-mode is REPLACED by the plan's, priced against the
+                    # plan's host side, and the fitter can put far more on the host
+                    # than the plan did. A retry that keeps "none" turns a pageable
+                    # fallback into a host-RAM OOM. Only Unsloth's own tokens; the
+                    # record is kept, as the --fit on retry keeps it, since the
+                    # arch-crash and CPU fallbacks respawn from `cmd` and strip it
+                    # themselves.
+                    if self._fit_load_mode_flags:
+                        reverted = _without_subsequence(reverted, self._fit_load_mode_flags)
                     _restored = (getattr(self, "_spill_plan_restore", None) or {}).get("--parallel")
                     if _restored is not None:
                         try:

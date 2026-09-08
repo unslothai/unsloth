@@ -1164,3 +1164,19 @@ def test_the_gate_prices_the_prompt_at_the_window_the_reduced_slots_serve(monkey
         layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base, kv_unified = True)
     )
     assert seen and seen[-1] == 1024, seen
+
+
+def test_a_repeated_rung_class_is_walked_once():
+    """A custom order that names a class twice must not count its bytes twice:
+    every rung pass re-reads its units from the layout, so the second pass took
+    the same tensors again toward the deficit while the override names them once,
+    and the plan claimed a fit that freed less than it said."""
+    layout = graded_moe()
+    dup = (SpillClass.FFN_DOWN, SpillClass.FFN_DOWN, SpillClass.FFN_UP, SpillClass.FFN_GATE)
+    clean = (SpillClass.FFN_DOWN, SpillClass.FFN_UP, SpillClass.FFN_GATE)
+    # 14 GiB: the deficit outruns every ffn_down, so the duplicate pass would run.
+    plan = plan_placement(layout, [14 * GIB], 94 * GIB, 8192, opts = opts(ffn_rung_order = dup))
+    ref = plan_placement(layout, [14 * GIB], 94 * GIB, 8192, opts = opts(ffn_rung_order = clean))
+    assert plan.spills_anything
+    assert plan.ot_patterns == ref.ot_patterns
+    assert moved_bytes(plan, layout) >= deficit_of(layout, 14)

@@ -303,7 +303,14 @@ def test_a_planner_owned_launch_on_windows_carries_the_clamp_and_not_the_tuning_
     assert "--ctx-checkpoints" not in cmd
 
 
-def _launch_crash_then_ok(tmp_path, monkeypatch, plan, **load_kwargs):
+def _launch_crash_then_ok(
+    tmp_path,
+    monkeypatch,
+    plan,
+    *,
+    caps = None,
+    **load_kwargs,
+):
     """The planned launch crashes at startup; the revocation retry comes up healthy.
 
     Mirrors the real recovery in _spawn_and_wait: the first child exits on a signal,
@@ -329,6 +336,7 @@ def _launch_crash_then_ok(tmp_path, monkeypatch, plan, **load_kwargs):
         "supports_kv_unified": True,
         "supports_fit_ctx": True,
         "supports_cache_ram": True,
+        **(caps or {}),
     }
     backend._available_system_memory_mib = lambda: 64 * 1024
     backend._planned_tensor_spill = lambda inputs, **_kw: plan
@@ -563,3 +571,39 @@ def test_the_workload_prompt_is_the_whole_window_under_a_unified_cache(tmp_path,
     assert seen["inputs"]["kv_unified"] is False
     assert seen["inputs"]["n_parallel"] == 4
     assert seen["inputs"]["workload_prompt_tokens"] == 1024
+
+
+def test_a_revoked_plan_takes_its_load_mode_with_it(tmp_path, monkeypatch):
+    """Once a plan is taken the fit's --load-mode is replaced by the plan's,
+    priced against the plan's host side. The revocation handed placement back to
+    the fitter, which can put far more on the host, and left "none" in the retry
+    argv, so the pageable fallback became a host-RAM OOM."""
+    plan = Plan(
+        changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), load_mode_none = True
+    )
+    cmds, backend = _launch_crash_then_ok(
+        tmp_path, monkeypatch, plan, caps = {"supports_load_mode": True}
+    )
+    assert len(cmds) == 2, cmds
+    assert _flag(cmds[0], "--load-mode") == "none"
+    assert "--load-mode" not in cmds[1], cmds[1]
+    assert cmds[1][-2:] == ["--fit", "on"]
+
+
+def test_a_cache_ram_typed_into_the_extras_is_the_one_the_launch_prices(tmp_path, monkeypatch):
+    """Extras are appended after every emitted flag and llama.cpp is last-wins, so
+    a typed --cache-ram is what the child runs with. Priced as unset, the launch
+    charged nothing for it, appended a clamp the extras then overrode, and let an
+    unbounded prompt cache eat the RAM --load-mode none reserved for the weights."""
+    plan = Plan(
+        changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), cache_ram_mib = 1024
+    )
+    cmd, backend, seen = _launch_with(
+        tmp_path, monkeypatch, plan, avail_mib = 12 * 1024, extra_args = ["--cache-ram", "-1"]
+    )
+    assert seen["inputs"]["cache_ram_user_set"] is True
+    # -1 is charged as the default the cache is likely to reach, never as zero.
+    assert seen["inputs"]["host_ram_unpriced_bytes"] >= 8192 * MIB
+    assert [i for i, a in enumerate(cmd) if a == "--cache-ram"] == [len(cmd) - 2]
+    assert _flag(cmd, "--cache-ram") == "-1"
+    assert "--cache-ram" not in backend._spill_plan_restore
