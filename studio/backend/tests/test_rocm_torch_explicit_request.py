@@ -1675,3 +1675,63 @@ def test_a_routable_request_still_bypasses_it(stack, monkeypatch):
     """The control: the request is the whole feature, so a viable one must still outrank
     the NVIDIA card here or the repair it gates can never run."""
     assert _needs_repair_passes_the_nvidia_gate(stack, monkeypatch, viable = True) is True
+
+
+def test_a_mask_past_the_last_device_is_not_a_viable_route(stack, monkeypatch):
+    """_pick_visible_index answers 0 for an ordinal past the last device, which is right for
+    arch SELECTION and wrong here: HIP exposes no device for that value, so approving the
+    route lets _ensure_cuda_torch stand down and replaces a working CUDA stack for a card the
+    runtime never hands torch. install.sh fails closed on the same input."""
+    assert (
+        _viable_masked(
+            stack, monkeypatch, devices = ["gfx1100", "gfx1010"], HIP_VISIBLE_DEVICES = "7"
+        )
+        is False
+    )
+
+
+def test_a_mask_that_is_not_a_device_index_is_not_a_viable_route(stack, monkeypatch):
+    """The other half of the same fallback: a UUID or junk value also folds onto GPU 0. The
+    ordinal case alone could be fixed by a range test, so this is the one that says the rule
+    is about what the mask RESOLVES to."""
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1100", "gfx1010"],
+            HIP_VISIBLE_DEVICES = "GPU-9d4f00a1",
+        )
+        is False
+    )
+
+
+def test_an_in_range_mask_past_the_first_device_is_still_viable(stack, monkeypatch):
+    """The control that keeps the rule narrow. gfx1010 leads, so a fix that declined on any
+    set mask -- or that read the first device rather than the selected one -- would answer
+    False here and remove the feature for every user who pins a card."""
+    assert (
+        _viable_masked(
+            stack, monkeypatch, devices = ["gfx1010", "gfx1100"], HIP_VISIBLE_DEVICES = "1"
+        )
+        is True
+    )
+
+
+def test_an_unresolvable_mask_does_not_answer_for_the_next_host(stack, monkeypatch):
+    """The flag is module state, so it is reset on entry rather than only where it is
+    decided. The second call takes _runtime_gfx_target's declared-arch early return, which
+    never reaches the pick site that would recompute it -- so without the reset it inherits
+    the previous host's NO and silently disables the feature for the rest of the process.
+
+    A first version of this test used an unmasked host for the second call and could not
+    fail: that path has a device list, so the pick site answers again either way. The early
+    return is what the reset is for, and an explicit arch is the one that outranks masks in
+    both halves of the installer."""
+    assert (
+        _viable_masked(
+            stack, monkeypatch, devices = ["gfx1100", "gfx1010"], HIP_VISIBLE_DEVICES = "7"
+        )
+        is False
+    )
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1100")
+    assert _viable_masked(stack, monkeypatch, devices = ["gfx1100", "gfx1010"]) is True

@@ -1933,6 +1933,13 @@ def _has_usable_nvidia_gpu() -> bool:
 # keeps the plain indexing behaviour.
 _LAST_AMD_GFX_PROBE: "str | None" = None
 
+# Whether the HIP-layer mask named a device the host actually has, on the last
+# _runtime_gfx_target call. Provenance beside _LAST_AMD_GFX_PROBE and for the same reason:
+# the target alone cannot carry it, since an unresolvable mask and an unmasked host both
+# resolve to the first device, and only the callers deciding whether to REPLACE a working
+# stack need to tell them apart.
+_LAST_HIP_MASK_RESOLVED = True
+
 
 def _detect_amd_gfx_codes(
     dedup: bool = True,
@@ -2142,6 +2149,13 @@ def _forced_rocm_route_is_viable() -> bool:
     # composes both mask layers and returns the whole machine beside the target, which is
     # the shape _gfx_route_on_host needs for the gfx906 mixed-host rule.
     _target, _, _, _host_codes = _runtime_gfx_target(_infer_linux_amd_gfx_arch())
+    # A mask HIP cannot resolve exposes no device to it, so there is nothing to swap to --
+    # and the target above is the first card only because _pick_visible_index guesses one.
+    # Above the target test, since the fallback below would otherwise approve the same host
+    # off its inventory. Silent by design: _pick_visible_index has already warned, naming
+    # the variable and its value, and this predicate is asked from three call sites.
+    if not _LAST_HIP_MASK_RESOLVED:
+        return False
     if _target is not None:
         return _gfx_route_on_host(_target, _host_codes or [_target])
     # No target resolved. A mask exposing no GPU is a deliberate selection, so there is
@@ -2245,6 +2259,11 @@ def _runtime_gfx_target(
     matter because a runtime-only ROCm install ships neither rocminfo nor amd-smi, and with
     no target the callers keep a wheel with no kernels for this GPU.
     """
+    # Reset on entry rather than only where it is decided, so a caller can never read the
+    # answer a previous host-shape gave: every early return below leaves a mask that resolved
+    # (an explicit arch outranks it; a no-GPU mask has its own rule) or no list to index.
+    global _LAST_HIP_MASK_RESOLVED
+    _LAST_HIP_MASK_RESOLVED = True
     # An empty (or "-1") mask selects NO GPU, deliberately, per _visible_devices_pinned.
     # Decided before any probe runs, because no probe is filtered the way the reroutes need:
     # only ROCR_VISIBLE_DEVICES reaches rocminfo, and amd-smi and KFD sysfs are filtered by
@@ -2382,6 +2401,13 @@ def _runtime_gfx_target(
                 f"   Set UNSLOTH_ROCM_GFX_ARCH to the arch you want wheels for.\n"
             )
             return None, [], None, host_codes
+    # Recorded beside the pick, against the same list, because this is the one place both
+    # are known: gfx_devices has had the ROCr layer applied and is what the HIP index
+    # addresses. The pick itself is unchanged -- selecting an arch off a mask that named
+    # nothing is still better than naming none -- and only the replace-the-stack callers
+    # read the flag.
+    if gfx_devices:
+        _LAST_HIP_MASK_RESOLVED = _hip_layer_mask_names_a_device(len(gfx_devices))
     runtime_gfx = (
         gfx_devices[_pick_visible_index(len(gfx_devices), masks = _HIP_LAYER_MASKS)]
         if gfx_devices
@@ -2628,6 +2654,40 @@ _HIP_LAYER_MASKS = ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
 # A device count no host reaches, for asking what index a mask NAMES rather than which entry
 # of a real list it selects: any ordinal below it resolves to itself, not to the 0 fallback.
 _INDEX_PROBE_LEN = 1 << 20
+
+
+def _hip_layer_mask_names_a_device(device_count: int) -> bool:
+    """Whether the HIP-layer mask, if set, names a device index this host has.
+
+    _pick_visible_index answers 0 for a mask it cannot resolve -- an ordinal past the last
+    device, or a value that is not an index at all -- because for arch SELECTION a first-GPU
+    guess beats no answer, and it warns while doing it. Deciding whether to REPLACE a working
+    CUDA stack is the opposite question: HIP exposes no device for either value, so the ROCm
+    wheels would land on a host whose runtime then hands torch nothing. install.sh fails
+    closed on the same input, and the two halves have to agree.
+
+    First-set-wins between the two spellings, as _pick_visible_index documents, and against
+    the list the HIP layer actually indexes -- the survivors of the ROCr layer, which the
+    caller has already applied. True when no HIP-layer mask is set: there is nothing to
+    resolve, which is not the same as failing to resolve something.
+    """
+    for _env in _HIP_LAYER_MASKS:
+        _val = os.environ.get(_env)
+        if _val is None:
+            continue
+        _val = _val.strip()
+        # A no-GPU mask is a deliberate selection rather than an unresolvable one, and
+        # _visible_masks_select_no_gpu already declines it with that reasoning.
+        if _val == "" or _val == "-1":
+            return False
+        _first = _val.split(",")[0].strip()
+        try:
+            return 0 <= int(_first) < device_count
+        except ValueError:
+            # A UUID or junk. AMD documents UUID forms for ROCR_VISIBLE_DEVICES, which is a
+            # different layer and is resolved by _rocr_visible_subset.
+            return False
+    return True
 
 
 def _rocr_visible_subset(gfx_devices: "list[str]") -> "tuple[list[str], bool]":
