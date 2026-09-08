@@ -11,6 +11,7 @@ subprocess.poll() branch so a crashed llama-server surfaces a structured
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import threading
 import time
@@ -1160,3 +1161,127 @@ def test_the_lifecycle_reset_stays_below_the_argument_checks():
     assert body.index("choose an explicit port.") < body.index(
         "_begin_server_lifecycle()"
     ), "the reset runs before run_server has finished rejecting bad arguments"
+
+
+def test_the_lifecycle_reset_is_the_last_thing_before_the_serve():
+    """Clearing the shutdown flag is what lets a spawn through, so nothing that can
+    abort startup may follow it.
+
+    An embedded host restarting into an occupied port (_resolve_port) or a missing
+    frontend (SystemExit) would otherwise leave _shutting_down False with the
+    previous session's still-unwinding load free to start a child the shutdown
+    sweep has already run past.
+    """
+    body = _run_server_body()
+    reset = body.index("_begin_server_lifecycle()")
+    tail = body[reset:]
+
+    for fail_fast in ("raise SystemExit", "_resolve_port("):
+        assert fail_fast not in tail, (
+            f"{fail_fast} runs after the lifecycle reset, so a failed restart leaves the "
+            "spawn guard cleared"
+        )
+
+
+class TestARefusedSpawnClosesItsLog:
+    """Each spawn opens a per-attempt tee log just before Popen. A refusal returns
+    without a process, and _kill_process returns early when there is none, so
+    nothing else ever closes it: the next attempt overwrites the attribute, leaking
+    the descriptor and holding the file lock on Windows."""
+
+    def _backend(self, tmp_path):
+        b = _make_backend()
+        b._shutting_down = True
+        b._spawn_lock = threading.Lock()
+        b._stop_mtp_crash_watchdog = lambda: None
+        b._process = None
+        b._redacted_cmd_for_log = lambda c: c
+        b._llama_log_path = str(tmp_path / "llama.log")
+        b._llama_log_fh = None
+        return b
+
+    def test_start_llama_process_closes_it(self, tmp_path):
+        """The handle under test is the one the method opens for itself, not one
+        set beforehand: _start_llama_process clears the attribute and opens a fresh
+        per-attempt log before it reaches the shutdown check."""
+        b = self._backend(tmp_path)
+        opened = []
+        real_open = open
+
+        def tracking_open(*a, **k):
+            fh = real_open(*a, **k)
+            opened.append(fh)
+            return fh
+
+        import builtins
+
+        with mock.patch.object(builtins, "open", tracking_open):
+            assert (
+                b._start_llama_process(["llama-server"], {}, child_gpu_physical_ids = None)
+                is False
+            )
+
+        assert opened, "the method never opened an attempt log; this proves nothing"
+        assert all(fh.closed for fh in opened), "the refused attempt left its tee log open"
+        assert b._llama_log_fh is None
+
+    def test_the_kill_path_does_not_cover_it(self, tmp_path):
+        """Why the explicit close is needed: _kill_process is the only other closer
+        and it returns before that, since a refusal published no process."""
+        b = self._backend(tmp_path)
+        fh = open(tmp_path / "kill.log", "w", encoding = "utf-8")
+        b._llama_log_fh = fh
+        b._reset_effective_parallel_slots = lambda: None
+
+        b._kill_process(teardown = True)
+
+        assert not fh.closed, (
+            "_kill_process now closes the handle with no process; if that is "
+            "deliberate this test and the explicit close are both redundant"
+        )
+        fh.close()
+
+
+def test_the_pid_is_recorded_before_the_spawn_lock_is_released():
+    """Teardown takes the lock the instant publication ends. Recording the pid after
+    that would write it back behind a sweep that just forgot it, and
+    _pid_start_identity cannot read a start time for a reaped process -- so the
+    record is a bare pid, which a later launch kills without an identity check."""
+    b = _make_backend()
+    b._shutting_down = False
+    b._stop_mtp_crash_watchdog = lambda: None
+    b._process = None
+    b._redacted_cmd_for_log = lambda c: c
+    b._llama_log_path = None
+    b._llama_log_fh = None
+    order = []
+
+    class _Lock:
+        def __enter__(self):
+            order.append("lock")
+            return None
+
+        def __exit__(self, *_exc):
+            order.append("unlock")
+            return False
+
+    b._spawn_lock = _Lock()
+    b._record_server_pid = lambda pid: order.append("record")
+
+    class _Proc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    with mock.patch.object(subprocess, "Popen", lambda *a, **k: _Proc()):
+        with mock.patch.object(threading, "Thread", lambda **k: mock.Mock()):
+            assert (
+                b._start_llama_process(["llama-server"], {}, child_gpu_physical_ids = None)
+                is True
+            )
+
+    assert order.index("record") < order.index("unlock"), (
+        f"the pid is recorded after the lock is released ({order}), so a teardown "
+        "between the two writes a bare pid record for an already-reaped process"
+    )

@@ -2584,26 +2584,6 @@ def run_server(
     # imported, because main.py must not import this module back.
     app.state.live_sibling_backend = live_sibling_backend
 
-    # A new server lifecycle. The backend is a module singleton, so an embedded
-    # host that stops and calls this again reuses the instance _graceful_shutdown
-    # marked as shutting down, and without this every launch of the second session
-    # would be refused.
-    #
-    # Here rather than at the top of this function because `main` imports the route
-    # module, so by this line the singleton already exists and the import below is a
-    # lookup with no side effects. Reaching for it any earlier would build that
-    # singleton itself -- which sweeps orphan llama-servers and registers an atexit
-    # handler -- ahead of the UTF-8 reconfigure, the session log, the structlog
-    # setup, initialize_parent_lifetime() and write_startup_marker(), each of which
-    # this function documents as having to come first. Still long before uvicorn
-    # serves, so nothing can have asked for a load yet.
-    try:
-        from routes.inference import _llama_cpp_backend
-        if _llama_cpp_backend is not None:
-            _llama_cpp_backend._begin_server_lifecycle()
-    except Exception as e:
-        logger.warning("Could not reset llama-server shutdown state: %s", e)
-
     logger.info(
         "Imported FastAPI app in %.1fms",
         (time.perf_counter() - import_started) * 1000,
@@ -2767,6 +2747,27 @@ def run_server(
     config = uvicorn.Config(app, **config_kwargs)
     _server = _ReadyServer(config)
     _shutdown_event = Event()
+
+    # A new server lifecycle. The backend is a module singleton, so an embedded host
+    # that stops and calls this again reuses the instance _graceful_shutdown marked
+    # as shutting down, and without this every launch of the second session would be
+    # refused.
+    #
+    # Last, after every fail-fast path, because clearing the flag is what lets a
+    # spawn through: an abort between the reset and the serve (an occupied port from
+    # _resolve_port, the missing-frontend SystemExit) would leave the previous
+    # session's still-unwinding load free to start a child that the shutdown sweep
+    # has already run past. Also after `from main import app`, which imports the
+    # route package, so the singleton exists by now and the import below is a lookup
+    # -- reaching for it earlier would build it here instead, ahead of the UTF-8
+    # reconfigure, the session log, the structlog setup, initialize_parent_lifetime()
+    # and write_startup_marker(), each documented above as having to come first.
+    try:
+        from routes.inference import _llama_cpp_backend
+        if _llama_cpp_backend is not None:
+            _llama_cpp_backend._begin_server_lifecycle()
+    except Exception as e:
+        logger.warning("Could not reset llama-server shutdown state: %s", e)
 
     # Expose the actual bound port so handlers build loopback URLs at the real
     # backend, not whatever a proxy/tunnel exposed. For ephemeral binds (port==0)
