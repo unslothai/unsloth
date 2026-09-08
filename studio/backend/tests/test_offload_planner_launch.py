@@ -673,9 +673,7 @@ def test_every_cache_ram_spelling_the_child_accepts_is_priced():
     assert _extra_args_cache_ram(["-cram", "512"], {"LLAMA_ARG_CACHE_RAM": "8192"}) == 512
 
 
-def test_a_typed_cache_ram_outranks_the_field_and_the_field_outranks_the_env(
-    tmp_path, monkeypatch
-):
+def test_a_typed_cache_ram_outranks_the_field_and_the_field_outranks_the_env(tmp_path, monkeypatch):
     """The field's flag is emitted before the extras and llama.cpp is last-wins, so
     a typed --cache-ram is what the child allocates; priced from the field, the RAM
     rule reserved 1 GiB for a cache the child grows to 16."""
@@ -692,7 +690,7 @@ def test_a_typed_cache_ram_outranks_the_field_and_the_field_outranks_the_env(
 def test_a_pass_through_zero_context_pins_the_native_window_the_plan_is_priced_at(
     tmp_path, monkeypatch
 ):
-    """"-c 0" is Auto to the cap (it runs) and the planner was asked FIT_ONLY at the
+    """ "-c 0" is Auto to the cap (it runs) and the planner was asked FIT_ONLY at the
     context Auto wanted. A shrunk context rewrote the emitted -c, but the extras
     append "-c 0" after it and llama.cpp is last-wins, so the child ran at native
     with --fit off and a cache the plan never priced. The pin is the user's: priced
