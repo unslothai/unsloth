@@ -3,7 +3,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
-import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { type ProfileStats, loadProfileStats } from "../api/profile-stats";
 
 type ProfileStatsState = {
@@ -45,17 +44,12 @@ export function useProfileStats(): ProfileStatsState {
     return () => abortRef.current?.abort();
   }, [load]);
 
+  // Coming back to the tab is when the numbers can have moved: the user chatted
+  // in another window, or an API client spent tokens while this one sat open.
+  // Reopening Settings needs no watcher of its own -- the dialog content is not
+  // force-mounted, so the panel unmounts on close and the effect above refetches
+  // when it mounts again.
   useEffect(() => subscribeResidentStatusRefresh(load), [load]);
-
-  const settingsOpen = useSettingsDialogStore((state) => state.open);
-  const sawSettingsOpenRef = useRef(settingsOpen);
-  useEffect(() => {
-    const wasOpen = sawSettingsOpenRef.current;
-    sawSettingsOpenRef.current = settingsOpen;
-    if (!wasOpen && settingsOpen) {
-      void load();
-    }
-  }, [settingsOpen, load]);
 
   const reload = useCallback(() => {
     void load();

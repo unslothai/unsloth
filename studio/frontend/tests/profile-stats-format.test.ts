@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  type ActivityGridColumn,
   activitySummaryForMode,
   formatCompactNumber,
   formatDayCount,
@@ -208,6 +209,65 @@ test("activity summaries follow the selected chart mode", () => {
   assert.equal(activitySummaryForMode(grid, "cumulative"), 180);
   assert.equal(activitySummaryForMode(grid, "weekly"), 150);
   assert.equal(activitySummaryForMode([], "daily"), 0);
+});
+
+test("daily and cumulative still total the window, as the card always did", () => {
+  // The helper replaced an inline reduce over the same grid. If these two modes
+  // ever stop matching it, every existing subtitle silently changes number, and
+  // nothing else in the suite would notice.
+  const legacyVisibleTotal = (grid: ActivityGridColumn[]) =>
+    grid.reduce(
+      (sum, column) =>
+        column.reduce((total, cell) => total + (cell.day?.tokens ?? 0), sum),
+      0,
+    );
+
+  let seed = 20260908;
+  const random = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 2 ** 32;
+  };
+  for (let trial = 0; trial < 200; trial += 1) {
+    const grid: ActivityGridColumn[] = Array.from(
+      { length: 1 + Math.floor(random() * 55) },
+      () =>
+        Array.from({ length: 7 }, () =>
+          random() < 0.3
+            ? { day: null }
+            : { day: { tokens: Math.floor(random() * 50_000) } },
+        ),
+    );
+    const expected = legacyVisibleTotal(grid);
+    assert.equal(activitySummaryForMode(grid, "daily"), expected);
+    assert.equal(activitySummaryForMode(grid, "cumulative"), expected);
+    // A peak week is one column, so it can never exceed the whole window.
+    assert.ok(activitySummaryForMode(grid, "weekly") <= expected);
+  }
+});
+
+test("the shapes a real grid actually takes summarise without NaN", () => {
+  // Every column is padded to a Monday-started week, so null cells are the norm
+  // rather than an edge case, and the final column is short.
+  const allPadding = [Array.from({ length: 7 }, () => ({ day: null }))];
+  const ragged = [
+    [
+      { day: { tokens: 1 } },
+      { day: { tokens: 2 } },
+      { day: { tokens: 3 } },
+      { day: { tokens: 4 } },
+      { day: { tokens: 5 } },
+      { day: { tokens: 6 } },
+      { day: { tokens: 7 } },
+    ],
+    [{ day: { tokens: 100 } }, { day: { tokens: 200 } }],
+  ];
+
+  for (const mode of ["daily", "weekly", "cumulative"] as const) {
+    assert.equal(activitySummaryForMode(allPadding, mode), 0);
+    assert.ok(!Number.isNaN(activitySummaryForMode(ragged, mode)));
+  }
+  assert.equal(activitySummaryForMode(ragged, "daily"), 328);
+  assert.equal(activitySummaryForMode(ragged, "weekly"), 300);
 });
 
 test("series modes reshape the same daily data", () => {
