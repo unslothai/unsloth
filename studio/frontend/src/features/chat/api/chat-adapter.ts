@@ -114,6 +114,7 @@ import {
   createBoundaryScan,
   mergedToolCallArgumentsText,
   splitTopLevelJsonObjects,
+  streamedToolCallArguments,
   toolCallArgumentsText,
   toolCallReplayArguments,
 } from "../tool-call-arguments";
@@ -139,7 +140,10 @@ import {
 import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
+  externalMaxOutputTokensNeedsConnectionCap,
   getExternalMaxOutputTokens,
+  getPublishedExternalMaxOutputTokens,
+  getGroundedExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
@@ -1190,9 +1194,12 @@ function buildReplayContent(
   textContent: string,
   imageParts: Array<{ type: "image_url"; image_url: { url: string } }>,
 ): OpenAIMessageContent {
-  return imageParts.length > 0
+  if (imageParts.length === 0) return textContent;
+  // Anthropic rejects whitespace-only text, and collectTextParts joins with "\n".
+  // Spread: the caller's array must not become the message content.
+  return textContent.trim()
     ? [{ type: "text", text: textContent }, ...imageParts]
-    : textContent;
+    : [...imageParts];
 }
 
 function collectAssistantTextThoughtSignature(
@@ -4157,6 +4164,19 @@ export function createOpenAIStreamAdapter(
                   providerId: researchExternalProvider.id,
                   providerType: researchExternalProvider.providerType,
                   modelId: researchExternalSelection.modelId,
+                  maxOutputTokens: getGroundedExternalMaxOutputTokens(
+                    researchExternalProvider.providerType,
+                    researchExternalSelection.modelId,
+                    researchExternalProvider.maxOutputTokens,
+                  ),
+                  maxOutputTokensFromSavedCap: externalMaxOutputTokensNeedsConnectionCap(
+                    researchExternalProvider.providerType,
+                    researchExternalSelection.modelId,
+                  ),
+                  maxOutputTokensPublished: getPublishedExternalMaxOutputTokens(
+                    researchExternalProvider.providerType,
+                    researchExternalSelection.modelId,
+                  ),
                 }
               : undefined,
           temperature: params.temperature,
@@ -5837,6 +5857,10 @@ export function createOpenAIStreamAdapter(
                 ? { thread_id: resolvedThreadId }
                 : {}),
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
+              ...(externalCapabilities?.minP ? { min_p: params.minP } : {}),
+              ...(externalCapabilities?.repetitionPenalty
+                ? { repetition_penalty: params.repetitionPenalty }
+                : {}),
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
@@ -6998,10 +7022,9 @@ export function createOpenAIStreamAdapter(
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
                   // The chunk is cast, not validated, and llama-server has shipped `arguments` as a decoded object.
-                  const deltaArgs =
-                    typeof call.function?.arguments === "string"
-                      ? call.function.arguments
-                      : "";
+                  const deltaArgs = streamedToolCallArguments(
+                    call.function?.arguments,
+                  );
                   // Unsloth's local Codex loop follows the OpenAI tool-call delta with tool_start/tool_end, so
                   // resolve the backend id now to keep all three shapes on one card. Before resolving, since
                   // a provider claiming a minted spelling would merge two calls.

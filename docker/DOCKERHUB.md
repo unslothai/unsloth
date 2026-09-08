@@ -1,8 +1,8 @@
 # Unsloth Docker Image
 
-Pre-built images for [Unsloth](https://github.com/unslothai/unsloth): fine-tune and run LLMs, vision, audio and diffusion models with no setup. Every image carries the full training stack (PyTorch 2.11 with CUDA 12.8, Unsloth, unsloth-zoo, bitsandbytes, xformers, TRL, PEFT), JupyterLab with the [Unsloth notebooks](https://github.com/unslothai/notebooks) pre-synced, and prebuilt llama.cpp and whisper.cpp for GGUF work.
+Pre-built images for [Unsloth](https://github.com/unslothai/unsloth): fine-tune and run LLMs, vision, audio and diffusion models with no setup. Every image carries the full training stack (PyTorch 2.11 with CUDA 12.8, Unsloth, unsloth-zoo, bitsandbytes, TRL, PEFT, plus xformers on `linux/amd64`), JupyterLab with the [Unsloth notebooks](https://github.com/unslothai/notebooks) pre-synced, and prebuilt llama.cpp and whisper.cpp for GGUF work.
 
-Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in the main repository. Guide: [docs.unsloth.ai](https://docs.unsloth.ai/get-started/install-and-update/docker).
+Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in the main repository. Guide: [docs.unsloth.ai](https://docs.unsloth.ai/get-started/install/docker).
 
 ## Tags
 
@@ -17,7 +17,13 @@ Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in th
 
 ## Quick start
 
-Requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and an NVIDIA driver of 570.26 or newer. On Windows use Docker Desktop with the WSL 2 backend.
+Needs an NVIDIA driver of 570.26 or newer and, on Linux, the NVIDIA Container Toolkit. One command installs the toolkit (Ubuntu, Debian, RHEL, Fedora, Rocky, Amazon Linux, SUSE) and checks a container can see the GPU:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh
+```
+
+On Windows use Docker Desktop with the WSL 2 backend and a current NVIDIA Windows driver; nothing else to install. Then:
 
 ```bash
 docker run -d --gpus all --ipc=host \
@@ -69,7 +75,7 @@ docker run -d -e UNSLOTH_ALLOW_CPU=1 -p 8000:8000 -p 8888:8888 unsloth/unsloth
 
 ## Supported GPUs
 
-Compiled for `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120`: Turing (T4, RTX 20), Ampere (A100, A10, RTX 30), Ada (L4, L40, RTX 40), Hopper (H100, H200, GH200), Blackwell (B200, GB200, RTX 50, RTX PRO 6000) and GB10 (DGX Spark). The container prints the detected GPU on start and explains what to do when the driver is too old.
+Compiled for `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120`: Turing (T4, RTX 20), Ampere (A100, A10, RTX 30), Ada (L4, L40, RTX 40), Hopper (H100, H200, GH200) and Blackwell (B200, GB200, RTX 50, RTX PRO 6000). GB10 (DGX Spark, `sm_121`) runs the `sm_120` binaries through Blackwell forward compatibility; only kernels compiled at run time, such as Triton, use the CUDA 13 compiler the container switches to on that GPU. The container prints the detected GPU on start and explains what to do when the driver is too old.
 
 Driver requirements:
 
