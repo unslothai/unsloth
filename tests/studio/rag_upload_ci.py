@@ -26,6 +26,7 @@ env.update(
         "TMP": str(root / "tmp"),
         "TEMP": str(root / "tmp"),
         "UV_CACHE_DIR": str(root / "cache/uv"),
+        "PIP_CACHE_DIR": str(root / "cache/pip"),
         "XDG_CACHE_HOME": str(root / "cache"),
         "HF_HOME": str(root / "cache/huggingface"),
         "PYTHONDONTWRITEBYTECODE": "1",
@@ -63,7 +64,9 @@ def python_in(directory):
 assert run("bootstrap", [sys.executable, "-m", "venv", root / "bootstrap"])
 bootstrap = python_in(root / "bootstrap")
 assert run("install-uv", [bootstrap, "-m", "pip", "install", "uv==0.11.0"])
-assert run("venv", [bootstrap, "-m", "uv", "venv", "--python", sys.executable, root / "venv"])
+assert run(
+    "venv", [bootstrap, "-m", "uv", "venv", "--clear", "--python", sys.executable, root / "venv"]
+)
 python = python_in(root / "venv")
 assert run(
     "dependencies",

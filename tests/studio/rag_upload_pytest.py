@@ -15,7 +15,7 @@ Path.home = classmethod(lambda cls: test_home)
 expanduser = os.path.expanduser
 os.path.expanduser = lambda path: (
     str(test_home) + path[1:]
-    if isinstance(path, str) and (path == "~" or path.startswith("~/"))
+    if isinstance(path, str) and (path == "~" or path.startswith(("~/", "~\\")))
     else expanduser(path)
 )
 os.environ.update(
