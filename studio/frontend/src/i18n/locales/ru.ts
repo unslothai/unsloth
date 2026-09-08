@@ -54,6 +54,13 @@ export const ru = {
     shutdown: "Выключить",
   },
   shell: {
+    find: {
+      label: "Поиск на странице",
+      previous: "Предыдущее совпадение",
+      next: "Следующее совпадение",
+      close: "Закрыть поиск",
+      truncated: "Эта страница слишком длинная, чтобы выполнить поиск целиком.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -224,6 +231,10 @@ export const ru = {
       browserReserved:
         "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
       actions: {
+        findInPage: {
+          label: "Поиск на странице",
+          description: "Искать текст на этой странице",
+        },
         openSettings: {
           label: "Открыть настройки",
           description: "Открыть окно настроек",
@@ -484,6 +495,13 @@ export const ru = {
         sttModelLabel: "Модель распознавания речи",
         sttModelDescription:
           "Выберите или найдите модель STT для локального запуска.",
+        sttDeviceLabel: "Загружать в",
+        sttDeviceAuto: "GPU, если доступен",
+        sttDeviceCpu: "ОЗУ процессора",
+        sttDeviceAutoDescription:
+          "Использовать GPU, когда он есть, иначе CPU.",
+        sttDeviceCpuDescription:
+          "Держать модель в системной памяти. Расшифровка медленнее, но память GPU не занимается.",
         sttModelSearchPlaceholder: "Поиск модели",
         sttModelSearching: "Поиск на Hugging Face…",
         sttModelValidating: "Проверка совместимости с Whisper…",
@@ -907,7 +925,11 @@ export const ru = {
         currentStreak: "Текущая серия",
         longestStreak: "Самая длинная серия",
         activityTitle: "Активность по токенам",
-        activityDescription: "Период: {weeks} · {total}",
+        activityDescription: {
+          daily: "Период: {weeks} · {total}",
+          weekly: "Пиковая неделя {total} · последние {weeks}",
+          cumulative: "{total} накоплено за последние {weeks}",
+        },
         mode: {
           daily: "По дням",
           weekly: "По неделям",
@@ -1238,7 +1260,7 @@ export const ru = {
       description:
         "Подключение кодинг-агентов, таких как Claude Code и Codex, к локальной модели с помощью unsloth start.",
       intro:
-        "подключает Claude Code, Codex, Hermes, OpenClaw, OpenCode и других агентов к модели, которую Unsloth обслуживает локально, полностью офлайн. Запускается OpenAI-совместимый сервер, а файлы конфигурации вашего агента остаются нетронутыми.",
+        "подключает Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode и других агентов к модели, которую Unsloth обслуживает локально, полностью офлайн. Запускается OpenAI-совместимый сервер, а файлы конфигурации вашего агента остаются нетронутыми.",
       readDocs: "Открыть документацию",
       copy: "Копировать",
       copied: "Скопировано",
@@ -2152,6 +2174,7 @@ export const ru = {
       memoryEfficient: "Экономия памяти",
       weightDecomposed: "Декомпозиция весов",
       notSupportedAppleSilicon: "Не поддерживается на Apple Silicon",
+      doraNeedsVisionLayersOff: "Отключите обучение слоёв зрения, чтобы использовать DoRA",
       optimization: "Оптимизация",
       schedule: "Расписание",
       memory: "Память",

@@ -168,19 +168,16 @@ export function codexCapabilitiesWithPlanModels(
   stored: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
 ): Record<string, { vision?: boolean; studio_tools?: boolean }> | null {
   if (!listed || listed.source !== "subscription") return null;
-  // The registry row is what says which slugs the plan is allowed to describe and what
-  // the provider-wide studio_tools answer is. Without it every seed model reads as one
-  // the registry never listed, so the plan's modalities are written over the registry's
-  // for slugs the registry does describe, and the wildcard entry that carries
-  // studio_tools for the whole provider type is dropped rather than rewritten. Both are
-  // persisted, so an editor opened before the registry finished loading, or after that
-  // fetch failed, leaves the composer wrong until the next successful sync. Learning
-  // nothing here is the honest answer; the next fetch with a registry in hand records it.
+  // The registry row says which slugs the plan may describe and what the provider-wide
+  // studio_tools answer is. Without it every seed model reads as unlisted, so the plan's
+  // modalities overwrite the registry's and the wildcard studio_tools entry is dropped.
+  // Both are persisted, so an editor opened before the registry loaded leaves the composer
+  // wrong until the next sync. Learning nothing here is the honest answer.
   if (!entry) return null;
   const registryCapabilities = entry.model_capabilities ?? {};
-  // The map is keyed by provider type, not by connection, so it must start from what
-  // is already learned: a second ChatGPT connection lists its own slugs, and rebuilding
-  // from the registry alone would drop the first one's.
+  // The map is keyed by provider type, not connection, so it must start from what is already
+  // learned: a second ChatGPT connection lists its own slugs, and rebuilding from the
+  // registry alone would drop the first one's.
   const capabilities = mergeLearnedModelCapabilities(
     stored,
     registryCapabilities,
@@ -189,11 +186,10 @@ export function codexCapabilitiesWithPlanModels(
   // Hidden entries are described too: they stay selectable, so the composer needs their
   // modalities as much as the offered ones.
   for (const model of listed.known ?? listed.models) {
-    // Only the plan describes a slug the registry never listed. Without it the
-    // composer reads "unknown" as "allowed" and offers image attachments that the
-    // backend then refuses on every send. A catalog entry carrying no modality list
-    // normalizes to null upstream and the backend gate is bool(vision), so the honest
-    // mirror here is false rather than recording nothing at all.
+    // Only the plan describes a slug the registry never listed. Without it the composer reads
+    // "unknown" as "allowed" and offers image attachments the backend refuses on every send.
+    // A catalog entry with no modality list normalizes to null upstream and the backend gate
+    // is bool(vision), so the honest mirror is false rather than nothing at all.
     if (!(model.id in registryCapabilities)) {
       capabilities[model.id] = {
         ...capabilities[model.id],
@@ -210,9 +206,9 @@ export function resolveCodexPickerModels(
   savedModels: string[],
   listed: CodexSubscriptionModels | null,
 ): { catalog: string[]; selected: string[] } {
-  // Only the plan's own catalog can retire a saved slug. The backend answers with the
-  // curated seed when it could not reach upstream, so treating that as the catalog
-  // would drop a saved model and the next unrelated save would make the loss stick.
+  // Only the plan's own catalog can retire a saved slug. The backend answers with the curated
+  // seed when it could not reach upstream, so treating that as the catalog would drop a
+  // saved model and the next unrelated save would make the loss stick.
   const planListed = listed?.source === "subscription" && listed.models.length > 0;
   if (!planListed) {
     const catalog = [...new Set([...curated, ...savedModels])];
@@ -220,9 +216,9 @@ export function resolveCodexPickerModels(
     return { catalog, selected: savedModels.filter((model) => offered.has(model)) };
   }
   const offeredIds = listed.models.map((model) => model.id);
-  // A saved slug the plan still returns is kept even when it is no longer offered:
-  // "hide" retires a model from the picker, it does not revoke one already in use.
-  // Only a slug the plan does not return at all is retired from the selection.
+  // A saved slug the plan still returns is kept even when no longer offered: "hide" retires a
+  // model from the picker, it does not revoke one in use. Only a slug the plan does not
+  // return at all is retired.
   const known = new Set((listed.known ?? listed.models).map((model) => model.id));
   const selected = savedModels.filter((model) => known.has(model));
   const catalog = [...new Set([...offeredIds, ...selected])];
@@ -236,8 +232,8 @@ export function ChatProvidersSettings({
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
   const seededProviderTypeRef = useRef<string | null>(null);
-  // Latches the one-shot auto-open below. Every navigation the user drives sets
-  // it too, so a slow first sync cannot pull them back into the form.
+  // Latches the one-shot auto-open below. Every user-driven navigation sets it too, so a slow
+  // first sync cannot pull them back into the form.
   const autoOpenedAddFormRef = useRef(false);
   const [page, setPage] = useState<"list" | "form">("list");
   const [providerType, setProviderType] = useState<string>("");
@@ -281,13 +277,12 @@ export function ChatProvidersSettings({
     providerType,
     editingProviderId ? editingBackendProviderType : null,
   );
-  // llama.cpp hides the key field. Ollama and vLLM show an optional key:
-  // Ollama cloud and secured vLLM need one; local servers leave it empty.
+  // llama.cpp hides the key field. Ollama and vLLM show an optional key: Ollama cloud and
+  // secured vLLM need one; local servers leave it empty.
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
-  // Unsloth runs Search, Code, MCP and RAG on this machine for any provider that
-  // advertises the capability, with no extra opt-in. Say so where the
-  // connection is created: the tool results also travel back to the provider as
-  // the next turn's input, which is not obvious from "connect a model".
+  // Unsloth runs Search, Code, MCP and RAG on this machine for any provider advertising the
+  // capability, with no extra opt-in. Say so where the connection is created: tool results
+  // also travel back to the provider as the next turn's input.
   const runsStudioToolsLocally =
     providerModelSupportsStudioTools(
       toExternalBackendProviderType(providerType),
@@ -398,9 +393,8 @@ export function ChatProvidersSettings({
       }
       return;
     }
-    // Seed default_models only for curated providers (catalog too large to
-    // enumerate). Remote cloud providers and local OpenAI-compat presets stay
-    // empty until the user clicks "Load available models".
+    // Seed default_models only for curated providers (catalog too large to enumerate). Remote
+    // cloud providers and local OpenAI-compat presets stay empty until "Load available models".
     const seedDefaults = entry.model_list_mode === "curated";
     setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds([]);
@@ -432,8 +426,8 @@ export function ChatProvidersSettings({
         ]);
         if (!isMounted) return;
         syncSucceeded = true;
-        // Hidden entries are fetched for their capabilities only; the dropdown
-        // surfaces them through CUSTOM_PROVIDER_PRESETS instead.
+        // Hidden entries are fetched for their capabilities only; the dropdown surfaces them through
+        // CUSTOM_PROVIDER_PRESETS instead.
         const selectableRegistry = registryRows.filter((entry) => !entry.hidden);
         setRegistry(selectableRegistry);
         setProviderType((current) => {
@@ -446,14 +440,12 @@ export function ChatProvidersSettings({
           }
           return registryRows[0]?.provider_type ?? "";
         });
-        // Trust the backend response. An empty array means every connection was
-        // removed (often from another tab); mirror that locally, else stale
-        // entries become un-removable here until localStorage is cleared.
+        // Trust the backend response. An empty array means every connection was removed, often from
+        // another tab; mirror that locally, else stale entries are un-removable here.
         onProvidersChange(syncedProviders);
-        // An empty list never says what this page is for, so open the form
-        // instead. Reads the synced response, not the local snapshot, so a
-        // stale empty list cannot flash the form at an existing user. Once
-        // only, else the focus re-sync would pull the user back here.
+        // An empty list never says what this page is for, so open the form instead. Reads the synced
+        // response, not the local snapshot, so a stale empty list cannot flash the form at an
+        // existing user. Once only, else the focus re-sync would pull the user back here.
         if (!autoOpenedAddFormRef.current) {
           autoOpenedAddFormRef.current = true;
           if (syncedProviders.length === 0 && selectableRegistry.length > 0) {
@@ -461,8 +453,7 @@ export function ChatProvidersSettings({
           }
         }
       } catch (error) {
-        // Only surface a toast for real failures, not for the silent
-        // background re-sync on tab focus.
+        // Only surface a toast for real failures, not for the silent background re-sync on tab focus.
         if (showSpinner) {
           const message =
             error instanceof Error ? error.message : "Unknown error";
@@ -477,9 +468,8 @@ export function ChatProvidersSettings({
       return syncSucceeded;
     };
     void syncFromBackend();
-    // Re-sync silently when the tab regains focus so deletes made in
-    // another browser propagate without forcing the user to reopen the
-    // dialog. Skip when the document is hidden to avoid background work.
+    // Re-sync silently on focus so deletes made in another browser propagate without reopening
+    // the dialog. Skip when the document is hidden to avoid background work.
     const handleVisibilityChange = () => {
       if (typeof document === "undefined" || document.hidden) return;
       void syncFromBackend({ showSpinner: false });
@@ -498,9 +488,9 @@ export function ChatProvidersSettings({
   }, [onProvidersChange]);
 
   function resetForm() {
-    // Any form transition retires an in-flight Codex catalog request. Its spinner goes
-    // with it: the state is shared across forms, so leaving it set would hold the next
-    // form's Load and Save controls disabled until the abandoned request times out.
+    // Any form transition retires an in-flight Codex catalog request, and its spinner with it:
+    // the state is shared across forms, so leaving it set would hold the next form's Load and
+    // Save disabled until the abandoned request times out.
     codexCatalogRequestRef.current += 1;
     setModelsLoading(false);
     setEditingProviderId(null);
@@ -625,9 +615,8 @@ export function ChatProvidersSettings({
       return;
     }
     if (providerType === "openai_codex") {
-      // Registry-curated, but the real catalog comes from the plan, so this control has
-      // to refetch it. Falling into the branch below would leave the only way to retry a
-      // failed catalog fetch closing and reopening the form.
+      // Registry-curated, but the real catalog comes from the plan, so this control has to refetch
+      // it. The branch below would leave closing and reopening the form as the only retry.
       if (!editingProviderId) {
         toast.info("Connect this ChatGPT subscription to load the models it can reach.");
         return;
@@ -636,17 +625,17 @@ export function ChatProvidersSettings({
         (candidate) => candidate.id === editingProviderId,
       );
       setModelsLoading(true);
-      // The live checkboxes, not the persisted list: a manual reload re-reads the
-      // catalog, it does not revert edits the user has not saved yet.
+      // The live checkboxes, not the persisted list: a manual reload re-reads the catalog, it does
+      // not revert unsaved edits.
       const applied = await applyCodexSubscriptionModels(
         editingProviderId,
         selectedModelIds,
         provider?.authStatus,
         true,
       ).catch(() => true);
-      // Only the request that still owns the form clears the shared flag. An abandoned
-      // one would re-enable Save while the newer request is out, letting the form be
-      // saved and then mutated when that request lands.
+      // Only the request that still owns the form clears the shared flag. An abandoned one would
+      // re-enable Save while the newer request is out, letting the form be saved and then
+      // mutated when that request lands.
       if (applied) setModelsLoading(false);
       return;
     }
@@ -679,9 +668,8 @@ export function ChatProvidersSettings({
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
         : (registryByType.get(providerType)?.default_models ?? []);
-      // Union of registry defaults + fetched models, defaults first so any
-      // curated picks (e.g. claude-haiku-4-5) always show even when the
-      // provider's /models endpoint omits them.
+      // Union of registry defaults and fetched models, defaults first so curated picks still show
+      // when the provider's /models endpoint omits them.
       const modelIds = pruneProviderModelIds(providerType, [
         ...new Set(
           [
@@ -1071,8 +1059,8 @@ export function ChatProvidersSettings({
       }
     }
     if (request !== codexCatalogRequestRef.current) {
-      // The form moved to another connection while this catalog was in flight, and
-      // applying it here would save the first connection's models onto the second.
+      // The form moved to another connection while this catalog was in flight, and applying it
+      // here would save the first connection's models onto the second.
       return false;
     }
     const capabilities = codexCapabilitiesWithPlanModels(
@@ -1082,8 +1070,8 @@ export function ChatProvidersSettings({
     );
     if (capabilities) setProviderModelCapabilities("openai_codex", capabilities);
     if (listed?.source === "reauthorization_required") {
-      // The backend already marked the bundle; resync so the connect panel offers
-      // Reconnect instead of leaving the connection looking healthy.
+      // The backend already marked the bundle; resync so the connect panel offers Reconnect
+      // instead of leaving the connection looking healthy.
       void syncExternalProvidersFromBackend(providersRef.current)
         .then((synced) => {
           providersRef.current = synced;
@@ -1093,17 +1081,16 @@ export function ChatProvidersSettings({
     }
     const picker = resolveCodexPickerModels(curated, savedModels, listed);
     if (refresh && listed?.source !== "subscription") {
-      // A curated fallback is not the account's catalog, so it retires nothing: keep
-      // whatever is on screen, including a model checked while the request was out.
+      // A curated fallback is not the account's catalog, so it retires nothing: keep what is on
+      // screen, including a model checked while the request was out.
       setAvailableModels((previous) => [...new Set([...picker.catalog, ...previous])]);
       setManualModelIds("");
       return true;
     }
     setAvailableModels(picker.catalog);
     if (refresh) {
-      // The checkboxes stay live while the request is out, so reconcile against the
-      // latest selection rather than the snapshot taken when the reload began. This is
-      // what the remote-catalog path above already does.
+      // The checkboxes stay live while the request is out, so reconcile against the latest
+      // selection rather than the snapshot taken when the reload began.
       const offered = new Set(picker.catalog);
       setSelectedModelIds((previous) => previous.filter((id) => offered.has(id)));
     } else {
@@ -1114,8 +1101,8 @@ export function ChatProvidersSettings({
   }
 
   async function editProvider(provider: ExternalProviderConfig) {
-    // Switching connections retires an in-flight catalog request, including on the
-    // branches below that never reach applyCodexSubscriptionModels.
+    // Switching connections retires an in-flight catalog request, including on the branches
+    // below that never reach applyCodexSubscriptionModels.
     codexCatalogRequestRef.current += 1;
     setModelsLoading(false);
     setEditingProviderId(provider.id);
@@ -1132,8 +1119,8 @@ export function ChatProvidersSettings({
     setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
-    // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under
-    // one would fail every unrelated edit. The resolver already reads it as the floor.
+    // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under one would
+    // fail every unrelated edit. The resolver already reads it as the floor.
     setMaxOutputTokensDraft(
       provider.maxOutputTokens == null
         ? ""
@@ -1178,9 +1165,9 @@ export function ChatProvidersSettings({
       return;
     }
     if (provider.authKind === "chatgpt_oauth") {
-      // The form is already on screen and the reset emptied the catalog, so this fetch
-      // needs the same spinner the manual reload has. Without it the editor looks like a
-      // connection with no models, and Save answers "load available models first".
+      // The form is on screen and the reset emptied the catalog, so this fetch needs the same
+      // spinner the manual reload has. Without it the editor looks like a connection with no
+      // models, and Save answers "load available models first".
       setModelsLoading(true);
       const applied = await applyCodexSubscriptionModels(
         provider.id,
@@ -1246,8 +1233,7 @@ export function ChatProvidersSettings({
     const savedKey = provider.hasApiKey
       ? ""
       : getExternalProviderApiKey(provider.id).trim();
-    // Hosted registry providers require keys. Local OpenAI-compatible presets
-    // may be keyless.
+    // Hosted registry providers require keys. Local OpenAI-compatible presets may be keyless.
     if (
       !savedKey &&
       !provider.hasApiKey &&
@@ -1632,21 +1618,15 @@ export function ChatProvidersSettings({
               authStatus={providers.find((provider) => provider.id === editingProviderId)?.authStatus}
               ensureProvider={ensureCodexProvider}
               onChanged={async () => {
-                // The form can move while this sync is out, and the id below is the one
-                // captured when the flow started. Every transition retires the catalog
-                // generation, so a change here means this continuation is for a form the
-                // user has already left.
-                // Taking a generation rather than reading one, the way every other
-                // transition does. Reading it shares a ticket with a catalog request that
-                // is already out, and an authorization change retires that request
-                // anyway: leaving it owning the form let it land, clear the shared
-                // loading flag and re-enable Save while this continuation was still
-                // syncing, which is the state the flag exists to prevent.
+                // The form can move while this sync is out, and the id below was captured when the flow
+                // started. Every transition retires the catalog generation, so a change here means this
+                // continuation is for a form the user has left. Taking a generation rather than reading
+                // one: sharing a ticket with an in-flight catalog request let it land, clear the shared
+                // loading flag and re-enable Save while this continuation was still syncing.
                 const request = ++codexCatalogRequestRef.current;
                 const changedProviderId = editingProviderId;
-                // Save is gated on this flag. Leaving it clear here lets the connection
-                // be saved with the pre-authorization seed selection before the plan's
-                // own catalog arrives, and those slugs then fail on every send.
+                // Save is gated on this flag. Leaving it clear lets the connection be saved with the
+                // pre-authorization seed selection, and those slugs then fail on every send.
                 setModelsLoading(true);
                 let owned = true;
                 try {
@@ -1668,9 +1648,9 @@ export function ChatProvidersSettings({
                     );
                   }
                 } catch (error) {
-                  // A failed sync still has to answer the ownership question: the user
-                  // can cancel this form while it is out and start another request, and
-                  // clearing the flag then would re-enable Save during that one.
+                  // A failed sync still has to answer the ownership question: the user can cancel this form
+                  // while it is out and start another request, and clearing the flag then would re-enable
+                  // Save during that one.
                   owned = request === codexCatalogRequestRef.current;
                   throw error;
                 } finally {

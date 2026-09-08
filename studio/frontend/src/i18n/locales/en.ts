@@ -47,6 +47,13 @@ export const en = {
     shutdown: "Shutdown",
   },
   shell: {
+    find: {
+      label: "Find in page",
+      previous: "Previous match",
+      next: "Next match",
+      close: "Close find",
+      truncated: "This page is too long to search in full.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -222,6 +229,10 @@ export const en = {
       browserReserved:
         "Your browser may keep this chord for itself. It works in the desktop app.",
       actions: {
+        findInPage: {
+          label: "Find in page",
+          description: "Search the text on this page",
+        },
         openSettings: {
           label: "Open settings",
           description: "Open the settings dialog",
@@ -482,6 +493,13 @@ export const en = {
         customModelDescription: "Model name sent to /v1/audio/transcriptions.",
         sttModelLabel: "Speech recognition model",
         sttModelDescription: "Choose or search a STT model to run locally.",
+        sttDeviceLabel: "Load into",
+        sttDeviceAuto: "GPU when available",
+        sttDeviceCpu: "CPU RAM",
+        sttDeviceAutoDescription:
+          "Use the GPU when there is one, and the CPU otherwise.",
+        sttDeviceCpuDescription:
+          "Keep the model in system RAM. Transcription is slower, but no GPU memory is used.",
         sttModelSearchPlaceholder: "Search any model on HF",
         sttModelSearching: "Searching Hugging Face…",
         sttModelValidating: "Checking Whisper compatibility…",
@@ -898,7 +916,11 @@ export const en = {
         currentStreak: "Current streak",
         longestStreak: "Longest streak",
         activityTitle: "Token activity",
-        activityDescription: "{total} over the last {weeks}",
+        activityDescription: {
+          daily: "{total} over the last {weeks}",
+          weekly: "Peak week {total} · last {weeks}",
+          cumulative: "{total} accumulated over the last {weeks}",
+        },
         mode: {
           daily: "Daily",
           weekly: "Weekly",
@@ -1229,7 +1251,7 @@ export const en = {
       description:
         "Connect coding agents like Claude Code and Codex to a local model with unsloth start.",
       intro:
-        "connects Claude Code, Codex, Hermes, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
+        "connects Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
       readDocs: "Read the docs",
       copy: "Copy",
       copied: "Copied",
@@ -2107,6 +2129,7 @@ export const en = {
       memoryEfficient: "Memory Efficient",
       weightDecomposed: "Weight-Decomposed",
       notSupportedAppleSilicon: "Not supported on Apple Silicon",
+      doraNeedsVisionLayersOff: "Turn off vision layer training to use DoRA",
       optimization: "Optimization",
       schedule: "Schedule",
       memory: "Memory",

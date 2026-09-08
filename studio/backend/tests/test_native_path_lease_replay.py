@@ -3,6 +3,8 @@
 
 """Durable, atomic replay protection for signed native path grants."""
 
+from __future__ import annotations
+
 import base64
 import concurrent.futures
 import hashlib

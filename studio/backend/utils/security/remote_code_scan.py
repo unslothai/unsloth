@@ -49,8 +49,8 @@ _SEVERITY_ORDER = {CRITICAL: 0, HIGH: 1, MEDIUM: 2}
 SCAN_RULES_VERSION = 1
 
 # Configs that can carry an ``auto_map`` pointing at executable repo ``.py``.
-# ``trust_remote_code`` runs code from ANY of these, so scanner and gate must read the
-# same set (scanning only config.json/tokenizer would miss a custom-processor VLM).
+# ``trust_remote_code`` runs code from ANY of these, so scanner and gate must read the same set: scanning only
+# config.json/tokenizer would miss a custom-processor VLM.
 REMOTE_CODE_CONFIG_FILES = (
     "config.json",
     "tokenizer_config.json",
@@ -295,10 +295,9 @@ def _load_canonical_scanner():
     return module
 
 
-# Model-context-strict patterns. The canonical scanner only flags bare
-# ``subprocess``/``eval`` in combinations (common in package build scripts), but a
-# model's modeling_*.py never legitimately shells out, so the gate flags them alone
-# (e.g. a bare ``subprocess.Popen`` in a config ``__init__``).
+# Model-context-strict patterns: the canonical scanner flags bare ``subprocess``/``eval`` only in
+# combinations, but a model's modeling_*.py never legitimately shells out, so these flag alone.
+# For example a bare ``subprocess.Popen`` in a config ``__init__``.
 _MODEL_STRICT_PATTERNS: tuple[tuple[re.Pattern, str, str], ...] = (
     (
         re.compile(
@@ -470,12 +469,10 @@ def repo_remote_code_files(
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
 
-            # Walk ALL .py, not just the auto_map entry's static import closure. This is
-            # DELIBERATE (see the remote-branch note): the entry can reach a sibling via
-            # an absolute import, importlib, or exec, which a relative-import closure
-            # misses, so closure-only scanning is a real bypass. Broad scan never
-            # under-scans; the cost is a benign script can over-block, the safe direction
-            # for an RCE gate (HIGH stays approvable; only CRITICAL hard-blocks).
+            # Walk ALL .py, not just the auto_map entry's static import closure. This is DELIBERATE: the entry can reach
+            # a sibling via an absolute import, importlib, or exec, which a relative-import closure misses, so closure-
+            # only scanning is a real bypass. A broad scan never under-scans; the cost is that a benign script can over-
+            # block, the safe direction for an RCE gate (HIGH stays approvable; only CRITICAL hard-blocks).
             def raise_walk_error(error):
                 raise error
 
@@ -503,10 +500,9 @@ def repo_remote_code_files(
                             f"{model_name}: Python source {p.relative_to(root)} is unreadable"
                         )
                     files[str(p.relative_to(root))] = _read_python_source(p)
-            # A local config can still point auto_map at an EXTERNAL Hub repo
-            # (owner/name--module.Class) that executes on load, so fetch it. Every config
-            # that can declare auto_map is checked, so a custom processor's external code
-            # is not missed.
+            # A local config can still point auto_map at an EXTERNAL Hub repo that executes on load, so fetch it; every
+            # config that can declare auto_map is checked.
+            # The external form is owner/name--module.Class.
             ext_refs = set()
             for name in remote_code_config_paths(load_subdirs):
                 p = root.joinpath(*pathlib.PurePosixPath(name).parts)
@@ -557,18 +553,13 @@ def repo_remote_code_files(
         except Exception as exc:
             raise RemoteCodeUnscannable(f"{model_name}: could not list repo files ({exc})") from exc
         repo_file_set = set(repo_files)
-        # Scan every present .py PLUS own-repo auto_map targets that ACTUALLY EXIST in
-        # this revision. Scanning EVERY .py (not just the closure) is DELIBERATE: the
-        # entry can reach a sibling via absolute import / importlib / exec, which a
-        # relative-import closure misses, so closure-only scanning is a real bypass.
-        # Broad scan never under-scans; the cost is a benign script can over-block, the
-        # safe direction for an RCE gate (HIGH approvable; only CRITICAL hard-blocks). An
-        # auto_map target absent from the listing is a STALE ref (an older config naming a
-        # since-removed file, e.g. unsloth/PaddleOCR-VL names processing_ppocrvl.py but
-        # ships processing_paddleocr_vl.py). transformers cannot execute an absent file,
-        # so drop the stale ref rather than fail closed; present .py are still fully
-        # scanned. This also absorbs a mis-derived dotted name (sub.mod.py vs sub/mod.py):
-        # the bad name drops as stale while the real present file is scanned.
+        # Scan every present .py PLUS own-repo auto_map targets that ACTUALLY EXIST in this revision. Scanning every .py
+        # rather than the closure is DELIBERATE: the entry can reach a sibling via absolute import / importlib / exec,
+        # so closure-only scanning is a real bypass, and over-blocking is the safe direction for an RCE gate (HIGH
+        # approvable; only CRITICAL hard-blocks). An auto_map target absent from the listing is a STALE ref
+        # (unsloth/PaddleOCR-VL names processing_ppocrvl.py but ships processing_paddleocr_vl.py); transformers cannot
+        # execute an absent file, so drop the stale ref rather than fail closed. This also absorbs a mis-derived dotted
+        # name (sub.mod.py vs sub/mod.py).
         present_py = {f for f in repo_files if f.endswith(".py")}
         stale_refs = own_refs - repo_file_set
         for fn in sorted(stale_refs):
@@ -588,10 +579,8 @@ def repo_remote_code_files(
                     cache_dir = active_hf_hub_cache(),
                 )
             except Exception as exc:
-                # A .py CONFIRMED PRESENT could not be fetched. A partial set would
-                # fingerprint "clean" while transformers later runs this file, so fail
-                # closed. (Stale/absent refs were dropped above, so this only fires on a
-                # present-file fetch failure.)
+                # A .py CONFIRMED PRESENT could not be fetched: a partial set would fingerprint "clean" while
+                # transformers later runs the file, so fail closed.
                 raise RemoteCodeUnscannable(
                     f"{model_name}: present file {fn} could not be fetched ({exc})"
                 ) from exc
@@ -643,7 +632,7 @@ def _auto_map_refs(cfg: dict) -> set:
                 # ref like "modeling_deepseekocr.Cls" or "owner/name--modeling.Cls"
                 if "." not in ref:
                     continue
-                module = ref.rsplit(".", 1)[0]  # drop trailing .ClassName
+                module = ref.rsplit(".", 1)[0]
                 if "--" in module:
                     repo, mod = module.split("--", 1)
                     out.add((repo or None, mod + ".py"))
@@ -749,12 +738,10 @@ def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
                 exc,
             )
             return False
-        # The loader's executable closure = every present .py plus any referenced entry
-        # file. With a REAL (non-empty) listing, present_py covers the code, so an entry
-        # ref absent from it is stale/mis-derived and is dropped rather than failing
-        # closed (like the own-repo path). With an EMPTY listing we cannot prove the ref
-        # stale, so keep fetching it and fail closed if unreachable; never under-scan. A
-        # PRESENT file that cannot be fetched still fails closed below.
+        # The loader's executable closure is every present .py plus any referenced entry file. With a
+        # non-empty listing, an entry ref absent from present_py is stale and is dropped; with an EMPTY
+        # listing staleness cannot be proven, so keep fetching and fail closed. Never under-scan.
+        # A PRESENT file that cannot be fetched still fails closed below.
         repo_file_set = set(repo_files)
         present_py = {f for f in repo_files if f.endswith(".py")}
         if repo_file_set:

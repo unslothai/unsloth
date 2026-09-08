@@ -38,26 +38,26 @@ def _find_pin_try(tree: ast.AST):
     return None
 
 
-# The pin catches Exception, not ImportError: a half-built unsloth_zoo raises
-# RuntimeError or AttributeError too. Anything that still catches an ImportError
-# counts, so widening the handler again does not break this test.
+# The pin catches Exception, not ImportError: a half-built unsloth_zoo raises RuntimeError or
+# AttributeError too. Anything that still catches an ImportError counts, so widening the handler
+# again does not break this test.
 _CATCHES_IMPORT_ERROR = ("ImportError", "Exception", "BaseException")
 
 
 def _catches_import_error(handler: ast.ExceptHandler) -> bool:
-    if handler.type is None:  # bare except
+    if handler.type is None:
         return True
     names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
     return any(isinstance(n, ast.Name) and n.id in _CATCHES_IMPORT_ERROR for n in names)
 
 
-# A half-built unsloth_zoo imports and then raises RuntimeError or AttributeError, which
-# ImportError alone does not cover.
+# A half-built unsloth_zoo imports and then raises RuntimeError or AttributeError, which ImportError alone does not
+# cover.
 _CATCHES_EVERYTHING = ("Exception", "BaseException")
 
 
 def _covers_half_built_zoo(handler: ast.ExceptHandler) -> bool:
-    if handler.type is None:  # bare except
+    if handler.type is None:
         return True
     names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
     caught = {n.id for n in names if isinstance(n, ast.Name)}

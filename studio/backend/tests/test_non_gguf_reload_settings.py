@@ -37,6 +37,13 @@ class _Backend:
     def __init__(self, entry):
         self.active_model_name = RESIDENT
         self.models = {RESIDENT: entry}
+        self.loading_models: set = set()
+
+
+class _NoLlama:
+    """No llama-server resident, so status takes the non-GGUF branch."""
+
+    is_loaded = False
 
 
 class _Request:
@@ -134,18 +141,80 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
     def test_the_route_stamps_it_after_a_successful_load(self, field):
         assert field in self._stamp_block(), f"{field} is never recorded on the resident"
 
-    def test_the_non_gguf_status_branch_publishes_them(self):
-        import inspect
-        import routes.inference as ri
+    def _status_for(self, monkeypatch, entry):
+        """The non-GGUF status payload for a resident stamped with `entry`.
 
-        src = inspect.getsource(ri.get_status)
-        # The GGUF branch returns first, so the last occurrence is the non-GGUF return.
-        non_gguf = src[src.rindex("Non-GGUF: classify from the loaded template") :]
-        for wire, stamped in (
-            ("requested_context_length", "max_seq_length_requested"),
-            ("load_in_4bit", "load_in_4bit_requested"),
-            ("requested_gpu_ids", "gpu_ids_requested"),
-        ):
-            assert (
-                f'{wire} = model_info.get("{stamped}")' in non_gguf
-            ), f"non-GGUF status does not publish {wire}"
+        Driven through the route rather than read out of its source: the spelling of the
+        read is not the contract, the published field is. An earlier version asserted the
+        literal `model_info.get(...)` line and broke on #8125, which kept publishing the
+        same field from the same stamped key through a coercion helper.
+        """
+        import asyncio
+
+        backend = _Backend(entry)
+        monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _NoLlama())
+        monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+        monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: backend)
+        monkeypatch.setattr(
+            inference_route, "_probe_llama_cpp_status", lambda _backend: (False, {})
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *_a: {
+                "supports_reasoning": False,
+                "reasoning_style": "enable_thinking",
+                "reasoning_effort_levels": [],
+                "reasoning_always_on": False,
+                "supports_preserve_thinking": False,
+                "supports_tools": False,
+            },
+        )
+        monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
+        # Unrelated to the stamped settings, and it re-derives from the model card, which
+        # would put a Hub request in the middle of a status unit test.
+        monkeypatch.setattr(
+            inference_route, "_resolve_loaded_trust_remote_code", lambda *_a, **_k: False
+        )
+        monkeypatch.setattr(inference_route, "_running_load_attempt", None)
+        monkeypatch.setattr(inference_route, "_pending_load_attempts", {})
+        return asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    def test_the_non_gguf_status_branch_publishes_them(self, monkeypatch):
+        response = self._status_for(
+            monkeypatch,
+            {
+                "max_seq_length_requested": 8192,
+                "load_in_4bit_requested": False,
+                "gpu_ids_requested": [0, 1],
+            },
+        )
+
+        assert response.requested_context_length == 8192
+        assert response.load_in_4bit is False
+        assert response.requested_gpu_ids == [0, 1]
+
+    def test_the_mlx_mirror_wins_over_the_stamped_spelling(self, monkeypatch):
+        """#8125: the MLX worker mirrors the real context back as requested_context_length."""
+        response = self._status_for(
+            monkeypatch,
+            {"requested_context_length": 4096, "max_seq_length_requested": 8192},
+        )
+
+        assert response.requested_context_length == 4096
+
+    @pytest.mark.parametrize(
+        "requested, published",
+        [(0, 0), (8192, 8192), ("8192", 8192), (-1, None), (True, None), ("", None), (None, None)],
+    )
+    def test_a_requested_context_length_is_published_only_when_it_is_a_count(
+        self, monkeypatch, requested, published
+    ):
+        """0 is an answer -- size it yourself -- so it must survive; junk must not.
+
+        A bool is not a count even though `int(True)` is 1, and a negative is not one
+        either; a numeric string still is, since the stamp is read back off JSON.
+        """
+        response = self._status_for(monkeypatch, {"max_seq_length_requested": requested})
+
+        assert response.requested_context_length == published

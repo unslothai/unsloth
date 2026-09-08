@@ -19,9 +19,8 @@ STUDIO_HOME against the working directory.
 
 import os as _os
 
-# Set by Unsloth Desktop on every CLI child it owns (process.rs). Forging it
-# grants nothing: anyone who can set a child's environment can set its working
-# directory, and the move lands inside the caller's own account.
+# Set by Unsloth Desktop on every CLI child it owns (process.rs); forging it grants nothing,
+# the move lands in the caller's own account.
 DESKTOP_MANAGED_ENV = "UNSLOTH_DESKTOP_MANAGED"
 
 # The directory process.rs pins, so an older desktop lands in the same place.
@@ -59,8 +58,7 @@ def windows_roots(
             roots.append(value)
     if roots:
         return roots
-    # No Windows installation found: keep the guard alive on SystemRoot or the
-    # default, never on a user-settable value.
+    # No Windows installation found: keep the guard on SystemRoot or the default, never on a user-settable value.
     return [system_root or r"C:\Windows"]
 
 
@@ -144,9 +142,8 @@ def _outside_windows(candidate, windirs, pathmod, sep):
     norm = _normalize(candidate, pathmod)
     for windir in windirs:
         windir_norm = _normalize(windir, pathmod)
-        # A root-relative candidate carries no drive, so it equals no
-        # drive-qualified root: "\Windows\System32\config\systemprofile" is
-        # SYSTEM's profile on whichever drive, so compare that spelling too.
+        # A root-relative candidate carries no drive, so compare that spelling too:
+        # "\Windows\System32\config\systemprofile" is SYSTEM's profile on whichever drive.
         for form in (windir_norm, pathmod.splitdrive(windir_norm)[1]):
             if not form:
                 continue
@@ -181,8 +178,7 @@ def safe_user_dir(
     for candidate in candidates:
         if not _outside_windows(candidate, windirs, pathmod, sep):
             continue
-        # USERPROFILE and ~ can name the public profile themselves, so the check
-        # is on the folder, not on which variable it came from.
+        # USERPROFILE and ~ can name the public profile, so check the folder, not which variable it came from.
         if (
             not allow_public
             and public
@@ -193,11 +189,9 @@ def safe_user_dir(
     return None
 
 
-# Commands the desktop runs that take no path from a user: Unsloth resolves its
-# venv, llama.cpp, auth, pid files and logs from the Unsloth home. `update` is here
-# so an older desktop can still upgrade from the tray. Everything else keeps the
-# hard error. Matched whole, not on the first word, since `studio update --local
-# <path>` resolves that path against the working directory.
+# Commands the desktop runs that take no path from a user; `update` is here so an older desktop
+# can still upgrade from the tray. Matched whole, since `studio update --local <path>`
+# resolves against the working directory.
 _STUDIO_COMMANDS = (
     ("provision-desktop-auth",),
     ("desktop-capabilities",),
@@ -226,9 +220,8 @@ def _is_desktop_backend_launch(rest):
     return True
 
 
-# Subcommands that take a path from the caller, by argument or by environment.
-# `run` takes --model and a raw llama-server tail; `update --local` installs
-# from a checkout the caller names.
+# Subcommands that take a path from the caller: `run` takes --model and a raw llama-server
+# tail, `update --local` a checkout.
 _PATH_TAKING_STUDIO_COMMANDS = ("run", "update")
 
 
@@ -238,8 +231,7 @@ def _carries_a_value(arg):
         return True
     if arg.startswith("--"):
         return "=" in arg
-    # A short option carries its value in the same token from the second
-    # character on: `-f.\dist` is Click's spelling of `--frontend .\dist`.
+    # A short option carries its value in the same token: `-f.\dist` is Click's spelling of `--frontend .\dist`.
     return len(arg) > 2
 
 
@@ -251,10 +243,8 @@ def _takes_a_path(rest):
         return False
     if rest[0] in _PATH_TAKING_STUDIO_COMMANDS:
         return tuple(rest) not in _STUDIO_COMMANDS
-    # rest[0] is the subcommand name, skipped unless it is a flag (then there is
-    # no subcommand). An attached value hides inside its own token, so a leading
-    # dash does not clear it: Click reads both `--frontend=.\dist` and the short
-    # `-f.\dist` as a value, and either carries a path a relocation would rebase.
+    # rest[0] is the subcommand name, skipped unless it is a flag. A leading dash does not clear
+    # an attached value: Click reads `--frontend=.\dist` and `-f.\dist` as values with a path.
     tail = rest if rest[0].startswith("-") else rest[1:]
     return any(_carries_a_value(arg) for arg in tail)
 
@@ -268,21 +258,18 @@ def is_relocatable_invocation(argv, environ):
     args = [arg for arg in argv if arg]
     if not args:
         return False
-    # Click handles top-level -h/--help/--version eagerly, before the callback
-    # this runs from, so only `studio --help` actually arrives here.
+    # Click handles top-level -h/--help/--version eagerly, so only `studio --help` arrives here.
     if all(arg in _HELP_FLAGS for arg in args):
         return True
     if args[0] != "studio":
-        # The marker is inherited by everything the backend spawns, so it
-        # authorises the desktop's studio commands and nothing else: rebasing
-        # `train --dataset .\data.json` under a stray one would be worse than the
-        # refusal it replaced.
+        # The marker is inherited by everything the backend spawns, so it authorises the desktop's
+        # studio commands only: rebasing `train --dataset .\data.json` under a stray one is worse
+        # than refusing.
         return False
     rest = args[1:]
     if environ.get(DESKTOP_MANAGED_ENV) == "1" and not _takes_a_path(rest):
-        # The marker covers a desktop build whose command shape this CLI does not
-        # know yet, but must not widen the set to path-carrying commands: `studio
-        # run --model .\local.gguf` from a marked shell would be rebased.
+        # The marker covers desktop builds whose command shape this CLI does not know yet, but must
+        # not widen to path-carrying commands like `studio run --model .\local.gguf`.
         return True
     if rest and all(arg in _HELP_FLAGS for arg in rest):
         return True
@@ -291,11 +278,9 @@ def is_relocatable_invocation(argv, environ):
     return tuple(rest) in _STUDIO_COMMANDS
 
 
-# Path overrides the caller may have written relative to the folder being left.
-# Unsloth resolves them with Path.resolve(), which anchors a relative value to the
-# working directory, so moving first would silently retarget them.
+# Path overrides written relative to the folder being left: Unsloth resolves them with
+# Path.resolve(), so moving first would silently retarget them.
 _RELATIVE_PATH_ENV = (
-    # Unsloth roots: storage_roots.py.
     "UNSLOTH_STUDIO_HOME",
     "STUDIO_HOME",
     "UNSLOTH_STUDIO_DOCUMENTS_HOME",
@@ -303,7 +288,6 @@ _RELATIVE_PATH_ENV = (
     "UNSLOTH_STUDIO_SANDBOX_HOME",
     # `studio update` reads it, and that command relocates.
     "STUDIO_LOCAL_REPO",
-    # Engine and tool locations the user may point somewhere of their own.
     "UNSLOTH_LLAMA_CPP_PATH",
     "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR",
     "UNSLOTH_SD_CPP_PATH",
@@ -312,16 +296,14 @@ _RELATIVE_PATH_ENV = (
     "WHISPER_SERVER_PATH",
     "SD_CLI_PATH",
     "SD_SERVER_PATH",
-    # Model files llama-server reads straight from the environment, and Unsloth
-    # reads back when it sizes a launch (llama_cpp.py). The URL and HF-repo
-    # spellings are deliberately absent: they name no local file.
+    # Model files llama-server reads from the environment and Unsloth reads back when sizing a
+    # launch (llama_cpp.py). URL and HF-repo spellings are absent: they name no local file.
     "LLAMA_ARG_MODEL",
     "LLAMA_ARG_MMPROJ",
     "LLAMA_ARG_MODEL_DRAFT",
     "LLAMA_ARG_SPEC_DRAFT_MODEL",
-    # Read straight from the environment as a file path: the ASIC table by
-    # unsloth/import_fixes.py, the vLLM cache root by Unsloth when the caller set
-    # it themselves (storage_roots.py only fills a blank one).
+    # Read straight from the environment as a file path: the ASIC table (import_fixes.py) and the
+    # vLLM cache root when the caller set it (storage_roots.py fills only a blank one).
     "AMDGPU_ASIC_ID_TABLE_PATH",
     "VLLM_CACHE_ROOT",
     # A custom ggml backend, preserved into the llama.cpp child (llama_cpp.py).
@@ -337,7 +319,6 @@ _RELATIVE_PATH_ENV = (
     "OLLAMA_MODELS",
     "DG_VISUAL_BIN",
     "UNSLOTH_DG_SHIM",
-    # Caches.
     "UNSLOTH_COMPILE_LOCATION",
     "TORCHINDUCTOR_CACHE_DIR",
     "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR",
@@ -348,11 +329,10 @@ _RELATIVE_PATH_ENV = (
     "HF_XET_CACHE",
     "HF_DATASETS_CACHE",
     "HF_ASSETS_CACHE",
-    # The credential file: a relative value would follow the child and lose
-    # access to gated repos.
+    # The credential file: a relative value would follow the child and lose access to gated repos.
     "HF_TOKEN_PATH",
-    # Read as written, and authoritative when non-blank (storage_roots.py), so
-    # `unsloth studio update` would install from a different cache after a move.
+    # Authoritative when non-blank (storage_roots.py), so `unsloth studio update` would install
+    # from a different cache after a move.
     "UV_CACHE_DIR",
     "TRANSFORMERS_CACHE",
     "SENTENCE_TRANSFORMERS_HOME",
@@ -365,26 +345,20 @@ _RELATIVE_PATH_ENV = (
     "CUDA_ROOT",
 )
 
-# Pinned when it can be, but never at the cost of the move. `studio update
-# --local` is the only command that reads STUDIO_LOCAL_REPO and it takes a path,
-# so it keeps the hard error; the bare update that does relocate drops the value
-# before anything reads it (commands/studio.py). Refusing a System32 update over
-# a stale setting nothing was going to look at would defeat the fallback this
-# guard exists for, so an unresolvable one is left behind instead.
+# Pinned when possible, never at the cost of the move: only `studio update --local` reads
+# STUDIO_LOCAL_REPO and it keeps the hard error, so an unresolvable one is left behind rather
+# than defeating the fallback.
 _BEST_EFFORT_ENV = frozenset(("STUDIO_LOCAL_REPO",))
 
 # The most a Windows environment variable holds, terminator included.
 _WINDOWS_ENV_VALUE_LIMIT = 32767
 
-# The separator is Windows', not the host's: this guard only ever runs on
-# Windows, and os.pathsep would split "D:\\shared" apart anywhere else.
+# The separator is Windows', not the host's: os.pathsep would split "D:\shared" apart anywhere else.
 _PATH_LIST_SEPARATOR = ";"
 
-# Values holding several separated directories, anchored entry by entry. A
-# relative PYTHONPATH entry is resolved at import time, so a move would let
-# whatever sits in the new directory shadow a managed import. PATH is left out on
-# purpose: refusing the whole move over one unresolvable entry in a list that long
-# would cost more than it protects.
+# Multi-directory values, anchored entry by entry: a relative PYTHONPATH entry is resolved at
+# import time and would let the new directory shadow a managed import. PATH is left out:
+# refusing the whole move over one unresolvable entry costs more than it protects.
 _PATH_LIST_ENV = (
     "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH",
     "CUDA_RUNTIME_DLL_DIR",
@@ -416,9 +390,8 @@ def pin_relative_overrides(
             continue
         if anchored is not None:
             if len(anchored) >= _WINDOWS_ENV_VALUE_LIMIT:
-                # Anchoring a value that was already near the limit can cross it,
-                # and a variable Windows will not accept is a failure to report
-                # here rather than one to discover in the next process.
+                # Anchoring a value already near the limit can cross it, and a variable Windows will not
+                # accept is a failure to report here.
                 raise ValueError(
                     f"{name} does not fit in an environment variable once it "
                     "names its folder in full"
@@ -429,8 +402,7 @@ def pin_relative_overrides(
         raw = environ.get(name) or ""
         if not raw.strip():
             continue
-        # Each entry is anchored on its own: one relative entry changes what the
-        # whole list means.
+        # Each entry is anchored on its own: one relative entry changes what the whole list means.
         entries = raw.split(_PATH_LIST_SEPARATOR)
         anchored_entries = [
             _anchor_list_entry(name, e, cwd, pathmod, abspath, expandvars, expanduser)
@@ -439,8 +411,6 @@ def pin_relative_overrides(
         if anchored_entries != entries:
             joined = _PATH_LIST_SEPARATOR.join(anchored_entries)
             if len(joined) >= _WINDOWS_ENV_VALUE_LIMIT:
-                # A value Windows will not accept is a failure to report here,
-                # not one to discover when the next process is started.
                 raise ValueError(
                     f"{name} does not fit in an environment variable once each "
                     "entry names its folder in full"
@@ -450,22 +420,17 @@ def pin_relative_overrides(
     return pinned
 
 
-# Values a consumer deliberately does not read as a plain path: anchoring one
-# changes what it means rather than moving a folder. Each exemption names the
-# variables whose reader proves it, since the syntax is only special there and a
-# directory really called "[llama]" or "%data%" is legal on Windows.
+# Values a consumer does not read as a plain path: anchoring one changes its meaning. Each
+# exemption names the reader that proves it, since a directory really called "[llama]" is
+# legal on Windows.
 
-# MLX_HOSTFILE holds either a filename or the host list itself, as JSON
-# (`unsloth_cli/_inference.py`, `_json_rank_count_from_env`).
+# MLX_HOSTFILE holds either a filename or the host list itself as JSON (_inference.py, _json_rank_count_from_env).
 _INLINE_JSON_ENV = frozenset(("MLX_HOSTFILE", "MLX_IBV_DEVICES"))
 
-# Names whose readers disagree about %VAR% and $VAR: huggingface_hub calls
-# expandvars on HF_HOME (and on the XDG_CACHE_HOME it defaults from), HF_HUB_CACHE
-# and HF_ASSETS_CACHE, and Unsloth calls it on SENTENCE_TRANSFORMERS_HOME, but
-# Unsloth's own hf_cache_settings._canonical() does not, so it would read
-# %LOCALAPPDATA%\hf as a relative folder. Expanding here before deciding settles
-# it: both readers then see one absolute path. Scoped to these names because a
-# directory really called "%data%" is legal, and every other name is read as one.
+# Readers disagree about %VAR%/$VAR: huggingface_hub expandvars HF_HOME, XDG_CACHE_HOME,
+# HF_HUB_CACHE and HF_ASSETS_CACHE and Unsloth does SENTENCE_TRANSFORMERS_HOME, but
+# hf_cache_settings._canonical() does not. Expanding here makes both readers see one absolute
+# path.
 _EXPANDED_ENV = frozenset(
     (
         "HF_HOME",
@@ -478,9 +443,8 @@ _EXPANDED_ENV = frozenset(
     )
 )
 
-# The pre-quant allowlist skips a bare on/off token precisely so there is no
-# "allow all" mode (`diffusion_prequant.py`); anchoring one would turn it into a
-# real allowlisted directory.
+# The pre-quant allowlist skips a bare on/off token so there is no "allow all" mode
+# (diffusion_prequant.py); anchoring one would make it a real allowlisted directory.
 _TOGGLE_ENV = frozenset(("UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH",))
 _TOGGLE_TOKENS = frozenset(("1", "true", "yes", "on", "0", "false", "no", "off"))
 
@@ -524,16 +488,15 @@ def pin_relative_sys_path(
         if not isinstance(entry, str):
             continue
         try:
-            # The empty entry is the working directory by definition; anything
-            # else has to name something that is really there.
+            # The empty entry is the working directory by definition; anything else has to name something really there.
             if entry.strip() and not exists(entry):
                 continue
             anchored = _anchor_list_entry(
                 "PYTHONPATH", entry, cwd, pathmod, abspath, None, expanduser
             )
         except Exception:
-            # Best effort, unlike the environment: an import root this process
-            # already holds is not worth refusing the move over.
+            # Best effort, unlike the environment: an import root this process already holds is not worth
+            # refusing the move over.
             continue
         if anchored != entry:
             syspath[index] = anchored
@@ -595,22 +558,17 @@ def _anchor(
     """
     original = value = (value or "").strip()
     if value.startswith("~"):
-        # Written out rather than skipped: only some readers call expanduser
-        # first, and llama_cpp.py hands UNSLOTH_LLAMA_CPP_PATH straight to Path(),
-        # so a move would leave it naming a folder called "~" under the new
-        # directory. It is what the caller meant either way.
+        # Written out rather than skipped: llama_cpp.py hands UNSLOTH_LLAMA_CPP_PATH straight to
+        # Path(), so a move would leave it naming a folder called "~".
         value = (expanduser or pathmod.expanduser)(value)
     if name in _EXPANDED_ENV and value:
-        # Written out, so the reader that expands and the one that does not land
-        # in the same folder. An unset variable is left exactly as written.
+        # Written out, so the reader that expands and the one that does not land in the same folder.
+        # An unset variable is left as written.
         expandvars = expandvars or _os.path.expandvars
         settled = _expand_settled(value, expandvars)
         if settled is None:
-            # One pass does not settle it, so writing the result back would have
-            # the reader expand it a second time. What the reader does see is one
-            # pass: if that names a folder on its own the value is safe to leave
-            # alone, and if it does not, the folder it names depends on where the
-            # process is standing and the move has to be refused instead.
+            # One pass does not settle it, so writing the result back would have the reader expand twice;
+            # if one pass does not name a folder on its own, the move has to be refused.
             once = expandvars(value)
             if _is_fully_qualified(once, pathmod):
                 return None
@@ -619,15 +577,14 @@ def _anchor(
     if not value:
         return None
     if _is_fully_qualified(value, pathmod):
-        # Already names one folder, but still worth writing back if expanding is
-        # what made it name one: the reader that does not expand cannot see that.
+        # Already names one folder, but write back if expanding is what made it name one: the reader
+        # that does not expand cannot see that.
         return value if value != original else None
     if not _names_a_path(name, value):
         return None
     if pathmod.splitdrive(value)[0] or value.startswith(("\\", "/")):
-        # "D:cache" is drive D's own current directory and "\cache" the root of
-        # the current drive, neither of which join() knows, so ask the OS. A
-        # failure reaches the caller, which then declines to move at all.
+        # Ask the OS: "D:cache" is drive D's current directory and "\cache" the current drive's root,
+        # neither of which join() knows.
         return (abspath or pathmod.abspath)(value)
     return pathmod.join(cwd, value)
 
@@ -647,16 +604,15 @@ def relocation_target(
         return None
     if home_isdir is None:
         home_isdir = pathmod.isdir
-    # A profile that has not mounted yet still has a writable parent, so makedirs
-    # would build an empty second one that shadows the real one when it arrives.
+    # A profile that has not mounted yet still has a writable parent, so makedirs would build an
+    # empty second one that shadows the real one.
     if not home_isdir(home):
         return None
     work_dir = pathmod.join(home, WORK_DIR_NAME)
     try:
         makedirs(work_dir, exist_ok = True)
     except OSError:
-        # An unwritable home is a broken profile and Unsloth must write there
-        # anyway, so stop now rather than failing later.
+        # An unwritable home is a broken profile and Unsloth must write there anyway, so stop now.
         return None
     return work_dir
 
@@ -671,13 +627,11 @@ def blocked_message(
     expanduser = None,
 ):
     """The error shown to someone who ran Unsloth from a system folder by hand."""
-    # allow_public here only: a person can sensibly `cd C:\Users\Public`, but
-    # relocating there would share one account's state with every other account.
+    # allow_public here only: relocating to C:\Users\Public would share one account's state with every other account.
     home = safe_user_dir(environ, windir, pathmod, sep, expanduser, allow_public = True)
     if home:
-        # Quote it, or C:\Users\Jane Doe reaches Set-Location as two arguments.
-        # PowerShell single quotes are verbatim ('' escapes an apostrophe); cmd
-        # needs double quotes once extensions are off.
+        # Quote it, or C:\Users\Jane Doe reaches Set-Location as two arguments. PowerShell single
+        # quotes are verbatim; cmd needs double quotes once extensions are off.
         home_ps = "'" + home.replace("'", "''") + "'"
         home_cmd = '"' + home + '"'
         cd_lines = (
@@ -732,8 +686,7 @@ def check_working_directory(
     try:
         cwd = getcwd()
     except OSError:
-        # The launch directory is gone: say so rather than name a folder they
-        # were never in.
+        # The launch directory is gone: say so rather than name a folder they were never in.
         return (
             (
                 "Unsloth cannot determine its current folder. It may have been deleted,\n"
@@ -748,36 +701,31 @@ def check_working_directory(
         return None, None, False
 
     if not relocate or not is_relocatable_invocation(argv, environ):
-        # `relocate = False` is the imported-as-a-library case: the command
-        # modules are already loaded, so a move now is too late for the roots they
-        # resolved at import time.
+        # `relocate = False` is the imported-as-a-library case: command modules already resolved their
+        # roots at import time.
         return blocked_message(cwd, argv, environ, windirs, pathmod, sep, expanduser), "red", True
 
     target = relocation_target(environ, windirs, pathmod, sep, expanduser, makedirs, home_isdir)
     unpinnable = None
-    # The caller's own process state when the guard runs inside a host, so nothing
-    # stays rewritten unless the move actually happens.
+    # The caller's own process state when the guard runs inside a host, so nothing stays rewritten
+    # unless the move happens.
     environ_before = dict(environ)
     if syspath is None:
-        # Resolved here rather than inside the pinning, or the console script,
-        # which passes nothing, would rewrite the real sys.path with no snapshot
-        # to put back when the move then fails.
+        # Resolved here rather than inside the pinning, or the console script (which passes nothing)
+        # would rewrite the real sys.path with no snapshot to restore.
         import sys as _sys
         syspath = _sys.path
     syspath_before = list(syspath)
     if target is not None:
         try:
-            # Before moving, or a relative override would end up naming a folder
-            # under the new directory instead of theirs.
+            # Before moving, or a relative override would name a folder under the new directory instead of theirs.
             pin_relative_overrides(environ, cwd, pathmod, abspath, expandvars, expanduser)
-            # This interpreter read PYTHONPATH before the guard ran and keeps the
-            # entries as written, resolving a relative one on every import, so it
-            # needs anchoring here as well as in the environment.
+            # This interpreter read PYTHONPATH before the guard ran and resolves relative entries on every
+            # import, so it needs anchoring here too.
             pin_relative_sys_path(cwd, pathmod, syspath, abspath, exists, expanduser)
         except Exception as error:
-            # An environment we cannot pin is one we must not move underneath.
-            # Both reasons are real: a drive with no current directory, and a list
-            # that no longer fits in a Windows variable once fully qualified.
+            # An environment we cannot pin is one we must not move underneath: a drive with no current
+            # directory, or a list that no longer fits in a Windows variable.
             unpinnable = error
             target = None
     moved = False
@@ -795,9 +743,8 @@ def check_working_directory(
             except OSError:
                 target = None
             if target is None:
-                # It landed somewhere the CLI still refuses, so go back: the
-                # values written for the move only mean the same folder from the
-                # directory they were written in.
+                # It landed somewhere the CLI still refuses, so go back: the values written for the move only
+                # mean the same folder from where they were written.
                 try:
                     chdir(cwd)
                 except OSError:
@@ -812,8 +759,8 @@ def check_working_directory(
         if syspath_before != syspath:
             syspath[:] = syspath_before
     if unpinnable is not None:
-        # Named separately from the profile case below: blaming the user folder
-        # for an unpinnable override sends them looking in the wrong place.
+        # Named separately from the profile case below: blaming the user folder for an unpinnable
+        # override sends them looking in the wrong place.
         return (
             (
                 f"Unsloth cannot run from {cwd}, and could not move out of it\n"
@@ -825,8 +772,8 @@ def check_working_directory(
             True,
         )
     if target is None:
-        # Fail closed: nowhere usable outside the Windows tree. This text lands in
-        # the desktop's logs, so it describes that case, not a shell.
+        # Fail closed: nowhere usable outside the Windows tree. This text lands in the desktop's logs,
+        # so it describes that case, not a shell.
         return (
             (
                 f"Unsloth cannot run from {cwd}, and no folder outside {windir} was\n"

@@ -1195,7 +1195,7 @@ export function AgentWorkspacePanel({
                         {layer.path}
                         {layer.truncated ? " (truncated)" : ""}
                       </summary>
-                      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">
+                      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-ui-11 leading-5 text-muted-foreground">
                         {layer.content}
                       </pre>
                     </details>
@@ -1240,7 +1240,7 @@ export function AgentWorkspacePanel({
                   {repositoryMap.entries.slice(0, 100).map((entry) => (
                     <div
                       key={entry.path}
-                      className="truncate rounded-lg bg-muted/30 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground"
+                      className="truncate rounded-lg bg-muted/30 px-2.5 py-1.5 font-mono text-ui-11 text-muted-foreground"
                       title={entry.path}
                     >
                       {entry.path}
@@ -1293,7 +1293,7 @@ export function AgentWorkspacePanel({
                     ))}
                   </div>
                   {gitStatus.files.length ? (
-                    <div className="mt-2 max-h-40 overflow-auto rounded-xl bg-muted/30 p-2 font-mono text-[11px] leading-5 text-muted-foreground">
+                    <div className="mt-2 max-h-40 overflow-auto rounded-xl bg-muted/30 p-2 font-mono text-ui-11 leading-5 text-muted-foreground">
                       {gitStatus.files.slice(0, 100).map((file) => (
                         <div
                           key={`${file.code}:${file.path}`}
@@ -1356,7 +1356,7 @@ export function AgentWorkspacePanel({
                         {gitDiff.staged ? "Staged" : "Working"} diff
                         {gitDiff.truncated ? " (truncated)" : ""}
                       </summary>
-                      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-muted-foreground">
+                      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-ui-11 leading-5 text-muted-foreground">
                         {gitDiff.diff || "No diff."}
                       </pre>
                     </details>
@@ -1367,7 +1367,7 @@ export function AgentWorkspacePanel({
                         <p className="text-xs font-semibold text-foreground">
                           Prepare selected commit
                         </p>
-                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                        <p className="mt-0.5 text-ui-11 text-muted-foreground">
                           Confirmation creates a Studio-owned prepared ref. It
                           does not move the current branch or change the working
                           tree.
@@ -1422,7 +1422,7 @@ export function AgentWorkspacePanel({
                       {visibleCommitFiles.map((file) => (
                         <label
                           key={`${file.code}:${file.path}`}
-                          className="flex min-w-0 items-center gap-2 py-1 font-mono text-[11px] text-muted-foreground"
+                          className="flex min-w-0 items-center gap-2 py-1 font-mono text-ui-11 text-muted-foreground"
                         >
                           <input
                             type="checkbox"
@@ -1438,20 +1438,20 @@ export function AgentWorkspacePanel({
                           </span>
                           <span className="min-w-0 truncate">{file.path}</span>
                           {file.code === "??" ? (
-                            <span className="ml-auto shrink-0 font-sans text-[10px]">
+                            <span className="ml-auto shrink-0 font-sans text-ui-10">
                               stage first
                             </span>
                           ) : null}
                         </label>
                       ))}
                       {!visibleCommitFiles.length ? (
-                        <p className="py-2 text-center text-[11px] text-muted-foreground">
+                        <p className="py-2 text-center text-ui-11 text-muted-foreground">
                           No matching tracked changes.
                         </p>
                       ) : null}
                     </div>
                     {filteredCommitFiles.length > visibleCommitFiles.length ? (
-                      <p className="mt-1 text-[10px] text-muted-foreground">
+                      <p className="mt-1 text-ui-10 text-muted-foreground">
                         Showing 200 of {filteredCommitFiles.length} matches.
                         Refine the path filter to select another file.
                       </p>
@@ -1493,11 +1493,11 @@ export function AgentWorkspacePanel({
                           <span className="font-medium">
                             {preparedCommit.message}
                           </span>
-                          <span className="ml-auto text-[11px] text-muted-foreground">
+                          <span className="ml-auto text-ui-11 text-muted-foreground">
                             expires {formatDate(preparedCommit.expiresAt)}
                           </span>
                         </div>
-                        <div className="mt-2 max-h-32 overflow-auto rounded-lg bg-background/60 p-2 font-mono text-[11px] text-muted-foreground">
+                        <div className="mt-2 max-h-32 overflow-auto rounded-lg bg-background/60 p-2 font-mono text-ui-11 text-muted-foreground">
                           {(preparedCommit.files ?? []).map((file) => (
                             <div
                               key={`${file.code}:${file.path}`}
@@ -1510,11 +1510,11 @@ export function AgentWorkspacePanel({
                             </div>
                           ))}
                         </div>
-                        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background/60 p-2 font-mono text-[11px] leading-5 text-muted-foreground">
+                        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background/60 p-2 font-mono text-ui-11 leading-5 text-muted-foreground">
                           {preparedCommit.diff || "No diff."}
                         </pre>
                         {preparedCommit.diffTruncated ? (
-                          <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-300">
+                          <p className="mt-1 text-ui-10 text-amber-700 dark:text-amber-300">
                             The server truncated this diff preview at its review
                             limit.
                           </p>
@@ -1546,7 +1546,7 @@ export function AgentWorkspacePanel({
                       </div>
                     ) : null}
                     {confirmedCommit ? (
-                      <div className="mt-2 rounded-lg bg-emerald-500/10 px-3 py-2 text-[11px] text-foreground">
+                      <div className="mt-2 rounded-lg bg-emerald-500/10 px-3 py-2 text-ui-11 text-foreground">
                         Prepared ref created at{" "}
                         <span className="font-mono">
                           {confirmedCommit.commitSha?.slice(0, 12)}
@@ -1557,7 +1557,7 @@ export function AgentWorkspacePanel({
                     {commitConfirmationError ? (
                       <div
                         role="alert"
-                        className="mt-2 rounded-lg bg-destructive/10 px-3 py-2 text-[11px] text-destructive"
+                        className="mt-2 rounded-lg bg-destructive/10 px-3 py-2 text-ui-11 text-destructive"
                       >
                         {commitConfirmationError}
                       </div>
@@ -1751,7 +1751,7 @@ export function AgentWorkspacePanel({
                             <summary className="cursor-pointer text-xs font-medium">
                               {result.name}: {agentStatusLabel(result.status)}
                             </summary>
-                            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">
+                            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-ui-11 text-muted-foreground">
                               {result.output || "No output."}
                             </pre>
                           </details>
@@ -1834,7 +1834,7 @@ export function AgentWorkspacePanel({
                               }
                               disabled={Boolean(busy)}
                               aria-label={`Status for ${task.title}`}
-                              className="h-7 rounded-full border border-border bg-background px-2 text-[11px] outline-none"
+                              className="h-7 rounded-full border border-border bg-background px-2 text-ui-11 outline-none"
                             >
                               <option value="pending">Pending</option>
                               <option value="running">Running</option>
@@ -2002,7 +2002,7 @@ export function AgentWorkspacePanel({
                     className="h-8 font-mono text-xs"
                   />
                 </div>
-                <p className="mt-2 rounded-lg bg-muted/35 px-2.5 py-2 text-[11px] text-muted-foreground">
+                <p className="mt-2 rounded-lg bg-muted/35 px-2.5 py-2 text-ui-11 text-muted-foreground">
                   {BACKGROUND_AGENT_PERMISSION_POLICY}
                 </p>
                 <div className="mt-2 grid gap-2 sm:grid-cols-3">
@@ -2063,7 +2063,7 @@ export function AgentWorkspacePanel({
                     <label
                       id={`${cleanupWorktreePolicyId}-label`}
                       htmlFor={cleanupWorktreePolicyId}
-                      className="text-[11px] text-muted-foreground"
+                      className="text-ui-11 text-muted-foreground"
                     >
                       Remove this Studio-owned worktree if cancellation leaves
                       it clean
@@ -2139,7 +2139,7 @@ export function AgentWorkspacePanel({
                               ? task.payload.instruction || "Agent task"
                               : task.kind}
                           </p>
-                          <p className="text-[11px] text-muted-foreground">
+                          <p className="text-ui-11 text-muted-foreground">
                             Attempt {task.attempt} {formatDate(task.updatedAt)}
                           </p>
                         </div>
@@ -2187,7 +2187,7 @@ export function AgentWorkspacePanel({
                         ) : null}
                       </div>
                       {task.kind === "agent" ? (
-                        <details className="mt-2 border-t border-border/50 pt-2 text-[11px] text-muted-foreground">
+                        <details className="mt-2 border-t border-border/50 pt-2 text-ui-11 text-muted-foreground">
                           <summary className="cursor-pointer font-medium text-foreground/75">
                             Captured context
                             <Badge variant="outline" className="ml-2">
@@ -2255,7 +2255,7 @@ export function AgentWorkspacePanel({
                         </details>
                       ) : null}
                       {task.error ? (
-                        <p className="mt-2 text-[11px] text-destructive">
+                        <p className="mt-2 text-ui-11 text-destructive">
                           {safeAgentWorkspaceError(task.error)}
                         </p>
                       ) : null}
@@ -2344,12 +2344,12 @@ export function AgentWorkspacePanel({
                         ) : null}
                       </div>
                       {worktree.backgroundTaskId ? (
-                        <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                        <p className="mt-1 truncate text-ui-11 text-muted-foreground">
                           Linked task: {worktree.backgroundTaskId}
                         </p>
                       ) : null}
                       {worktree.merge ? (
-                        <div className="mt-2 border-t border-border/50 pt-2 text-[11px] text-muted-foreground">
+                        <div className="mt-2 border-t border-border/50 pt-2 text-ui-11 text-muted-foreground">
                           <div className="flex flex-wrap items-center gap-2">
                             <Badge
                               variant={statusBadgeVariant(
@@ -2435,19 +2435,19 @@ export function AgentWorkspacePanel({
               {review ? (
                 <div className="grid gap-2 sm:grid-cols-3">
                   <div className="rounded-xl bg-muted/35 px-3 py-2">
-                    <p className="text-[11px] text-muted-foreground">Goal</p>
+                    <p className="text-ui-11 text-muted-foreground">Goal</p>
                     <p className="mt-1 line-clamp-2 text-xs font-medium">
                       {review.goal || "No goal set"}
                     </p>
                   </div>
                   <div className="rounded-xl bg-muted/35 px-3 py-2">
-                    <p className="text-[11px] text-muted-foreground">Plans</p>
+                    <p className="text-ui-11 text-muted-foreground">Plans</p>
                     <p className="mt-1 text-xs font-medium">
                       {review.plans.length} recorded
                     </p>
                   </div>
                   <div className="rounded-xl bg-muted/35 px-3 py-2">
-                    <p className="text-[11px] text-muted-foreground">
+                    <p className="text-ui-11 text-muted-foreground">
                       Verification
                     </p>
                     <p className="mt-1 text-xs font-medium">
@@ -2506,7 +2506,7 @@ export function AgentWorkspacePanel({
                     <p className="text-xs font-semibold text-foreground">
                       Connected GitHub handoff
                     </p>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                    <p className="mt-0.5 text-ui-11 text-muted-foreground">
                       Preview the exact request first. Submission requires a
                       separate explicit action and is never retried
                       automatically.
@@ -2619,14 +2619,14 @@ export function AgentWorkspacePanel({
                         {pullRequestHandoff.request.owner}/
                         {pullRequestHandoff.request.repo}
                       </span>
-                      <span className="font-mono text-[11px] text-muted-foreground">
+                      <span className="font-mono text-ui-11 text-muted-foreground">
                         {pullRequestHandoff.request.base} from{" "}
                         {pullRequestHandoff.request.head}
                       </span>
                       {pullRequestHandoff.request.draft ? (
                         <Badge variant="secondary">draft</Badge>
                       ) : null}
-                      <span className="ml-auto text-[11px] text-muted-foreground">
+                      <span className="ml-auto text-ui-11 text-muted-foreground">
                         expires {formatDate(pullRequestHandoff.expiresAt)}
                       </span>
                     </div>
@@ -2672,7 +2672,7 @@ export function AgentWorkspacePanel({
                   <div
                     aria-live="polite"
                     aria-atomic="true"
-                    className={`mt-3 rounded-lg px-3 py-2 text-[11px] ${
+                    className={`mt-3 rounded-lg px-3 py-2 text-ui-11 ${
                       pullRequestSubmission.status === "unknown"
                         ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
                         : "bg-muted/35 text-foreground"

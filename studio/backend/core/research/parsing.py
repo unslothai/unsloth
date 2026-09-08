@@ -21,8 +21,8 @@ from core.research.redaction import _sanitize_public_query
 _STREAMED_TITLE = re.compile(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"')
 # One more than the plan-step cap, since the plan's own title matches too.
 _MAX_PREVIEW_LABELS = 31
-# Allows the container marker of a list item or block quote before the fence ("- ```"), else the
-# open is missed and a marker quoted inside is mistaken for the real boundary.
+# Allow a list-item or block-quote container marker before the fence, else the open is missed and a
+# marker quoted inside is taken for the real boundary.
 _MARKDOWN_FENCE = re.compile(r"^ {0,3}(?:(?:[-*+]|\d{1,9}[.)])[ \t]+|>[ \t]?)*(`{3,}|~{3,})")
 
 
@@ -126,8 +126,7 @@ def _normalize_synthesis_audit(
                 item.get("documentCitations"),
                 allowed_document_citations,
             )
-            # A claim is supported only when the audit maps it to web or document evidence
-            # gathered in this run.
+            # A claim is supported only when the audit maps it to web or document evidence gathered in this run.
             if claim and (urls or document_citations):
                 supported_claims.append(
                     {
@@ -301,13 +300,12 @@ def _report_after_boundary(text: str, boundary: str) -> str | None:
             fence_char = token[0]
             fence_length = len(token)
             continue
-        # CommonMark measures indentation in columns with a four-column tab stop, so one tab opens
-        # an indented code block just as four spaces do.
+        # CommonMark measures indentation in columns with a four-column tab stop, so one tab opens an
+        # indented code block just as four spaces do.
         prefix = content[: len(content) - len(content.lstrip(" \t"))]
         indentation = len(prefix.expandtabs(4))
-        # The prompt shows the marker in backticks, so models echo it that way. splitlines
-        # breaks on \x0b\x0c\x1c-\x1e\x85  , which rstrip("\r\n") leaves behind,
-        # so strip every whitespace form rather than let a stray one hide the boundary.
+        # splitlines breaks on whitespace forms rstrip("\r\n") leaves behind, so strip every one rather than
+        # let a stray one hide the boundary.
         if indentation <= 3 and content[len(prefix) :].strip().strip("`").strip() == boundary:
             boundary_line = index
     if boundary_line is None:

@@ -53,9 +53,8 @@ function currentRoute(): string {
   return window.location.pathname + window.location.search;
 }
 
-// Create-project dialog for the composer, sidebar, and projects page. Creating
-// opens the new project; `onCreated` overrides that for callers with their own
-// follow-up (the sidebar's "move this chat to a new project").
+// Create-project dialog for the composer, sidebar and projects page. Creating opens the new
+// project; `onCreated` overrides that for callers with their own follow-up.
 export function NewProjectDialog({
   open,
   onOpenChange,

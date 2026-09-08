@@ -50,6 +50,7 @@ write_prebuilt_metadata = INSTALL_LLAMA_PREBUILT.write_prebuilt_metadata
 existing_install_matches_plan = INSTALL_LLAMA_PREBUILT.existing_install_matches_plan
 existing_install_matches_choice = INSTALL_LLAMA_PREBUILT.existing_install_matches_choice
 ensure_diffusion_visual_server = INSTALL_LLAMA_PREBUILT.ensure_diffusion_visual_server
+runtime_payload_health_groups = INSTALL_LLAMA_PREBUILT.runtime_payload_health_groups
 
 
 def linux_host() -> HostInfo:
@@ -1537,12 +1538,14 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_fails(
 
     original_replace = INSTALL_LLAMA_PREBUILT.os.replace
 
-    def cross_device_replace(src, dst):
+    # EIO, not EXDEV: a cross-device link is the one rename failure the aside-move
+    # now completes by copy, so it is no longer an example of a move that fails
+    def failing_replace(src, dst):
         if Path(src) == install_dir:
-            raise OSError(errno.EXDEV, "Invalid cross-device link")
+            raise OSError(errno.EIO, "Input/output error")
         return original_replace(src, dst)
 
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", failing_replace)
 
     with pytest.raises(
         PrebuiltFallback,
@@ -1557,6 +1560,93 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_fails(
     captured = capsys.readouterr()
     output = captured.out + captured.err
     assert "existing install could not be moved aside; leaving it in place" in output
+
+
+def test_activate_install_tree_copies_the_existing_install_aside_across_devices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", lambda *_args: None)
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def cross_device_replace(src, dst):
+        if Path(src) == install_dir:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+
+    # a Docker studio build moves the base image's llama.cpp onto a different overlay
+    # layer, where rename cannot reach and the copy fallback has to carry it
+    activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert (install_dir / "new.txt").read_text() == "new install\n"
+    assert not staging_dir.exists()
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "copy+publish" in output
+
+
+def test_move_install_dir_aside_leaves_no_partial_tree_when_the_copy_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    src = tmp_path / "llama.cpp"
+    src.mkdir()
+    (src / "old.txt").write_text("old install\n")
+    dst = tmp_path / "llama.cpp.rollback-20250101000000-1"
+
+    def cross_device_replace(from_path, to_path):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    def failing_copytree(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.shutil, "copytree", failing_copytree)
+
+    with pytest.raises(OSError, match = "No space left on device"):
+        INSTALL_LLAMA_PREBUILT.move_install_dir_aside(src, dst)
+
+    # callers read dst.exists() as proof of a COMPLETE tree
+    assert not dst.exists()
+    assert not dst.with_name(dst.name + ".copying").exists()
+    assert (src / "old.txt").read_text() == "old install\n"
+
+
+def test_move_install_dir_aside_refuses_to_copy_a_linked_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target = tmp_path / "real-install-elsewhere"
+    target.mkdir()
+    (target / "old.txt").write_text("old install\n")
+
+    src = tmp_path / "llama.cpp"
+    try:
+        src.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    dst = tmp_path / "llama.cpp.rollback-20250101000000-1"
+
+    def cross_device_replace(from_path, to_path):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+
+    # copytree always follows the root, so this would duplicate a checkout the
+    # installer does not own
+    with pytest.raises(OSError, match = "cross-device"):
+        INSTALL_LLAMA_PREBUILT.move_install_dir_aside(src, dst)
+
+    assert not dst.exists()
+    assert src.is_symlink()
+    assert (target / "old.txt").read_text() == "old install\n"
 
 
 def test_activate_install_tree_keeps_existing_install_when_aside_move_hits_busy_lock(
@@ -1731,6 +1821,49 @@ def test_activate_staged_dir_copies_when_replace_hits_busy_lock(
 
     captured = capsys.readouterr()
     assert "falling back to file-by-file copy" in captured.out + captured.err
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "soname links are a Unix bundle layout")
+@pytest.mark.parametrize("dst_exists", [False, True])
+def test_activate_staged_dir_copy_keeps_soname_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dst_exists: bool
+):
+    """The EXDEV copy must not turn a bundle's soname chain into duplicate libraries.
+
+    A Linux llama.cpp release ships libllama.so -> libllama.so.0 -> libllama.so.0.3.0
+    (10 such links in b10715), and copytree's default symlinks = False dereferences
+    every one of them into a full copy of the shared library.
+    """
+    staging_dir = tmp_path / "llama.cpp.staging-test"
+    staging_dir.mkdir()
+    real = staging_dir / "libllama.so.0.3.0"
+    real.write_bytes(b"\0" * 4096)
+    (staging_dir / "libllama.so.0").symlink_to("libllama.so.0.3.0")
+    (staging_dir / "libllama.so").symlink_to("libllama.so.0")
+    dst = tmp_path / "llama.cpp"
+    if dst_exists:
+        # os.replace also refuses an EMPTY existing dst cross-device, and the copy
+        # still has to complete there
+        dst.mkdir()
+
+    def cross_device_replace(src, dst_arg):
+        raise OSError(errno.EXDEV, "Invalid cross-device link", str(src))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+
+    activate_staged_dir(staging_dir, dst)
+
+    assert (dst / "libllama.so.0.3.0").read_bytes() == b"\0" * 4096
+    for link, target in (("libllama.so.0", "libllama.so.0.3.0"), ("libllama.so", "libllama.so.0")):
+        assert (
+            dst / link
+        ).is_symlink(), f"{link} was dereferenced into a copy of the library it aliases"
+        assert os.readlink(dst / link) == target
+    on_disk = sum(p.lstat().st_size for p in dst.iterdir())
+    assert on_disk < 2 * len(
+        b"\0" * 4096
+    ), f"the activated tree duplicated libraries ({on_disk} bytes)"
+    assert not staging_dir.exists()
 
 
 def test_activate_staged_dir_reraises_non_busy_errors(
@@ -2268,11 +2401,23 @@ def write_windows_install_shape(
     include_llama_dll: bool = True,
     include_cuda_dll: bool = False,
     include_cudart_dlls: bool = False,
+    include_shared_runtime: bool = True,
 ) -> None:
     runtime_dir = install_dir / "build" / "bin" / "Release"
     runtime_dir.mkdir(parents = True, exist_ok = True)
     (runtime_dir / "llama-server.exe").write_bytes(b"MZ")
     (runtime_dir / "llama-quantize.exe").write_bytes(b"MZ")
+    if include_shared_runtime:
+        # What a BUILD_SHARED_LIBS bundle carries alongside llama.dll.
+        for name in (
+            "llama-common.dll",
+            "llama-server-impl.dll",
+            "ggml.dll",
+            "ggml-base.dll",
+            "ggml-cpu-x64.dll",
+            "mtmd.dll",
+        ):
+            (runtime_dir / name).write_bytes(b"DLL")
     if include_llama_dll:
         (runtime_dir / "llama.dll").write_bytes(b"DLL")
     if include_cuda_dll:
@@ -6700,3 +6845,190 @@ def test_a_non_cuda_bundle_declares_no_supported_sms(tmp_path: Path, install_kin
     )
     marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text())
     assert marker["supported_sms"] == []
+
+
+# What a localized nvidia-smi writes, which -X utf8 decodes as UTF-8 (#10173). The
+# banner leads with GBK 0x81 0x40 so a cp1252 host cannot decode it either.
+_LOCALIZED_NVIDIA_SMI = (
+    "import sys\n"
+    "a = sys.argv[1:]\n"
+    "if a == ['-L']:\n"
+    "    sys.stdout.buffer.write(b'GPU 0: NVIDIA GeForce RTX 3090 (UUID: GPU-a)\\n')\n"
+    "elif a and a[0].startswith('--query-gpu'):\n"
+    "    sys.stdout.buffer.write(b'0, GPU-a, 8.6\\n')\n"
+    "else:\n"
+    "    sys.stdout.buffer.write(b'| NVIDIA-SMI 591.86    CUDA Version: 13.1 |\\n')\n"
+    "    sys.stdout.buffer.write('\\u4e02\\u4fdd\\u7559\\u6240\\u6709\\u6743\\u5229\\u3002\\n'.encode('gbk'))\n"
+)
+
+
+def test_run_capture_keeps_ascii_lines_when_a_child_writes_another_code_page():
+    result = INSTALL_LLAMA_PREBUILT.run_capture(
+        [sys.executable, "-c", _LOCALIZED_NVIDIA_SMI], timeout = 30
+    )
+    assert "CUDA Version: 13.1" in result.stdout
+    assert "\ufffd" in result.stdout
+
+
+def test_detect_host_reads_the_driver_cuda_version_from_a_localized_nvidia_smi(
+    monkeypatch, tmp_path
+):
+    fake = tmp_path / "nvidia-smi.py"
+    fake.write_text(_LOCALIZED_NVIDIA_SMI, encoding = "utf-8")
+    real_run = subprocess.run
+
+    def run_fake_nvidia_smi(command, *args, **kwargs):
+        if command and command[0] == "nvidia-smi":
+            command = [sys.executable, str(fake), *command[1:]]
+        kwargs.setdefault("encoding", "utf-8")  # what the launcher's -X utf8 does
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.subprocess, "run", run_fake_nvidia_smi)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "which",
+        lambda name, *a, **k: "nvidia-smi" if name == "nvidia-smi" else None,
+    )
+    host = INSTALL_LLAMA_PREBUILT.detect_host()
+    assert host.compute_caps == ["86"]
+    assert host.driver_cuda_version == (13, 1)
+
+
+def _flat(groups: list[list[str]]) -> set[str]:
+    return {pattern for group in groups for pattern in group}
+
+
+@pytest.mark.parametrize(
+    "install_kind",
+    [
+        "windows-cpu",
+        "windows-arm64",
+        "windows-cuda",
+        "windows-hip",
+        "windows-rocm",
+        "windows-vulkan",
+    ],
+)
+def test_windows_prebuilt_health_requires_the_shared_runtime(install_kind: str):
+    """Requiring only llama.dll let a tree missing llama-common.dll validate and
+    then fail at exec."""
+    patterns = _flat(runtime_payload_health_groups(install_kind, source_label = "published"))
+    for required in (
+        "llama.dll",
+        "llama-common.dll",
+        "llama-server.exe",
+        "llama-server-impl.dll",
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-cpu*.dll",
+        "mtmd.dll",
+    ):
+        assert required in patterns, f"{install_kind} does not require {required}"
+
+
+def test_windows_source_build_does_not_require_the_shared_runtime():
+    """setup.ps1 builds with -DBUILD_SHARED_LIBS=OFF, so requiring these would
+    fail a healthy tree."""
+    patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label = None))
+    assert "llama.dll" in patterns
+    for absent in ("llama-common.dll", "llama-server-impl.dll", "mtmd.dll"):
+        assert absent not in patterns
+
+
+def test_windows_upstream_bundles_require_the_shared_runtime_too():
+    """Upstream ggml-org Windows zips are also built with shared libs on."""
+    patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label = "upstream"))
+    assert "llama-common.dll" in patterns
+
+
+# Real win-cpu-x64 zip payloads either side of the impl split (llama.cpp#23462).
+_PRE_SPLIT_WINDOWS_PAYLOAD = (
+    "llama.dll",
+    "llama-common.dll",
+    "llama-server.exe",
+    "ggml.dll",
+    "ggml-base.dll",
+    "ggml-cpu-haswell.dll",
+    "mtmd.dll",
+)
+_POST_SPLIT_WINDOWS_PAYLOAD = _PRE_SPLIT_WINDOWS_PAYLOAD + ("llama-server-impl.dll",)
+
+
+@pytest.mark.parametrize(
+    ("tag", "payload", "healthy"),
+    [
+        ("b9279", _PRE_SPLIT_WINDOWS_PAYLOAD, True),
+        ("b9283", _POST_SPLIT_WINDOWS_PAYLOAD, True),
+        ("b9283", _PRE_SPLIT_WINDOWS_PAYLOAD, False),
+    ],
+    ids = ["pre-split-monolithic", "post-split-complete", "post-split-truncated"],
+)
+def test_pre_split_upstream_windows_pin_is_not_forced_to_a_source_build(
+    tmp_path: Path, tag: str, payload: tuple[str, ...], healthy: bool
+):
+    """A pinned upstream tag older than b9283 ships no llama-server-impl.dll.
+
+    Requiring it unconditionally made validate_prebuilt_choice reject a valid
+    downloaded prebuilt and fall back to a costly Windows source build.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    runtime_dir = install_dir / "build" / "bin" / "Release"
+    runtime_dir.mkdir(parents = True)
+    for name in payload:
+        (runtime_dir / name).write_bytes(b"DLL")
+
+    choice = AssetChoice(
+        repo = "ggml-org/llama.cpp",
+        tag = tag,
+        name = f"llama-{tag}-bin-win-cpu-x64.zip",
+        url = f"https://github.com/ggml-org/llama.cpp/releases/download/{tag}/x.zip",
+        source_label = "upstream",
+        install_kind = "windows-cpu",
+    )
+    assert (
+        INSTALL_LLAMA_PREBUILT.runtime_payload_is_healthy(install_dir, _windows_host(), choice)
+        is healthy
+    )
+
+
+def test_existing_install_matches_plan_windows_rejects_missing_llama_common(tmp_path: Path):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_windows_install_shape(install_dir, include_llama_dll = True)
+    runtime_dir = install_dir / "build" / "bin" / "Release"
+    (runtime_dir / "llama-common.dll").unlink()
+
+    groups = runtime_payload_health_groups("windows-cpu", source_label = "published")
+    host = HostInfo(
+        system = "Windows",
+        machine = "AMD64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    assert INSTALL_LLAMA_PREBUILT._runtime_payload_has(install_dir, host, groups) is False
+
+    (runtime_dir / "llama-common.dll").write_bytes(b"DLL")
+    assert INSTALL_LLAMA_PREBUILT._runtime_payload_has(install_dir, host, groups) is True
+
+
+def test_a_fresh_windows_install_is_payload_checked_not_just_vulkan():
+    """A source guard: reaching that call needs a real download, but the check
+    has to run where the bundle is unpacked, not only on the reuse path."""
+    source = MODULE_PATH.read_text(encoding = "utf-8")
+    gate = source[source.index("overlaying prebuilt bundle") :]
+    gate = gate[: gate.index("preflight_linux_installed_binaries")]
+    assert "runtime_payload_is_healthy" in gate, "fresh installs are not payload checked at all"
+    assert (
+        'choice.install_kind.startswith("windows-")' in gate
+    ), "fresh Windows installs are not payload checked"
+    assert "VULKAN_INSTALL_KINDS" in gate, "the Vulkan check must not be dropped"

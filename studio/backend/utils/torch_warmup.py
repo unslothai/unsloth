@@ -127,9 +127,6 @@ def purge_partial_import(package: str) -> list:
         return []
     prefix = package + "."
     stale = [name for name in list(sys.modules) if name.startswith(prefix)]
-    # Re-check before touching anything: a retrying importer publishes the parent as soon
-    # as its __init__ begins, and popping submodules out from under it produces the very
-    # half-initialised package this prevents. Narrows the window; CPython's lock is private.
     if package in sys.modules:
         logger.info(
             "not purging %s: another importer republished it while collecting its "
@@ -181,10 +178,8 @@ _STAGE_PACKAGE = {
     "datasets": "datasets",
 }
 
-# Hold the import lock across a bare import and its failure cleanup. Locking only
-# the purge leaves a window where a queued importer can reuse stale submodules.
-# Hardware and transformers acquire additional locks, so exclude them to avoid
-# lock-order inversions.
+# Hold the import lock across a bare import AND its failure cleanup: locking only the purge leaves a window where a
+# queued importer reuses stale submodules.
 _BARE_IMPORT_STAGES = frozenset({"datasets"})
 
 
@@ -218,9 +213,7 @@ def _run_stage(name: str, fn) -> None:
 
 
 def _warm_hardware(epoch: Optional[int] = None) -> None:
-    # Requests hit the same call, so they reuse the cache or block on this thread's lock,
-    # never race a second detection. The epoch rides along: a shutdown landing between
-    # _warm()'s check and _DETECT_LOCK would else publish for the lifespan that just ended.
+    # Requests hit the same call.
     from utils.hardware import ensure_hardware_detected
     ensure_hardware_detected(epoch)
 

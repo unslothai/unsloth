@@ -40,20 +40,25 @@ def _evict_chat() -> None:
     from core.inference.llama_cpp import chat_load_active
 
     llama = get_llama_cpp_backend()
-    # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting up holds VRAM but is not healthy. chat_load_active
-    # too, since an HF load has no process until its GGUF downloaded. unload_model sets the cancel event the download loop polls, so it aborts.
+    # is_active, not is_loaded: a model still starting holds VRAM
+    # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting up holds VRAM but is
+    # not healthy. chat_load_active too, since an HF load has no process until its GGUF downloaded. unload_model sets
+    # the cancel event the download loop polls, so it aborts.
     if llama.is_active or chat_load_active():
         llama.unload_model()
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
         orchestrator.unload_model(orchestrator.active_model_name)
-    # An in-flight safetensors load has no active_model_name yet (published only on success), so the unload above misses it and it would finish onto
-    # the GPU we just granted away. cancel_load discards the loading marker BEFORE tearing the worker down, and runs off the lifecycle gate.
+    # An in-flight safetensors load has no active_model_name yet (published only on success), so the unload above misses
+    # it and it would finish onto the GPU we just granted away. cancel_load discards the loading marker BEFORE tearing
+    # the worker down, and runs off the lifecycle gate.
     for pending in list(getattr(orchestrator, "loading_models", ()) or ()):
         orchestrator.cancel_load(pending)
     # Kill the subprocess too: its base CUDA context holds VRAM diffusion needs.
     orchestrator._shutdown_subprocess(timeout = 5.0)
-    # The driver reclaims the killed VRAM asynchronously, so wait for it to settle before diffusion allocates, else a warm handoff can transiently OOM.
+    # the driver reclaims killed VRAM asynchronously, else a warm handoff can transiently OOM
+    # The driver reclaims the killed VRAM asynchronously, so wait for it to settle before diffusion allocates, else a
+    # warm handoff can transiently OOM.
     llama._wait_for_vram_settle(since_kill = time.monotonic())
 
 
@@ -68,7 +73,8 @@ def _evict_video() -> None:
     get_video_backend().unload()
 
 
-# Patchable in tests via monkeypatch.setitem. Ownership is exclusive, so acquire_for's evict-the-current-owner generalises to any number of owners.
+# Patchable in tests via monkeypatch.setitem. Ownership is exclusive, so acquire_for's evict-the-current-owner
+# generalises to any number of owners.
 _EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion, VIDEO: _evict_video}
 
 

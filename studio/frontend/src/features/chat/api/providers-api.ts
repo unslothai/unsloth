@@ -124,23 +124,55 @@ async function importProviderPublicKey(
   return forgeKey;
 }
 
+const ENVELOPE_VERSION = "v1";
+/** Pins an envelope to this protocol and version; the backend checks the same bytes. */
+const ENVELOPE_AAD = "unsloth-studio-provider-key-v1";
+const AES_KEY_BYTES = 32;
+const NONCE_BYTES = 12;
+
+function randomBinaryString(byteLength: number): string {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return String.fromCharCode(...bytes);
+}
+
+/**
+ * Produce `v1.<wrapped AES key>.<nonce>.<ciphertext||tag>`, each part base64. RSA-OAEP wraps
+ * only the 32-byte content key: encrypting the API key itself would cap it at 190 bytes.
+ */
 export async function encryptProviderApiKey(
   plaintextApiKey: string,
   forceRefresh = false,
 ): Promise<string> {
   const key = await importProviderPublicKey(forceRefresh);
-  const encrypted = key.encrypt(plaintextApiKey, "RSA-OAEP", {
+  const aesKey = randomBinaryString(AES_KEY_BYTES);
+  const nonce = randomBinaryString(NONCE_BYTES);
+
+  const cipher = forge.cipher.createCipher("AES-GCM", aesKey);
+  cipher.start({ iv: nonce, additionalData: ENVELOPE_AAD, tagLength: 128 });
+  // forge ciphers take bytes, so a non-ASCII key would otherwise lose all but the low byte
+  // of each UTF-16 code unit.
+  cipher.update(forge.util.createBuffer(forge.util.encodeUtf8(plaintextApiKey)));
+  if (!cipher.finish()) {
+    throw new Error("Failed to encrypt API key.");
+  }
+
+  const wrappedKey = key.encrypt(aesKey, "RSA-OAEP", {
     md: forge.md.sha256.create(),
     mgf1: { md: forge.md.sha256.create() },
   });
-  return forge.util.encode64(encrypted);
+  return [
+    ENVELOPE_VERSION,
+    forge.util.encode64(wrappedKey),
+    forge.util.encode64(nonce),
+    forge.util.encode64(cipher.output.getBytes() + cipher.mode.tag.getBytes()),
+  ].join(".");
 }
 
 export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
-  // include_hidden asks for the backend-only entries (the self-hosted presets),
-  // which carry the studio-tools capability the composer gates on. An older
-  // backend ignores the parameter and returns the visible entries, so the
-  // capability simply reads as unknown and the pills stay closed.
+  // include_hidden asks for the backend-only entries (the self-hosted presets), which carry the
+  // studio-tools capability the composer gates on. An older backend ignores the parameter and
+  // returns the visible entries, so the capability reads as unknown and the pills stay closed.
   const response = await authFetch("/api/providers/registry?include_hidden=true");
   return parseJsonOrThrow<ProviderRegistryEntry[]>(response);
 }
@@ -183,9 +215,8 @@ export async function deleteProviderConfig(providerId: string): Promise<void> {
   const response = await authFetch(`/api/providers/${providerId}`, {
     method: "DELETE",
   });
-  // Treat 404 as success: another tab already deleted this provider, so pruning
-  // the stale cache is correct. Otherwise the caller throws and the user is stuck
-  // with an entry they cannot remove from the UI.
+  // Treat 404 as success: another tab already deleted this provider, so pruning the stale cache is
+  // correct. Otherwise the caller throws and the user is stuck with an entry they cannot remove.
   if (response.status === 404) {
     return;
   }
@@ -318,11 +349,11 @@ export async function listProviderModels(payload: {
 
 export interface CodexSubscriptionModels {
   models: ProviderModelInfo[];
-  /** Every model the plan returned, offered or not: absent from this means the account
-   * cannot reach it, while present-but-unoffered only means it is no longer shown. */
+  /** Every model the plan returned, offered or not: absent from this means the account cannot reach
+   *  it, while present-but-unoffered only means it is no longer shown. */
   known?: ProviderModelInfo[];
-  /** "reauthorization_required" is a curated answer that also says the connection has
-   * to be reconnected: the picker must not treat it as the plan's catalog. */
+  /** "reauthorization_required" is a curated answer that also says the connection has to be
+   *  reconnected: the picker must not treat it as the plan's catalog. */
   source: "subscription" | "curated" | "reauthorization_required";
 }
 

@@ -280,8 +280,8 @@ def configure_lan_access(
     resolved_loopback = bool(app_state.lan_access_launch_addresses) and all(
         _normalized_ip(address).is_loopback for address in app_state.lan_access_launch_addresses
     )
-    # An unresolved hostname is launch-managed but never trusted for keyless LAN
-    # admission: request_on_lan_access requires its resolved address set.
+    # An unresolved hostname is launch-managed but never trusted for keyless LAN admission:
+    # request_on_lan_access requires its resolved address set.
     app_state.lan_access_launch_managed = (
         app_state.lan_access_wildcard_bind or not resolved_loopback
     )
@@ -295,9 +295,9 @@ def configure_lan_access(
 def _launch_urls(app_state) -> list[str]:
     """Where a launch-managed bind answers on this network.
 
-    A wildcard launch cannot use ``server_url``: run.py builds that from
-    ``_display_host_for_bind``, which resolves the machine's public IP for
-    sharing, and behind NAT that address reaches nothing on the LAN.
+    A wildcard launch cannot rely only on ``server_url``: run.py gives that
+    direct base one LAN-reachable address, while Settings must show every
+    currently reachable address in each family the launch serves.
     """
     if getattr(app_state, "lan_access_wildcard_bind", False):
         from lan_access import detect_lan_addresses
@@ -489,7 +489,6 @@ def stop_lan_access(app) -> dict:
     status = lan_access_status(app)
     if status["managed_by"] == "launch":
         raise RuntimeError("launch_managed")
-    # a stop that could not confirm the port is closed leaves the host reachable
     # a stop that could not confirm the port is closed leaves the host reachable,
     # and lan_access keeps the trust flag with the listener state it describes
     if stop_lan_listener():
