@@ -27751,11 +27751,22 @@ def _responses_reasoning_output_item(
     return ResponsesOutputReasoning(**kwargs).model_dump()
 
 
-def _reject_unsupported_responses_message_part(part) -> None:
-    """Refuse the two attachment shapes the local adapter cannot serve, instead of dropping them.
+def _reject_unserviceable_responses_attachment(part) -> None:
+    """Refuse an attachment the local adapter cannot serve, instead of dropping it.
 
-    ``_responses_tool_output_content`` already answers these exact shapes with a typed 400.
-    Genuinely unmodelled future part types still drop.
+    ``_responses_tool_output_content`` already answers these exact shapes with a typed 400
+    when they arrive as a tool result; the same four rules and the same wording apply to a
+    message content part, so one server does not explain the gap in one place and hide it in
+    another.
+
+    A part reaches here only after failing its typed variant, so an ``input_image`` that got
+    this far is missing its ``image_url``, or carries a ``detail`` outside the documented set,
+    or both. An image carrying ``image_url`` *and* ``file_id`` validates normally and is
+    served from the URL -- ``file_id`` means "instead of a URL" here, exactly as it does on
+    the tool-result path.
+
+    Called for every role, before the system/developer hoist and the assistant flatten, since
+    an attachment vanishes just as quietly from those turns as it does from a user turn.
     """
     part_type = getattr(part, "type", None)
     if part_type == "input_file":
@@ -27763,12 +27774,54 @@ def _reject_unsupported_responses_message_part(part) -> None:
             "input",
             "Responses input_file message parts are not supported by the local adapter.",
         )
-    if part_type == "input_image" and getattr(part, "file_id", None):
-        _raise_unsupported_openai_parameter(
-            "input",
-            "Responses input_image message parts with file_id are not supported by the local "
-            "adapter. Use image_url instead.",
-        )
+    if part_type == "input_image":
+        image_url = getattr(part, "image_url", None)
+        if not isinstance(image_url, str) or not image_url:
+            if getattr(part, "file_id", None):
+                _raise_unsupported_openai_parameter(
+                    "input",
+                    "Responses input_image message parts with file_id are not supported by the "
+                    "local adapter. Use image_url instead.",
+                )
+            _raise_unsupported_openai_parameter(
+                "input",
+                "Responses input_image message parts require an image_url string.",
+            )
+        detail = getattr(part, "detail", "auto")
+        if detail is None:
+            detail = "auto"
+        if detail not in ("auto", "low", "high", "original"):
+            _raise_unsupported_openai_parameter(
+                "input",
+                "Responses input_image message detail must be auto, low, high, or original.",
+            )
+
+
+def _reject_unserviceable_responses_attachments(item) -> None:
+    """Run the attachment refusal over one input message's content parts.
+
+    Only list content carries parts; a plain string cannot hide an attachment.
+    """
+    if isinstance(item.content, str):
+        return
+    for part in item.content or []:
+        _reject_unserviceable_responses_attachment(part)
+
+
+def _reject_unknown_responses_message_part(part) -> None:
+    """Refuse a content part no local route can serve, naming the type.
+
+    Mirrors ``_reject_unsupported_content_parts`` on the Chat Completions side: a part left
+    standing is dropped in silence and the model answers a prompt the caller did not send.
+    Applied to user turns only, so an assistant replay turn keeps the lenient text flatten
+    it has always had -- clients round-trip prior assistant output verbatim and must not be
+    made to fail on a part that carries no attachment.
+    """
+    _raise_unsupported_openai_parameter(
+        "input",
+        f"Responses message content parts of type '{getattr(part, 'type', None)}' "
+        "are not supported.",
+    )
 
 
 def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
@@ -27893,7 +27946,12 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             # don't 422.
             continue
 
-        # ResponsesInputMessage -- hoist system/developer to the top, merge.
+        # ResponsesInputMessage. Refuse an attachment this adapter cannot serve before the
+        # role branches below, each of which returns via `continue` and would otherwise carry
+        # a system, developer or assistant turn's attachment away in silence.
+        _reject_unserviceable_responses_attachments(item)
+
+        # Hoist system/developer to the top, merge.
         if item.role in ("system", "developer"):
             hoisted = _responses_message_text(item.content)
             if hoisted:
@@ -27914,8 +27972,9 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                 messages.append(ChatMessage(role = "assistant", content = text))
             continue
 
-        # User (and any other remaining roles) -- refuse an attachment we cannot serve,
-        # drop genuinely unmodelled parts silently.
+        # User (and any other remaining roles). Attachments are already refused above; a part
+        # still standing here is one no local route can serve, so name it rather than answer
+        # a prompt the caller did not send.
         parts: list = []
         for part in item.content:
             if isinstance(part, (ResponsesInputTextPart, ResponsesOutputTextPart)):
@@ -27928,7 +27987,7 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                     )
                 )
             else:
-                _reject_unsupported_responses_message_part(part)
+                _reject_unknown_responses_message_part(part)
         if parts:
             # Collapse single-text-part content to a plain string so roles that
             # reject multimodal arrays (e.g. legacy templates) still accept it.
