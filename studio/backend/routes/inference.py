@@ -13391,6 +13391,15 @@ async def _load_model_impl(
     def _raise_if_scoped_load_cancelled() -> None:
         if load_cancel_event is not None and load_cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
+        # Auto-switch and preview call this impl directly, without a _ScopedLoadAttempt,
+        # so the shutdown sweep has no event to set for them. Reading the latch here puts
+        # both on the same footing as /load: the callers of this helper are the points of
+        # no return, so a shutdown seen before one still stops the load rather than
+        # spawning a worker that outlives quit.
+        with _scoped_load_attempts_lock:
+            _shutting_down_now = _loads_shutting_down
+        if _shutting_down_now:
+            raise HTTPException(status_code = 409, detail = "Model load cancelled")
 
     # A new load starts here; arm the progress throttle so this load's first
     # sampled step logs even if it reports 100% immediately (cached/small load).

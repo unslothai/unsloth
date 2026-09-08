@@ -2840,3 +2840,102 @@ def test_the_route_latch_clears_only_after_the_backend_lifecycle_reopens():
         "request admitted by the old lifecycle can cross the teardown wait"
     )
     assert route_reset < serve, "the route latch is still set when the server starts serving"
+
+
+def _load_impl_ast():
+    """(module source, the _load_model_impl node) from routes/inference.py."""
+    import ast
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parent.parent / "routes" / "inference.py"
+    ).read_text(encoding = "utf-8")
+    fn = next(
+        n
+        for n in ast.parse(src).body
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_load_model_impl"
+    )
+    return src, fn
+
+
+def test_the_shutdown_latch_is_enforced_in_the_load_impl_not_only_at_the_route():
+    """Auto-switch and preview await _load_model_impl directly, without ever
+    registering a _ScopedLoadAttempt, so the shutdown sweep has no event to set for
+    them. With the latch checked only where /load registers, one of those loads can
+    survive the sweep, reach a non-GGUF target after run.py already tore the
+    inference subprocess down, and spawn a worker that outlives quit.
+    """
+    import ast
+
+    src, impl = _load_impl_ast()
+
+    tracked = {"_run_tracked_load_model_impl", "_load_model_impl"}
+    direct = [
+        node.name
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name not in tracked
+        and any(
+            isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Name)
+            and c.func.id == "_load_model_impl"
+            for c in ast.walk(node)
+        )
+    ]
+    assert direct, (
+        "no direct _load_model_impl callers left; if registration now covers every "
+        "path this guard can move back to the route"
+    )
+
+    reads = [
+        n.id
+        for n in ast.walk(impl)
+        if isinstance(n, ast.Name) and n.id == "_loads_shutting_down"
+    ]
+    assert reads, (
+        "_load_model_impl never consults the shutdown latch, so these direct "
+        f"callers bypass it entirely: {sorted(set(direct))}"
+    )
+
+
+def test_the_impl_cancel_check_refuses_a_load_once_shutdown_has_latched():
+    """Runs the shipped closure, rather than asserting on its text.
+
+    The callers of this helper are the load's points of no return, so refusing here
+    is what stops a shutdown-crossing load before it spawns anything.
+    """
+    import ast
+    import textwrap
+    import threading
+
+    from fastapi import HTTPException
+
+    src, impl = _load_impl_ast()
+    helper = next(
+        n
+        for n in impl.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_raise_if_scoped_load_cancelled"
+    )
+
+    ns = {
+        "HTTPException": HTTPException,
+        "_scoped_load_attempts_lock": threading.Lock(),
+        "_loads_shutting_down": False,
+        "load_cancel_event": None,
+    }
+    exec(textwrap.dedent(ast.get_source_segment(src, helper) or ""), ns)
+    check = ns["_raise_if_scoped_load_cancelled"]
+
+    check()  # nothing set: a normal load must not be refused
+
+    ns["_loads_shutting_down"] = True
+    with pytest.raises(HTTPException) as excinfo:
+        check()
+    assert excinfo.value.status_code == 409
+
+    ns["_loads_shutting_down"] = False
+    ns["load_cancel_event"] = threading.Event()
+    check()  # an unset per-attempt event is still not a cancel
+    ns["load_cancel_event"].set()
+    with pytest.raises(HTTPException):
+        check()
