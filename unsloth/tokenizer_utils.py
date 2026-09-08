@@ -68,65 +68,55 @@ IGNORED_TOKENIZER_NAMES = frozenset(
 )
 os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
-# Gemma 4 base (non-it) Hub mirrors ship without add_bos_token: true even though
-# google/gemma-4-* includes it. Detect from the loaded tokenizer / model config,
-# not the repo name: local folders and extra quant suffixes (bnb-4bit, GGUF, ...)
-# do not match a Hub-id regex. -it is fine: chat_template.jinja emits bos_token.
-# See unslothai/unsloth#7903.
+# The gemma-4 base mirrors kept google's release-day tokenizer.json, which google replaced hours
+# later: ours has post_processor.single = [A], google's has [<bos>, A], so base models never see
+# <bos> and degenerate. Not keyed on tokenizer_config's add_bos_token (google omits it on E4B,
+# 31B, 26B-A4B and still prepends) nor on the repo name (local folders, quant suffixes). -it is
+# skipped: google leaves it BOS-less too since chat_template emits it. See unslothai/unsloth#7903.
 _GEMMA4_INSTRUCT_EOS = "<turn|>"
+
+# Anchored: a future gemma-4.5 / gemma_45 has its own BOS policy, and DiffusionGemma4... is not gemma 4.
+_GEMMA4_NAME_RE = re.compile(r"^gemma[\s_-]*4(?![\d.])", re.IGNORECASE)
+
+# A bos_token inside a Jinja comment renders to nothing, so it is not an emission.
+_JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.DOTALL)
 
 
 def _tokenizer_objects(tokenizer):
     """Yield the processor and its inner tokenizer once each."""
     seen = []
     for obj in (tokenizer, getattr(tokenizer, "tokenizer", None)):
-        if obj is None or obj in seen:
+        # Identity, not equality: a wrapper defining __eq__ would compare fields.
+        if obj is None or any(obj is s for s in seen):
             continue
         seen.append(obj)
         yield obj
 
 
-def _tokenizer_stored(obj, name):
-    value = getattr(obj, name, None)
-    if value is not None:
-        return value
-    init_kwargs = getattr(obj, "init_kwargs", None) or {}
-    return init_kwargs.get(name)
-
-
-def _normalize_type_name(value):
-    if value is None:
-        return ""
-    return str(value).replace("_", "").replace("-", "").lower()
-
-
 def _is_gemma4_config(config):
     if config is None:
         return False
-    candidates = [config, getattr(config, "text_config", None)]
-    for cfg in candidates:
+    for cfg in (config, getattr(config, "text_config", None)):
         if cfg is None:
             continue
-        model_type = _normalize_type_name(getattr(cfg, "model_type", None))
-        if model_type.startswith("gemma4"):
+        model_type = getattr(cfg, "model_type", None)
+        if model_type is not None and _GEMMA4_NAME_RE.match(str(model_type)):
             return True
-        architectures = getattr(cfg, "architectures", None) or []
-        if any("gemma4" in _normalize_type_name(item) for item in architectures):
+        if any(_GEMMA4_NAME_RE.match(str(a)) for a in (getattr(cfg, "architectures", None) or [])):
             return True
     return False
 
 
 def _is_gemma4_tokenizer(tokenizer):
-    if tokenizer is None:
-        return False
+    """Gemma 4 declares processor_class = Gemma4Processor, usually only in init_kwargs.
+
+    The class itself is GemmaTokenizer, so a class-name check would never fire.
+    """
     for obj in _tokenizer_objects(tokenizer):
-        if "gemma4" in _normalize_type_name(type(obj).__name__):
-            return True
-        processor_class = _normalize_type_name(_tokenizer_stored(obj, "processor_class"))
-        if processor_class == "gemma4processor":
-            return True
-        # Gemma 4 tokenizer_config always pairs these; Gemma 3 / 3n do not.
-        if _tokenizer_stored(obj, "think_token") and _tokenizer_stored(obj, "boa_token"):
+        processor_class = getattr(obj, "processor_class", None)
+        if processor_class is None:
+            processor_class = (getattr(obj, "init_kwargs", None) or {}).get("processor_class")
+        if str(processor_class or "").strip().lower() == "gemma4processor":
             return True
     return False
 
@@ -138,149 +128,110 @@ def _chat_template_emits_bos(tokenizer):
             continue
         chunks = template.values() if isinstance(template, dict) else (template,)
         for chunk in chunks:
-            text = chunk if isinstance(chunk, str) else str(chunk)
+            text = _JINJA_COMMENT_RE.sub("", chunk if isinstance(chunk, str) else str(chunk))
             if "bos_token" in text or "<bos>" in text:
                 return True
     return False
 
 
 def _tokenizer_auto_adds_bos(tokenizer):
+    """Does this tokenizer already emit <bos>?
+
+    add_bos_token is no proxy: google/gemma-4-E2B reports False and still prepends, since BOS
+    lives in tokenizer.json's post_processor. Only the emitted ids are truth.
+    """
     bos_token_id = getattr(tokenizer, "bos_token_id", None)
     if bos_token_id is None:
         return bool(getattr(tokenizer, "add_bos_token", False))
     try:
-        return tokenizer("A").input_ids[0] == bos_token_id
+        input_ids = tokenizer("A")["input_ids"]
     except Exception:
         return bool(getattr(tokenizer, "add_bos_token", False))
+    # Processors return a batched nested list.
+    while (
+        isinstance(input_ids, (list, tuple))
+        and input_ids
+        and isinstance(input_ids[0], (list, tuple))
+    ):
+        input_ids = input_ids[0]
+    return bool(input_ids) and input_ids[0] == bos_token_id
 
 
 def _strip_bos_from_chat_template_text(chat_template):
     if not isinstance(chat_template, str) or not chat_template:
         return chat_template
-    stripped = re.sub(
-        r"\{[\s\-]*\{[\s\-]*bos\_token[\s\-]*\}[\s\-]*\}",
-        "",
-        chat_template,
-        count = 1,
-    )
-    stripped = re.sub(
-        r"\{[\s\-]*\{[\s\-]*bos\_token[\s\-]*\+[\s\-]*",
-        "",
-        stripped,
-        count = 1,
-    )
-    return stripped
+    stripped = re.sub(r"\{[\s\-]*\{[\s\-]*bos\_token[\s\-]*\}[\s\-]*\}", "", chat_template, count = 1)
+    return re.sub(r"\{[\s\-]*\{[\s\-]*bos\_token[\s\-]*\+[\s\-]*", "", stripped, count = 1)
 
 
 def _dedupe_bos_chat_template(tokenizer):
     """Drop template-emitted BOS when the tokenizer already prepends one."""
     for obj in _tokenizer_objects(tokenizer):
-        if not _tokenizer_auto_adds_bos(obj):
-            continue
         template = getattr(obj, "chat_template", None)
-        if template is None or not _chat_template_emits_bos(obj):
+        if (
+            template is None
+            or not _tokenizer_auto_adds_bos(obj)
+            or not _chat_template_emits_bos(obj)
+        ):
             continue
         if isinstance(template, dict):
             obj.chat_template = {
-                key: _strip_bos_from_chat_template_text(value) if isinstance(value, str) else value
-                for key, value in template.items()
+                k: _strip_bos_from_chat_template_text(v) if isinstance(v, str) else v
+                for k, v in template.items()
             }
         elif isinstance(template, str):
             obj.chat_template = _strip_bos_from_chat_template_text(template)
 
 
 def _is_gemma4_instruct_tokenizer(tokenizer):
-    if tokenizer is None:
-        return False
+    """-it emits BOS from its chat template, so flipping the flag would double it.
+
+    google leaves -it BOS-less for the same reason, so skipping keeps us matching upstream.
+    """
     if _chat_template_emits_bos(tokenizer):
         return True
-    for obj in _tokenizer_objects(tokenizer):
-        if getattr(obj, "eos_token", None) == _GEMMA4_INSTRUCT_EOS:
-            return True
-    return False
+    return any(
+        getattr(o, "eos_token", None) == _GEMMA4_INSTRUCT_EOS for o in _tokenizer_objects(tokenizer)
+    )
 
 
 def _needs_gemma4_base_bos(tokenizer, config = None):
-    if _is_gemma4_instruct_tokenizer(tokenizer):
+    if tokenizer is None or _is_gemma4_instruct_tokenizer(tokenizer):
         return False
     return _is_gemma4_tokenizer(tokenizer) or _is_gemma4_config(config)
 
 
-def _has_add_bos_token_setter(tokenizer):
-    prop = getattr(type(tokenizer), "add_bos_token", None)
-    return isinstance(prop, property) and prop.fset is not None
-
-
-def _update_generic_fast_post_processor(tokenizer):
-    """Rebuild the Rust post-processor for bare ``PreTrainedTokenizerFast`` loads."""
-    backend = getattr(tokenizer, "_tokenizer", None)
-    bos_token = getattr(tokenizer, "bos_token", None)
-    bos_token_id = getattr(tokenizer, "bos_token_id", None)
-    if backend is None or bos_token is None or bos_token_id is None:
-        return False
-
-    add_eos_token = bool(getattr(tokenizer, "add_eos_token", False))
-    eos_token = getattr(tokenizer, "eos_token", None)
-    eos_token_id = getattr(tokenizer, "eos_token_id", None)
-
-    try:
-        from tokenizers import processors
-    except Exception:
-        return False
-
-    single = f"{bos_token}:0 $A:0"
-    if add_eos_token and eos_token is not None:
-        single += f" {eos_token}:0"
-    pair = f"{single} {bos_token}:1 $B:1"
-    if add_eos_token and eos_token is not None:
-        pair += f" {eos_token}:1"
-
-    special_tokens = [(bos_token, bos_token_id)]
-    if add_eos_token and eos_token is not None and eos_token_id is not None:
-        special_tokens.append((eos_token, eos_token_id))
-
-    backend.post_processor = processors.TemplateProcessing(
-        single = single,
-        pair = pair,
-        special_tokens = special_tokens,
-    )
-    if hasattr(tokenizer, "_add_bos_token"):
-        tokenizer._add_bos_token = True
-    init_kwargs = getattr(tokenizer, "init_kwargs", None)
-    if isinstance(init_kwargs, dict):
-        init_kwargs["add_bos_token"] = True
-    try:
-        tokenizer.add_bos_token = True
-    except Exception:
-        pass
-    return True
-
-
 def _enable_add_bos_token(tokenizer):
+    """Make the tokenizer prepend <bos>, and warn if that could not be done.
+
+    Nothing extra is recorded for save_pretrained: transformers 5.x drops add_bos_token from
+    tokenizer_config.json, so the setter's post_processor rewrite is what persists, matching
+    google/gemma-4-*.
+    """
     for obj in _tokenizer_objects(tokenizer):
-        if getattr(obj, "add_bos_token", False):
-            continue
-        if _has_add_bos_token_setter(obj):
-            try:
-                obj.add_bos_token = True
-                continue
-            except Exception:
-                pass
-        if _update_generic_fast_post_processor(obj):
+        # Already correct: keep its post_processor rather than rebuilding one.
+        if _tokenizer_auto_adds_bos(obj):
             continue
         try:
             obj.add_bos_token = True
-        except Exception:
-            pass
+        except AttributeError:
+            continue  # Read-only property, or rejects the attribute. Not our tokenizer.
+        except ValueError as error:
+            # Raised when bos_token is None; swallowing it would fake success.
+            logger.warning(f"Unsloth: Could not enable add_bos_token for Gemma 4: {error}")
+            continue
+        # Pre-5.x fast tokenizers accept the attribute without changing what they emit.
+        if not _tokenizer_auto_adds_bos(obj):
+            logger.warning(
+                "Unsloth: add_bos_token was set for this Gemma 4 base tokenizer but it still "
+                "does not prepend <bos>. See unslothai/unsloth#7903."
+            )
 
 
 def _fix_gemma4_base_bos_token(tokenizer, config = None):
-    if tokenizer is None:
+    if tokenizer is None or not _needs_gemma4_base_bos(tokenizer, config = config):
         return tokenizer
-    if not (_is_gemma4_tokenizer(tokenizer) or _is_gemma4_config(config)):
-        return tokenizer
-    if _needs_gemma4_base_bos(tokenizer, config = config):
-        _enable_add_bos_token(tokenizer)
+    _enable_add_bos_token(tokenizer)
     return tokenizer
 
 

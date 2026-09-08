@@ -36,8 +36,6 @@ class _Tok:
         add_bos_token = False,
         bos_token_id = 2,
         processor_class = None,
-        think_token = None,
-        boa_token = None,
         chat_template = None,
         eos_token = "<eos>",
         init_kwargs = None,
@@ -45,8 +43,6 @@ class _Tok:
         self.add_bos_token = add_bos_token
         self.bos_token_id = bos_token_id
         self.processor_class = processor_class
-        self.think_token = think_token
-        self.boa_token = boa_token
         self.chat_template = chat_template
         self.eos_token = eos_token
         if init_kwargs is not None:
@@ -65,11 +61,6 @@ class _Proc:
         self.chat_template = chat_template
 
 
-class _Gemma4Processor:
-    def __init__(self, tokenizer):
-        self.tokenizer = tokenizer
-
-
 def _gemma4_base(**kwargs):
     kwargs.setdefault("processor_class", "Gemma4Processor")
     return _Tok(**kwargs)
@@ -77,11 +68,6 @@ def _gemma4_base(**kwargs):
 
 def test_gemma4_from_processor_class():
     assert tu._is_gemma4_tokenizer(_gemma4_base()) is True
-
-
-def test_gemma4_from_think_and_boa_tokens():
-    tok = _Tok(processor_class = None, think_token = "<think>", boa_token = "<boa>")
-    assert tu._is_gemma4_tokenizer(tok) is True
 
 
 def test_gemma4_from_init_kwargs():
@@ -92,10 +78,6 @@ def test_gemma4_from_init_kwargs():
 def test_gemma4_from_processor_wrapper():
     proc = _Proc(_Tok())
     assert tu._is_gemma4_tokenizer(proc) is True
-
-
-def test_gemma4_from_class_name():
-    assert tu._is_gemma4_tokenizer(_Gemma4Processor(_Tok())) is True
 
 
 def test_gemma3_processor_is_not_gemma4():
@@ -233,36 +215,8 @@ def test_fastmodel_processor_path_skips_instruct_template():
     assert inner.add_bos_token is False
 
 
-def test_generic_fast_post_processor_gets_bos():
-    pytest.importorskip("tokenizers")
-    from tokenizers import processors
-
-    class _Backend:
-        post_processor = None
-
-    class _GenericFast:
-        bos_token = "<bos>"
-        bos_token_id = 2
-        add_eos_token = False
-        add_bos_token = False
-        init_kwargs = {}
-
-        def __init__(self):
-            self._tokenizer = _Backend()
-
-    obj = _GenericFast()
-    assert tu._update_generic_fast_post_processor(obj) is True
-    assert isinstance(obj._tokenizer.post_processor, processors.TemplateProcessing)
-    assert obj.add_bos_token is True
-    assert obj.init_kwargs["add_bos_token"] is True
-
-
-def test_generic_fast_post_processor_skips_without_backend():
-    obj = types.SimpleNamespace(bos_token = "<bos>", bos_token_id = 2, add_bos_token = False)
-    assert tu._update_generic_fast_post_processor(obj) is False
-
-
 @pytest.mark.e2e
+@pytest.mark.slow
 def test_gemma4_e2b_hub_tokenizer_prepends_bos():
     pytest.importorskip("transformers")
     from transformers import AutoTokenizer
@@ -338,3 +292,153 @@ def test_instruct_template_is_not_stripped_when_tokenizer_does_not_add_bos():
     tu._fix_gemma4_base_bos_token(tok)
     assert tok.add_bos_token is False
     assert "bos_token" in tok.chat_template
+
+
+# Real-backend tests. The fakes above accept any attribute, so they cannot tell a working repair
+# from an inert one; these build a real tokenizers backend in memory, no network needed.
+
+
+def _build_fast_tokenizer():
+    tokenizers = pytest.importorskip("tokenizers")
+    from transformers import PreTrainedTokenizerFast
+
+    backend = tokenizers.Tokenizer(
+        tokenizers.models.WordLevel(
+            {"<bos>": 0, "<eos>": 1, "hello": 2, "world": 3}, unk_token = None
+        )
+    )
+    backend.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
+    return PreTrainedTokenizerFast(tokenizer_object = backend, bos_token = "<bos>", eos_token = "<eos>")
+
+
+def _backend_honors_add_bos_token():
+    # Pre-5.x fast tokenizers store add_bos_token without changing what they emit. Gemma 4 needs
+    # transformers >= 5.5.0 anyway (loader.py SUPPORTS_GEMMA4), so record it rather than fail.
+    try:
+        tokenizer = _build_fast_tokenizer()
+    except Exception:
+        return False
+    tokenizer.add_bos_token = True
+    return tokenizer("hello world")["input_ids"][0] == tokenizer.bos_token_id
+
+
+requires_working_add_bos_token = pytest.mark.skipif(
+    not _backend_honors_add_bos_token(),
+    reason = "this transformers treats add_bos_token as an inert attribute",
+)
+
+
+def _real_tokenizer(add_bos = False):
+    tokenizer = _build_fast_tokenizer()
+    # Gemma 4 is identified by its processor, not by this toy vocabulary.
+    tokenizer.processor_class = "Gemma4Processor"
+    if add_bos:
+        tokenizer.add_bos_token = True
+    return tokenizer
+
+
+def _ids(
+    tokenizer,
+    text = "hello world",
+    **kwargs,
+):
+    return tokenizer(text, **kwargs)["input_ids"]
+
+
+@requires_working_add_bos_token
+def test_real_backend_gains_exactly_one_bos():
+    tok = _real_tokenizer()
+    assert _ids(tok)[0] != tok.bos_token_id
+    tu._fix_gemma4_base_bos_token(tok)
+    ids = _ids(tok)
+    assert ids[0] == tok.bos_token_id and ids[1] != tok.bos_token_id
+
+
+@requires_working_add_bos_token
+def test_real_backend_repair_is_idempotent():
+    tok = _real_tokenizer()
+    tu._fix_gemma4_base_bos_token(tok)
+    once = _ids(tok)
+    tu._fix_gemma4_base_bos_token(tok)
+    assert _ids(tok) == once
+
+
+@requires_working_add_bos_token
+def test_real_backend_add_special_tokens_false_never_gains_bos():
+    tok = _real_tokenizer()
+    tu._fix_gemma4_base_bos_token(tok)
+    assert tok.bos_token_id not in _ids(tok, add_special_tokens = False)
+
+
+@requires_working_add_bos_token
+def test_real_backend_already_correct_tokenizer_is_left_alone():
+    # google base mirrors report add_bos_token = False and still prepend, so a repair keyed on
+    # the attribute would rebuild a post_processor that already works.
+    tok = _real_tokenizer(add_bos = True)
+    before = str(tok._tokenizer.post_processor)
+    ids_before = _ids(tok)
+    tu._fix_gemma4_base_bos_token(tok)
+    assert _ids(tok) == ids_before
+    assert str(tok._tokenizer.post_processor) == before
+
+
+@requires_working_add_bos_token
+def test_real_backend_without_bos_token_does_not_claim_success():
+    tok = _real_tokenizer()
+    tok.bos_token = None
+    tu._fix_gemma4_base_bos_token(tok)
+    assert not getattr(tok, "add_bos_token", False) or _ids(tok)[0] == tok.bos_token_id
+
+
+@pytest.mark.parametrize(
+    "model_type, expected",
+    [
+        ("gemma4", True),
+        ("gemma4_text", True),
+        ("gemma-4", True),
+        ("gemma3", False),
+        ("gemma3n", False),
+        ("gemma3n_text", False),
+        ("gemma2", False),
+        ("llama", False),
+        # A future Gemma 4.5 is a different model with its own BOS policy.
+        ("gemma_45", False),
+        ("gemma-4.5", False),
+        # Substring matching would catch unsloth's own diffusion_gemma4.
+        ("diffusion_gemma4", False),
+    ],
+)
+def test_config_model_type_detection_is_anchored(model_type, expected):
+    config = types.SimpleNamespace(model_type = model_type, text_config = None)
+    assert tu._is_gemma4_config(config) is expected
+
+
+@pytest.mark.parametrize(
+    "architecture, expected",
+    [
+        ("Gemma4ForConditionalGeneration", True),
+        ("DiffusionGemma4ForConditionalGeneration", False),
+        ("Gemma3ForConditionalGeneration", False),
+    ],
+)
+def test_config_architectures_detection_is_anchored(architecture, expected):
+    config = types.SimpleNamespace(
+        model_type = "unknown", text_config = None, architectures = [architecture]
+    )
+    assert tu._is_gemma4_config(config) is expected
+
+
+@requires_working_add_bos_token
+def test_bos_token_inside_a_jinja_comment_does_not_suppress_the_fix():
+    tok = _real_tokenizer()
+    tok.chat_template = "{# bos_token is handled elsewhere #}{{ messages }}"
+    tu._fix_gemma4_base_bos_token(tok)
+    assert _ids(tok)[0] == tok.bos_token_id
+
+
+@requires_working_add_bos_token
+def test_bos_token_emitted_by_the_template_still_suppresses_the_fix():
+    tok = _real_tokenizer()
+    tok.chat_template = "{{- bos_token -}}{{ messages }}"
+    tu._fix_gemma4_base_bos_token(tok)
+    assert _ids(tok)[0] != tok.bos_token_id
