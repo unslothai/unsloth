@@ -474,3 +474,40 @@ class TestTheCpuOnlyReplay:
             host_msg = None, cpu_cmd = ["llama-server"], env = {}, avail_mib = 1024
         )
         assert backend.last_carveout_advice is None
+
+
+class TestTheResponseRechecksTheDismissal:
+    """The already-resident path returns a cached payload, not a fresh launch."""
+
+    @staticmethod
+    def _backend(advice):
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._last_carveout_advice = advice
+        return backend
+
+    def test_a_dismissed_notice_is_stripped_from_the_response(self):
+        # Picking a model that is still up answers from _reuse_loaded_gguf without
+        # launching anything, so the launch-time dismissal gate never runs and the
+        # toast came back on every later load of the same model.
+        from routes.inference import _live_carveout_advice
+        from utils.igpu_carveout_notice_settings import dismiss_notice
+
+        advice = {"current_gb": 32.0, "suggested_gb": 48, "message": "..."}
+        backend = self._backend(advice)
+        assert _live_carveout_advice(backend) == advice
+        dismiss_notice(32.0)
+        assert _live_carveout_advice(backend) is None
+
+    def test_a_larger_allocation_still_speaks(self):
+        # Dismissed at 32, now running 64 and short again: the same rule the launch
+        # path follows, so the two cannot disagree.
+        from routes.inference import _live_carveout_advice
+        from utils.igpu_carveout_notice_settings import dismiss_notice
+
+        dismiss_notice(32.0)
+        backend = self._backend({"current_gb": 64.0, "suggested_gb": 96, "message": "..."})
+        assert _live_carveout_advice(backend) is not None
+
+    def test_no_advice_stays_no_advice(self):
+        from routes.inference import _live_carveout_advice
+        assert _live_carveout_advice(self._backend(None)) is None
