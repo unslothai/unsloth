@@ -4433,9 +4433,7 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
             # _pin_needs_reinstall, not an exact compare: ==0.18.0 never equals 0.18.0+cu130.
             _ao_index = _torch_accelerator_index_url(_label_after)
             _ao_args = ["--force-reinstall", "--no-deps", "--no-cache-dir"]
-            if _pin_needs_reinstall(
-                _spec, _torch_index_tag(_label_after) if _ao_index else ""
-            ):
+            if _pin_needs_reinstall(_spec, _torch_index_tag(_label_after) if _ao_index else ""):
                 _note(f"torch {_label_after} after repair -- reinstalling {_spec}")
                 _touched_torch = True
                 _ao_ok = pip_install_try(
