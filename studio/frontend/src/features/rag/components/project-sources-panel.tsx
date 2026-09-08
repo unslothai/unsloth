@@ -14,7 +14,7 @@ import {
   listProjectDocuments,
   subscribeProjectSourcesUpdated,
 } from "../api/rag-api";
-import { RAG_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
+import { RAG_SOURCE_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
 import {
@@ -105,7 +105,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   } = useNativeFileDrop({
     onFiles: handleFiles,
     onNativeIntents: handleNativeIntents,
-    accept: RAG_UPLOAD_ACCEPT,
+    accept: RAG_SOURCE_UPLOAD_ACCEPT,
     disabled: uploading,
     disabledReason: "Wait for the current upload to finish, then drop again.",
   });
@@ -116,7 +116,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         ref={fileInputRef}
         type="file"
         multiple={true}
-        accept={RAG_UPLOAD_ACCEPT}
+        accept={RAG_SOURCE_UPLOAD_ACCEPT}
         className="hidden"
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);

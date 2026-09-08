@@ -46,7 +46,7 @@ import {
   isComposerAttachmentName,
 } from "../src/features/native-intents/drop-paths.ts";
 import type { NativeIntent } from "../src/features/native-intents/types.ts";
-import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
+import { RAG_UPLOAD_ACCEPT, RAG_SOURCE_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
 import { MAX_REFERENCE_BYTES } from "../src/features/video/reference-budget.ts";
 import { AUDIO_ACCEPT } from "../src/lib/audio-utils.ts";
 import {
@@ -283,6 +283,26 @@ test("registering image drops hold the gate before the queue can", () => {
   // A stray end can't drive it negative and wedge the gate shut.
   store.endImageDropRegistration();
   assert.equal(useNativeIntentStore.getState().registeringImageDrops, 0);
+});
+
+test("frontend RAG source extensions are completely covered by backend ALL_UPLOAD_EXTS", () => {
+  const frontendSourceExts = RAG_SOURCE_UPLOAD_ACCEPT.split(",").map((s) =>
+    s.trim().toLowerCase(),
+  );
+  const backendSource = readFileSync(
+    new URL("../../backend/core/rag/config.py", import.meta.url),
+    "utf8",
+  );
+  const backendExts = new Set(
+    [...backendSource.matchAll(DOTTED_EXTENSION_RE)].map((m) => m[1]),
+  );
+
+  for (const ext of frontendSourceExts) {
+    assert.ok(
+      backendExts.has(ext),
+      "Frontend accepts " + ext + " but backend config does not contain it",
+    );
+  }
 });
 
 test("frontend, backend, and Rust accept the same document extensions", () => {

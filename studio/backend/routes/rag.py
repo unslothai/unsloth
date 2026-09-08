@@ -113,10 +113,10 @@ def _sanitize_filename(name: str) -> str:
 def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple[str, str]:
     """Copy a validated document stream into the managed uploads root."""
     ext = os.path.splitext(filename)[1].lower()
-    if ext not in config.UPLOAD_EXTS:
+    if ext not in config.ALL_UPLOAD_EXTS:
         raise HTTPException(
             status_code = 400,
-            detail = f"Unsupported file type '{ext}'. Allowed: {sorted(config.UPLOAD_EXTS)}",
+            detail = f"Unsupported file type '{ext}'. Allowed: {sorted(config.ALL_UPLOAD_EXTS)}",
         )
     uploads = ensure_dir(rag_uploads_root())
     stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
@@ -171,7 +171,7 @@ def _save_native_path_upload(lease: str) -> tuple[str, str]:
             operation = "attach",
             expected_kind = "attachment",
             expected_path_type = "file",
-            allowed_suffixes = sorted(config.UPLOAD_EXTS),
+            allowed_suffixes = sorted(config.ALL_UPLOAD_EXTS),
         )
     except NativePathLeaseError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
@@ -1083,7 +1083,10 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     ext = os.path.splitext(doc["filename"])[1].lower()
     return FileResponse(
         stored_path,
-        media_type = _CONTENT_TYPES.get(ext, "application/octet-stream"),
+        media_type = _CONTENT_TYPES.get(
+            ext,
+            "text/plain; charset=utf-8" if ext in config.TEXT_EXTS else "application/octet-stream",
+        ),
         # linked documents are named by a posix relative path, invalid in this header
         filename = doc["filename"].rsplit("/", 1)[-1],
     )
