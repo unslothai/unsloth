@@ -48,11 +48,9 @@ class _Tracker:
         self._last_active = time.monotonic()
         # The model identity the last tick saw, so a fresh load counts as activity.
         self.seen: Any = None
-        # so the tick that sees work end can start the TTL there rather than at the last busy poll
         # Whether the last tick found work in flight, so the tick that sees it end can start the TTL there rather than
         # at the last busy poll.
         self.was_busy = False
-        # terminal record of the last finished job
         # The terminal record of the last finished background job this tracker has seen, so a job no poll ever sampled
         # as busy still dates the TTL from its completion.
         self.completed: Any = None
@@ -226,9 +224,8 @@ async def admission_gate(owner: str):
 
 @contextlib.asynccontextmanager
 async def _gate(tracker: _Tracker):
-    # polled non-blocking acquire, like llama_keepwarm's
-    # Polled non-blocking acquire, exactly like llama_keepwarm's: it keeps the wait off this loop AND cancellation-safe,
-    # since a cancel lands during the sleep with the gate free.
+    # Polled non-blocking acquire, exactly like llama_keepwarm's: it keeps the wait off this loop AND
+    # cancellation-safe, since a cancel lands during the sleep with the gate free.
     while not tracker.gate.acquire(blocking = False):
         await asyncio.sleep(0.02)
     try:
@@ -314,11 +311,10 @@ def _probe(backend: Any) -> tuple[bool, Optional[tuple[Any, ...]]]:
     return loading or bool(progress.get("active")), _completed_token(progress)
 
 
-# the repo id is not enough: MiniMax-H3 stages a different denoiser per h3_task and quants are picked per load.
 # What makes one resident build different from another. The repo id is not enough: MiniMax-H3 stages a different
 # denoiser per h3_task, so a cached fl2va -> ref2va reload is a new build under the same id, and the quants are picked
-# per load too. Only fields fixed at load time, so nothing that moves under a resident model (a Speed=Auto compile flips
-# speed_optims mid-life) can be mistaken for a reload and keep it warm forever.
+# per load too. Only fields fixed at load time, so nothing that moves under a resident model (a Speed=Auto compile
+# flips speed_optims mid-life) can be mistaken for a reload and keep it warm forever.
 _IDENTITY_FIELDS = (
     "repo_id",
     "base_repo",
@@ -357,11 +353,9 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
             tracker.was_busy = True
             return
         if tracker.was_busy or finished:
-            # a video generation outlives its POST, so dating the TTL from the last busy poll would spend up to one poll
-            # interval of the user's keep-warm window before the model was even free
             # The work ended between two ticks. A video generation outlives its POST, so the only activity it stamps
-            # after that is the busy polls, and dating the TTL from the last of those spends up to one poll interval of
-            # the keep-warm window the user configured before the model was even free. Start it here instead.
+            # after that is the busy polls, and dating the TTL from the last of those spends up to one poll interval
+            # of the keep-warm window the user configured before the model was even free. Start it here instead.
             tracker.was_busy = False
             tracker.seen = identity
             tracker.note_activity()

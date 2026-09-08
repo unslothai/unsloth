@@ -151,7 +151,6 @@ class AudioCodecManager:
         device: str = "cuda",
         model_repo_path: Optional[str] = None,
     ) -> None:
-        """Load the appropriate codec for the given audio type."""
         if audio_type == "snac":
             self._load_snac(device, model_repo_path)
         elif audio_type == "bicodec":
@@ -163,7 +162,6 @@ class AudioCodecManager:
         else:
             raise ValueError(f"Unknown audio_type: {audio_type}")
 
-    # ── Lazy loaders ─────────────────────────────────────────────
 
     def _load_snac(
         self,
@@ -237,7 +235,6 @@ class AudioCodecManager:
         self._codec_devices["dac"] = device
         logger.info("Loaded DAC audio codec")
 
-    # ── Decoders ─────────────────────────────────────────────────
 
     def decode_snac(self, generated_ids: torch.Tensor, device: str) -> Tuple[bytes, int]:
         """Decode SNAC tokens (Orpheus) into WAV bytes.
@@ -382,7 +379,6 @@ class AudioCodecManager:
             return self.decode_dac(text, device)
         raise ValueError(f"Cannot decode audio_type: {audio_type}")
 
-    # ── Cleanup ──────────────────────────────────────────────────
 
     def unload(self) -> None:
         """Release all codec models from memory."""

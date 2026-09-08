@@ -71,7 +71,6 @@ def _patch_create_causal_mask() -> None:
     _CAUSAL_MASK_PATCHED = True
 
 
-# fused qkv (Q/K/V stacked, each hidden_size rows), read from config so a future change cannot mis-split it
 # The fp8 attention is a fused ``qkv`` matrix (Q/K/V stacked, each ``hidden_size`` rows), read from config so a future
 # change cannot mis-split it.
 _QKV_SPLIT = ("to_q", "to_k", "to_v")
@@ -321,7 +320,6 @@ def load_ideogram4_transformer(
     config = _read_transformer_config(repo_id, subfolder, token)
     shard_paths = _transformer_shard_paths(repo_id, subfolder, token)
 
-    # check every shard header: a dense-first multi-shard fp8 export must still route to dequant
     # Detect fp8 from shard HEADERS (keys() reads metadata only), checking all shards so a dense-first multi-shard
     # export still routes to the dequant path. Only fp8 materializes tensors; -nf4 goes straight to from_pretrained.
     is_fp8 = False

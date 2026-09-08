@@ -197,7 +197,6 @@ class ApiMonitorEntry:
     progress: Optional[float] = None
     # Stamped on the first reply text; snapshot() prefers it over engine timings.
     first_token_monotonic: Optional[float] = None
-    # a tool card is client output that TTFT should count and the token-rate clock must not
     # The same instant, but only for output the model decoded. A tool card is client output that TTFT should count and
     # the token-rate clock must not: the tool run between it and the first token is not decoding.
     first_decode_monotonic: Optional[float] = None
@@ -207,7 +206,6 @@ class ApiMonitorEntry:
     # timings.predicted_ms; set only from engine timings, so its presence marks a rateable row.
     decode_ms: Optional[float] = None
     stop_reason: Optional[str] = None
-    # an n > 1 stream reports each choice in its own chunk
     # Every finish reason seen so far. An n > 1 stream reports each choice in its own chunk, so agreement can only be
     # judged across the whole request. Not serialized.
     stop_reasons_seen: set[str] = field(default_factory = set)
@@ -244,7 +242,6 @@ class ApiMonitorEntry:
         if (
             tok_per_sec is None
             and self.completion_tokens
-            # the clock starts at the first token, so one token has no gap to measure and hence no rate
             # The clock starts at the first token, so it spans only the gaps that followed it: one token has no gap to
             # measure, hence no rate at all.
             and self.completion_tokens > 1
@@ -343,8 +340,6 @@ class ApiMonitor:
         """Remove only the terminal callback registration owned by ``lease``."""
         with self._callback_condition:
             self._terminal_callback_leases.pop(lease, None)
-            # let a notification that already captured this callback finish its fast enqueue before the owner
-            # drains/stops the writer
             # A notification may already have captured this callback. Let its fast enqueue finish before the owner
             # drains/stops the writer.
             while self._terminal_callbacks_inflight.get(lease, 0):
@@ -495,10 +490,9 @@ class ApiMonitor:
                     entry.first_token_monotonic = now
                 if entry.first_decode_monotonic is None:
                     entry.first_decode_monotonic = now
-            # once the "..." marker is present the head is frozen
             # Preview is capped: once the "..." marker is present the head is frozen, so skip the per-chunk re-concat
-            # (avoids O(n^2) on long generations). A reply that landed exactly on the cap has no marker yet, so let one
-            # more append record the truncation before freezing.
+            # (avoids O(n^2) on long generations). A reply that landed exactly on the cap has no marker yet, so let
+            # one more append record the truncation before freezing.
             if len(entry.reply) >= _MAX_REPLY_CHARS:
                 if not entry.reply.endswith("..."):
                     entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
@@ -693,7 +687,6 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
-        # coerce before locking: a raise here (this runs inside streaming generators) would truncate the user's response
         # Coerce before locking: arbitrary payloads, and a raise here (this runs inside streaming generators) would
         # truncate the user's response.
         tok_per_sec = _finite_float_or_none(tok_per_sec)

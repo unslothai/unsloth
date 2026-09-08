@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-# a paste-only turn carries no `content` text: the composer wraps long pastes in this tag
 # The composer sends a long paste as a text attachment wrapped in this tag, so a paste-only turn carries no `content`
 # text at all.
 _PASTED_TEXT_OPEN = "<pasted_text name="

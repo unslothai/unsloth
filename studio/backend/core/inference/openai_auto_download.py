@@ -78,7 +78,6 @@ class _Active:
     expected_bytes: int = 0
     monitor_id: Optional[str] = None
     started_at: float = 0.0
-    # held until a retry surfaces it: Retry-After is far longer than the watcher poll
     # Set when the worker failed. Held until a retry surfaces it: Retry-After is far longer than the watcher poll, so
     # the client would restart the same failing download.
     error: Optional[str] = None
@@ -430,8 +429,6 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
             state, error = await _job_state(active.repo_id, active.variant)
             if state in ("running", "cancelling", "unknown"):
                 if timed_out:
-                    # a running worker still owns the slot, and releasing on the clock alone would admit a second
-                    # multi-GB download beside it
                     # A running worker still owns the slot: releasing on the clock alone would admit a second multi-GB
                     # download beside it. "unknown" cannot confirm it is alive, so release then, or a broken probe
                     # wedges us.
@@ -876,7 +873,6 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
     target = (wanted or "").strip().lower()
     if not target:
         return None
-    # PATH-qualified keys only: an H3 root stem's bare quant names both partitions
     # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names both partitions,
     # so it must miss rather than serve one of them.
     matches = [
@@ -967,10 +963,9 @@ async def _dispatch(
         return busy
 
     monitor_id = api_monitor.record_lifecycle(
-        # only /v1 reaches auto-download, but that is not API-key traffic
         # Reason "api" since only /v1 reaches auto-download, but that is not API-key traffic: Unsloth's chat calls /v1
-        # on a JWT, and marking its download would pop the overlay mid-chat. So attribution comes from the request, plus
-        # its caller, since the row is shared.
+        # on a JWT, and marking its download would pop the overlay mid-chat. So attribution comes from the request,
+        # plus its caller, since the row is shared.
         event = "download",
         model = label,
         reason = "api",

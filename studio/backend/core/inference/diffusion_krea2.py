@@ -176,7 +176,6 @@ def load_krea2_pipeline(
     """
     import diffusers
 
-    # diffusers gained Krea2Pipeline in 0.39; fail here rather than on a bare AttributeError below
     # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain below dies with a bare
     # AttributeError, so fail first with the fix.
     if not hasattr(diffusers, "Krea2Pipeline"):
@@ -188,7 +187,6 @@ def load_krea2_pipeline(
 
     token = hf_token or None
     cache_dir = _live_cache_dir()
-    # read the index before the 26 GB transformer: a corrupt one used to surface only after everything was built
     # A few KB, and it configures the components, so it is read before them: read last, a corrupt index only surfaced
     # after the encoder, the VAE and the 26 GB transformer were already built.
     model_index = _load_model_index(repo_id, hf_token = token, local_files_only = local_files_only)

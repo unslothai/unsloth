@@ -458,8 +458,6 @@ def _ensure_hub_repo_private(hf_api, repo_id):
 
 
 class ExportBackend:
-    """Handles model export operations"""
-
     def __init__(self):
         self.inference_backend = get_inference_backend()
         self.current_checkpoint = None
@@ -495,11 +493,8 @@ class ExportBackend:
     def scan_checkpoints(
         self, outputs_dir: str = str(outputs_root())
     ) -> List[Tuple[str, List[Tuple[str, str]]]]:
-        """
-        Scan outputs folder for training runs and their checkpoints.
-
-        Returns: [(model_name, [(display_name, checkpoint_path), ...]), ...]
-        """
+        """Scan the outputs folder for training runs and their checkpoints, as [(model_name,
+        [(display_name, checkpoint_path), ...]), ...]."""
         from utils.models.checkpoints import scan_checkpoints
         return scan_checkpoints(outputs_dir = outputs_dir)
 
@@ -512,19 +507,15 @@ class ExportBackend:
         hf_token: HfTokenArg = None,
         _device_map_override: Optional[dict] = None,
     ) -> Tuple[bool, str]:
-        """
-        Load a checkpoint for export.
+        """Load a checkpoint for export.
 
-        ``hf_token`` authenticates the actual weight load for gated/private
-        checkpoints, matching the token the worker used for the security preflight
-        (otherwise a gated repo passes scanning then 401s at from_pretrained).
+        ``hf_token`` authenticates the actual weight load for gated/private checkpoints, matching
+        the token the worker used for the security preflight (otherwise a gated repo passes scanning
+        then 401s at from_pretrained).
 
-        ``False`` (denied the ambient token) must travel all the way down: ``None`` reads as
-        "go and find a credential" (``if token is None: get_token()`` in ``save.py`` and
-        ``hf_login``), and ``get_token()`` reads the operator's stored login off disk.
-
-        Returns:
-            Tuple of (success: bool, message: str)
+        ``False`` (denied the ambient token) must travel all the way down: ``None`` reads as "go and
+        find a credential" (``if token is None: get_token()`` in ``save.py`` and ``hf_login``), and
+        ``get_token()`` reads the operator's stored login off disk.
         """
         token = normalize_token(hf_token)
         # Loaders only: the probes' cache guards refuse an anonymous read, which offline
@@ -765,22 +756,12 @@ class ExportBackend:
         private: bool = False,
         compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
-        """
-        Export merged model (for PEFT models).
+        """Export a merged model (a no-op merge for non-PEFT base models).
 
-        Args:
-            save_directory: Local directory to save model
-            format_type: "16-bit (FP16)", "4-bit (FP4)", or a compressed-tensors label
-            compressed_method: Optional compressed-tensors scheme alias (e.g. "fp8",
-                "fp8_static", "w8a8", "w4a16", "mxfp4", "mxfp8", "nvfp4"). Overrides
-                format_type and is resolved against unsloth.save COMPRESSED_EXPORT_SCHEMES.
-            push_to_hub: Whether to push to Hugging Face Hub
-            repo_id: Hub repository ID (username/model-name)
-            hf_token: Hugging Face token
-            private: Whether to make the repo private
-
-        Returns:
-            Tuple of (success: bool, message: str, output_path: Optional[str])
+        ``format_type`` is "16-bit (FP16)", "4-bit (FP4)", or a compressed-tensors label.
+        ``compressed_method`` is an optional compressed-tensors scheme alias (fp8, fp8_static, w8a8,
+        w4a16, mxfp4, mxfp8, nvfp4); it overrides ``format_type`` and is resolved against
+        unsloth.save COMPRESSED_EXPORT_SCHEMES.
         """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
@@ -1012,12 +993,6 @@ class ExportBackend:
         private: bool = False,
         base_model_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
-        """
-        Export base model (for non-PEFT models).
-
-        Returns:
-            Tuple of (success: bool, message: str, output_path: Optional[str])
-        """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
@@ -1143,23 +1118,12 @@ class ExportBackend:
         private: bool = False,
         gguf_shard_size: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
-        """
-        Export model in GGUF format.
+        """Export the model in GGUF format.
 
-        Args:
-            save_directory: Local directory to save model
-            quantization_method: A single GGUF quant method (e.g., "Q4_K_M") or a list of them
-                (e.g., ["Q4_K_M", "Q8_0"]). A list produces one GGUF per quant from a single
-                model load (unsloth save_to_gguf loops internally).
-            push_to_hub: Whether to push to Hugging Face Hub
-            repo_id: Hub repository ID
-            hf_token: Hugging Face token
-            imatrix_file: Optional importance matrix file path or boolean
-            private: Whether to make the Hub repository private
-            gguf_shard_size: Maximum final full-precision GGUF shard size
-
-        Returns:
-            Tuple of (success: bool, message: str, output_path: Optional[str])
+        ``quantization_method`` is a single GGUF quant method ("Q4_K_M") or a list of them; a list
+        produces one GGUF per quant from a single model load, since unsloth save_to_gguf loops
+        internally. ``imatrix_file`` is an importance matrix path or boolean, and
+        ``gguf_shard_size`` caps the final full-precision GGUF shard size.
         """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
@@ -1482,16 +1446,11 @@ class ExportBackend:
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
     ) -> Tuple[bool, str, Optional[str]]:
-        """
-        Export LoRA adapter only (not merged).
+        """Export the LoRA adapter only, not merged.
 
-        Args:
-            gguf: If True, also convert the adapter to a GGUF LoRA file (llama.cpp
-                convert_lora_to_gguf.py), loadable with `llama-cli --lora ...`.
-            gguf_outtype: GGUF LoRA output float type; one of q8_0/f16/bf16/f32.
-
-        Returns:
-            Tuple of (success: bool, message: str, output_path: Optional[str])
+        ``gguf`` also converts the adapter to a GGUF LoRA file (llama.cpp convert_lora_to_gguf.py),
+        loadable with `llama-cli --lora ...`; ``gguf_outtype`` is its output float type, one of
+        q8_0/f16/bf16/f32.
         """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
@@ -1635,7 +1594,6 @@ _export_backend = None
 
 
 def get_export_backend() -> ExportBackend:
-    """Get or create the global export backend instance"""
     global _export_backend
     if _export_backend is None:
         _export_backend = ExportBackend()

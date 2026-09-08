@@ -55,7 +55,6 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
         # crashing the probe.
         return flags, names
 
-    # bound outside the try above: a ggml-base without the description symbol must degrade to unnamed
     # Bound outside the type-detection try above: a ggml-base without the description symbol (older/custom build) must
     # degrade to unnamed devices, not abort before the iGPU flags are read (which would count an iGPU's shared RAM as
     # VRAM).

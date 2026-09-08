@@ -60,7 +60,6 @@ def save(wav_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
     return _record(audio_id, meta)
 
 
-# /v1/audio/speech persists every call, so bound it here rather than at that route, covering the UI's runaway too
 # The OpenAI-compatible /v1/audio/speech route persists every call, so an automated client can grow the gallery until
 # the disk fills. Bounded here rather than at that route so the UI's own runaway is covered too. Generous by default:
 # this is a convenience gallery, and the clip is returned to the caller either way.
@@ -116,14 +115,11 @@ def _prune_to_cap() -> int:
     directory = gallery_dir()
     removed = 0
     try:
-        # select AND delete under one lock: otherwise an archive landing in the window is deleted anyway
         # Select AND delete under one lock, as clear() does. Choosing victims from a snapshot and unlinking after it
         # leaves a window where an archive lands and is deleted anyway.
         with gallery_flags.exclusive(directory, require_file_lock = True):
             entries = _list_audio_entries()
 
-            # newest first; the newest is always kept, since dropping what the caller just generated looks like a silent
-            # failure
             # Newest first, so the index where either budget runs out is the cut point. The newest is always kept:
             # dropping what the caller just generated looks like a silent failure.
             keep = len(entries) if cap <= 0 else min(cap, len(entries))
@@ -137,7 +133,6 @@ def _prune_to_cap() -> int:
             if keep >= len(entries):
                 return 0
 
-            # re-read TRUSTED before deleting: read() answers "nothing is archived" for a store it cannot parse
             # Re-read TRUSTED immediately before deleting: read() answers "nothing is archived" for a store it cannot
             # parse, which here would drop the clips the shelf exists to keep. It also covers filesystems where the
             # cross-process lock degrades to a no-op.
@@ -210,8 +205,7 @@ def _sidecar_path(audio_id: str) -> Path:
     return gallery_dir() / f"{audio_id}.json"
 
 
-# key-presence ownership: a hand-dropped wav with a partial sidecar is neither counted as ours nor destroyed
-# key-presence ownership test: a hand-dropped wav with a partial sidecar is never counted as ours nor destroyed
+# Key-presence ownership test: a hand-dropped wav with a partial sidecar is neither counted as ours nor destroyed.
 _REQUIRED_META = (
     "prompt",
     "model",

@@ -69,7 +69,6 @@ def _looks_like_broken_json(raw: str) -> bool:
         # json at all` healable.
         if error.msg.startswith("Expecting property name"):
             return False
-        # excluded for the opposite reason: `{"a": 1} trailing` decodes fully and then finds junk
         # Excluded for the opposite reason: a COMPLETE document with something after it. `{"a": 1} trailing` decodes
         # fully and then finds junk, so nothing was lost.
         if error.msg.startswith("Extra data"):
@@ -152,7 +151,6 @@ def _heal_arg_key(tool_name: str, tool_schemas = None) -> "str | None":
     key = _HEAL_ARG_CACHE.get(tool_name)
     if key is not None or not tool_schemas:
         return key
-    # not cached: caching by name would let one chat's MCP server decide another chat's healing
     # Not cached: the request's tools belong to the request, and caching them by name would let one chat's MCP server
     # decide another chat's healing.
     return _healable_keys_from(tool_schemas).get(tool_name)
@@ -197,7 +195,6 @@ class ToolCallDecision:
     tool_name: str
     arguments: dict[str, Any]
     tool_call_id: str = ""
-    # for an id-less call this is the spelling the client minted
     # The id the card carries on screen. For an id-less call that is the spelling the client minted, not the id the
     # conversation replays; otherwise the two are the same.
     card_call_id: str = ""
@@ -240,7 +237,6 @@ class ToolCallDecision:
         return None
 
     def tool_start_payload(self) -> dict[str, Any]:
-        """Build the payload fields for a real tool_start event."""
         fragment = self.unparsed_fragment
         # `raw` is the shape this module already uses for arguments it could not read into a schema, so the card shows
         # the model's own text under a name that means something rather than an internal sentinel.
@@ -255,7 +251,6 @@ class ToolCallDecision:
         }
 
     def tool_start_event(self) -> dict[str, Any]:
-        """Build the existing backend event shape for a real execution."""
         return {"type": "tool_start", **self.tool_start_payload()}
 
     def as_assistant_tool_call(self) -> dict[str, Any]:
@@ -290,7 +285,6 @@ class ToolCallCompletion:
     executed: bool = False
 
     def tool_end_payload(self) -> dict[str, Any]:
-        """Build the payload fields for a real tool_end event."""
         return {
             "tool_name": self.decision.tool_name,
             "tool_call_id": self.decision.card_id,
@@ -299,7 +293,6 @@ class ToolCallCompletion:
         }
 
     def tool_end_event(self) -> dict[str, Any]:
-        """Build the existing backend event shape for a real execution result."""
         return {"type": "tool_end", **self.tool_end_payload()}
 
     def tool_message(self) -> dict[str, Any]:
@@ -364,10 +357,9 @@ _DECODE_ERRORS = (ValueError, RecursionError)
 _LITERAL_ERRORS = (*_DECODE_ERRORS, SyntaxError, MemoryError)
 
 
-# group 1 is the closing quote, which `endswith` cannot stand in for because an open string can end on an escaped one;
 # A JSON string, open or closed; group 1 is the closing quote, which `endswith` cannot stand in for because an open
-# string can end on an escaped one. The `\?$` tail stops a started match from ever failing, which would send `finditer`
-# back over every later quote.
+# string can end on an escaped one. The `\?$` tail stops a started match from ever failing, which would send
+# `finditer` back over every later quote.
 _JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*(?:(")|\\?$)', re.S)
 _JSON_CLOSER = {"[": "]", "{": "}"}
 

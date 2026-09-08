@@ -55,23 +55,19 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Iterable, Optional
 
-# the rotation KIND; an unimplemented value is refused
-# ── the metadata contract, carried in the prequant checkpoint's own ``metadata`` dict ────────── The rotation KIND. A
-# value this module does not implement is refused, so a future scheme can be added without a released Unsloth silently
-# treating it as this one.
-# ── the metadata contract, carried in the prequant checkpoint's own ``metadata`` dict ──────────
+# The metadata contract, carried in the prequant checkpoint's own ``metadata`` dict. The rotation KIND: a value this
+# module does not implement is refused, so a future scheme can be added without a released Unsloth silently treating
+# it as this one.
 CONVROT_KIND = "convrot_hadamard_v1"
-# mirrors the adaLN curve contract next door: a form tag plus the parameters to reproduce the form
 # Key naming mirrors the adaLN curve contract next door (``adaln_form`` / ``curve_dim`` / ``curve_grid``): a form tag
 # plus the parameters needed to reproduce the form.
 ROTATION_KEY = "activation_rotation"
 ROTATION_GROUP_KEY = "activation_rotation_group"
 ROTATION_FQNS_KEY = "activation_rotation_fqns"
 
-# 256 beat 64 in weight space on MiniMax-H3 (-19.9% vs -17.3% mean relative quantization error over 200 layers)
-# The group size the denoiser artifact ships at, and the one the hosted conditioner already uses. 256 beat 64 in weight
-# space on MiniMax-H3 (mean relative quantization error -19.9% vs -17.3% over 200 layers) and is the largest power of 4
-# that divides every quantized H3 input axis.
+# The group size the denoiser artifact ships at, and the one the hosted conditioner already uses. 256 beat 64 in
+# weight space on MiniMax-H3 (mean relative quantization error -19.9% vs -17.3% over 200 layers) and is the largest
+# power of 4 that divides every quantized H3 input axis.
 DEFAULT_CONVROT_GROUPSIZE = 256
 
 # Marker set on a transformer whose rotation is installed, so a caller can tell a rotated module from an unrotated one
@@ -94,12 +90,8 @@ def is_power_of_four(size: Any) -> bool:
     return (n.bit_length() - 1) % 2 == 0
 
 
-# mirrors comfy-kitchen's _build_hadamard / _rotate_activation / _rotate_weight, without the wheel dependency
-
-# ── the rotation itself ─────────────────────────────────────────────────────────────────────── Mirrors comfy-kitchen's
-# ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight``, in a few lines of torch rather than a dependency on
-# a wheel Unsloth does not ship.
-# ── the rotation itself ───────────────────────────────────────────────────────────────────────
+# The rotation itself. Mirrors comfy-kitchen's ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight``, in a
+# few lines of torch rather than a dependency on a wheel Unsloth does not ship.
 _HADAMARD_CACHE: dict = {}
 
 
@@ -221,9 +213,6 @@ def _install_rotation(module: Any, group_size: int) -> None:
     module.__class__ = convrot_linear_class()
 
 
-# ── the metadata contract ─────────────────────────────────────────────────────────────────────
-
-
 def declares_rotation(metadata: Any) -> bool:
     """True when ``metadata`` claims its weights were rotated offline.
 
@@ -272,9 +261,6 @@ def rotation_metadata(group_size: int, fqns: Iterable[str]) -> dict:
         ROTATION_GROUP_KEY: int(group_size),
         ROTATION_FQNS_KEY: sorted(fqns),
     }
-
-
-# ── the two halves ────────────────────────────────────────────────────────────────────────────
 
 
 def rotatable_fqns(

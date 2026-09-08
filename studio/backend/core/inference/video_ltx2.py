@@ -47,8 +47,6 @@ _EXTRAS_VIDEO_VAE = "vae/ltx-2.3-22b-{variant}_video_vae.safetensors"
 _EXTRAS_AUDIO_VAE = "vae/ltx-2.3-22b-{variant}_audio_vae.safetensors"
 
 
-# ── configs + rename tables, verbatim from scripts/convert_ltx2_to_diffusers.py ──
-
 # from_single_file config overrides on top of the base 2.0 transformer config.
 LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES: dict[str, Any] = {
     "gated_attn": True,
@@ -250,9 +248,6 @@ _VOCODER_CONFIG: dict[str, Any] = {
 _DIT_PREFIX = "model.diffusion_model."
 
 
-# ── checkpoint inspection ────────────────────────────────────────────────────
-
-
 def read_checkpoint_header(checkpoint_path: Path | str) -> dict[str, tuple[int, ...]]:
     """Tensor name -> shape from the checkpoint HEADER only (no weight data). GGUF shapes come back
     in GGML (reversed) order, so callers should membership-test, not assume a dimension position."""
@@ -283,9 +278,6 @@ def is_ltx23_checkpoint(checkpoint_path: Path | str) -> bool:
         if name.endswith("transformer_blocks.0.scale_shift_table"):
             return 9 in shape
     return False
-
-
-# ── state-dict plumbing ──────────────────────────────────────────────────────
 
 
 def _apply_rename(state: dict[str, Any], rename: dict[str, str]) -> dict[str, Any]:
@@ -433,9 +425,6 @@ def ltx23_verbatim_sigmas(pipe: Any) -> Any:
     return _ctx()
 
 
-# ── component builders ───────────────────────────────────────────────────────
-
-
 def _build_from_config(
     model_cls: Any,
     config: dict[str, Any],
@@ -575,9 +564,6 @@ def load_ltx23_audio_vae_and_vocoder(
         vocoder = LTX2VocoderWithBWE.from_config(_VOCODER_CONFIG)
     vocoder.load_state_dict(vocoder_state, strict = True, assign = True)
     return audio_vae, vocoder.to(torch_dtype)
-
-
-# ── pipeline assembly ────────────────────────────────────────────────────────
 
 
 def load_ltx23_pipeline(

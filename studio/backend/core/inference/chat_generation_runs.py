@@ -31,18 +31,16 @@ _SHUTDOWN_GRACE_SECONDS = 10.0
 # Second budget, after task.cancel(). Shorter than the grace period: by this point the run is already being abandoned,
 # and the only question is whether shutdown returns.
 _SHUTDOWN_CANCEL_SECONDS = 5.0
-# the sweeper's work is redundant at shutdown, and Desktop force-kills the backend after five seconds
-# The sweeper's own shutdown budget, far below the producers'. Its work is redundant at shutdown and Desktop force-kills
-# the backend after five seconds.
+# The sweeper's own shutdown budget, far below the producers'. Its work is redundant at shutdown and Desktop
+# force-kills the backend after five seconds.
 _SWEEP_SHUTDOWN_SECONDS = 0.5
 # A durable run sets cancel_on_disconnect=False, so reaping is keyed on progress rather than on connectedness. The
 # default matches llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S, the request path's own first-token budget: a lease older
 # than that cannot be legitimate prefill, and slow decode is safe at any speed. A century: clear of any real lease, far
 # below where integer milliseconds overflow.
 _MAX_ENV_SECONDS = 100.0 * 365.0 * 24.0 * 60.0 * 60.0
-# a day already means the queue never reports, and tripling it stays inside _MAX_ENV_SECONDS
-# The longest admission keep-alive cadence worth deriving a lease from. A day already means the queue never reports, and
-# tripling it stays far inside _MAX_ENV_SECONDS.
+# The longest admission keep-alive cadence worth deriving a lease from. A day already means the queue never reports,
+# and tripling it stays far inside _MAX_ENV_SECONDS.
 _MAX_ADMISSION_INTERVAL_SECONDS = 24.0 * 60.0 * 60.0
 _LEASE_TIMEOUT_SECONDS = 1200.0
 _LEASE_SWEEP_INTERVAL_SECONDS = 60.0
@@ -225,7 +223,6 @@ class ChatGenerationLeaseSweeper:
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
 
-    # generous: unwinding cleanly beats being cancelled mid-teardown
     # Grace for a settled producer to notice the cooperative cancel. Generous: unwinding cleanly beats being cancelled
     # mid-teardown, and the run is already declared dead.
     _FORCE_CANCEL_GRACE_S = 30.0
@@ -321,11 +318,10 @@ class ChatGenerationLeaseSweeper:
         task, self._task = self._task, None
         if task is None:
             return
-        # the boot reconcile settles every active run anyway
         # A short wait, not the producer grace. Letting a sweep finish at shutdown buys nothing: the boot reconcile
-        # settles every active run anyway, so its work is redundant here, while a sweep parked on the writer lock would
-        # otherwise spend Studio Desktop's whole graceful-exit budget before producers are even signalled. asyncio.wait,
-        # never wait_for(gather(...)); see ChatGenerationSupervisor.stop.
+        # settles every active run anyway, while a sweep parked on the writer lock would otherwise spend Studio
+        # Desktop's whole graceful-exit budget before producers are even signalled. asyncio.wait, never
+        # wait_for(gather(...)); see ChatGenerationSupervisor.stop.
         _done, pending = await asyncio.wait({task}, timeout = _SWEEP_SHUTDOWN_SECONDS)
         if not pending:
             return
@@ -349,11 +345,9 @@ def start_lease_sweeper(app: Any) -> ChatGenerationLeaseSweeper | None:
     return sweeper
 
 
-# matched rather than imported to keep this module free of a routes import at module scope
-# The admission stream's own comment, matched rather than imported to keep this module free of a routes import at module
-# scope. Pinned by a test against the constant there.
+# The admission stream's own comment, matched rather than imported to keep this module free of a routes import at
+# module scope. Pinned by a test against the constant there.
 _ADMISSION_WAIT_MARKER = ": admission-wait"
-# renewed unconditionally: wait renewals are rate limited and the lease equals the first-token timeout
 # Leaving the queue. Renewed unconditionally: wait renewals are rate limited, and the lease equals the first-token
 # timeout, so any age carried in is negative margin.
 _ADMISSION_DONE_MARKER = ": admission-done"
@@ -454,7 +448,6 @@ class ChatGenerationSupervisor:
             return False
         cancel_event = self._cancel_events.get(run_id)
         if cancel_event is not None:
-            # Enrich an early run-only reservation with authoritative identity.
             with active_generations.ActiveGeneration(
                 cancel_event,
                 run_id = run_id,
@@ -533,9 +526,8 @@ class ChatGenerationSupervisor:
             if task is not None and not task.done():
                 task.cancel()
         active_generations.cancel_run(run_id)
-        # closes the narrow gap where registration is imminent but this supervisor has not observed it
-        # The inference cancel registry closes the narrow gap where registration is imminent but this supervisor has not
-        # yet observed it.
+        # The inference cancel registry closes the narrow gap where registration is imminent but this supervisor has
+        # not yet observed it.
         from routes.inference import _cancel_by_cancel_id_or_stash
 
         _cancel_by_cancel_id_or_stash(run_id)
@@ -650,7 +642,6 @@ class ChatGenerationSupervisor:
                     error = "Studio shut down during generation" if shutting_down else None,
                 )
                 return
-            # spans the lifecycle gate too: a run waiting on the gate is still queued
             # Spans the lifecycle gate as well as preparation: a run waiting on the gate is still queued, so its lease
             # ages from created_at with nothing renewing it.
             async with self._lease_heartbeat(run_id):

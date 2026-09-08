@@ -82,7 +82,6 @@ def cache_root() -> Path:
     return Path(root) if root else _DEFAULT_ROOT
 
 
-# --------------------------------------------------------------------------- fingerprint
 def _triton_version() -> Optional[str]:
     try:
         import triton  # noqa: PLC0415
@@ -120,10 +119,9 @@ def environment_fingerprint() -> dict[str, Any]:
         fp["torch"] = str(torch.__version__)
         fp["torch_cuda"] = str(torch.version.cuda)
         if torch.cuda.is_available():
-            # the CURRENT device, not 0: keying by GPU 0 lets two cards share or overwrite each other's
-            # architecture-specific artifacts
             # The CURRENT device, not 0: a load pinned to another card compiles for that architecture, and keying the
-            # bundle by GPU 0 lets two cards share or overwrite each other's supposedly architecture-specific artifacts.
+            # bundle by GPU 0 lets two cards share or overwrite each other's supposedly architecture-specific
+            # artifacts.
             index = torch.cuda.current_device()
             fp["gpu_name"] = torch.cuda.get_device_name(index)
             cap = torch.cuda.get_device_capability(index)
@@ -166,7 +164,6 @@ def cache_key(env_fp: dict[str, Any], model_fp: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
-# ----------------------------------------------------------------------------- lifecycle
 @dataclasses.dataclass
 class CacheContext:
     """Per-load cache state carried between ``begin`` and ``save``/``restore``.

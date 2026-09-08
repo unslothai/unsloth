@@ -105,7 +105,6 @@ def _llm_training_active() -> bool:
 
 
 # One JSON file per terminal run, not the LLM sqlite, so diffusion runs stay off the LLM Runs page.
-# ── persisted run history ──────────────────────────────────────────────────────
 def _runs_dir() -> Path:
     from utils.paths.storage_roots import studio_root
 
@@ -125,17 +124,16 @@ def _resume_fields(
     source_checkpoint: Optional[str] = None,
     source_created_at: Optional[float] = None,
 ) -> dict[str, Any]:
-    """``can_resume`` / ``checkpoint_step`` / ``resume_blocked_reason`` for a run, read from
-    the checkpoints that are actually on disk.
+    """``can_resume`` / ``checkpoint_step`` / ``resume_blocked_reason`` for a run, read from the
+    checkpoints that are actually on disk.
 
-    Derived, not trusted: a persisted record is a snapshot of the moment the run ended, but
-    the user can delete the output folder afterwards. ``started_at`` fences off bundles an
-    EARLIER run of the same adapter name left in the same folder, and ``ended_at`` fences off
-    the ones a LATER run put there after this one finished -- without the upper bound a
-    finished run offers, and resumes, its successor's training state. ``write_error`` is the run's
-    own report that a checkpoint write failed; that is sticky and blocks resume (mirroring the
-    MLX trainer's ``resume_blocked``), because whatever older state is on disk predates the
-    adapter that was published, so continuing from it would silently lose steps. Never raises."""
+    Derived, not trusted: a persisted record is a snapshot of the moment the run ended, but the user
+    can delete the output folder afterwards. ``started_at`` fences off bundles an EARLIER run of the
+    same adapter name left in the same folder, and ``ended_at`` fences off the ones a LATER run put
+    there after this one finished. ``write_error`` is the run's own report that a checkpoint write
+    failed; that is sticky and blocks resume (mirroring the MLX trainer's ``resume_blocked``),
+    because whatever older state is on disk predates the adapter that was published. Never raises.
+    """
     try:
         from core.training.diffusion_checkpoint import describe_resume_state
         state = describe_resume_state(
@@ -452,7 +450,6 @@ class DiffusionTrainingService:
         # The active job's start config, scrubbed of secrets, kept for the run record.
         self._config: dict[str, Any] = {}
 
-    # ── lifecycle ────────────────────────────────────────────────────────────
     def is_active(self) -> bool:
         with self._lock:
             if self._reserved:
@@ -460,17 +457,16 @@ class DiffusionTrainingService:
             return self._proc is not None and self._proc.is_alive()
 
     def reserve(self) -> None:
-        """Mark a diffusion-training start as in flight so the image/video load guards (which
-        read is_active) refuse a concurrent load BEFORE the route frees resident GPU models.
-        Without this the training becomes active only at start(), after the free, so an
-        overlapping load passes its guard, acquires the GPU, and both workloads allocate VRAM.
+        """Mark a diffusion-training start as in flight so the image/video load guards (which read
+        is_active) refuse a concurrent load BEFORE the route frees resident GPU models. Without this
+        the training becomes active only at start(), after the free, so an overlapping load passes
+        its guard, acquires the GPU, and both workloads allocate VRAM.
 
         Compare-and-set: raise if a start is already reserved or a job is already running, so a
-        second overlapping /diffusion/start is rejected (409) BEFORE it frees GPU residents,
-        instead of both requests tearing down residents and racing to start() (whichever finishes
-        first wins, so a double-click or a retry with different parameters could start the wrong
-        config). Paired with unreserve() in a finally by the reserving caller, so a failed start
-        never leaves training 'active'."""
+        second overlapping /diffusion/start is rejected (409) BEFORE it frees GPU residents, instead
+        of both requests tearing down residents and racing to start(). Paired with unreserve() in a
+        finally by the reserving caller, so a failed start never leaves training active.
+        """
         with self._lock:
             if self._reserved or (self._proc is not None and self._proc.is_alive()):
                 raise RuntimeError("A diffusion training job is already running.")
@@ -532,16 +528,16 @@ class DiffusionTrainingService:
         """Hold the GPU-admission interlock across a load's guard -> arbiter -> registration.
 
         The load guards read ``is_active()`` and only THEN acquire the arbiter and register the
-        load, so a start reserving inside that gap freed residents the load had not registered
-        yet and the trainer came up beside a brand-new pipeline. Registering the admission under
-        the same lock ``reserve()`` uses closes it from both sides, exactly like
-        ``dataset_mutation``: this raises once a start is reserved or running, and ``reserve()``
-        raises while an admission is open, so neither waits on the other.
+        load, so a start reserving inside that gap freed residents the load had not registered yet
+        and the trainer came up beside a brand-new pipeline. Registering the admission under the
+        same lock ``reserve()`` uses closes it from both sides, exactly like ``dataset_mutation``:
+        this raises once a start is reserved or running, and ``reserve()`` raises while an admission
+        is open, so neither waits on the other.
 
-        The span is deliberately short. ``begin_load`` returns as soon as the load is registered
-        (the download and build run on a daemon thread), and from that point
-        ``_free_gpu_for_diffusion_training`` preempts the in-flight load, so holding this for the
-        whole load would block starts for minutes to no purpose."""
+        The span is deliberately short: ``begin_load`` returns as soon as the load is registered,
+        and from that point ``_free_gpu_for_diffusion_training`` preempts the in-flight load, so
+        holding this for the whole load would block starts for minutes to no purpose.
+        """
         with self._lock:
             if self._reserved or (self._proc is not None and self._proc.is_alive()):
                 raise TrainingActiveError(
@@ -671,14 +667,12 @@ class DiffusionTrainingService:
             snap["active"] = self._proc is not None and self._proc.is_alive()
             return snap
 
-    # ── event pump ───────────────────────────────────────────────────────────
     def _pump_loop(self, event_queue: Any, proc: Any) -> None:
         while True:
             try:
                 ev = event_queue.get(timeout = 1.0)
             except Exception:  # noqa: BLE001 -- Empty (timeout) or a closed queue
                 if not proc.is_alive():
-                    # Drain anything buffered, then decide if it exited cleanly.
                     drained = False
                     while True:
                         try:
@@ -734,15 +728,15 @@ class DiffusionTrainingService:
     def _apply_discard_intent(self, *, delete: bool = True) -> None:
         """Carry out a stop-without-saving the child could not report itself.
 
-        The trainer does this on its own completion path; a child that OOMs, is killed, or dies
-        on the current step never gets there. Blocking the resume is the visible half -- the
-        bundles are the other one, and they hold optimizer and scheduler state, are sizeable,
-        and have no delete path in the UI once the run is marked discarded.
+        The trainer does this on its own completion path; a child that OOMs, is killed, or dies on
+        the current step never gets there. Blocking the resume is the visible half; the bundles are
+        the other one, and they hold optimizer and scheduler state, are sizeable, and have no delete
+        path in the UI once the run is marked discarded.
 
-        ``delete`` False is the case where the child DID get there. Its cleanup restores any
-        bundle this run wrote over, so the paths remembered here no longer name this run's
-        bundles -- deleting them then destroys the predecessor that was just handed back, which
-        is another run's resume point. The state half still applies either way.
+        ``delete`` False is the case where the child DID get there. Its cleanup restores any bundle
+        this run wrote over, so the paths remembered here no longer name this run's bundles, and
+        deleting them then destroys the predecessor that was just handed back. The state half still
+        applies either way.
         """
         with self._lock:
             own = list(self._own_checkpoints) if delete else []
