@@ -253,8 +253,8 @@ class _GenerationThreadError(RuntimeError):
 def _prompt_already_has_bos(tokenizer, prompt):
     """Did the rendered chat template emit BOS itself?
 
-    Most templates do, so the tokenizer must not add a second one. Some do not (zephyr,
-    tinyllama-chat), and suppressing special tokens for those would drop BOS entirely.
+    Most do, so the tokenizer must not add a second. Some do not (zephyr, tinyllama-chat), and
+    suppressing special tokens there drops BOS entirely.
     """
     tok = getattr(tokenizer, "tokenizer", tokenizer)
     bos_token_id = getattr(tok, "bos_token_id", None)

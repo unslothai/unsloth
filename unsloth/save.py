@@ -4628,9 +4628,8 @@ def unsloth_save_pretrained_gguf(
     # preflight sized, so it measured the disk these files land on.
     gguf_directory = _gguf_output_directory(save_directory)
 
-    # Pass the processor, not its inner tokenizer: save_pretrained writes the processor's own
-    # chat_template.jinja, so leaving that copy alone exports a second BOS. Both copies are
-    # deduped, so both are restored afterwards.
+    # save_pretrained writes the processor's own chat_template.jinja, so pass the processor:
+    # both copies get deduped, so both are restored below.
     from .tokenizer_utils import _tokenizer_objects
 
     old_chat_templates = [

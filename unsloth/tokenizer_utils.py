@@ -68,11 +68,9 @@ IGNORED_TOKENIZER_NAMES = frozenset(
 )
 os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
-# The gemma-4 base mirrors kept google's release-day tokenizer.json, which google replaced hours
-# later: ours has post_processor.single = [A], google's has [<bos>, A], so base models never see
-# <bos> and degenerate. Not keyed on tokenizer_config's add_bos_token (google omits it on E4B,
-# 31B, 26B-A4B and still prepends) nor on the repo name (local folders, quant suffixes). -it is
-# skipped: google leaves it BOS-less too since chat_template emits it. See unslothai/unsloth#7903.
+# gemma-4 base mirrors do not prepend <bos> (post_processor.single = [A], google's is [<bos>, A]).
+# Not keyed on add_bos_token (google omits it on E4B/31B/26B-A4B and still prepends) nor on repo
+# name. -it is skipped: its chat_template emits BOS. unslothai/unsloth#7903
 _GEMMA4_INSTRUCT_EOS = "<turn|>"
 
 # Anchored: a future gemma-4.5 / gemma_45 has its own BOS policy, and DiffusionGemma4... is not gemma 4.
@@ -108,9 +106,9 @@ def _is_gemma4_config(config):
 
 
 def _is_gemma4_tokenizer(tokenizer):
-    """Gemma 4 declares processor_class = Gemma4Processor, usually only in init_kwargs.
+    """processor_class = Gemma4Processor, usually only in init_kwargs.
 
-    The class itself is GemmaTokenizer, so a class-name check would never fire.
+    The class is GemmaTokenizer, so a class-name check never fires.
     """
     for obj in _tokenizer_objects(tokenizer):
         processor_class = getattr(obj, "processor_class", None)
@@ -137,8 +135,7 @@ def _chat_template_emits_bos(tokenizer):
 def _tokenizer_auto_adds_bos(tokenizer):
     """Does this tokenizer already emit <bos>?
 
-    add_bos_token is no proxy: google/gemma-4-E2B reports False and still prepends, since BOS
-    lives in tokenizer.json's post_processor. Only the emitted ids are truth.
+    Not add_bos_token: google/gemma-4-E2B reports False and still prepends.
     """
     bos_token_id = getattr(tokenizer, "bos_token_id", None)
     if bos_token_id is None:
@@ -167,9 +164,8 @@ def _strip_bos_from_chat_template_text(chat_template):
 def _dedupe_bos_chat_template(tokenizer):
     """Drop template-emitted BOS when the tokenizer already prepends one.
 
-    A processor keeps its own chat_template copy and save_pretrained writes that one, so both
-    copies must lose the BOS or a VLM export emits it twice. Only the inner tokenizer can be
-    asked whether BOS is added already; calling a processor needs an image.
+    A processor keeps its own copy and save_pretrained writes that one, so both must lose it.
+    Only the inner tokenizer can be asked: calling a processor needs an image.
     """
     if not _tokenizer_auto_adds_bos(getattr(tokenizer, "tokenizer", tokenizer)):
         return
@@ -187,10 +183,7 @@ def _dedupe_bos_chat_template(tokenizer):
 
 
 def _is_gemma4_instruct_tokenizer(tokenizer):
-    """-it emits BOS from its chat template, so flipping the flag would double it.
-
-    google leaves -it BOS-less for the same reason, so skipping keeps us matching upstream.
-    """
+    """-it emits BOS from its chat template, so flipping the flag would double it."""
     if _chat_template_emits_bos(tokenizer):
         return True
     return any(
@@ -207,9 +200,8 @@ def _needs_gemma4_base_bos(tokenizer, config = None):
 def _enable_add_bos_token(tokenizer):
     """Make the tokenizer prepend <bos>, and warn if that could not be done.
 
-    Nothing extra is recorded for save_pretrained: transformers 5.x drops add_bos_token from
-    tokenizer_config.json, so the setter's post_processor rewrite is what persists, matching
-    google/gemma-4-*.
+    Nothing is recorded for save_pretrained: transformers 5.x drops add_bos_token from
+    tokenizer_config.json, so the setter's post_processor rewrite is what persists.
     """
     for obj in _tokenizer_objects(tokenizer):
         # Already correct: keep its post_processor rather than rebuilding one.
