@@ -3462,7 +3462,7 @@ _amd_node_repairs() {
             # so a device node owned by one is a udev misconfiguration to report rather
             # than a membership to prescribe. gid 0 as well as the name, since a renamed
             # root group is still root. Mirrors _PRIVILEGED_GROUPS in utils/hardware/amd.py.
-            if ($3 + 0 == 0 || $2 ~ /^(root|wheel|sudo|admin|adm|disk|kmem|shadow)$/) {
+            if ($3 + 0 == 0 || $2 ~ /^(root|wheel|sudo|admin|adm|disk|kmem|shadow|docker|lxd)$/) {
                 if (!pseen[$2]++) print "privileged:" $2
                 next
             }
@@ -5537,25 +5537,29 @@ case "$TORCH_INDEX_URL" in
     */cpu|*/rocm*|*/gfx*) _amd_node_diag_route=true ;;
     *)                    _amd_node_diag_route=false ;;
 esac
+# The two diagnoses are separate branches, not one branch with an inner test, because
+# they need DIFFERENT evidence. The mapping one below is gated on the KFD topology -- the
+# amdkfd driver's own sysfs -- so it must not sit behind _has_amd_rocm_gpu: that probe
+# answers from `amd-smi list`, which reads the driver over sysfs and libdrm and therefore
+# SUCCEEDS in a container given only --device /dev/dri, where HIP has no /dev/kfd to open.
+# llama_cpp.py's _rocm_hip_is_reachable records the same disagreement. Behind that probe
+# the mapping warning was suppressed on exactly the container shape it was written for,
+# and the two later diagnostics stay silent too: the render node is open, so nothing is
+# closed and nothing is missing.
 if [ "$_amd_node_diag_route" = true ] && \
+   [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ] && \
+   [ ! -e /dev/kfd ] && _kfd_topology_has_an_amd_gpu; then
+    substep "An AMD GPU is in the KFD topology but /dev/kfd is not present, so the" "$C_WARN"
+    substep "  driver is loaded and reinstalling ROCm changes nothing: the node itself"
+    substep "  is missing. Under Docker, recreate the container with --device /dev/kfd"
+    substep "  --device /dev/dri; on a bare host it is a udev or devtmpfs problem."
+elif [ "$_amd_node_diag_route" = true ] && \
    [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ] && \
    ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
    ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
-    # The KFD topology is the amdkfd driver's own sysfs, so a host that has it does NOT
-    # need the kernel stack installed -- the node is simply not in this mount namespace,
-    # which is what a container created with --device /dev/dri and no --device /dev/kfd
-    # looks like from inside (/sys comes from the host, /dev does not). Telling that user
-    # to install ROCm leaves HIP exactly as unavailable as before.
-    if _kfd_topology_has_an_amd_gpu; then
-        substep "An AMD GPU is in the KFD topology but /dev/kfd is not present, so the" "$C_WARN"
-        substep "  driver is loaded and reinstalling ROCm changes nothing: the node itself"
-        substep "  is missing. Under Docker, recreate the container with --device /dev/kfd"
-        substep "  --device /dev/dri; on a bare host it is a udev or devtmpfs problem."
-    else
         substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
         substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
         substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
-    fi
 fi
 # The driver is loaded and the nodes exist, so neither a wheel nor a kernel stack
 # repairs this; only group membership does. Nothing else in this installer asks
@@ -5606,9 +5610,18 @@ if [ "$_amd_node_diag_route" = true ] && [ -n "$_closed_amd_nodes" ]; then
         substep "  sudo usermod -a -G $_closed_amd_groups ${USER:-\$USER}"
     fi
     if [ -n "$_closed_amd_gids" ]; then
-        substep "  Some of those nodes belong to GID $_closed_amd_gids, which has no group" "$C_WARN"
-        substep "  entry here, so usermod cannot name it: create a group with that GID, or"
-        substep "  recreate the container passing --group-add with the numeric GID."
+        # One flag per GID, as docker/run.sh does and as the Python half already emits:
+        # --group-add takes a SINGLE value, so a comma-joined pair is one group name that
+        # does not exist, and naming only the first leaves the second node shut.
+        _closed_amd_gid_adds=$(printf '%s' "$_closed_amd_gids" | tr ',' '\n' \
+            | sed 's/^/--group-add /' | tr '\n' ' ' | sed 's/ *$//')
+        case "$_closed_amd_gids" in
+            *,*) substep "  Some of those nodes belong to GIDs $_closed_amd_gids, which have no" "$C_WARN"
+                 substep "  group entry here, so usermod cannot name them: create groups with those" ;;
+            *)   substep "  Some of those nodes belong to GID $_closed_amd_gids, which has no" "$C_WARN"
+                 substep "  group entry here, so usermod cannot name it: create a group with that" ;;
+        esac
+        substep "  GID, or recreate the container passing $_closed_amd_gid_adds."
     fi
     if [ -n "$_closed_amd_modes" ]; then
         substep "  $_closed_amd_modes does not grant its own group read and write, so no" "$C_WARN"

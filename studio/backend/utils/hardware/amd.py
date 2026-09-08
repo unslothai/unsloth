@@ -778,7 +778,23 @@ def _has_an_access_acl(path: str) -> bool:
 # Groups whose membership reaches far beyond a device node. Not exhaustive and does not
 # need to be: anything here is reported instead of prescribed, and an unlisted group that
 # turns out to be privileged is the status quo rather than a regression.
-_PRIVILEGED_GROUPS = frozenset({"root", "wheel", "sudo", "admin", "adm", "disk", "kmem", "shadow"})
+# docker and lxd are here for the same reason as wheel: membership is root by another
+# route, since either can start a container or VM with the host filesystem mounted. A node
+# owned by one is a udev mistake to report rather than a group to join for a GPU.
+_PRIVILEGED_GROUPS = frozenset(
+    {
+        "root",
+        "wheel",
+        "sudo",
+        "admin",
+        "adm",
+        "disk",
+        "kmem",
+        "shadow",
+        "docker",
+        "lxd",
+    }
+)
 
 
 def _groups_that_own(paths: list) -> tuple:

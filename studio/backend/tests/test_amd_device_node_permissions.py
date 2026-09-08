@@ -22,7 +22,10 @@ that had to mknod would need root, which is the one account this bug cannot reac
 from __future__ import annotations
 
 import os
+import re
 import subprocess
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -784,6 +787,7 @@ def _install_sh_hint(
     render_present: bool = True,
     amd_present: bool = True,
     self_uid: str = "4242",
+    repairs: "str | None" = None,
 ) -> str:
     """The installer's closed-node message, run for a given closed set.
 
@@ -829,7 +833,10 @@ def _install_sh_hint(
             # The route the diagnoses are gated on; the gate has its own tests below.
             "_amd_node_diag_route=true",
             "OS=linux",
-            helper,
+            # The real derivation by default. An override stands in only where the case
+            # cannot be built on disk -- a node whose GID has no entry in the group
+            # database -- and _amd_node_repairs has its own tests either way.
+            helper if repairs is None else f"_amd_node_repairs() {{ printf '%s\\n' '{repairs}'; }}",
             block,
         ]
     )
@@ -1931,3 +1938,196 @@ def test_a_container_missing_kfd_is_told_to_map_it_rather_than_reinstall(monkeyp
     assert "--device /dev/kfd" in hint
     assert "kernel stack" not in hint
     assert "the kernel driver is loaded" in hint
+
+
+
+def _install_sh_missing_kfd(*, topology: bool, amd_smi_sees_it: bool) -> str:
+    """What the installer says when /dev/kfd is absent, for a given pair of probes.
+
+    Lifts the two branches together, through the closing `fi`, because which of them runs
+    is the thing under test. The `[ ! -e /dev/kfd ]` test is left live rather than stubbed
+    -- a test operator cannot be stubbed, and rewriting it would be editing the code under
+    test -- so the case needs a host without the node.
+    """
+    if os.path.exists(amd._KFD_NODE):
+        pytest.skip("this arm needs a host with no /dev/kfd, and cannot remove a device node")
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    # Anchored on the kernel-stack condition, which this change does not touch, then walked
+    # back to the `if` above it. Anchoring on the new mapping condition would make the
+    # control vacuous: a revert would stop the extraction finding anything, and "the text
+    # changed" would read as "the behaviour changed".
+    end = next(
+        i
+        for i, line in enumerate(lines)
+        if line.rstrip().endswith("! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then")
+    )
+    start = end
+    while not lines[start].lstrip().startswith("if "):
+        start -= 1
+    close = next(i for i in range(end + 1, len(lines)) if lines[i] == "fi")
+    script = "\n".join(
+        [
+            'substep() { echo "$1"; }',
+            'C_WARN=""',
+            "SKIP_TORCH=false",
+            "OS=linux",
+            "_amd_node_diag_route=true",
+            f"_kfd_topology_has_an_amd_gpu() {{ return {0 if topology else 1}; }}",
+            f"_has_amd_rocm_gpu() {{ return {0 if amd_smi_sees_it else 1}; }}",
+            "_amd_gpu_present_via_pci() { return 0; }",
+            "\n".join(lines[start : close + 1]),
+        ]
+    )
+    out = subprocess.run(
+        ["bash", "-c", script],
+        capture_output = True,
+        text = True,
+        check = True,
+        env = {**os.environ, "_closed_amd_nodes": ""},
+    )
+    return out.stdout
+
+
+def test_amd_smi_does_not_suppress_the_missing_kfd_mapping_advice():
+    """amd-smi reads the driver over sysfs and libdrm, so it lists the card in a container
+    given only --device /dev/dri, where HIP has no /dev/kfd to open -- llama_cpp.py's
+    _rocm_hip_is_reachable documents exactly that disagreement. Behind _has_amd_rocm_gpu the
+    mapping advice was therefore suppressed on the container shape it was written for, and
+    nothing else spoke: the render node is open, so no node is closed and none is missing."""
+    out = _install_sh_missing_kfd(topology = True, amd_smi_sees_it = True)
+    assert "--device /dev/kfd" in out
+    assert "Install the ROCm kernel stack" not in out
+
+
+def test_the_kernel_stack_advice_still_needs_rocm_to_be_blind():
+    """The control, and the reason the two are separate branches rather than one branch
+    with an inner test: they need different evidence. With no KFD topology the driver
+    really is missing, and that diagnosis is still gated on ROCm seeing nothing, so a host
+    whose amd-smi answers is not told to install what it already has."""
+    assert "Install the ROCm kernel stack" in _install_sh_missing_kfd(
+        topology = False, amd_smi_sees_it = False
+    )
+    assert "Install the ROCm kernel stack" not in _install_sh_missing_kfd(
+        topology = False, amd_smi_sees_it = True
+    )
+
+
+def test_a_docker_owned_node_is_not_answered_with_usermod(monkeypatch, linux):
+    """Membership in docker is root by another route -- a container started with the host
+    filesystem mounted -- so prescribing it to open a GPU node is a privilege escalation
+    dressed as a device repair, exactly as for wheel."""
+    _stat_nodes(monkeypatch, {"/dev/kfd": (999, 0o660, 0)}, {999: "docker"})
+    joinable, unnamed, no_group, acl, owned, privileged = amd._groups_that_own(["/dev/kfd"])
+    assert privileged == ["docker"]
+    assert joinable == []
+
+
+def test_the_installer_denies_the_same_groups_the_runtime_does():
+    """The two lists are maintained by hand in two languages, so drift is the failure mode.
+    Read install.sh's alternation and compare it to the constant rather than restating
+    either: a group added to one half alone fails here."""
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    text = install_sh.read_text(encoding = "utf-8")
+    match = re.search(r'\$2 ~ /\^\(([a-z|]+)\)\$/', text)
+    assert match, "install.sh no longer carries the privileged-group alternation"
+    assert set(match.group(1).split("|")) == set(amd._PRIVILEGED_GROUPS)
+
+
+def test_the_installer_repeats_group_add_for_every_unnamed_gid():
+    """--group-add takes a SINGLE value, so a comma-joined pair is one group name that does
+    not exist, and naming only the first leaves the second node shut. docker/run.sh repeats
+    the flag and the Python half already emits it repeated; the installer said "the numeric
+    GID", singular, for a value it had just printed as "993,994"."""
+    out = _install_sh_hint("/dev/kfd\n/dev/dri/renderD128", repairs = "gid:993\ngid:994")
+    assert "--group-add 993 --group-add 994" in out
+    assert "GIDs 993,994" in out
+
+
+def test_one_unnamed_gid_still_reads_as_one():
+    """The control: the singular wording and a single flag, so the fix is not "always say
+    GIDs"."""
+    out = _install_sh_hint("/dev/kfd", repairs = "gid:993")
+    assert "--group-add 993" in out
+    assert "--group-add 993 --group-add" not in out
+    assert "GID 993" in out
+
+
+def test_an_empty_rocr_token_keeps_the_prefix_it_already_counted(monkeypatch, linux):
+    """ROCr's RvdFilter builds its list from tokens that are "Legal and NOT Terminating",
+    so an entry it cannot evaluate ends the list and the devices BEFORE it still survive.
+    ROCR_VISIBLE_DEVICES='0,' therefore leaves one device, and HIP ordinal 1 hides it --
+    read as an unresolvable list instead, the HIP mask went unmentioned."""
+    reason = _reason_with_masks(
+        monkeypatch,
+        {"ROCR_VISIBLE_DEVICES": "0,", "HIP_VISIBLE_DEVICES": "1"},
+        {"hip"},
+        gpu_count = 2,
+    )
+    assert "HIP_VISIBLE_DEVICES='1'" in reason
+    assert "which the groups do not clear" in reason
+
+
+def test_a_repeated_rocr_ordinal_surfaces_one_device(monkeypatch, linux):
+    """The same rule from the other side: an enumeration index is Terminating when it "maps
+    to a device that has been previously selected", so '0,0' surfaces one device rather than
+    two. Counting every token read it as two survivors and called a HIP ordinal that hides
+    the only device a valid selector."""
+    reason = _reason_with_masks(
+        monkeypatch,
+        {"ROCR_VISIBLE_DEVICES": "0,0", "HIP_VISIBLE_DEVICES": "1"},
+        {"hip"},
+        gpu_count = 2,
+    )
+    assert "HIP_VISIBLE_DEVICES='1'" in reason
+    assert "which the groups do not clear" in reason
+
+
+def test_a_live_cuda_runtime_outranks_a_stale_rocm_intent(monkeypatch, linux):
+    """A conda or locally built CUDA wheel carries no +cu tag, so the label names no vendor
+    and a venv that once recorded a ROCm flavor made this read the wheel as AMD-targeted --
+    replacing the reinstall advice with group membership on a host whose CUDA build cannot
+    use the AMD card however open its nodes are. torch.version.cuda is the build's own
+    answer and is stubbed here rather than the predicate that reads it."""
+    from utils.hardware import hardware
+
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
+    monkeypatch.setattr(hardware, "TORCH_IMPORT_ERROR", None)
+    monkeypatch.setattr(hardware, "_expected_rocm_flavor_was_chosen", lambda: True)
+    monkeypatch.setenv("USER", "ada")
+
+    _torch = types.SimpleNamespace(
+        version = types.SimpleNamespace(cuda = "12.8", hip = None), __version__ = "2.11.0"
+    )
+    monkeypatch.setitem(sys.modules, "torch", _torch)
+    message = hardware._gpu_present_but_unusable_message(
+        "video generation",
+        verdict = ("torch_cuda_unavailable", "2.11.0"),
+    )
+    assert "Repair installation" in message
+
+
+def test_a_live_hip_runtime_still_gets_the_node_hint_alone(monkeypatch, linux):
+    """The control, on the same untagged label: torch.version.hip set means the wheel IS a
+    ROCm build, so the closed node explains it fully and the reinstall advice would send
+    the user after the wrong repair. Without this the rule could be "an untagged label is
+    never AMD"."""
+    from utils.hardware import hardware
+
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
+    monkeypatch.setattr(hardware, "TORCH_IMPORT_ERROR", None)
+    monkeypatch.setattr(hardware, "_expected_rocm_flavor_was_chosen", lambda: True)
+    monkeypatch.setenv("USER", "ada")
+
+    _torch = types.SimpleNamespace(
+        version = types.SimpleNamespace(cuda = "12.8", hip = "6.4.0"), __version__ = "2.11.0"
+    )
+    monkeypatch.setitem(sys.modules, "torch", _torch)
+    message = hardware._gpu_present_but_unusable_message(
+        "video generation",
+        verdict = ("torch_cuda_unavailable", "2.11.0"),
+    )
+    assert "Repair installation" not in message
+    assert "usermod -a -G render,video ada" in message

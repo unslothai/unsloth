@@ -1250,6 +1250,32 @@ def _torch_reports_a_hip_runtime() -> bool:
         return False
 
 
+def _torch_reports_another_vendors_runtime() -> bool:
+    """Whether the installed torch is a CUDA or XPU build, whatever its label says.
+
+    The mirror of _torch_reports_a_hip_runtime, and needed for the same reason in reverse.
+    A conda or locally built CUDA wheel carries no +cu tag, so the label names no vendor,
+    and the intent fallback then reads a stale recorded ROCm flavor as "this wheel targets
+    AMD" -- on a host whose real repair is reinstalling ROCm torch. torch.version.cuda is
+    written by the build itself and settles it.
+
+    False when torch cannot be imported: there is no live runtime to ask, and the label and
+    the recorded intent decide as they did before.
+    """
+    if TORCH_IMPORT_ERROR is not None:
+        return False
+    try:
+        import torch
+        _version = getattr(torch, "version", None)
+        # A ROCm build sets torch.version.hip and can carry a cuda attribute besides, so
+        # that reading is taken first and this answers only about the other vendors.
+        if getattr(_version, "hip", None) is not None:
+            return False
+        return bool(getattr(_version, "cuda", None)) or bool(getattr(_version, "xpu", None))
+    except Exception:
+        return False
+
+
 # Marketing name -> gfx, mirroring setup.ps1's $nameArchTable and
 # install_python_stack._WIN_GPU_NAME_ARCH_TABLE. Only names those two route to a wheel
 # family: this decides whether a repair could change anything, so a card no index covers
@@ -2119,7 +2145,14 @@ def _gpu_present_but_unusable_message(
         "rocm" in _label
         or "hip" in _label
         or _torch_reports_a_hip_runtime()
-        or (not _WHEEL_LABEL_OTHER_VENDOR_RE.search(_label) and _expected_rocm_flavor_was_chosen())
+        or (
+            not _WHEEL_LABEL_OTHER_VENDOR_RE.search(_label)
+            # An untagged CUDA build (conda, or built locally) names no vendor in its
+            # label, so the regex above clears it and stale intent would otherwise speak
+            # for a wheel that is demonstrably not AMD's.
+            and not _torch_reports_another_vendors_runtime()
+            and _expected_rocm_flavor_was_chosen()
+        )
     )
     amd_is_the_target = vendors == {"amd"} or wheel_targets_amd
     node_hint = None

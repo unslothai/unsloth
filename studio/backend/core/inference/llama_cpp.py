@@ -9888,13 +9888,30 @@ class LlamaCppBackend:
                 _raw = (os.environ.get("ROCR_VISIBLE_DEVICES") or "").strip()
                 if not _raw or not _amd_gpu_count:
                     return None
+                # ROCr's own rule, from RvdFilter's documentation in
+                # core/inc/amd_filter_device.h: it "builds the list of Gpu devices to
+                # surface using tokens that are Legal and NOT Terminating", an index
+                # terminates when its "value ... lies outside the interval
+                # [0 - (numGpuDevices - 1)]" OR "maps to a device that has been previously
+                # selected", and a token is Illegal when it "can't be evaluated into an
+                # instance of Device UUID or Enumeration Index". Every ending is therefore
+                # a PREFIX whose length is known -- including a repeated ordinal ("0,0"
+                # surfaces one device, not two) and an empty token ("0," ends after the
+                # first, leaving one survivor). Only a UUID is unknowable here, since the
+                # KFD count is an ordinal space and nothing in it can match one.
                 _survivors = 0
+                _selected: "set[int]" = set()
                 for _entry in _raw.split(","):
                     _entry = _entry.strip()
-                    # The list stops at the first entry naming no device, and a UUID cannot
-                    # be resolved against an ordinal count, so both end the prefix.
-                    if not _entry.isdigit() or int(_entry) >= _amd_gpu_count:
-                        return None if not _entry.isdigit() else _survivors
+                    if not _entry.isdigit():
+                        # AMD documents the UUID form as the literal "GPU-XX"; anything
+                        # else that is not an index is Illegal to ROCr as well, so it ends
+                        # the list at a length this does know.
+                        return None if _entry.lower().startswith("gpu-") else _survivors
+                    _idx = int(_entry)
+                    if _idx >= _amd_gpu_count or _idx in _selected:
+                        return _survivors
+                    _selected.add(_idx)
                     _survivors += 1
                 return _survivors
 
