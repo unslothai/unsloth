@@ -183,7 +183,12 @@ class _FakeDiT:
         self.calls = 0
         self.seen: list = []
 
-    def forward(self, hidden_states, timestep = None, return_dict = True):
+    def forward(
+        self,
+        hidden_states,
+        timestep = None,
+        return_dict = True,
+    ):
         self.calls += 1
         self.seen.append((hidden_states, timestep, return_dict))
         return (_FakeTensor((1, 4), value = ("out", self.calls), tag = "out"),)
@@ -534,16 +539,19 @@ def test_signature_is_the_original_forwards(stub_torch):
 
 
 # -- kill switch --
-@pytest.mark.parametrize("token, disabled", [
-    ("1", True),
-    ("true", True),
-    ("YES", True),
-    ("On", True),
-    (" true ", True),
-    ("0", False),
-    ("", False),
-    ("no", False),
-])
+@pytest.mark.parametrize(
+    "token, disabled",
+    [
+        ("1", True),
+        ("true", True),
+        ("YES", True),
+        ("On", True),
+        (" true ", True),
+        ("0", False),
+        ("", False),
+        ("no", False),
+    ],
+)
 def test_env_kill_switch(monkeypatch, token, disabled):
     monkeypatch.setenv(cg.CUDA_GRAPH_DISABLE_ENV, token)
     assert cg.cuda_graph_disabled() is disabled
@@ -580,26 +588,29 @@ def test_graph_eligible_happy_path(stub_torch, monkeypatch):
     assert _eligible(monkeypatch, speed_mode = "max")[0] is True
 
 
-@pytest.mark.parametrize("overrides, reason", [
-    ({"target": _target(device = "mps", backend = "mps")}, "device is mps"),
-    ({"target": _target(device = "cpu", backend = "cpu")}, "device is cpu"),
-    ({"target": _target(backend = "rocm")}, "backend is rocm"),
-    ({"offload_active": True}, "offload active"),
-    ({"cache_active": True}, "step cache active"),
-    ({"speed_mode": "eager"}, "speed tier eager"),
-    ({"speed_mode": "off"}, "speed tier off"),
-    ({"speed_mode": None}, "speed tier off"),
-    (
-        {"pipe": types.SimpleNamespace(unet = UNet2DConditionModel(), transformer = _FakeDiT())},
-        "denoiser is a U-Net",
-    ),
-    ({"pipe": types.SimpleNamespace()}, "no denoiser transformer"),
-    (
-        {"family": types.SimpleNamespace(supports_cuda_graph = False)},
-        "family opts out",
-    ),
-    ({"family_default": False}, "family opts out"),
-])
+@pytest.mark.parametrize(
+    "overrides, reason",
+    [
+        ({"target": _target(device = "mps", backend = "mps")}, "device is mps"),
+        ({"target": _target(device = "cpu", backend = "cpu")}, "device is cpu"),
+        ({"target": _target(backend = "rocm")}, "backend is rocm"),
+        ({"offload_active": True}, "offload active"),
+        ({"cache_active": True}, "step cache active"),
+        ({"speed_mode": "eager"}, "speed tier eager"),
+        ({"speed_mode": "off"}, "speed tier off"),
+        ({"speed_mode": None}, "speed tier off"),
+        (
+            {"pipe": types.SimpleNamespace(unet = UNet2DConditionModel(), transformer = _FakeDiT())},
+            "denoiser is a U-Net",
+        ),
+        ({"pipe": types.SimpleNamespace()}, "no denoiser transformer"),
+        (
+            {"family": types.SimpleNamespace(supports_cuda_graph = False)},
+            "family opts out",
+        ),
+        ({"family_default": False}, "family opts out"),
+    ],
+)
 def test_graph_eligible_refusals(stub_torch, monkeypatch, overrides, reason):
     ok, got = _eligible(monkeypatch, **overrides)
     assert ok is False
@@ -692,7 +703,12 @@ def test_real_cuda_capture_replays_bit_identically():
             self.act = nn.SiLU()
             self.proj_out = nn.Linear(dim, dim)
 
-        def forward(self, hidden_states, timestep, return_dict = True):
+        def forward(
+            self,
+            hidden_states,
+            timestep,
+            return_dict = True,
+        ):
             out = self.proj_out(self.act(self.proj_in(hidden_states))) + timestep
             if return_dict:
                 return types.SimpleNamespace(sample = out)
@@ -707,9 +723,7 @@ def test_real_cuda_capture_replays_bit_identically():
             hidden = torch.randn(2, 8, dim, device = "cuda", dtype = torch.bfloat16)
             timestep = torch.randn(1, 1, device = "cuda", dtype = torch.bfloat16)
             with torch.inference_mode():
-                want = handle.orig(
-                    hidden_states = hidden, timestep = timestep, return_dict = False
-                )[0]
+                want = handle.orig(hidden_states = hidden, timestep = timestep, return_dict = False)[0]
                 got = module(hidden_states = hidden, timestep = timestep, return_dict = False)[0]
             assert torch.equal(got, want)
 
