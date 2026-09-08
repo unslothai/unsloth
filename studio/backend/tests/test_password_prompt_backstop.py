@@ -800,14 +800,14 @@ def test_the_child_does_not_repeat_a_prompt_the_parent_already_gave_up_on(monkey
         raise AssertionError("the child prompted again after the parent gave up")
 
     from auth import storage as _storage
+
     monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
 
-    assert run._terminal_password_gate(
-        tunnel_will_start = False, **_RAW_BIND_KWARGS
-    ) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
     # Consumed, so a later launch from the same environment is not silently
     # stripped of its own prompt.
     import os as _os
+
     assert _os.environ.get("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE") is None
 
 
@@ -818,9 +818,7 @@ def test_the_marker_never_silences_a_tunnel_launch(monkeypatch):
     _patch_seeded_admin(monkeypatch, requires_change = True)
 
     from auth import terminal_prompt
-    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change",
-                        lambda **_kw: False)
 
-    assert run._terminal_password_gate(
-        tunnel_will_start = True, **_GATE_KWARGS
-    ) == (False, False)
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
