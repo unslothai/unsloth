@@ -414,7 +414,22 @@ function Get-StudioPython {
 # already resolves a custom home and the legacy layout; the inventory and the
 # event scoping must agree on this directory or a runtime under a custom home
 # is inventoried in one place and counted as foreign in the other.
-function Resolve-VenvDir {
+function Resolve-VenvDir([string] $dir) {
+    # Recorded by run and read back by collect when $dir is given, the way the
+    # llama.cpp selection already is. Both of those resolutions go through
+    # UNSLOTH_STUDIO_HOME, which an operator may have set for the shell that ran
+    # the earlier stage only, and a reboot between the stages is supported. So
+    # recomputing here handed collect the legacy default while run had
+    # inventoried a custom venv: the real tree's events were then scoped 'other'
+    # and dropped from the counts, and the one enforced 3077 this probe has ever
+    # seen was inside that tree.
+    if ($dir) {
+        $recorded = Join-Path $dir 'venv-selection.txt'
+        if (Test-Path -LiteralPath $recorded) {
+            $recordedPath = (Get-Content -LiteralPath $recorded -Raw).Trim()
+            if ($recordedPath) { return $recordedPath }
+        }
+    }
     $studioPython = Get-StudioPython
     if ($studioPython) { return (Split-Path -Parent (Split-Path -Parent $studioPython)) }
     return $VENV_DIR
@@ -1071,6 +1086,7 @@ function Invoke-Prepare {
     # machine state revert has to restore, which the retry did not change.
     foreach ($stale in @(
         'scenario-status.json', 'scenario-results.json', 'runtime-selection.json',
+        'venv-selection.txt',
         'signature-inventory.json', 'signature-inventory.csv',
         'venv-signature-inventory.json', 'venv-signature-inventory.csv',
         'code-integrity-events.json', 'code-integrity-events.txt',
@@ -1168,7 +1184,20 @@ function Invoke-Run {
             $bootedAt = $null
             try { $bootedAt = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime } catch { }
             $preparedAt = $null
-            try { $preparedAt = [datetime]::Parse($runBaseline.CapturedAt) } catch { }
+            # Invariant, and on the string form, because CapturedAt arrives
+            # here in two shapes and the default parse reads neither safely.
+            # ConvertFrom-Json silently turns an ISO timestamp into a [datetime],
+            # PowerShell then stringifies that with the INVARIANT culture
+            # (MM/dd/yyyy) to bind the string overload, while [datetime]::Parse
+            # reads the CURRENT one. On a dd/MM machine every prepare after the
+            # 12th of a month threw here and left $preparedAt null, so the
+            # revalidation below was skipped and collect graded the window on a
+            # control that fired on a different boot; on the 1st to the 12th it
+            # parsed silently into the wrong month instead.
+            try {
+                $preparedAt = [datetime]::Parse([string]$runBaseline.CapturedAt,
+                    [cultureinfo]::InvariantCulture)
+            } catch { }
             if ($bootedAt -and $preparedAt -and $bootedAt -gt $preparedAt) {
                 # The control that fired belongs to the previous boot. Ask again
                 # on this one, and record the answer where collect reads it.
@@ -1200,7 +1229,20 @@ function Invoke-Run {
             $bootedAt = $null
             try { $bootedAt = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime } catch { }
             $preparedAt = $null
-            try { $preparedAt = [datetime]::Parse($runBaseline.CapturedAt) } catch { }
+            # Invariant, and on the string form, because CapturedAt arrives
+            # here in two shapes and the default parse reads neither safely.
+            # ConvertFrom-Json silently turns an ISO timestamp into a [datetime],
+            # PowerShell then stringifies that with the INVARIANT culture
+            # (MM/dd/yyyy) to bind the string overload, while [datetime]::Parse
+            # reads the CURRENT one. On a dd/MM machine every prepare after the
+            # 12th of a month threw here and left $preparedAt null, so the
+            # revalidation below was skipped and collect graded the window on a
+            # control that fired on a different boot; on the 1st to the 12th it
+            # parsed silently into the wrong month instead.
+            try {
+                $preparedAt = [datetime]::Parse([string]$runBaseline.CapturedAt,
+                    [cultureinfo]::InvariantCulture)
+            } catch { }
             if (($bootedAt -and $preparedAt -and $bootedAt -gt $preparedAt) -or
                 ($true -ne $runBaseline.SacControlFired)) {
                 Write-Host 'confirming on this boot that unsigned code is actually refused here'
@@ -1232,6 +1274,12 @@ function Invoke-Run {
     $studioPython = Get-StudioPython
     $venvDir = Resolve-VenvDir
     Write-Host "venv: $venvDir"
+    # Recorded for collect, which may run from a shell where a custom
+    # UNSLOTH_STUDIO_HOME was never set. See Resolve-VenvDir: without this,
+    # collect scoped the window against a different tree than run inventoried.
+    # It is staged into the zip like everything else in the run directory, so
+    # the reader can see which venv the counts were taken over.
+    $venvDir | Set-Content -LiteralPath (Join-Path $dir 'venv-selection.txt') -Encoding UTF8
     $venvInventory = @(Get-SignatureInventory $venvDir)
     ConvertTo-Json -InputObject @($venvInventory) -Depth 4 |
         Set-Content -LiteralPath (Join-Path $dir 'venv-signature-inventory.json') -Encoding UTF8
@@ -1409,7 +1457,7 @@ function Invoke-Collect {
     # unescaped tail matched none of its events, filing its 3076/3077 records
     # under 'other' and dropping them out of the Unsloth headline.
     $tail = Get-ScopeTail (Resolve-LlamaDir $dir)
-    $venvTail = Get-ScopeTail (Resolve-VenvDir)
+    $venvTail = Get-ScopeTail (Resolve-VenvDir $dir)
     $shaped = @($events | ForEach-Object {
         $msg = $_.Message
         $scope =

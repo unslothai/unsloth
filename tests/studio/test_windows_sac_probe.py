@@ -817,9 +817,11 @@ def test_the_venv_inventory_comes_from_the_running_interpreter_and_cannot_be_emp
     assert "$venvDir = Resolve-VenvDir" in ps1
     assert "no PE files found under $venvDir" in ps1
     # The event scoping in collect must resolve the venv the same way the
-    # inventory does, or a custom-home venv is counted as somebody else's.
+    # inventory does, or a custom-home venv is counted as somebody else's - and
+    # it reads run's recorded answer rather than resolving it again, since the
+    # override may only ever have been set in the shell that ran run.
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
-    assert "$venvTail = " in collect and "Get-ScopeTail (Resolve-VenvDir)" in collect
+    assert "$venvTail = " in collect and "Get-ScopeTail (Resolve-VenvDir $dir)" in collect
     assert "$VENV_DIR -replace" not in collect
 
 
@@ -1629,3 +1631,42 @@ def test_run_refuses_a_label_whose_revert_already_completed():
     assert guard < run.index("Write-Section 'Venv signature inventory'")
     # All three stages now refuse a spent baseline rather than two of them.
     assert "if ($baseline.RevertCompletedAt) {" in ps1[ps1.index("function Invoke-Revert") :]
+
+
+def test_collect_scopes_the_venv_run_measured_not_the_one_this_shell_resolves():
+    """Both resolutions go through UNSLOTH_STUDIO_HOME, and a reboot between the
+    stages is supported, so a collect from a shell without that override scoped
+    the window against the legacy default while run had inventoried a custom
+    venv. The real tree's events were then filed as somebody else's - and the
+    one enforced 3077 this probe has ever seen was inside that tree."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    assert "function Resolve-VenvDir([string] $dir) {" in ps1
+    fn = ps1[ps1.index("function Resolve-VenvDir") : ps1.index("function Test-StudioResponding")]
+    assert "$recorded = Join-Path $dir 'venv-selection.txt'" in fn
+    # The recorded answer wins, and only when a run directory was passed.
+    assert fn.index("$recorded = Join-Path") < fn.index("$studioPython = Get-StudioPython")
+    run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
+    assert "$venvDir | Set-Content -LiteralPath (Join-Path $dir 'venv-selection.txt')" in run
+    # Written from the value the inventory actually used.
+    assert run.index("$venvDir = Resolve-VenvDir") < run.index("'venv-selection.txt'")
+    # A reopened window must not inherit the previous one's answer.
+    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    stale = prepare[prepare.index("foreach ($stale in @(") :]
+    assert "'venv-selection.txt'" in stale[: stale.index(")) {")]
+
+
+def test_the_prepare_timestamp_is_read_back_culture_invariantly():
+    """ConvertFrom-Json turns CapturedAt into a DateTime, PowerShell stringifies
+    that with the invariant culture (MM/dd/yyyy) to bind the string overload,
+    and [datetime]::Parse reads the CURRENT one. On a dd/MM machine every
+    prepare after the 12th of a month threw here and left $preparedAt null, so
+    the after-a-reboot revalidation was skipped and collect graded the window on
+    a control that fired on a different boot."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
+    assert "[datetime]::Parse($runBaseline.CapturedAt)" not in run
+    # The audit-policy cell and the Smart App Control cell, both of them.
+    assert run.count("[datetime]::Parse([string]$runBaseline.CapturedAt,") == 2
+    assert run.count("[cultureinfo]::InvariantCulture") == 2
+    # Still gating the control, not a parse nobody reads.
+    assert run.count("$bootedAt -and $preparedAt -and $bootedAt -gt $preparedAt") == 2
