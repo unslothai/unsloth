@@ -9864,6 +9864,39 @@ class LlamaCppBackend:
                 _is_vulkan or "hip" in _backends or not _backends
             )
 
+            def _hides_every_device(value: str) -> bool:
+                # CUDA and HIP read the list left to right and stop at the first entry
+                # that names no device, so a value that is empty, or whose FIRST entry
+                # is empty or negative, exposes nothing; HIP_VISIBLE_DEVICES=0 still
+                # exposes GPU 0.
+                first = value.split(",")[0].strip()
+                return first == "" or first.startswith("-")
+
+            # Which of the four this host actually reads, per variable rather than one
+            # rule applied to all of them alike. Reaching a node hint at all means an
+            # AMD-capable install and a closed AMD node, so the runtime being explained
+            # is HIP, and clr's own precedence holds: Device::init reads
+            # HIP_VISIBLE_DEVICES when it is set and CUDA_VISIBLE_DEVICES only
+            # otherwise, so an empty CUDA mask behind a valid HIP one is never consulted
+            # and naming it sends the user after a change that fixes nothing. ROCr sits
+            # BELOW that layer and composes with it rather than deferring
+            # (_rocm_visibility_masks_are_stacked), so an empty ROCr mask does blind the
+            # runtime while HIP wins above it; Windows has no ROCr layer at all.
+            # GPU_DEVICE_ORDINAL has its own predicate, and it reads whitespace as no
+            # filter. _active_gpu_visibility_mask is deliberately not the predicate
+            # here: it gates the same chain on torch being a ROCm build, which is the
+            # right question for torch's own device list and the wrong one for a HIP
+            # llama-server sitting beside the CPU torch wheel this host tends to have.
+            _hip_layer_var = (
+                "HIP_VISIBLE_DEVICES"
+                if os.environ.get("HIP_VISIBLE_DEVICES") is not None
+                else "CUDA_VISIBLE_DEVICES"
+            )
+            _rocr_filters = (
+                sys.platform != "win32" and os.environ.get("ROCR_VISIBLE_DEVICES") is not None
+            )
+            _ordinal_filters = LlamaCppBackend._gpu_device_ordinal_active()
+
             masks = []
             blocking = []
             for var in (
@@ -9877,13 +9910,14 @@ class LlamaCppBackend:
                     continue
                 phrase = f"{var}={raw!r}" if raw.strip() else f"{var} is empty"
                 masks.append(phrase)
-                # Which of these can actually explain an empty probe. CUDA and HIP read
-                # the list left to right and stop at the first entry that names no
-                # device, so a value that is empty, or whose FIRST entry is empty or
-                # negative, exposes nothing; HIP_VISIBLE_DEVICES=0 still exposes GPU 0.
+                if var == "GPU_DEVICE_ORDINAL":
+                    _consulted = _ordinal_filters
+                elif var == "ROCR_VISIBLE_DEVICES":
+                    _consulted = _rocr_filters
+                else:
+                    _consulted = var == _hip_layer_var
                 # A Vulkan build reads none of the four, so none of them blocks it.
-                first = raw.split(",")[0].strip()
-                if not _is_vulkan and (first == "" or first.startswith("-")):
+                if not _is_vulkan and _consulted and _hides_every_device(raw):
                     blocking.append(phrase)
             mask_note = f" ({', '.join(masks)})" if masks else ""
 

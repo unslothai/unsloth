@@ -14,6 +14,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from typing import Any, Optional
@@ -651,6 +652,18 @@ def _kfd_topology_has_an_amd_gpu() -> bool:
     return False
 
 
+def _amd_render_node_exists() -> bool:
+    """Whether any AMD render node is present at all.
+
+    Presence, not openability. A container given ``--device /dev/kfd`` and not
+    ``--device /dev/dri`` passes every probe in this file, and ROCr opens a render node
+    to talk to amdgpu, so it initialises nothing; ``docker/run.sh`` passes both devices
+    for that reason. Group membership cannot create the node, so this is an independent
+    blocker rather than part of the permission repair.
+    """
+    return any(_render_node_is_amd(path) for path in glob.glob(_DRI_RENDER_GLOB))
+
+
 def amd_nodes_closed_to_this_user() -> list[str]:
     """AMD device nodes that exist on this host and this user cannot open.
 
@@ -685,34 +698,46 @@ def amd_nodes_closed_to_this_user() -> list[str]:
     return closed
 
 
-def _groups_that_own(paths: list) -> list:
-    """Group names owning ``paths``, in first-seen order, GID when the name is unknown.
+def _groups_that_own(paths: list) -> tuple:
+    """How to open ``paths``, read from the nodes: ``(joinable, unnamed_gids, no_group)``.
 
-    The command is only as good as the group it names, and "render,video" is not always
-    the right pair. A container gets the host's numeric gids passed through by
-    ``--group-add`` and has no matching group NAMES inside it (docker/run.sh says so and
-    passes numbers for exactly this reason), a minimal distribution can ship no render
-    group at all, and a node left ``root:root`` by a udev rule is not fixed by joining
-    anything. Reading the node answers all three, and a GID is as valid an argument to
-    ``usermod -a -G`` as a name is.
+    "render,video" is not always the right pair, and sometimes no group is the answer at
+    all. Three outcomes, because they need three different repairs:
 
-    Best effort by construction: a node that cannot be stat'd contributes nothing rather
-    than raising, and a caller with no answer at all falls back to the documented pair.
+    ``joinable``   group names whose membership WOULD open the node -- the group has read
+                   and write on it, so ``usermod -a -G`` is the fix.
+    ``unnamed``    GIDs with no entry in the group database, which is the container case
+                   ``docker/run.sh`` documents: ``--group-add`` passes the host's numeric
+                   gids and no name inside matches them. Naming a bare GID to usermod does
+                   NOT work -- shadow 4.13 answers ``group '993' does not exist`` and exits
+                   6 -- so these are reported rather than prescribed.
+    ``no_group``   nodes whose mode denies the group too, e.g. a udev rule leaving one
+                   ``root:render 0600``. Joining render there changes nothing.
+
+    Best effort by construction: a node that cannot be stat'd contributes to none of the
+    three rather than raising, since this runs where things are already wrong.
     """
-    names = []
+    joinable, unnamed, no_group = [], [], []
     for path in paths:
         try:
-            gid = os.stat(path).st_gid
+            _st = os.stat(path)
         except OSError:
+            continue
+        # Group read AND write: HIP and the Vulkan loader both open the node read-write,
+        # which is the same bar amd_nodes_closed_to_this_user() applied to this account.
+        if (_st.st_mode & stat.S_IRGRP) == 0 or (_st.st_mode & stat.S_IWGRP) == 0:
+            no_group.append(path)
             continue
         try:
             import grp
-            name = grp.getgrgid(gid).gr_name
-        except Exception:  # noqa: BLE001 -- no passwd/group database, or no such gid
-            name = str(gid)
-        if name and name not in names:
-            names.append(name)
-    return names
+            name = grp.getgrgid(_st.st_gid).gr_name
+        except Exception:  # noqa: BLE001 -- no group database, or no entry for this gid
+            if _st.st_gid not in unnamed:
+                unnamed.append(_st.st_gid)
+            continue
+        if name and name not in joinable:
+            joinable.append(name)
+    return joinable, unnamed, no_group
 
 
 def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
@@ -736,18 +761,35 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     # Claim only what the closed set actually blocks.
     blocked = "no GPU backend can use" if any(p != _KFD_NODE for p in closed) else "ROCm cannot use"
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
-    # Named from the nodes themselves, so the command grants access to the files that
-    # were actually refused. "render,video" is the fallback for a host whose nodes could
-    # not be stat'd, not the answer.
-    groups = _groups_that_own(closed) or ["render", "video"]
-    joined = ",".join(groups)
-    plural = "group" if len(groups) == 1 else "groups"
+    joinable, unnamed, no_group = _groups_that_own(closed)
     hint = (
         f"This account cannot open {', '.join(closed)}, so {blocked} the "
-        f"AMD card even though the driver is loaded. Add the account to the "
-        f"{joined} {plural} and then log out and back in: "
-        f"sudo usermod -a -G {joined} {user}"
+        f"AMD card even though the driver is loaded."
     )
+    # Prescribed only where joining a group is the repair. A host whose nodes could not be
+    # stat'd at all still gets the documented pair, since some advice beats none; a host
+    # whose nodes were read and offer no joinable group gets the sentences below instead of
+    # a command that would fail.
+    if joinable or not (unnamed or no_group):
+        groups = joinable or ["render", "video"]
+        joined = ",".join(groups)
+        plural = "group" if len(groups) == 1 else "groups"
+        hint += (
+            f" Add the account to the {joined} {plural} and then log out and back in: "
+            f"sudo usermod -a -G {joined} {user}"
+        )
+    if unnamed:
+        _gids = ", ".join(str(_g) for _g in unnamed)
+        hint += (
+            f" Some of those nodes belong to GID {_gids}, which has no group entry on this "
+            f"system, so usermod cannot name it: create a group with that GID, or recreate "
+            f"the container passing --group-add {unnamed[0]}."
+        )
+    if no_group:
+        hint += (
+            f" {', '.join(no_group)} does not grant its own group read and write, so no "
+            f"membership opens it: fix the udev rule or the node's permissions."
+        )
     # Group membership cannot create a device node. A caller that needs /dev/kfd on a
     # host without one has a second, unrelated problem, and the sentence above is then
     # only true of the render node that was found: the DRM driver is loaded, the ROCm
@@ -756,5 +798,15 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
         hint += (
             " ROCm also needs /dev/kfd, which does not exist on this host, so the ROCm "
             "kernel stack has to be installed as well; the groups alone will not create it."
+        )
+    # The other half of the same pair, and the container shape of it: /dev/kfd mapped
+    # without /dev/dri leaves the closed KFD node looking like the whole story while
+    # ROCr has no render node to open. Asked whatever needs_kfd said, since a Vulkan
+    # caller needs one too.
+    if not _amd_render_node_exists():
+        hint += (
+            " No AMD render node (/dev/dri/renderD*) is present either, and ROCm and "
+            "Vulkan both open one, so the device mapping needs fixing too; under Docker "
+            "that is --device /dev/kfd --device /dev/dri."
         )
     return hint

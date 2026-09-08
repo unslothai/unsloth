@@ -2094,9 +2094,21 @@ def _gpu_present_but_unusable_message(
     # below is the right one. So AMD also has to be what this install targets: it is the
     # only qualifying vendor, or the venv asked for ROCm, or torch carries a HIP runtime.
     vendors = {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}
-    amd_is_the_target = vendors == {"amd"} or (
-        _expected_rocm_flavor_was_chosen() or _torch_reports_a_hip_runtime()
+    # Two different questions, and conflating them was the bug. Whether the closed node is
+    # worth MENTIONING is about the hardware: on an AMD-only host it always is. Whether it
+    # REPLACES the reinstall advice is about the wheel, and only a ROCm one is repaired by
+    # opening a node -- a CUDA- or XPU-tagged build on an AMD-only host raises the same
+    # verdict, and no amount of group membership makes it use the card.
+    # The label the message itself is about to print is the most direct evidence of what
+    # the installed wheel is, and it is the one piece the caller has already resolved; the
+    # two probes answer for the venv, which a passed-in verdict may predate.
+    wheel_targets_amd = (
+        "rocm" in (detail or "").lower()
+        or "hip" in (detail or "").lower()
+        or _expected_rocm_flavor_was_chosen()
+        or _torch_reports_a_hip_runtime()
     )
+    amd_is_the_target = vendors == {"amd"} or wheel_targets_amd
     node_hint = None
     if "amd" in vendors and amd_is_the_target:
         try:
@@ -2104,11 +2116,13 @@ def _gpu_present_but_unusable_message(
             node_hint = amd_node_permission_hint()
         except Exception:
             node_hint = None
-    # It REPLACES the reinstall advice for a GPU wheel that cannot initialise the device,
+    # It REPLACES the reinstall advice for a ROCm wheel that cannot initialise the device,
     # which the closed node fully explains. It does not for a CPU-only wheel: opening the
     # node leaves a build with no GPU path at all, so that host needs both repairs and is
-    # given both below rather than being sent back after only one.
-    if node_hint and reason == "torch_cuda_unavailable":
+    # given both below rather than being sent back after only one. Nor for a wheel built
+    # for another vendor, which is the same story: the node is real, and the wheel is
+    # still the repair.
+    if node_hint and reason == "torch_cuda_unavailable" and wheel_targets_amd:
         return f"This host has a GPU, but {feature} cannot use it. {node_hint}"
     # Both routes, always. The repair row exists only in the desktop app and only for a
     # backend it manages, so a browser-hosted Studio, or a desktop attached to a server
@@ -2125,6 +2139,10 @@ def _gpu_present_but_unusable_message(
         f"{feature} cannot use it. This is usually a driver or runtime mismatch; reinstalling "
         f"a matching PyTorch build fixes it. Use Repair installation in Settings in the "
         f"desktop app, or re-run the Unsloth installer."
+        # Appended, not substituted: a wheel built for another vendor is not repaired by
+        # opening a node, but the node is still closed and the matching ROCm build will
+        # need it. Same shape as the CPU-only arm above, for the same reason.
+        + (f" {node_hint}" if node_hint else "")
     )
 
 

@@ -57,7 +57,7 @@ def _nodes(
     # These paths are patched rather than created, so stat cannot name their groups; say
     # so explicitly instead of leaving it to whether the runner happens to have a node at
     # the same path. The derivation itself is exercised in its own tests below.
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: [])
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], []))
 
 
 def test_a_node_this_user_cannot_open_is_reported(monkeypatch, linux):
@@ -437,6 +437,11 @@ def _kernel_stack_hint_runs(closed_nodes: str) -> bool:
         [
             "_has_amd_rocm_gpu() { return 1; }",  # ROCm cannot see the card
             "_amd_gpu_present_via_pci() { return 0; }",  # but the PCI bus can
+            # Carried by the guard now that it sits after the case rather than inside the
+            # */cpu arm, which supplied them. Set here so the answer still depends only on
+            # the closed-node reasoning.
+            "SKIP_TORCH=false",
+            "OS=linux",
             guard,
             "    echo FIRED",
             "fi",
@@ -628,7 +633,7 @@ def test_the_repair_names_the_groups_the_closed_nodes_belong_to(monkeypatch, lin
         present = ["/dev/kfd", "/dev/dri/renderD128"],
         openable = set(),
     )
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ["kfd", "gpu"])
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["kfd", "gpu"], [], []))
     monkeypatch.setenv("USER", "ada")
     hint = amd.amd_node_permission_hint()
     assert "usermod -a -G kfd,gpu ada" in hint
@@ -639,7 +644,7 @@ def test_a_single_owning_group_is_not_pluralised(monkeypatch, linux):
     """A host where both nodes belong to one group gets one group named, and the sentence
     has to agree with the command rather than saying "groups" over a single name."""
     _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ["render"])
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [], []))
     monkeypatch.setenv("USER", "ada")
     hint = amd.amd_node_permission_hint()
     assert "usermod -a -G render ada" in hint
@@ -651,70 +656,92 @@ def test_unreadable_nodes_fall_back_to_the_documented_pair(monkeypatch, linux):
     must still get advice rather than an empty -G argument, and that advice is the pair
     the AMD documentation names."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: [])
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], []))
     monkeypatch.setenv("USER", "ada")
     assert "usermod -a -G render,video ada" in amd.amd_node_permission_hint()
+
+
+def _stat_nodes(monkeypatch, modes: dict, names: dict):
+    """Stub os.stat and grp for the node set ``modes`` maps to (gid, mode).
+
+    Paths outside the map raise, which covers the vanished-node arm. The stub takes
+    ``follow_symlinks`` because pytest itself stats files while this patch is in force,
+    and a two-argument lambda takes the whole session down with it rather than failing
+    the test that installed it.
+    """
+    import grp as _grp
+
+    def _stat(path, *, follow_symlinks = True):
+        if str(path) not in modes:
+            raise OSError("gone")
+        gid, mode = modes[str(path)]
+        return type("st", (), {"st_gid": gid, "st_mode": mode})()
+
+    def _getgrgid(gid):
+        if gid not in names:
+            raise KeyError(gid)
+        return type("gr", (), {"gr_name": names[gid]})()
+
+    monkeypatch.setattr(amd.os, "stat", _stat)
+    monkeypatch.setattr(_grp, "getgrgid", _getgrgid)
 
 
 def test_the_group_derivation_reads_the_node(monkeypatch):
     """The helper itself, since every test above stubs it. Two nodes owned by one group
     name it once, and order is first-seen so the command reads like the node list."""
-    import grp as _grp
-
-    gids = {"/dev/kfd": 44, "/dev/dri/renderD128": 44, "/dev/dri/renderD129": 39}
-    monkeypatch.setattr(
-        amd.os,
-        "stat",
-        lambda p: type("st", (), {"st_gid": gids[p]})(),
+    _stat_nodes(
+        monkeypatch,
+        {
+            "/dev/kfd": (44, 0o660),
+            "/dev/dri/renderD128": (44, 0o660),
+            "/dev/dri/renderD129": (39, 0o660),
+        },
+        {44: "video", 39: "render"},
     )
-    monkeypatch.setattr(
-        _grp,
-        "getgrgid",
-        lambda gid: type("gr", (), {"gr_name": {44: "video", 39: "render"}[gid]})(),
-    )
-    assert amd._groups_that_own(["/dev/dri/renderD129", "/dev/kfd", "/dev/dri/renderD128"]) == [
-        "render",
-        "video",
-    ]
+    assert amd._groups_that_own(
+        ["/dev/dri/renderD129", "/dev/kfd", "/dev/dri/renderD128"]
+    ) == (["render", "video"], [], [])
 
 
-def test_a_gid_with_no_group_entry_is_named_by_number(monkeypatch):
+def test_a_gid_with_no_group_entry_is_reported_rather_than_prescribed(monkeypatch):
     """The container case docker/run.sh documents: --group-add passes the host's numeric
-    gids, and inside the container no group entry matches them. usermod -a -G takes a GID
-    as happily as a name, so the number is the answer rather than a reason to give up."""
-    import grp as _grp
+    gids, and inside the container no group entry matches them.
 
-    monkeypatch.setattr(amd.os, "stat", lambda p: type("st", (), {"st_gid": 993})())
-    monkeypatch.setattr(
-        _grp,
-        "getgrgid",
-        lambda gid: (_ for _ in ()).throw(KeyError(gid)),
-    )
-    assert amd._groups_that_own(["/dev/kfd"]) == ["993"]
+    Fails before the fix, which returned the bare number for usermod to consume. shadow
+    4.13 answers ``group '993' does not exist`` and exits 6 on that command, verified on
+    this host, so the number belongs in a sentence rather than in the -G argument."""
+    _stat_nodes(monkeypatch, {"/dev/kfd": (993, 0o660)}, {})
+    assert amd._groups_that_own(["/dev/kfd"]) == ([], [993], [])
+
+
+def test_a_node_whose_own_group_cannot_open_it_is_not_a_membership_problem(monkeypatch):
+    """A udev rule leaving a node root:render 0600 denies the group as well, so joining
+    render opens nothing. Read the mode before naming the group, or the repair is a
+    command that runs, succeeds, and changes nothing.
+
+    Fails before the fix, which read st_gid alone and would have prescribed render."""
+    _stat_nodes(monkeypatch, {"/dev/kfd": (44, 0o600)}, {44: "render"})
+    assert amd._groups_that_own(["/dev/kfd"]) == ([], [], ["/dev/kfd"])
+
+
+def test_group_read_without_write_is_not_enough(monkeypatch):
+    """Its boundary: HIP and the Vulkan loader both open the node read-write, which is
+    the bar the probe itself applies, so 0640 is still not a joinable group."""
+    _stat_nodes(monkeypatch, {"/dev/kfd": (44, 0o640)}, {44: "render"})
+    assert amd._groups_that_own(["/dev/kfd"]) == ([], [], ["/dev/kfd"])
 
 
 def test_a_node_that_cannot_be_stat_contributes_nothing(monkeypatch):
     """And the failure mode that must not raise: diagnostics run on the path where things
     are already wrong, so a node that vanished between the probe and the message drops
     out rather than taking the whole hint down."""
-
-    def _stat(path):
-        if path == "/dev/kfd":
-            raise OSError("gone")
-        return type("st", (), {"st_gid": 44})()
-
-    import grp as _grp
-
-    monkeypatch.setattr(amd.os, "stat", _stat)
-    monkeypatch.setattr(
-        _grp,
-        "getgrgid",
-        lambda gid: type("gr", (), {"gr_name": "video"})(),
+    _stat_nodes(monkeypatch, {"/dev/dri/renderD128": (44, 0o660)}, {44: "video"})
+    assert amd._groups_that_own(["/dev/kfd", "/dev/dri/renderD128"]) == (
+        ["video"], [], [],
     )
-    assert amd._groups_that_own(["/dev/kfd", "/dev/dri/renderD128"]) == ["video"]
 
 
-def _install_sh_hint(closed_nodes: str) -> str:
+def _install_sh_hint(closed_nodes: str, *, render_present: bool = True) -> str:
     """The installer's closed-node message, run for a given closed set.
 
     Lifted from install.sh rather than restated, and the whole block rather than a
@@ -734,7 +761,7 @@ def _install_sh_hint(closed_nodes: str) -> str:
     end = next(i for i in range(start, len(lines)) if lines[i] == "fi")
     block = "\n".join(lines[start : end + 1])
 
-    fn_start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_groups() {"))
+    fn_start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_repairs() {"))
     depth = 0
     for fn_end in range(fn_start, len(lines)):
         depth += lines[fn_end].count("{") - lines[fn_end].count("}")
@@ -742,14 +769,15 @@ def _install_sh_hint(closed_nodes: str) -> str:
             break
     helper = "\n".join(lines[fn_start : fn_end + 1])
 
-    script = "\n".join(
-        [
-            'substep() { echo "$1"; }',
-            'C_WARN=""',
-            helper,
-            block,
-        ]
-    )
+    script = "\n".join([
+        "substep() { echo \"$1\"; }",
+        'C_WARN=""',
+        # Stubbed rather than lifted: the real one reads /sys and /dev, so leaving it
+        # live would make every arm depend on the runner's own hardware.
+        f"_amd_render_node_present() {{ return {0 if render_present else 1}; }}",
+        helper,
+        block,
+    ])
     out = subprocess.run(
         ["bash", "-c", script],
         capture_output = True,
@@ -772,6 +800,9 @@ def test_the_installer_names_the_group_the_node_actually_has(tmp_path):
 
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
+    # 0660, the mode a real render node has: the installer now reads the mode as well as
+    # the group, and a default 0644 is a node no membership opens.
+    node.chmod(0o660)
     owner = subprocess.run(
         ["stat", "-c", "%G", str(node)],
         capture_output = True,
@@ -866,3 +897,296 @@ def test_the_same_empty_mask_still_counts_for_a_hip_build(monkeypatch, linux):
     still report the mask when the install is one that actually reads it."""
     reason = _reason_with_mask(monkeypatch, "HIP_VISIBLE_DEVICES", "", {"hip"})
     assert "visibility mask is also in force" in reason
+
+
+def test_an_unnamed_gid_is_not_handed_to_usermod(monkeypatch, linux):
+    """A GID with no group entry is reported, not prescribed. usermod -a -G takes names
+    only: shadow 4.13 answers ``group '993' does not exist`` and exits 6, run live on this
+    host to check rather than read out of the man page.
+
+    Fails before the fix, which put the bare number in the -G argument."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993], []))
+    monkeypatch.setenv("USER", "ada")
+    hint = amd.amd_node_permission_hint()
+    # The sentence names usermod to say it cannot help, so the assertion is on the
+    # COMMAND rather than on the word.
+    assert "usermod -a -G" not in hint
+    assert "--group-add 993" in hint
+
+
+def test_a_joinable_group_beside_an_unnamed_gid_is_still_prescribed(monkeypatch, linux):
+    """The control that keeps the suppression narrow: a host with one node in a real
+    group and another in an unnamed one can still fix half of it by joining, so the
+    command has to survive and name only the group that works."""
+    _nodes(
+        monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set(),
+    )
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [993], []))
+    monkeypatch.setenv("USER", "ada")
+    hint = amd.amd_node_permission_hint()
+    assert "usermod -a -G render ada" in hint
+    assert "GID 993" in hint
+
+
+def test_a_node_no_membership_opens_is_not_answered_with_usermod(monkeypatch, linux):
+    """A udev rule leaving the node root:render 0600 denies its own group, so joining
+    render runs, succeeds, and opens nothing. The repair there is the rule.
+
+    Fails before the fix, which named the owning group whatever the mode said."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], ["/dev/kfd"]))
+    monkeypatch.setenv("USER", "ada")
+    hint = amd.amd_node_permission_hint()
+    assert "usermod -a -G" not in hint
+    assert "udev rule" in hint
+
+
+def test_a_host_whose_nodes_could_not_be_read_still_gets_the_documented_pair(monkeypatch, linux):
+    """And the control for BOTH suppressions: all three lists empty means the nodes could
+    not be stat'd at all, which is a detection miss rather than evidence that joining
+    cannot work. Some advice beats none there, and it is the pair AMD documents."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], []))
+    monkeypatch.setenv("USER", "ada")
+    assert "usermod -a -G render,video ada" in amd.amd_node_permission_hint()
+
+
+def _unusable_message(monkeypatch, detail, *, rocm_expected = False, hip_runtime = False):
+    """The capability message on an AMD-only host with a closed node, for a given wheel."""
+    from utils.hardware import hardware
+
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
+    # Pinned rather than inherited: both probes answer for the venv this suite runs in,
+    # so leaving them live would make the arms depend on the test host's torch.
+    monkeypatch.setattr(hardware, "_expected_rocm_flavor_was_chosen", lambda: rocm_expected)
+    monkeypatch.setattr(hardware, "_torch_reports_a_hip_runtime", lambda: hip_runtime)
+    monkeypatch.setenv("USER", "ada")
+    return hardware._gpu_present_but_unusable_message(
+        "video generation", verdict = ("torch_cuda_unavailable", detail),
+    )
+
+
+def test_a_cuda_wheel_on_an_amd_only_host_keeps_the_reinstall_advice(monkeypatch, linux):
+    """An AMD-only host running a CUDA-tagged wheel raises the same verdict, and opening
+    the node does not make that wheel use the card -- the reinstall is still the repair,
+    and the closed node is still real. So this host needs both, exactly like the CPU-wheel
+    arm above.
+
+    Fails before the fix, where "AMD is the only vendor" alone made the hint REPLACE the
+    reinstall advice, leaving the user with a group command and no way to use the GPU."""
+    message = _unusable_message(monkeypatch, "2.11.0+cu128")
+    assert "usermod -a -G render,video ada" in message
+    assert "Repair installation" in message
+
+
+def test_a_rocm_wheel_on_the_same_host_still_replaces_it(monkeypatch, linux):
+    """Its control, one label apart: a ROCm wheel that cannot initialise the device IS
+    fully explained by the closed node, so the reinstall advice would send the user after
+    the wrong repair and must still be suppressed."""
+    message = _unusable_message(monkeypatch, "2.11.0+rocm7.0")
+    assert "usermod -a -G render,video ada" in message
+    assert "Repair installation" not in message
+
+
+def _installer_index_summary(index_url: str, closed_nodes: str) -> str:
+    """install.sh's index summary and the two diagnoses that follow it, run for one index.
+
+    The whole span is lifted rather than the guard alone, because the thing under test is
+    WHERE the diagnosis sits relative to the case: a copy of the condition would answer
+    the same whichever arm it had been left in.
+    """
+    import subprocess
+
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    start = max(i for i, line in enumerate(lines) if line == 'case "$TORCH_INDEX_URL" in')
+    anchor = next(
+        i for i in range(start, len(lines))
+        if "needs a recent kernel" in lines[i]
+    )
+    # Through the closed-node block as well, so one run shows which of the two
+    # diagnoses this index gets.
+    last = next(
+        i for i in range(anchor, len(lines)) if "membership opens it" in lines[i]
+    )
+    end = next(i for i in range(last, len(lines)) if lines[i] == "fi")
+    fn_start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_repairs() {"))
+    depth = 0
+    for fn_end in range(fn_start, len(lines)):
+        depth += lines[fn_end].count("{") - lines[fn_end].count("}")
+        if depth == 0:
+            break
+    script = "\n".join([
+        *lines[fn_start : fn_end + 1],
+        'substep() { echo "$1"; }',
+        'C_WARN=""',
+        "_amd_gpu_radeon=false",
+        '_strip_index_url_credentials() { printf "%s\\n" "$1"; }',
+        "_has_amd_rocm_gpu() { return 1; }",  # ROCm cannot see the card
+        "_amd_gpu_present_via_pci() { return 0; }",  # but the PCI bus can
+        "SKIP_TORCH=false",
+        "OS=linux",
+        "_amd_render_node_present() { return 0; }",
+        *lines[start : end + 1],
+    ])
+    out = subprocess.run(
+        ["bash", "-c", script], capture_output = True, text = True,
+        env = {
+            **os.environ,
+            "TORCH_INDEX_URL": index_url,
+            "_closed_amd_nodes": closed_nodes,
+        },
+    )
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+def test_the_kernel_stack_diagnosis_reaches_a_rerouted_gfx_index():
+    """The runtime-less host this was written for: no /dev/kfd, so the per-arch reroute
+    rewrote its cpu index to a gfx one and it took the other arm of the case. Left inside
+    the */cpu arm the diagnosis never printed for exactly the host that needed it.
+
+    Fails before the fix, which produced only the wheels line for this index."""
+    out = _installer_index_summary("https://repo.radeon.com/rocm/manylinux/gfx1151", "")
+    assert "ROCm cannot see it" in out
+
+
+def test_a_cpu_index_on_the_same_host_still_gets_it():
+    """The control: the arm the diagnosis used to live in must keep it, or the hoist has
+    moved the message rather than widened it."""
+    out = _installer_index_summary("https://download.pytorch.org/whl/cpu", "")
+    assert "ROCm cannot see it" in out
+
+
+def test_a_closed_kfd_node_still_suppresses_it_after_the_case():
+    """And the suppression the hoist must carry with it: /dev/kfd existing is the evidence
+    the kernel stack is already loaded, so on a gfx index too the group advice is the
+    repair and "install the ROCm kernel stack" is not."""
+    out = _installer_index_summary(
+        "https://repo.radeon.com/rocm/manylinux/gfx1151", "/dev/kfd",
+    )
+    assert "ROCm cannot see it" not in out
+    assert "cannot open its device nodes" in out
+
+
+def _reason_with_masks(monkeypatch, env: dict, backends: set) -> str:
+    """The empty-probe reason on a closed-node host carrying several visibility masks."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setenv("USER", "ada")
+    for var in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
+        monkeypatch.delenv(var, raising = False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset(backends)),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_is_vulkan_backend",
+        staticmethod(lambda _b: backends == {"vulkan"}),
+    )
+    return LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+
+
+def test_an_empty_ordinal_variable_is_not_a_filter(monkeypatch, linux):
+    """_gpu_device_ordinal_active reads a whitespace GPU_DEVICE_ORDINAL as no filter at
+    all, so an empty one hides nothing and clearing it changes nothing.
+
+    Fails before the fix, which applied the CUDA/HIP first-token rule to all four names
+    alike and told this user to clear a variable that was already inert."""
+    reason = _reason_with_masks(monkeypatch, {"GPU_DEVICE_ORDINAL": ""}, {"hip"})
+    assert "usermod -a -G render,video ada" in reason
+    assert "visibility mask" not in reason
+
+
+def test_an_ordinal_that_hides_everything_is_still_reported(monkeypatch, linux):
+    """Its control: a value that IS a filter and whose first entry names no device leaves
+    nothing enumerated, so that host really does need both fixes."""
+    reason = _reason_with_masks(monkeypatch, {"GPU_DEVICE_ORDINAL": "-1"}, {"hip"})
+    assert "visibility mask is also in force" in reason
+    assert "GPU_DEVICE_ORDINAL='-1'" in reason
+
+
+def test_an_empty_cuda_mask_behind_a_valid_hip_one_is_not_consulted(monkeypatch, linux):
+    """clr reads HIP_VISIBLE_DEVICES when it is set and CUDA_VISIBLE_DEVICES only
+    otherwise, so an empty CUDA mask underneath a valid HIP one is never looked at.
+    Naming it sends the user after a variable that hides nothing.
+
+    Fails before the fix, which judged each of the four on its own value."""
+    reason = _reason_with_masks(
+        monkeypatch,
+        {"HIP_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": ""},
+        {"hip"},
+    )
+    assert "usermod -a -G render,video ada" in reason
+    assert "visibility mask" not in reason
+
+
+def test_the_same_empty_cuda_mask_blocks_once_hip_is_unset(monkeypatch, linux):
+    """The control, one variable apart: with no HIP mask above it the same empty CUDA
+    value is the one clr reads, and it exposes nothing."""
+    reason = _reason_with_masks(monkeypatch, {"CUDA_VISIBLE_DEVICES": ""}, {"hip"})
+    assert "CUDA_VISIBLE_DEVICES is empty" in reason
+    assert "visibility mask is also in force" in reason
+
+
+def test_an_empty_rocr_mask_blinds_the_runtime_under_a_valid_hip_one(monkeypatch, linux):
+    """ROCr is a LOWER layer than clr and composes with it rather than deferring: it
+    filters the agent list hsa_iterate_agents returns, and the HIP ordinals then index
+    what it left. An empty ROCr mask leaves nothing to index, whatever HIP says.
+
+    This is what keeps the fix from being "only the winner of the precedence chain
+    counts", which passes the two tests above and is wrong here."""
+    reason = _reason_with_masks(
+        monkeypatch,
+        {"HIP_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": ""},
+        {"hip"},
+    )
+    assert "ROCR_VISIBLE_DEVICES is empty" in reason
+    assert "visibility mask is also in force" in reason
+
+
+def test_a_container_given_kfd_but_no_render_node_is_told_so(monkeypatch, linux):
+    """/dev/kfd mapped without /dev/dri passes every probe in this file and still cannot
+    initialise ROCm, because ROCr opens a render node to reach amdgpu -- docker/run.sh
+    passes both devices for that reason. No group creates the missing one, so it is an
+    independent blocker and has to be said alongside the permission repair.
+
+    Fails before the fix, which named only a missing /dev/kfd."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setenv("USER", "ada")
+    hint = amd.amd_node_permission_hint()
+    assert "No AMD render node" in hint
+    assert "--device /dev/kfd --device /dev/dri" in hint
+
+
+def test_a_host_that_has_a_render_node_is_not_told_to_map_one(monkeypatch, linux):
+    """Its control, and the one that matters: an ordinary AMD host has a render node and
+    only cannot open it, so claiming the device mapping is wrong would send the user
+    after a second repair that does not exist."""
+    _nodes(
+        monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set(),
+    )
+    monkeypatch.setenv("USER", "ada")
+    assert "No AMD render node" not in amd.amd_node_permission_hint()
+
+
+def test_the_installer_says_the_same_thing_about_a_missing_render_node(tmp_path):
+    """The shell half. Stubbed on both sides so the arms differ only in the answer, since
+    the real helper reads the runner's own /sys and /dev."""
+    node = tmp_path / "kfd"
+    node.write_bytes(b"")
+    node.chmod(0o660)
+    assert "No AMD render node" in _install_sh_hint(str(node), render_present = False)
+    assert "No AMD render node" not in _install_sh_hint(str(node), render_present = True)

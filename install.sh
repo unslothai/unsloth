@@ -3402,21 +3402,42 @@ _amd_nodes_closed_to_this_user() {
     done
 }
 
-# The groups the given nodes belong to, one per line, GID when stat cannot name the group.
-# "render,video" is not universally the right pair: a container is passed the host's numeric
-# gids by --group-add and has no matching group NAMES inside it (docker/run.sh passes numbers
-# for exactly this reason), a minimal distribution can ship no render group, and a node left
-# root:root by a udev rule is not fixed by joining anything. usermod -a -G takes a GID as
-# happily as a name, so reading the node answers all three.
-_amd_node_groups() {
-    for _ang_node in $1; do
-        _ang_g=$(stat -c '%G' "$_ang_node" 2>/dev/null) || continue
-        # stat prints UNKNOWN for a gid with no group entry, which is the container case.
-        case "$_ang_g" in
-            ""|UNKNOWN*) _ang_g=$(stat -c '%g' "$_ang_node" 2>/dev/null) || continue ;;
-        esac
-        [ -n "$_ang_g" ] && printf '%s\n' "$_ang_g"
-    done | awk 'NF && !seen[$0]++'
+# Whether any AMD render node is PRESENT, whatever this account can do with it. A
+# container given --device /dev/kfd and not --device /dev/dri passes the probe above
+# and still cannot initialise ROCm, since ROCr opens a render node to reach amdgpu;
+# docker/run.sh passes both devices for that reason, and no group creates one.
+_amd_render_node_present() {
+    for _arnp_node in /dev/dri/renderD*; do
+        [ -e "$_arnp_node" ] || continue
+        _arnp_vendor_file="/sys/class/drm/${_arnp_node##*/}/device/vendor"
+        [ -r "$_arnp_vendor_file" ] || continue
+        read -r _arnp_vendor < "$_arnp_vendor_file" 2>/dev/null || continue
+        [ "$_arnp_vendor" = "0x1002" ] && return 0
+    done
+    return 1
+}
+
+# How to open the given nodes, one classified line each, read from the nodes themselves:
+#   join:NAME   membership WOULD open it -- the group has read and write on the node
+#   gid:N       no group entry for that GID, the container case docker/run.sh documents,
+#               where --group-add passes the host's numeric gids and no name matches.
+#               usermod cannot take a bare GID (shadow 4.13: "group '993' does not exist",
+#               exit 6), so these are reported rather than prescribed.
+#   mode:PATH   the mode denies the group too (a udev rule leaving one root:render 0600),
+#               so no membership opens it.
+# "render,video" is not universally right and sometimes no group is the answer at all.
+_amd_node_repairs() {
+    for _anr_node in $1; do
+        stat -c '%a|%G|%g|%n' "$_anr_node" 2>/dev/null || true
+    done | awk -F'|' '
+        {
+            # Group digit of the octal mode; read AND write, since HIP and the Vulkan
+            # loader both open the node read-write.
+            g = substr($1, length($1) - 1, 1) + 0
+            if (g != 6 && g != 7) { print "mode:" $4; next }
+            if ($2 == "" || $2 ~ /^UNKNOWN/) { if (!gseen[$3]++) print "gid:" $3; next }
+            if (!nseen[$2]++) print "join:" $2
+        }'
 }
 
 # rocminfo names each agent twice, so "gfx1201\ngfx1201" is one device, not two.
@@ -5453,22 +5474,6 @@ case "$TORCH_INDEX_URL" in
                 substep "  driver is current; or run unsloth/scripts/install_rocm_wsl_strixhalo.sh yourself."
             else
                 substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
-                # Only when ROCm truly can't see the GPU: a detected-but-too-old
-                # ROCm (rocminfo works, wheels need 6.0+) has its own guidance. A
-                # closed node is answered after the whole case instead, because it
-                # reaches the gfx arm too.
-                #
-                # Suppressed by a closed /dev/kfd alone, not by any closed node: that
-                # node existing is the evidence the kernel stack is loaded, and it is
-                # what makes this hint the wrong repair. A host whose /dev/kfd is
-                # ABSENT while a render node is closed needs both -- no amount of group
-                # membership creates /dev/kfd -- so it gets both.
-                if ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
-                   ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
-                    substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
-                    substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
-                    substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
-                fi
             fi
             substep "Re-run with --no-torch for GGUF-only (faster, no PyTorch):"
             substep "  curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
@@ -5482,6 +5487,22 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
+# Both of the diagnoses below are answered after the whole case, for the same reason:
+# they are properties of the HOST, and the arm the index lands in is not. This one lived
+# in the */cpu arm, where a runtime-less host with an inferable arch never saw it -- the
+# per-arch reroute rewrites exactly that host's cpu index to a */gfx* one, so it took the
+# other arm and was told only to join a group, which cannot create a device node.
+#
+# Suppressed by a closed /dev/kfd, not by any closed node: that node existing is the
+# evidence the kernel stack IS loaded, and is what makes this the wrong repair. A host
+# whose /dev/kfd is ABSENT while a render node is closed needs both, and gets both.
+if [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ] && \
+   ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
+   ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
+    substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
+    substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
+    substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
+fi
 # The driver is loaded and the nodes exist, so neither a wheel nor a kernel stack
 # repairs this; only group membership does. Nothing else in this installer asks
 # whether the account can OPEN a node it just found (#10466). /dev/kfd alone stops
@@ -5496,15 +5517,44 @@ if [ -n "$_closed_amd_nodes" ]; then
     else
         substep "  ROCm needs it; Vulkan does not. Add yourself to the"
     fi
-    # Named from the nodes that were refused, so the command grants access to those files.
-    # The documented pair is the fallback for a host whose nodes could not be stat'd.
-    _closed_amd_groups=$(_amd_node_groups "$_closed_amd_nodes" | tr '\n' ',' | sed 's/,*$//')
-    [ -n "$_closed_amd_groups" ] || _closed_amd_groups="render,video"
-    case "$_closed_amd_groups" in
-        *,*) substep "  $_closed_amd_groups groups, then log out and back in:" ;;
-        *)   substep "  $_closed_amd_groups group, then log out and back in:" ;;
-    esac
-    substep "  sudo usermod -a -G $_closed_amd_groups ${USER:-\$USER}"
+    # Read from the nodes that were refused, so the advice matches those files.
+    _closed_amd_repairs=$(_amd_node_repairs "$_closed_amd_nodes")
+    _closed_amd_groups=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^join://p' \
+        | tr '\n' ',' | sed 's/,*$//')
+    _closed_amd_gids=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^gid://p' \
+        | tr '\n' ',' | sed 's/,*$//')
+    _closed_amd_modes=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^mode://p' \
+        | tr '\n' ',' | sed 's/,*$//')
+    # The documented pair is the fallback for nodes that could not be stat'd at all, where
+    # some advice beats none. A node that WAS read and offers no joinable group gets the
+    # sentences below instead of a command that would fail.
+    if [ -z "$_closed_amd_groups" ] && [ -z "$_closed_amd_gids" ] && [ -z "$_closed_amd_modes" ]; then
+        _closed_amd_groups="render,video"
+    fi
+    if [ -n "$_closed_amd_groups" ]; then
+        case "$_closed_amd_groups" in
+            *,*) substep "  $_closed_amd_groups groups, then log out and back in:" ;;
+            *)   substep "  $_closed_amd_groups group, then log out and back in:" ;;
+        esac
+        substep "  sudo usermod -a -G $_closed_amd_groups ${USER:-\$USER}"
+    fi
+    if [ -n "$_closed_amd_gids" ]; then
+        substep "  Some of those nodes belong to GID $_closed_amd_gids, which has no group" "$C_WARN"
+        substep "  entry here, so usermod cannot name it: create a group with that GID, or"
+        substep "  recreate the container passing --group-add with the numeric GID."
+    fi
+    if [ -n "$_closed_amd_modes" ]; then
+        substep "  $_closed_amd_modes does not grant its own group read and write, so no" "$C_WARN"
+        substep "  membership opens it: fix the udev rule or the node's permissions."
+    fi
+    # The container shape of the missing-node problem: /dev/kfd mapped without
+    # /dev/dri leaves the closed KFD node looking like the whole story while ROCr
+    # has no render node to open, and no group creates one.
+    if ! _amd_render_node_present; then
+        substep "  No AMD render node (/dev/dri/renderD*) is present either, and ROCm and" "$C_WARN"
+        substep "  Vulkan both open one, so the device mapping needs fixing too; under"
+        substep "  Docker that is --device /dev/kfd --device /dev/dri."
+    fi
 fi
 
 # ── Install unsloth directly into the venv (no activation needed) ──
