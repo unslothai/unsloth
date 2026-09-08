@@ -20,6 +20,7 @@ bearing rather than incidental, so it is asserted here too.
 
 from __future__ import annotations
 
+import importlib.util
 import itertools
 from pathlib import Path
 
@@ -296,17 +297,14 @@ def test_the_woa_pandas_split_covers_every_supported_python():
                 ), f"{label}: Python {py} must not be handed the pandas 3 row"
 
 
-def _skip_list_module():
-    """install_python_stack.py, loaded so the skip list is read rather than copied here."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "_ips_marker_skiplist",
-        REPO_ROOT / "studio" / "install_python_stack.py",
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+# install_python_stack.py, loaded so the skip list is read rather than copied here.
+_SPEC = importlib.util.spec_from_file_location(
+    "_ips_marker_skiplist", REPO_ROOT / "studio" / "install_python_stack.py"
+)
+IPS = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(IPS)
+# Every name install_python_stack.py filters out of the requirements files on win_arm64.
+WOA_SKIPPED = {IPS._canonical_dist_name(n) for n in IPS.WINDOWS_ARM64_SKIP_PACKAGES}
 
 
 # Scoped to `studio` deliberately: it is the extra a Windows-on-ARM user installs. The other
@@ -326,13 +324,11 @@ def test_a_skipped_package_is_not_left_live_in_an_extra(extra):
     sqlite-vec was exactly this: win_amd64 wheels only, and no sdist at all, so the studio
     extra could not resolve on a native ARM64 interpreter.
     """
-    module = _skip_list_module()
-    skipped = {module._canonical_dist_name(n) for n in module.WINDOWS_ARM64_SKIP_PACKAGES}
     woa = _env(("win32", "Windows", "ARM64", "nt"), "3.13")
     live = [
         str(req)
         for req in _pyproject_extras()[extra]
-        if module._canonical_dist_name(req.name) in skipped
+        if IPS._canonical_dist_name(req.name) in WOA_SKIPPED
         and (req.marker is None or req.marker.evaluate(woa))
     ]
     assert not live, (
@@ -342,11 +338,7 @@ def test_a_skipped_package_is_not_left_live_in_an_extra(extra):
     )
 
 
-@pytest.mark.parametrize(
-    "extra",
-    WOA_INSTALLABLE_EXTRAS,
-    ids = WOA_INSTALLABLE_EXTRAS,
-)
+@pytest.mark.parametrize("extra", WOA_INSTALLABLE_EXTRAS, ids = WOA_INSTALLABLE_EXTRAS)
 def test_dropping_a_package_on_woa_drops_it_nowhere_else(extra):
     """A negative ARM64 marker is a scalpel: every other platform keeps the row.
 
@@ -354,10 +346,8 @@ def test_dropping_a_package_on_woa_drops_it_nowhere_else(extra):
     this file uses, so a marker that reads correctly but excludes (say) Windows x86 as well
     is still caught.
     """
-    module = _skip_list_module()
-    skipped = {module._canonical_dist_name(n) for n in module.WINDOWS_ARM64_SKIP_PACKAGES}
     for req in _pyproject_extras()[extra]:
-        if module._canonical_dist_name(req.name) not in skipped or req.marker is None:
+        if IPS._canonical_dist_name(req.name) not in WOA_SKIPPED or req.marker is None:
             continue
         for plat in PLATFORMS:
             if (plat[0], plat[2]) == ("win32", "ARM64"):

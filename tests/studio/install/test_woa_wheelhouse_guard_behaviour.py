@@ -56,8 +56,7 @@ HELPERS = (
 )
 
 
-def _source() -> str:
-    return INSTALL_PS1.read_text(encoding = "utf-8-sig")
+INSTALL_SRC = INSTALL_PS1.read_text(encoding = "utf-8-sig")
 
 
 def _function(source: str, name: str) -> str:
@@ -75,11 +74,13 @@ def _drop_list_block(source: str) -> str:
     return textwrap.dedent(source[start.start() : end.start()].replace("\r\n", "\n"))
 
 
+# PowerShell does not hoist, so every snippet below carries all of HELPERS in front of it.
+PRELUDE = "\n".join(_function(INSTALL_SRC, name) for name in HELPERS)
+
+
 def _run(script: str) -> str:
-    source = _source()
-    prelude = "\n".join(_function(source, name) for name in HELPERS)
     proc = subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", prelude + "\n" + script],
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", PRELUDE + "\n" + script],
         capture_output = True,
         text = True,
         encoding = "utf-8",
@@ -96,7 +97,6 @@ def _dropped_names(provided: str) -> set[str]:
     The staging directory is empty on purpose: the only thing standing between a name and
     the AMD64 drop line is the $WoaPyPIProvided bookkeeping this exercises.
     """
-    source = _source()
     out = _run(f"""
 $dir = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $dir -Force | Out-Null
@@ -107,7 +107,7 @@ $script:WoaTorchAudio = $false
 $script:WoaPyarrowWheelName = $null
 $script:WoaPyPIProvided = {provided}
 function substep {{ param($a, $b) }}
-{_drop_list_block(source)}
+{_drop_list_block(INSTALL_SRC)}
 Remove-Item -LiteralPath $dir -Recurse -Force
 ($WoaOverrideLines | Where-Object {{ $_ -like "*platform_machine*" }} |
     ForEach-Object {{ ($_ -split ' ')[0] }} | Sort-Object -Unique) -join ","
