@@ -540,12 +540,17 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
 
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     source = TITLEBAR.read_text(encoding = "utf-8")
+    squished = re.sub(r"\s+", " ", source)
 
-    assert 'showSidebarSurface && !pinned ? "7rem" : sidebarWidth' in source
+    # Mobile keeps the fixed slot: the sidebar is a Sheet there, so it owns no
+    # column for the button to line up with (#8600).
+    assert 'showSidebarSurface && (isMobile || !pinned) ? "7rem" : sidebarWidth' in source
     assert "style={{ width: titlebarNavigationWidth }}" in source
     assert "left: titlebarNavigationWidth" in source
     assert "<DesktopTitlebarNavigation" in source
-    assert "const contentBorderLeft = pinned" in source
+    assert "const showDesktopSidebarSurface = showSidebarSurface && !isMobile;" in source
+    # Collapsed so a reformat of the ternary cannot fail this on indentation.
+    assert "const contentBorderLeft = showDesktopSidebarSurface && pinned" in squished
     assert ': "0px";' in source
 
     # Keep the decoration below z-50 modals and outside the z-[70] header.
@@ -555,10 +560,17 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
         'className="pointer-events-none absolute inset-x-0 '
         'top-[var(--studio-custom-titlebar-height)] z-[45] h-3"' in decoration
     )
-    # The border is always visible.
+    # The border is always visible, mobile widths included, so the wrapper's own
+    # gate stays on showSidebarSurface; the desktop-only flag would take the
+    # separator with it below 768px.
+    slot = source.index('data-slot="window-titlebar-decoration"')
+    wrapper_gate = source[source.rindex("{", 0, slot) : slot]
+    assert "showSidebarSurface && (" in wrapper_gate
+    assert "showDesktopSidebarSurface" not in wrapper_gate
     assert 'className="absolute top-0 h-px bg-sidebar-border"' in decoration
-    # The backing and corner only appear when pinned.
-    assert decoration.count("{pinned && (") == 2
+    # The backing and corner only appear when pinned, and only where the desktop
+    # sidebar actually holds a column to align them to.
+    assert decoration.count("{showDesktopSidebarSurface && pinned && (") == 2
     assert 'className="absolute top-0 size-3 -translate-x-px bg-sidebar"' in decoration
     assert (
         'className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
