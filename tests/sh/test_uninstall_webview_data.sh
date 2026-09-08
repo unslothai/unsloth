@@ -593,9 +593,17 @@ case "$_out" in
     *)  echo "  PASS: refused default root: no claim that none was found"; PASS=$((PASS+1)) ;;
 esac
 case "$_out" in
-    *"some paths could not be removed"*)
-        echo "  PASS: refused default root: reported as incomplete cleanup"; PASS=$((PASS+1)) ;;
-    *)  echo "  FAIL: refused default root: reported as a clean uninstall"; FAIL=$((FAIL+1)) ;;
+    *"carries no Unsloth install marker"*)
+        echo "  PASS: refused default root: names the kept directory"; PASS=$((PASS+1)) ;;
+    *)  echo "  FAIL: refused default root: never names the kept directory"; FAIL=$((FAIL+1)) ;;
+esac
+# It was refused BECAUSE it is not ours, so the generic "remove those paths by hand" advice
+# would undo the point of the gate.
+case "$_out" in
+    *"those paths by hand"*)
+        echo "  FAIL: refused default root: told the reader to delete a foreign directory"
+        FAIL=$((FAIL+1)) ;;
+    *)  echo "  PASS: refused default root: no advice to delete it"; PASS=$((PASS+1)) ;;
 esac
 
 # ── 3k. _set_marker must survive a write it cannot perform. 3i only proves the mktemp guard,

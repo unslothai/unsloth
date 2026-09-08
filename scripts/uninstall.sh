@@ -245,6 +245,10 @@ $_roots_from_conf"
 # subshell, where an assignment would never reach the summary.
 #   remove-failed  an rm failed, or a root was skipped while still holding data
 #   db-removed     a removed install root actually held studio.db
+#   db-kept        the default root was REFUSED and still holds studio.db. Its own flag, not
+#                  remove-failed: nothing failed, the gate declined a directory that does not
+#                  look like ours, and telling the reader to delete it by hand is the opposite
+#                  of what this gate is for.
 # studio.db holds chat_threads/chat_messages (backend/storage/studio_db.py via studio_root()),
 # not the provider API keys: providers_db.py keeps those in the browser's localStorage only.
 # It sits under the install root, so an env-mode install keeps it in a custom root a bare run
@@ -254,9 +258,11 @@ $_roots_from_conf"
 _MARKER_DIR=$(mktemp -d 2>/dev/null || true)
 _REMOVE_FAILED_FLAG=""
 _DB_REMOVED_FLAG=""
+_DB_KEPT_FLAG=""
 if [ -n "$_MARKER_DIR" ] && [ -d "$_MARKER_DIR" ]; then
     _REMOVE_FAILED_FLAG="$_MARKER_DIR/remove-failed"
     _DB_REMOVED_FLAG="$_MARKER_DIR/db-removed"
+    _DB_KEPT_FLAG="$_MARKER_DIR/db-kept"
 fi
 
 # `printf`, never `: > "$f"`: `:` is a POSIX special builtin, so a redirection error on it
@@ -421,6 +427,10 @@ _is_studio_root() {
         _is_installer_leftover_name "$_p" || continue
         _is_venv_dir "$_p" && return 0
     done
+    # Earlier still: install.sh:791 points UV_CACHE_DIR at $STUDIO_HOME/cache/uv and creates it
+    # long before the venv exists, so an install that dies in between leaves only this, and it
+    # can be gigabytes. The "uv" leaf is required; a bare "cache" is too ordinary a name.
+    [ -d "$_r/cache/uv" ] && return 0
     return 1
 }
 
@@ -652,7 +662,7 @@ _unsloth_uninstall_main() {
         # our data behind. This is our own default path, where a damaged install can sit, so a
         # studio.db here is chat history the summary must not report as never found.
         if [ -f "$HOME/.unsloth/studio/studio.db" ]; then
-            _set_marker "$_REMOVE_FAILED_FLAG"
+            _set_marker "$_DB_KEPT_FLAG"
         fi
     else
         _remove_root_recording_db "$HOME/.unsloth/studio"
@@ -950,8 +960,16 @@ _unsloth_uninstall_main() {
         echo "Note: this also removed the app's WebView data, so the desktop app's session is"
         echo "      gone. A browser session is not affected: its tokens live in the same"
         echo "      localStorage as the API keys below."
-        echo "      No studio.db was found, so any chat history in an install root this run"
-        echo "      did not see is still on disk."
+        if _marker_set "$_DB_KEPT_FLAG"; then
+            # Named, and with no advice to delete it: the gate kept this directory precisely
+            # because it does not look like ours, so "remove it by hand" would undo the point.
+            echo "      $HOME/.unsloth/studio carries no Unsloth install marker, so it was left"
+            echo "      alone. The studio.db inside it is still there; look at that directory"
+            echo "      yourself before deciding what to do with it."
+        else
+            echo "      No studio.db was found, so any chat history in an install root this run"
+            echo "      did not see is still on disk."
+        fi
     fi
     echo "Note: provider API keys are kept in the browser's localStorage, not in studio.db."
     echo "      Unless you ran Unsloth as the desktop app, clear site data for the"

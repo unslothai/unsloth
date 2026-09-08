@@ -85,6 +85,13 @@ try {
         (_IsStudioRoot (Make "partial-invalid" @(".venv.invalid.20260908120000.4242\pyvenv.cfg")) -ManagedDefaultRoot)
     Check "partial install: rollback with a numeric suffix" `
         (_IsStudioRoot (Make "partial-suffix" @("unsloth_studio.rollback.20260908120000.4242.2\pyvenv.cfg")) -ManagedDefaultRoot)
+    # install.ps1:1427 creates the uv cache before anything else in the root exists.
+    $uvOnly = Make "partial-uvcache" @()
+    New-Item -ItemType Directory -Path (Join-Path $uvOnly "cache\uv") -Force | Out-Null
+    Check "partial install: the uv cache alone" (_IsStudioRoot $uvOnly -ManagedDefaultRoot)
+    Check "the same uv cache at a custom root is refused" (-not (_IsStudioRoot $uvOnly))
+    Check "a cache directory without the uv leaf is refused" `
+        (-not (_IsStudioRoot (Make "cache-only" @("cache\notes.md")) -ManagedDefaultRoot))
 
     # A marker is proof wherever the root sits; it is the only thing a custom root can offer.
     Check "a custom root with the venv owner marker" `

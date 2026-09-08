@@ -107,6 +107,10 @@ check "partial install: rollback with a numeric suffix" own managed \
     "unsloth_studio.rollback.20260908120000.4242.2/pyvenv.cfg"
 check "partial install: install.sh's 'time' date fallback" own managed \
     ".venv.invalid.time.4242/pyvenv.cfg"
+# install.sh:791 creates the uv cache before anything else in the root exists.
+check "partial install: the uv cache alone" own managed "cache/uv/"
+check "a cache directory without the uv leaf" foreign managed "cache/notes.txt"
+check "the uv cache at a custom root" foreign custom "cache/uv/"
 
 echo
 echo "Edge cases:"

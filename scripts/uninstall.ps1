@@ -14,6 +14,10 @@ function Uninstall-UnslothStudio {
     # second run in the same window would otherwise inherit the first run's flags.
     $script:RemoveFailed = $false
     $script:StudioDbRemoved = $false
+    # The default root was REFUSED and still holds studio.db. Its own flag, not RemoveFailed:
+    # nothing failed, the gate declined a directory that does not look like ours, and telling
+    # the reader to delete it by hand is the opposite of what this gate is for.
+    $script:StudioDbKept = $false
     # ONE waiting budget for the run, not per path. What _RemovePath waits out is wall clock and
     # shared -- the seconds torch inductor holds handles after the server stops -- so whatever the
     # first blocked path waits, the next no longer has to. Without this, a root that can NEVER be
@@ -469,6 +473,10 @@ Environment:
                 if (_IsVenvDir $dir.FullName) { return $true }
             }
         }
+        # Earlier still: install.ps1:1427 points UV_CACHE_DIR at <root>\cache\uv, which exists
+        # long before the venv does, so an install that dies in between leaves only this, and it
+        # can be gigabytes. The "uv" leaf is required; a bare "cache" is too ordinary a name.
+        if (Test-Path -LiteralPath (Join-Path $Path "cache\uv") -PathType Container) { return $true }
         return $false
     }
 
@@ -898,7 +906,17 @@ Environment:
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
     $stopRoots = @($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
-    _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $knownRoots))
+    # Reparse expansion is gated on ownership, and the plain roots are not. Following a link
+    # turns one path into generic subdirectories of wherever it points -- node, bin,
+    # unsloth_studio -- and _StopProcessesLockingRoots force-stops every process running from
+    # under them, before the gates below have refused anything. On a stale UNSLOTH_STUDIO_HOME
+    # that is a relative symlink, that is somebody's training run.
+    $ownedRoots = @()
+    if ($defaultStudioHome -and (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot)) {
+        $ownedRoots += $defaultStudioHome
+    }
+    foreach ($r in $customRoots) { if (_IsStudioRoot $r) { $ownedRoots += $r } }
+    _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $ownedRoots))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
@@ -941,7 +959,7 @@ Environment:
         # our data behind. This is our own default path, where a damaged install can sit, so a
         # studio.db here is chat history the summary must not report as never found.
         if (Test-Path -LiteralPath (Join-Path $defaultStudioHome "studio.db") -PathType Leaf) {
-            $script:RemoveFailed = $true
+            $script:StudioDbKept = $true
         }
     } elseif ($defaultStudioHome) {
         _RemoveRootRecordingDb $defaultStudioHome
@@ -1119,8 +1137,16 @@ Environment:
         Write-Host "Note: this also removed the app's WebView data, so the desktop app's session"
         Write-Host "      is gone. A browser session is not affected: its tokens live in the same"
         Write-Host "      localStorage as the API keys below."
-        Write-Host "      No studio.db was found, so any chat history in an install root this run"
-        Write-Host "      did not see is still on disk."
+        if ($script:StudioDbKept) {
+            # Named, and with no advice to delete it: the gate kept this directory precisely
+            # because it does not look like ours, so "remove it by hand" would undo the point.
+            Write-Host "      $defaultStudioHome carries no Unsloth install marker, so it was"
+            Write-Host "      left alone. The studio.db inside it is still there; look at that"
+            Write-Host "      directory yourself before deciding what to do with it."
+        } else {
+            Write-Host "      No studio.db was found, so any chat history in an install root this run"
+            Write-Host "      did not see is still on disk."
+        }
     }
     Write-Host "Note: provider API keys are kept in the browser's localStorage, not in studio.db."
     Write-Host "      Unless you ran Unsloth as the desktop app, clear site data for the"

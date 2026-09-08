@@ -42,8 +42,13 @@ if (-not $fn) {
 
 # The stop-scan call site has to actually pass the targets, or the helper is dead code.
 $ps1Text = Get-Content -LiteralPath $ps1Path -Raw
+# $ownedRoots, not $knownRoots: following a link turns one path into generic subdirectories of
+# wherever it points, and the stop scan runs before the ownership gates, so an unowned root would
+# have processes killed under its target and only then be refused.
 Check "the stop scan is given the managed paths under the target" `
-    ($ps1Text -match '_StopProcessesLockingRoots -Roots \(\$stopRoots \+ @\(_ManagedPathsUnderReparseTargets \$knownRoots\)\)')
+    ($ps1Text -match '_StopProcessesLockingRoots -Roots \(\$stopRoots \+ @\(_ManagedPathsUnderReparseTargets \$ownedRoots\)\)')
+Check "and that list is filtered by the ownership gate" `
+    ($ps1Text -match '(?s)\$ownedRoots = @\(\).*?_IsStudioRoot \$defaultStudioHome -ManagedDefaultRoot.*?foreach \(\$r in \$customRoots\) \{ if \(_IsStudioRoot \$r\)')
 
 # Both kinds: the helper reads only .Target; a symlink needs elevation, a junction never does.
 # $IsWindows exists only on PowerShell 6+.
