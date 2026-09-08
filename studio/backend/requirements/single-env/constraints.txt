@@ -39,8 +39,9 @@ pandas>=3.0,<4; sys_platform == "win32" and platform_machine == "ARM64" and pyth
 # .github/scripts/clean-machine-assert.sh instead; cryptography below is the one
 # other package that would compile.
 av<16; sys_platform != "win32" or platform_machine != "ARM64"
-# The opposite case: av publishes win_arm64 wheels from 17.1 only (cp311-abi3).
-av>=17.1.0; sys_platform == "win32" and platform_machine == "ARM64"
+# The opposite case: av publishes win_arm64 wheels from 17.0.0 only (cp311-abi3,
+# plus a cp314t; there is no 3.13t wheel on any release).
+av>=17.0.0; sys_platform == "win32" and platform_machine == "ARM64"
 
 # cryptography 49.0.0 dropped the macosx_10_9_universal2 wheel for arm64-only, so
 # x86_64 macOS has no wheel and builds the sdist, needing Rust plus a working

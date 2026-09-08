@@ -1767,7 +1767,7 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
         constraints = (
             PACKAGE_ROOT / "studio" / "backend" / "requirements" / "single-env" / "constraints.txt"
         ).read_text(encoding = "utf-8")
-        assert 'av>=17.1.0; sys_platform == "win32" and platform_machine == "ARM64"' in constraints
+        assert 'av>=17.0.0; sys_platform == "win32" and platform_machine == "ARM64"' in constraints
 
     @requires_pwsh
     @pytest.mark.parametrize(

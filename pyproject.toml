@@ -279,7 +279,7 @@ huggingface = [
 # handles instead.
 windows = [
     "unsloth[huggingface]",
-    # bitsandbytes ships a win_arm64 wheel from 0.50.1, so this row covers it.
+    # bitsandbytes ships a win_arm64 wheel from 0.50.0, so this row covers it.
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 ; (sys_platform == 'win32')",
     # No win_arm64 wheel and no sdist that builds without CUDA's Windows-ARM toolchain, so this
     # row would fail the whole extra. Torch's SDPA is the fallback.
