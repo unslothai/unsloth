@@ -101,9 +101,9 @@ class TestAPartialReclaimDoesNotFreeEverybody:
 
         source = Path(inference.__file__).read_text(encoding = "utf-8")
         assert (
-            "if freed >= _idle_tokens:\n                            controller.note_cells_reclaimed()"
-            in source
+            "if freed >= _idle_tokens:\n                            "
+            "controller.note_cells_reclaimed(" in source
         ), (
-            "note_cells_reclaimed is global, so it may only follow a reclaim that erased "
-            "the whole idle residue"
+            "the release covers every parked holder of the reading it is given, so it may "
+            "only follow a reclaim that erased the whole idle residue"
         )

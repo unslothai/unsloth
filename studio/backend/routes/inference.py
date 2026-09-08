@@ -2350,6 +2350,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         base = str(getattr(llama_backend, "base_url", "") or "")
         if not base:
             return
+        # Read BEFORE the scrape, so a chat that parks between the two is left out rather
+        # than released against cells this reading never saw and no erase will take.
+        parked_before = controller.parked_holders()
         occupancy = read_slot_occupancy(
             lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
         )
@@ -2358,6 +2361,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
             0 if occupancy is None else int(occupancy.get("idle_tokens") or 0),
         )
         _gguf_slots_seen["occupancy"] = occupancy
+        # Carried with the reading it belongs to: the token path reclaims from a snapshot
+        # up to a second old, and the holders parked since are not this snapshot's to give.
+        _gguf_slots_seen["parked"] = parked_before
         if occupancy is None:
             return
         # Reclaim dead residue the moment it is SEEN, not once a victim has been chosen:
@@ -2393,11 +2399,12 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                     max(0, int(occupancy.get("resident") or 0) - freed),
                     max(0, int(occupancy.get("idle_tokens") or 0) - freed),
                 )
-                # ONLY when every idle slot went: the erase can stop after one, and
-                # `note_cells_reclaimed` is global, so after a partial erase it hands back
-                # commitments whose cells are still resident.
+                # ONLY when every idle slot went: the erase can stop after one, and after a
+                # partial erase the release would hand back commitments whose cells are
+                # still resident. `parked_before` bounds it to the holders THIS reading saw
+                # parked, so one that parked during the erases keeps its charge.
                 if freed >= int(occupancy.get("idle_tokens") or 0):
-                    controller.note_cells_reclaimed()
+                    controller.note_cells_reclaimed(parked_before)
                 _gguf_slots_seen["occupancy"] = None
 
     _gguf_live_state = {"state": ParticipantState.DECODING}
@@ -2455,10 +2462,12 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                     if freed:
                         _llama_preemption_log("reclaimed-idle", freed = freed, gen_id = completion_id)
                         # ONLY when every idle slot went: `reclaim_idle_slots` stops at
-                        # `freed >= needed`, while `note_cells_reclaimed` is global, so after
-                        # a partial erase it gives away room that is still occupied.
+                        # `freed >= needed`, so after a partial erase the release would give
+                        # away room that is still occupied. Bounded to the holders the
+                        # snapshot this erase was planned from saw parked, since it can be
+                        # a second old and a chat parks on a tool in far less.
                         if freed >= _idle_tokens:
-                            controller.note_cells_reclaimed()
+                            controller.note_cells_reclaimed(_gguf_slots_seen.get("parked"))
                         # Re-read rather than assume the erase was enough.
                         _gguf_slots_seen["at"] = 0.0
         except Exception:
@@ -2629,6 +2638,10 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
 
         def _reclaim() -> None:
             try:
+                # Before the scrape, for the reason the sweep reads it there: each erase
+                # below can take seconds, and a chat that parks inside that window keeps
+                # cells no erase took.
+                parked_before = get_preemption_controller(key).parked_holders()
                 occupancy = read_slot_occupancy(
                     lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
                 )
@@ -2655,10 +2668,11 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
                             int(after.get("resident") or 0),
                             int(after.get("idle_tokens") or 0),
                         )
-                    # And only when every idle slot went, or a global reclaim hands out
-                    # cells that are still resident.
+                    # And only when every idle slot went, or the release hands out cells
+                    # that are still resident -- and only to the holders that were parked
+                    # before the scrape, since each erase above can take seconds.
                     if freed >= int(occupancy.get("idle_tokens") or 0):
-                        _controller.note_cells_reclaimed()
+                        _controller.note_cells_reclaimed(parked_before)
             except Exception:
                 pass
 

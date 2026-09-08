@@ -432,6 +432,11 @@ class Participant:
     # True once an idle-slot reclaim erased this holder's cells: its charge then describes
     # cells that are gone. Cleared when it decodes again, which prefills the prompt back.
     cells_reclaimed: bool = False
+    # Bumped every time this holder stops on a tool. A reclaim is planned from a `/slots`
+    # reading and released after the erases, so the release has to tell the holder that
+    # reading saw parked from one that parked (or parked again) while the erases were in
+    # flight, whose cells no erase touched.
+    park_seq: int = 0
     # The ONLY thing that puts the batch term in the buffer, so it must be set before the
     # request carrying the prompt is sent. `measured` asks whether the charge is resident.
     pending_prefill: int = 0
@@ -864,6 +869,8 @@ class PreemptionController:
             if participant.state == state:
                 return False
             participant.state = state
+            if state in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING):
+                participant.park_seq += 1
             if state == ParticipantState.DECODING:
                 # Back at the model: llama-server prefills the prompt in again, so the
                 # cells are real once more.
@@ -876,13 +883,34 @@ class PreemptionController:
                 self._epoch_winner = None
             return True
 
-    def note_cells_reclaimed(self) -> int:
+    def parked_holders(self) -> Dict[str, int]:
+        """Who is parked on a tool right now, with each one's park count.
+
+        Read BEFORE the `/slots` scrape a reclaim is planned from and handed back to
+        `note_cells_reclaimed`, so the release covers the holders whose idle cells that
+        reading counted and not one that parked while the erases were in flight.
+        """
+        with self._lock:
+            return {
+                gen_id: participant.park_seq
+                for gen_id, participant in self._participants.items()
+                if participant.state
+                in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING)
+            }
+
+    def note_cells_reclaimed(self, only: Optional[Dict[str, int]] = None) -> int:
         """An idle-slot reclaim just erased every idle slot. Tell the ledger.
 
         A holder parked on an approval or running its tools has an idle slot by definition,
         so the erase took its cells: its charge stops counting, and its lease hands the
         commitment back the way `recost_waiting` does. Returns how many holders it applied
         to.
+
+        `only` is a `parked_holders()` reading taken before the scrape the erases were
+        planned from. The erases are blocking HTTP calls that can take seconds, and a chat
+        that parks inside that window has idle cells no erase touched and was never in the
+        scrape's `idle_tokens`; releasing its commitment would let a waiter into KV that is
+        still resident. Omitted, every parked holder is released, as before.
         """
         released = []
         with self._lock:
@@ -891,6 +919,10 @@ class PreemptionController:
                     ParticipantState.PARKED_ON_TOOL,
                     ParticipantState.TOOLS_RUNNING,
                 ):
+                    continue
+                if only is not None and only.get(participant.gen_id) != participant.park_seq:
+                    # Parked after the reading, or parked again since: its cells are the
+                    # ones the erases did not take.
                     continue
                 if participant.cells_reclaimed:
                     continue
@@ -933,6 +965,13 @@ class PreemptionController:
             participant = self._participants.get(gen_id)
             if participant is None:
                 return
+            # A park is counted once, however many times it is reported: a repeat would
+            # make a holder that really was in the reading look like a newcomer to it.
+            if state != participant.state and state in (
+                ParticipantState.PARKED_ON_TOOL,
+                ParticipantState.TOOLS_RUNNING,
+            ):
+                participant.park_seq += 1
             participant.state = state
             if state not in _HOLDS_KV:
                 participant.prefill_done()
