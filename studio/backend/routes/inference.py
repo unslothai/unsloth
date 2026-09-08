@@ -14114,6 +14114,12 @@ async def _load_model_impl(
             # falls back to layer split so the checkbox never blocks a model from
             # loading; the response reports the backend's actual tensor_parallel
             # state so the UI toggle reflects the fallback.
+            # Immediately before the backend, not only at the point of no return above:
+            # the drain and _unload_llama_before_standard_load between them can run for
+            # minutes, and a restart in that gap bumps the generation the backend is
+            # about to capture. Only the admission stamp still remembers which session
+            # asked for this.
+            _raise_if_admitted_by_a_previous_session()
             try:
                 success = await load_with_tensor_fallback(
                     _attempt_gguf_load,
@@ -14264,6 +14270,9 @@ async def _load_model_impl(
         # claim is all that stops a second pipeline allocating over a resident model).
         # load_model fires it in between; the post-load release covers a re-taken claim.
         _release_chat_after_teardown = (lambda: release(CHAT)) if not chat_load_needs_gpu else None
+        # Same recheck as the GGUF path: _unload_llama_before_standard_load above is
+        # measured in minutes on a large model.
+        _raise_if_admitted_by_a_previous_session()
         try:
             success = await asyncio.to_thread(
                 backend.load_model,

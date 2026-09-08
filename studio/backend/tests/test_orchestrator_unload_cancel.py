@@ -3459,3 +3459,58 @@ def test_an_old_sweep_does_not_terminate_the_new_lifecycles_children():
         pl.begin_process_lifecycle()
         child.kill()
         child.wait()
+
+
+def test_the_admission_stamp_is_rechecked_immediately_before_each_backend():
+    """A preview load carries no cancel event, so between the point of no return and the
+    backend call it has only the stamp. That span includes the drain and
+    _unload_llama_before_standard_load, which this file notes can run for minutes on a
+    large model; a restart inside it bumps the generation the backend then captures, so
+    every earlier check has gone stale by the time it matters.
+    """
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    impl = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "_load_model_impl"
+    )
+
+    checks = sorted(
+        n.lineno
+        for n in ast.walk(impl)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_raise_if_admitted_by_a_previous_session"
+    )
+
+    # Both backends, located as AST nodes: the non-GGUF one is dispatched through
+    # asyncio.to_thread, so load_model is an argument rather than the callee.
+    def _line_of(pred):
+        return min((n.lineno for n in ast.walk(impl) if pred(n)), default = None)
+
+    gguf = _line_of(
+        lambda n: isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "load_with_tensor_fallback"
+    )
+    standard = _line_of(
+        lambda n: isinstance(n, ast.Call)
+        and any(
+            isinstance(a, ast.Attribute) and a.attr == "load_model" for a in getattr(n, "args", [])
+        )
+    )
+    assert gguf is not None and standard is not None, "backend call sites moved; retarget"
+
+    for name, call in (("gguf", gguf), ("standard", standard)):
+        preceding = [c for c in checks if c < call]
+        assert preceding, f"no admission check before the {name} backend call"
+        # Not merely "somewhere earlier": nothing that can block may sit in between.
+        assert call - preceding[-1] < 12, (
+            f"the {name} backend is invoked {call - preceding[-1]} lines after the last "
+            "admission check, so a restart during the teardown in between goes unnoticed"
+        )
