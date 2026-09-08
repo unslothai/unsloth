@@ -85,6 +85,26 @@ def test_an_administrator_policy_block_is_not_sent_to_smart_app_control():
     assert "managed by an administrator" in ambiguous
 
 
+def test_an_invalid_image_hash_does_not_deny_corruption():
+    """0xC0000428 / winerror 577 are a hash mismatch, which Windows reports for a
+    damaged file as readily as for one a policy refuses, so the message must not
+    tell the user the download is intact and reinstalling cannot help."""
+    for error in (0xC0000428, 0xC0000428 - (1 << 32), _WinError(577)):
+        reason = code_integrity_block_reason(error)
+        assert reason is not None
+        message = code_integrity_user_message(r"C:\Users\x\.unsloth\llama.cpp", reason)
+        assert r"C:\Users\x\.unsloth\llama.cpp" in message
+        assert "not a corrupt download" not in message
+        assert "Reinstalling" in message
+        # Still names the policy remedies, since the cause is not certain.
+        assert "Smart App Control" in message
+        assert "managed by an administrator" in message
+
+    # The unambiguous policy statuses keep asserting that a reinstall is futile.
+    policy = code_integrity_user_message(r"C:\x", code_integrity_block_reason(0xC0E90002))
+    assert "not a corrupt download" in policy
+
+
 def test_bad_image_without_a_status_is_not_called_a_policy_block():
     """Windows prints the same sentence for a corrupt or wrong-architecture DLL,
     which do need the reinstall this module rules out."""

@@ -14,17 +14,21 @@ import re
 _REASON_SAC_OR_POLICY = "Smart App Control or an Application Control policy blocked the image"
 _REASON_ADMIN_POLICY = "an Application Control policy blocked this program"
 _REASON_SMART_APP_CONTROL = "Smart App Control blocked this program"
+_REASON_INVALID_HASH_STATUS = (
+    "the image failed code integrity validation (invalid or missing signature)"
+)
+_REASON_INVALID_HASH_WINERROR = "Windows could not verify the digital signature of the image"
 
 # NTSTATUS refusals: SAC facility, INVALID_IMAGE_HASH, FAIL_FAST_EXCEPTION.
 _BLOCK_STATUS_CODES = {
     0xC0E90002: _REASON_SAC_OR_POLICY,
-    0xC0000428: "the image failed code integrity validation (invalid or missing signature)",
+    0xC0000428: _REASON_INVALID_HASH_STATUS,
     0xC0000602: "the image was refused by a code integrity fail-fast",
 }
 
 # winerror equivalents; CI_BLOCKED is from unslothai/unsloth#6648.
 _BLOCK_WINERRORS = {
-    577: "Windows could not verify the digital signature of the image",
+    577: _REASON_INVALID_HASH_WINERROR,
     1260: _REASON_ADMIN_POLICY,
     4551: "code integrity blocked the image",
 }
@@ -35,6 +39,15 @@ _BLOCK_WINERRORS = {
 # admin-owned policy, where turning off SAC fixes nothing and downgrades security.
 _ADMIN_POLICY_REASONS = frozenset({_REASON_ADMIN_POLICY})
 _SMART_APP_CONTROL_REASONS = frozenset({_REASON_SMART_APP_CONTROL})
+
+# 0xC0000428 and winerror 577 report a HASH MISMATCH, not a policy verdict.
+# Microsoft's own text for both is "signed incorrectly or damaged", and event
+# 5038 names disk error and unauthorized modification beside it, so a truncated
+# or damaged copy of an otherwise acceptable file lands here too -- and there
+# replacing the file IS the remedy. These two must not deny corruption.
+_INVALID_HASH_REASONS = frozenset(
+    {_REASON_INVALID_HASH_STATUS, _REASON_INVALID_HASH_WINERROR}
+)
 
 _STATUS_TEXT_RE = re.compile(r"0x(c0e90002|c0000428|c0000602)\b", re.IGNORECASE)
 _BAD_IMAGE_RE = re.compile(
@@ -90,6 +103,19 @@ def code_integrity_block_reason(error: object) -> str | None:
 
 
 def code_integrity_user_message(binary: str, reason: str) -> str:
+    if reason in _INVALID_HASH_REASONS:
+        return (
+            f"Windows refused to load part of the local model runtime: {reason}. "
+            f"The refused file is under {binary}. "
+            "Windows reports this both for a file a code integrity policy will not "
+            "accept and for one that is damaged or was downloaded incompletely, so "
+            "the error alone does not say which. Reinstalling the local runtime "
+            "replaces the files and clears the damaged case. If it fails again after "
+            "that, it is a policy: Smart App Control has no per-application exception "
+            "and turning it off in Windows Security under App & browser control is "
+            "the only local workaround, while on a device managed by an administrator "
+            "the policy is theirs to change."
+        )
     opening = (
         f"Windows blocked part of the local model runtime: {reason}. "
         f"The blocked file is under {binary}. "
