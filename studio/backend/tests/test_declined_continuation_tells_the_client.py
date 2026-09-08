@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A continuation the backend declines must not be retried by the client.
-
-Observed in the browser on 2026-09-05, Qwen3.6-35B-A3B at a 8192-token window: one chat
-filled the window on its own, the loop declined its own continuation ("the retry prompt
-would not be served"), and the turn ended at `finish_reason` "length" holding the partial.
-That is exactly the shape the client resumes automatically, so it sent the retry the
-backend had just refused to send, the count preflight rejected it, and the user got
-"Response interrupted" plus a red error box next to a Continue button that could never
-work.
-
-The client already refuses on `contextTruncation.fits === false`. The decline knows that
-answer -- it priced the retry and tried evicting for it -- so it says so on that channel,
-once, and the "raise Context Length" bar is shown instead of a doomed round.
-"""
+"""A continuation the backend declines must not be retried by the client."""
 
 from __future__ import annotations
 
@@ -47,12 +34,7 @@ def _refusals(events) -> list[dict]:
 
 
 def _declining_backend(monkeypatch, payloads):
-    """A server whose continuation preflight cannot admit the retry.
-
-    The window is 4096 and every count comes back 4096, which is the real case in
-    miniature: the answer consumed the physical context, so replaying it leaves no room
-    to answer in and a single user turn has nothing older to evict.
-    """
+    """A server whose continuation preflight cannot admit the retry."""
     backend = _make_backend(
         monkeypatch,
         _cut_off_then([_sse({"content": " never sent"}), _done()]),
@@ -83,8 +65,7 @@ def test_the_in_loop_decline_tells_the_client_the_retry_would_not_fit(monkeypatc
 
 
 def test_the_declined_turn_still_ends_with_length_and_the_whole_partial(monkeypatch):
-    """The signal is added to the existing outcome, not in place of it. The partial is
-    still the answer and Continue is still offered; only the AUTOMATIC round stops."""
+    """The signal is added to the existing outcome, not in place of it."""
 
     payloads: list[dict] = []
     events = _run(_declining_backend(monkeypatch, payloads))
@@ -110,12 +91,7 @@ def test_the_final_pass_decline_says_the_same_thing(monkeypatch):
 
 
 def test_a_spent_output_cap_is_not_reported_as_a_context_refusal(monkeypatch):
-    """The other reason a continuation is declined, and it is not the window.
-
-    `max_tokens` belongs to THIS request; the client's next one carries its own, so that
-    continuation is servable. Saying the prompt does not fit would hide a Continue that
-    works, and send the user to the one setting that was never the constraint.
-    """
+    """The other reason a continuation is declined, and it is not the window."""
 
     payloads: list[dict] = []
     backend = _make_backend(
@@ -133,8 +109,7 @@ def test_a_spent_output_cap_is_not_reported_as_a_context_refusal(monkeypatch):
 
 
 def test_a_continuation_that_is_sent_announces_no_refusal(monkeypatch):
-    """The ordinary case still has to be silent, or every long answer would stop
-    resuming itself."""
+    """The ordinary case still has to be silent, or every long answer would stop resuming itself."""
 
     payloads: list[dict] = []
     backend = _make_backend(

@@ -7032,13 +7032,7 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
 
 
 def test_a_parallel_round_keeps_each_calls_compaction_promise(monkeypatch):
-    """The gate's promise to compact an oversized call travels with that call.
-
-    In an overlapped round every call is prepared before any is settled, and the flag the
-    gate set for the first call was a loop-scoped name that the second call's preparation
-    reset. The first tool then ran, with its side effect, and its arguments were replayed
-    in full on the next request: the exact overrun the gate had let it run to avoid.
-    """
+    """The gate's promise to compact an oversized call travels with that call."""
     # Two files, so the round's keys differ and the calls overlap: edits to one file are
     # kept in order on purpose.
     first_turn = _two_edits_in_one_turn()

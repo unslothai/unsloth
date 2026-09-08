@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A chat that stops waiting for KV room says so. It used to end in silence.
-
-Measured 2026-09-05, four chats on the 35B at -c 8192 with the GPU shared
-(logs/studio_gpu0_swap_20260905_154407.log): one chat was evicted while still
-prefilling, waited, and its resume was refused. The route then finished the turn with an
-empty body and no error at all. The client recorded
-
-    error: None, tokens: 0, chars: 0, wall_s: 163.8
-
-and the GUI rendered a blank assistant turn with no notice and no Continue. A caller
-cannot tell that from a model that chose to answer with nothing, which is the one outcome
-a scheduler that pauses rather than fails must never produce: the whole reason for pausing
-is that the user gets told what happened to their answer.
-
-The notice rides on `context_truncated`, carrying `reason: "preempt_gave_up"`, `fits`
-true and `dropped_messages` zero -- see `_preempt_gave_up_event` for why that event and
-why those values. This file pins it on the three surfaces it has to reach: the plain chat
-stream, the tool loop, and the durable `chat-runs` worker that relays `data:` lines to a
-follower.
-"""
+"""A chat that stops waiting for KV room says so."""
 
 from __future__ import annotations
 
@@ -65,12 +46,7 @@ from test_llama_tool_loop_preempt_resume import _run as _run_tools  # noqa: E402
 
 
 def _nothing_yet() -> str:
-    """A chunk that opens the stream and carries no text.
-
-    The live shape: the chat was still prefilling when it was chosen, so it had produced
-    nothing at all when the pause landed. `_Recorder` pauses on the first `data: {` line,
-    and this is one that leaves `content_text` empty.
-    """
+    """A chunk that opens the stream and carries no text."""
     return "data: " + json.dumps({"choices": [{"index": 0, "delta": {}}]}) + "\n"
 
 
@@ -90,13 +66,7 @@ def _metadata(chunks) -> list[dict]:
 
 class TestTheEventItself:
     def test_it_says_nothing_was_evicted_and_everything_fitted(self):
-        """Both fields are load-bearing on the client and both are true here.
-
-        A non-zero `dropped_messages` raises "This conversation was compacted" for a
-        compaction that never happened, and `fits: false` sends the user to the Context
-        Length setting for a prompt that was perfectly servable. The cache was busy, not
-        small.
-        """
+        """Both fields are load-bearing on the client and both are true here."""
         event = _preempt_gave_up_event(4096, 512)
         assert event["type"] == "context_truncated"
         assert event["reason"] == PREEMPT_GAVE_UP_REASON
@@ -106,8 +76,7 @@ class TestTheEventItself:
         assert 0 < event["prompt_target"] < 4096
 
     def test_an_unknown_window_still_produces_a_notice(self):
-        """The reason is the payload; the window is context for it. A backend that cannot
-        report its context length must still not fall silent."""
+        """The reason is the payload; the window is context for it."""
         event = _preempt_gave_up_event(None, None)
         assert event["reason"] == PREEMPT_GAVE_UP_REASON
         assert "context_length" not in event
@@ -115,11 +84,7 @@ class TestTheEventItself:
 
 class TestThePlainChatPath:
     def test_a_refused_resume_before_the_first_token_is_not_an_empty_turn(self, monkeypatch):
-        """The live failure exactly: nothing decoded, the resume refused, the turn over.
-
-        What the client got was an empty 200. What it must get is a notice naming the
-        cause and a terminal `length`, which is the shape it already knows how to resume.
-        """
+        """The live failure exactly: nothing decoded, the resume refused, the turn over."""
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy(resume = False)
         recorder = _PlainRecorder(
@@ -158,8 +123,7 @@ class TestThePlainChatPath:
         ), "an incomplete turn reported as anything else tells the client it is done"
 
     def test_the_notice_comes_before_the_end_of_the_turn(self, monkeypatch):
-        """Order. A notice after the terminal metadata is a notice a client that stops
-        reading at the finish reason never sees."""
+        """Order: a notice after the terminal metadata is one the client never reads."""
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy(resume = False)
         recorder = _PlainRecorder(
@@ -174,8 +138,7 @@ class TestThePlainChatPath:
         assert kinds.index("preempt") < kinds.index("context_truncated")
 
     def test_a_resume_that_is_granted_says_nothing_of_the_kind(self, monkeypatch):
-        """The notice must be a give-up signal, not a pause signal. A chat that paused
-        and came back has nothing to apologise for and must not offer Continue."""
+        """The notice must be a give-up signal, not a pause signal."""
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
         recorder = _PlainRecorder(
@@ -193,14 +156,7 @@ class TestThePlainChatPath:
 
 class TestTheToolLoopPath:
     def test_a_refused_resume_is_announced_there_too(self, monkeypatch):
-        """Every GUI chat carries tools, so this is the surface most users are on.
-
-        Giving up here ends the turn the way the final pass ends its own refused
-        resume: the lease went back with `on_preempted` and the participant is PAUSED,
-        so breaking into the final answering pass would decode on cells the planner had
-        already handed to somebody else. The notice is owed all the same: the client
-        was shown "Paused while another chat finishes" and nothing has resolved it.
-        """
+        """Every GUI chat carries tools, so this is the surface most users are on."""
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy(resume = False)
         recorder = _ToolRecorder(
@@ -225,8 +181,9 @@ class TestTheToolLoopPath:
         assert finishes and finishes[-1] == "length", "the client resumes from a length finish"
 
     def test_it_is_emitted_once_even_though_the_loop_continues(self, monkeypatch):
-        """`context_truncated` is not idempotent on the client: `mergeContextTruncation`
-        sums the counters across a turn, so a second copy is not a no-op."""
+        """`context_truncated` is not idempotent on the client: `mergeContextTruncation` sums the
+        counters across a turn, so a second copy is not a no-op.
+        """
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy(resume = False)
         recorder = _ToolRecorder(
@@ -271,12 +228,8 @@ async def _follower_stream(after = 0) -> str:
 
 
 class TestTheDurableRunPath:
-    """The GUI streams plain chats through a durable run, and its worker reads the
-    internal stream with `_SSEDecoder`, which keeps `data:` lines and drops comments.
-
-    That is the reason this notice is a `data:` event rather than an SSE comment like
-    `: preempt-paused`: the pause needed a special relay written for it before it reached
-    a browser on this path at all. A `data:` line needs none.
+    """The GUI streams plain chats through a durable run, and its worker reads the internal stream
+    with `_SSEDecoder`, which keeps `data:` lines and drops comments.
     """
 
     @pytest.mark.asyncio

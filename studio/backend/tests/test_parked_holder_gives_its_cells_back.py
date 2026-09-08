@@ -1,32 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A chat stopped on a tool approval must not keep waiting chats out of an empty cache.
-
-WHAT WENT WRONG
-
-Four tool-enabled API chats on the 35B model at -c 8192, 2026-09-05. The leader parsed a
-tool call that needed confirmation and stopped. The preemptor, seeing two chats waiting
-for room, erased the leader's idle slot ("reclaimed-idle-early: freed=4676"), which is
-right: its cells are the cheapest room there is. Then nothing happened for three minutes.
-`resident=0` -- the cache was EMPTY -- while `committed=5931`, because the leader was
-still DECODING in the ledger with 3847 tokens charged, and a waiter wanting 3092 could
-not fit under a 6136 ceiling beside a charge for cells that no longer existed. Both
-waiters gave up at the 90 second stall bound ("nothing decoding" was, after all, true)
-and ended their turns with nothing.
-
-The states for this, PARKED_ON_TOOL and TOOLS_RUNNING, had been defined with the
-controller and never set by anything.
-
-THE RULES THIS PINS
-
-1. A holder reported parked or in a tool stops counting once an idle-slot reclaim has
-   erased its cells, and counts again when it decodes.
-2. Its admission lease hands its commitment back the same way, so the pool ledger agrees.
-3. The tool-loop route reports the transitions: approval prompt -> parked, answered ->
-   tools running, first content of the next round -> decoding.
-4. A waiter's stall clock treats a holder in a tool as work in progress.
-"""
+"""A chat stopped on a tool approval must not keep waiting chats out of an empty cache."""
 
 from __future__ import annotations
 

@@ -1,34 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The text a client sees across a pause is exactly the text the model produced.
-
-WHAT WENT WRONG
-
-Measured on Qwen3.5-4B at ``-c 8192`` with four chats, seed 1234, temperature 0. The solo
-reference for one prompt read "Introduction: The Paradigm Shifts"; the same chat, paused
-once at 107 characters and resumed, read "Introduction: Theigm Shifts". The pause landed
-after "The"; the resumed attempt's first token was " Parad" and the client never got it.
-
-llama-server was not the cause. Aborting a stream and continuing from the characters the
-client saw, twelve seams with the prompt cache on and off, gave the reference's next token
-every time (`scripts/seam_repro.py`). The token was lost on this side.
-
-Every route consumer diffs cumulative snapshots: ``new = cumulative[len(prev):]`` then
-``prev = cumulative``. That is the generator's contract, and a resumed attempt broke it.
-It restarted its accumulator at "" so its first snapshot was SHORTER than the last one the
-consumer had seen: the diff came out empty, ``prev`` was overwritten with the short
-snapshot, and the next diff began after the token that had just been dropped. One token
-per resume on the plain path; on the tool loop, whose first emission is a whole buffered
-prefix, potentially far more.
-
-THE RULE THESE TESTS PIN
-
-A resumed attempt's snapshots continue the paused attempt's: every string the generator
-yields starts with the one before it, across the pause. The assertions replay the routes'
-own diff so the check is against what a client would have assembled, not against an
-internal accumulator that a refactor could keep monotonic while the yields drift.
-"""
+"""The text a client sees across a pause is exactly the text the model produced."""
 
 from __future__ import annotations
 
@@ -140,10 +113,9 @@ class TestThePlainPathSeam:
         assert recorder.payloads[2]["messages"][-1]["content"] == "one two"
 
     def test_a_resume_paused_before_its_first_token_still_continues_the_partial(self, monkeypatch):
-        """Measured: the essay appeared twice, the second copy starting right after the
-        first 107 characters. The resumed attempt was paused again before it produced
-        anything, and the re-issue sent the partial as a finished turn with a fresh
-        generation prompt after it, so the model answered from the top."""
+        """Measured: the essay appeared twice, the second copy starting right after the first 107
+        characters.
+        """
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
         recorder = _PlainRecorder(
@@ -205,8 +177,9 @@ class TestThePlainPathSeam:
         assert _as_a_route_would(snapshots) == "<think>Let me</think>Answer. Done."
 
     def test_a_pause_mid_thought_resumes_the_thought_not_the_answer(self, monkeypatch):
-        """The replay must go back as reasoning_content, or the model reads its own
-        half-thought as the start of its answer and the client renders it as such."""
+        """The replay must go back as reasoning_content, or the model reads its own half-thought as
+        the start of its answer and the client renders it as such.
+        """
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
         recorder = _PlainRecorder(
@@ -284,12 +257,7 @@ class TestTheToolLoopSeam:
 
 
 class TestTheToolLoopAnnouncesThePause:
-    """The tool loop is the path every GUI chat takes, and it announced nothing.
-
-    Eight pauses in the server log, the paused line shown zero times, four browser
-    sessions at -c 8192. The plain path had yielded the event since the signal was
-    written; this loop paused and resumed in silence.
-    """
+    """The tool loop is the path every GUI chat takes, and it announced nothing."""
 
     def test_a_pause_and_its_resume_are_both_announced(self, monkeypatch):
         signal = preemption.PreemptSignal()
@@ -311,8 +279,9 @@ class TestTheToolLoopAnnouncesThePause:
         assert states == ["paused", "resumed"]
 
     def test_the_pause_is_announced_after_the_lease_goes_back(self, monkeypatch):
-        """Order matters: a client told it is paused before the cells are released could
-        act on a state the ledger does not yet show."""
+        """Order matters: a client told it is paused before the cells are released could act on a
+        state the ledger does not yet show.
+        """
         signal = preemption.PreemptSignal()
         order: list[str] = []
 

@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Surfaces that took an optimistic lease and then ran outside the mechanism.
-
-Admission deliberately overcommits: a request is charged an estimate and PERMITTED its
-whole window, and what makes that safe is that anything which outgrows its charge can be
-paused. Every hole below is the same shape -- the charge was made on the assumption that
-preemption applied, and then nothing on that path could deliver a pause -- so the failure
-is the one this whole design exists to remove, ``Context size has been exceeded`` with
-every slot lost at once.
-
-Structural, for the reason ``test_llama_preemption_is_armed_on_chat_surfaces`` gives: each
-of these branches behaves correctly on its own terms and the missing wiring is visible
-only as an absence.
-"""
+"""Surfaces that took an optimistic lease and then ran outside the mechanism."""
 
 from __future__ import annotations
 
@@ -46,14 +34,7 @@ def _calls(node: ast.AST, name: str) -> int:
 
 
 class TestTheNonStreamingToolBranch:
-    """Streaming got both halves; non-streaming got neither.
-
-    A tool request that is GRANTED at once arms beside its reservation. One that QUEUES
-    binds None there, because `_openai_llama_preemption_arm` calls `lease_nowait()` and
-    returns None without a lease. The streaming branch re-arms after its wait; the
-    non-streaming branch never did, so it decoded with no participant in the ledger at
-    all -- invisible to the watermark, on a charge priced as though it were visible.
-    """
+    """Streaming got both halves; non-streaming got neither."""
 
     def test_it_re_arms_after_a_queued_admission(self):
         source = _routes_source()
@@ -62,13 +43,7 @@ class TestTheNonStreamingToolBranch:
         ), "both branches wait for a lease, so both have to arm once they have one"
 
     def test_it_disarms_on_every_exit(self):
-        """Arming registers a charge; the exit that drops it is not optional.
-
-        And the cells go with it. Dropping only the charge is worse than dropping
-        neither: llama-server keeps a finished slot's prompt cache for prefix reuse, so
-        an unregistered participant hands the next request a ledger that says there is
-        room while the cache is still holding the tokens.
-        """
+        """Arming registers a charge; the exit that drops it is not optional."""
         handler = _function(_routes_source(), "produce_openai_chat_completions")
         armed = _calls(handler, "_openai_llama_preemption_arm")
         disarmed = _calls(handler, "_openai_llama_preemption_disarm")
@@ -91,16 +66,7 @@ class TestTheNonStreamingToolBranch:
 
 
 class TestDisarmFollowsTheStreamTeardown:
-    """Unregistering is a logical release and may not precede the physical one.
-
-    On an error or a disconnect the upstream llama-server request keeps decoding until
-    the generator is closed and the drain has run. Unregistering first hands the room to
-    an arriving or paused chat while the cells are still live, and the cell-reclaim half
-    of the disarm cannot recover them either: a slot that is still decoding is not idle,
-    so `reclaim_idle_slots` skips it. That is exactly the "charge dropped, cells
-    resident" pairing the disarm's own docstring records as the crash rather than a
-    stall.
-    """
+    """Unregistering is a logical release and may not precede the physical one."""
 
     def test_the_streaming_tool_finally_disarms_last(self):
         source = _routes_source()
@@ -125,12 +91,7 @@ class TestTheAnthropicSurfaces:
         ), "and both drop the charge again on the way out"
 
     def test_the_server_tool_generator_is_handed_the_policy(self):
-        """`_arm_anthropic` registers this request as an ordinary preemptible DECODING
-        participant. Without the signal it never sees the pause it was chosen for, and
-        without `on_tokens` its growth never reaches `observe()`. It then sits in
-        PREEMPTING, which is out of `_PREEMPTABLE`, so no later sweep can ask again while
-        it goes on filling the cache.
-        """
+        """`_arm_anthropic` registers this request as an ordinary preemptible DECODING participant."""
         source = _routes_source()
         run_tool_gen = source[source.index("def _run_tool_gen():") :]
         run_tool_gen = run_tool_gen[: run_tool_gen.index("if payload.stream:")]
@@ -142,12 +103,8 @@ class TestTheAnthropicSurfaces:
             assert kwarg in run_tool_gen, f"the Anthropic tool loop is missing {kwarg}"
 
     def test_the_raw_passthrough_is_counted_and_never_chosen(self):
-        """It streams llama-server's bytes straight through, so there is no Studio
-        generator holding the conversation and nothing to resume from. Armed as an
-        ordinary victim it is chosen, marked PREEMPTING and never heard from again, with
-        the planner having already subtracted its tokens from the room it believed it
-        freed. `STREAMING_RAW` counts it without ever selecting it, which is what the
-        OpenAI passthrough already does.
+        """It streams llama-server's bytes straight through, so there is no Studio generator
+        holding the conversation and nothing to resume from.
         """
         source = _routes_source()
         assert (
@@ -160,12 +117,7 @@ class TestTheAnthropicSurfaces:
 
 
 class TestTheRespawnRetryKeepsItsControls:
-    """`_respawn_if_dead()` re-opens the same generation against a replacement server.
-
-    The route still holds the optimistically priced lease and the participant it
-    registered, so the retry has to keep the clamp, the signal, the policy and the token
-    reports. Dropped, the replacement stream decoded outside the ledger entirely.
-    """
+    """`_respawn_if_dead()` re-opens the same generation against a replacement server."""
 
     def test_the_connect_error_retry_forwards_the_preemption_arguments(self):
         source = LLAMA_CPP.read_text(encoding = "utf-8")
@@ -185,14 +137,7 @@ class TestTheRespawnRetryKeepsItsControls:
 
 
 class TestTheRoundBoundaryPublishesTheNewCharge:
-    """The re-cost is what grows the lease; reading it first published the old figure.
-
-    A round boundary is where the prompt grows -- a tool result has landed, or a resume
-    has replayed its partial -- and it is also where the sweep runs. Sweeping on the
-    PREVIOUS round's charge is the one case that must not happen, and nothing corrected
-    it until 32 more tokens had been generated, by which time the prefill it was meant to
-    make room for has already gone in.
-    """
+    """The re-cost is what grows the lease; reading it first published the old figure."""
 
     def test_the_recost_runs_before_note_tokens(self):
         source = _routes_source()
@@ -208,14 +153,7 @@ class TestTheRoundBoundaryPublishesTheNewCharge:
 
 
 class TestTheParallelToolClosureBindsItsOwnCall:
-    """In an overlapped round the tool's worker runs while the loop has moved on.
-
-    `_decision` was bound as a default for exactly that reason, and the body then went on
-    reading the loop's own names for the rest: the stand-in tool message named the wrong
-    call, and the remaining-calls slice that splits the result budget started from the
-    wrong index. Both decide how much of a tool's output survives, so every call but the
-    last was sized as if it were the last.
-    """
+    """In an overlapped round the tool's worker runs while the loop has moved on."""
 
     def test_every_per_call_value_is_a_default_argument(self):
         source = LLAMA_CPP.read_text(encoding = "utf-8")
@@ -236,14 +174,7 @@ class TestTheParallelToolClosureBindsItsOwnCall:
 
 
 class TestTheResumeClearsItsSignalBeforeItIsSelectable:
-    """`on_resumed` is what makes this participant a candidate again.
-
-    It clears the signal and moves the participant to DECODING under the controller's
-    lock. A clear AFTER it raced the next sweep: between the state change and the clear a
-    sweep could choose this chat, set PREEMPTING and set the signal, and the clear then
-    erased a pause that had already been counted as room freed. PREEMPTING is out of
-    `_PREEMPTABLE`, so nothing could ask again.
-    """
+    """`on_resumed` is what makes this participant a candidate again."""
 
     def test_the_tool_loop_clears_before_calling_on_resumed(self):
         source = LLAMA_CPP.read_text(encoding = "utf-8")

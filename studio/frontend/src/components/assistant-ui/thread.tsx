@@ -6858,9 +6858,8 @@ const ContinueMessageBarForLastMessage: FC = () => {
   const continuable = useAuiState(({ message }) =>
     isContinuableContent(message.content),
   );
-  // The same question with the "there must be text" half dropped, for the one reason that
-  // can arrive with no text at all. Selected unconditionally because the reason is not
-  // known until below and a hook cannot be.
+  // The same question with the "there must be text" half dropped. Selected unconditionally
+  // because the reason is not known until below and a hook cannot be conditional.
   const continuableIfEmpty = useAuiState(({ message }) =>
     isContinuableContent(message.content, { allowEmpty: true }),
   );
@@ -6884,17 +6883,14 @@ const ContinueMessageBarForLastMessage: FC = () => {
   const stamped = readIncompleteInfo(metadata);
   const cancelled =
     status?.type === "incomplete" && status?.reason === "cancelled";
-  // `paused` is stamped but has no assistant-ui status of its own, so `restoredAssistantStatus`
-  // maps it to `cancelled` and a reload would otherwise relabel a turn the backend paused as
-  // "Response stopped", which reads as something the user did. The stamp wins for that one.
+  // `paused` has no assistant-ui status of its own, so a reload would relabel it "Response
+  // stopped", which reads as something the user did. The stamp wins for that one.
   const reason =
     cancelled && stamped?.reason !== "paused"
       ? ("cancelled" as const)
       : stamped?.reason;
-  // A turn the backend gave up on can be empty: the chat was evicted while still prefilling
-  // and never produced a token. Both content gates below are written for a turn that has
-  // text, and together they hid the bar on exactly the turn that most needed it -- an empty
-  // bubble with no notice, no Continue and no error. Measured in the GUI on 2026-09-05.
+  // A turn the backend gave up on can be empty, and both content gates below assume text,
+  // so together they hid the bar on exactly the turn that most needed it.
   const noTextIsExpected = resumesWithoutText(reason);
 
   // Every gate the bar itself answers to. Resuming without asking has to clear the same

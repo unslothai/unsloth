@@ -1,33 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A finished chat keeps its prompt cache when nobody else wants the room.
-
-WHAT WENT WRONG
-
-`_openai_llama_preemption_disarm` erases llama-server's idle slots, because a ledger that
-says there is room while the cache still holds the tokens is the crash rather than a stall
-(`TestDroppingTheChargeWithoutTheCellsIsWorseThanNeither` has the measurements). While the
-disarm ran on the tool path alone that erase was rare. Arming the plain, non-streaming and
-Anthropic surfaces made it run after EVERY ordinary chat, and an idle slot's tokens are
-exactly the prefix the next turn of the same conversation reuses.
-
-CI caught it in one pass: `.github/scripts/assert-prompt-cache.sh api` sends two turns that
-share a long system preamble and asserts turn two reports
-`usage.prompt_tokens_details.cached_tokens > 0`. It came back zero. llama.cpp had a complete
-prefix hit to offer and Studio had deleted it between the turns.
-
-THE RULE THESE TESTS PIN
-
-Unregister always, because the ledger has to be exact. Erase only when the cells are wanted.
-With this generation already unregistered, `committed == 0` means it was the only chat in the
-cache, so there is nobody to hand the room to and the cells are worth more as a prefix.
-Should that change, the watermark sweep reclaims on its next pass; nothing depends on the
-disarm being the only reclaimer.
-
-The tests are behavioural on purpose. The condition is one `if` away from being deleted by a
-refactor that still passes every source-level assertion in the wiring suite.
-"""
+"""A finished chat keeps its prompt cache when nobody else wants the room."""
 
 import pytest
 
@@ -115,11 +89,7 @@ class TestTheSingleUserCaseCIChecks:
         )
 
     def test_the_ledger_is_exact_either_way(self, controller, erasures):
-        """Skipping the erase must never mean skipping the unregister.
-
-        An over-counted ledger is the pessimistic failure, but it is still a failure: it
-        serialises chats that would have fit.
-        """
+        """Skipping the erase must never mean skipping the unregister."""
         controller.register("gone", lease = _Lease(), tokens = 2000)
         inference._openai_llama_preemption_disarm(llama_backend = _Backend(), gen_id = "gone")
         snapshot = controller.snapshot()
@@ -148,11 +118,7 @@ class TestTheContendedCaseStillReclaims:
         assert erasures == [0]
 
     def test_a_raw_stream_counts_too(self, controller, erasures):
-        """The counted-but-never-chosen surfaces hold KV without ever being preempted.
-
-        They are invisible to `decoding`/`paused`/`parked`, which is why the condition is
-        written on `committed`: it sums everything in `_HOLDS_KV`.
-        """
+        """The counted-but-never-chosen surfaces hold KV without ever being preempted."""
         controller.register("leaving", lease = _Lease(), tokens = 2000)
         controller.register(
             "passthrough",
@@ -164,10 +130,10 @@ class TestTheContendedCaseStillReclaims:
         assert erasures == [0]
 
     def test_a_request_waiting_at_admission_counts_too(self, controller, erasures, monkeypatch):
-        """A waiter holds no KV yet, so no participant counts it, but the lease this chat
-        hands back is exactly what admits it, and its first prefill lands in whatever was
-        left resident. Too short a chat to have produced a residency sample and that
-        arrival sees only its own reservation. The admission queue knows it is there."""
+        """A waiter holds no KV yet, so no participant counts it, but the lease this chat hands
+        back is exactly what admits it, and its first prefill lands in whatever was left
+        resident.
+        """
 
         class _Queue:
             def snapshot(self):

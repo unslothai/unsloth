@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pausing and finishing an ordinary chat, with no tools anywhere.
-
-The twin of ``test_llama_tool_loop_preempt_resume``, and it exists because that one was
-for a long time the ONLY coverage of preemption, which matched the code: preemption armed
-on the tool-loop branch and nowhere else, so a chat that invoked no tools took an admission
-lease and then decoded with no preemption at all. Measured on the plain streaming surface
-at ``-c 16384`` with four chats and 3000-token prompts, the whole machinery reported
-``armed 0 paused 0 gave-up 0``, and not even ``not-armed``, which is logged whenever arming
-is attempted and declined.
-
-The resume shape differs from the tool loop's and that difference is the thing to hold
-still. The tool loop never leaves its frame, because its ``ToolLoopController`` ledger is
-in-memory and tearing the response down would re-run one-shot tools. A plain chat has no
-such ledger, so it resumes by calling the generator again with the partial appended, which
-avoids re-indenting ~130 lines of a 400-line generator inside a ``while True:``. The
-recursion is bounded by ``DEFAULT_MAX_PREEMPT_RESUMES``.
-"""
+"""Pausing and finishing an ordinary chat, with no tools anywhere."""
 
 from __future__ import annotations
 
@@ -179,13 +163,7 @@ class TestAPlainChatPauses:
         assert "Once upon a time" in trailing["content"]
 
     def test_the_handshake_runs_in_order_including_on_resumed(self, monkeypatch):
-        """``on_resumed`` was missing from the first version of this handler.
-
-        It drives ``controller.note_resumed``, so without it a chat that is decoding
-        again stays PAUSED in the ledger: its cells read as reclaimable, it stays a
-        candidate for a pause it is no longer in, and the winner logic reasons about a
-        state two moves old. Nothing else in the suite would have noticed.
-        """
+        """``on_resumed`` was missing from the first version of this handler."""
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
         recorder = _Recorder(
@@ -200,15 +178,8 @@ class TestAPlainChatPauses:
         assert policy.events == ["preempted", "awaited", "resumed"]
 
     def test_the_visible_text_is_not_replayed(self, monkeypatch):
-        """The client has already been streamed the partial, so the resumed attempt
-        must not send it a second time.
-
-        Judged the way a client would: the generator yields cumulative snapshots and
-        every route diffs consecutive ones, so the text a client assembles is the
-        concatenation of those diffs, not of the snapshots. This test once joined the
-        snapshots themselves, which passed only while the resumed attempt restarted its
-        snapshot at "", and that restart was the bug that dropped the first resumed
-        token (`test_preempt_resume_seam_is_seamless`).
+        """The client has already been streamed the partial, so the resumed attempt must not send
+        it a second time.
         """
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
@@ -233,14 +204,7 @@ class TestAPlainChatPauses:
 
 
 class TestThePauseIsVisibleToTheClient:
-    """The spin-wait the goal asks for, made visible.
-
-    `admission-status.ts` has been able to read `preempt-paused` and `preempt-resumed`
-    since it was written, and the backend had never sent either. A paused chat looked
-    exactly like a wedged one: a half-written answer that stops dead and starts again
-    minutes later with no explanation. The queue signals it DID send say "you have not
-    started"; these say "you started, the text on screen is not lost".
-    """
+    """The spin-wait the goal asks for, made visible."""
 
     @staticmethod
     def _events(chunks):
@@ -261,10 +225,7 @@ class TestThePauseIsVisibleToTheClient:
         assert [e["state"] for e in events] == ["paused", "resumed"]
 
     def test_a_pause_that_never_resumes_still_announces_itself(self, monkeypatch):
-        """The case that matters most, because the turn ends there.
-
-        A client told nothing has a truncated answer and no reason for it.
-        """
+        """The case that matters most, because the turn ends there."""
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy(resume = False)
         recorder = _Recorder(
@@ -276,11 +237,7 @@ class TestThePauseIsVisibleToTheClient:
         assert [e["state"] for e in events] == ["paused"]
 
     def test_the_pause_is_announced_after_the_lease_goes_back(self, monkeypatch):
-        """Order, not just presence.
-
-        Announcing before `on_preempted` would tell the client it is waiting for room
-        that this very chat is still holding.
-        """
+        """Order, not just presence."""
         signal = preemption.PreemptSignal()
         order = []
 
@@ -322,12 +279,7 @@ class TestThePauseIsVisibleToTheClient:
 
 class TestTheCapIsSpentDownAcrossResumes:
     def test_a_stated_max_tokens_shrinks_on_resume(self, monkeypatch):
-        """``max_tokens`` bounds NEW tokens, and the resumed attempt starts a fresh count.
-
-        Forwarding it unchanged let a chat preempted n times emit up to (n+1) times the
-        cap it asked for, which is wrong for the client and wrong for admission, which
-        charged once.
-        """
+        """``max_tokens`` bounds NEW tokens, and the resumed attempt starts a fresh count."""
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
         recorder = _Recorder(
@@ -365,12 +317,7 @@ class TestTheCapIsSpentDownAcrossResumes:
 
 class TestGivingUpIsNotAnError:
     def test_a_refused_resume_ends_the_turn_with_the_partial(self, monkeypatch):
-        """``await_resume`` answering False means the room never came back.
-
-        Ending there leaves the client the partial it has already been streamed, which
-        the length-continuation path can pick up. Raising instead would turn a busy cache
-        into an error, which is the behaviour this whole design replaces.
-        """
+        """``await_resume`` answering False means the room never came back."""
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy(resume = False)
         recorder = _Recorder(
@@ -386,13 +333,7 @@ class TestGivingUpIsNotAnError:
 
 class TestThePauseCanLandBeforeTheStreamOpens:
     def test_a_pause_during_stream_setup_still_resumes(self, monkeypatch):
-        """The earliest possible pause, and it used to raise NameError.
-
-        ``_open_stream`` raises ``LlamaStreamPreempted`` from the read installer, before
-        the body of the ``with`` runs. ``reasoning_text`` was assigned inside that body,
-        so the handler, which reads it, blew up and the client saw a 500 rather than a
-        resume. Every other test here pauses mid-stream and cannot reach this.
-        """
+        """The earliest possible pause, and it used to raise NameError."""
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
         recorder = _Recorder(
@@ -421,11 +362,7 @@ class TestThePauseCanLandBeforeTheStreamOpens:
         assert any("a full answer" in c for c in chunks if isinstance(c, str))
 
     def test_the_checkpoint_of_an_empty_pause_does_not_continue(self, monkeypatch):
-        """Nothing was produced, so there is nothing to continue FROM.
-
-        ``continue_final_message`` refuses an empty assistant turn, so the attempt has to
-        be re-issued whole rather than as a continuation.
-        """
+        """Nothing was produced, so there is nothing to continue FROM."""
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
         recorder = _Recorder(

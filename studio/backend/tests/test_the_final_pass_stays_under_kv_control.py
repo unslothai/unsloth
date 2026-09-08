@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The synthesised final answer is a generation like any other.
-
-``generate_chat_completion_with_tools`` runs its rounds, then breaks into a separate
-final pass that streams the answer with no tools attached. For a common tool run -- one
-that exhausts its tool budget, or whose model stops asking -- that pass produces MOST of
-what the user reads, and it was the one generation nothing bounded and nothing watched:
-
-  * ``admission_output_allowance`` is the wire clamp that makes the reservation an
-    enforced figure rather than a recorded one. Applied to every round's payload, and not
-    to this one, so the pass that answers sent the whole window as its output cap while
-    admission had reserved a share of it.
-  * ``on_tokens`` is the ONLY thing that calls ``observe()``, and ``observe()`` is the
-    only thing that plans an eviction. Without it the participant sat in the ledger at
-    its last round-boundary figure while this pass decoded thousands more tokens into the
-    shared cache, so the watermark could not fire on the growth that mattered most.
-"""
+"""The synthesised final answer is a generation like any other."""
 
 from __future__ import annotations
 

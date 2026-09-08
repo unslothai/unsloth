@@ -35,8 +35,7 @@ test("the keep-alive comment is left to its own reader", () => {
 });
 
 test("a data line is never an admission signal", () => {
-  // The two are told apart by the leading colon alone, so a payload that happens to spell
-  // one must not be mistaken for the comment.
+  // Told apart by the leading colon alone, so a payload spelling one is not the comment.
   assert.equal(readAdmissionComment("data: admission-wait"), null);
   assert.equal(readAdmissionComment(""), null);
   assert.equal(readAdmissionComment("admission-wait"), null);
@@ -58,7 +57,7 @@ test("a run that is not generating gets a line, one that is gets none", () => {
 });
 
 test("queued and paused do not share one message", () => {
-  // Queued has produced nothing; paused has visible text above it. One line for both
+  // Queued has produced nothing; paused has visible text above it, so one line for both
   // would put "waiting for a free slot" under a half-written answer.
   assert.notEqual(
     admissionStatusLabel("waiting"),

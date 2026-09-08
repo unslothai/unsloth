@@ -868,12 +868,8 @@ def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop()
         in inspect.signature(llama_cpp.LlamaCppBackend.generate_chat_completion).parameters
     )
     body = inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion)
-    # The property, not a count. This asserted `== 2`, which was the number of internal
-    # re-issues at the time: the respawn retry and the length continuation. Preemption
-    # added a third, the resume after a pause, and a literal count turns "one more path
-    # that must forward the flag" into a failure that says only that a number changed.
-    # Every self-call must forward it, however many there come to be, and a new one that
-    # forgets still fails here by name.
+    # The property, not a count: a literal count turns "one more path that must forward the
+    # flag" into a failure that says only that a number changed.
     import ast, textwrap
 
     tree = ast.parse(textwrap.dedent(body))

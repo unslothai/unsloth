@@ -1,29 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What the final answering pass tells the preemptor about a paused attempt.
-
-The pass now pauses and resumes like the rounds before it, and both halves of its
-arithmetic were wrong in the same direction as each other but opposite in effect:
-
-  * The live count reported through ``on_tokens`` carried across the resume. By then
-    ``on_preempted`` had already moved the aborted attempt's tokens into the
-    participant's ``base_tokens`` through ``note_replayed`` -- they are prompt now, not
-    output -- and ``observe`` computes occupancy as ``base_tokens + reported``. The sweep
-    therefore saw the first attempt twice and read a chat as roughly double its size,
-    which evicts somebody to make room that was never taken.
-
-  * The charge for the pause fell back to the four-characters-per-token estimate whenever
-    the server sent no usage, which is the normal case for an attempt aborted before its
-    terminal chunk, while the observed chunk count was sitting right there. That estimate
-    undercharges token-dense text, and the same figure spends down ``max_tokens`` and
-    re-baselines the controller, so an undercharge is both an output cap the caller never
-    agreed to and cells the watermark cannot see.
-
-These drive the real loop with fake llama-server streams: the first stream calls a tool,
-the one-round budget breaks the loop into the final pass, and that pass pauses partway
-through and is resumed.
-"""
+"""What the final answering pass tells the preemptor about a paused attempt."""
 
 from __future__ import annotations
 
@@ -232,8 +210,9 @@ class TestTheLiveCountIsPerAttempt:
         )
 
     def test_the_report_still_fires_at_all(self, monkeypatch):
-        """The reset must not turn into never reporting: `observe` is the only thing that
-        plans an eviction and `on_tokens` is the only thing that calls it."""
+        """The reset must not turn into never reporting: `observe` is the only thing that plans an
+        eviction and `on_tokens` is the only thing that calls it.
+        """
         _recorder, _policy, reports, _events = _paused_final_run(monkeypatch)
         assert len(reports) == 2
 
@@ -254,8 +233,7 @@ class TestThePauseChargeIsTheObservedCount:
         assert checkpoint.charged_tokens > estimate
 
     def test_the_estimate_still_floors_it(self, monkeypatch):
-        """Neither reading wins outright. The estimate stays as the lower bound it always
-        was, so a stream whose chunks are not one per token cannot undercharge either."""
+        """The estimate stays the lower bound, so chunks that are not one per token cannot undercharge."""
         _recorder, policy, _reports, _events = _paused_final_run(monkeypatch)
         checkpoint = policy.checkpoints[0]
         assert checkpoint.charged_tokens >= len(checkpoint.visible_text) // 4

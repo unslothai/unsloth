@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A chat waiting for KV room is queued, not stuck, for as long as anything is moving.
-
-The live failure, four chats on the 35B at -c 8192 with the GPU shared
-(logs/studio_gpu0_swap_20260905_154407.log, outputs/swap_c/four_studio_35b.json):
-
-    llama preemption awaiting-room: gen_id=chatcmpl-ef6143032791 want=2032
-    llama preemption gave-up: gen_id=chatcmpl-ef6143032791 want=2032 (no progress for 90.0s)
-
-Across those 90 seconds the other three chats decoded to completion, so the backend was
-never stuck; what was frozen was the thing the waiter looked at. `progress_signature` was
-`(committed, holders)`, and `committed` is `max(resident, measured) + pending`: while
-llama-server's resident reading is the larger of the two, every token the ledger adds is
-invisible. The same log shows resident 3254 against measured 2343 a second after the
-give-up, so the maximum was pinned on a figure the decoders were not moving.
-
-The chat had generated nothing yet, so its client got `tokens: 0, chars: 0, error: None`
-and the GUI a blank turn. The product rule is that an evicted chat waits however long the
-others need; giving up is for a genuine hang, which is now defined as nothing moving at
-all: no token anywhere, no tool call, no room returned, no holder leaving.
-"""
+"""A chat waiting for KV room is queued, not stuck, for as long as anything is moving."""
 
 import threading
 import time
@@ -66,11 +47,7 @@ def _pinned_controller(key: str) -> PreemptionController:
 
 
 def _waiting_policy(controller: PreemptionController, gen_id: str, tokens: int):
-    """A policy that reaches the wait loop, with its participant PAUSED as a real one is.
-
-    `await_resume` short-circuits before the loop without a lease and without an event
-    loop to take it back on, so both are stubbed.
-    """
+    """A policy that reaches the wait loop, with its participant PAUSED as a real one is."""
     import asyncio
 
     class _Lease:
@@ -114,9 +91,9 @@ class TestTheSignatureSeesADecodingBackend:
         assert after[2] > before[2], "the token total is the term that moves"
 
     def test_a_resumed_attempt_restarting_its_count_is_not_read_as_lost_tokens(self):
-        """`observe` is given a per-attempt cumulative count, and a resume starts a new
-        one at zero. A fall is a new attempt, never tokens being taken back, so the total
-        must not go backwards or a resume would look like a stall in reverse."""
+        """`observe` is given a per-attempt cumulative count, and a resume starts a new one at
+        zero.
+        """
 
         controller = _pinned_controller("restarts")
         controller.observe("holder", 512)
@@ -126,8 +103,7 @@ class TestTheSignatureSeesADecodingBackend:
         assert after > mid, "the fresh attempt's own tokens still count as progress"
 
     def test_a_tool_call_starting_moves_the_signature(self):
-        """A holder that stops decoding to run a tool moves nothing else. It is still
-        work, and the count of holders inside one is in the signature for that reason."""
+        """A holder that stops decoding to run a tool moves nothing else."""
 
         controller = _pinned_controller("tools")
         before = controller.progress_signature()
@@ -145,12 +121,7 @@ class TestTheSignatureSeesADecodingBackend:
 
 class TestTheWaiterHoldsOnWhileAnythingMoves:
     def test_it_is_still_waiting_after_the_timeout_and_resumes_when_room_appears(self):
-        """Committed never falls, no holder ever leaves, and tokens keep arriving.
-
-        Under `(committed, holders)` this waiter gives up at `timeout` with an empty
-        turn. It must instead outlast the timeout several times over and then take the
-        room the moment it is real.
-        """
+        """Committed never falls, no holder ever leaves, and tokens keep arriving."""
 
         timeout = 0.4
         controller = _pinned_controller("still-decoding")
@@ -194,11 +165,7 @@ class TestTheWaiterHoldsOnWhileAnythingMoves:
         assert resumed is True, "and it takes the room once the room is real"
 
     def test_a_backend_where_nothing_moves_at_all_still_gives_up(self):
-        """The hang this bound exists for, unchanged: a full cache nobody is draining.
-
-        No token, no tool, no room returned, no holder leaving. The turn finishes with
-        what it has rather than waiting on a backend that has stopped.
-        """
+        """The hang this bound exists for, unchanged: a full cache nobody is draining."""
 
         timeout = 0.5
         controller = _pinned_controller("frozen")
@@ -218,13 +185,8 @@ class TestTheWaiterHoldsOnWhileAnythingMoves:
 
 class TestTheBackstopOutlastsARealAnswer:
     def test_the_hard_bound_is_longer_than_the_slowest_answer_measured(self):
-        """`hard_deadline` is the one failure the stall clock cannot see: a cache that
-        churns forever while THIS chat is never quite fitted. It is not a second
-        give-up timer, so it must not fire inside a legitimate answer.
-
-        The 2026-09-05 run decoded at 2.3 tok/s on its slowest chat, so one 8192-token
-        answer is about an hour on its own, and a waiter can be behind more than one.
-        The old 20x (30 minutes) was shorter than a single such answer.
+        """`hard_deadline` is the one failure the stall clock cannot see: a cache that churns
+        forever while THIS chat is never quite fitted.
         """
 
         bound = DEFAULT_RESUME_WAIT_TIMEOUT_S * MAX_RESUME_WAIT_MULTIPLE

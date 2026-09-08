@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The last stream of a tool run pauses and resumes like the rounds before it.
-
-A tool loop ends in a synthesized answering pass: the rounds break, the tool results are
-in the conversation, and one more request writes the reply. That request is routinely the
-longest decode of the whole turn, and it feeds the same shared KV cache as everything
-else, so it is exactly the generation a sweep under pressure will choose.
-
-It could not be paused. The rounds forwarded ``preempt_event`` into their stream and
-handled ``LlamaStreamPreempted``; the final pass forwarded neither, so a chat chosen here
-kept decoding while its participant stayed PREEMPTING. That state is outside
-``_PREEMPTABLE``, so no later sweep could ask it again, and the cells the planner had
-already counted as reclaimed were never released: the chats waiting on them waited for
-room that was not coming.
-
-These drive the real loop with fake llama-server streams. The first stream calls a tool,
-the loop's one-round budget breaks it into the final pass, and that pass is what pauses.
-"""
+"""The last stream of a tool run pauses and resumes like the rounds before it."""
 
 from __future__ import annotations
 
@@ -114,11 +98,7 @@ class _RecordingPolicy:
 
 
 class _Recorder:
-    """A backend that pauses the stream of a chosen attempt partway through.
-
-    Attempt 0 is the tool round; attempt 1 is the final answering pass, which is the one
-    these tests are about.
-    """
+    """A backend that pauses the stream of a chosen attempt partway through."""
 
     def __init__(
         self,
@@ -274,11 +254,7 @@ class TestTheFinalPassResumes:
         assert "is 6.10." in answer, answer
 
     def test_a_policy_that_gives_up_ends_the_turn_and_says_so(self, monkeypatch):
-        """It must not wait forever, it must not pause again, and it must not fall silent.
-
-        Nothing runs after this pass, so a bare return is a blank assistant turn that a
-        caller cannot tell from a model that chose to say nothing.
-        """
+        """It must not wait forever, it must not pause again, and it must not fall silent."""
         recorder, policy, signal, events = _paused_final_run(monkeypatch, resume = False)
         assert policy.events.count("preempted") == 1, "it paused more than once"
         assert not signal.is_set(), "the signal must be cleared before ending the turn"
@@ -294,8 +270,9 @@ class TestTheFinalPassResumes:
 
 
 class TestTheWiringIsThere:
-    """Structural, because the absence is what breaks: both calls behaved correctly on
-    their own terms, and a pause simply never reached them."""
+    """Structural, because the absence is what breaks: both calls behaved correctly on their own
+    terms, and a pause simply never reached them.
+    """
 
     @staticmethod
     def _final_pass_source() -> str:
@@ -353,6 +330,7 @@ class TestTheWiringIsThere:
         ), "the clear must not run after the participant becomes selectable again"
 
     def test_the_module_still_parses(self):
-        """The handler lives deep inside a very long generator; a stray indent there
-        would be caught by nothing else in this file."""
+        """The handler lives deep inside a very long generator; a stray indent there would be
+        caught by nothing else in this file.
+        """
         ast.parse(LLAMA_CPP.read_text(encoding = "utf-8"))

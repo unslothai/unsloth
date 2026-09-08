@@ -2,10 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A turn paused so another chat could finish is not a failure, and must not be dressed as
- * one. The regression this guards is small and very easy to reintroduce: assistant-ui has
- * no "paused" status, so the obvious mapping is `error`, which paints MessagePrimitive's
- * red box and a Retry button over a turn that is merely waiting its turn on the KV cache.
+ * A turn paused so another chat could finish is not a failure. assistant-ui has no "paused"
+ * status, so the obvious mapping is `error`, which paints a red box and a Retry button over
+ * a turn that is merely waiting its turn on the KV cache.
  */
 
 import assert from "node:assert/strict";
@@ -22,8 +21,8 @@ import {
 const pausedMetadata = { custom: { incomplete: { reason: "paused" } } };
 
 test("paused survives the metadata round trip", () => {
-  // readIncompleteInfo validates against a fixed list; a reason missing from it is
-  // silently dropped and the turn reloads as if it had completed normally.
+  // readIncompleteInfo validates against a fixed list, and a reason missing from it is
+  // dropped, so the turn reloads as if it had completed normally.
   assert.deepEqual(readIncompleteInfo(pausedMetadata), { reason: "paused" });
 });
 

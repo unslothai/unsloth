@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The policy and the stream were built apart; this is the seam between them.
-
-Both halves passed their own tests while nothing called `plan_preemptions()`, so a build
-containing every line of this feature still could not pause a chat. These tests assert
-the wiring itself: that the route arms a policy, that arming it charges the real token
-figure rather than a silent zero, and that a finished generation stops counting.
-"""
+"""The policy and the stream were built apart; this is the seam between them."""
 
 import sys
 from types import SimpleNamespace
@@ -31,17 +25,7 @@ from core.inference.llama_preemption import (
 
 @pytest.fixture(autouse = True)
 def _isolate_process_wide_admission_state():
-    """The park budget and the queue registry are process-wide, not per test.
-
-    `_parked_total` in llama_admission is deliberately global: there is one executor and
-    base_url takes a fresh port on every load, so a per-queue budget would hand the same
-    allowance to each backend. That makes it shared state between tests, and a test that
-    parks without releasing starves every later one.
-
-    Caught by `test_parking_does_not_reopen_the_whole_cache` failing only when this file
-    ran after the preemption wiring suite, and passing alone. An order-dependent failure
-    is worse than a plain one: it moves whenever a test is added.
-    """
+    """The park budget and the queue registry are process-wide, not per test."""
     from core.inference.llama_admission import reset_llama_admission_queues
 
     reset_llama_admission_queues()
@@ -73,12 +57,7 @@ def _backend(
 
 
 class TestTheLeaseReportsWhatItHolds:
-    """`getattr(lease, "tokens", 0)` silently returned 0 before this property existed.
-
-    That is the failure mode this whole file exists to catch: everything imports, every
-    unit test passes, and preemption never triggers because it believes nobody is
-    holding anything.
-    """
+    """`getattr(lease, "tokens", 0)` silently returned 0 before this property existed."""
 
     @pytest.mark.asyncio
     async def test_a_lease_exposes_its_charge(self):
@@ -109,8 +88,9 @@ class TestTheLeaseReportsWhatItHolds:
 
 
 class TestAFinishedChatStopsCounting:
-    """A missed unregister would preempt everyone forever, so it cannot depend on the
-    route remembering. Release happens on at least eight branches."""
+    """A missed unregister would preempt everyone forever, so it cannot depend on the route
+    remembering.
+    """
 
     @pytest.mark.asyncio
     async def test_a_released_participant_is_pruned_without_unregister(self):
@@ -137,12 +117,7 @@ class TestAFinishedChatStopsCounting:
 
     @pytest.mark.asyncio
     async def test_pruning_frees_the_charge(self):
-        """This asserted that pruning freed the EPOCH, which no longer exists.
-
-        No generation is exempt from eviction now, so there is no crown to release; what
-        pruning has to free is the charge, or the ledger reports a cache fuller than it is
-        and admits nobody.
-        """
+        """This asserted that pruning freed the EPOCH, which no longer exists."""
         queue = get_llama_admission_queue("wiring-epoch")
         controller = PreemptionController("wiring-epoch")
         controller.configure(budget = 16384, kv_unified = True)
@@ -159,8 +134,9 @@ class TestAFinishedChatStopsCounting:
 
 
 class TestTheDeferredHandoff:
-    """The generator is BUILT before admission returns and ITERATED after, so the policy
-    passed into it cannot yet know its lease."""
+    """The generator is BUILT before admission returns and ITERATED after, so the policy passed
+    into it cannot yet know its lease.
+    """
 
     def test_unbound_is_inert_rather_than_crashing(self):
         policy = DeferredPreemptionPolicy()
@@ -221,8 +197,9 @@ class TestTheRouteActuallyArmsIt:
 
     @pytest.mark.asyncio
     async def test_a_private_cache_per_slot_is_not_armed(self):
-        """Without --kv-unified a preempted slot's cells are never purged for anyone
-        else, so pausing would stall the victim for nothing."""
+        """Without --kv-unified a preempted slot's cells are never purged for anyone else, so
+        pausing would stall the victim for nothing.
+        """
         inference = self._route()
         queue = get_llama_admission_queue("http://127.0.0.1:2/")
         reservation = queue.reserve(
@@ -257,12 +234,7 @@ class TestTheRouteActuallyArmsIt:
         assert policy is None, "the rollout switch did not turn it off"
 
     def test_the_tool_loop_is_handed_both_the_signal_and_the_policy(self):
-        """The wiring that makes any of this reachable at runtime.
-
-        Read from source: the call site is inside a large async generator that cannot be
-        invoked here without a live backend, and asserting on the source is honest about
-        that rather than pretending to exercise it.
-        """
+        """The wiring that makes any of this reachable at runtime."""
         from pathlib import Path
 
         import routes.inference as inference
@@ -290,15 +262,7 @@ class TestTheRouteActuallyArmsIt:
 
 
 class TestSpeculativeDraftsAreReserved:
-    """Drafts occupy cells nobody is charged for.
-
-    Measured 2026-09-01 on `-c 16384 --parallel 4 --kv-unified --spec-type draft-mtp
-    --spec-draft-n-max 2`: the cache filled, llama-server halved n_batch 128 -> 64 -> 32
-    -> 16 -> 8 -> 4 hunting for room, and at that width the speculative indices fell
-    outside the sub-batch and it threw. That is upstream ggml-org/llama.cpp#24840, whose
-    retry path shifts `slot.i_batch` by the offset but never `slot.spec_i_batch`. We
-    cannot patch it, so the fix here is to keep the cache off that retry path.
-    """
+    """Drafts occupy cells nobody is charged for."""
 
     def test_drafts_are_added_on_top_of_the_ratio(self):
         from core.inference.llama_preemption import preemption_buffer_tokens
@@ -416,13 +380,7 @@ class TestSpeculativeDraftsAreReserved:
 
 
 class TestALoneChatStillNeedsRoomForItsOwnBatch:
-    """`Context size has been exceeded` six times a run, on four consecutive runs.
-
-    The solo ceiling reserved drafts plus an estimate margin and nothing for the batch,
-    so a lone chat could occupy 16297 of a 16384 cache and leave 87 cells against a
-    2048-token `--batch-size`. Its own next prefill then could not fit. That reads like
-    contention and is nothing of the sort: there is only one chat.
-    """
+    """`Context size has been exceeded` six times a run, on four consecutive runs."""
 
     def _controller(self, **kw):
         controller = PreemptionController("solo-batch")
@@ -446,26 +404,10 @@ class TestALoneChatStillNeedsRoomForItsOwnBatch:
 
 
 class TestTheBufferCanHoldOnePrefillChunk:
-    """The term every earlier buffer was missing.
-
-    The cache does not fail when it is full of tokens, it fails when the next BATCH does
-    not fit. llama-server prefills in chunks of --batch-size, so a resumed chat replaying
-    5000 tokens asks for a whole chunk of free cells at once.
-
-    Measured 2026-09-03 and it is why the watermark kept looking innocent: across 1329
-    samples peak residency was 13540 against a 15592 ceiling, never once over, while
-    llama-server halved its batch 19 times and threw 4 speculative sub-batch errors. The
-    buffer was 792 against a 2048 chunk.
-    """
+    """The term every earlier buffer was missing."""
 
     def test_the_buffer_covers_the_batch(self):
-        """While a prefill is pending. That qualifier is the 2026-09-05 change.
-
-        The term was permanent until then, which held a whole --batch-size back even
-        with every chat decoding and nothing to prefill: a quarter of an 8192 cache,
-        forever. The chunk still has to fit when one is actually submitted, which is
-        what this pins.
-        """
+        """While a prefill is pending."""
         from core.inference.llama_preemption import preemption_buffer_tokens
 
         buffer = preemption_buffer_tokens(16384, slots = 4, batch_tokens = 2048, pending_prefill = 5000)
@@ -487,11 +429,7 @@ class TestTheBufferCanHoldOnePrefillChunk:
         assert drafted == plain + 6 * 4
 
     def test_reaction_headroom_still_wins_when_it_is_larger(self):
-        """max(), not a sum: both buy space for the next step, so the larger covers both.
-
-        A tiny --batch-size must not shrink the buffer below the reaction headroom that
-        several slots decoding at once still needs.
-        """
+        """max(), not a sum: both buy space for the next step, so the larger covers both."""
         from core.inference.llama_preemption import preemption_buffer_tokens
         assert preemption_buffer_tokens(16384, slots = 8, batch_tokens = 64) == (
             preemption_buffer_tokens(16384, slots = 8)
@@ -506,20 +444,11 @@ class TestTheBufferCanHoldOnePrefillChunk:
 
 
 class TestTheLiveCrashOf20260901:
-    """Four chats armed, two were chosen as victims, neither ever paused.
-
-    The log said `preempted=chatcmpl-...` and then nothing: no `paused`, no
-    `awaiting-room`, no `resumed`. Meanwhile `committed` sat at 8192 of a 16384 cache
-    while four chats really held 16384, and the model ran out of context space exactly
-    as it did before any of this was written.
-
-    Two independent defects, both of which these tests fail against.
-    """
+    """Four chats armed, two were chosen as victims, neither ever paused."""
 
     @pytest.mark.asyncio
     async def test_the_participant_polls_the_signal_the_stream_polls(self):
-        """Defect one. Without a shared signal, `register` builds its own, the caller
-        hands a different one to the stream, and selecting a victim reaches nobody."""
+        """Without a shared signal `register` builds its own, so selecting a victim reaches nobody."""
         import routes.inference as inference
 
         queue = get_llama_admission_queue("http://127.0.0.1:20/")
@@ -556,8 +485,7 @@ class TestTheLiveCrashOf20260901:
         assert not big.is_set(), "the winner must keep decoding"
 
     def test_a_victim_keeps_holding_kv_until_the_pause_is_confirmed(self):
-        """Defect two. Marking a victim PAUSED at planning time frees room that is
-        still occupied, so the next arrival is admitted against a cache that is full."""
+        """Marking a victim PAUSED at planning time frees room that is still occupied."""
         controller = PreemptionController("honest-accounting")
         controller.configure(budget = 16384, kv_unified = True)
         for index in range(4):
@@ -595,8 +523,7 @@ class TestTheLiveCrashOf20260901:
 
 
 class TestTheDraftReserveActuallyApplied:
-    """Defect three. The live buffer read 820 where 828 was expected, so the reserve
-    silently did nothing on the one configuration that needed it."""
+    """The live buffer read 820 where 828 was expected, so the reserve silently did nothing."""
 
     def test_a_load_whose_spec_block_came_from_extra_args(self):
         import routes.inference as inference
@@ -634,14 +561,7 @@ class TestTheDraftReserveActuallyApplied:
 
 
 class TestAPauseCannotOutliveTheRoomItWaitsFor:
-    """A 33-minute hang with nothing decoding, observed 2026-09-01.
-
-    Three chats were interrupted, entered the pause handshake, and waited forever: the
-    stream calls `await_resume()` with NO argument, the adapter mapped None to
-    `future.result(timeout=None)`, and `resume_async` mapped it to no deadline. Both
-    layers unbounded. That is strictly worse for a user than the crash it replaced,
-    because a crash at least ends.
-    """
+    """A 33-minute hang with nothing decoding, observed 2026-09-01."""
 
     def test_no_argument_does_not_mean_forever(self):
         import inspect
@@ -661,12 +581,7 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         ), "the future would block forever when the caller stated no timeout"
 
     def test_it_always_returns_promptly_rather_than_blocking(self):
-        """The value depends on the path taken; the point is that it RETURNS.
-
-        A participant holding no lease answers True at once (there is nothing to take
-        back), one with no loop answers False. Neither may block, which is the property
-        the hang violated.
-        """
+        """The value depends on the path taken; the point is that it RETURNS."""
         import time
         for gen_id in ("known", "missing"):
             controller = PreemptionController(f"prompt-{gen_id}")
@@ -680,8 +595,9 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
             assert time.monotonic() - started < 5, f"{gen_id}: await_resume blocked"
 
     def test_giving_up_is_reported_as_false_not_raised(self):
-        """False means "finish the turn with what you have", which the stream already
-        knows how to do. An exception here would surface as a failed generation."""
+        """False means "finish the turn with what you have", which the stream already knows how to
+        do.
+        """
         controller = PreemptionController("gave-up")
         controller.configure(budget = 16384, kv_unified = True)
         policy = ControllerPreemptionPolicy(controller, "missing", PreemptSignal(), loop = None)
@@ -689,12 +605,7 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
 
     @staticmethod
     def _waiting_policy(controller, gen_id, tokens):
-        """A policy that actually reaches the wait loop.
-
-        await_resume short-circuits before the loop when the participant has no lease
-        (nothing to take back) or no event loop (nothing to take it back ON), so a stub
-        for each is the only way to exercise the thing under test.
-        """
+        """A policy that actually reaches the wait loop."""
         import asyncio
         import threading
 
@@ -717,13 +628,8 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         loop.call_soon_threadsafe(loop.stop)
 
     def test_two_waiters_cannot_both_be_granted_the_same_room(self):
-        """The 2026-09-03 run 2 failure: 3 context-exhaustion errors and 4 speculative
-        sub-batch errors while sampled residency never once passed the ceiling.
-
-        `room_for` only answers a question. PAUSED is not in `_HOLDS_KV`, so two paused
-        chats asking at the same moment do not appear in each other's arithmetic and both
-        get yes, then both prefill. The overflow happens inside one prefill, between two
-        residency samples, which is why the watermark never saw it.
+        """The 2026-09-03 run 2 failure: 3 context-exhaustion errors and 4 speculative sub-batch
+        errors while sampled residency never once passed the ceiling.
         """
         controller = PreemptionController("double-grant")
         controller.configure(budget = 16384, kv_unified = True, slots = 4)
@@ -760,11 +666,7 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         ), "room booked by a resume that never happened must not stay booked"
 
     def test_a_stalled_wait_still_ends(self):
-        """The hang this bound exists for: nothing decoding, nothing moving.
-
-        A full cache that nobody is draining produces no progress at all, so the stall
-        deadline expires on schedule and the turn finishes with what it has.
-        """
+        """The hang this bound exists for: nothing decoding, nothing moving."""
         import time
 
         controller = PreemptionController("stalled")
@@ -781,12 +683,8 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         assert 0.4 < elapsed < 5.0, f"stall must end near the timeout, took {elapsed}s"
 
     def test_progress_buys_more_patience_than_the_wall_clock_allows(self):
-        """The defect that killed two live chats: 90s of wall clock against an answer
-        that legitimately takes minutes, while the cache was steadily turning over.
-
-        Room is released from another thread AFTER the flat deadline would have fired.
-        A wall-clock bound gives up; a stall bound waits, because the cache kept giving
-        room back the whole time.
+        """The defect that killed two live chats: 90s of wall clock against an answer that
+        legitimately takes minutes, while the cache was steadily turning over.
         """
         import threading
         import time
@@ -823,22 +721,7 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         )
 
     def test_growth_is_visible_in_the_signature(self):
-        """Growth must be VISIBLE. Whether it buys patience is a separate question, and
-        this test used to answer it the wrong way round.
-
-        It was called `test_growth_is_not_progress` and argued that resetting the stall
-        deadline on growth "would restore the hang". That is false for the hang actually
-        named in `await_resume`: three paused chats with NOTHING decoding leaves the
-        signature frozen, so the stall fires immediately either way.
-
-        It is true of a different case -- one chat decoding forever while a waiter never
-        fits -- which the stall detector cannot distinguish from healthy work and which
-        `hard_deadline` bounds instead. The cost of getting this wrong was measured: a
-        waiter abandoned its turn 15 ms before its blocker released, after 90s in which
-        the ledger rose monotonically and fell zero times out of 308 samples.
-
-        The assertions below are unchanged; only the claim they were filed under is.
-        """
+        """Growth must be VISIBLE."""
         controller = PreemptionController("growing")
         controller.configure(budget = 16384, kv_unified = True)
         controller.register("a", tokens = 1000, signal = PreemptSignal())
@@ -852,17 +735,7 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         assert after[1] == before[1], "with the same holders"
 
     def test_a_waiter_does_not_give_up_on_a_server_that_is_still_working(self):
-        """The live failure, as a test: a blocker that GROWS rather than drains.
-
-        `logs/spec_ab_studio_r1_base.log`, round 1 base: a waiter gave up "no progress
-        for 90.0s" 15 ms before the chat holding the cache finished. Across those 90s,
-        308 samples showed the ledger rising 7248 -> 18096 with zero falls, so the
-        server was decoding at full rate the whole time.
-
-        Under the previous predicate -- reset only when committed FALLS or a holder
-        LEAVES -- this fails at `timeout`. It must instead hold on, because the server
-        is plainly alive and the blocker will end.
-        """
+        """The live failure, as a test: a blocker that GROWS rather than drains."""
         import threading
         import time
 
@@ -901,9 +774,7 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         )
 
     def test_the_events_reach_the_logger_studio_actually_configures(self):
-        """`paused` never appeared in the live log, which read as "the handshake never
-        ran". The handshake may well have run: the module was writing to a stdlib
-        logger Studio does not configure, so the evidence was simply discarded."""
+        """`paused` never appeared in the live log, which read as "the handshake never ran"."""
         from pathlib import Path
 
         import core.inference.llama_preemption as module
@@ -916,23 +787,7 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
 
 
 class TestTheCacheIsNeverHandedOutToTheLastToken:
-    """Four chats died with preemption working perfectly, 2026-09-01.
-
-    armed 4, paused 3, resumed 3, peak requests_processing 4: the pause/resume cycle did
-    exactly what it was built to do. They still all died, because admission had handed
-    out `4 * 4096 = 16384` of a 16384 cache. At 100% with zero headroom the speculative
-    drafts had nowhere to go, and the overrun was 24 cells.
-
-    This class first asserted the reserve by subtracting it from the admission budget and
-    checking `capacity * share` left headroom. Both halves of that belong to the design
-    where a chat was confined to a share of the cache. A chat is now clamped to the whole
-    window and the cache is deliberately overcommitted, so `capacity * share` describes
-    nothing, and subtracting the reserve from the budget reserved the drafts twice over
-    while reporting a cache smaller than llama-server was launched with.
-
-    The property is unchanged and is asserted where it now lives: the watermark holds
-    back at least the drafts, so the cache is never worked right up to its last cell.
-    """
+    """Four chats died with preemption working perfectly, 2026-09-01."""
 
     def _buffer(self, budget, drafts, slots):
         from core.inference.llama_preemption import preemption_buffer_tokens
@@ -956,19 +811,11 @@ class TestTheCacheIsNeverHandedOutToTheLastToken:
                 assert total - buffer < total, f"{total}/{slots}: no headroom"
 
     def test_no_speculation_still_leaves_a_margin(self):
-        """The token figures are estimates, not tokenisations, in every case.
-
-        `estimate_messages_tokens_dense` approximates, so a cache handed out to the last
-        token only works if the arithmetic is exact, and it is not.
-        """
+        """The token figures are estimates, not tokenisations, in every case."""
         assert self._buffer(16384, 0, 4) > 0
 
     def test_a_tiny_cache_is_reduced_not_erased(self):
-        """A buffer that swallows the budget leaves a ceiling of zero.
-
-        That reads as "no room for anyone" and would preempt every participant on every
-        call, forever, so it is capped at half.
-        """
+        """A buffer that swallows the budget leaves a ceiling of zero."""
         for total in (256, 512, 1024):
             buffer = self._buffer(total, 8, 8)
             assert 0 < buffer <= total // 2, f"{total}: buffer {buffer} erases the cache"
@@ -986,14 +833,7 @@ class TestTheCacheIsNeverHandedOutToTheLastToken:
 
 
 class TestEveryChatGetsTheWholeWindow:
-    """N for everyone, then evict. The design asked for from the start.
-
-    Dividing the cache into `N / slots` was the stopgap while nothing could pause, and
-    its cost was measured on 2026-09-01: a chat held to ~4049 tokens an attempt, a long
-    answer grinding through length continuations, two of four not finishing inside 900s
-    while the cache sat mostly idle. vLLM admits against the full max_model_len and
-    preempts at a watermark; so do we now.
-    """
+    """N for everyone, then evict."""
 
     def _backend(
         self,
@@ -1076,12 +916,7 @@ class TestTheWatermarkSweep:
         assert any(s.is_set() for s in signals.values())
 
     def test_the_newest_arrival_is_the_first_victim(self):
-        """This asserted the reverse, that the biggest chat is never a victim.
-
-        Largest-first ranked 5th of 7 policies over nine simulated regimes and last on
-        fairness. vLLM V1 evicts the most recently arrived instead, so the work already
-        done survives, and that ranked best overall.
-        """
+        """This asserted the reverse, that the biggest chat is never a victim."""
         controller, signals = self._filled(each = 2000)
         controller.register("big", tokens = 9000, signal = PreemptSignal())
         victims = {v.gen_id for v in controller.observe("big", 3000)}
@@ -1119,13 +954,7 @@ def _chat_payload(**fields):
 
 
 class TestTheStreamActuallyReportsGrowth:
-    """The sweep is only as good as the thing feeding it.
-
-    Deleting the counter increment from the chunk loop left every other test green: the
-    controller's own eviction logic is fine in isolation, and nothing asserted that the
-    stream still tells it anything. That is the same shape as the two live failures
-    today, where the policy was correct and simply never reached.
-    """
+    """The sweep is only as good as the thing feeding it."""
 
     def _source(self):
         from pathlib import Path
@@ -1150,8 +979,9 @@ class TestTheStreamActuallyReportsGrowth:
         assert "_tokens_this_stream % _TOKEN_REPORT_EVERY == 0" in source
 
     def test_the_batch_is_small_enough_to_be_caught_by_the_buffer(self):
-        """Overshoot between reports must fit inside the headroom, or the sweep learns
-        about the overrun after llama-server does."""
+        """Overshoot between reports must fit inside the headroom, or the sweep learns about the
+        overrun after llama-server does.
+        """
         from core.inference.llama_cpp import _TOKEN_REPORT_EVERY
         from core.inference.llama_preemption import preemption_buffer_tokens
 
@@ -1176,14 +1006,7 @@ class TestTheStreamActuallyReportsGrowth:
 
 
 class TestResumingDoesNotThrash:
-    """44 preemptions across four chats, one producing 611 characters in 374 seconds.
-
-    Observed 2026-09-01 the first time the cache was deliberately overcommitted. Eviction
-    was gated on the LIVE total while resume was gated on the admission queue's optimistic
-    charge, so a chat was let back in while the cache was still over its watermark and the
-    next sweep threw it straight back out. A resume undone by the next sweep is worse than
-    waiting: it pays a prefill for nothing.
-    """
+    """44 preemptions across four chats, one producing 611 characters in 374 seconds."""
 
     def test_no_room_while_the_others_still_hold_it(self):
         controller = PreemptionController("thrash-1")
@@ -1195,8 +1018,9 @@ class TestResumingDoesNotThrash:
         ), "a resume was permitted while the cache was already over its watermark"
 
     def test_room_appears_once_a_holder_stops(self):
-        """The approved policy: the longest chat continues, and the rest resume once it
-        frees its room."""
+        """The approved policy: the longest chat continues, and the rest resume once it frees its
+        room.
+        """
         controller = PreemptionController("thrash-2")
         controller.configure(budget = 16384, kv_unified = True)
         for index in range(2):
@@ -1232,18 +1056,7 @@ class TestResumingDoesNotThrash:
 
 
 class TestTheCacheHoldsMoreThanTheLedgerKnows:
-    """`purging slot 1 with 16383 tokens`, observed 2026-09-01.
-
-    An idle slot held the ENTIRE 16384-cell cache, left behind by a request that had
-    already finished, while four chats were scheduled against a ledger that believed the
-    cache was nearly empty. llama.cpp keeps a slot's prompt cache for prefix reuse; the
-    admission ledger cannot see it and /metrics does not report it. That residue is why
-    the watermark kept firing too late and llama-server kept dropping into the
-    shrinking-batch retry where upstream #24840 throws.
-
-    The original design said explicitly not to add a GET /slots reader. That was written
-    before this was understood, and it is the only endpoint that can report it.
-    """
+    """`purging slot 1 with 16383 tokens`, observed 2026-09-01."""
 
     def test_residency_counts_what_the_ledger_cannot_see(self):
         from core.inference.llama_preemption import read_slot_occupancy
@@ -1267,14 +1080,7 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         assert [slot for slot, _ in occupancy["idle"]] == [0, 2], "largest idle first"
 
     def test_generated_tokens_count_as_residency(self):
-        """The undercount that made every watermark diagnostic come back innocent.
-
-        `/slots` reports the prompt. The tokens decoded since occupy cells too, and on a
-        chat writing a long answer they are most of it. Sampled live 2026-09-03 while one
-        slot decoded: reported 12632, decoded 6323, true 18955, in a 16384 cache, against
-        a ceiling of 14312. The watermark never fired because the number it watches never
-        passed the ceiling.
-        """
+        """The undercount that made every watermark diagnostic come back innocent."""
         from core.inference.llama_preemption import read_slot_occupancy
 
         # `n_prompt_tokens` ALREADY includes them, so this asserts no addition. Measured
@@ -1312,8 +1118,9 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         ), "n_prompt_tokens_cache is the prompt only, so generation is still missing"
 
     def test_a_finished_slot_is_not_counted_twice(self):
-        """An idle slot's prompt cache already holds the whole sequence it produced, so
-        adding a stale n_decoded on top would count the generated half twice."""
+        """An idle slot's prompt cache already holds the whole sequence it produced, so adding a
+        stale n_decoded on top would count the generated half twice.
+        """
         from core.inference.llama_preemption import read_slot_occupancy
 
         slots = [
@@ -1379,13 +1186,7 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         assert controller.committed_tokens() == 2000, "a failed read falls back, not to zero"
 
     def test_a_chat_already_in_the_cache_is_not_counted_a_second_time(self):
-        """The regression that paused chats against a cache that was half empty.
-
-        Taking max(ledger, resident) was safe; adding the two was not, and the old split
-        did neither cleanly. Measured over 1218 samples of a live four-chat run, the
-        ledger overstated the cache in 1212 of them because every chat carried an equal
-        share reservation on top of cells llama-server had already counted.
-        """
+        """The regression that paused chats against a cache that was half empty."""
         controller = PreemptionController("resident-measured")
         controller.configure(budget = 16384, kv_unified = True)
         controller.register("a", tokens = 4096, signal = PreemptSignal())
@@ -1412,14 +1213,7 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         assert controller.committed_tokens() == 9000
 
     def test_idle_residue_does_not_stand_between_a_waiter_and_its_resume(self):
-        """The deadlock of 2026-09-04: three runs completing nothing.
-
-        With no live generation at all the ledger read 0 while the summed slots read
-        21304 against a 14312 ceiling, so room_for refused every resume, nineteen chats
-        gave up, and 0 of 4 completed on three consecutive runs. That residue belongs to
-        finished requests and is erased for the waiter before it resumes, so waiting it
-        out is waiting for something nobody will ever do.
-        """
+        """The deadlock of 2026-09-04: three runs completing nothing."""
         controller = PreemptionController("idle-deadlock")
         controller.configure(budget = 16384, kv_unified = True, slots = 4)
         controller.register("waiter", tokens = 5000, signal = PreemptSignal())
@@ -1443,9 +1237,9 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         assert controller.room_for("waiter", 5000) is False
 
     def test_a_reading_above_the_cache_is_clamped_to_it(self):
-        """A per-slot sum is an upper bound, not a measurement: prompts share prefix
-        cells under --kv-unified and idle entries go stale, so the total can exceed the
-        cache. Left unclamped the figure is unreachable rather than merely pessimistic."""
+        """A per-slot sum is an upper bound, not a measurement: prompts share prefix cells under
+        --kv-unified and idle entries go stale, so the total can exceed the cache.
+        """
         controller = PreemptionController("clamp")
         controller.configure(budget = 16384, kv_unified = True, slots = 4)
         controller.register("a", tokens = 100, signal = PreemptSignal())
@@ -1513,14 +1307,7 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
 
 
 class TestIdleResidueIsFreedWhenSeenNotWhenDesperate:
-    """Reclaiming only once a victim had been chosen made the erase almost useless.
-
-    Measured 2026-09-02: three reclaims freeing 1949, 3103 and 844 tokens while
-    llama-server still entered its shrinking-batch retry 21 times and threw the
-    speculative sub-batch error 4 times. By the time a victim is being chosen the cache
-    is already in trouble. An idle slot's cache belongs to a request that has finished,
-    so there is no reason to wait for trouble before freeing it.
-    """
+    """Reclaiming only once a victim had been chosen made the erase almost useless."""
 
     def test_the_route_reclaims_on_sight(self):
         from pathlib import Path
@@ -1553,26 +1340,10 @@ class TestIdleResidueIsFreedWhenSeenNotWhenDesperate:
 
 
 class TestEveryNameThePreemptPathCallsIsActuallyBound:
-    """A NameError on the pause path kills the chat it was trying to save.
-
-    Shipped 2026-09-02 and caught only by a live run: an import was inserted into the
-    first textual match of the import statement, which was an unrelated local import
-    deep in the GGUF metadata reader, so the names were bound in a function that never
-    used them and unbound in the one that did. The file still compiled, `ast.parse`
-    still passed, the helpers still imported cleanly from their own module, and the
-    first preemption raised `NameError: name 'trailing_assistant_reasoning' is not
-    defined`. Two chats died in under twenty seconds.
-
-    Checking that a helper exists is not the same as checking its caller can see it.
-    """
+    """A NameError on the pause path kills the chat it was trying to save."""
 
     def test_the_resume_helpers_are_bound_wherever_they_are_called(self):
-        """Every function that calls them must import them, whichever one that is.
-
-        Pinned to a function name at first, which broke the moment the block was
-        extracted into a helper. The invariant is not "this function imports it", it is
-        "no function calls a name it cannot see".
-        """
+        """Every function that calls them must import them, whichever one that is."""
         import ast
         from pathlib import Path
 
@@ -1719,18 +1490,7 @@ class TestAFailureInTheResumeCannotKillTheChat:
 
 
 class TestAPauseActuallyFreesCells:
-    """Aborting the upstream request stops the decode; it does not free the cache.
-
-    llama-server keeps a finished slot's prompt cache for prefix reuse, so a paused chat
-    still occupies its cells. Three chats paused together therefore hold the whole cache
-    between them and every one of them waits for room only the others could return.
-
-    Measured 2026-09-02 on the build that carried thoughts across a pause and charged
-    them correctly: `want` climbed 4049 -> 4625 -> 9532 as each replayed thought became
-    prompt, only two reclaims fired totalling 5620 tokens against a 16384 cache, and all
-    three chats hit "no room within 90.0s". Correct accounting was not enough; the cells
-    have to actually go, which is what vLLM's RECOMPUTE does.
-    """
+    """Aborting the upstream request stops the decode; it does not free the cache."""
 
     def _refresh_source(self):
         from pathlib import Path
@@ -1763,17 +1523,7 @@ class TestAPauseActuallyFreesCells:
 
 
 class TestAFinishedGenerationGivesItsChargeBack:
-    """The ledger only ever grew, so eventually nobody could be admitted.
-
-    `_openai_llama_preemption_disarm` was written and never called. Every chat that
-    ended stayed registered with its tokens committed: the ones that finished normally,
-    the ones that gave up waiting for room, and the ones killed by a stream error. Once
-    the accumulated total passed the ceiling the next chat waited for room that could
-    never arrive, and unlike the resume wait that path has no timeout, so it waited until
-    the client disconnected. Observed 2026-09-02: one chat of four open for the full
-    2400s deadline while llama-server sat idle with every slot released and
-    `requests_processing` at 0.
-    """
+    """The ledger only ever grew, so eventually nobody could be admitted."""
 
     def test_the_disarm_is_called(self):
         from pathlib import Path
@@ -1847,18 +1597,7 @@ class TestAFinishedGenerationGivesItsChargeBack:
 
 
 class TestDroppingTheChargeWithoutTheCellsIsWorseThanNeither:
-    """Freeing a finished chat's charge while llama-server still holds its cells.
-
-    The ledger then reports room the cache does not have, and admission overcommits
-    against space that does not exist. That is the crash, not a stall, which makes it
-    strictly worse than the leak it replaced: an over-counted ledger is only pessimistic.
-
-    Measured 2026-09-02 across two consecutive builds on the same scenario. Before the
-    disarm: 3 of 4 chats completed, 0 context-exhaustion errors, 1 KV retry. After the
-    disarm alone: 0 of 4, 3 context-exhaustion errors, 42 KV retries, and idle reclaims
-    fell from 5 to 2 because the emptier-looking ledger left nobody waiting to trigger
-    them.
-    """
+    """Freeing a finished chat's charge while llama-server still holds its cells."""
 
     def _disarm_source(self):
         from pathlib import Path
@@ -1898,24 +1637,14 @@ class TestDroppingTheChargeWithoutTheCellsIsWorseThanNeither:
 
 
 def _await_resume_body(source: str) -> str:
-    """The adapter's await_resume, not one of the four other definitions of that name.
-
-    Splitting on the bare name picked up a Protocol stub, whose body is 53 characters and
-    contains none of what these assertions look for, so the tests failed against correct
-    code.
-    """
+    """The adapter's await_resume, not one of the four other definitions of that name."""
     cls = source.split("class ControllerPreemptionPolicy", 1)[1]
     return cls.split("def await_resume", 1)[1].split("\n    def ", 1)[0]
 
 
 class TestTheResumeWaitNeverWaitsForImpossibleRoom:
-    """The live hang, at its source.
-
-    A resumed run replays what it generated as prompt, so `want` grows with every pause.
-    Once it passes the shared ceiling no eviction can admit it, and once it passes the
-    cache itself nothing can. The wait loop asked neither question and simply spun until
-    its client disconnected: one chat of four open for a full 2400s deadline with
-    llama-server idle and every slot released.
+    """A resumed run's `want` grows with every pause, and the wait loop asked neither whether it
+    still fits beside anyone nor whether it fits at all.
     """
 
     def _adapter(
@@ -1972,14 +1701,7 @@ class TestTheResumeWaitNeverWaitsForImpossibleRoom:
 
 
 class TestTheResumeGrantReadsTheCacheAfresh:
-    """A resume is granted against an exact figure, not one up to a second old.
-
-    The ledger adds up prompt ESTIMATES; llama-server's per-slot totals are exact, and on
-    code-heavy answers the two drift. A run overran the cache with three slots holding
-    4237 + 5400 + 7390 = 17027 tokens against 16384, and nothing recorded whether the
-    ledger had drifted low or the sweep had simply not run during prefill. Both are now
-    addressed: the drift is logged when it exceeds 256 tokens, and the grant re-reads.
-    """
+    """A resume is granted against an exact figure, not one up to a second old."""
 
     def test_the_controller_can_be_given_a_probe(self):
         from core.inference.llama_preemption import PreemptionController
@@ -2039,18 +1761,7 @@ class TestTheResumeGrantReadsTheCacheAfresh:
 
 
 class TestTheSweepIsNotBlindDuringPrefill:
-    """A round boundary grows the prompt, so it has to be a sweep point.
-
-    The watermark ran from the token callback alone. `_gguf_recost` told the controller
-    the new size at each round through `note_tokens`, but note_tokens only records and
-    only observe() plans evictions, so the larger figure sat in the ledger unacted on
-    until 32 more tokens had been generated.
-
-    That window is exactly where the prompts are biggest: after a tool result, and after
-    a resume replays its whole partial. Three chats prefilling together could pass the
-    cache before the sweep next ran, which is how three slots came to hold
-    4237 + 5400 + 7390 = 17027 tokens against a 16384 cache with the watermark at 15608.
-    """
+    """A round boundary grows the prompt, so it has to be a sweep point."""
 
     def _recost_body(self):
         from pathlib import Path

@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A reservation nobody enforces is not a reservation.
-
-Admission charged an unstated "Max Tokens: Max" a bounded allowance while the request
-sent to llama-server still said the whole window, so the two disagreed by the whole
-cache. Measured on 2026-09-01: four tool chats on `-c 16384 --parallel 4 --kv-unified`
-were each admitted at their share, all generated into the one shared pool, and
-llama-server errored EVERY processing slot at once. Four conversations, lost together.
-
-The bound is the fair share, and the charge is raised to match it exactly. An earlier
-revision let the two differ, on the reasoning that the charge should stay optimistic so
-more chats fit while the bound only had to be physically safe. That is unsound in
-company: a small prompt charged `prompt + 1024` was still permitted its whole share, so
-admitting it beside a large-prompt request let the permitted total pass the cache while
-the charged total fit. Charging the whole share costs no concurrency, because
-`capacity * share <= budget` by construction.
-"""
+"""A reservation nobody enforces is not a reservation."""
 
 from types import SimpleNamespace
 
@@ -66,24 +51,7 @@ def _enforced(payload, backend):
 
 
 class TestTheInvariant:
-    """The invariant MOVED. It is no longer arithmetic, it is eviction.
-
-    This class used to assert `capacity * (prompt + permitted) <= budget`: admission
-    divided the cache so an overrun was impossible by construction. That is safe and it
-    is not what was asked for. It held every chat to about `N / slots` -- measured
-    2026-09-01, ~4049 tokens an attempt on a 16384 cache, with long answers grinding
-    through length continuations and two of four not finishing inside 900s while most of
-    the cache sat idle.
-
-    Every chat is now permitted the whole window and the cache is overcommitted on
-    purpose, exactly as vLLM admits against the full max_model_len. What keeps the cache
-    inside its bounds is the watermark sweep in `llama_preemption`, which sees each n_i
-    grow and evicts. Those guarantees are asserted in
-    `test_llama_preemption_wiring.py::TestTheWatermarkSweep`, not here.
-
-    What remains true here is narrower and still worth pinning: no single request may be
-    permitted more than the window its own slot holds.
-    """
+    """No single request may be permitted more than the window its own slot holds."""
 
     def test_no_request_may_exceed_its_own_window(self):
         for total in (2048, 4096, 8192, 16384, 65536, 262144):
@@ -143,34 +111,22 @@ class TestWhatIsLeftAlone:
         assert _enforced(_Payload(max_tokens = 16384), backend) is None
 
     def test_a_private_cache_per_slot_is_unrestricted(self):
-        """Under --no-kv-unified the aggregate is N times the window, so a share IS the
-        window and no request can overrun anyone else."""
+        """Under --no-kv-unified the aggregate is N times the window, so a share IS the window and
+        no request can overrun anyone else.
+        """
         backend = _backend(window = 4096, total = 16384, slots = 4)
         assert _enforced(_chat(max_tokens = 4096), backend) is None
 
 
 class TestTheEdges:
     def test_a_prompt_that_fills_the_window_still_gets_a_token(self):
-        """Zero would be refused upstream, so the floor is one. Reached now only by a
-        prompt approaching the WHOLE window rather than a quarter of it."""
+        """Zero would be refused upstream, so the floor is one."""
         backend = _backend(window = 16384, total = 16384, slots = 4)
         enforced = _enforced(_chat("word " * 20000, max_tokens = 16384), backend)
         assert enforced == 1
 
     def test_the_bound_deliberately_exceeds_the_charge(self):
-        """They diverge ON PURPOSE now, and that is the whole design.
-
-        The charge is what admission RESERVES so several chats fit; the bound is what a
-        single request is physically allowed. Under the divided design these had to be
-        equal, because arithmetic was the only defence and a request admitted on less
-        than it could use overran the cache. That is no longer how safety is obtained:
-        the cache is overcommitted deliberately and the watermark sweep evicts.
-
-        This is the same shape as the bug of 2026-09-01, and the difference is not
-        cosmetic. Then, nothing watched the gap. Now the sweep does, on every 32 tokens,
-        and it is asserted in TestTheWatermarkSweep. If that sweep is ever removed this
-        gap becomes the crash again.
-        """
+        """They diverge ON PURPOSE now, and that is the whole design."""
         backend = _backend(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
         charged = _openai_llama_admission_tokens(
@@ -200,15 +156,7 @@ def _prompt_tokens(payload):
 
 
 class TestItReachesTheWireWithoutBecomingTheCallersCap:
-    """The bound has to land on the request and nowhere else.
-
-    Charging one figure and sending another is the whole defect, so the allowance must
-    reach `payload["max_tokens"]`. But folding it into the caller's `max_tokens` instead
-    is its own trap: `_loop_budget_left` reads that as "what the caller allowed" and
-    stops continuing once it is spent, which would replace a crash with a silent
-    truncation at one share. Both halves are asserted here because the first draft of
-    this change did exactly the wrong one.
-    """
+    """The bound has to land on the request and nowhere else."""
 
     def _source(self):
         from pathlib import Path
@@ -226,8 +174,9 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
         ), f"expected the plain stream and the tool loop to bound the wire cap, found {applied}"
 
     def test_the_loop_budget_never_sees_it(self):
-        """`_loop_budget_left` answers "did the CALLER cap this", and an admission bound
-        is not the caller speaking."""
+        """`_loop_budget_left` answers "did the CALLER cap this", and an admission bound is not the
+        caller speaking.
+        """
         lines = self._source().split("\n")
         start = next(i for i, l in enumerate(lines) if "def _loop_budget_left" in l)
         indent = len(lines[start]) - len(lines[start].lstrip())
@@ -252,15 +201,7 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
 
 
 class TestChargedAndPermittedCannotDrift:
-    """The bound is only safe if nothing is admitted on less than it may use.
-
-    Found by asking what happens when the allowance floors at 1. A prompt past its share
-    is permitted ``prompt + 1``, which is far more than a share, and the defence was that
-    such a request is charged more than a share so fewer are admitted. That holds on its
-    own, but not in company: a SMALL prompt was charged ``prompt + 1024`` while being
-    permitted its whole share, and mixing the two let the permitted total pass the cache
-    while the charged total still fit.
-    """
+    """The bound is only safe if nothing is admitted on less than it may use."""
 
     def _charged(self, budget, share, prompt):
         from routes.inference import _openai_llama_admission_output_allowance
@@ -299,22 +240,7 @@ class TestChargedAndPermittedCannotDrift:
         assert len(admitted) <= slots
 
     def test_the_charge_is_deliberately_less_than_the_permission(self):
-        """This asserted the opposite, and the opposite was already false.
-
-        It was `test_nothing_is_admitted_on_less_than_it_may_use`, requiring
-        `charged >= permitted` so that `sum(charged) <= budget` implied the permitted total
-        fit. It passed only because it computed `permitted` as `prompt + (share - prompt)`
-        inline. The code permits `window - prompt`:
-
-            budget=16384  share=4096  prompt=8  charged=4096  permitted=16384
-
-        so the property had already been abandoned, by a factor of four, and the test did
-        not notice because it never asked the function.
-
-        The charge is now an admission estimate and nothing more. Preemption enforces the
-        cache, which is why it must stay timely: if eviction stops working this becomes the
-        crash again, and no arithmetic here will catch it.
-        """
+        """This asserted the opposite, and the opposite was already false."""
         for budget, slots in ((16384, 4), (4096, 4), (2048, 2), (32768, 8), (262144, 4)):
             share = budget // slots
             for prompt in (1, 8, share // 2, share - 2):
@@ -340,12 +266,7 @@ class TestChargedAndPermittedCannotDrift:
 
 
 class TestWhenNothingWillReclaim:
-    """The window is the ceiling only while preemption can reclaim the overcommit.
-
-    Under the rollout switch nothing can pause a chat that outgrows its charge, so four
-    chats each permitted the whole window is the shared-cache overflow the switch exists
-    to fall back from. The share comes back there, held per request as it was before.
-    """
+    """The window is the ceiling only while preemption can reclaim the overcommit."""
 
     def test_the_switch_brings_the_share_back(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")

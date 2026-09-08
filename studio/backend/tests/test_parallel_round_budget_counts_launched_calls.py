@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A no-op in an overlapped round must not spend the call budget.
-
-An overlapped round has to check the budget against what it has LAUNCHED, because a
-launched call has not settled yet and only settling decrements ``remaining``. Counting
-the whole pending list instead counts entries that will never spend anything: a
-duplicate the controller turned into a no-op, a denied call, a call an earlier budget
-check already refused. All three are held in the same list so their cards land in call
-order, and all three are tagged ``"lines"`` rather than ``"call"``.
-
-The consequence is a call the model asked for, that the budget could pay for, that was
-never run and came back to the provider as ``budget exhausted``. In a sequential round
--- where the pending list is always empty -- the same round runs it.
-"""
+"""A no-op in an overlapped round must not spend the call budget."""
 
 from __future__ import annotations
 
@@ -77,12 +65,7 @@ def _calls_turn(calls):
 
 
 def _transport_with_a_repeat():
-    """Round one runs `alpha`. Round two repeats it, then asks for two new searches.
-
-    The repeat is a controller no-op -- `record_result` put its key in
-    `_successful_keys` -- so it costs nothing. The round's three keys are still distinct
-    from each other, which is what the overlap gate asks, so the round runs in parallel.
-    """
+    """Round one runs `alpha`."""
     return FakeTransport(
         [
             _calls_turn([("call_a", "alpha")]),
@@ -95,11 +78,7 @@ def _transport_with_a_repeat():
 
 class TestABudgetIsSpentByLaunchesOnly:
     def test_a_repeat_beside_two_new_calls_does_not_refuse_the_second(self, executed):
-        """Budget 3: one for round one, two left for round two's two real searches.
-
-        Counting the repeat's placeholder against the budget left `remaining - 3 <= 0`
-        at the third call and refused `gamma` for a slot nothing had taken.
-        """
+        """Budget 3: one for round one, two left for round two's two real searches."""
         lines = _run(_transport_with_a_repeat(), max_calls = 3, tools = [WEB])
 
         def _query(arguments):
@@ -122,11 +101,6 @@ class TestABudgetIsSpentByLaunchesOnly:
         ), f"a call was refused for a budget that was not spent: {results}"
 
     def test_a_budget_that_really_is_spent_still_refuses(self, executed):
-        """The guard the counting exists for, unchanged.
-
-        With one call for the whole response, round one takes it and round two's real
-        searches must not run: launching them would spend a budget the loop had already
-        refused, side effects and all.
-        """
+        """The guard the counting exists for, unchanged."""
         _run(_transport_with_a_repeat(), max_calls = 1, tools = [WEB])
         assert len(executed) == 1

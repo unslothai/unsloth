@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A pause has to be tellable from a Stop, at the exact place the stream dies.
-
-Both close the upstream read the same way, through the same watcher and the same
-socket shutdown. What separates them is only which exception comes out, and
-everything downstream depends on getting that right: ``_LlamaStreamCancelled``
-ends the turn and writes ``status="cancelled"`` on the durable run, while a pause
-is expected to be caught and resumed. Confusing them either abandons a chat that
-was merely waiting or silently resumes one the user stopped.
-"""
+"""A pause has to be tellable from a Stop, at the exact place the stream dies."""
 
 import threading
 
@@ -78,8 +70,7 @@ class TestWhichExceptionComesOut:
         assert response.closed
 
     def test_a_stop_during_a_pause_is_still_a_stop(self):
-        """A user who pressed Stop while a chat was paused meant Stop. Resuming
-        it would restart a turn they abandoned."""
+        """A user who pressed Stop while a chat was paused meant Stop."""
         cancel = threading.Event()
         cancel.set()
         pause = preemption.PreemptSignal()
@@ -125,8 +116,9 @@ class TestThePauseIsSeenBetweenChunks:
 
 class TestTheCombinedWaitable:
     def test_it_is_the_existing_helper_not_a_new_one(self):
-        """Reusing `_CombinedCancelEvent` is why a pause needs no new teardown:
-        the watcher thread and the socket shutdown are untouched."""
+        """Reusing `_CombinedCancelEvent` is why a pause needs no new teardown: the watcher thread
+        and the socket shutdown are untouched.
+        """
         from core.inference.llama_cpp import _CombinedCancelEvent
 
         combined = _interrupt_event(threading.Event(), preemption.PreemptSignal())
@@ -134,8 +126,9 @@ class TestTheCombinedWaitable:
 
 
 class TestTheSignaturesStayBackwardsCompatible:
-    """Overrides and test doubles written against the old signatures still work,
-    because the new argument is only passed when a pause signal exists."""
+    """Overrides and test doubles written against the old signatures still work, because the new
+    argument is only passed when a pause signal exists.
+    """
 
     def test_every_funnel_defaults_the_new_argument(self):
         import inspect
@@ -160,7 +153,8 @@ class TestTheSignaturesStayBackwardsCompatible:
 
     def test_cancel_only_callers_pass_no_new_argument(self):
         """The guard against the failure this change actually hit: a monkeypatched
-        `_stream_with_retry` with the old signature must never see the kwarg."""
+        `_stream_with_retry` with the old signature must never see the kwarg.
+        """
         import pathlib
         import re
 

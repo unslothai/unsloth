@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The two places the sweep can free room it has not actually freed.
-
-Both are arithmetic, and both end the same way: the planner reports it made space, the
-prefill that triggered it goes ahead, and the cache is still full. That is the
-``Context size has been exceeded`` this whole mechanism exists to remove, arrived at by
-believing the ledger rather than the cache.
-"""
+"""The two places the sweep can free room it has not actually freed."""
 
 from __future__ import annotations
 
@@ -34,20 +28,10 @@ class _Lease:
 
 
 class TestAReclaimedHolderIsNotAVictim:
-    """It holds no cells, so pausing it frees none.
-
-    ``note_cells_reclaimed`` flips ``cells_reclaimed``, which takes a participant out of
-    ``holds_kv`` and therefore out of ``_committed_locked``. Its STATE is still
-    PARKED_ON_TOOL, so ``preemptable`` stayed True and the planner picked it first --
-    then subtracted its stale ``tokens`` from a total that had never included them, and
-    stopped, satisfied, without choosing the live decoder that actually had the room.
-    """
+    """It holds no cells, so pausing it frees none."""
 
     def test_a_parked_holder_whose_cells_were_erased_is_not_chosen(self):
-        """Ceiling 15616 of a 16384 cache. Three holders totalling 16000 are over it,
-        but 9000 of that belongs to a parked holder whose cells were already erased and
-        which is therefore already out of ``committed``.
-        """
+        """Ceiling 15616 of a 16384 cache."""
         controller = _controller("http://sweep-1")
         controller.register("parked", lease = _Lease(9000), tokens = 9000)
         controller.register("live-a", lease = _Lease(8000), tokens = 8000)
@@ -70,14 +54,7 @@ class TestAReclaimedHolderIsNotAVictim:
         assert not controller.participant("parked").preempt_event.is_set()
 
     def test_the_live_decoder_is_still_reachable_behind_it(self):
-        """The consequence of the above, and the reason it matters.
-
-        Parked holders sort FIRST -- they are the cheapest room -- so a reclaimed one
-        absorbed the whole shortfall on paper and the loop broke before it ever looked
-        at a chat that was decoding. Its 9000 came off a total that never contained
-        them, so 16000 became 7000 and the sweep declared itself done having freed
-        nothing at all.
-        """
+        """The consequence of the above, and the reason it matters."""
         controller = _controller("http://sweep-2")
         controller.register("parked", lease = _Lease(9000), tokens = 9000)
         controller.register("live-a", lease = _Lease(8000), tokens = 8000)
@@ -95,14 +72,7 @@ class TestAReclaimedHolderIsNotAVictim:
 
 
 class TestAPartialReclaimDoesNotFreeEverybody:
-    """``reclaim_idle_slots`` stops at ``needed``; ``note_cells_reclaimed`` does not.
-
-    The erase loop breaks as soon as it has freed what was asked for, so a cache holding
-    three idle slots can lose one. ``note_cells_reclaimed`` is global: it marks EVERY
-    parked and tools-running holder as having lost its cells and makes each hand its
-    admission commitment back. Applied after a partial erase, that gives away room that
-    is still physically occupied.
-    """
+    """``reclaim_idle_slots`` stops at ``needed``; ``note_cells_reclaimed`` does not."""
 
     def test_the_erase_loop_stops_once_it_has_what_it_needed(self):
         occupancy = {

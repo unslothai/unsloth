@@ -2,20 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A give-up is not always how the turn ended.
+ * A give-up is not always how the turn ended: a tool run sends the notice and then BREAKS
+ * INTO the final answering pass, which usually stops normally on `finish_reason: "stop"`.
  *
- * When a tool run stops waiting for room in the shared KV cache it sends the give-up
- * notice and then BREAKS INTO the final answering pass, which usually writes the reply and
- * stops normally on `finish_reason: "stop"`. The notice has already been sent by then.
- *
- * Chunk processing clears `incompleteReason` on that terminal reason, but the give-up
- * latch was never cleared and the override that reads it is unconditional and last, so a
- * completed answer was stamped `paused`: the "did not get it back" notice under a finished
- * reply, and a Continue offering to resume a turn with nothing left to say.
- *
- * `length` must keep the old behaviour exactly. It is the shape a give-up really does end
- * on -- the backend stamps it so the client can resume from the partial -- so a `length`
- * chunk after the notice is the case the override exists for.
+ * `length` must keep the old behaviour exactly, since it is the shape a give-up really does
+ * end on and a `length` chunk after the notice is the case the override exists for.
  */
 
 import assert from "node:assert/strict";
@@ -41,10 +32,8 @@ test("a finished answer clears the give-up, a length stop does not", () => {
   assert.equal(completedAfterGivingUp(""), false);
 });
 
-/**
- * The adapter's own two steps over a stream, in the order it runs them: latch what the
- * chunks say, then apply the give-up override once the stream has ended.
- */
+/** The adapter's own two steps, in order: latch what the chunks say, then apply the
+ *  give-up override once the stream has ended. */
 function replay(
   chunks: readonly { finishReason?: string; gaveUp?: boolean }[],
 ): IncompleteReason | null {
@@ -94,8 +83,8 @@ test("a turn that gave up and stopped there is still paused", () => {
 });
 
 test("a give-up after an answer still wins", () => {
-  // The order that matters: the notice arrives AFTER a pass that stopped normally when
-  // the give-up happened in the final pass itself, which really did end the turn early.
+  // A notice AFTER a pass that stopped normally is a give-up in the final pass itself,
+  // which really did end the turn early.
   assert.equal(replay([{ finishReason: "stop" }, { gaveUp: true }]), "paused");
 });
 
@@ -106,8 +95,7 @@ test("nothing else about the length latch changes", () => {
 });
 
 test("the adapter clears the latch where it latches the finish reason", () => {
-  // Structural, because the absence is the defect: both halves behaved correctly on their
-  // own terms and nothing ever connected them.
+  // Structural, because the absence is the defect: both halves behaved correctly alone.
   const source = readFileSync(
     new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
     "utf8",

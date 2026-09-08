@@ -2,16 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A turn the backend gave up on can be EMPTY, and an empty turn used to render as nothing
- * at all.
- *
- * Measured in the GUI on 2026-09-05, four chats on a 35B at -c 8192 with the GPU shared:
- * one chat was evicted while still prefilling, waited for room, and the backend finished
- * its turn without it ever producing a token. The stream carried no error, so the row
- * mounted with no text, no notice, no Continue and no explanation. `isContinuableContent`
- * and the bar's own `partial.trim()` check both require text, which is right for every
- * other reason a turn stops early and wrong for this one, since this is the only reason
- * the backend can raise BEFORE the first token.
+ * A turn the backend gave up on can be EMPTY, and an empty turn used to render as nothing at
+ * all: a chat evicted while still prefilling never produces a token, and the stream carries
+ * no error. `isContinuableContent` and the bar's own `partial.trim()` check both require
+ * text, which is right for every other reason a turn stops early and wrong for this one.
  */
 
 import assert from "node:assert/strict";
@@ -35,10 +29,9 @@ test("the give-up signal is read off the truncation event", () => {
 });
 
 test("an ordinary fit is not a give-up", () => {
-  // The same event carries real fits, several per turn on a compacting thread. Reading one
-  // of those as a give-up would relabel a healthy turn as paused.
-  // Typed as the event the backend really sends, so the case is checked against the shape
-  // the reader is handed rather than against a two-field stand-in for it.
+  // The same event carries real fits, several per turn on a compacting thread, and reading
+  // one as a give-up would relabel a healthy turn as paused. Typed as the event the backend
+  // really sends rather than a two-field stand-in.
   const fit: ContextTruncation = { fits: false, dropped_messages: 4 };
   assert.equal(isPreemptGaveUp(fit), false);
   assert.equal(isPreemptGaveUp({}), false);
@@ -48,8 +41,7 @@ test("an ordinary fit is not a give-up", () => {
 
 test("only a paused turn may be continued with no text", () => {
   assert.equal(resumesWithoutText("paused"), true);
-  // Every other reason has text by construction, and offering Continue on an empty one
-  // would resume a turn that never started.
+  // Every other reason has text by construction.
   assert.equal(resumesWithoutText("length"), false);
   assert.equal(resumesWithoutText("cancelled"), false);
   assert.equal(resumesWithoutText("interrupted"), false);
@@ -68,8 +60,8 @@ test("an empty assistant turn is continuable only when it is allowed to be", () 
 });
 
 test("allowEmpty does not reopen the tool-call rule", () => {
-  // The reason `isContinuableContent` exists. A continuation runs as a sibling, so the
-  // call and its result are missing from the outbound history whatever stopped the turn.
+  // A continuation runs as a sibling, so the call and its result are missing from the
+  // outbound history whatever stopped the turn.
   const calledATool = [
     { type: "text", text: "" },
     { type: "tool-call", toolName: "web_search" },

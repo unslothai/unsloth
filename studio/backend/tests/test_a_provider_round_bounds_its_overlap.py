@@ -1,28 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""How many of one provider round's tool calls may be in flight at once.
-
-Overlapping a round's calls is worth having: a turn that asks for three searches should
-cost the longest of them and not the sum. What it cannot be is unbounded. Each overlapped
-call is a `stream_tool_execution` worker with a pump task on top of it, and every one of
-them starts its side effects at once, so a provider turn carrying dozens of distinct calls
--- prompt induced, or simply a model that fanned out -- multiplied threads and side
-effects with nothing bounding it.
-
-`max_tool_calls_per_message` does not bound it. At its unlimited value the budget check
-above the launch never refuses a call, which is exactly the configuration this was
-reported against, and the round's length is the model's choice rather than the user's.
-
-The local GGUF loop already caps it: a round past `_MAX_PARALLEL_TOOL_CALLS_PER_ROUND`
-runs single file, as every round did before overlapping existed. This is the same rule and
-the same figure on the provider loop.
-
-The bound is measured with a barrier rather than a sleep: two tools that must each see the
-other before either may return can only both return if they were running together, so a
-round that overlaps reports TOGETHER and one that does not reports ALONE. A machine that
-is merely slow cannot turn one into the other.
-"""
+"""How many of one provider round's tool calls may be in flight at once."""
 
 from __future__ import annotations
 
@@ -89,13 +68,7 @@ def _round_of(count: int) -> FakeTransport:
 
 @pytest.fixture
 def rendezvous(monkeypatch):
-    """A tool that cannot return until another call of it has also started.
-
-    Pairs, not the whole round: a barrier sized to the round would answer "did all of
-    them overlap", and what has to be answered is "did ANY two". A round that runs single
-    file breaks the barrier once on its timeout and every later call then returns at once,
-    so the sequential case costs one timeout rather than one per call.
-    """
+    """A tool that cannot return until another call of it has also started."""
     # Long enough that a loaded runner still meets it, short enough that the serialised
     # case (where it can never be met) does not dominate the suite.
     barrier = threading.Barrier(2, timeout = 4)

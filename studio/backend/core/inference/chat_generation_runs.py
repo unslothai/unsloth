@@ -357,16 +357,13 @@ _ADMISSION_WAIT_MARKER = ": admission-wait"
 # Leaving the queue. Renewed unconditionally: wait renewals are rate limited, and the lease equals the first-token
 # timeout, so any age carried in is negative margin.
 _ADMISSION_DONE_MARKER = ": admission-done"
-# The pause comments, same origin. A durable follower never sees the SSE comments the
-# legacy stream shows the browser directly (`_SSEDecoder` keeps data lines only), so
-# a chat that was parked to make room, by Studio or by llama-server itself, showed a
-# durable run nothing at all: the text stopped and started minutes later with no
-# explanation, which is the hang this design replaced. Relayed as a chunk carrying the
-# frontend's own `_admissionStatus` field, which is what its comment parser produces.
+# The pause comments, same origin. `_SSEDecoder` keeps data lines only, so a durable
+# follower never sees them and a paused chat simply stopped and restarted minutes later.
+# Relayed as a chunk carrying the frontend's own `_admissionStatus` field.
 _PREEMPT_PAUSED_MARKER = ": preempt-paused"
 _PREEMPT_RESUMED_MARKER = ": preempt-resumed"
-# Every two seconds of a pause. The lease is renewed on it: a pause longer than the lease is
-# a chat waiting its turn, not a wedged run.
+# Every two seconds of a pause. The lease is renewed on it: a pause longer than the lease
+# is a chat waiting its turn, not a wedged run.
 _PREEMPT_KEEPALIVE_MARKER = ": preempt-keepalive"
 
 
@@ -773,10 +770,8 @@ class ChatGenerationSupervisor:
                         await self._try_touch_progress(run_id)
                 status_chunks = _admission_status_chunks(text)
                 if status_chunks:
-                    # Written at once, not batched: nothing follows a pause for as long
-                    # as it lasts, so a batched notice would reach the follower with the
-                    # resume, when it has nothing left to explain. The pause is also
-                    # progress for the lease, like the admission comments above.
+                    # Written at once, not batched: nothing follows a pause while it
+                    # lasts, so a batched notice would arrive with the resume.
                     now_ms = db.now_ms()
                     pending.extend(("chunk", chunk, now_ms) for chunk in status_chunks)
                     await asyncio.to_thread(db.append_events, run_id, worker_token, pending)

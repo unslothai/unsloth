@@ -1199,30 +1199,20 @@ def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
 
 _PARALLEL_TOOL_CALLS_ENV = "UNSLOTH_PARALLEL_TOOL_CALLS"
 
-# The most calls one round overlaps. Each overlapped call is a `stream_tool_execution`
-# worker with a pump task on top of it, and every one of them starts its side effects at
-# once, so a provider turn carrying dozens of distinct calls -- prompt induced, or simply a
-# model that fanned out -- would multiply threads and side effects with nothing bounding
-# it. `max_tool_calls_per_message` cannot bound it either: at its unlimited value the
-# budget check above the launch never refuses a call. A round past this runs single file,
-# as every round did before overlapping existed, which is the same rule and the same figure
-# the local GGUF loop applies through `_MAX_PARALLEL_TOOL_CALLS_PER_ROUND`. Kept here
-# rather than imported, because the two loops must not import each other.
+# The most calls one round overlaps. Each is a worker with a pump task on top, all
+# starting side effects at once, and `max_tool_calls_per_message` cannot bound them since
+# its unlimited value never refuses a call. A round past this runs single file. Kept here
+# rather than imported from the GGUF loop, because the two must not import each other.
 _MAX_PARALLEL_TOOL_CALLS_PER_ROUND = 8
 
 
 def parallel_tool_calls_enabled() -> bool:
     """Whether one turn's tool calls may run at the same time. On unless switched off.
 
-    A model that asks for three web searches in one turn was getting them one after the
-    other, so the turn cost the sum of the three rather than the longest. Every provider
-    that emits parallel tool calls expects them to be independent -- that is what makes
-    them parallel calls rather than three turns -- so overlapping them is the behaviour
-    the format already promises.
-
-    The switch exists because "independent" is the model's claim, not a guarantee: two
-    calls that write the same file interleave differently when they overlap. Setting this
-    to 0 restores the strict one-at-a-time order.
+    Every provider that emits parallel tool calls expects them to be independent, which is
+    what makes them parallel calls rather than three turns. The switch exists because
+    "independent" is the model's claim, not a guarantee: two calls that write the same file
+    interleave differently when they overlap.
     """
     raw = os.environ.get(_PARALLEL_TOOL_CALLS_ENV)
     if raw is None:
@@ -1233,17 +1223,11 @@ def parallel_tool_calls_enabled() -> bool:
 def round_call_key(name: Any, arguments: Any) -> tuple:
     """A conservative identity for one call, computed before the controller heals it.
 
-    Used to decide whether a round may run its calls together, so it has to answer "these
-    two are the same request" for the shapes that reach it. The same call can arrive twice
-    in one turn in two different forms: llama.cpp can leak the raw `<tool_call>` markup AND
-    emit the parsed structured call, in which case one side's arguments are a dict and the
-    other's are the JSON text of that dict. Comparing them as they arrive calls them
-    different and runs a side-effecting tool twice for one model intent.
-
-    Parsed, then re-serialised with sorted keys, so both forms land on the same key. What it
-    still cannot see is a pair that only becomes identical after healing; that costs a
-    repeated result rather than a wrong answer, and is the price of not serialising every
-    round that calls one tool twice.
+    The same call can arrive twice in one turn in two forms, since llama.cpp can leak the
+    raw `<tool_call>` markup AND emit the parsed structured call, so one side's arguments
+    are a dict and the other's the JSON text of it. Parsed and re-serialised with sorted
+    keys, both land on one key. A pair that only becomes identical after healing still
+    escapes, which costs a repeated result rather than a wrong answer.
     """
     if isinstance(arguments, str):
         try:
@@ -1264,11 +1248,9 @@ async def _pump_tool_stream(
 ) -> None:
     """Drive one tool's event stream to completion, buffering what it emits.
 
-    The tool only advances while somebody is calling ``next()`` on its generator, so
-    running two tools at once means having two of these in flight. Events go to a queue
-    instead of being yielded, because the SSE stream has ONE order and it must stay the
-    order the model asked for: a card that fills in before the card above it opened would
-    read as the wrong tool answering.
+    The tool only advances while somebody calls ``next()``, so running two at once means
+    two of these in flight. Events go to a queue rather than being yielded, because the SSE
+    stream must keep the order the model asked for.
 
     Ends with ``_STEP_DONE``, always, so a consumer never waits on a pump that has died.
     """
@@ -1299,11 +1281,9 @@ async def stream_with_studio_tools(
     """Stream a provider, execute requested Unsloth tools, continue to a final answer.
 
     ``preempt_signal`` lets a KV-pressure pause interrupt the provider stream. Tool
-    execution is not interruptible -- an abort between the point where calls
-    materialise and the point where their results are appended would either lose
-    the work of tools that already ran or re-run them on resume -- so this holds the
-    signal off for that stretch. Deferring costs nothing: the request stays pending
-    and is honoured at the next round's stream, which is a safe point.
+    execution is not interruptible, since an abort between calls materialising and their
+    results being appended would lose or re-run the tools that already ran, so the signal
+    is held off for that stretch and honoured at the next round's stream.
     """
     conversation = [dict(message) for message in run.messages]
     # Kept before the loop appends anything: this is the branch the request is on.
@@ -1369,9 +1349,8 @@ async def stream_with_studio_tools(
     # that executes nothing, so a lower bound here only cuts a productive run short with no final answer.
     max_provider_turns = max(1, remaining) + 2 * MAX_ACT_REPROMPTS + 4
 
-    # Opened when a round's calls materialise, closed at the top of the next round.
-    # A superset of the strictly unsafe stretch, which is the safe direction to err:
-    # it only delays a pause to the next stream, and that is where a pause belongs.
+    # Opened when a round's calls materialise, closed at the top of the next round. A
+    # superset of the strictly unsafe stretch, which errs in the safe direction.
     _unsafe_window = None
 
     def _close_unsafe_window() -> None:
@@ -1387,8 +1366,8 @@ async def stream_with_studio_tools(
             _unsafe_window.__enter__()
 
     while not cancel_event.is_set():
-        # Any window the previous round opened ends here: the top of a round, before
-        # its stream, which is exactly where a pause is safe to land.
+        # Any window the previous round opened ends here, before this round's stream,
+        # which is exactly where a pause is safe to land.
         _close_unsafe_window()
         if provider_turns >= max_provider_turns:
             # Reached only by a model that keeps asking for tools it cannot run (all disabled, or the budget is gone).
@@ -1638,9 +1617,8 @@ async def stream_with_studio_tools(
             else turn.calls(used_call_ids, painted_card_ids)
         )
         if calls:
-            # From here until the next round's stream, results are being produced and
-            # appended. A pause in that stretch would either discard the work of tools
-            # that already ran or re-run them on resume.
+            # From here until the next round's stream, results are produced and appended,
+            # and a pause would discard or re-run the tools that already ran.
             _open_unsafe_window()
         if not calls:
             # The badge clears between iterations, and this turn is over too. Without it a turn whose only call was
@@ -1698,16 +1676,12 @@ async def stream_with_studio_tools(
         noop_messages: list[dict[str, Any]] = []
         turn_executed_real_tool = False
 
-        # Whether this round's calls may overlap. Decided BEFORE any of them is prepared,
-        # because the decision has to hold for the whole round: starting call two while
-        # call one is still running and then discovering call three needs an approval
-        # dialog would put a modal in front of work already in flight.
-        #
-        # Approval gating keeps the strict order. It is interactive, one prompt at a time,
-        # and a user answering "Allow" for a tool whose siblings have already run is being
-        # asked about a decision that was made without them. Under `permission_mode ==
-        # "auto"` only the high-risk calls prompt, so a round of ordinary reads still
-        # overlaps.
+        # Whether this round's calls may overlap, decided BEFORE any is prepared: finding
+        # out at call three that it needs an approval dialog would put a modal in front of
+        # work already in flight. Approval gating therefore keeps the strict order, and a
+        # user answering "Allow" for a tool whose siblings have run is being asked about a
+        # decision already made without them. Under `permission_mode == "auto"` only
+        # high-risk calls prompt, so a round of ordinary reads still overlaps.
         _approval_gate = confirm_tool_calls and not bypass_permissions and permission_mode != "off"
         if _approval_gate and permission_mode == "auto":
             _approval_gate = any(
@@ -1717,17 +1691,13 @@ async def stream_with_studio_tools(
                 for item in calls
             )
         # And only when the calls cannot depend on each other's RESULTS. `prepare_call` has
-        # exactly two such dependencies, both written by `record_result`: the same call twice
-        # in one turn is a no-op the second time, and a one-shot tool runs once per turn.
-        # Deciding either with both in flight runs the tool twice, which is what
-        # `test_text_and_structured_form_of_one_call_run_once` catches: a provider that sends
-        # one call in both its text and its structured form is asking for the same thing
-        # twice, and only the ledger knows that.
+        # two such dependencies, both written by `record_result`: the same call twice in one
+        # turn is a no-op the second time, and a one-shot tool runs once per turn. Deciding
+        # either with both in flight runs the tool twice.
         #
-        # Keyed on the arguments as they arrived rather than as healed, which is the one gap:
-        # two calls whose malformed arguments heal to the same canonical key would both run.
-        # That costs a repeated result, not a wrong answer, and the alternative is
-        # serialising every round that calls one tool twice.
+        # Keyed on the arguments as they arrived rather than as healed, which is the one
+        # gap: two calls whose malformed arguments heal alike would both run, costing a
+        # repeated result rather than a wrong answer.
         _one_shot = frozenset(getattr(controller, "_one_shot_tools", ()) or ())
         _round_keys = [
             round_call_key(
@@ -1740,8 +1710,7 @@ async def stream_with_studio_tools(
         parallel_round = (
             parallel_tool_calls_enabled()
             and len(calls) > 1
-            # Bounded, for the reason the constant gives: overlap is per call a thread
-            # and a task, and this round's length is the model's choice, not the user's.
+            # Bounded: this round's length is the model's choice, not the user's.
             and len(calls) <= _MAX_PARALLEL_TOOL_CALLS_PER_ROUND
             and not _approval_gate
             and len(set(_round_keys)) == len(_round_keys)
@@ -1753,19 +1722,16 @@ async def stream_with_studio_tools(
         async def _settle_call(entry: tuple) -> AsyncIterator[str]:
             """Yield one call's events in order, then record its result.
 
-            Everything after the tool returns is unchanged and stays sequential: the
-            controller's ledger, the call budget and the transcript are all order
-            sensitive, and only the WAITING was ever worth overlapping.
+            Everything after the tool returns stays sequential: the controller's ledger, the
+            call budget and the transcript are order sensitive, and only the WAITING was
+            ever worth overlapping.
             """
             nonlocal remaining, turn_executed_real_tool, executed_any, last_reprompt_text
             if entry[0] == "lines":
-                # A call that produced its whole answer without running a tool: the budget
-                # was spent, the controller made it a no-op, or the user denied it. Those
-                # used to be written straight out from the preparing pass, which put them
-                # AHEAD of every call that was still running -- the order the client paints
-                # cards in, and the order the provider reads results in, both came out
-                # wrong for a mixed round. Held here instead so each one lands in its own
-                # place.
+                # A call that answered without running a tool: spent budget, a controller
+                # no-op, or a denial. Written straight out from the preparing pass they
+                # landed AHEAD of every call still running, which is the order the client
+                # paints cards in and the provider reads results in.
                 _, lines, tool_message = entry
                 for line in lines:
                     yield line
@@ -1793,9 +1759,8 @@ async def stream_with_studio_tools(
                 elif "result" in outcome:
                     result = outcome["result"]
                 elif cancel_event.is_set():
-                    # Stopped before the tool returned. Defaulting to "" here would record a successful empty result and
-                    # paint a normal tool_end, so the transcript would claim a tool ran and produced nothing, when in
-                    # truth it was abandoned partway and its side effects may already have happened.
+                    # Stopped before the tool returned. Defaulting to "" would record a successful empty result and
+                    # paint a normal tool_end, so the transcript would claim a tool ran and produced nothing.
                     result = _TOOL_CANCELLED
                 else:
                     result = ""
@@ -1805,10 +1770,9 @@ async def stream_with_studio_tools(
                 result = f"Error: tool raised an exception: {exc}"
             finally:
                 if not drained and not pump.done():
-                    # The worker thread cannot be cancelled, so tell the tool to stop and
-                    # join it rather than closing a generator that is still executing:
-                    # close() during next() raises "generator already executing" and skips
-                    # the generator's own cleanup.
+                    # The worker thread cannot be cancelled, so tell the tool to stop rather
+                    # than closing a generator that is still executing: close() during next()
+                    # raises "generator already executing" and skips its cleanup.
                     cancel_event.set()
                 try:
                     await asyncio.shield(pump)
@@ -1817,9 +1781,8 @@ async def stream_with_studio_tools(
                 tool_stream.close()
 
             completion = controller.record_result(decision, result)
-            # Counted whether or not the tool succeeded: a failing call has already done its work (and possibly its side
-            # effects), so letting it run for free would put the budget past max_calls. Counted per call rather than per
-            # turn, so parallel calls each spend one.
+            # Counted whether or not the tool succeeded: a failing call has already done its work, so letting it run
+            # for free would put the budget past max_calls. Per call, so parallel calls each spend one.
             if not unlimited:
                 remaining -= 1
             turn_executed_real_tool = True
@@ -1831,14 +1794,10 @@ async def stream_with_studio_tools(
         for call in calls:
             if cancel_event.is_set():
                 break
-            # The LAUNCHED entries are the ones that will each spend one when they
-            # settle, so a parallel round must not start a call the budget cannot pay for.
-            # Counting the whole list instead counted the `"lines"` entries too -- a
-            # duplicate the controller turned into a no-op, a denied call, a call the
-            # budget already refused -- and none of those ever decrements `remaining`. With
-            # two calls left, a round of {duplicate, new, new} refused the second new call
-            # for a budget it had not spent, which in a sequential round it would have run.
-            # In a sequential round the list is empty and this is the check it always was.
+            # Only the LAUNCHED entries spend one when they settle. Counting the whole list
+            # counted the `"lines"` entries too -- no-ops, denials, calls the budget already
+            # refused -- none of which decrement `remaining`, so a round of {duplicate, new,
+            # new} refused a call for a budget it had not spent.
             _launched = sum(1 for _entry in pending_calls if _entry[0] != "lines")
             if not unlimited and remaining - _launched <= 0:
                 # Budget spent.
@@ -1995,10 +1954,8 @@ async def stream_with_studio_tools(
                 }
                 if call_id:
                     denied_message["tool_call_id"] = call_id
-                # A denial cannot occur in an overlapped round today, because a round that
-                # needs any approval is kept sequential. Deferred anyway: the branch is one
-                # `parallel_round` term away from being reachable, and this is the shape
-                # that goes wrong when it is.
+                # Unreachable today, since a round needing any approval is kept sequential.
+                # Deferred anyway: the branch is one `parallel_round` term from reachable.
                 if parallel_round:
                     pending_calls.append(("lines", [_denied_line], denied_message))
                     reprompts = max_reprompts
@@ -2053,22 +2010,21 @@ async def stream_with_studio_tools(
             )
             outcome: dict[str, Any] = {}
             # Unbounded on purpose: the pump must never block on a consumer that has not
-            # reached this call yet, or two overlapping tools deadlock on each other.
+            # reached this call yet, or two overlapping tools deadlock.
             events: "asyncio.Queue[Any]" = asyncio.Queue()
             pump = asyncio.create_task(
                 _pump_tool_stream(tool_stream, outcome, events, cancel_event)
             )
             entry = ("call", decision, name, call_id, card_id, tool_stream, outcome, events, pump)
             if parallel_round:
-                # Started, not awaited. The next call's tool is launched while this one is
-                # still working, and both are drained below in the order the model asked.
+                # Started, not awaited: the next call's tool is launched while this one
+                # works, and both are drained below in the order the model asked.
                 pending_calls.append(entry)
                 continue
             async for line in _settle_call(entry):
                 yield line
 
-        # Whatever was left running. In a sequential round this list is empty and the loop
-        # below does nothing, so that path is exactly what it was.
+        # Whatever was left running. Empty in a sequential round.
         for entry in pending_calls:
             async for line in _settle_call(entry):
                 yield line

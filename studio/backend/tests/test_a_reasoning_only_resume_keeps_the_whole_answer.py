@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""For a reasoning-only model the promoted fallback IS the answer.
-
-Qwen3 and its kind put the whole reply in ``reasoning_content``. The stream wraps that in
-``<think>``, and at a clean stop `_finalize_reasoning_only_cumulative` appends the same
-text again as visible content, because the frontend hides the thought block and shows the
-fallback. That is the answer the user reads.
-
-The fallback was built from the CURRENT attempt's ``reasoning_text`` alone. A pause
-splits one reply into two attempts, so a reply of A then B promoted only B: the stitching
-correctly restored A inside the thought, and the user was shown the second half of their
-answer with the first half hidden in a block the UI does not render. Half an answer,
-silently, on the surface a pause is supposed to be invisible on.
-"""
+"""For a reasoning-only model the promoted fallback IS the answer."""
 
 from __future__ import annotations
 

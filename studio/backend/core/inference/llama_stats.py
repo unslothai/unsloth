@@ -29,19 +29,13 @@ def fetch_llama_slots(
 ):
     """One ``GET /slots`` read as a list, or None if it could not be read.
 
-    ``headers`` carries the backend's ``Authorization`` when the load was launched with
-    ``--api-key`` (``UNSLOTH_DIRECT_STREAM=1``). llama.cpp exempts only ``/health`` and
-    ``/v1/health`` from the key check, so an unauthenticated read of ``/slots`` answers
-    401 and the ``except`` below turns that into None -- "cannot tell" -- which silently
-    switches the whole exact-residency probe off in a supported mode.
+    ``headers`` carries the backend's ``Authorization``, since llama.cpp exempts only
+    ``/health`` from ``--api-key`` and an unauthenticated read answers 401, which reads
+    back as "cannot tell" and switches the residency probe off in a supported mode.
 
-    Added against the advice in the original design, which said to reuse the /metrics
-    scraper and NOT add a slots poller. That advice was written before the residue was
-    understood: /metrics reports requests_processing and token counters but nothing about
-    cells still held by IDLE slots, and llama.cpp keeps a slot's prompt cache after its
-    request finishes. Measured 2026-09-01, one idle slot held 16383 of a 16384 cache
-    while the scheduler believed it was nearly empty. This is the only endpoint that can
-    say so.
+    A slots poller rather than the /metrics scraper the original design called for:
+    /metrics says nothing about cells still held by IDLE slots, and llama.cpp keeps a
+    slot's prompt cache after its request finishes. This is the only endpoint that can say.
 
     None means "cannot tell" -- endpoint disabled, older build, socket error -- and must
     never be read as "the cache is empty".
@@ -67,14 +61,13 @@ def erase_llama_slot(
 ) -> int:
     """Drop one idle slot's cached prompt. Returns tokens erased, 0 on any failure.
 
-    Cheaper than preempting: the cache belongs to a request that has already finished, so
-    this costs a future prefix-cache hit rather than a running conversation's progress.
+    Cheaper than preempting: the cache belongs to a finished request, so this costs a
+    future prefix-cache hit rather than a running conversation's progress.
     """
     url = f"{str(base_url).rstrip('/')}/slots/{int(slot_id)}?action=erase"
     try:
-        # Authorized for the same reason the read above is: a 401 here returns 0 tokens
-        # erased, so a paused slot's cells are never released and the waiter it was freed
-        # for waits out its deadline.
+        # Authorized for the same reason the read above is: a 401 returns 0 tokens erased,
+        # so a paused slot's cells are never released.
         request = urllib.request.Request(url, method = "POST", data = b"", headers = dict(headers or {}))
         with urllib.request.urlopen(request, timeout = timeout_s) as r:
             if r.status != 200:
@@ -91,11 +84,9 @@ def erase_llama_slot(
 def scrape_llama_metrics(base_url, timeout_s = 3.0):
     """One /metrics read as a {name: float} dict, or None if it could not be read.
 
-    Split out of the daemon's own scrape so a caller needing a single sample (the
-    preemption reclaim barrier) reuses this parser instead of adding a second one, or a
-    ``GET /slots`` poller. None covers every reason the read did not happen: no
-    ``--metrics``, a server still starting, a socket error. Callers must treat that as
-    "cannot tell", never as "nothing is running".
+    Split out of the daemon's own scrape so a caller needing a single sample reuses this
+    parser rather than adding a second one. None covers every reason the read did not
+    happen and must be read as "cannot tell", never as "nothing is running".
     """
     url = f"{str(base_url).rstrip('/')}/metrics"
     try:

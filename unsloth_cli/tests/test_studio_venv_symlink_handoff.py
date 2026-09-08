@@ -3,15 +3,8 @@
 
 """A Studio home whose venv is a symlink must not launch the CLI into a loop.
 
-`unsloth studio run` hands off to the Studio venv's own console script when it is not
-already running inside that venv. The check compared `sys.prefix`, which is the venv's REAL
-directory, against `STUDIO_HOME / "unsloth_studio"` as a string prefix. With the venv
-symlinked into the home (two homes sharing one venv, a relocated install) the child made
-the same comparison, failed it the same way, and handed off to itself again: 100 percent
-CPU, nothing printed, no server. Measured at over seven minutes before it was killed.
-
-Two rules, pinned separately: the check resolves symlinks, and a second hand-off is refused
-with a message rather than attempted.
+Two rules, pinned separately: the hand-off check resolves symlinks, and a second hand-off
+is refused with a message rather than attempted.
 """
 
 from __future__ import annotations
@@ -66,8 +59,8 @@ class TestTheVenvCheckResolvesSymlinks:
 class TestTheSecondHandOffIsRefused:
     def test_the_first_hand_off_marks_the_environment(self, monkeypatch):
         studio = _studio()
-        # setenv, so the marker the guard writes is restored (to absent) at teardown and
-        # cannot leak into the re-exec tests that run after this one.
+        # setenv, so the marker the guard writes is restored at teardown and cannot leak
+        # into the re-exec tests after this one.
         monkeypatch.setenv(studio._REEXEC_DEPTH_ENV, "0")
         studio._guard_reexec_loop("/some/home/unsloth_studio")
         assert os.environ.get(studio._REEXEC_DEPTH_ENV) == "1"
@@ -91,8 +84,8 @@ class TestTheSecondHandOffIsRefused:
 
 class TestTheMarkerIsClearedWhereTheHandOffLanded:
     def test_the_recognised_child_drops_the_marker(self, monkeypatch):
-        """Left in place it reached the server and every subprocess, and a fresh
-        `unsloth studio` from an integrated terminal was refused as a second hand-off."""
+        """Left in place it reaches the server and every subprocess, and a fresh
+        `unsloth studio` is refused as a second hand-off."""
         monkeypatch.setenv(_studio()._REEXEC_DEPTH_ENV, "1")
         _studio()._hand_off_landed()
         assert _studio()._REEXEC_DEPTH_ENV not in os.environ

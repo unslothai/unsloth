@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``/slots`` is not a public endpoint.
-
-``UNSLOTH_DIRECT_STREAM=1`` starts llama-server with ``--api-key``. llama.cpp's key
-middleware exempts only ``/health`` and ``/v1/health`` (plus the bundled UI assets) and
-answers every other path 401, so an unauthenticated read of ``/slots`` fails and both
-helpers swallow it: the occupancy read becomes None -- "cannot tell" -- and the erase
-returns zero tokens freed.
-
-That is not a degraded mode, it is the mechanism switched off. ``note_resident`` never
-learns what the cache holds, ``_room_for_locked`` falls back to the ledger alone, and a
-paused chat's cells are never erased for the waiter they were freed for.
-"""
+"""``/slots`` is not a public endpoint."""
 
 from __future__ import annotations
 

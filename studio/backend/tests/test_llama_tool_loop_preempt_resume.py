@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pausing a reply and finishing it, in one response, through the real loop.
-
-This is the whole mechanic end to end. A pause aborts only the upstream request;
-the loop stays in ``generate_chat_completion_with_tools``, keeps its
-``ToolLoopController`` and its conversation, and re-opens the request with the
-partial reply as a trailing assistant turn plus ``continue_final_message``.
-
-What makes that safe is that the loop never leaves the frame. The controller's
-one-shot ledger lives in memory and is built once per response, so a design that
-tore the response down and resumed it as a new request would re-run one-shot
-tools. These tests pin the observable consequences: the request really is
-re-opened, it really carries the continuation flag and the partial text, and the
-turn is not charged as a tool iteration.
-"""
+"""Pausing a reply and finishing it, in one response, through the real loop."""
 
 from __future__ import annotations
 
@@ -209,8 +196,9 @@ class TestThePauseIsResumed:
         assert policy.events == ["preempted", "awaited", "resumed"]
 
     def test_the_checkpoint_carries_the_streamed_text(self, monkeypatch):
-        """From the stream accumulator, not the thread's assistant row, which an
-        aborted attempt never writes."""
+        """From the stream accumulator, not the thread's assistant row, which an aborted attempt
+        never writes.
+        """
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
         recorder = _Recorder(
@@ -227,12 +215,9 @@ class TestThePauseIsResumed:
         assert policy.checkpoints[0].resumes == 1
 
     def test_token_dense_text_is_charged_by_the_chunks_seen(self, monkeypatch):
-        """A pause aborts the attempt before its usage chunk, and the four-characters-a-
-        token estimate prices CJK and emoji at a quarter of what was decoded. One chunk is
-        about one token, and the attempt counted every one it received, so that count is
-        the floor of the charge: the same figure is replayed to the controller and taken
-        from the caller's allowance, and an undercharge there is cells the watermark
-        cannot see and output the caller never agreed to."""
+        """A pause aborts the attempt before its usage chunk, and the four-characters-a- token
+        estimate prices CJK and emoji at a quarter of what was decoded.
+        """
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
         dense = ["\u6708"] * 12  # twelve one-character chunks, three tokens by the estimate
@@ -288,12 +273,7 @@ class TestThePauseIsResumed:
 
 class TestWhatAPauseMustNotCost:
     def test_a_resume_is_not_charged_as_a_tool_iteration(self, monkeypatch):
-        """Contention must not silently shorten an agent run.
-
-        Enough pauses to outlast the loop's own reprompt slack, because one pause
-        fits inside it and would prove nothing: a chat unlucky enough to be paused
-        repeatedly is exactly the case that must still finish.
-        """
+        """Contention must not silently shorten an agent run."""
         pauses = 6
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
@@ -311,17 +291,7 @@ class TestWhatAPauseMustNotCost:
 
 class TestWhenItCannotOrMustNotResume:
     def test_a_policy_that_gives_up_ends_the_turn_and_says_so(self, monkeypatch):
-        """It must not wait forever, it must not pause a second time, and it must
-        not decode on.
-
-        Giving up used to hand the turn to the final-answer pass, but the lease went
-        back with on_preempted and the participant is paused, so that pass decoded
-        on cells the planner had already handed out, uncounted and unselectable.
-        The turn now ends the way the final pass ends its own refused resume: the
-        notice saying why, then a terminal metadata carrying `length`, which the
-        client already resumes from. What must NOT happen is another pause, a
-        hang, or a second request.
-        """
+        """It must not wait forever, it must not pause a second time, and it must not decode on."""
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy(resume = False)
         recorder = _Recorder(
@@ -346,8 +316,9 @@ class TestWhenItCannotOrMustNotResume:
         ), "no terminal metadata with a length finish"
 
     def test_a_pause_before_the_first_token_re_issues_the_request_whole(self, monkeypatch):
-        """`continue_final_message` refuses an empty assistant turn, so there is
-        nothing to continue and the attempt is simply sent again."""
+        """`continue_final_message` refuses an empty assistant turn, so there is nothing to
+        continue and the attempt is simply sent again.
+        """
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
 

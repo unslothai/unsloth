@@ -2962,16 +2962,13 @@ def trailing_assistant_text(messages: list) -> Optional[str]:
 def trailing_assistant_reasoning(messages: list) -> str:
     """Reasoning text of a trailing assistant turn that showed no prose yet.
 
-    A reasoning model preempted inside its thought block has produced real work and no
-    visible characters, so ``trailing_assistant_text`` reports "" and every truthiness
-    gate built on it drops the continuation. Measured on Qwen3 at a 16384 window: ten
-    consecutive pauses, ``kept_chars=0`` on every one, thousands of decoded tokens
-    thrown away each time and the same chat still unfinished 25 minutes later.
+    A reasoning model preempted inside its thought block has real work and no visible
+    characters, so ``trailing_assistant_text`` reports "" and every truthiness gate built
+    on it drops the continuation.
 
-    Separate from ``trailing_assistant_text`` on purpose. That one feeds the manual
-    prompt splice, which appends its result as VISIBLE text; handing it reasoning would
-    paste the thought into the answer. This is only for deciding whether a backend that
-    does its own templating (llama-server) should be told to continue the turn.
+    Separate from ``trailing_assistant_text`` on purpose: that one feeds the manual prompt
+    splice, which appends its result as VISIBLE text, so handing it reasoning would paste
+    the thought into the answer.
     """
     if not messages:
         return ""

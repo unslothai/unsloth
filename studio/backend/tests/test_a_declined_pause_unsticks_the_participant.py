@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A pause the stream refuses has to be handed back, not merely ignored.
-
-A sweep that chooses a victim moves it to PREEMPTING and sets its signal. Both halves of
-the tool loop refuse to pause once they have paused ``_MAX_PREEMPT_RESUMES`` times: rather
-than pausing again they clear the signal and finish the turn, which for the round loop
-means breaking into the final answering pass and decoding a whole answer there.
-
-Clearing the signal is not the same as taking the decision back. PREEMPTING is outside
-``_PREEMPTABLE`` and nothing in the ordinary path moves it back -- ``observe`` returns
-TOOLS_RUNNING and PARKED_ON_TOOL to DECODING and deliberately leaves PREEMPTING alone --
-so the refusing chat went on decoding while permanently unselectable, holding cells the
-planner had already counted as reclaimed. Whoever was waiting on those cells waited for
-room that was never coming.
-
-``on_declined`` is the handback: state and signal only, nothing released, because nothing
-was released. These drive the real loop with fake llama-server streams and a real
-controller, and check the state the sweep reads.
-"""
+"""A pause the stream refuses has to be handed back, not merely ignored."""
 
 from __future__ import annotations
 
@@ -93,11 +76,7 @@ def _tool_call(call_id: str = "call_search") -> list[str]:
 
 
 class _OldDouble:
-    """A policy written against the protocol as it was, with no ``on_declined``.
-
-    Injected doubles are handed straight to the loop, so the call has to survive one that
-    has never heard of the method.
-    """
+    """A policy written against the protocol as it was, with no ``on_declined``."""
 
     def __init__(self):
         self.events: list[str] = []
@@ -196,11 +175,7 @@ def _run(recorder, *, signal, policy):
 
 
 def _chosen_victim(controller, gen_id, signal):
-    """Register two decoding chats and let a real sweep choose `gen_id`.
-
-    Newest first is the policy, so the one registered last is the one asked to stop, and
-    it is asked by the controller itself rather than by a test setting a field.
-    """
+    """Register two decoding chats and let a real sweep choose `gen_id`."""
     controller.register("other", tokens = 1000)
     participant = controller.register(gen_id, tokens = 1000, signal = signal)
     victims = controller.plan_preemptions(needed = 16384)
@@ -328,9 +303,7 @@ class TestTheRoundLoopHandsTheDecisionBack:
 
 
 class TestTheFinalPassHandsTheDecisionBack:
-    """The same branch at the end of the turn. Nothing decodes after it, but teardown is
-    what releases the lease, and a sweep running before teardown must not be shown a
-    victim whose pause is never coming."""
+    """The same branch at the end of the turn."""
 
     def test_nothing_is_left_preempting(self, monkeypatch):
         _capped(monkeypatch)

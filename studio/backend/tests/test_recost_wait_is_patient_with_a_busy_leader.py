@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A round waiting for room behind a decoding leader is queued, not stuck.
-
-`recost_waiting` reset its stall clock only when the pool's commitment FELL. That ledger
-moves at round boundaries and nowhere else, so a tool-loop chat waiting for its next round
-behind a leader decoding at full rate saw nothing move for `timeout_s`, decided the pool
-was stuck, and went on at its old figure on top of a full cache. Measured 2026-09-05 on
-the 35B model at -c 8192: five minutes of silence per round for the waiting chat while the
-leader generated 220 tokens a second, then an uncharged round and a preemption.
-
-The wait now also watches a `progress` signature, the preemptor's, which moves with every
-token anybody decodes. Any change resets the clock; the hard deadline still bounds a pool
-that moves forever without ever fitting this lease.
-"""
+"""A round waiting for room behind a decoding leader is queued, not stuck."""
 
 from __future__ import annotations
 

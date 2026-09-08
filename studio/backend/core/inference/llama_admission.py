@@ -70,10 +70,8 @@ _log = logging.getLogger(__name__)
 
 DEFAULT_RECOST_WAIT_TIMEOUT_S = 300.0
 
-# How much longer than its patience a reparking lease may wait while the pool is visibly
-# draining. The wait resets on every drain, so this is the only thing that bounds a pool
-# that churns forever without ever fitting this particular lease. Matches the preemptor's
-# MAX_RESUME_WAIT_MULTIPLE; the two waits are the same wait, one layer apart.
+# The only thing that bounds a pool churning forever without ever fitting this particular
+# lease, since the wait itself resets on every drain. Matches MAX_RESUME_WAIT_MULTIPLE.
 _MAX_REPARK_WAIT_MULTIPLE = 20
 
 
@@ -341,9 +339,8 @@ class LlamaAdmissionLease:
         self._release_lock = threading.Lock()
         self._parked = False
         self._budgeted = False
-        # Set by preempt(), which hands the commitment back because the upstream task
-        # ended and the cells really are reclaimable. Distinct from _parked, where the
-        # task is alive and the cells are not.
+        # Set by preempt(), where the upstream task ended and the cells really are
+        # reclaimable. Distinct from _parked, where the task is alive and the cells are not.
         self._preempted = False
         # Returned to the queue on release, not on park: a parked holder has stopped decoding but llama-server still
         # holds its KV until the task ends.
@@ -382,13 +379,10 @@ class LlamaAdmissionLease:
     def yield_parked_commitment(self) -> int:
         """Hand this lease's KV commitment back while its cells are gone.
 
-        `park()` keeps `_tokens` on purpose: a run stopped on an approval prompt still
-        holds its cells, and re-charging on resume would make it wait behind everyone.
-        That stops being true the moment the preemptor erases its idle slot for a waiting
-        chat; from then on the commitment describes nothing, and holding it kept two chats
-        out of an empty cache for three minutes (2026-09-05). Same accounting as the
-        first half of `recost_waiting`: the figure goes to zero and the pool is told. The
-        next round's `recost_waiting` charges the real size again, waiting its turn.
+        `park()` keeps `_tokens` on purpose, since a run stopped on an approval still holds
+        its cells. That stops being true once the preemptor erases its idle slot, and
+        holding the commitment then keeps waiters out of an empty cache. The next round's
+        `recost_waiting` charges the real size again, waiting its turn.
 
         Returns the tokens handed back, 0 when there was nothing to hand back.
         """
@@ -398,10 +392,9 @@ class LlamaAdmissionLease:
                 return 0
             held, self._tokens = self._tokens, 0
         queue.yield_commitment(held)
-        # `yield_commitment` counts the caller as reparking until it reclaims, which holds
-        # the wait line shut against new arrivals. Right for a round about to ask again;
-        # wrong here, where nothing asks until the tool comes back. `abandon_repark(0)`
-        # drops the count and re-runs the grant without re-committing anything.
+        # `yield_commitment` counts the caller as reparking, which holds the wait line shut
+        # against new arrivals: right for a round about to ask again, wrong here, where
+        # nothing asks until the tool comes back.
         queue.abandon_repark(0)
         return held
 
@@ -474,32 +467,25 @@ class LlamaAdmissionLease:
     def tokens(self) -> int:
         """What this lease is currently charged, after any recost.
 
-        Read by the preemptor to size a participant and to ask how much room a new
-        arrival needs. A property rather than the raw attribute so a caller cannot get a
-        silent zero from ``getattr`` and conclude nothing needs preempting.
+        A property rather than the raw attribute, so a caller cannot get a silent zero from
+        ``getattr`` and conclude nothing needs preempting.
         """
         return int(self._tokens or 0)
 
     def preempt(self) -> bool:
         """Hand back BOTH the slot and the KV commitment so someone else may decode.
 
-        The difference from ``park`` is what llama-server is doing afterwards. A parked
-        holder has only stopped waiting on the GPU; its task is still alive and its cells
-        are still resident, which is why ``park`` keeps ``_tokens``. Preemption ends the
-        upstream task, so the slot goes non-processing and its cells become purgeable by
-        ``try_clear_idle_slots`` (``server-context.cpp:1656``, gated on ``kv_unified``
-        alone). Only then is the commitment genuinely free to give away.
+        Unlike ``park``, the upstream task has ENDED, so the slot goes non-processing and
+        its cells become purgeable by ``try_clear_idle_slots`` (``server-context.cpp:1656``,
+        gated on ``kv_unified`` alone). Only then is the commitment free to give away.
 
-        **The caller must have closed the upstream response first.** This is the rule
-        ``_release_admission`` already states (``routes/inference.py:2690-2696``): on
-        disconnect llama-server keeps decoding until ``resp`` is closed, so handing the
-        room back any earlier admits a second request past ``--parallel`` and recreates
-        the collision this exists to prevent. Nothing here can check that, so it is a
-        contract, not a guard.
+        **The caller must have closed the upstream response first**, the rule
+        ``_release_admission`` already states: llama-server keeps decoding until ``resp`` is
+        closed, so handing the room back earlier admits a second request past
+        ``--parallel``. Nothing here can check that, so it is a contract, not a guard.
 
-        False when there is nothing to preempt: no queue, already released, or already
-        preempted. A lease holding no slot (parked on a tool approval) still returns
-        True and gives its commitment back, which is the cheapest room to reclaim.
+        False when there is nothing to preempt. A lease holding no slot (parked on a tool
+        approval) still returns True and gives its commitment back.
         """
         queue = self._queue
         with self._release_lock:
@@ -508,9 +494,8 @@ class LlamaAdmissionLease:
             slot, self._slot = self._slot, None
             tokens, self._tokens = self._tokens, 0
             self._preempted = True
-        # Outside the lease lock, matching release()'s order. Gives the slot and the
-        # tokens back together and re-runs the grant, so the room reaches whoever is
-        # waiting for it in one step.
+        # Outside the lease lock, matching release()'s order: the slot and the tokens go
+        # back together and the grant re-runs, so the room reaches a waiter in one step.
         queue.release(slot, tokens)
         return True
 
@@ -522,11 +507,9 @@ class LlamaAdmissionLease:
     def is_released(self) -> bool:
         """Whether this lease is finished with the cache.
 
-        Lets the preemptor prune a participant whose generation ended without depending
-        on the route to say so. Release happens on many branches (normal finish, cancel,
-        disconnect, timeout, admission error), and a single missed one would leave a dead
-        conversation counted against the budget forever, which is worse than not
-        preempting at all.
+        Lets the preemptor prune a participant without depending on the route to say so:
+        release happens on many branches, and one missed would count a dead conversation
+        against the budget forever.
         """
         return self._released
 
@@ -541,26 +524,19 @@ class LlamaAdmissionLease:
     ) -> bool:
         """Take the room back after a preemption, waiting until the cache has it.
 
-        ``progress`` is an optional zero-argument callable whose result changes whenever
-        the backend does work (the controller's ``progress_signature``). ``timeout_s`` is
-        then a stall bound that resets on each change, capped at
-        ``_MAX_REPARK_WAIT_MULTIPLE`` times itself, rather than a flat wall clock.
+        ``progress`` is an optional callable whose result changes whenever the backend does
+        work, which turns ``timeout_s`` into a stall bound that resets on each change,
+        capped at ``_MAX_REPARK_WAIT_MULTIPLE`` times itself.
 
-        ``tokens`` is re-stated rather than remembered because a resumed run carries the
-        partial it already generated, so it is larger than it was when preempted.
+        ``tokens`` is re-stated rather than remembered, because a resumed run carries the
+        partial it already generated. No double-charge: both paths commit it themselves.
 
-        No double-charge: on the slot path ``acquire_parked_slot`` commits the tokens
-        itself inside ``_take_slot_locked``, so this only records the figure. On the
-        commitment-only path ``try_recost(0, want)`` does the same move without a slot.
+        Bounded for the same reason ``recost_waiting`` is: a caller spinning here holds room
+        nobody else can plan against, so an unbounded wait freezes the queue rather than one
+        chat. Giving up leaves this lease holding nothing, which the caller must surface.
 
-        Bounded for the same reason ``recost_waiting`` is: a caller spinning here holds
-        room nobody else can plan against, so an unbounded wait would freeze the queue
-        rather than one chat. Giving up leaves this lease holding nothing, which the
-        caller must surface rather than carry on decoding.
-
-        False means the resume did not happen: cancelled, released, or waited past
-        ``timeout_s``. True with no queue is the admission-disabled case, where there is
-        nothing to account.
+        False means the resume did not happen. True with no queue is the
+        admission-disabled case, where there is nothing to account.
         """
         want = max(0, int(tokens or 0))
         queue = self._queue
@@ -571,10 +547,8 @@ class LlamaAdmissionLease:
                 return True
             if not self._preempted:
                 return True
-            # A parked holder's slot is owned by the park machinery and comes back
-            # through unpark_async. Taking a second one from a ticket here would put the
-            # same lease in two slots, so a parked lease only ever re-takes its
-            # commitment, whether or not it is holding the slot at this instant.
+            # A parked holder's slot comes back through unpark_async, so taking a second
+            # one from a ticket here would put the same lease in two slots.
             commitment_only = self._parked or self._slot is not None
         deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
         patience = None if deadline is None else float(timeout_s)
@@ -583,15 +557,10 @@ class LlamaAdmissionLease:
         )
         last_progress = progress() if progress is not None else None
         if commitment_only:
-            # Stall, not wall clock. A resume queued behind a long answer waits through
-            # entirely healthy draining, and a flat deadline cannot tell that from a pool
-            # that has stopped moving. Observed 2026-09-03: a chat gave up here after the
-            # preemptor had already confirmed the cache had room for it, because the wait
-            # was simply shorter than the answer ahead of it. The deadline resets whenever
-            # the pool's commitment falls, which is exactly when room is handed back;
-            # growth never resets it, so a pool that only fills still times out.
-            # ``progress`` widens that to any work at all, for the same reason
-            # ``acquire_parked_slot`` takes it below.
+            # Stall, not wall clock: a resume queued behind a long answer waits through
+            # healthy draining, which a flat deadline cannot tell from a stopped pool. The
+            # deadline resets when the pool's commitment FALLS, which is when room is handed
+            # back; growth never resets it, so a pool that only fills still times out.
             last_committed = queue.committed_now()
             while True:
                 if queue.try_recost(0, want):
@@ -628,9 +597,8 @@ class LlamaAdmissionLease:
     def _record_resume(self, queue, want: int, *, slot: Optional[int]) -> bool:
         """Record room the queue has already committed, or give it straight back.
 
-        release() may have run during the wait, in which case it handed back the 0 this
-        lease held while preempted and will not run again. Whatever was just committed
-        would then be stranded for the life of the process, so return it here.
+        release() may have run during the wait, handing back the 0 this lease held while
+        preempted, so whatever was just committed would be stranded for the process' life.
         """
         with self._release_lock:
             if self._released:
@@ -680,39 +648,22 @@ class LlamaAdmissionLease:
     ) -> bool:
         """Re-state this lease's cost, waiting for room rather than running over it.
 
-        ``progress`` is a second opinion on whether the pool is moving. This ledger only
-        changes at round boundaries, so a lease waiting behind a leader that is decoding
-        at full rate sees ``committed`` sit still and, after ``timeout_s``, decides the
-        pool is stuck. Measured 2026-09-05 on the 35B model: five minutes of silence per
-        round for the waiting chat while the leader generated 220 tokens a second, then a
-        give-up and an uncharged round on top of a full cache. Any change in what
-        ``progress`` returns resets the stall clock, the way the preemptor's own resume
-        wait already works; ``hard_deadline`` still bounds a pool that moves forever
-        without ever fitting this lease.
-
-        ``recost`` declines when the cache is full and the caller carries on at its old
-        figure, so the next round sends a bigger prompt than the pool was told about, and
-        enough of those is the ``Context size has been exceeded`` that kills every
-        decoding slot at once.
+        ``progress`` is a second opinion on whether the pool is moving: this ledger changes
+        only at round boundaries, so a lease waiting behind a leader decoding at full rate
+        sees ``committed`` sit still and decides the pool is stuck. Any change in what
+        ``progress`` returns resets the stall clock; ``hard_deadline`` still bounds a pool
+        that moves forever without ever fitting this lease.
 
         Call this only between rounds, and only with ``allow_yield`` true where an idle
         slot's cells actually come back. Being between rounds makes the slot IDLE; what
         makes its cells REUSABLE under ``--kv-unified`` is ``prompt_clear()``, which
-        llama-server runs only under ``--cache-idle-slots`` (``server-context.cpp``) --
-        force-disabled by ``--cache-ram 0``, and absent on older servers. Studio emits
-        ``--cache-ram 0`` on Windows under full GPU offload (#5692, WDDM overhead)
-        alongside ``--kv-unified``; there a yielded round's cells stay resident, so
-        yielding would hand the same capacity to a second caller. With yielding off this
-        degrades to plain ``recost``, which declines rather than overcommits. Where
-        clearing IS active the cache changes only the PRICE: reclaiming costs a prefix hit
-        if the cells were spilled to host RAM.
+        llama-server runs only under ``--cache-idle-slots``, force-disabled by
+        ``--cache-ram 0`` (which Studio emits on Windows under full GPU offload, #5692) and
+        absent on older servers. With yielding off this degrades to plain ``recost``.
 
-        False means this lease still holds the figure it came in with: declined,
-        cancelled, released, or waited past ``timeout_s``. The timeout is the blast
-        radius -- a reparker holds the wait line shut for everyone (see
-        ``yield_commitment``), so an endless wait freezes the queue, not one chat. Giving
-        up restores the old commitment and the decline-and-continue behaviour that
-        predates this.
+        False means this lease still holds the figure it came in with. The timeout is the
+        blast radius: a reparker holds the wait line shut for everyone, so an endless wait
+        freezes the queue rather than one chat.
         """
         want = max(0, int(tokens or 0))
         # Cheap path first: growth that already fits never touches the wait line.
@@ -726,16 +677,10 @@ class LlamaAdmissionLease:
                 return True
             held, self._tokens = self._tokens, 0
         queue.yield_commitment(held)
-        # Stall, not wall clock, for the same reason the preemptor's resume wait measures
-        # it that way: a lease reparking behind a 10k-token answer waits minutes through
-        # entirely healthy draining, and a flat deadline cannot tell that from a pool that
-        # has stopped moving. Observed 2026-09-03, one chat gave up here even though the
-        # layer above had already confirmed the cache had room for it.
-        #
-        # The deadline resets whenever the pool's commitment FALLS, which is precisely
-        # when somebody hands room back. Growth never resets it, so a pool that only fills
-        # still times out on schedule, and `hard_deadline` bounds a pool that churns
-        # forever without ever fitting this lease.
+        # Stall, not wall clock, as the preemptor's resume wait measures it: a lease
+        # reparking behind a 10k-token answer waits minutes through healthy draining. The
+        # deadline resets when the pool's commitment FALLS; growth never resets it, and
+        # `hard_deadline` bounds a pool that churns without ever fitting this lease.
         patience = None if not timeout_s or timeout_s <= 0 else float(timeout_s)
         started = time.monotonic()
         deadline = None if patience is None else started + patience
@@ -977,8 +922,8 @@ class LlamaAdmissionQueue:
         # FIFO tickets for holders resuming from a park (see acquire_parked_slot). A bare count deadlocked: every
         # approved holder blocked every other one.
         self._unpark_tickets: Deque[int] = deque()
-        # The KV each ticket is coming back for, by ticket. A ticket holds a slot back for itself and, from here, its
-        # room too: the head-of-line rule the waiters already live by.
+        # The KV each ticket is coming back for. A ticket holds back a slot and, from here,
+        # its room too: the head-of-line rule the waiters already live by.
         self._unpark_wants: dict = {}
         self._unpark_seq = 0
         # KV tokens held by live leases, against the cache size the caller reports. 0 budget disables the check, which
@@ -1038,9 +983,8 @@ class LlamaAdmissionQueue:
         if not (bool(self._free) and (self._held + reserved) < self._capacity):
             return False
         # A free slot is not enough: with --kv-unified every slot reports the full n_ctx, so the pool can hand out more
-        # slots than the one cache can serve. ``reserved_tokens`` is the room the tickets ahead are coming back for:
-        # a later, smaller resume that fitted where an earlier one did not overtook it, and with room handed out in
-        # that order the earlier one could wait out its deadline while capacity came and went.
+        # slots than the one cache can serve. ``reserved_tokens`` is the room the tickets ahead are coming back for, or
+        # a later, smaller resume overtakes an earlier one that could then wait out its deadline.
         return self._fits_budget_locked(tokens + max(0, int(reserved_tokens or 0)))
 
     def _take_slot_locked(
@@ -1194,9 +1138,8 @@ class LlamaAdmissionQueue:
     def committed_now(self) -> int:
         """Tokens the pool currently believes are spoken for.
 
-        Read by a reparking lease to tell "the pool is draining, keep waiting" from
-        "nothing here is moving". Only ever falls when somebody gives room back, which
-        is exactly the event a waiter is waiting for.
+        Read by a reparking lease to tell "the pool is draining" from "nothing is moving":
+        it only ever falls when somebody gives room back.
         """
         with self._lock:
             return int(self._committed)
@@ -1268,25 +1211,16 @@ class LlamaAdmissionQueue:
     ) -> Optional[int]:
         """Wait for a slot for a holder resuming from a park, None if cancelled.
 
-        Ordered by ticket rather than counted, so approvals resume in the order
-        they came back: counting them made every approved holder block every
-        other one, and with nothing decoding that never resolved.
+        Ordered by ticket rather than counted: counting made every approved holder block
+        every other one, and with nothing decoding that never resolved.
 
-        ``tokens`` is the KV commitment to take back alongside the slot, and is
-        committed here rather than by the caller, so a resumed holder cannot be
-        admitted into room the cache does not have. It defaults to 0, which is a
-        park resuming: that holder never gave its commitment back, so there is
-        nothing to re-take and the wait is for a slot alone.
+        ``tokens`` is the KV commitment to take back alongside the slot, committed here so
+        a resumed holder cannot be admitted into room the cache does not have. It defaults
+        to 0, a park resuming, which never gave its commitment back.
 
-        ``deadline`` is a ``time.monotonic()`` instant to give up at, for a preempted
-        holder whose wait must be bounded. None is the park default: an approved prompt
-        waits as long as it takes, which is the behaviour that predates preemption.
-
-        ``progress`` makes that bound a stall bound: whenever the callable's result
-        changes the deadline moves out by ``patience`` seconds, so a resume queued
-        behind a long answer waits through healthy draining instead of timing out
-        while every slot is busy and moving. ``hard_deadline`` still ends the wait
-        whatever the pool does.
+        ``deadline`` bounds a preempted holder's wait; None is the park default, where an
+        approved prompt waits as long as it takes. ``progress`` makes that bound a STALL
+        bound, so a resume queued behind a long answer waits through healthy draining.
         """
         want = max(0, int(tokens or 0))
         last_progress = progress() if progress is not None else None
@@ -1303,8 +1237,7 @@ class LlamaAdmissionQueue:
                         if queued == ticket:
                             break
                         ahead += 1
-                    # Only the approvals ahead of this one hold slots, and their room, back
-                    # from it: ticket order for the room as well as the slot.
+                    # Ticket order for the room as well as the slot.
                     slot = self._take_slot_locked(
                         ahead, want, self._unpark_tokens_locked(before = ticket)
                     )

@@ -1,34 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One turn's tool calls run at the same time, and still answer in order.
-
-WHAT IT COST TO RUN THEM ONE AT A TIME
-
-A model that asks for three web searches in one turn was getting them sequentially, so
-the turn cost the sum of the three rather than the longest of them. Nothing about the
-format asks for that: parallel tool calls are parallel precisely because the model has
-declared them independent, and every provider that emits them expects them to overlap.
-
-WHAT MUST NOT CHANGE
-
-Overlapping the WAITING is the whole change. Everything downstream of a tool returning is
-order sensitive and stays sequential:
-
-  * the transcript. `tool_messages` must be in call order or the provider sees results
-    attached to the wrong calls, and OpenAI, Anthropic and Gemini all reject that history.
-  * the SSE. A card that fills in before the card above it opened reads as the wrong tool
-    answering.
-  * the call budget. `max_calls` counts calls, and launching four when one remains would
-    spend a budget the loop had already refused.
-  * approvals. They are interactive and one at a time, so a round containing any gated
-    call keeps the strict order rather than asking about a decision whose siblings have
-    already run.
-
-The overlap itself is measured with a barrier rather than a sleep: two tools that must
-each see the other before either may return can only both return if they were running
-together, and the test hangs on its own timeout instead of passing on a fast machine.
-"""
+"""One turn's tool calls run at the same time, and still answer in order."""
 
 from __future__ import annotations
 
@@ -103,13 +76,7 @@ def _two_calls(
 
 @pytest.fixture
 def rendezvous(monkeypatch):
-    """A tool that cannot return until another call of it has also started.
-
-    This is the measurement. A sleep would pass on a machine that happens to be fast and
-    a timing assertion would be flaky on one that is loaded; a barrier can only be cleared
-    by genuine overlap, and the absence of overlap shows up as the timeout rather than as
-    a number that drifted.
-    """
+    """A tool that cannot return until another call of it has also started."""
     # Long enough that a loaded runner still meets it, short enough that the
     # serialised cases (where it can never be met) do not dominate the suite.
     barrier = threading.Barrier(2, timeout = 4)
@@ -160,12 +127,7 @@ class TestTheyActuallyOverlap:
         assert sorted(rendezvous) == ["alpha", "beta"]
 
     def test_the_switch_puts_them_back_in_single_file(self, rendezvous, monkeypatch):
-        """The escape hatch has to actually reach the loop, not just exist.
-
-        "Independent" is the model's claim, not a guarantee, so an install that has two
-        tools writing the same file needs a way back to the old order. With the calls
-        serialised the barrier can never be met, and each returns ALONE.
-        """
+        """The escape hatch has to actually reach the loop, not just exist."""
         monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "0")
         lines = _run(_two_calls())
         ends = _events(lines, "tool_end")
@@ -238,23 +200,12 @@ class TestOrderIsStillTheModelsOrder:
 
 class TestTheLimitsThatMustHold:
     def test_the_call_budget_counts_launches_not_finishes(self, recorder):
-        """With one call left, a two-call round must still run exactly one.
-
-        The budget check reads `remaining`, which is only decremented when a call
-        settles. Launching both and then discovering the budget was spent would run a
-        tool the loop had already refused, side effects and all.
-        """
+        """With one call left, a two-call round must still run exactly one."""
         _run(_two_calls("alpha", "beta"), max_calls = 1)
         assert len(recorder) == 1
 
     def test_a_gated_round_is_not_parallelised(self, rendezvous, monkeypatch):
-        """Approvals are interactive and one at a time.
-
-        `permission_mode="auto"` gates only high-risk tools, and the fixture marks
-        `python` as one, so this round asks for confirmation and must serialise. It never
-        reaches an approval prompt in this test: what is asserted is that the loop chose
-        the sequential path, which the barrier reports as ALONE.
-        """
+        """Approvals are interactive and one at a time."""
         monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *a, **k: object())
         monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda *a, **k: None)
         monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda *a, **k: "allow")
@@ -269,11 +220,7 @@ class TestTheLimitsThatMustHold:
         assert all("TOGETHER" not in (end.get("result") or "") for end in ends)
 
     def test_an_ordinary_round_still_overlaps_under_auto(self, rendezvous):
-        """The gate is per round and must not be the mere presence of a permission mode.
-
-        Under `auto` a round of low-risk reads asks nothing of the user, so serialising it
-        would be paying the approval tax without an approval.
-        """
+        """The gate is per round and must not be the mere presence of a permission mode."""
         lines = _run(_two_calls(), permission_mode = "auto", confirm_calls = True)
         ends = _events(lines, "tool_end")
         assert len(ends) == 2
@@ -282,11 +229,7 @@ class TestTheLimitsThatMustHold:
 
 class TestCancellation:
     def test_a_cancelled_round_does_not_hang(self, monkeypatch):
-        """A tool that ignores the cancel flag must not hold the answer open forever.
-
-        The pump stops asking for events as soon as the flag is set, and the settle path
-        joins the worker rather than closing a generator that is still executing.
-        """
+        """A tool that ignores the cancel flag must not hold the answer open forever."""
         started = threading.Event()
 
         def _execute(name, arguments, **kwargs):
@@ -475,13 +418,7 @@ class TestTheLocalGgufLoopOverlapsToo:
         assert all("ALONE" in (end.get("result") or "") for end in ends)
 
     def test_a_round_that_repeats_a_call_stays_sequential(self, monkeypatch):
-        """The one dependency between a round's calls, and why it is checked up front.
-
-        `prepare_call` turns the second identical call into a no-op because
-        `record_result` put the first one's key in `_successful_keys`. Deciding that with
-        both in flight would run the tool twice, so a round containing a repeat keeps the
-        order it has always had, and the second call is suppressed exactly as before.
-        """
+        """The one dependency between a round's calls, and why it is checked up front."""
         ran: list = []
 
         def _execute(name, arguments, **_kwargs):
@@ -501,10 +438,8 @@ class TestTheLocalGgufLoopOverlapsToo:
         assert [e.get("type") for e in events].count("tool_end") == 1
 
     def test_the_result_budget_is_divided_by_the_whole_batch(self, monkeypatch):
-        """Sequentially call k divides by the calls still to run, because `_spent` has
-        already grown by the results before it. Run together they all price against the
-        same `_spent`, so each dividing by its own remainder would hand out
-        B/N + B/(N-1) + ... , which is more than the batch has.
+        """Sequentially call k divides by the calls still to run, because `_spent` has already
+        grown by the results before it.
         """
         budgets: list = []
 
@@ -538,24 +473,14 @@ class TestTheLocalGgufLoopOverlapsToo:
 
 
 class TestTheRoundLevelLimitsThatAreReadWhileItIsPrepared:
-    """Anything the loop reads per call and updates per RESULT is a hazard here.
-
-    An overlapped round prepares every call before any of them finishes, so a counter that
-    is read while preparing and written when settling is consulted at its starting value
-    every time. Two of these were found by running it: the controller's duplicate ledger,
-    which is why a repeated call keeps the round sequential, and the RAG search cap below.
-    """
+    """Anything the loop reads per call and updates per RESULT is a hazard here."""
 
     def test_the_search_cap_is_not_exceeded_by_a_single_round(self):
         from core.inference.tool_call_parser import RAG_MAX_SEARCHES_PER_TURN
         assert RAG_MAX_SEARCHES_PER_TURN >= 1
 
     def test_the_cap_counts_launches_not_finishes(self, monkeypatch):
-        """More searches in one turn than the cap allows, all distinct so the round overlaps.
-
-        Counting them as they settle lets the whole round through, because every call read
-        the counter before any of them had incremented it.
-        """
+        """More searches in one turn than the cap allows, all distinct so the round overlaps."""
         from core.inference.tool_call_parser import RAG_MAX_SEARCHES_PER_TURN, RAG_SEARCH_TOOLS
 
         tool = sorted(RAG_SEARCH_TOOLS)[0]
@@ -579,17 +504,7 @@ class TestTheRoundLevelLimitsThatAreReadWhileItIsPrepared:
 
 
 class TestNothingNewSlipsIntoTheSameHazard:
-    """A guard on the shape of the bug, not on any one instance of it.
-
-    Three bugs in this change were the same mistake: state that the loop READS while
-    preparing a call and WRITES when that call settles is read at its starting value by
-    every call in an overlapped round. The duplicate ledger, the RAG search cap and the
-    forced tool choice were each found separately, by running it.
-
-    So pin the list. Both settle paths declare what they write, and adding a name to
-    either is exactly the moment to ask whether the head reads it too. A test that fails
-    on a NEW name is worth more than three tests for the three names already handled.
-    """
+    """A guard on the shape of the bug, not on any one instance of it."""
 
     def _nonlocals(self, path, marker):
         import ast
@@ -641,14 +556,7 @@ class TestNothingNewSlipsIntoTheSameHazard:
 
 
 class TestTheReplayedTurnIsWhatTheModelSees:
-    """`assistant_msg` is the third name read while preparing and written when settling.
-
-    It is safe for a structural reason rather than a counted one: every call is APPENDED to
-    it in the preparing pass, and the rebinding only happens in the settling pass, so the
-    hazard its own comment describes -- "the next one in the batch appends its tool_call to
-    this handle while its RESULT goes to conversation" -- cannot occur in an overlapped
-    round. That is an argument, so here it is as a measurement instead.
-    """
+    """`assistant_msg` is the third name read while preparing and written when settling."""
 
     def test_one_assistant_row_carries_every_call_and_its_own_result(self, monkeypatch):
         def _execute(name, arguments, **_kwargs):
@@ -678,18 +586,7 @@ class TestTheReplayedTurnIsWhatTheModelSees:
 
 
 class TestTheControllerHasExactlyTwoIntraRoundDependencies:
-    """The other place a round's calls could depend on each other: the controller.
-
-    The `nonlocal` guard above covers state shared through the loop's own scope. It says
-    nothing about `ToolLoopController`, which is where the FIRST bug of this class lived:
-    `prepare_call` reads `_successful_keys` and `_completed_one_shot_tools`, and
-    `record_result` writes them, so an overlapped round decides both before any result
-    exists. That is why a round containing a repeat or a repeated one-shot tool is kept
-    sequential.
-
-    Two is the number the gate is built for. A third would pass every behavioural test in
-    this file and silently break a round that both loops had already decided to overlap.
-    """
+    """The other place a round's calls could depend on each other: the controller."""
 
     def _self_attrs(self, cls_node, method, kind):
         import ast
@@ -752,15 +649,7 @@ class TestTheControllerHasExactlyTwoIntraRoundDependencies:
 
 
 class TestAMixedRoundStillAnswersInOrder:
-    """The ordering claim, tested where it actually broke.
-
-    Every earlier ordering test used a round in which every call ran. A call that produces
-    its answer WITHOUT running a tool -- the budget is spent, the controller made it a
-    no-op, the user denied it -- used to be written straight out from the preparing pass,
-    so it overtook every call that was still running. CI found it as
-    `['c2', 'c1'] == ['c1', 'c2']` on the cards, and the same inversion in the replayed
-    transcript, which providers reject outright.
-    """
+    """The ordering claim, tested where it actually broke."""
 
     def test_the_provider_loop_keeps_a_spent_budget_in_its_place(self, recorder):
         """One call runs, the next is past the budget. The cards must close in call order."""

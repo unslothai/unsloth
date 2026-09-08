@@ -1,28 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A tool-loop chat that queued at admission is armed once it is granted.
-
-WHAT WENT WRONG
-
-The tool path armed preemption beside its reservation. `_openai_llama_preemption_arm`
-calls `lease_nowait()` and returns None when the lease has not been granted, so a chat
-that queued bound None and never armed: it decoded outside the preemptor's ledger, and
-nothing could pause it or pause for it. The plain path had been given a second arm after
-its wait for exactly this reason; the tool path had not.
-
-Measured with four simultaneous tool-enabled API chats on the 4B model at ``-c 8192``: two
-`armed` lines, two chats decoding unarmed, three of four dead with `Context size has been
-exceeded`. Four browser tabs had not shown it because their sends were staggered enough for
-every chat to be granted at once.
-
-THE RULE THIS PINS
-
-Drive the real ASGI route with a one-slot backend whose slot is already taken. The request
-queues (it streams `: admission-wait`). Release the slot. The request proceeds, and the
-preemptor is armed WITH the lease in hand: the arm that ran beside the reservation saw no
-lease, the arm that ran after the wait did.
-"""
+"""A tool-loop chat that queued at admission is armed once it is granted."""
 
 from __future__ import annotations
 

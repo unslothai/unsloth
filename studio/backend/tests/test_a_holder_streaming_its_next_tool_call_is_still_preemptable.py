@@ -1,30 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A chat that answers a tool result with another tool call must still be pausable.
-
-WHAT WENT WRONG
-
-Four browser chats on the 35B model at -c 8192, 2026-09-05 02:54. Chat 0 wrote its
-answer through a terminal tool (`cat > MANUAL.md << EOF ...`), so its second round was
-one long tool call: tool-call deltas, no content. The route had reported TOOLS_RUNNING at
-the first tool start and would report DECODING only at the next content chunk, which
-never came. TOOLS_RUNNING is not preemptable. The sweep saw two holders, one of them
-unpreemptable, spared the other as the last one standing, and chose nobody while the
-pool climbed 5216 -> 8288 past a 6136 ceiling. llama-server then ended both chats with
-`Context size has been exceeded`. Reproduced in temp/repro_tools_running.py.
-
-THE RULES THIS PINS
-
-1. A generated token is proof of decoding: `observe` moves a TOOLS_RUNNING or
-   PARKED_ON_TOOL holder to DECODING by itself.
-2. The sweep leaves one HOLDER standing, not one preemptable victim. Beside a holder it
-   cannot choose (a raw passthrough, a chat genuinely in a tool), every preemptable chat
-   may be chosen; a holder already PREEMPTING is on its way out and does not count.
-3. The tool-loop route reports DECODING on streamed tool arguments, and compares against
-   the ledger's own state rather than a local mirror, so a state the controller moved on
-   its own is not mistaken for a repeat.
-"""
+"""A chat that answers a tool result with another tool call must still be pausable."""
 
 from __future__ import annotations
 
@@ -126,8 +103,9 @@ class TestOneHolderStanding:
 
 class TestTheRouteReports:
     def test_note_state_reads_the_ledger_not_a_mirror(self, monkeypatch):
-        """After the controller moved the chat to DECODING by itself, a later
-        TOOLS_RUNNING report must still go through."""
+        """After the controller moved the chat to DECODING by itself, a later TOOLS_RUNNING report
+        must still go through.
+        """
         controller = _controller()
         monkeypatch.setattr(inference_route, "get_preemption_controller", lambda key: controller)
         backend = type("B", (), {"base_url": "http://tool.test"})()

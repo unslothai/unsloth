@@ -1448,10 +1448,8 @@ export async function estimateKvCache(
 /**
  * Split one SSE block into its data lines and its admission signal, if it carries one.
  *
- * The admission comments are the only comments this reader acts on, and they arrive in
- * blocks with no `data:` line at all, so the caller must handle the signal BEFORE its
- * empty-block early exit. Every other comment (`: keep-alive`) still falls through
- * untouched.
+ * These blocks carry no `data:` line at all, so the caller must handle the signal BEFORE its
+ * empty-block early exit. Every other comment still falls through untouched.
  */
 function parseSseEvent(rawEvent: string): {
   dataLines: string[];
