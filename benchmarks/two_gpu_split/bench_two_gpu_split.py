@@ -833,6 +833,12 @@ def main():
     for name in cfgs:
         entry = {"config": name, "seconds": [], "setup_seconds": None}
         sp = None
+        # Peak memory is per configuration, not per process. Without this reset a row inherits
+        # the highest-water mark of every row before it, so an offload arm that never touched
+        # card 1 would still report card 1's peak from the split arm.
+        for i in idx:
+            if i < torch.cuda.device_count():
+                torch.cuda.reset_peak_memory_stats(i)
         try:
             d0 = dynamo_seconds()
             t0 = time.perf_counter()
@@ -1074,7 +1080,8 @@ def _print_table(report, args):
             "expected:\n        different SM counts change the tile and split-k choice inside "
             "cuBLAS,\n        which changes the reduction order and therefore the last bits."
         )
-    if not report["environment"]["p2p_any"]:
+    ran_split = any(k in report["results"] for k in ("split", "split_host", "accel_dispatch"))
+    if not report["environment"]["p2p_any"] and ran_split:
         print(
             "\n  NOTE: no peer-to-peer access between these cards. The 'split' row already "
             "reflects\n        the driver's host-staged path, and 'split_host' is the explicit "

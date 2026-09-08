@@ -30,23 +30,112 @@ This script needs **two CUDA devices visible to one process**. That constrains w
 
 **Two DGX Sparks are two nodes, not two GPUs.** They link over ConnectX-7 200GbE with RoCE and are
 driven by NCCL across a network, not by `.to(device)` inside one process. This script deliberately
-uses no `torch.distributed` and no NCCL, so it cannot address that pair at all. A cross-node split
-is a different design, and the numbers say it is also a much worse one:
+uses no `torch.distributed` and no NCCL, so it cannot address that pair at all.
 
-| path | bandwidth |
-|---|---|
-| direct device-to-device, same box, 64 MiB | 582 GiB/s |
-| host-staged, same box | 26 GiB/s |
-| two Sparks over 200GbE RoCE | about 12 GiB/s (~106 Gbit/s measured by others) |
+An earlier version of this section argued a cross-node split was also the wrong shape on bandwidth.
+**That argument was wrong, and it was corrected by measurement on a two-Spark pair.** The corrected
+numbers, from the PR discussion:
 
-Both 200G ports also share two PCIe Gen5 x4 lanes, so a second cable buys little. A layer boundary
-crossed every forward at 12 GiB/s costs roughly **50x** what the in-box case costs, so pipeline
-placement across two Sparks is likely the wrong shape; tensor parallelism through vLLM or Ray,
-which is what NVIDIA's own two-Spark guidance uses, is the better fit.
+| path | earlier claim | measured on a GB10 pair |
+|---|---|---|
+| direct device-to-device, same box, 64 MiB | 582 GiB/s | 103.3 GiB/s (the 582 was a B200 NVLink pair) |
+| host-staged, same box, 64 MiB | 26 GiB/s | 27.5 GiB/s |
+| two Sparks, raw RDMA, one rail | | 13.98 GB/s |
+| two Sparks, raw RDMA, both rails concurrent | | 24.5 GB/s |
+| two Sparks, NCCL busbw | about 12 GiB/s | 20.31 GB/s = 18.91 GiB/s |
 
-Note also that one Spark carries 128 GB of unified memory, which is more than two 5090s combined.
-The "it does not fit on one card" problem this feature targets is a **two consumer GPU** problem,
-so that is the configuration worth measuring.
+Three things in the earlier version do not survive. The 12 GiB/s figure was the single-rail number,
+so the pair was costed as if one cable were connected; NCCL bandwidth is 1.69x that. The claim that
+both 200G ports share two PCIe Gen5 x4 lanes is false on this hardware: the two devices sit in
+separate PCI domains, `0000:01:00.0` and `0002:01:00.0`, each with its own 32.0 GT/s x4 link, and
+aggregation measures 1.75x raw and 2.00x under NCCL. And the "50x" compared two link bandwidths
+rather than link time against compute time, and used the NVLink figure as the in-box denominator
+when a GeForce pair over PCIe without P2P is host-staged; the honest ratio is 27.5 / 18.91 = 1.45x.
+
+**What a DiT boundary actually costs**, counted from the tensors the boundary block is called with,
+both crossings, against measured per-forward compute on a GB10:
+
+| | Z-Image-Turbo 1024, 9 steps | Wan2.2-TI2V-5B 1280x704x121, 100 forwards |
+|---|---|---|
+| bytes per render | 0.60 GB | 35.2 GB |
+| compute per render | 14.4 s | 1180 s |
+| boundary at 12 GiB/s | 46.8 ms = **0.32%** | 2.73 s = **0.23%** |
+| boundary at 20.31 GB/s | 29.7 ms = 0.21% | 1.73 s = 0.15% |
+
+The bandwidth argument fails at the earlier number, before any correction: a DiT crossing is large
+in bytes and tiny against the FLOPs of the stack it separates.
+
+**What does still hold for two Sparks, for reasons that are not about bandwidth.** For a single
+render there is no capacity problem to solve (peak allocation is 21.67 GiB for the whole Z-Image
+pipeline and 12.1 GiB for the Wan transformer, against 121.7 GiB on one Spark), and a layer split is
+strictly sequential, so it buys 1.0x because step t+1 consumes step t. Where a two-node split would
+pay is a **batch of renders**: images in a batch are independent, so a two-stage schedule over the
+batch dimension has real in-flight work, and its steady-state ceiling is the boundary cost above.
+That should approach 2x aggregate throughput. Not built here.
+
+## sm_121: the ptxas trap
+
+`--compile` on a Spark fails out of the box:
+
+```
+ptxas fatal : Value 'sm_121a' is not defined for option 'gpu-name'
+```
+
+The triton bundled inside the torch cu130 wheel (3.5.1 with torch 2.9.1) ships a CUDA 12.8.93 ptxas
+that predates sm_121a. The fix needs no apt and no system CUDA, because the same torch wheel already
+carries a newer assembler:
+
+```bash
+export TRITON_PTXAS_PATH=<venv>/lib/python3.12/site-packages/torch/bin/ptxas   # CUDA 13.0.48
+```
+
+`nvidia-cuda-nvcc-cu13` is not an alternative; it is a placeholder sdist with no aarch64 wheel. torch
+also warns that capability 12.1 exceeds its stated 12.0 maximum, and runs anyway. This is the sm_121
+analogue of the sm_120 nvcc trap documented in the NVFP4 benchmark PR.
+
+## Results reported so far
+
+**RTX 6000 Ada (sm_89) + RTX 3090 (sm_86), no P2P, 3090 on PCIe 3.0 x4.** Z-Image-Turbo 1024, 9
+steps, balanced split at block 13 of 30:
+
+| configuration | p50 s | vs single | GPU 0 GiB | GPU 1 GiB |
+|---|---|---|---|---|
+| single | 12.765 | 1.000x | 19.29 | 0 |
+| split | 14.817 | 1.161x | 13.63 | 5.91 |
+| accel_dispatch | 15.118 | 1.184x | 13.51 | 5.79 |
+| cpu_offload | 18.046 | 1.414x | | |
+| seq_offload | 33.076 | 2.591x | | |
+
+5.66 GiB saved on the primary card for 16% more time, faster than `accel_dispatch`, 1.22x faster than
+CPU offload and 2.23x faster than sequential offload. Boundary transfers were 2.85% of the render even
+on a saturated PCIe 3.0 x4 link at 2.6 GiB/s. Moving fewer blocks to the slower card reduced the
+slowdown (ratio 0.75: 1.070x, 2.85 GiB on GPU 1), so on a mismatched pair the memory-balanced default
+is not the fastest split. Five split/undo cycles left no hooks, shims or buffers behind and reproduced
+the baseline bit-identically.
+
+**Mixed cards diverge, and by how much depends on the model.** The split matched `accel_dispatch`
+byte for byte, so the divergence is between the GPUs, not from the split. On Wan2.2 it was a
+one-level difference in 233k of 63.7M values. On 9-step Z-Image-Turbo it was a visibly different
+image, PSNR 25.90 dB, and it grows with steps: 37.5 dB at 1 step, 33.2 at 2, 30.5 at 4, 25.9 at 9.
+Running entirely on one card versus entirely on the other differs *more* (22.35 dB) than the split
+does. Users with mixed cards should expect this, and a few-step image model is where it shows.
+
+**The hook boundary recompiles slowly.** With `--compile` the shim and hook styles produce identical
+pixels, but the hook is traced into the compiled block, so changing placement forces a full block
+recompile: 42.7 s against 1.1 s for the shim. Prefer the shim under compile.
+
+**The planner splits only the largest container**, so `noise_refiner` and `context_refiner` (1.33 GiB
+together on Z-Image) stay on GPU 0 in every configuration.
+
+**DGX Spark, GB10, sm_121a, `--devices 0`.** Z-Image-Turbo 1024, 9 steps, single card: 34.29 s eager,
+25.01 s with regional compile (1.371x, 26.1 s wall and 13.3 s in dynamo, kept in its own column),
+peak 21.67 GiB. CPU offload 104.0 s, sequential offload 80.9 s. With one device the `bit_identical`,
+boundary and P2P columns are trivially true, zero and empty respectively, and mean nothing.
+
+Two reporting bugs found in the first round are fixed in this revision: the `card0 GiB` / `card1 GiB`
+columns read a process-lifetime peak without resetting between configurations, so an offload row
+could report a peak on a card it never used (the JSON's `allocated_gib` was always correct); and the
+no-P2P note printed under `--devices 0` where no split row had run.
 
 ## Run it
 
