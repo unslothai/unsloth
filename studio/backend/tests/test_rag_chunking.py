@@ -73,8 +73,7 @@ def test_parse_text_single_page():
 
 
 def test_large_document_does_not_retokenize_every_piece_after_cache_eviction():
-    # GGUF counts are HTTP requests behind a 4096-entry cache. A long TXT/DOCX
-    # page evicts all its early words before merging reaches them again.
+    # Merging must not repeat HTTP requests after the 4096-entry cache fills.
     requests = Counter()
 
     @lru_cache(maxsize = 4096)

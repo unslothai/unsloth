@@ -448,8 +448,7 @@ def parse(path: str, *, want_images: bool = False):
         return (pages, []) if want_images else pages
 
     if ext in (".html", ".htm", ".txt", ".md", ".markdown"):
-        # Windows text exports can carry a UTF-16/32 BOM. Decoding those as
-        # UTF-8 indexes NULs and replacement characters instead of searchable text.
+        # Honor Unicode BOMs; check UTF-32 before its overlapping UTF-16 prefix.
         with open(path, "rb") as f:
             prefix = f.read(4)
         encoding = "utf-8-sig"

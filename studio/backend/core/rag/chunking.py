@@ -90,9 +90,7 @@ def _merge(
         chunks.append((stripped, start, end))
 
     for piece, start in zip(pieces, starts):
-        # Keep the count obtained while splitting. On large single-page text
-        # documents the GGUF tokenizer's LRU has already evicted early pieces;
-        # asking it again here repeats thousands of synchronous HTTP requests.
+        # Reuse counts after the GGUF tokenizer's cache evicts earlier pieces.
         pt = piece.token_count
         if buf and buf_tok + pt > max_tokens:
             _flush()

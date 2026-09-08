@@ -320,7 +320,7 @@ def _run(
 
         def report_embeddings(done, total):
             nonlocal embedded_progress
-            # A backend swap may repeat a batch; progress must not go backwards.
+            # Keep progress monotonic when a backend swap repeats a batch.
             embedded_progress = max(embedded_progress, 0.65 + 0.25 * done / total)
             _progress(conn, job_id, "embedding", embedded_progress)
 
@@ -453,8 +453,7 @@ def start_ingestion(
                 )
             )
             if empty_completed or stale_model or in_progress:
-                # Empty/stale vectors, or an orphan with no active job: retry and keep
-                # the original until the replacement has completed.
+                # Retry empty, stale or orphaned documents; keep the old copy until success.
                 replaces = (existing, doc.get("stored_path"))
             else:
                 job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)

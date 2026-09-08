@@ -218,8 +218,7 @@ export function useRagDocuments(
             return;
           }
         }
-        // An interrupted or unavailable SSE stream is not completion. Keep
-        // following the persisted job, including a duplicate's original job.
+        // Poll until the persisted job reaches a terminal state.
         try {
           while (!controller.signal.aborted) {
             const job = await getJob(jobId);
@@ -502,7 +501,7 @@ export function useRagDocuments(
         sigByDocId.current.set(result.documentId, itemSignature(item));
         if (seenIds.has(result.documentId)) {
           setDocuments((rows) => rows.filter((row) => row.id !== tempId));
-          // Keep following the real job: a duplicate can still be indexing.
+          // A duplicate may still be indexing.
           trackJob(result.jobId, result.documentId, result.filename || name);
           return;
         }

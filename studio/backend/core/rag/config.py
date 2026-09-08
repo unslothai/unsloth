@@ -51,8 +51,7 @@ FOLDER_JOB_HISTORY_LIMIT = int(os.environ.get("RAG_FOLDER_JOB_HISTORY_LIMIT", "2
 # Falls back to plain PyMuPDF text when off, when pymupdf4llm is missing, or when extraction fails.
 PDF_MARKDOWN = os.environ.get("RAG_PDF_MARKDOWN", "1") == "1"
 
-# Optional enrichment: keep ordinary uploads fast even when a vision model is loaded.
-# The chat's "Describe figures & charts" toggle overrides this per upload.
+# Figure descriptions are opt-in; the chat toggle overrides this default.
 CAPTION_IMAGES = os.environ.get("RAG_CAPTION_IMAGES", "0") == "1"
 # Total per-document tile budget (figure-bearing pages are tiled, see below).
 CAPTION_MAX_IMAGES = int(os.environ.get("RAG_CAPTION_MAX_IMAGES", "24"))

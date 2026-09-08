@@ -518,8 +518,7 @@ export function ThreadDocumentsBar({
         );
         return;
       }
-      // Resolve only after upload has filtered duplicates and shown the chips.
-      // A reselected file needs no chat initialization or persistence request.
+      // Filter duplicates before initializing the chat.
       void upload(items, async () => ({
         type: "thread",
         threadId: await ensureThreadId(),
