@@ -937,8 +937,7 @@ def test_run_training_process_eagerly_installs_causal_conv1d_in_normal_mode():
     )
 
 
-# unsloth_zoo vendors the FLA gated-delta kernels and injects them as `fla` at
-# `import unsloth`, shadowing any pip copy and forcing FLA_TILELANG=0.
+# unsloth_zoo vendors the FLA kernels as `fla`; the worker must never pip install them.
 _NEVER_PIP_INSTALLED = ("flash-linear-attention", "fla-core", "tilelang", "apache-tvm-ffi")
 
 

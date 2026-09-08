@@ -3396,8 +3396,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # 1) causal-conv1d runs eagerly for matching architectures: some SSM modeling files
     #    lazy_load it without calling is_causal_conv1d_available.
     # 2) mamba-ssm + flash-attn keep their substring / size gates.
-    # 3) The FLA gated-delta kernels need no install: unsloth_zoo vendors them and
-    #    injects them as `fla` at `import unsloth`.
+    # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
     try:
         from utils.ssm_runtime import resolved_model_wants_causal_conv1d
 
