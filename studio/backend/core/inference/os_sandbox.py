@@ -289,7 +289,7 @@ def capability_snapshot(
         limitations = (
             ("srt_windows_system_dns_unfenced", "srt_windows_shared_account_grants")
             if sys.platform == "win32"
-            else ("srt_macos_system_dns_unfenced",)
+            else ("srt_macos_system_dns_unfenced", "host_files_readable")
         )
         return SandboxCapability(
             backend = "srt",

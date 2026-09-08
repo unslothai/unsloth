@@ -89,7 +89,12 @@ TOOL_OUTPUT_STREAM_MAX_CHARS = 400_000
 _STREAM_CAPPED_NOTICE = "\n... (further live output not streamed)\n"
 
 
-def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> tuple[str, bool]:
+def _drain_queue(
+    q: "queue.Queue",
+    sentinel: object,
+    max_chars: int | None,
+    pending_events: list[dict] | None = None,
+) -> tuple[str, bool]:
     """Pull every currently-queued item, joining chunks in FIFO order.
 
     With ``max_chars`` set, stop concatenating at the budget and discard the
@@ -97,7 +102,8 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
     far more than the cap before the consumer wakes. The crossing chunk is sliced
     to one char past the budget, enough for the caller's truncation to stay
     byte-identical. Returns ``(joined_text, hit_sentinel)``; the surplus is still
-    scanned so completion is detected promptly.
+    scanned so completion is detected promptly. A control event ends the batch
+    and is handed back for dispatch before consuming any subsequent output.
     """
     parts: list[str] = []
     total = 0
@@ -110,6 +116,11 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
             break
         if item is sentinel:
             hit_sentinel = True
+            break
+        if isinstance(item, dict):
+            if pending_events is None:
+                raise TypeError("Control events require a pending-event receiver")
+            pending_events.append(item)
             break
         if dropping:
             continue
@@ -207,10 +218,13 @@ def stream_tool_execution(
     streamed_chars = 0
     stream_capped = False
     finished = False
+    pending_events: list[dict] = []
 
     def _drain_pending(max_chars: int | None = None) -> str:
         nonlocal finished
-        text, hit_sentinel = _drain_queue(output_queue, done_sentinel, max_chars)
+        text, hit_sentinel = _drain_queue(
+            output_queue, done_sentinel, max_chars, pending_events
+        )
         if hit_sentinel:
             finished = True
         return text
@@ -230,12 +244,19 @@ def stream_tool_execution(
             if item is done_sentinel:
                 finished = True
                 return
+            if isinstance(item, dict):
+                pending_events.append(item)
+                return
 
     abnormal_exit = False
     try:
         while not finished:
             try:
-                item = output_queue.get(timeout = poll_interval_s)
+                item = (
+                    pending_events.pop()
+                    if pending_events
+                    else output_queue.get(timeout = poll_interval_s)
+                )
             except queue.Empty:
                 # A disconnect sets cancel_event while the worker is silent; surface a heartbeat this poll so the route
                 # regains control and tears down at once, not after a full heartbeat interval.

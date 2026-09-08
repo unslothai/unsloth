@@ -55,6 +55,46 @@ def test_nonzero_has_no_false_execution_attestation(native_session):
     assert records == []
 
 
+@pytest.mark.parametrize("kind", ["python", "terminal"])
+def test_native_completion_after_output_survives_stream(native_session, monkeypatch, kind):
+    import threading
+    from core.inference import tools, tool_stream_exec
+
+    original_start = threading.Thread.start
+
+    def start(worker):
+        original_start(worker)
+        if worker.name.startswith("tool-exec-"):
+            worker.join(timeout = 40)
+            assert not worker.is_alive()
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    execute = tools._python_exec if kind == "python" else tools._bash_exec
+    code = "print('NATIVE_STREAM_SUCCESS')" if kind == "python" else "printf NATIVE_STREAM_SUCCESS"
+    cancel = threading.Event()
+
+    def invoke(output, completion):
+        return execute(code, None, 30, "native-stream", output_callback = output,
+                       launch_record_callback = completion)
+
+    gen = tool_stream_exec.stream_tool_execution(
+        invoke, tool_name = kind, cancel_event = cancel,
+        launch_event_factory = lambda record: {"type": "tool_execution", "record": record.as_dict()},
+    )
+    events = []
+    while True:
+        try:
+            events.append(next(gen))
+        except StopIteration as stop:
+            assert "NATIVE_STREAM_SUCCESS" in stop.value
+            break
+    assert not cancel.is_set()
+    assert "NATIVE_STREAM_SUCCESS" in "".join(e.get("text", "") for e in events)
+    records = [e["record"] for e in events if e["type"] == "tool_execution"]
+    assert len(records) == 1
+    assert records[0]["backend"] == "srt" and records[0]["os_isolation"]
+
+
 def test_selected_python_pillow_formats(native_session):
     from core.inference import tools
 

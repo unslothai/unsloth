@@ -10,6 +10,21 @@ import { fileURLToPath } from 'node:url';
 import { MAX_REQUEST, connectControl, executeSupported, payloadCommand, quote, supportedArgv, supportedConfig, validateRequest, verifyInstallation } from './bridge.mjs';
 import { applyPatch } from './apply_patch.mjs';
 
+test('macOS native configuration permits host reads and needs a read-authority disclosure', {skip:process.platform === 'win32' && 'policy generator requires POSIX shell lookup'}, async () => {
+  const { wrapCommandWithSandboxMacOS } = await import('@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js');
+  const config = supportedConfig({readRoots:['/usr'],writeRoots:['/private/work'],denyReadRoots:[]});
+  const generate = denyOnly => wrapCommandWithSandboxMacOS({
+    command:'true', needsNetworkRestriction:true,
+    readConfig:{denyOnly,allowWithinDeny:config.filesystem.allowRead},
+    writeConfig:{allowOnly:config.filesystem.allowWrite,denyWithinAllow:[]},
+  });
+  const native = generate(config.filesystem.denyRead);
+  assert.ok(native.includes('(allow file-read*)'));
+  assert.ok(!native.includes('(deny file-read*'));
+  // Policy-generator control only: this is not a supported Studio request or a native denial.
+  assert.ok(generate(['/']).includes('(deny file-read*'));
+});
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const request = () => ({v:1,operation:'run',executable:path.resolve('/usr/bin/python3'),argv:['-c','print(1)'],cwd:path.resolve('/tmp/work'),env:{PATH:'/usr/bin:/bin'},readRoots:[path.resolve('/usr')],writeRoots:[path.resolve('/tmp/work')],timeoutMs:1000});
 

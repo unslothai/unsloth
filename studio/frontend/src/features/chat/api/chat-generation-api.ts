@@ -241,18 +241,25 @@ export async function getActiveChatGenerationRuns(
 
 export async function createChatGenerationRun(
   input: CreateChatGenerationRunInput,
+  beforeDispatch?: () => void,
 ): Promise<ChatGenerationRun> {
   let failures = 0;
   while (true) {
+    beforeDispatch?.();
     try {
       return await json<ChatGenerationRun>(
-        await authFetch("/api/inference/chat-runs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(input),
-        }),
+        await authFetch(
+          "/api/inference/chat-runs",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+          { beforeRetry: beforeDispatch },
+        ),
       );
     } catch (error) {
+      beforeDispatch?.();
       if (isPermanent(error)) throw error;
       failures += 1;
       await waitForReconnect(reconnectDelay(failures));
@@ -264,8 +271,9 @@ export async function createChatGenerationRun(
 export async function createChatGenerationRunUntilAbort(
   input: CreateChatGenerationRunInput,
   signal: AbortSignal,
+  beforeDispatch?: () => void,
 ): Promise<ChatGenerationRun | null> {
-  const createPromise = createChatGenerationRun(input);
+  const createPromise = createChatGenerationRun(input, beforeDispatch);
   let resolveAbort: (() => void) | undefined;
   const aborted = new Promise<null>((resolve) => {
     resolveAbort = () => resolve(null);

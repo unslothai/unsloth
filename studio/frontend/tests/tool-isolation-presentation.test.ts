@@ -29,7 +29,7 @@ const presentation = runInNewContext(
 
 for (const [environment, limitations] of [
   ["win32", ["srt_windows_system_dns_unfenced", "srt_windows_shared_account_grants"]],
-  ["darwin", ["srt_macos_system_dns_unfenced"]],
+  ["darwin", ["srt_macos_system_dns_unfenced", "host_files_readable"]],
   ["linux", ["srt_platform_qualification_incomplete"]],
 ] as const) {
   test(`${environment}: supported SRT limitations do not disable Required presentation`, () => {

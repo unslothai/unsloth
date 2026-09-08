@@ -75,6 +75,36 @@ const createInput = () => ({
   requestPayload: run("queued", 1).requestPayload,
 });
 
+test("durable admission revalidates after capability discovery", async () => {
+  let current = true;
+  let posts = 0;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === "POST") posts++;
+    current = false;
+    return Response.json({ runs: [] });
+  }) as typeof fetch;
+  await supportsChatGenerationRuns("thread-1");
+  await assert.rejects(createChatGenerationRunUntilAbort(
+    createInput(), new AbortController().signal,
+    () => { if (!current) throw new Error("permissions withdrawn"); },
+  ), /permissions withdrawn/);
+  assert.equal(posts, 0);
+});
+
+test("durable admission does not reconnect with revoked permission", async () => {
+  let current = true;
+  const posted: unknown[] = [];
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    posted.push(JSON.parse(String(init?.body)));
+    current = false;
+    throw new TypeError("disconnected");
+  }) as typeof fetch;
+  await assert.rejects(createChatGenerationRun(
+    createInput(), () => { if (!current) throw new Error("permissions withdrawn"); },
+  ), /permissions withdrawn/);
+  assert.equal(posted.length, 1);
+});
+
 const frame = (
   seq: number,
   type: string,

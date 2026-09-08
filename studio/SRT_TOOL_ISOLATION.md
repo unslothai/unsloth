@@ -16,7 +16,7 @@ Normal Studio setup runs `studio/install_srt_runtime.py` on Linux, macOS and Win
 
 Linux also needs `bubblewrap`, `socat`, `ripgrep` and usable OS confinement facilities. Install missing prerequisites with your distribution's package manager if the capability message requests them; Studio does not change host security policy to enable them. Existing Studio setup manages an isolated Node where supported; a desktop frontend bundle alone does not supply the backend helper.
 
-macOS uses the operating system's `sandbox-exec`/Seatbelt implementation. Install `ripgrep` with `brew install ripgrep` if it is missing; no separate account or WFP setup applies.
+macOS uses the operating system's `sandbox-exec`/Seatbelt implementation. Required retains the upstream native read policy: commands can read host files accessible to Studio, including unrelated documents and credentials. It restricts writes but does not confine reads to the runtime and workdir. Capability responses, execution records and Sandbox details disclose `host_files_readable`. The native probe checks workdir writes and a denied host write; it does not qualify read confinement. Install `ripgrep` with `brew install ripgrep` if it is missing; no separate account or WFP setup applies.
 
 For an explicit reinstall from an already populated npm cache:
 
@@ -26,7 +26,7 @@ python studio/install_srt_runtime.py --offline
 
 This command fails if cached packages are missing. Normal tool calls perform no dependency installation and require no npm registry access. Preserve the installed `srt_runtime/node_modules` when preparing an offline image. After an upgrade, rerun setup so the lock and integrity manifest match. The helper lives inside the Studio installation; helper installation alone does not provision a sandbox account or machine policy.
 
-The Linux live confinement probe requires working host DNS as a positive control. A host without DNS cannot establish that denial result and Required remains unavailable, even when the helper is installed from an offline cache.
+The Linux live confinement probe uses owned local TCP, UDP and Unix socket positive controls and checks that the sandbox cannot reach them. It requires no public DNS or Internet connection. Failed controls, launch verification or a probe timeout still leave Required unavailable.
 
 ## Windows machine setup
 

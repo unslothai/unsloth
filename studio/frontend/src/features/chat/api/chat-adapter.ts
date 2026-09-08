@@ -4881,9 +4881,26 @@ export function createOpenAIStreamAdapter(
       }
 
       function currentToolIsolationRequestFields() {
+        // Also used by HTTP admission and retries after their final await.
+        const live = useChatRuntimeStore.getState();
         if (
           supportsStudioToolsForThisTurn &&
-          !queuedIsolationDecisionIsCurrent(runtime, useChatRuntimeStore.getState())
+          (!queuedIsolationDecisionIsCurrent(runtime, live) ||
+            runtime.toolNetworkPolicy !== live.toolNetworkPolicy ||
+            (runsStudioPythonOrTerminal &&
+              toolIsolationRequestFields.tool_execution_mode === "limited" &&
+              (!isLimitedGrantCurrent(
+                live.limitedToolGrant,
+                live.toolIsolationCapability,
+              ) ||
+                live.limitedToolGrant?.grant !==
+                  toolIsolationRequestFields.limited_grant)) ||
+            (runsStudioPythonOrTerminal &&
+              toolIsolationRequestFields.tool_execution_mode === "os_isolation_required" &&
+              live.toolIsolationCapability?.protection_state !== "protected" &&
+              live.toolIsolationCapability?.protection_state !== "preview") ||
+            (toolIsolationRequestFields.tool_network_policy === "allowlist" &&
+              !live.toolIsolationCapability?.network_policies.includes("allowlist")))
         ) {
           throw new Error(
             "Tool permissions changed while preparing this request. Review the protection level and send again.",
@@ -6450,6 +6467,7 @@ export function createOpenAIStreamAdapter(
                         requestPayload,
                       },
                       runSignal,
+                      currentToolIsolationRequestFields,
                     );
                   } catch (error) {
                     if (!isLegacyFallbackChatGenerationAdmissionError(error)) {
@@ -6558,6 +6576,7 @@ export function createOpenAIStreamAdapter(
                       : (runtime.loadedCustomContextLength ??
                         runtime.loadedContextLength ??
                         (params.maxSeqLength || null)),
+                    currentToolIsolationRequestFields,
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();

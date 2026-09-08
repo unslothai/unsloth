@@ -12,6 +12,13 @@ import pytest
 from core.inference import srt_adapter
 
 
+def test_macos_native_request_retains_documented_broad_read_policy(tmp_path, monkeypatch):
+    monkeypatch.setattr(srt_adapter.sys, "platform", "darwin")
+    monkeypatch.setattr(srt_adapter, "read_roots", lambda executable: [str(tmp_path / "runtime")])
+    request = srt_adapter.request_for([sys.executable, "-c", "print(1)"], str(tmp_path), {}, 30)
+    assert request["denyReadRoots"] == []
+
+
 def test_windows_grants_private_runtime_once_without_stamping_program_files(tmp_path, monkeypatch):
     monkeypatch.setattr(srt_adapter.sys, "platform", "win32")
     monkeypatch.setattr(srt_adapter, "RUNTIME", tmp_path)

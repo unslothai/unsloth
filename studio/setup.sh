@@ -1430,12 +1430,6 @@ elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
 fi
 
-# The backend helper is needed even when the desktop supplies a built frontend.
-# Setup failure leaves Required unavailable; tool execution never invokes npm.
-if ! python "$SCRIPT_DIR/install_srt_runtime.py"; then
-    substep "SRT setup failed; Required tools remain unavailable. Retry studio setup when Node/npm and the registry are available." "$C_WARN"
-fi
-
 _remove_agent_instruction_files \
     "$SCRIPT_DIR/frontend/node_modules" \
     "$_OXC_DIR/node_modules"
@@ -1485,6 +1479,13 @@ elif [ -n "$STAGE_ROOT" ]; then
     hash -r 2>/dev/null || true
 else
     source "$VENV_DIR/bin/activate"
+fi
+
+# The backend helper is needed even when the desktop supplies a built frontend.
+# Use the selected environment after activation, including standalone/staged setup.
+# Setup failure leaves Required unavailable; tool execution never invokes npm.
+if ! python "$SCRIPT_DIR/install_srt_runtime.py"; then
+    substep "SRT setup failed; Required tools remain unavailable. Retry studio setup when Node/npm and the registry are available." "$C_WARN"
 fi
 
 install_python_stack() {

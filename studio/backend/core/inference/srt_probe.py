@@ -42,12 +42,15 @@ for family, address in [(socket.AF_INET, ('127.0.0.1', config['port']))]:
         raise RuntimeError('host listener is reachable')
     finally:
         sock.close()
-try:
-    socket.getaddrinfo('example.com', 443)
-except OSError:
-    pass
-else:
-    raise RuntimeError('system DNS resolved an external host')
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+    udp.settimeout(.5)
+    try:
+        udp.sendto(b'network-control', ('127.0.0.1', config['udp_port']))
+        udp.recvfrom(128)
+    except OSError:
+        pass
+    else:
+        raise RuntimeError('host UDP listener is reachable')
 for address in (config['host_socket'], config['abstract_socket']):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as unix:
         unix.settimeout(.5)
@@ -114,11 +117,11 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
         )
     if sys.platform != "linux":
         return False, "SRT strict profile is unavailable on this platform"
-    # Without working host controls a refused call inside the sandbox proves nothing.
-    socket.getaddrinfo("example.com", 443)
+    # Positive controls use owned local endpoints, independent of public DNS.
     with (
         tempfile.TemporaryDirectory(prefix = "unsloth-srt-probe-") as directory,
         socket.socket() as listener,
+        socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as host_udp,
         socket.socket(socket.AF_UNIX) as host_unix,
         socket.socket(socket.AF_UNIX) as host_abstract,
     ):
@@ -145,6 +148,28 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
         with socket.create_connection(("127.0.0.1", port), timeout = 1):
             accepted, _ = listener.accept()
             accepted.close()
+        host_udp.bind(("127.0.0.1", 0))
+        host_udp.settimeout(.5)
+        udp_address = host_udp.getsockname()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+            client.settimeout(.5)
+            client.sendto(b"network-control", udp_address)
+            packet, address = host_udp.recvfrom(128)
+            host_udp.sendto(packet, address)
+            assert client.recvfrom(128)[0] == b"network-control"
+
+        udp_stop = threading.Event()
+
+        def echo_udp():
+            while not udp_stop.is_set():
+                try:
+                    packet, address = host_udp.recvfrom(128)
+                    host_udp.sendto(packet, address)
+                except socket.timeout:
+                    continue
+
+        # Keep the positive endpoint live throughout the isolated negative check.
+        udp_worker = threading.Thread(target = echo_udp, daemon = True)
         from .tools import _build_safe_env, _sandbox_launcher_preexec
 
         env = _build_safe_env(str(work))
@@ -158,6 +183,7 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
             "sentinel": str(sentinel),
             "escape": str(escape),
             "port": port,
+            "udp_port": udp_address[1],
             "shell": shell,
             "host_socket": unix_path,
             "abstract_socket": abstract_path,
@@ -169,13 +195,19 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
             30,
             operation = "probe",
         )
-        proc = srt_adapter.spawn(
-            request,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            cwd = str(work),
-            preexec_fn = _sandbox_launcher_preexec,
-        )
+        udp_worker.start()
+        try:
+            proc = srt_adapter.spawn(
+                request,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                cwd = str(work),
+                preexec_fn = _sandbox_launcher_preexec,
+            )
+        except BaseException:
+            udp_stop.set()
+            udp_worker.join(timeout = 2)
+            raise
         try:
             output, _ = proc.communicate(timeout = 35)
             if proc.returncode == 0:
@@ -192,6 +224,8 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
             proc.wait(timeout = 5)
             raise
         finally:
+            udp_stop.set()
+            udp_worker.join(timeout = 2)
             srt_adapter.release_control(proc)
         if proc.returncode != 0 or output.strip() != b"UNSLOTH_SRT_NATIVE_PROBE_OK":
             return False, "SRT selected-runtime probe refused: " + output.decode(errors = "replace")[
@@ -199,7 +233,7 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
             ]
         return (
             True,
-            "Selected Python, shell children, private IPC/resource sharing, read confinement, DNS and host network checks passed.",
+            "Selected Python, shell children, private IPC/resource sharing, read confinement and controlled host TCP/UDP network checks passed.",
         )
 
 
