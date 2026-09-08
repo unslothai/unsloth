@@ -441,13 +441,15 @@ def test_an_explicit_family_override_still_gets_the_substituted_leaf(monkeypatch
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
     assert ips._torchcodec_index_url("2.11.0+cu128", "torchcodec>=0.11.0,<0.12.0") == base + "cu126"
 
-    # An explicit URL is opaque: taken as-is, and it claims no provenance tag.
+    # An explicit URL is opaque: taken as-is, and its provenance is UNKNOWN rather than
+    # absent. Reporting it as absent made an untagged wheel compare equal, which satisfies
+    # the range, so pip fetched nothing and the mirror was never contacted.
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/whl/xpu/")
     assert ips._torchcodec_index_url("2.14.0+xpu", "torchcodec>=0.12.0") == (
         "https://mirror.corp.example/whl/xpu"
     )
-    assert ips._torchcodec_index_tag("2.14.0+xpu") == ""
+    assert ips._torchcodec_index_tag("2.14.0+xpu") is None
 
 
 def test_no_cuda_13_index_relies_on_the_unpinned_torchao_fallback():
@@ -488,6 +490,24 @@ def test_the_provenance_check_compares_against_the_tag_the_pin_will_fetch():
     assert "_codec_want = _torchcodec_index_tag(_codec_torch_ver)" in step
     # The old spelling read the torch tag straight off the version string.
     assert '_codec_want = str(_codec_torch_ver).partition("+")' not in step
+    # An unknown tag has to force, not compare equal to an untagged wheel.
+    assert "_codec_want is None" in step
+
+
+def test_an_opaque_mirror_replaces_a_codec_it_cannot_vouch_for(monkeypatch):
+    """UNSLOTH_TORCH_INDEX_URL can be an accelerator-specific private mirror, and nothing
+    here can tell which build it serves. Reporting that as "no tag required" let an
+    installed untagged wheel -- PyPI's CUDA build -- compare equal and satisfy the version
+    range, so pip fetched nothing and the mirror was never reached."""
+    ips = _load_install_python_stack()
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/whl/cu130")
+    want = ips._torchcodec_index_tag("2.14.0+cu130")
+    assert want is None
+    for have in ("0.16.0", "0.16.0+cu126", "0.16.0+cu130"):
+        forced = bool(have) and (
+            want is None or have.partition("+")[2].strip().lower() != want
+        )
+        assert forced, have
 
 
 def test_the_two_pypi_only_rows_stay_unpinned():

@@ -579,16 +579,33 @@ def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str |
     return _torch_accelerator_index_url(torch_version, _TORCHCODEC_INDEX_TAGS)
 
 
-def _torchcodec_index_tag(torch_version: "str | None") -> str:
-    """The local tag of the codec build the index pin will fetch, which is NOT always the
-    resident torch's own tag: an xpu torch is served the cpu wheel, and a FAMILY override
-    names a leaf of its own. The provenance check below compares against this, so it has to
-    be derived the same way the URL is. An explicit URL is opaque, so it claims no tag."""
+def _torch_index_tag(
+    torch_version: "str | None",
+    substitutions: "dict[str, str] | None" = None,
+) -> "str | None":
+    """The local tag of the build the index pin will fetch, or None when unknowable.
+
+    NOT always the resident torch's own tag: a FAMILY override names a leaf of its own, and
+    a per-package substitution can redirect one (xpu takes the cpu codec). Provenance checks
+    compare against this, so it has to be derived the same way the URL is, or a pin to one
+    leaf gets validated against another leaf's tag and never fires.
+
+    None means an explicit UNSLOTH_TORCH_INDEX_URL is in play. That URL is opaque -- it can
+    be an accelerator-specific private mirror -- so nothing here can say which build it
+    serves. Callers must treat that as "cannot prove the installed wheel came from there"
+    and replace, not as "no tag required": an untagged wheel already satisfies the version,
+    so pip would fetch nothing and the mirror would never be reached.
+    """
     if os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip():
-        return ""
+        return None
+    substitutions = substitutions or {}
     family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip().strip("/").lower()
     local = family or str(torch_version or "").partition("+")[2].strip().lower()
-    return _TORCHCODEC_INDEX_TAGS.get(local, local)
+    return substitutions.get(local, local)
+
+
+def _torchcodec_index_tag(torch_version: "str | None") -> "str | None":
+    return _torch_index_tag(torch_version, _TORCHCODEC_INDEX_TAGS)
 
 
 def _torchcodec_spec_bounds(spec: str) -> "tuple[tuple[int, ...], tuple[int, ...] | None]":
@@ -782,7 +799,11 @@ def _exact_distribution_spec_is_installed(spec: str) -> bool:
     return installed is not None and installed == match.group(2)
 
 
-def _pin_needs_reinstall(spec: str, torch_version: "str | None" = None) -> bool:
+# "no index is being pinned", which is not the same as "the index is opaque" (None).
+_NO_INDEX_PINNED = object()
+
+
+def _pin_needs_reinstall(spec: str, want_tag: object = _NO_INDEX_PINNED) -> bool:
     """Whether a ``name==version`` pin has to be forced over what is already installed.
 
     Two reasons, and the second only exists once an index is pinned. The version can be
@@ -790,9 +811,13 @@ def _pin_needs_reinstall(spec: str, torch_version: "str | None" = None) -> bool:
     be RIGHT while the build is wrong: an accelerator index stamps its tag into the local
     version (``0.18.0+cu130``) and PyPI forbids one, so a wheel already inside the pin
     satisfies pip, nothing is fetched, and the wrong-accelerator build this pin exists to
-    replace stays put. Comparing local tags is what catches that. Pass torch_version only
-    when an index is actually being pinned; without one the tag carries no requirement and
-    a matching release must not be reinstalled every run.
+    replace stays put.
+
+    want_tag is the tag the pin will FETCH, from _torch_index_tag -- not the resident
+    torch's own tag, which a FAMILY override or a substitution can differ from. Leave it
+    unset when no index is pinned: the tag then carries no requirement and a matching
+    release must not be reinstalled on every run. None means the index is an opaque mirror,
+    where nothing can prove the installed wheel came from it, so it is replaced.
     """
     match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s]+)", spec)
     if match is None:
@@ -802,10 +827,9 @@ def _pin_needs_reinstall(spec: str, torch_version: "str | None" = None) -> bool:
         return True  # absent; kept True so the flag matches what this step passed before
     if installed.partition("+")[0] != match.group(2).partition("+")[0]:
         return True
-    if not torch_version:
+    if want_tag is _NO_INDEX_PINNED:
         return False
-    want = str(torch_version).partition("+")[2].strip().lower()
-    return installed.partition("+")[2].strip().lower() != want
+    return installed.partition("+")[2].strip().lower() != want_tag
 
 
 def _installed_torch_is_windows_rocm() -> bool:
@@ -4317,7 +4341,9 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
             # ==0.18.0 never equals, which would make this fire on every repair.
             _ao_index = _torch_accelerator_index_url(_label_after)
             _ao_args = ["--force-reinstall", "--no-deps", "--no-cache-dir"]
-            if _pin_needs_reinstall(_spec, _label_after if _ao_index else None):
+            if _pin_needs_reinstall(
+                _spec, _torch_index_tag(_label_after) if _ao_index else _NO_INDEX_PINNED
+            ):
                 _note(f"torch {_label_after} after repair -- reinstalling {_spec}")
                 _touched_torch = True
                 _ao_ok = pip_install_try(
@@ -7744,7 +7770,10 @@ def install_python_stack() -> int:
         # rocm leaves really do publish torchao.
         _torchao_index = _torch_accelerator_index_url(_torch_ver)
         _torchao_args = ["--no-cache-dir"]
-        if _pin_needs_reinstall(_torchao_spec, _torch_ver if _torchao_index else None):
+        if _pin_needs_reinstall(
+            _torchao_spec,
+            _torch_index_tag(_torch_ver) if _torchao_index else _NO_INDEX_PINNED,
+        ):
             _torchao_args.insert(0, "--force-reinstall")
         _note(
             f"torch {_torch_ver or 'unknown'} detected -- installing {_torchao_spec}"
@@ -7955,9 +7984,15 @@ def install_python_stack() -> int:
             _codec_have = _installed_distribution_version("torchcodec") or ""
             # The tag the PIN will fetch, not the resident torch's own: an xpu torch is
             # served the cpu wheel, and comparing against "xpu" would never match, so every
-            # run would force-reinstall a codec that was already correct.
+            # run would force-reinstall a codec that was already correct. None means an
+            # opaque mirror, which cannot prove anything, so the wheel is replaced -- an
+            # untagged one already satisfies the range, so pip would otherwise fetch nothing
+            # and the mirror would never be reached.
             _codec_want = _torchcodec_index_tag(_codec_torch_ver)
-            if _codec_have and _codec_have.partition("+")[2].strip().lower() != _codec_want:
+            if _codec_have and (
+                _codec_want is None
+                or _codec_have.partition("+")[2].strip().lower() != _codec_want
+            ):
                 _codec_args += ("--force-reinstall",)
                 _codec_rebuild = True
         _safe_print(

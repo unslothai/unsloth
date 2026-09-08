@@ -193,28 +193,69 @@ def test_the_torchao_step_pins_the_index_and_retries_without_it():
 
 
 @pytest.mark.parametrize(
-    "installed, spec, torch_version, expected",
+    "installed, spec, want_tag, expected",
     [
         # No index pinned: only the release matters, and a local tag on what is installed
         # must not force a reinstall on every single run.
-        ("0.18.0", "torchao==0.18.0", None, False),
-        ("0.18.0+cu130", "torchao==0.18.0", None, False),
-        ("0.17.0", "torchao==0.18.0", None, True),
-        (None, "torchao==0.18.0", None, True),
+        ("0.18.0", "torchao==0.18.0", "<none>", False),
+        ("0.18.0+cu130", "torchao==0.18.0", "<none>", False),
+        ("0.17.0", "torchao==0.18.0", "<none>", True),
+        (None, "torchao==0.18.0", "<none>", True),
         # Index pinned: the release can be right while the BUILD is wrong. pip counts an
         # 0.18.0+cu126 wheel as satisfying ==0.18.0, fetches nothing, and leaves exactly the
         # wrong-accelerator build the pin exists to replace.
-        ("0.18.0+cu130", "torchao==0.18.0", "2.14.0+cu130", False),
-        ("0.18.0+cu126", "torchao==0.18.0", "2.14.0+cu130", True),
-        ("0.18.0", "torchao==0.18.0", "2.14.0+cu130", True),
-        ("0.18.0+rocm7.2", "torchao==0.18.0", "2.11.0+rocm7.2", False),
-        ("0.17.0+cu130", "torchao==0.18.0", "2.14.0+cu130", True),
+        ("0.18.0+cu130", "torchao==0.18.0", "cu130", False),
+        ("0.18.0+cu126", "torchao==0.18.0", "cu130", True),
+        ("0.18.0", "torchao==0.18.0", "cu130", True),
+        ("0.18.0+rocm7.2", "torchao==0.18.0", "rocm7.2", False),
+        ("0.17.0+cu130", "torchao==0.18.0", "cu130", True),
+        # An opaque mirror proves nothing about the installed wheel, so it is replaced.
+        # Accepting it would leave an untagged wheel satisfying the pin and the mirror
+        # would never be contacted.
+        ("0.18.0", "torchao==0.18.0", None, True),
+        ("0.18.0+cu130", "torchao==0.18.0", None, True),
     ],
 )
-def test_pin_needs_reinstall(monkeypatch, installed, spec, torch_version, expected):
+def test_pin_needs_reinstall(monkeypatch, installed, spec, want_tag, expected):
     mod = _load_module(monkeypatch)
     monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: installed)
-    assert mod._pin_needs_reinstall(spec, torch_version) is expected
+    tag = mod._NO_INDEX_PINNED if want_tag == "<none>" else want_tag
+    assert mod._pin_needs_reinstall(spec, tag) is expected
+
+
+def test_the_wanted_tag_follows_the_index_that_will_be_pinned(monkeypatch):
+    """The provenance tag has to come from the leaf the pin resolves to, not from the
+    resident torch. With UNSLOTH_TORCH_INDEX_FAMILY=cu130 over a +cu128 venv the pin goes to
+    cu130 while the old comparison asked for cu128, so an 0.18.0+cu128 wheel looked correct,
+    pip found the requirement satisfied and the cu130 build was never fetched."""
+    mod = _load_module(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu130")
+    assert mod._torch_accelerator_index_url("2.13.0+cu128").endswith("/cu130")
+    assert mod._torch_index_tag("2.13.0+cu128") == "cu130"
+
+    monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: "0.18.0+cu128")
+    assert mod._pin_needs_reinstall("torchao==0.18.0", mod._torch_index_tag("2.13.0+cu128"))
+    monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: "0.18.0+cu130")
+    assert not mod._pin_needs_reinstall("torchao==0.18.0", mod._torch_index_tag("2.13.0+cu128"))
+
+    # An explicit URL is opaque, so nothing can prove where a wheel came from.
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/whl/cu130")
+    assert mod._torch_index_tag("2.13.0+cu128") is None
+
+    # And with no override at all the resident tag is still what is asked for.
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL")
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
+    assert mod._torch_index_tag("2.13.0+cu128") == "cu128"
+
+
+def test_both_torchao_call_sites_ask_for_the_pinned_tag():
+    """Two places install torchao, step 4 and the post-repair resync. Passing the torch
+    version to either would reintroduce the drift the helper exists to remove."""
+    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
+    assert source.count("_pin_needs_reinstall(") == 3  # the def plus both call sites
+    assert "_torch_index_tag(_torch_ver) if _torchao_index else _NO_INDEX_PINNED" in source
+    assert "_torch_index_tag(_label_after) if _ao_index else _NO_INDEX_PINNED" in source
 
 
 def test_windows_first_hop_uses_einx_wheel_without_shared_test_tree():
