@@ -627,7 +627,10 @@ class TestWhichAdapterTheAllocationBelongsTo:
         import utils.hardware.hardware as hw
 
         def _records(vendor_id = hw._AMD_PCI_VENDOR_ID, *, distinguish_failure = False):
-            return by_vendor.get(vendor_id, {})
+            answer = by_vendor.get(vendor_id, {})
+            if answer is None and not distinguish_failure:
+                return {}
+            return answer
 
         monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", _records)
         monkeypatch.setattr(
@@ -666,6 +669,35 @@ class TestWhichAdapterTheAllocationBelongsTo:
         import utils.hardware.hardware as hw
         self._with_records(
             monkeypatch, {hw._INTEL_PCI_VENDOR_ID: {2: {"dedicated_memory_bytes": 8 * _GB}}}
+        )
+        assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) is None
+
+    def test_an_adapter_with_no_readable_allocation_still_counts(self, monkeypatch):
+        # The count IS the attribution test. A shared APU whose record carries no
+        # dedicated-memory value is still an adapter the selection could have meant,
+        # and filtering it out left the discrete Radeon beside it looking like the
+        # only candidate, with its fixed 16 GB quoted as the APU's carve-out.
+        import utils.hardware.hardware as hw
+        self._with_records(
+            monkeypatch,
+            {
+                hw._AMD_PCI_VENDOR_ID: {
+                    1: {"gfx": "gfx1151"},
+                    2: {"dedicated_memory_bytes": 16 * _GB},
+                }
+            },
+        )
+        assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) is None
+
+    def test_a_vendor_the_registry_could_not_read_fails_closed(self, monkeypatch):
+        # An incomplete inventory cannot say the adapter it did see is the only one.
+        import utils.hardware.hardware as hw
+        self._with_records(
+            monkeypatch,
+            {
+                hw._AMD_PCI_VENDOR_ID: {1: {"dedicated_memory_bytes": 32 * _GB}},
+                hw._INTEL_PCI_VENDOR_ID: None,
+            },
         )
         assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) is None
 

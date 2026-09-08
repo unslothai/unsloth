@@ -10722,49 +10722,51 @@ class LlamaCppBackend:
         path is never reached; off Windows it returns nothing instantly and costs
         one function call.
         """
-        sizes: list[int] = []
-        amd_sizes: list[int] = []
+        # Every adapter the registry lists, not only the ones with a readable
+        # allocation: the count IS the attribution test, and a record whose optional
+        # dedicated-memory values are absent is still an adapter the selection could
+        # have meant. Filtering those out first made a shared APU with no readable
+        # record invisible, leaving a discrete Radeon looking like the only candidate
+        # and its fixed VRAM quoted as the APU's carve-out.
+        answers: list[Optional[dict]] = []
         try:
             from utils.hardware.hardware import (
                 _AMD_PCI_VENDOR_ID,
                 _INTEL_PCI_VENDOR_ID,
                 _windows_amd_adapter_records_by_luid,
             )
-
-            # Both vendors, because the count below is what stands in for the
-            # attribution: the physical inventory reads the same registry for Intel
-            # (an Arc host whose XPU wheel became a CPU one), and asking for AMD
-            # alone on an Intel-iGPU-plus-Radeon-dGPU host returns exactly one
-            # record -- the discrete card's -- which then reads as the integrated
-            # GPU's allocation and produces a toast quoting fixed dGPU VRAM against
-            # a firmware setting for a different vendor's part.
             for vendor_id in (_AMD_PCI_VENDOR_ID, _INTEL_PCI_VENDOR_ID):
-                records = _windows_amd_adapter_records_by_luid(vendor_id) or {}
-                found = [
-                    int(record["dedicated_memory_bytes"])
-                    for record in records.values()
-                    if record.get("dedicated_memory_bytes")
-                ]
-                sizes.extend(found)
-                if vendor_id == _AMD_PCI_VENDOR_ID:
-                    amd_sizes.extend(found)
+                answers.append(
+                    _windows_amd_adapter_records_by_luid(vendor_id, distinguish_failure = True)
+                )
         except Exception:
-            sizes = []
-            amd_sizes = []
-        # Only with exactly one such adapter. Picking between two needs the
-        # LUID-to-device join the inventory does, and attributing the wrong
-        # adapter's allocation would produce advice about the wrong GPU. A machine
-        # pairing an APU with a discrete Radeon lands here, and silence is right.
-        # AMD only, even though Intel is counted. On an APU the DirectX value is the
-        # firmware carve-out this advice is about; on Intel UMA it is a small
-        # dedicated block beside memory the driver hands out dynamically, so
-        # quoting it would recommend reserving gigabytes in a setting that may not
-        # exist and promise residency it cannot deliver. Intel is read for the
-        # count alone, which is what makes the attribution safe above.
-        if len(sizes) == 1 and len(amd_sizes) == 1 and amd_sizes[0] > 0:
-            return amd_sizes[0]
-        if sizes:
-            return None
+            answers = []
+        if any(answer is not None for answer in answers):
+            # One vendor answered, so this is Windows and the registry is the reading.
+            # A vendor that could not be read leaves the inventory incomplete, and an
+            # incomplete inventory cannot say the remaining adapter is the only one,
+            # so it fails closed rather than attributing to whatever it did see.
+            if any(answer is None for answer in answers):
+                return None
+            adapters = sum(len(answer) for answer in answers)
+            # AMD only, even though Intel is counted. On an APU the DirectX value is
+            # the firmware carve-out this advice is about; on Intel UMA it is a small
+            # dedicated block beside memory the driver hands out dynamically, so
+            # quoting it would recommend reserving gigabytes in a setting that may not
+            # exist and promise residency it cannot deliver.
+            amd_sizes = [
+                int(record["dedicated_memory_bytes"])
+                for record in (answers[0] or {}).values()
+                if record.get("dedicated_memory_bytes")
+            ]
+            if adapters == 1 and len(amd_sizes) == 1 and amd_sizes[0] > 0:
+                return amd_sizes[0]
+            if adapters:
+                # Two adapters need the LUID-to-device join the inventory does, and
+                # attributing the wrong one's allocation would advise about the wrong
+                # GPU. A machine pairing an APU with a discrete Radeon lands here, and
+                # silence is right.
+                return None
         if ordinals_are_vulkan:
             # No Linux reading for a Vulkan launch, for two independent reasons.
             #
