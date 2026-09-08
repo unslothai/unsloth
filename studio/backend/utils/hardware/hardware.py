@@ -2086,14 +2086,19 @@ def _gpu_present_but_unusable_message(
     # can raise the same two reasons while an AMD node happens to be closed, and there
     # the PyTorch advice below is right and joining the render group repairs nothing.
     # The vendors are already recorded for the mismatch being reported right now.
+    node_hint = None
     if "amd" in {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}:
         try:
             from utils.hardware.amd import amd_node_permission_hint
             node_hint = amd_node_permission_hint()
         except Exception:
             node_hint = None
-        if node_hint:
-            return f"This host has a GPU, but {feature} cannot use it. {node_hint}"
+    # It REPLACES the reinstall advice for a GPU wheel that cannot initialise the device,
+    # which the closed node fully explains. It does not for a CPU-only wheel: opening the
+    # node leaves a build with no GPU path at all, so that host needs both repairs and is
+    # given both below rather than being sent back after only one.
+    if node_hint and reason == "torch_cuda_unavailable":
+        return f"This host has a GPU, but {feature} cannot use it. {node_hint}"
     # Both routes, always. The repair row exists only in the desktop app and only for a
     # backend it manages, so a browser-hosted Studio, or a desktop attached to a server
     # someone started from a terminal, was being sent to a control that is not on the page.
@@ -2102,6 +2107,7 @@ def _gpu_present_but_unusable_message(
             f"This host has a GPU, but the installed PyTorch is a CPU-only build{installed}, "
             f"so {feature} cannot use it. Reinstall the GPU build: use Repair installation "
             f"in Settings in the desktop app, or re-run the Unsloth installer."
+            + (f" {node_hint}" if node_hint else "")
         )
     return (
         f"This host has a GPU, but the installed PyTorch{installed} cannot initialise it, so "

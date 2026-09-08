@@ -22,6 +22,8 @@ that had to mknod would need root, which is the one account this bug cannot reac
 from __future__ import annotations
 
 import os
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -185,8 +187,8 @@ def test_the_empty_probe_explanation_names_the_permission(monkeypatch, linux):
     monkeypatch.setenv("USER", "ada")
     monkeypatch.setattr(
         LlamaCppBackend,
-        "_is_vulkan_backend",
-        staticmethod(lambda _b: True),
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
     )
     reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
     assert "usermod -a -G render,video ada" in reason
@@ -200,8 +202,8 @@ def test_the_empty_probe_explanation_is_unchanged_when_the_nodes_open(monkeypatc
     _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = {"/dev/dri/renderD128"})
     monkeypatch.setattr(
         LlamaCppBackend,
-        "_is_vulkan_backend",
-        staticmethod(lambda _b: True),
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
     )
     assert LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server") == (
         "the Vulkan probe reported no device"
@@ -264,8 +266,8 @@ def test_the_vulkan_probe_keeps_its_own_reason_when_only_kfd_is_closed(monkeypat
     )
     monkeypatch.setattr(
         LlamaCppBackend,
-        "_is_vulkan_backend",
-        staticmethod(lambda _b: True),
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
     )
     assert LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server") == (
         "the Vulkan probe reported no device"
@@ -284,8 +286,8 @@ def test_a_rocm_binary_is_still_told_about_the_closed_kfd_node(monkeypatch, linu
     monkeypatch.setenv("USER", "ada")
     monkeypatch.setattr(
         LlamaCppBackend,
-        "_is_vulkan_backend",
-        staticmethod(lambda _b: False),
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"hip"})),
     )
     assert "usermod -a -G render,video ada" in (
         LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
@@ -324,3 +326,136 @@ def test_a_hybrid_host_whose_amd_card_raised_it_still_gets_the_permission_hint(m
         verdict = ("torch_cpu_build", None),
     )
     assert "usermod -a -G render,video ada" in message
+
+
+def test_a_cuda_only_build_is_not_sent_after_the_amd_render_group(monkeypatch, linux):
+    """A hybrid host whose CUDA build enumerated nothing for its own reasons.
+
+    Every AMD node is closed, so the hint is available and would be returned by any
+    build that could use the card. This one cannot, so the mask diagnosis below has
+    to survive.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"cuda"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert "usermod" not in reason
+    assert "CUDA_VISIBLE_DEVICES" in reason
+
+
+def test_a_build_whose_backend_cannot_be_read_still_gets_the_hint(monkeypatch, linux):
+    """The control for the test above, and the reason it names CUDA rather than
+    "not ROCm": an install this probe cannot read must not lose the diagnosis."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setenv("USER", "ada")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset()),
+    )
+    assert "usermod -a -G render,video ada" in (
+        LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    )
+
+
+def test_a_cpu_wheel_beside_a_closed_node_is_told_to_do_both(monkeypatch, linux):
+    """Opening the node leaves a CPU-only wheel with no GPU path, so the reinstall
+    step has to survive the permission hint rather than being replaced by it."""
+    from utils.hardware import hardware
+
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
+    monkeypatch.setenv("USER", "ada")
+    message = hardware._gpu_present_but_unusable_message(
+        "video generation",
+        verdict = ("torch_cpu_build", None),
+    )
+    assert "CPU-only build" in message
+    assert "Repair installation" in message
+    assert "usermod -a -G render,video ada" in message
+
+
+def test_a_gpu_wheel_beside_a_closed_node_is_told_only_the_permission(monkeypatch, linux):
+    """The pair: a ROCm wheel that cannot open a device is fully explained by the
+    node, so the reinstall advice would send the user after the wrong repair."""
+    from utils.hardware import hardware
+
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
+    monkeypatch.setenv("USER", "ada")
+    message = hardware._gpu_present_but_unusable_message(
+        "video generation",
+        verdict = ("torch_cuda_unavailable", "2.11.0+rocm7.0"),
+    )
+    assert "usermod -a -G render,video ada" in message
+    assert "Repair installation" not in message
+
+
+def _kernel_stack_hint_runs(closed_nodes: str) -> bool:
+    """Whether install.sh's missing-kernel-stack branch fires for this closed set.
+
+    The guard is lifted out of install.sh by text rather than restated here: a test
+    that restated it would pass whatever the installer went on to say. Only the
+    condition is taken, and its two probes are stubbed true so the answer depends on
+    nothing but the closed-node reasoning.
+    """
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    # Anchored on the part of the condition this change does NOT touch, then walked
+    # back over the continuations to the "if". Anchoring on the new closed-node text
+    # instead would make the control vacuous: reverting the guard would stop the
+    # extraction finding anything, and "the text changed" would read as "the
+    # behaviour changed".
+    end = next(
+        i for i, line in enumerate(lines)
+        if line.rstrip().endswith("! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then")
+    )
+    start = end
+    while not lines[start].lstrip().startswith("if "):
+        start -= 1
+    guard = "\n".join(line.strip() for line in lines[start:end + 1])
+    script = "\n".join([
+        "_has_amd_rocm_gpu() { return 1; }",   # ROCm cannot see the card
+        "_amd_gpu_present_via_pci() { return 0; }",  # but the PCI bus can
+        guard,
+        "    echo FIRED",
+        "fi",
+    ])
+    # The set arrives as an exported variable rather than a generated assignment: a
+    # repr() inside shell single quotes turns the newline separating two nodes into a
+    # literal backslash-n, which reads as one unmatched line and looks exactly like the
+    # suppression failing.
+    out = subprocess.run(
+        ["bash", "-c", script],
+        capture_output = True, text = True, check = True,
+        env = {**os.environ, "_closed_amd_nodes": closed_nodes},
+    )
+    return "FIRED" in out.stdout
+
+
+def test_a_closed_kfd_node_suppresses_the_kernel_stack_hint():
+    """/dev/kfd existing is the evidence the stack is already loaded, so telling the
+    user to install one cannot help; the group advice printed after the case is the
+    repair."""
+    assert not _kernel_stack_hint_runs("/dev/kfd")
+    assert not _kernel_stack_hint_runs("/dev/kfd\n/dev/dri/renderD128")
+
+
+def test_a_missing_kfd_node_keeps_the_kernel_stack_hint():
+    """The case the suppression must not swallow: no /dev/kfd at all, and a render
+    node this account cannot open. No amount of group membership creates /dev/kfd,
+    so both diagnoses apply and both have to print."""
+    assert _kernel_stack_hint_runs("/dev/dri/renderD128")
+
+
+def test_the_hint_still_runs_on_a_host_with_nothing_closed():
+    """The negative control: the branch's original behaviour is untouched."""
+    assert _kernel_stack_hint_runs("")

@@ -5440,7 +5440,13 @@ case "$TORCH_INDEX_URL" in
                 # ROCm (rocminfo works, wheels need 6.0+) has its own guidance. A
                 # closed node is answered after the whole case instead, because it
                 # reaches the gfx arm too.
-                if [ -z "$_closed_amd_nodes" ] && \
+                #
+                # Suppressed by a closed /dev/kfd alone, not by any closed node: that
+                # node existing is the evidence the kernel stack is loaded, and it is
+                # what makes this hint the wrong repair. A host whose /dev/kfd is
+                # ABSENT while a render node is closed needs both -- no amount of group
+                # membership creates /dev/kfd -- so it gets both.
+                if ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
                    ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
                     substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
                     substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"

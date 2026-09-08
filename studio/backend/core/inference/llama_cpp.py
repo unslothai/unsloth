@@ -9851,12 +9851,23 @@ class LlamaCppBackend:
             # (#10466). A Vulkan binary is asked only about the render node, since it
             # never opens /dev/kfd and a closed one is not why its probe came back
             # empty; it keeps its own reason below.
+            #
+            # A build that cannot drive an AMD card at all is asked about neither. On a
+            # hybrid host a CUDA build finds AMD nodes present and closed while its own
+            # probe came back empty for some unrelated reason -- a visibility mask, the
+            # arch gate -- and joining the render group would repair none of it. Only a
+            # positively CUDA-only build is skipped, so an unreadable install still gets
+            # the hint rather than losing it to a detection miss.
             _is_vulkan = LlamaCppBackend._is_vulkan_backend(binary)
-            try:
-                from utils.hardware.amd import amd_node_permission_hint
-                node_hint = amd_node_permission_hint(needs_kfd = not _is_vulkan)
-            except Exception:  # noqa: BLE001
-                node_hint = None
+            _backends = LlamaCppBackend._installed_ggml_backends(binary)
+            _cuda_only = "cuda" in _backends and not _backends.intersection({"vulkan", "hip"})
+            node_hint = None
+            if not _cuda_only:
+                try:
+                    from utils.hardware.amd import amd_node_permission_hint
+                    node_hint = amd_node_permission_hint(needs_kfd = not _is_vulkan)
+                except Exception:  # noqa: BLE001
+                    node_hint = None
             if node_hint:
                 return node_hint
             if _is_vulkan:
