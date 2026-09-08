@@ -421,6 +421,19 @@ jobs:
           # otherwise be scoped out into a clean verdict. Escaped because -like
           # reads [ and ] as pattern syntax. Same normalisation the probe applies.
           $dir = $env:RUNTIME_DIR
+          if (-not $dir) {
+            # The exercise step sets RUNTIME_DIR once the bundle is extracted
+            # and llama-server.exe is found. Without it nothing was loaded
+            # under the policy, and since this step runs on always() the job
+            # summary would otherwise carry a clean signature-only verdict for
+            # a runtime that never ran. A non-zero llama-server --version is a
+            # different case and still reaches the verdict below: that step
+            # reports the exit code rather than throwing on it.
+            Write-Host '::error::the shipped runtime was never extracted, so there is no verdict to give; see the exercise step'
+            "## App Control audit (signature-only)`n`nNo verdict: the shipped runtime was never loaded under the policy.`n" |
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            exit 1
+          }
           # Ends at a separator so a prefix-colliding sibling directory is not
           # read as the shipped runtime, the same boundary the probe applies.
           $tail = if ($dir) {

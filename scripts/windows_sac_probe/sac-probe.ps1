@@ -249,6 +249,41 @@ function Get-CiLogSettings {
     return [pscustomobject]@{ Enabled = $enabled; MaxSize = $maxSize }
 }
 
+# Does a preference that reads back as $actual carry the value $expected asked
+# for? $true match, $false mismatch, $null when it could not be decided.
+#
+# Both sides go through the cmdlet's own parameter enum, taken from
+# Set-MpPreference's metadata rather than a hand-written table. Get-MpPreference
+# returns these as CIM numbers on some builds and as named enum values on
+# others, and the baseline JSON stores whatever it was given, so a plain string
+# compare would call MAPSReporting 0 equal to 'Advanced' on exactly the machine
+# where the request was ignored. [Enum]::Parse takes the name or the number, so
+# one path covers both directions.
+function Test-MpPreferenceMatch($actual, $expected, [Type] $type) {
+    if ($null -eq $actual) { return $false }
+    if ($expected -is [bool] -or $actual -is [bool]) { return ([bool]$actual -eq [bool]$expected) }
+    if ([string]$actual -eq [string]$expected) { return $true }
+    if ($type -and $type.IsEnum) {
+        try {
+            $want = [int]([Enum]::Parse($type, [string]$expected, $true))
+            $have = [int]([Enum]::Parse($type, [string]$actual, $true))
+            return ($have -eq $want)
+        } catch { }
+    }
+    return $null
+}
+
+# The type Set-MpPreference declares for a preference, or $null when the cmdlet
+# is not there to ask.
+function Get-MpPreferenceType([string] $name) {
+    try {
+        $cmd = Get-Command Set-MpPreference -ErrorAction Stop
+        $p = $cmd.Parameters[$name]
+        if ($p) { return $p.ParameterType }
+    } catch { }
+    return $null
+}
+
 function Write-Section([string] $Text) {
     Write-Host ''
     Write-Host "=== $Text ===" -ForegroundColor Cyan
@@ -545,10 +580,22 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
         if ($created.Count -gt 0 -and (Test-Path -LiteralPath $baselinePath)) {
             $b = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
             $b.StudioInstalledByProbe = $true
-            $b.StudioInstallRoots = $created
+            # Merged, not replaced. A retry after a partial install finds the
+            # first attempt's trees already there, so they are no longer in
+            # $absentBefore and assigning $created would drop them from the
+            # baseline: revert would then leave the tree the first attempt made
+            # administrator-owned, which is the failure this record exists for.
+            $b.StudioInstallRoots = @(@($b.StudioInstallRoots) + $created |
+                Where-Object { $_ } | Select-Object -Unique)
             $b | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
         }
         if (-not $python) {
+            # prepare cannot go on: there is no Studio to start, so nothing
+            # loads inside the window and the cell measures nothing. Same
+            # reasoning as the startup-failure throw below.
+            if ($allowInstall) {
+                throw 'the installer ran but produced no managed interpreter, so there is no Studio to start and this window would observe nothing. Install Studio by hand and run prepare again; the machine is left prepared, so run revert if you stop here.'
+            }
             Write-Warning 'Studio still not found after the installer ran. Install it by hand, then re-run this stage.'
             return
         }
@@ -789,17 +836,13 @@ function Invoke-Prepare {
         foreach ($name in $wanted.Keys) {
             $actual = $applied.$name
             $expected = $wanted[$name]
-            $same =
-                if ($null -eq $actual) { $false }
-                elseif ($expected -is [bool]) { ([bool]$actual -eq $expected) }
-                elseif ($actual -is [Enum] -or $actual -is [string]) { ([string]$actual -eq [string]$expected) }
-                # A numeric read-back: the name-to-code map belongs to
-                # Defender, and inventing one here would report deviations
-                # that are not there. Left uncompared rather than guessed.
-                else { $true }
-            if (-not $same) {
+            $same = Test-MpPreferenceMatch $actual $expected (Get-MpPreferenceType $name)
+            if ($false -eq $same) {
                 $mpFailed += "${name}: set to $expected but reads back as $actual (tamper protection or policy?)"
                 Write-Warning "Defender $name reads back as $actual after being set to $expected"
+            } elseif ($null -eq $same) {
+                $mpFailed += "${name}: set to $expected and reads back as $actual, which could not be compared, so this cell cannot show it carries that setting"
+                Write-Warning "Defender $name reads back as $actual, which could not be compared to $expected"
             }
         }
     }
@@ -1567,6 +1610,26 @@ function Invoke-Revert {
         } catch {
             $failed++
             Write-Warning "could not restore $($r.Name): $_"
+        }
+    }
+    # Read back, for the same reason prepare does: a preference that became
+    # tamper-protected or policy-controlled between the two stages is ignored
+    # rather than refused, so $failed stays zero while the machine keeps the
+    # raised setting. Without this, revert reports success and spends the
+    # baseline (RevertCompletedAt) over a machine it did not restore.
+    $restored = $null
+    try { $restored = Get-MpPreference } catch { }
+    if (-not $restored) {
+        $failed++
+        Write-Warning 'could not read the Defender preferences back, so this revert cannot show the machine was restored'
+    } else {
+        foreach ($r in $restores) {
+            if ($null -eq $r.Value) { continue }
+            $same = Test-MpPreferenceMatch $restored.($r.Name) $r.Value (Get-MpPreferenceType $r.Name)
+            if ($true -ne $same) {
+                $failed++
+                Write-Warning "$($r.Name) reads back as $($restored.($r.Name)) after being restored to $($r.Value)"
+            }
         }
     }
     if ($failed -eq 0) { Write-Host 'Defender preferences restored' }

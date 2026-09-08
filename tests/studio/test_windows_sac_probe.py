@@ -910,7 +910,7 @@ def test_trees_the_installer_created_are_recorded_even_when_the_install_fails():
     assert init.index("$created = @($absentBefore") < init.index(
         "Write-Warning 'Studio still not found after the installer ran."
     )
-    assert init.index("$b.StudioInstallRoots = $created") < init.index(
+    assert init.index("$b.StudioInstallRoots = @(") < init.index(
         "Write-Warning 'Studio still not found after the installer ran."
     )
 
@@ -1271,3 +1271,76 @@ def test_the_defender_baseline_is_read_back_not_assumed():
         "$mpErrorPath = Join-Path $dir 'defender-preference-errors.txt'"
     )
     assert '$mpFailed += "${name}: set to $expected but reads back as $actual' in prepare
+
+
+def test_a_numeric_defender_readback_is_compared_not_waved_through():
+    """Get-MpPreference returns CIM numbers on some builds, so MAPSReporting 0
+    against a requested Advanced has to compare unequal: that is exactly the
+    machine where the request was ignored."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    fn = ps1[
+        ps1.index("function Test-MpPreferenceMatch") : ps1.index("function Get-MpPreferenceType")
+    ]
+    assert "[Enum]::Parse($type, [string]$expected, $true)" in fn
+    assert "[Enum]::Parse($type, [string]$actual, $true)" in fn
+    # Undecidable is its own answer, never a silent match.
+    assert "return $null\n}" in fn
+    # From the cmdlet's own metadata, never a hand-written name-to-code table.
+    assert "$cmd.Parameters[$name]" in ps1
+    prepare = ps1[
+        ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
+    ]
+    assert (
+        "$same = Test-MpPreferenceMatch $actual $expected (Get-MpPreferenceType $name)" in prepare
+    )
+    assert "} elseif ($null -eq $same) {" in prepare
+
+
+def test_revert_reads_the_defender_values_back_before_spending_the_baseline():
+    """An ignored restore leaves $failed at zero, so revert reported success
+    and stamped RevertCompletedAt over a machine still carrying the raised
+    settings."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    revert = ps1[ps1.index("function Invoke-Revert") :]
+    assert "$restored = Get-MpPreference" in revert
+    assert (
+        "$same = Test-MpPreferenceMatch $restored.($r.Name) $r.Value (Get-MpPreferenceType $r.Name)"
+        in revert
+    )
+    assert revert.index("$restored = Get-MpPreference") < revert.index("$restoreFailures = $failed")
+    assert revert.index("$restored = Get-MpPreference") < revert.index(
+        "-NotePropertyName RevertCompletedAt"
+    )
+
+
+def test_install_roots_survive_a_prepare_retry():
+    """A retry finds the first attempt's trees already present, so replacing
+    the recorded list dropped them and revert left them administrator-owned."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    init = ps1[ps1.index("function Initialize-Studio") : ps1.index("function Save-Baseline")]
+    assert "$b.StudioInstallRoots = @(@($b.StudioInstallRoots) + $created |" in init
+    assert "$b.StudioInstallRoots = $created" not in init
+
+
+def test_an_installer_that_produced_no_interpreter_fails_prepare():
+    """prepare printed 'prepare complete' with no Studio to start, and the
+    operator only found out when run rejected the empty venv."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    init = ps1[ps1.index("function Initialize-Studio") : ps1.index("function Save-Baseline")]
+    tail = init[init.index("if (-not $python) {\n            # prepare cannot go on") :]
+    assert "if ($allowInstall) {" in tail
+    assert "throw 'the installer ran but produced no managed interpreter" in tail
+    # run still warns and returns: its inventories are evidence either way.
+    assert "Write-Warning 'Studio still not found after the installer ran." in tail
+
+
+def test_the_ci_verdict_needs_a_runtime_that_was_actually_extracted():
+    """The verdict runs on always(), so a download or expand failure left a
+    clean signature-only verdict in the job summary for a runtime that was
+    never loaded."""
+    workflow = WORKFLOW.read_text(encoding = "utf-8")
+    verdict = workflow[workflow.index("      - name: Verdict\n        if: always()") :]
+    verdict = verdict[: verdict.index("      - name: Export the CodeIntegrity events")]
+    assert "if (-not $dir) {" in verdict
+    assert "::error::the shipped runtime was never extracted" in verdict
+    assert verdict.index("if (-not $dir) {") < verdict.index("foreach ($attempt in 1..10) {")
