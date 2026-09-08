@@ -66,11 +66,29 @@ assert run("bootstrap", [sys.executable, "-m", "venv", root / "bootstrap"])
 bootstrap = python_in(root / "bootstrap")
 assert run("install-uv", [bootstrap, "-m", "pip", "install", "uv==0.11.0"])
 # actions/setup-python ships macOS builds without --enable-loadable-sqlite-extensions, so
-# sqlite-vec cannot load and every RAG test errors. uv's managed interpreters are built with it.
-loadable = hasattr(sqlite3.connect(":memory:"), "enable_load_extension")
-interpreter = ["--python", sys.executable] if loadable else ["--managed-python", "--python", "3.12"]
-assert run("venv", [bootstrap, "-m", "uv", "venv", "--clear", *interpreter, root / "venv"])
+# sqlite-vec cannot load and every RAG test errors. Download an interpreter that has one:
+# `uv venv --managed-python` alone still resolved to the runner's framework build.
+if hasattr(sqlite3.connect(":memory:"), "enable_load_extension"):
+    interpreter = sys.executable
+else:
+    assert run("python-install", [bootstrap, "-m", "uv", "python", "install", "3.12"])
+    interpreter = subprocess.run(
+        [str(bootstrap), "-m", "uv", "python", "find", "--managed-python", "3.12"],
+        cwd = repo,
+        env = env,
+        capture_output = True,
+        text = True,
+        check = True,
+    ).stdout.strip()
+assert run(
+    "venv", [bootstrap, "-m", "uv", "venv", "--clear", "--python", interpreter, root / "venv"]
+)
 python = python_in(root / "venv")
+# Fail here rather than through a hundred RagExtensionUnavailable errors.
+assert run(
+    "sqlite-extensions",
+    [python, "-c", "import sqlite3; sqlite3.connect(':memory:').enable_load_extension(True)"],
+)
 assert run(
     "dependencies",
     [
