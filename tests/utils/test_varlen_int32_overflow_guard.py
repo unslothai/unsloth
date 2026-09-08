@@ -69,13 +69,7 @@ def test_empty_partition_never_trips():
     assert not ad._varlen_backward_overflows_int32(0, 0, 16, 128)
 
 
-def _context(
-    n_docs,
-    total_q,
-    requires_grad,
-    n_heads = 16,
-    head_dim = 128,
-):
+def _context(n_docs, total_q, requires_grad, n_heads = 16, head_dim = 128):
     lengths = torch.zeros(n_docs, dtype = torch.int32)
     return ad.AttentionContext(
         bsz = 1,
@@ -90,14 +84,7 @@ def _context(
     )
 
 
-def _run(
-    monkeypatch,
-    backend,
-    n_docs,
-    requires_grad,
-    guard_disabled = False,
-    softcap = None,
-):
+def _run(monkeypatch, backend, n_docs, requires_grad, guard_disabled = False, softcap = None):
     """Drive run_attention with every real kernel stubbed, and report which branch it took."""
     taken = {}
 

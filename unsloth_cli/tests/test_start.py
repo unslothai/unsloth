@@ -1500,14 +1500,7 @@ def fake_studio(tmp_path, monkeypatch):
     calls = []
     state = {"models": [MODEL]}
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         calls.append((method, url, payload))
         if url.endswith("/v1/models"):
             return {"object": "list", "data": state["models"]}
@@ -2375,14 +2368,7 @@ def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch, cap
     calls = []
     state = {"loaded": False}
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         calls.append((method, url, payload))
         if url.endswith("/v1/models"):
             return {
@@ -2418,14 +2404,7 @@ def test_resolve_model_matches_snapshot_path_by_public_id(monkeypatch):
     snapshot = "/home/u/.cache/legacy/models--Org--Model/snapshots/abc123"
     state = {"loaded": False}
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/v1/models"):
             return {"data": [{"id": "abc123"}] if state["loaded"] else []}
         if url.endswith("/api/inference/load"):
@@ -2480,14 +2459,7 @@ def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
     calls = []
     state = {"loaded": False}
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         calls.append((method, url))
         if url.endswith("/v1/models"):
             return {
@@ -2513,14 +2485,7 @@ def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
 
 
 def test_resolve_model_does_not_attach_if_catalog_stays_unloaded(monkeypatch):
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/v1/models"):
             return {
                 "data": [
@@ -2546,14 +2511,7 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
     # no /api/inference/load call.
     calls = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         calls.append((method, url))
         if url.endswith("/v1/models"):
             return {
@@ -2595,14 +2553,7 @@ def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
     calls = []
     state = {"loaded": False}
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         calls.append((method, url))
         if url.endswith("/v1/models"):
             return {
@@ -2802,14 +2753,7 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
     )
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/v1/models") and token == "sk-unsloth-stale":
             raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
         return inner(method, url, token, payload, timeout, error)
@@ -2830,14 +2774,7 @@ def test_connect_saved_key_server_outage_surfaces_not_reminted(fake_studio, tmp_
     cache.write_text(json.dumps({"servers": {BASE: {"saved": ["sk-unsloth-saved"]}}}))
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/v1/models") and token == "sk-unsloth-saved":
             raise urllib.error.HTTPError(url, 503, "Service Unavailable", None, None)
         return inner(method, url, token, payload, timeout, error)
@@ -2919,14 +2856,7 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
     canonical = "unsloth/Qwen3.5-35B-A3B"
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/api/inference/load"):
             return {"model": canonical, "display_name": canonical}
         if url.endswith("/v1/models"):
@@ -3031,12 +2961,7 @@ def test_start_positional_model_routes_to_model_on_auto_serve(fake_studio, monke
     captured = {}
     fake = SimpleNamespace(pid = 1, poll = lambda: None)
 
-    def fake_start(
-        base,
-        model,
-        load,
-        server_options = None,
-    ):
+    def fake_start(base, model, load, server_options = None):
         captured["model"] = model
         captured["load"] = load
         captured["server_options"] = server_options
@@ -3064,12 +2989,7 @@ def test_start_local_gguf_path_keeps_no_default_variant(fake_studio, monkeypatch
     captured = {}
     fake = SimpleNamespace(pid = 1, poll = lambda: None)
 
-    def fake_start(
-        base,
-        model,
-        load,
-        server_options = None,
-    ):
+    def fake_start(base, model, load, server_options = None):
         captured["load"] = load
         start._auto_served_server = fake
         return fake
@@ -3339,12 +3259,7 @@ def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
     captured = {}
     fake = SimpleNamespace(pid = 1, poll = lambda: None)
 
-    def fake_start(
-        base,
-        model,
-        load,
-        server_options = None,
-    ):
+    def fake_start(base, model, load, server_options = None):
         captured["server_options"] = server_options
         start._auto_served_server = fake
         return fake
@@ -3538,14 +3453,7 @@ def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
     # silently connecting to whatever else happens to be loaded.
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/api/inference/load"):
             return {}
         if url.endswith("/v1/models"):
@@ -3564,14 +3472,7 @@ def test_connect_gguf_only_agents_reject_non_gguf_model(fake_studio, monkeypatch
     # opencode is the control: /v1/chat/completions serves this model, so it must pass.
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": False, "model_identifier": "unsloth/Qwen3-0.6B"}
         return inner(method, url, token, payload, timeout, error)
@@ -3984,14 +3885,7 @@ def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
     release = start.threading.Event()
     calls = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         calls.append((method, url, payload))
         if url.endswith("/api/inference/load"):
             assert release.wait(timeout = 2)
@@ -4165,14 +4059,7 @@ def test_download_progress_ignores_fully_cached_bytes(capsys):
 def test_resolve_model_warns_on_same_repo_quant_switch(monkeypatch, capsys):
     models = [{"id": "owner/model-GGUF", "loaded": True}]
 
-    def http_json(
-        method,
-        url,
-        key,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, key, payload = None, timeout = 30, error = None):
         assert url.endswith("/api/inference/status"), url
         return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
 
@@ -4221,14 +4108,7 @@ def test_resolve_model_same_quant_prints_no_switch_warning(monkeypatch, capsys):
 def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
     models = [{"id": "owner/model-GGUF", "loaded": True}]
 
-    def http_json(
-        method,
-        url,
-        key,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, key, payload = None, timeout = 30, error = None):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         assert url.endswith("/v1/models"), url
@@ -4256,14 +4136,7 @@ def test_resolve_model_interrupt_skips_survivor_probe(monkeypatch, capsys):
     models = [{"id": "owner/model-GGUF", "loaded": True}]
     probes = []
 
-    def http_json(
-        method,
-        url,
-        key,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, key, payload = None, timeout = 30, error = None):
         return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
 
     def interrupted_load(base, key, model, load, payload):
@@ -4288,14 +4161,7 @@ def test_resolve_model_interrupt_skips_survivor_probe(monkeypatch, capsys):
 def test_resolve_model_failed_load_stays_quiet_when_model_gone(monkeypatch, capsys):
     models = [{"id": "owner/model-GGUF", "loaded": True}]
 
-    def http_json(
-        method,
-        url,
-        key,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, key, payload = None, timeout = 30, error = None):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         assert url.endswith("/v1/models"), url
@@ -4321,12 +4187,7 @@ def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(
-        base,
-        model,
-        load,
-        server_options = None,
-    ):
+    def fake_start(base, model, load, server_options = None):
         started.update(base = base, model = model, load = load)
         start._auto_served_server = fake
         return fake
@@ -4484,12 +4345,7 @@ def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(
-        base,
-        model,
-        load,
-        server_options = None,
-    ):
+    def fake_start(base, model, load, server_options = None):
         started.update(base = base, model = model)
         start._auto_served_server = fake
         return fake
@@ -4500,14 +4356,7 @@ def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch
     )
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": False, "model_identifier": "transformers-model"}
         return inner(method, url, token, payload, timeout, error)
@@ -4584,12 +4433,7 @@ def test_auto_serve_normalizes_portless_url(fake_studio, monkeypatch):
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(
-        base,
-        model,
-        load,
-        server_options = None,
-    ):
+    def fake_start(base, model, load, server_options = None):
         started["base"] = base
         start._auto_served_server = fake
         return fake
@@ -5598,12 +5442,7 @@ def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
     captured = {}
     fake = SimpleNamespace(pid = 1, poll = lambda: None)
 
-    def fake_start(
-        base,
-        model,
-        load,
-        server_options = None,
-    ):
+    def fake_start(base, model, load, server_options = None):
         captured["server_options"] = server_options
         start._auto_served_server = fake
         return fake
@@ -6420,14 +6259,7 @@ def test_agent_api_key_auto_started_rejected_env_key_falls_back(fake_studio, tmp
     # the local mint path, and never remember the foreign key for this base.
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/v1/models") and token == "sk-unsloth-other-server":
             raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
         return inner(method, url, token, payload, timeout, error)
@@ -7147,14 +6979,7 @@ def test_codex_preflight_defers_to_running_server(monkeypatch):
 def _fake_variants(monkeypatch, responses):
     urls = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         urls.append(url)
         if isinstance(responses, Exception):
             raise responses
@@ -7278,14 +7103,7 @@ def test_codex_gguf_failure_skips_hint_probe_for_non_hub_ids(monkeypatch, capsys
 def test_codex_attach_rejects_before_load(fake_studio, monkeypatch):
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if "/api/models/gguf-variants" in url:
             return {"variants": []}
         if url.endswith("/api/inference/load"):
@@ -7303,14 +7121,7 @@ def test_codex_attach_rejects_before_load(fake_studio, monkeypatch):
 def test_codex_attach_rejects_unavailable_variant_before_load(fake_studio, monkeypatch):
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if "/api/models/gguf-variants" in url:
             return {"variants": [{"quant": "Q4_K_M"}]}
         if url.endswith("/api/inference/load"):
@@ -7332,14 +7143,7 @@ def test_codex_attach_reuses_resident_model_without_preload_probe(fake_studio, m
     inner = start._http_json
     probes = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if "/api/models/gguf-variants" in url:
             probes.append(url)
             return {"variants": []}
@@ -7386,14 +7190,7 @@ def test_codex_attach_check_direct_variant_always_asks_the_server(monkeypatch):
     # explicit variant goes to the probe.
     probes = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         probes.append(url)
         return {
             "variants": [{"quant": "Q4_K_M"}],
@@ -7635,14 +7432,7 @@ def test_codex_attach_check_follows_bare_names_the_server_calls_remote(monkeypat
     # non-local must not settle the shorthand.
     urls = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         urls.append(url)
         if "unsloth" in url:
             return {"variants": [{"quant": "Q4_K_M"}], "resolved_locally": False}
@@ -7699,14 +7489,7 @@ def test_codex_attach_check_probes_missing_bare_gguf_shorthands(tmp_path, monkey
     monkeypatch.chdir(tmp_path)
     urls = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         urls.append(url)
         return {"variants": []}
 
@@ -7857,14 +7640,7 @@ def test_codex_preload_gate_checks_direct_path_identity(fake_studio, monkeypatch
     other.parent.mkdir()
     other.write_bytes(b"GGUF")
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/v1/models"):
             return {"data": [{"id": "foo-Q4_K_M", "loaded": True}]}
         if url.endswith("/api/inference/status"):
@@ -7892,14 +7668,7 @@ def test_codex_preload_gate_runs_for_a_settings_reload(fake_studio, monkeypatch)
     inner = start._http_json
     probed = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if "/api/models/gguf-variants" in url:
             probed.append(url)
             return {"variants": [{"quant": "Q4_K_M"}], "resolved_locally": False}
@@ -7919,14 +7688,7 @@ def test_codex_preload_gate_runs_for_a_mistyped_resident_variant(fake_studio, mo
     inner = start._http_json
     probed = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         if "/api/models/gguf-variants" in url:
@@ -7947,14 +7709,7 @@ def test_codex_preload_gate_defers_to_the_resident_model(fake_studio, monkeypatc
     # reject a second session for the model already serving, whose file may have moved.
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         if "/api/models/gguf-variants" in url:
@@ -7974,14 +7729,7 @@ def test_codex_preload_gate_still_runs_for_a_different_variant(fake_studio, monk
     inner = start._http_json
     probed = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         if "/api/models/gguf-variants" in url:
@@ -8046,14 +7794,7 @@ def test_codex_attach_check_defers_when_loopback_is_not_this_machine(monkeypatch
     monkeypatch.setattr(start, "verify_studio_identity", lambda base, **_kw: False)
     probes = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         probes.append(url)
         return {"variants": [{"quant": "Q4_K_M"}]}
 
@@ -8245,14 +7986,7 @@ def test_codex_attach_check_normalizes_shorthand_after_raw_probe(monkeypatch, ca
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     urls = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         urls.append(url)
         if "repo_id=Qwen3-0.6B" in url and "unsloth" not in url:
             raise urllib.error.HTTPError(url, 400, "invalid repo_id", None, None)
@@ -8269,14 +8003,7 @@ def test_codex_attach_check_normalizes_shorthand_after_raw_probe(monkeypatch, ca
 def test_codex_attach_check_trusts_raw_server_dir_answer(monkeypatch):
     urls = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         urls.append(url)
         return {"variants": [{"quant": "Q4_K_M"}]}
 
@@ -8292,14 +8019,7 @@ def test_codex_attach_check_rejects_live_empty_raw_shorthand(monkeypatch, tmp_pa
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     urls = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         urls.append(url)
         if "unsloth" in url:
             return {"variants": [{"quant": "Q4_K_M"}]}
@@ -8313,14 +8033,7 @@ def test_codex_attach_check_rejects_live_empty_raw_shorthand(monkeypatch, tmp_pa
 
 
 def test_codex_attach_check_defers_shorthand_when_canonical_probe_errors(monkeypatch):
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         raise urllib.error.HTTPError(url, 404, "nope", None, None)
 
     monkeypatch.setattr(start, "_http_json", http_json)
@@ -8455,14 +8168,7 @@ def test_claude_preload_gate_rejects_before_an_evicting_load(fake_studio, monkey
     inner = start._http_json
     probed = []
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if "/api/models/gguf-variants" in url:
             probed.append(url)
             return {"variants": []}
@@ -8486,12 +8192,7 @@ def test_claude_post_connect_failure_tears_down_auto_served(fake_studio, monkeyp
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(
-        base,
-        model,
-        load,
-        server_options = None,
-    ):
+    def fake_start(base, model, load, server_options = None):
         started.update(base = base, model = model)
         start._auto_served_server = fake
         return fake
@@ -8502,14 +8203,7 @@ def test_claude_post_connect_failure_tears_down_auto_served(fake_studio, monkeyp
     )
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": False, "model_identifier": "transformers-model"}
         return inner(method, url, token, payload, timeout, error)
@@ -8528,14 +8222,7 @@ def test_claude_post_connect_failure_spares_an_attached_server(fake_studio, monk
     monkeypatch.setattr(start, "_shutdown_server", lambda server: down.append(server))
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": False, "model_identifier": "transformers-model"}
         return inner(method, url, token, payload, timeout, error)
@@ -8691,12 +8378,7 @@ def test_an_unreadable_status_leaves_the_auto_served_server_alone(fake_studio, m
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(
-        base,
-        model,
-        load,
-        server_options = None,
-    ):
+    def fake_start(base, model, load, server_options = None):
         started.update(base = base, model = model)
         start._auto_served_server = fake
         return fake
@@ -8709,14 +8391,7 @@ def test_an_unreadable_status_leaves_the_auto_served_server_alone(fake_studio, m
     monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/api/inference/status"):
             raise urllib.error.HTTPError(url, 500, "Failed to get status", None, None)
         return inner(method, url, token, payload, timeout, error)
@@ -8734,14 +8409,7 @@ def test_an_unreadable_status_leaves_the_auto_served_server_alone(fake_studio, m
 def test_a_status_body_without_is_gguf_still_launches(fake_studio, monkeypatch, agent):
     inner = start._http_json
 
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
         if url.endswith("/api/inference/status"):
             return {"model_identifier": MODEL["id"]}
         return inner(method, url, token, payload, timeout, error)

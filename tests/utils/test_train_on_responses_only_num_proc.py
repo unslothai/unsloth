@@ -48,11 +48,7 @@ class _Unsized:
 
 
 class _Trainer:
-    def __init__(
-        self,
-        train_dataset = None,
-        eval_dataset = None,
-    ):
+    def __init__(self, train_dataset = None, eval_dataset = None):
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
 

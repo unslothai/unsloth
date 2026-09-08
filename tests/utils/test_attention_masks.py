@@ -59,12 +59,7 @@ def test_sdpa_packed_attention_mask_sliding_window():
 
 def test_xformers_block_mask_sliding_window(monkeypatch):
     class _FakeMask:
-        def __init__(
-            self,
-            lengths,
-            window = None,
-            device = None,
-        ):
+        def __init__(self, lengths, window = None, device = None):
             self.lengths = lengths
             self.window = window
             self.device = torch.device(device)

@@ -106,12 +106,7 @@ class _ModelWithEmbeddings:
         def __init__(self, weight):
             self.weight = weight
 
-    def __init__(
-        self,
-        input_numel,
-        output_numel = 0,
-        tied = False,
-    ):
+    def __init__(self, input_numel, output_numel = 0, tied = False):
         self._input = self._Embedding(self._Weight(input_numel))
         if tied:
             self._output = self._input
@@ -142,11 +137,7 @@ def stub_sizing(monkeypatch):
     def fake_free(path):
         return state["free"]
 
-    def fake_redirect(
-        save_directory,
-        need_bytes = 0,
-        what = "export",
-    ):
+    def fake_redirect(save_directory, need_bytes = 0, what = "export"):
         target, message = state["redirect"]
         if message is None:
             return save_directory, None
@@ -602,11 +593,7 @@ class _FakeModule:
     too and the deduplication has something to do.
     """
 
-    def __init__(
-        self,
-        parameters = (),
-        children = None,
-    ):
+    def __init__(self, parameters = (), children = None):
         self._parameters = list(parameters)
         self._children = dict(children or {})
 
@@ -625,13 +612,7 @@ class _FakeModule:
 class _ShapedModel(_FakeModule):
     """A named module tree plus the embedding getters and a config."""
 
-    def __init__(
-        self,
-        children,
-        config,
-        input_embeddings = None,
-        output_embeddings = None,
-    ):
+    def __init__(self, children, config, input_embeddings = None, output_embeddings = None):
         super().__init__(children = children)
         self.config = config
         self._input = input_embeddings
@@ -1224,11 +1205,7 @@ class TestMergeHeadroomMatchesTheZooGuard:
         """A `kaggle_tmp_redirect` that answers like the real one."""
         free_working = 31 * GB
 
-        def fake_redirect(
-            save_directory,
-            need_bytes = 0,
-            what = "export",
-        ):
+        def fake_redirect(save_directory, need_bytes = 0, what = "export"):
             if need_bytes <= 0 or free_working >= need_bytes:
                 return save_directory, None
             return "/tmp/unsloth_saves/model", "moved"

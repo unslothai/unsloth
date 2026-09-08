@@ -1475,11 +1475,7 @@ def test_eval_packing_on_a_late_split_follows_whether_trl_packs_it():
         assert max(len(r) for r in split["input_ids"]) > _MODEL_MAX_SEQ_LENGTH
         return split
 
-    def _run(
-        prepares_late,
-        eval_packing,
-        strategy = "wrapped",
-    ):
+    def _run(prepares_late, eval_packing, strategy = "wrapped"):
         Stub, seen = _stub_trainer_class(prepares_late = prepares_late)
         stub = Stub()
         stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
@@ -2137,11 +2133,7 @@ def _late_cap_helpers():
 
 
 class _EvalArgs:
-    def __init__(
-        self,
-        cap,
-        max_length = None,
-    ):
+    def __init__(self, cap, max_length = None):
         self.max_seq_length = cap
         self.max_length = max_length
         self.eval_packing = None

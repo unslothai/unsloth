@@ -350,13 +350,7 @@ def test_history_theft_plus_network_is_critical():
     assert fs and fs[0].severity == sp.CRITICAL, findings
 
 
-def _mk(
-    sev,
-    pkg,
-    fname,
-    check,
-    evidence = "evidence",
-):
+def _mk(sev, pkg, fname, check, evidence = "evidence"):
     return sp.Finding(sev, pkg, fname, check, evidence)
 
 

@@ -318,13 +318,7 @@ def test_ioc_in_assigned_string_survives_stripping():
 # ---------------------------------------------------------------------------
 
 
-def _finding(
-    pkg,
-    fn,
-    pattern,
-    sev = snp.HIGH,
-    evidence = "",
-):
+def _finding(pkg, fn, pattern, sev = snp.HIGH, evidence = ""):
     return snp.Finding(severity = sev, package = pkg, filename = fn, pattern = pattern, evidence = evidence)
 
 

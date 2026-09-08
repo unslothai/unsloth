@@ -54,13 +54,7 @@ def test_choose_first_conversion_imatrix_forces_two_pass():
 class _Harness:
     """Monkeypatched convert/quantize recording calls and creating real files."""
 
-    def __init__(
-        self,
-        monkeypatch,
-        tmp_path,
-        quantize_delays = None,
-        quantize_error = None,
-    ):
+    def __init__(self, monkeypatch, tmp_path, quantize_delays = None, quantize_error = None):
         self.tmp_path = tmp_path
         self.convert_calls = []
         self.quantize_calls = []

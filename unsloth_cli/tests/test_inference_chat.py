@@ -1993,15 +1993,7 @@ def test_catalog_local_folder_entries_require_loadable_payloads(monkeypatch, tmp
     ensure_studio_backend_path()
 
     class _LocalModelInfo:
-        def __init__(
-            self,
-            id,
-            display_name,
-            path,
-            source,
-            model_format = None,
-            partial = False,
-        ):
+        def __init__(self, id, display_name, path, source, model_format = None, partial = False):
             self.id = id
             self.display_name = display_name
             self.path = path

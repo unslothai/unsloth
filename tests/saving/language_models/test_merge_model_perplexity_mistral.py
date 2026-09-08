@@ -42,11 +42,7 @@ from tests.utils.perplexity_eval import (
 )
 
 
-def load_and_compute_8bit_ppl(
-    result_queue,
-    load_in_4bit = False,
-    load_in_8bit = False,
-):
+def load_and_compute_8bit_ppl(result_queue, load_in_4bit = False, load_in_8bit = False):
     """Load model and compute perplexity in subprocess"""
     from unsloth import FastLanguageModel
     from tests.utils.perplexity_eval import ppl_model
