@@ -4447,6 +4447,9 @@ class DiffusionBackend:
                         family = fam,
                         speed_mode = effective_speed,
                         cache_active = cache_engaged is not None or cache_may_toggle,
+                        # The graph arm bypasses per chunk when the auto cache toggles on, so only a cache engaged
+                        # at load refuses it (Flux schnell's 4-step default keeps its graphs).
+                        cache_engaged = cache_engaged is not None,
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
@@ -5739,6 +5742,7 @@ class DiffusionBackend:
             family = state.family,
             speed_mode = SPEED_DEFAULT,
             cache_active = state.transformer_cache is not None or state.cache_auto,
+            cache_engaged = state.transformer_cache is not None,
             offload_active = state.offload_policy != OFFLOAD_NONE,
             logger = logger,
         )

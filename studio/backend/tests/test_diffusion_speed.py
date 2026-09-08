@@ -1112,6 +1112,22 @@ def test_cuda_graph_default_is_forwarded_as_family_default(monkeypatch):
     assert calls["eligible"][1]["family_default"] is True
 
 
+def test_cuda_graph_cache_engaged_overrides_cache_active_for_the_graph_arm(monkeypatch):
+    # cache_active also means "auto cache that MAY toggle on later", which the compile must respect (fullgraph off)
+    # but the graph arm must not: the caller bypasses per chunk when the cache toggles, so only a cache engaged at
+    # load refuses graphs. cache_engaged is that narrower fact; when it is not given, cache_active is used as before.
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    calls = _stub_cuda_graph(monkeypatch)
+    common = dict(is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    apply_speed_optims(_Pipe(with_compile = True), _target(), cache_active = True, cache_engaged = False, **common)
+    assert calls["eligible"][0]["cache_active"] is False
+    apply_speed_optims(_Pipe(with_compile = True), _target(), cache_active = False, cache_engaged = True, **common)
+    assert calls["eligible"][1]["cache_active"] is True
+    apply_speed_optims(_Pipe(with_compile = True), _target(), cache_active = True, **common)
+    assert calls["eligible"][2]["cache_active"] is True
+
+
 def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
     # Capture allocates a graph pool worth about one step of activations, so it can OOM on a big model: that must
     # degrade to eager, never fail the load.

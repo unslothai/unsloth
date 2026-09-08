@@ -246,6 +246,7 @@ def apply_speed_optims(
     cache_active: bool = False,
     offload_active: bool = False,
     cuda_graph_default: bool = True,
+    cache_engaged: Optional[bool] = None,
     logger: Any = None,
 ) -> dict[str, bool]:
     """Apply the opt-in speed optims for ``speed_mode`` to a built pipeline, BEFORE placement /
@@ -256,7 +257,14 @@ def apply_speed_optims(
 
     ``cuda_graph_default`` is what the CUDA-graph arm assumes for a family that declares nothing:
     the image backend leaves it True (every image DiT was measured to gain), while the video backend
-    passes False, so only a video family that opts in with ``supports_cuda_graph`` gets graphs."""
+    passes False, so only a video family that opts in with ``supports_cuda_graph`` gets graphs.
+
+    ``cache_active`` covers a step cache that is engaged OR may still toggle on at generation time
+    (auto mode): the compile must drop ``fullgraph`` for both. The CUDA-graph arm only needs to know
+    whether the cache is engaged NOW (``cache_engaged``; defaults to ``cache_active``): a cache that
+    toggles on later is handled per chunk by the caller's ``set_bypass`` and by the step-cache marker
+    the wrapper checks on every call, so an auto-cache load whose default schedule does not reach
+    the cache threshold (Flux schnell, 4 steps) still gets its graphs."""
     applied = {
         "channels_last": False,
         "cudnn_benchmark": False,
@@ -347,7 +355,7 @@ def apply_speed_optims(
                 family = family,
                 pipe = pipe,
                 offload_active = offload_active,
-                cache_active = cache_active,
+                cache_active = cache_active if cache_engaged is None else bool(cache_engaged),
                 speed_mode = mode,
                 family_default = cuda_graph_default,
                 logger = logger,
