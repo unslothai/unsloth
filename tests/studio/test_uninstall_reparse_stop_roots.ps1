@@ -48,7 +48,11 @@ $ps1Text = Get-Content -LiteralPath $ps1Path -Raw
 Check "the stop scan is given the managed paths under the target" `
     ($ps1Text -match '_StopProcessesLockingRoots -Roots \(\$stopRoots \+ @\(_ManagedPathsUnderReparseTargets \$ownedRoots\)\)')
 Check "and that list is filtered by the ownership gate" `
-    ($ps1Text -match '(?s)\$ownedRoots = @\(\).*?_IsStudioRoot \$defaultStudioHome -ManagedDefaultRoot.*?foreach \(\$r in \$customRoots\) \{ if \(_IsStudioRoot \$r\)')
+    ($ps1Text -match '(?s)\$ownedRoots = @\(\).*?_IsStudioRoot \$defaultStudioHome -ManagedDefaultRoot.*?foreach \(\$r in \$customRoots\) \{\s*\r?\n\s*if \(\(_IsStudioRoot \$r\) -and -not \(_IsUnsafeRoot \$r\)\)')
+# The removal loop refuses on EITHER gate, so a real install on the deny list must not have
+# processes killed for a tree that is then left standing.
+Check "and by the deny list, which the removal loop also refuses on" `
+    ($ps1Text -match '(?s)\$ownedRoots = @\(\).*?-not \(_IsUnsafeRoot \$defaultStudioHome\)')
 # The legacy <parent>\stable-diffusion.cpp sibling is derived from the same corrected
 # Split-Path, and the scan that receives it also runs before the gates.
 Check "the legacy sd.cpp stop root is gated the same way" `

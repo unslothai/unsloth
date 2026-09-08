@@ -786,8 +786,28 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 # between used to leave a directory the uninstaller could only identify by guessing from
 # leftovers, and every guess is a chance to delete somebody else's files. One breadcrumb,
 # written first, is what it reads instead. Never fatal: an unwritable root fails below anyway.
-mkdir -p "$STUDIO_HOME" 2>/dev/null || true
-printf '' > "$STUDIO_HOME/.unsloth-studio-owned" 2>/dev/null || true
+#
+# Claim only what this run is allowed to take over. In env mode $STUDIO_HOME is a user-chosen
+# workspace and the guard at the venv step refuses a non-empty one carrying no Unsloth sentinel,
+# so the same sentinels decide this: claiming first and aborting there would leave our marker on
+# somebody's project, and the uninstaller deletes a marked root recursively.
+_claim_studio_root() {
+    if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
+       && [ ! -f "$STUDIO_HOME/.unsloth-studio-owned" ] \
+       && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
+       && [ ! -f "$STUDIO_HOME/share/studio.conf" ] \
+       && [ ! -f "$STUDIO_HOME/bin/unsloth" ]; then
+        for _claim_entry in "$STUDIO_HOME"/* "$STUDIO_HOME"/.[!.]* "$STUDIO_HOME"/..?*; do
+            if [ -e "$_claim_entry" ] || [ -L "$_claim_entry" ]; then return 0; fi
+        done
+    fi
+    mkdir -p "$STUDIO_HOME" 2>/dev/null || true
+    # Unlink first. The redirection follows a symlink at that path and truncates its TARGET,
+    # which on a user-chosen root is somebody's file. Matches the uv marker's handling.
+    rm -f "$STUDIO_HOME/.unsloth-studio-owned" 2>/dev/null || true
+    printf '' > "$STUDIO_HOME/.unsloth-studio-owned" 2>/dev/null || true
+}
+_claim_studio_root
 
 # Keep uv's cache on the same filesystem as the venv it fills.
 # uv hardlinks wheels within one filesystem and copies across a boundary, so a moved

@@ -427,6 +427,9 @@ _is_studio_root() {
     # the marker (install.sh:3190) leaves the root with neither, so it would be refused as
     # somebody else's. Only install.sh produces either name, and only ever by renaming a venv.
     for _p in "$_r"/unsloth_studio.rollback.* "$_r"/.venv.invalid.*; do
+        # Never a link. install.sh refuses to prune a rollback symlink and only ever creates
+        # these by renaming a directory, so a link here points somewhere it did not put.
+        [ -L "$_p" ] && continue
         _is_installer_leftover_name "$_p" || continue
         _is_venv_dir "$_p" && return 0
     done

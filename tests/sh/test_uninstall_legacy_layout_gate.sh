@@ -8,6 +8,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 UNINSTALL_SH="$SCRIPT_DIR/../../scripts/uninstall.sh"
+INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 PASS=0
 FAIL=0
 
@@ -104,6 +105,18 @@ check "a rollback name with a non-numeric pid" foreign managed \
     "unsloth_studio.rollback.20260908120000.mine/pyvenv.cfg"
 check "a rollback name with a short stamp" foreign managed \
     "unsloth_studio.rollback.2026.4242/pyvenv.cfg"
+# install.sh refuses to prune a rollback symlink and only ever renames a directory into place,
+# so a link with the right name points at a venv it did not put there.
+_linked="$_TMP_ROOT/linked_leftover"
+mkdir -p "$_linked" "$_TMP_ROOT/somebodys_venv"
+: > "$_TMP_ROOT/somebodys_venv/pyvenv.cfg"
+: > "$_linked/keepme.txt"
+ln -s "$_TMP_ROOT/somebodys_venv" "$_linked/unsloth_studio.rollback.20260908120000.4242"
+if _is_studio_root "$_linked" managed; then
+    echo "  FAIL: a symlinked leftover was claimed"; FAIL=$((FAIL+1))
+else
+    echo "  PASS: a symlinked leftover is refused"; PASS=$((PASS+1))
+fi
 # ... and the shapes the installers really write, including install.sh's date fallback.
 check "partial install: rollback with a numeric suffix" own managed \
     "unsloth_studio.rollback.20260908120000.4242.2/pyvenv.cfg"
@@ -133,6 +146,63 @@ if _is_studio_root "$_spaced"; then
     echo "  PASS: a path containing spaces is handled"; PASS=$((PASS+1))
 else
     echo "  FAIL: a path containing spaces was refused"; FAIL=$((FAIL+1))
+fi
+
+# The other half of the same question: install.sh decides when to WRITE the marker this gate
+# reads. In env mode $STUDIO_HOME is a user-chosen workspace, so claiming one the installer is
+# about to refuse would hand somebody's project to the uninstaller.
+echo
+echo "Who the installer is allowed to claim:"
+_fn=$(sed -n '/^_claim_studio_root() {/,/^}/p' "$INSTALL_SH")
+if [ -z "$_fn" ]; then
+    echo "  FAIL: could not extract _claim_studio_root from $INSTALL_SH"; FAIL=$((FAIL+1))
+else
+    eval "$_fn"
+    # name, expected (claimed|left), redirect mode, then paths.
+    claim_check() {
+        _cname="$1"; _cwant="$2"; _STUDIO_HOME_REDIRECT="$3"; shift 3
+        STUDIO_HOME="$_TMP_ROOT/claim_$(printf '%s' "$_cname" | tr -c 'a-zA-Z0-9' '_')"
+        VENV_DIR="$STUDIO_HOME/unsloth_studio"
+        mkdir -p "$STUDIO_HOME"
+        for _crel in "$@"; do
+            mkdir -p "$STUDIO_HOME/$(dirname "$_crel")"
+            : > "$STUDIO_HOME/$_crel"
+        done
+        _claim_studio_root
+        if [ -f "$STUDIO_HOME/.unsloth-studio-owned" ]; then _cgot=claimed; else _cgot=left; fi
+        if [ "$_cgot" = "$_cwant" ]; then
+            echo "  PASS: $_cname"; PASS=$((PASS+1))
+        else
+            echo "  FAIL: $_cname (got $_cgot, want $_cwant)"; FAIL=$((FAIL+1))
+        fi
+    }
+    claim_check "the default root, always" claimed default
+    claim_check "an empty custom root" claimed env
+    claim_check "a custom root already carrying our marker" claimed env "unsloth_studio/.unsloth-studio-owned"
+    claim_check "a custom root with share/studio.conf" claimed env "share/studio.conf"
+    # The case: the venv-step guard refuses this root, so the claim must not run ahead of it.
+    claim_check "somebody's workspace" left env "pyproject.toml" "src/main.py"
+    claim_check "somebody's workspace with a venv of their own" left env "unsloth_studio/pyvenv.cfg"
+
+    # A symlink at the marker path: the redirection would follow it and truncate the target.
+    STUDIO_HOME="$_TMP_ROOT/claim_symlink"
+    # shellcheck disable=SC2034  # read by the extracted _claim_studio_root
+    VENV_DIR="$STUDIO_HOME/unsloth_studio"
+    _STUDIO_HOME_REDIRECT=default
+    mkdir -p "$STUDIO_HOME"
+    printf 'precious' > "$_TMP_ROOT/claim_symlink_target"
+    ln -s "$_TMP_ROOT/claim_symlink_target" "$STUDIO_HOME/.unsloth-studio-owned"
+    _claim_studio_root
+    if [ "$(cat "$_TMP_ROOT/claim_symlink_target")" = "precious" ]; then
+        echo "  PASS: a symlinked marker path does not truncate its target"; PASS=$((PASS+1))
+    else
+        echo "  FAIL: a symlinked marker path truncated its target"; FAIL=$((FAIL+1))
+    fi
+    if [ -f "$STUDIO_HOME/.unsloth-studio-owned" ] && [ ! -L "$STUDIO_HOME/.unsloth-studio-owned" ]; then
+        echo "  PASS: and the marker is a regular file afterwards"; PASS=$((PASS+1))
+    else
+        echo "  FAIL: the marker is still a link"; FAIL=$((FAIL+1))
+    fi
 fi
 
 echo

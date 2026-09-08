@@ -449,7 +449,9 @@ Environment:
     # uninstaller must not be looser about it, and the managed root is deleted recursively.
     function _IsInstallerLeftoverName {
         param([string]$Name)
-        return ($Name -match '^(unsloth_studio\.rollback|\.venv\.invalid)\.(\d{14}|time)\.\d+(\.\d+)?$')
+        # No "time" alternative: that is install.sh's fallback for a failed date(1), and
+        # install.ps1 always formats yyyyMMddHHmmss, so accepting it here only widens the gate.
+        return ($Name -match '^(unsloth_studio\.rollback|\.venv\.invalid)\.\d{14}\.\d+(\.\d+)?$')
     }
 
     function _IsStudioRoot {
@@ -483,6 +485,9 @@ Environment:
         # renaming a venv.
         foreach ($leftover in @("unsloth_studio.rollback.*", ".venv.invalid.*")) {
             foreach ($dir in @(Get-ChildItem -LiteralPath $Path -Filter $leftover -Directory -Force -ErrorAction SilentlyContinue)) {
+                # Never a reparse point. install.ps1 refuses to prune a linked rollback and only
+                # ever creates these by renaming a directory, so a link points somewhere else.
+                if (($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
                 if (-not (_IsInstallerLeftoverName $dir.Name)) { continue }
                 if (_IsVenvDir $dir.FullName) { return $true }
             }
@@ -910,14 +915,21 @@ Environment:
     # process running from under what it is given, and it runs BEFORE the ownership gates below,
     # so a stale UNSLOTH_STUDIO_HOME whose parent holds ANOTHER install's marked sd.cpp would
     # have its diffusion job killed and then be refused, removing nothing.
+    # _IsUnsafeRoot as well as _IsStudioRoot, because the removal loop below refuses on either.
+    # install.ps1 accepts any writable root, so a real install can sit on the deny list, and
+    # stopping processes for a tree this run then leaves standing is pure harm.
     $ownedRoots = @()
-    if ($defaultStudioHome -and (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot)) {
+    if ($defaultStudioHome -and (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot) -and
+        -not (_IsUnsafeRoot $defaultStudioHome)) {
         $ownedRoots += $defaultStudioHome
     }
-    foreach ($r in $customRoots) { if (_IsStudioRoot $r) { $ownedRoots += $r } }
+    foreach ($r in $customRoots) {
+        if ((_IsStudioRoot $r) -and -not (_IsUnsafeRoot $r)) { $ownedRoots += $r }
+    }
     $customSdCppToStop = @()
     foreach ($r in $customRoots) {
         if (-not (_IsStudioRoot $r)) { continue }
+        if (_IsUnsafeRoot $r) { continue }
         $sdc = Join-Path (Split-Path -LiteralPath $r) "stable-diffusion.cpp"
         if ((Test-Path -LiteralPath $sdc) -and (Test-Path -LiteralPath (Join-Path $sdc ".unsloth-studio-owned") -PathType Leaf)) {
             $customSdCppToStop += $sdc

@@ -139,12 +139,86 @@ try {
         (-not (_IsStudioRoot (Make "leftover-backup" @(".venv.invalid.backup\pyvenv.cfg")) -ManagedDefaultRoot))
     Check "a rollback name with a non-numeric pid is refused" `
         (-not (_IsStudioRoot (Make "leftover-badpid" @("unsloth_studio.rollback.20260908120000.mine\pyvenv.cfg")) -ManagedDefaultRoot))
+    # install.sh has a "time" fallback for a failed date(1); install.ps1 always formats
+    # yyyyMMddHHmmss, so accepting it here would only widen the gate.
+    Check "install.sh's time fallback is not a Windows name" `
+        (-not (_IsStudioRoot (Make "leftover-time" @(".venv.invalid.time.4242\pyvenv.cfg")) -ManagedDefaultRoot))
+    # A reparse point with the right name points at a venv the installer did not put there.
+    $linkRoot = Make "leftover-link" @("keepme.txt")
+    $realVenv = Make "somebodys-venv" @("pyvenv.cfg")
+    $made = $null
+    foreach ($kind in @("Junction", "SymbolicLink")) {
+        try {
+            $made = New-Item -ItemType $kind -Path (Join-Path $linkRoot "unsloth_studio.rollback.20260908120000.4242") -Target $realVenv -ErrorAction Stop
+            if ($made -and -not [string]::IsNullOrWhiteSpace(@($made.Target)[0])) { break }
+        } catch { $made = $null }
+    }
+    if ($made -and -not [string]::IsNullOrWhiteSpace(@($made.Target)[0])) {
+        Check "a linked leftover is refused" (-not (_IsStudioRoot $linkRoot -ManagedDefaultRoot))
+    } else {
+        Write-Host "  SKIP  no reparse point could be created here"
+    }
     $foreign = Make "foreign-shim" @()
     New-Item -ItemType Directory -Path (Join-Path $foreign "bin") -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $foreign "bin\unsloth.cmd") -Value "@echo off`r`npython -m mytool %*`r`n"
     Check "a bin\unsloth.cmd without the trampoline is refused" (-not (_IsStudioRoot $foreign -ManagedDefaultRoot))
     Check "a missing path is refused" (-not (_IsStudioRoot (Join-Path $tmp "does-not-exist") -ManagedDefaultRoot))
     Check "an empty path is refused" (-not (_IsStudioRoot "" -ManagedDefaultRoot))
+
+    # The other half of the same question: install.ps1 decides when to WRITE the marker this gate
+    # reads. In env mode $StudioHome is a user-chosen workspace, so claiming one the installer is
+    # about to refuse would hand somebody's project to the uninstaller.
+    $installPs1 = [System.IO.Path]::Combine($repoRoot, "install.ps1")
+    $ie = $null; $it = $null
+    $iast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$it, [ref]$ie)
+    $ifns = $iast.FindAll({
+            param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]
+        }, $true)
+    foreach ($name in @("Test-DirectoryHasEntries", "Write-StudioRootOwnerMarker")) {
+        $fn = $ifns | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+        if (-not $fn) {
+            Write-Host "  FAIL  $name not found in install.ps1" -ForegroundColor Red
+            $script:failures++
+        } else {
+            . ([scriptblock]::Create($fn.Extent.Text))
+        }
+    }
+    function ClaimCheck([string]$Name, [bool]$WantClaimed, [string]$Mode, [string[]]$Files) {
+        $root = Join-Path $tmp ("claim-" + $Name)
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        foreach ($f in $Files) {
+            $p = Join-Path $root $f
+            New-Item -ItemType Directory -Path ([System.IO.Path]::GetDirectoryName($p)) -Force | Out-Null
+            Set-Content -LiteralPath $p -Value "x"
+        }
+        $StudioRedirectMode = $Mode
+        Write-StudioRootOwnerMarker -Root $root
+        $claimed = Test-Path -LiteralPath (Join-Path $root ".unsloth-studio-owned") -PathType Leaf
+        Check $Name ($claimed -eq $WantClaimed)
+    }
+    ClaimCheck "the default root, always" $true "default" @("notes.md")
+    ClaimCheck "an empty custom root" $true "env" @()
+    ClaimCheck "a custom root already carrying our marker" $true "env" @("unsloth_studio\.unsloth-studio-owned")
+    ClaimCheck "a custom root with share\studio.conf" $true "env" @("share\studio.conf")
+    ClaimCheck "somebody's workspace" $false "env" @("pyproject.toml")
+    ClaimCheck "somebody's workspace with a venv of their own" $false "env" @("unsloth_studio\pyvenv.cfg")
+
+    # A link at the marker path: WriteAllText would follow it and truncate the target.
+    $linkClaim = Join-Path $tmp "claim-link"
+    New-Item -ItemType Directory -Path $linkClaim -Force | Out-Null
+    $target = Join-Path $tmp "precious.txt"
+    Set-Content -LiteralPath $target -Value "precious"
+    $linked = $null
+    try {
+        $linked = New-Item -ItemType SymbolicLink -Path (Join-Path $linkClaim ".unsloth-studio-owned") -Target $target -ErrorAction Stop
+    } catch { $linked = $null }
+    if ($linked) {
+        $StudioRedirectMode = "default"
+        Write-StudioRootOwnerMarker -Root $linkClaim
+        Check "a linked marker path does not truncate its target" ((Get-Content -LiteralPath $target -Raw).Trim() -eq "precious")
+    } else {
+        Write-Host "  SKIP  no symlink could be created here"
+    }
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -1261,14 +1261,32 @@ public static class UnslothStudioFinalPathV2
     # to leave a directory the uninstaller could only identify by guessing from leftovers, and
     # every guess is a chance to delete somebody else's files. Never fatal: an unwritable root
     # fails the install on its own.
+    # Claim only what this run is allowed to take over: in env mode $StudioHome is a user-chosen
+    # workspace and the guard at the venv step refuses a non-empty one carrying no Unsloth
+    # sentinel, so the same sentinels decide this. Claiming first and aborting there would leave
+    # our marker on somebody's project, and the uninstaller deletes a marked root recursively.
     function Write-StudioRootOwnerMarker {
         param([Parameter(Mandatory = $true)][string]$Root)
         try {
-            if (-not (Test-Path -LiteralPath $Root)) {
+            if (Test-Path -LiteralPath $Root) {
+                $claimable = (
+                    $StudioRedirectMode -ne 'env' -or
+                    (Test-Path -LiteralPath (Join-Path $Root ".unsloth-studio-owned") -PathType Leaf) -or
+                    (Test-Path -LiteralPath (Join-Path $Root "unsloth_studio\.unsloth-studio-owned") -PathType Leaf) -or
+                    (Test-Path -LiteralPath (Join-Path $Root "share\studio.conf") -PathType Leaf) -or
+                    (Test-Path -LiteralPath (Join-Path $Root "bin\unsloth.exe") -PathType Leaf) -or
+                    -not (Test-DirectoryHasEntries -Path $Root)
+                )
+                if (-not $claimable) { return }
+            } else {
                 # .NET API: New-Item -Path treats brackets as wildcards.
                 [System.IO.Directory]::CreateDirectory($Root) | Out-Null
             }
-            [System.IO.File]::WriteAllText((Join-Path $Root ".unsloth-studio-owned"), "")
+            # Delete first. WriteAllText follows a file symlink and truncates its TARGET, which
+            # on a user-chosen root is somebody's file. Matches the uv marker's handling.
+            $marker = Join-Path $Root ".unsloth-studio-owned"
+            Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+            [System.IO.File]::WriteAllText($marker, "")
         } catch { }
     }
 
@@ -1340,6 +1358,9 @@ public static class UnslothStudioFinalPathV2
             [string]$UvExecutable = ""
         )
         $studioCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
+        # Ahead of the custom-cache return below, or a preset UV_CACHE_DIR skips the claim and
+        # an interruption after this leaves exactly the unidentifiable partial root it is for.
+        Write-StudioRootOwnerMarker -Root $StudioRoot
         if (-not [string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
             $script:StudioUvCacheMode = "custom"
             # Absolute before anything uses it, so every phase of one install and the
@@ -1416,7 +1437,6 @@ public static class UnslothStudioFinalPathV2
             }
         }
         Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $selectedCache
-        Write-StudioRootOwnerMarker -Root $StudioRoot
         Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $selectedCache
 
         switch ($script:StudioUvCacheMode) {
