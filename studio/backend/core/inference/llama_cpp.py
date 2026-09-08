@@ -14273,7 +14273,7 @@ class LlamaCppBackend:
 
         healthy = self._wait_for_health(timeout = 600.0, cancelled = cancelled)
         if healthy:
-            if not self._publish_healthy():
+            if not self._publish_healthy(load_generation):
                 # Same window as the llama-server path: a teardown between the
                 # probe and this commit is already killing the runner, so
                 # publishing it healthy would advertise a server that is gone.
@@ -18465,6 +18465,18 @@ class LlamaCppBackend:
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_scope():
+            # Refused HERE, not at the spawn: a lock gives a waiter no priority, so a
+            # load left over from a previous lifecycle can take this scope after the
+            # restart and spend minutes on probes and downloads first. Worse, the
+            # duplicate-adoption phase below calls _kill_process() on whatever is
+            # loaded, which by then is the NEW lifecycle's model -- so refusing only
+            # at the Popen would unload the restarted server and then decline to
+            # replace it, leaving it with nothing.
+            with self._spawn_lock:
+                _stale_load = self._spawn_is_stale(_load_generation)
+            if _stale_load:
+                logger.info("dropping a load left over from the previous server lifecycle")
+                return False
             # In-app update swapping binaries: refuse fast (set under this lock,
             # so any in-flight load has drained) instead of using a half-swapped one.
             if getattr(self, "_llama_update_in_progress", False):
@@ -25243,7 +25255,7 @@ class LlamaCppBackend:
                             else None
                         ),
                     )
-                if not self._publish_healthy():
+                if not self._publish_healthy(_load_generation):
                     # Teardown began between the probe that answered 200 and this
                     # commit, so the child is already being killed. Publishing here
                     # would leave the backend reporting a model it does not have.
@@ -26378,8 +26390,8 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"Could not terminate server descendants: {e}")
 
-    def _publish_healthy(self) -> bool:
-        """Commit _healthy under the spawn lock, or refuse if teardown has begun.
+    def _publish_healthy(self, load_generation: Optional[int] = None) -> bool:
+        """Commit _healthy under the spawn lock, or refuse if this load is stale.
 
         The recheck inside the health wait only narrows the window: teardown can
         still start after a successful probe returns, kill the child and clear the
@@ -26387,10 +26399,15 @@ class LlamaCppBackend:
         longer exists. Taken under the same lock the teardown mark is set with, so
         the two orders are the only ones possible: publish then teardown (which
         clears _healthy on its way out), or teardown then a refused publish.
+
+        The generation matters as much as the flag. A load still blocked in /health
+        when the host restarted returns to a lifecycle that has already cleared
+        _shutting_down, so the flag alone would let it publish a 200 it received
+        before the teardown -- for a process that is now None.
         """
         with self._spawn_lock:
-            if getattr(self, "_shutting_down", False):
-                logger.info("app shut down as the load completed; not publishing it healthy")
+            if self._spawn_is_stale(load_generation):
+                logger.info("load no longer belongs to this lifecycle; not publishing it healthy")
                 return False
             self._healthy = True
             return True
@@ -26450,7 +26467,24 @@ class LlamaCppBackend:
         ``teardown`` marks an app-level stop (shutdown, atexit) rather than the
         retry ladder reaping a child it is about to replace: only the former may
         end an in-flight health wait.
+
+        A teardown holds the spawn lock for the WHOLE kill, not just long enough to
+        set the flag. The terminate/wait below reads self._process repeatedly and
+        finally clears it, so an embedded host that saw the server thread stop and
+        called run_server() again could otherwise reopen the lifecycle mid-kill: the
+        new load would spawn, and this teardown's finally would then drop or
+        terminate its child. Marking is above the early return because a quit during
+        a download has no process to kill and still has to be recorded.
         """
+        if teardown:
+            with self._spawn_lock:
+                self._shutting_down = True
+                self._kill_process_body(teardown = True)
+            return
+        self._kill_process_body(teardown = False)
+
+    def _kill_process_body(self, *, teardown: bool):
+        """The kill itself. Caller holds _spawn_lock when ``teardown``."""
         # Stop the watchdog before a deliberate kill so a planned reload/unload
         # isn't seen as a crash; a real crash never routes through here.
         self._stop_mtp_crash_watchdog()
@@ -26459,12 +26493,6 @@ class LlamaCppBackend:
         # outlives its runner even when there was no process to kill.
         self._diffusion_requested_ngl = None
         self._child_gpu_physical_ids = None
-        if teardown:
-            # Above the early return: a quit during a download or staging has no
-            # process to kill, and marking teardown only on the path that has one
-            # let the load spawn a server after the shutdown sweep had finished.
-            with self._spawn_lock:
-                self._shutting_down = True
         if self._process is None:
             return
         # Not every _process is a Popen: tests stand one in to mean "a server is

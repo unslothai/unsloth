@@ -1439,3 +1439,139 @@ def test_the_deadline_asks_the_durable_flag_too(monkeypatch):
     assert b._wait_for_health(timeout = 0.01, interval = 0.05) is False
     assert b._health_wait_cancelled is True, "a teardown was recorded as a timeout"
     assert not any("health check timed out" in ln for ln in b._stdout_lines)
+
+
+class TestAStaleLoadIsDroppedAtTheSerialScope:
+    """Refusing a previous lifecycle's load only at the spawn is too late.
+
+    A lock gives a waiter no priority, so the stale load can take the serial scope
+    after the restart, and the duplicate-adoption phase inside it calls
+    _kill_process() on whatever is loaded -- by then the NEW lifecycle's model. It
+    would unload the restarted server and then decline to replace it.
+    """
+
+    def test_the_check_precedes_the_replacement_work(self):
+        """Checked over the AST, not the text: a first version matched the words
+        '_kill_process' in the explanatory comment above the guard and failed on
+        correct code."""
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model)))
+        scope = next(
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.With)
+            and any("_serial_load_scope" in ast.unparse(i.context_expr) for i in n.items)
+        )
+
+        guard_line = next(
+            n.lineno
+            for n in ast.walk(scope)
+            if isinstance(n, ast.Call) and "_spawn_is_stale" in ast.unparse(n.func)
+        )
+
+        early_kills = [
+            n.lineno
+            for n in ast.walk(scope)
+            if isinstance(n, ast.Call)
+            and "_kill_process" in ast.unparse(n.func)
+            and n.lineno < guard_line
+        ]
+        assert not early_kills, (
+            f"a stale load calls _kill_process at {early_kills}, before it is refused at "
+            f"line {guard_line}, so it unloads the new lifecycle's model"
+        )
+
+        # And the refusal has to stop the load rather than just log it.
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        stale = src.index("_spawn_is_stale(_load_generation)")
+        assert "return False" in src[stale:stale + 300], "the stale-load branch does not return"
+
+
+class TestAStaleLoadCannotPublishHealth:
+    """A load still blocked in /health when the host restarted comes back to a
+    lifecycle that has already cleared _shutting_down, so the flag alone would let
+    it publish a 200 it received before the teardown, for a process now None."""
+
+    def _backend(self):
+        b = _make_backend()
+        b._stop_mtp_crash_watchdog = lambda: None
+        b._healthy = False
+        b._process = None
+        b._spawn_lock = threading.Lock()
+        return b
+
+    def test_a_stale_generation_is_refused_even_with_the_flag_clear(self):
+        b = self._backend()
+        b._begin_server_lifecycle()
+        stale = b._lifecycle_generation
+        b._begin_server_lifecycle()  # the restart: flag clear, generation moved on
+
+        assert getattr(b, "_shutting_down", False) is False, "precondition: not shutting down"
+        assert b._publish_healthy(stale) is False
+        assert b._healthy is False, "a previous lifecycle's load published itself healthy"
+
+    def test_the_current_generation_still_publishes(self):
+        b = self._backend()
+        b._begin_server_lifecycle()
+
+        assert b._publish_healthy(b._lifecycle_generation) is True
+        assert b._healthy is True
+
+
+def test_a_lifecycle_cannot_reopen_while_a_teardown_is_still_killing():
+    """_kill_process(teardown) used to release the lock as soon as it set the flag,
+    but it goes on reading self._process and finally clears it. An embedded host
+    that saw the server thread stop could reopen the lifecycle in that gap, let a
+    new load spawn, and have this teardown drop or terminate its child."""
+    b = _make_backend()
+    b._stop_mtp_crash_watchdog = lambda: None
+    b._reset_effective_parallel_slots = lambda: None
+    b._diffusion_requested_ngl = None
+    b._leading_process_group = lambda _pid: None
+    b._collect_descendants = lambda _pid: []
+    b._spawn_lock = threading.RLock()  # so the probe below can observe, not deadlock
+
+    reopened_during_kill = []
+    in_kill = threading.Event()
+    release = threading.Event()
+
+    class _SlowProcess:
+        pid = 999
+
+        def terminate(self):
+            in_kill.set()
+            release.wait(2.0)
+
+        def wait(self, timeout = None):
+            return 0
+
+        def kill(self):
+            pass
+
+    b._process = _SlowProcess()
+
+    def restarter():
+        in_kill.wait(2.0)
+        # Non-blocking: if the teardown still holds the lock this cannot succeed,
+        # which is the property under test.
+        got = b._spawn_lock.acquire(blocking = False)
+        if got:
+            b._spawn_lock.release()
+        reopened_during_kill.append(got)
+        release.set()
+
+    t = threading.Thread(target = restarter)
+    t.start()
+    try:
+        b._kill_process(teardown = True)
+    finally:
+        release.set()
+        t.join(5.0)
+
+    assert reopened_during_kill == [False], (
+        "the spawn lock was free while the teardown was still killing, so "
+        "_begin_server_lifecycle could reopen the lifecycle mid-kill"
+    )

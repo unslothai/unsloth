@@ -231,7 +231,8 @@ def test_load_model_commits_requested_from_intent():
     # spawn lock so a teardown cannot land between the successful probe and the
     # commit. The invariant this test guards is unchanged: health is published
     # first, so a failed start cannot poison the next inheritance check.
-    healthy = src.find("self._publish_healthy()", 0, commit if commit != -1 else None)
+    # Matched without the argument list, so adding one does not break this again.
+    healthy = src.find("self._publish_healthy(", 0, commit if commit != -1 else None)
     snapshot = src.find("self._last_load_intent = replace(intent")
     assert commit != -1, "load_model must commit the requested slot count"
     assert healthy != -1 and healthy < commit < snapshot
