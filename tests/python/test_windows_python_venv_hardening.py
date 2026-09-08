@@ -52,11 +52,17 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
     # case in this file reads its stdout, so an interpreter that died at startup would surface as install.ps1 losing
     # half a moved environment.
     # See tests/_shared/unsloth_pwsh_runner.py.
+    # encoding, not the default: `text = True` alone decodes with the locale codec, which is
+    # cp1252 on a Windows runner, while both shells write their stdout as UTF-8. A non-ASCII
+    # path therefore came back as mojibake ("kaffee" with the a-umlaut arriving as A-tilde
+    # plus currency sign) and failed an assertion about a file that was in fact written
+    # correctly, so this decoded the transport wrongly rather than catching a real defect.
     result = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
         env = env,
         timeout = 30,
     )

@@ -775,6 +775,7 @@ installed_llama_prebuilt_release() {
     [ -f "$metadata_path" ] || return 0
     python - "$metadata_path" <<'PY' 2>/dev/null || true
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -792,6 +793,10 @@ llama_tag = str(payload.get("tag") or "").strip()
 source = str(payload.get("source") or "").strip()
 binary_repo = str(payload.get("binary_repo") or "").strip()
 binary_tag = str(payload.get("binary_release_tag") or "").strip()
+_backend_raw = payload.get("backend")
+# Absent before #8520, and null when backend_for_install_kind() had no answer. str() on a
+# non-string would diverge from the setup.ps1 twin (Python "[1, 2]" vs PowerShell "1 2").
+backend = _backend_raw.strip() if isinstance(_backend_raw, str) else ""
 if not repo or not release_tag:
     raise SystemExit(0)
 
@@ -804,6 +809,10 @@ else:
     message = f"installed release: {repo}@{release_tag}"
     if llama_tag and llama_tag != release_tag:
         message += f" (tag {llama_tag})"
+# Name the backend: a Vulkan and a ROCm bundle print an identical line without it. The
+# shape check keeps the line single-line and matches the setup.ps1 twin byte for byte.
+if re.fullmatch(r"[A-Za-z0-9._+-]{1,32}", backend):
+    message += f" -- {backend} backend"
 print(message)
 PY
 }
