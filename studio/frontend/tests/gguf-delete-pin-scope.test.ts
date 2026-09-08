@@ -75,7 +75,8 @@ for (const task of [null, "text-generation", "image-text-to-text", "text-to-imag
       });
       let reconciliations = 0;
       const callback = compile(body, {
-        repoId, hfToken: undefined, pipelineTag: task,
+        repoId, hfToken: "hf_fixture_token", pipelineTag: task,
+        useHfTokenStore: { getState: () => ({ token: "hf_fixture_token" }) },
         v: { quant: deleted }, entry: { repoId, quant: deleted },
         c: { repo_id: repoId, task, cache_path: "/inactive/cache" },
         variant: { quant: deleted }, isPinned: true, pinnedKeys: [...pinned],
@@ -84,7 +85,7 @@ for (const task of [null, "text-generation", "image-text-to-text", "text-to-imag
         diffusionTaskById: new Map([[repoId.toLowerCase(), task]]),
         mediaPageForTask: (value: string | null) => value && !["text-generation", "image-text-to-text"].includes(value) ? "images" : null,
         isChatGgufTask, usePinnedModelsStore, pinKey, togglePinned, togglePinnedQuant: togglePinned, unpinRepo,
-        reconcileGgufPinsAfterDelete: async (...args: unknown[]) => { reconciliations++; await reconcile(...args); },
+        reconcileGgufPinsAfterDelete: async (...args: unknown[]) => { reconciliations++; assert.equal(args[1], "hf_fixture_token"); await reconcile(...args); },
         onDeleteVariant: async () => {}, deleteCachedModel: async () => {}, deleteCachedDataset: async () => {},
         refreshCachedLists: () => {}, prunePinnedQuantValidation: () => {}, setRefreshKey: () => {},
       });

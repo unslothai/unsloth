@@ -797,7 +797,10 @@ export const InventoryRow = memo(function InventoryRow({
                 rowCachePath,
               );
               if (row.isGguf && isChatGgufTask(row.pipelineTag)) {
-                await reconcileGgufPinsAfterDelete(deletableRepoId);
+                await reconcileGgufPinsAfterDelete(
+                  deletableRepoId,
+                  useHfTokenStore.getState().token || undefined,
+                );
               } else {
                 usePinnedModelsStore.getState().unpinRepo(deletableRepoId);
               }

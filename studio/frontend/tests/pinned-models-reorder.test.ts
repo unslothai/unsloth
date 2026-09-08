@@ -576,7 +576,7 @@ test("chat GGUF deletes reconcile surviving copies while other model deletes cle
     ),
     "utf8",
   );
-  assert.ok(rows.includes("reconcileGgufPinsAfterDelete(deletableRepoId"));
+  assert.match(rows, /reconcileGgufPinsAfterDelete\(\s*deletableRepoId/);
   assert.ok(
     rows.includes(
       "usePinnedModelsStore.getState().unpinRepo(deletableRepoId);",

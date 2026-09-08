@@ -17,6 +17,7 @@ CHAT_GGUF_TASKS = (None, "text-generation", "image-text-to-text")
 
 def gguf_cache_snapshots(repo_id: str):
     """Active cache first, then remembered caches; newest snapshots first in each."""
+    from hub.services.models.catalog_classification import _gguf_path_task
     from hub.utils.hf_cache_state import hf_cache_roots
     from utils.models.model_config import _iter_hf_cache_snapshots
     from utils.hf_cache_settings import get_hf_cache_paths
@@ -24,12 +25,28 @@ def gguf_cache_snapshots(repo_id: str):
     active = get_hf_cache_paths().hub_cache
     roots = [active, *hf_cache_roots()]
     seen = set()
-    for root in roots:
+    for index, root in enumerate(roots):
         key = str(Path(root).resolve())
         if key in seen:
             continue
         seen.add(key)
-        yield from _iter_hf_cache_snapshots(repo_id, cache_dir = root)
+        for snapshot in _iter_hf_cache_snapshots(repo_id, cache_dir = root):
+            if index and _gguf_path_task(snapshot, (repo_id,)) not in CHAT_GGUF_TASKS:
+                continue
+            yield snapshot
+
+
+def cached_gguf_manifest_complete(repo_id: str, quant: str, snapshot: Path) -> bool:
+    """Prefer completed downloads without applying a newer revision's manifest to an older copy."""
+    from hub.services.models.catalog_classification import _gguf_path_task
+    from hub.utils.download_manifest import read_manifest, verify_against_disk
+
+    if _gguf_path_task(snapshot, (repo_id,)) not in CHAT_GGUF_TASKS:
+        return True
+    manifest = read_manifest("model", repo_id, quant, hub_cache = snapshot.parent.parent.parent)
+    if manifest is None or manifest.commit_hash not in (None, snapshot.name):
+        return True
+    return verify_against_disk(manifest, snapshot).ok
 
 
 @dataclass(frozen = True)
@@ -58,9 +75,13 @@ def cached_gguf_sources(repo_id: str) -> dict[str, CachedGgufSource]:
         complete = complete_snapshot_variants(str(snapshot)) or set()
         for variant in variants:
             if variant.quant and variant.quant in complete:
-                sources.setdefault(
-                    variant.quant.lower(), CachedGgufSource(variant, snapshot, has_vision)
-                )
+                key = variant.quant.lower()
+                previous = sources.get(key)
+                if previous is None or (
+                    not cached_gguf_manifest_complete(repo_id, variant.quant, previous.snapshot)
+                    and cached_gguf_manifest_complete(repo_id, variant.quant, snapshot)
+                ):
+                    sources[key] = CachedGgufSource(variant, snapshot, has_vision)
     return sources
 
 

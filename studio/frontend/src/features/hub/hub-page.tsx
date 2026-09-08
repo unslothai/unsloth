@@ -82,6 +82,7 @@ import { useModelsSelection } from "./hooks/use-models-selection";
 import { resolveSelectionUrlSync } from "./lib/selection-resolution";
 import { useHubInventory } from "./inventory";
 import { LOCAL_MODEL_SOURCE } from "./inventory/constants";
+import { isChatGgufTask } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
 import { settingsGgufVariantForRow } from "./inventory/settings-identity";
 import { adoptResidentModelStatus } from "./lib/adopt-inference-status";
 import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
@@ -1483,7 +1484,13 @@ export function ModelsPage() {
             const res = await listGgufVariants(repoId, hfApiToken(hfToken), {
               preferLocalCache: true,
               localPath:
-                row.kind === "local" ? row.path : (row.cachePath ?? null),
+                row.kind === "local"
+                  ? row.path
+                  : isChatGgufTask(row.pipelineTag)
+                    ? row.loadId
+                    : (row.cachePath ?? null),
+              includeCacheLocations:
+                row.kind === "cache" && isChatGgufTask(row.pipelineTag),
             });
             const downloaded = res.variants.filter((v) => v.downloaded);
             // Re-read after this await too: the lookup hits the network, and a switch during it would

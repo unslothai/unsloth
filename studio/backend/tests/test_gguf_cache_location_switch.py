@@ -408,3 +408,106 @@ def test_inactive_only_chat_cache_handles_hub_failures(
     variants = [v for v in response.json()["variants"] if v["downloaded"]]
     assert [(v["quant"], v["cache_path"]) for v in variants] == [(quant, str(repo))]
     assert not variants[0]["partial"]
+
+
+@pytest.mark.parametrize("task", ["text-to-image", "text-to-video", "text-to-speech"])
+def test_media_loader_does_not_reuse_inactive_cache(cache_locations, monkeypatch, task):
+    from core.inference.llama_cpp import cached_gguf_for_load
+
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    monkeypatch.setattr(
+        "hub.services.models.catalog_classification._gguf_path_task", lambda *args: task
+    )
+    for quant, (repo, path) in expected.items():
+        actual = cached_gguf_for_load(repo_id, quant)
+        assert actual == (str(path) if repo.parent == active else None)
+
+
+@pytest.mark.parametrize("entrypoint", ["source", "listing", "loader", "worker"])
+def test_interrupted_projector_prefers_ready_duplicate(cache_locations, monkeypatch, entrypoint):
+    from core.inference.llama_cpp import cached_gguf_for_load
+    from hub.utils import download_manifest
+    from hub.utils.gguf_sources import cached_gguf_sources
+
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    quant = "Q4_K_M"
+    filename = f"Model-{quant}.gguf"
+    healthy = None
+    for repo, path in expected.values():
+        snapshot = path.parent
+        (snapshot / filename).write_bytes(b"0" * 256)
+        if repo.parent != active:
+            (snapshot / "mmproj-F16.gguf").write_bytes(b"0" * 128)
+            healthy = snapshot
+        assert download_manifest.write_manifest(
+            "model",
+            repo_id,
+            quant,
+            [
+                download_manifest.ExpectedFile(filename, 256),
+                download_manifest.ExpectedFile("mmproj-F16.gguf", 128),
+            ],
+            hub_cache = repo.parent,
+            commit_hash = snapshot.name,
+        )
+    assert healthy is not None
+    inventory_scan.invalidate_hf_cache_scans()
+    if entrypoint == "source":
+        assert cached_gguf_sources(repo_id)[quant.lower()].snapshot == healthy
+    elif entrypoint == "loader":
+        assert cached_gguf_for_load(repo_id, quant) == str(healthy / filename)
+    elif entrypoint == "worker":
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        def offline(*args, **kwargs):
+            raise ConnectionError("offline test")
+
+        monkeypatch.setattr("huggingface_hub.list_repo_files", offline)
+        monkeypatch.setattr("huggingface_hub.get_paths_info", offline)
+        monkeypatch.setattr(
+            "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
+            lambda *args, **kwargs: pytest.fail("must reuse the complete remembered copy"),
+        )
+        actual = LlamaCppBackend()._download_gguf(hf_repo = repo_id, hf_variant = quant)
+        assert actual == str(healthy / filename)
+        assert (healthy / "mmproj-F16.gguf").is_file()
+    else:
+        response = asyncio.run(
+            gguf_variants.get_gguf_variants_response(
+                repo_id,
+                prefer_local_cache = True,
+                offline = True,
+                include_cache_locations = True,
+            )
+        )
+        variant = next(v for v in response.variants if v.quant == quant)
+        assert variant.downloaded and not variant.partial
+        assert variant.cache_path == str(healthy.parent.parent)
+
+
+@pytest.mark.parametrize("token", [False, "hf_fixture_token"])
+def test_pin_listing_needs_explicit_token_when_ambient_is_denied(
+    cache_locations, monkeypatch, token
+):
+    from hub.utils.gguf import GgufVariantInfo
+
+    repo_id, expected = cache_locations
+    quant, (repo, path) = next(
+        (q, value)
+        for q, value in expected.items()
+        if value[0].parent != hf_cache_settings.get_hf_cache_paths().hub_cache
+    )
+    variant = GgufVariantInfo(filename = path.name, quant = quant, size_bytes = 256)
+    monkeypatch.setattr(gguf_variants, "list_gguf_variants", lambda *a, **k: ([variant], False, []))
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            repo_id,
+            hf_token = token,
+            prefer_local_cache = True,
+            include_cache_locations = True,
+        )
+    )
+    actual = next(v for v in response.variants if v.quant == quant)
+    assert actual.downloaded is bool(token)
