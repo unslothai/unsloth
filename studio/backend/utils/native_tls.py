@@ -147,6 +147,9 @@ def activate_native_tls() -> bool:
     os.environ[_NATIVE_TLS_ENV] = "1"
     # uv's rustls ignores in-process injection (uv >= 0.11 reads UV_SYSTEM_CERTS, older reads UV_NATIVE_TLS). Mirror one
     # value across both: uv takes either as an opt-in, so an opt-out in one spelling must carry to the other.
+    # The Linux desktop reaches this too, and unlike truststore, uv REPLACES its bundled webpki roots with the OS
+    # store. That is the point behind an inspecting proxy, which re-signs PyPI as well, but it means a host with no
+    # usable OS store loses uv installs it had; UNSLOTH_STUDIO_NATIVE_TLS=0 or UV_SYSTEM_CERTS=0 backs either out.
     os.environ.setdefault("UV_SYSTEM_CERTS", os.environ.get("UV_NATIVE_TLS", "1"))
     os.environ.setdefault("UV_NATIVE_TLS", os.environ["UV_SYSTEM_CERTS"])
     # append, not insert(0): a user-installed truststore must win over the vendored copy.
