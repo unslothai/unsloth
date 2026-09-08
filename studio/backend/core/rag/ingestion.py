@@ -239,20 +239,30 @@ def _replace_old_document(
 
 
 def _retire_orphan_after_failure(
-    conn, replaces: tuple[str, str | None] | None, keep_path: str
+    conn, replaces: tuple[str, str | None] | None, keep_path: str, document_id: str
 ) -> None:
-    """Drop a never-indexed document whose replacement did not complete.
+    """Clear a never-indexed document whose replacement did not complete.
 
     Orphans only: an ``empty_completed`` / stale-embedder original is still searchable. The
     orphan has no live job, so startup repair (which scans jobs) never reaches it and the
     scope would stay indexing forever, holding queued chat sends.
+
+    Checked against the replacement inside the transaction, as ``_replace_old_document`` is: a
+    delete that removed the replacement took its upload too, so dropping the orphan there would
+    discard the last copy. Failing that one instead still frees the scope.
     """
     if replaces is None:
         return
     old_id, old_path = replaces
     try:
+        conn.execute("BEGIN IMMEDIATE")
         doc = store.get_document(conn, old_id)
         if doc is None or doc.get("status") not in {"pending", "running"}:
+            conn.rollback()
+            return
+        if store.get_document(conn, document_id) is None:
+            conn.rollback()
+            store.set_document_status(conn, old_id, "failed", error = "Indexing did not finish")
             return
         store.delete_document(conn, old_id)
         _remove_upload(old_path, keep_path = keep_path)
@@ -395,7 +405,7 @@ def _run(
         if conn is not None:
             # Every exit but a completed one, which already retired its orphan. Nothing relaunches
             # ingestion, so a lost lease ends the work too: only _new_job ever claims one.
-            _retire_orphan_after_failure(conn, replaces, stored_path)
+            _retire_orphan_after_failure(conn, replaces, stored_path, document_id)
             conn.close()
         job_leases.release(job_leases.INGESTION, job_id)
         with _jobs_lock:
@@ -557,7 +567,7 @@ def start_ingestion(
         # _run never entered, so its finally cannot retire the orphan this retry replaced.
         conn = rag_db.get_connection()
         try:
-            _retire_orphan_after_failure(conn, replaces, stored_path)
+            _retire_orphan_after_failure(conn, replaces, stored_path, document_id)
         finally:
             conn.close()
         raise

@@ -372,3 +372,61 @@ def test_orphan_retry_that_cannot_start_a_worker_retires_the_orphan(
     finally:
         conn.close()
     assert not any(row["status"] in {"pending", "running"} for row in rows)
+
+
+def test_cancelling_an_orphan_retry_keeps_the_original_upload(rag_home, stub_embeddings):
+    """Deleting the replacement takes its upload, so the orphan holds the last copy: fail that
+    row rather than retire it, which frees the scope without discarding the file."""
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    uploads = ensure_dir(rag_uploads_root())
+    original_file = uploads / "original.txt"
+    original_file.write_text("Revenue doubled this quarter.")
+    retry_file = uploads / "retry.txt"
+    retry_file.write_bytes(original_file.read_bytes())
+    scope = store.thread_scope("cancel-orphan")
+    conn = rag_db.get_connection()
+    try:
+        original = store.create_document(
+            conn,
+            scope = scope,
+            filename = original_file.name,
+            sha256 = ingestion._sha256_file(str(original_file)),
+            status = "pending",
+            stored_path = str(original_file),
+        )
+    finally:
+        conn.close()
+
+    started, release = threading.Event(), threading.Event()
+    parse = parsers.parse
+
+    def blocked_parse(path):
+        started.set()
+        assert release.wait(5)
+        return parse(path)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(parsers, "parse", blocked_parse)
+    try:
+        replacement, job = ingestion.start_ingestion(
+            scope, None, "cancel-orphan", retry_file.name, str(retry_file)
+        )
+        assert started.wait(5)
+        conn = rag_db.get_connection()
+        try:
+            store.delete_document(conn, replacement)
+        finally:
+            conn.close()
+        ingestion._remove_upload(str(retry_file))
+    finally:
+        release.set()
+        list(ingestion.job_events(job))
+        monkeypatch.undo()
+
+    assert original_file.exists()
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, original)["status"] == "failed"
+    finally:
+        conn.close()
