@@ -177,7 +177,7 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
         from pathlib import Path
 
         import core.inference.llama_cpp as llama_cpp
-        return Path(llama_cpp.__file__).read_text()
+        return Path(llama_cpp.__file__).read_text(encoding = "utf-8")
 
     # That the bound reaches every payload the generators send is asserted in
     # test_llama_admission_enforced_paths.py, against the payloads llama-server would

@@ -236,10 +236,11 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        assert names[-2:] == [
+        assert names[-3:] == [
             "on_conversation_grew",
             "admission_output_allowance",
-        ], f"a parameter was inserted rather than appended; signature ends {names[-4:]}"
+            "on_final_conversation_grew",
+        ], f"a parameter was inserted rather than appended; signature ends {names[-5:]}"
         plain = list(inspect.signature(LlamaCppBackend.generate_chat_completion).parameters)
         assert (
             plain[-1] == "admission_output_allowance"

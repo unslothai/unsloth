@@ -41,9 +41,13 @@ from core.inference.llama_admission import (
     reset_llama_admission_queues,
 )
 from core.inference.llama_cpp import LlamaCppBackend
+from fastapi.responses import JSONResponse
+
 from models.inference import AnthropicMessagesRequest, ChatCompletionRequest
 from routes.inference import (
     _build_openai_passthrough_body,
+    _openai_llama_admission_retry_max_tokens,
+    _openai_llama_admission_wire_prompt_tokens,
     _openai_llama_admission_enforced_max_tokens,
     _openai_llama_admission_prompt_tokens,
     _openai_llama_admission_recost,
@@ -337,6 +341,85 @@ class TestTheGeneratorsSendIt:
         assert payloads, "no request was sent"
         assert all(cap <= _SHARE for cap in _caps(payloads)), _caps(payloads)
 
+    def test_the_final_pass_gets_its_own_re_cost(self, monkeypatch):
+        """It is the one request of the run that sends no `tools` array.
+
+        The rounds subtract the injected catalogue from the share because they carry it;
+        subtracting it from a pass that does not send it takes roughly 1250 tokens off a
+        real answer, and floors it at one token once the history is long enough.
+        """
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _tool_call("web_search", {"query": "kernel"}, "c1"),
+                [_sse({"content": "6.10"}), _done()],
+            ],
+            payloads,
+        )
+        monkeypatch.setattr(
+            "core.inference.tools.execute_tool",
+            lambda name, arguments, **_kwargs: "Linux kernel 6.10.",
+        )
+
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "Which kernel?"}],
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                max_tool_iterations = 1,
+                permission_mode = "off",
+                admission_output_allowance = _SHARE,
+                on_conversation_grew = lambda _conversation: _SHARE - 500,
+                on_final_conversation_grew = lambda _conversation: _SHARE - 100,
+            )
+        )
+
+        assert _caps(payloads) == [_SHARE - 500, _SHARE - 100]
+
+    def test_a_caller_with_no_final_hook_keeps_the_old_behaviour(self, monkeypatch):
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _tool_call("web_search", {"query": "kernel"}, "c1"),
+                [_sse({"content": "6.10"}), _done()],
+            ],
+            payloads,
+        )
+        monkeypatch.setattr(
+            "core.inference.tools.execute_tool",
+            lambda name, arguments, **_kwargs: "Linux kernel 6.10.",
+        )
+
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "Which kernel?"}],
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                max_tool_iterations = 1,
+                permission_mode = "off",
+                admission_output_allowance = _SHARE,
+                on_conversation_grew = lambda _conversation: _SHARE - 500,
+            )
+        )
+
+        assert _caps(payloads) == [_SHARE - 500, _SHARE - 500]
+
 
 def _backend_stub(*, window, total, slots):
     return SimpleNamespace(
@@ -382,7 +465,7 @@ class TestEveryCallSiteCarriesIt:
 
     def _routes_tree(self):
         import ast
-        return ast.parse(Path(inf_mod.__file__).read_text())
+        return ast.parse(Path(inf_mod.__file__).read_text(encoding = "utf-8"))
 
     def _generator_calls(self, tree):
         """Calls on `llama_backend`, which is the only receiver that holds a KV lease.
@@ -503,6 +586,200 @@ class TestWhatThePromptIsMeasuredAgainst:
         prompt = _openai_llama_admission_prompt_tokens(_Payload(messages = grown))
         assert prompt + recosted <= 16384 // 4
 
+    def test_a_client_that_named_a_cap_is_never_bounded_at_either_end(self):
+        """The re-cost is a second chance to truncate someone who asked for a real cap.
+
+        A caller under the window is already honest and is charged what it asked for; a
+        bound handed back mid-loop would cut its answer at a share with nothing in the
+        response to say why.
+        """
+        backend = _backend_stub(window = 16384, total = 16384, slots = 4)
+
+        class _Lease:
+            def recost_waiting(self, *_args, **_kwargs):
+                return None
+
+        reservation = SimpleNamespace(lease_nowait = lambda: _Lease())
+        grown = [{"role": "user", "content": "word " * 900}]
+        for payload, cap in (
+            (_chat(max_tokens = 512), 512),
+            (_chat(max_completion_tokens = 512), 512),
+        ):
+            assert (
+                _openai_llama_admission_enforced_max_tokens(
+                    payload, request = None, llama_backend = backend
+                )
+                is None
+            )
+            assert (
+                _openai_llama_admission_recost(
+                    reservation,
+                    grown,
+                    request = None,
+                    llama_backend = backend,
+                    payload = payload,
+                    output_tokens = cap,
+                )
+                is None
+            )
+
+
+class TestWhatTheWireActuallyCarries:
+    """The charge is deliberately conservative; the bound cannot be.
+
+    Both figures come from the same conversation, but the ledger re-adds terms the next
+    request does not carry, and every one of those comes off the answer if it is
+    subtracted from the share as well.
+    """
+
+    def test_a_translated_system_prompt_is_not_charged_to_the_answer_twice(self):
+        """`anthropic_messages_to_openai` folds `system` into the conversation the loop
+        then re-costs, so the ledger adding `_openai_llama_admission_extra_prompt_tokens`
+        on top counts it a second time. Conservative for a charge; on the wire it takes
+        the system prompt off the answer twice."""
+        backend = _backend_stub(window = 65536, total = 65536, slots = 4)
+        system = "You are a careful assistant. " * 200
+        payload = _Payload(
+            messages = [{"role": "user", "content": "hi"}],
+            system = system,
+            max_tokens = 65536,
+        )
+        conversation = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": "hi"},
+        ]
+
+        class _Lease:
+            def recost_waiting(self, *_args, **_kwargs):
+                return None
+
+        reservation = SimpleNamespace(lease_nowait = lambda: _Lease())
+        wire = _openai_llama_admission_recost(
+            reservation,
+            conversation,
+            request = None,
+            llama_backend = backend,
+            payload = payload,
+            output_tokens = 65536,
+        )
+        share = 65536 // 4
+        conversation_tokens = _openai_llama_admission_wire_prompt_tokens(
+            conversation, llama_backend = backend
+        )
+        assert wire == share - conversation_tokens, (wire, share, conversation_tokens)
+
+    def test_image_transport_bytes_do_not_come_off_the_answer(self):
+        """An Anthropic `type="image"` block keeps its base64 through
+        `_openai_llama_admission_messages_for_estimate`, which only compacts OpenAI
+        `image_url` parts. The translated messages carry the normalised part instead."""
+        # A cache whose share (8192) is bigger than one image's allowance but smaller
+        # than the base64 priced as prompt text, which is exactly where the difference
+        # shows as the one-token floor.
+        backend = _backend_stub(window = 32768, total = 32768, slots = 4)
+        data = "A" * 40000
+        payload = _Payload(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": "image/png", "data": data},
+                        },
+                    ],
+                }
+            ],
+            max_tokens = 32768,
+        )
+        translated = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{data}"}},
+                ],
+            }
+        ]
+        raw = _openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend
+        )
+        wire = _openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, conversation = translated
+        )
+        assert raw == 1, "the base64 transport should have swamped the share"
+        assert wire > 1000, "the normalised part is priced as an image, not as prompt text"
+
+    def test_the_final_pass_keeps_the_catalogue_it_does_not_send(self):
+        """`wire_sends_tools = False` is the whole difference between a real answer and
+        the one-token floor once the history is long."""
+        backend = _backend_stub(window = 16384, total = 16384, slots = 4)
+        payload = _chat(max_tokens = 16384)
+
+        class _Lease:
+            def recost_waiting(self, *_args, **_kwargs):
+                return None
+
+        reservation = SimpleNamespace(lease_nowait = lambda: _Lease())
+        conversation = [{"role": "user", "content": "word " * 700}]
+
+        def _recost(wire_sends_tools):
+            return _openai_llama_admission_recost(
+                reservation,
+                conversation,
+                request = None,
+                llama_backend = backend,
+                payload = payload,
+                output_tokens = 16384,
+                injected_tools = _CATALOGUE,
+                wire_sends_tools = wire_sends_tools,
+            )
+
+        with_tools = _recost(True)
+        without = _recost(False)
+        assert without > with_tools, (with_tools, without)
+        catalogue = _openai_llama_admission_prompt_tokens(
+            _Payload(messages = [{"role": "user", "content": ""}]), injected_tools = _CATALOGUE
+        ) - _openai_llama_admission_prompt_tokens(
+            _Payload(messages = [{"role": "user", "content": ""}])
+        )
+        assert without - with_tools == catalogue
+
+
+class TestARetryThatGrewItsPrompt:
+    def test_the_nudge_retry_is_bounded_by_its_own_prompt(self):
+        backend = _backend_stub(window = 16384, total = 16384, slots = 4)
+        first = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 4088}
+        grown = {
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "word " * 500},
+                {"role": "user", "content": "please call the tool"},
+            ],
+            "max_tokens": 4088,
+        }
+        bound = _openai_llama_admission_retry_max_tokens(
+            grown, admission_output_allowance = 4088, request = None, llama_backend = backend
+        )
+        assert bound is not None and bound < first["max_tokens"]
+        assert (
+            _openai_llama_admission_wire_prompt_tokens(grown["messages"], llama_backend = backend)
+            + bound
+            <= 16384 // 4
+        )
+
+    def test_a_client_that_named_a_cap_is_left_alone(self):
+        """No bound on the first attempt means none on the retry: the caller asked for a
+        real cap and the queue charged them for it."""
+        backend = _backend_stub(window = 16384, total = 16384, slots = 4)
+        grown = {"messages": [{"role": "user", "content": "word " * 500}], "max_tokens": 512}
+        assert (
+            _openai_llama_admission_retry_max_tokens(
+                grown, admission_output_allowance = None, request = None, llama_backend = backend
+            )
+            is None
+        )
+
 
 class TestTheOperatorSwitches:
     """Both switches turn the reservation itself off, so there is nothing to enforce."""
@@ -588,7 +865,13 @@ class TestTheAnthropicSurface:
         yield
         reset_llama_admission_queues()
 
-    def _install(self, monkeypatch, seen: dict):
+    def _install(
+        self,
+        monkeypatch,
+        seen: dict,
+        *,
+        supports_tool_passthrough = False,
+    ):
         def _gen_plain(**kwargs):
             seen["plain"] = kwargs
             yield "ok"
@@ -601,7 +884,7 @@ class TestTheAnthropicSurface:
             is_loaded = True,
             is_vision = False,
             supports_tools = True,
-            supports_tool_passthrough = False,
+            supports_tool_passthrough = supports_tool_passthrough,
             model_identifier = "test-model",
             context_length = 16384,
             _kv_cache_context_total = 16384,
@@ -626,6 +909,50 @@ class TestTheAnthropicSurface:
 
         allowance = seen["plain"]["admission_output_allowance"]
         assert allowance is not None and allowance <= 16384 // 4
+
+    def test_the_client_tool_passthrough_is_bounded(self, monkeypatch):
+        """This branch returns through the passthrough builders before either generator is
+        reached, and `_admitted_anthropic` still takes a lease for it. A Claude-style
+        client-tool request was therefore charged a share and sent the whole window."""
+        seen: dict = {}
+        self._install(monkeypatch, seen, supports_tool_passthrough = True)
+        captured: dict = {}
+
+        async def _fake_passthrough(
+            llama_backend,
+            openai_messages,
+            openai_tools,
+            temperature,
+            top_p,
+            top_k,
+            max_tokens,
+            *args,
+            **kwargs,
+        ):
+            captured["max_tokens"] = max_tokens
+            captured["allowance"] = kwargs.get("admission_output_allowance")
+            return JSONResponse(content = {"id": "msg_x"})
+
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _fake_passthrough)
+        payload = AnthropicMessagesRequest.model_validate(
+            {
+                "max_tokens": 16384,
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {
+                        "name": "web_search",
+                        "description": "Search the web.",
+                        "input_schema": {"type": "object", "properties": {}},
+                    }
+                ],
+            }
+        )
+
+        asyncio.run(anthropic_messages(payload, request = _AnthropicRequest(), current_subject = "t"))
+
+        assert captured["max_tokens"] is not None
+        assert captured["max_tokens"] <= 16384 // 4, captured
+        assert captured["allowance"] == captured["max_tokens"]
 
     def test_the_tool_generator_is_bounded(self, monkeypatch):
         seen: dict = {}

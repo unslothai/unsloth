@@ -29089,6 +29089,11 @@ class LlamaCppBackend:
         # What KV admission reserved for this run's output, applied to the wire cap of
         # every request the loop sends. Appended for the same reason as the hook.
         admission_output_allowance: Optional[int] = None,
+        # The same hook for the synthesized final answer, which is the one request of the
+        # run that sends no `tools` array. Told apart because the caller prices the wire
+        # cap it hands back, and subtracting a catalogue this pass does not carry can
+        # floor a real answer at one token. Falls back to `on_conversation_grew`.
+        on_final_conversation_grew: Optional[Callable[[list], Optional[int]]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -32160,11 +32165,16 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
-        # Before the preflight fit, which sizes the room it keeps for the reply from this:
-        # fitting against the window and then sending a share would evict history to make
-        # space no request was ever going to use.
-        if admission_output_allowance is not None:
-            _final_max_tokens = min(_final_max_tokens, admission_output_allowance)
+        # The caller's figure stays intact: the re-cost below runs AFTER this and prices
+        # the pass without the catalogue it does not send, which can raise the bound, and
+        # a value already clamped down here could never come back up. The fit gets the
+        # bounded figure instead, so it does not evict history to reserve room this
+        # request will not be given.
+        _final_fit_max_tokens = (
+            min(_final_max_tokens, admission_output_allowance)
+            if admission_output_allowance is not None
+            else _final_max_tokens
+        )
         _final_preflight_context_length = None
         _final_preflight_succeeded = False
         if context_overflow == "truncate_oldest" and self._effective_context_length:
@@ -32193,7 +32203,7 @@ class LlamaCppBackend:
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
                     context_length = self._effective_context_length,
-                    max_tokens = _final_max_tokens,
+                    max_tokens = _final_fit_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
                             messages_without_unpriced_media(fitted), None, self.markup_profile
@@ -32278,9 +32288,10 @@ class LlamaCppBackend:
         # final pass the largest request of the run and the one the pool never heard
         # about. Here rather than at the breaks: the recall above can rebind
         # `conversation`, and every path reaches this point with the list about to be sent.
-        if on_conversation_grew is not None:
+        _final_recost = on_final_conversation_grew or on_conversation_grew
+        if _final_recost is not None:
             try:
-                _final_recosted_allowance = on_conversation_grew(conversation)
+                _final_recosted_allowance = _final_recost(conversation)
                 if _final_recosted_allowance is not None:
                     admission_output_allowance = _final_recosted_allowance
             except Exception:  # accounting must never break a run in progress
