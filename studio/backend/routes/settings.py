@@ -2508,9 +2508,7 @@ def _resolve_embedding_model_plan(
     candidates = _embedding_gguf_candidates(resolved)
     # Match the loader's online fast path exactly: only the preferred repo and
     # only the configured variant can suppress the download offer.
-    cached_repo = (
-        _cached_embedding_gguf(candidates[:1], require_variant = True) if cache_ok else None
-    )
+    cached_repo = _cached_embedding_gguf(candidates[:1], require_variant = True) if cache_ok else None
     if cached_repo:
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
