@@ -127,6 +127,34 @@ def _shell_function(name: str) -> str:
     raise AssertionError(f"unterminated function {name}")
 
 
+# `command -v rocminfo` must not reach a real one on a ROCm build host, or these answers
+# would depend on the machine running the suite. Each harness names its own inventory.
+_rocminfo_stub = "rocminfo() { return 1; }"
+
+
+def _fake_rocminfo(devices: "list[str]") -> str:
+    """A rocminfo whose output has the shape the real one has.
+
+    Every GPU agent names its target TWICE -- once as "Name:" and again inside "ISA Info"
+    -- which is the whole defect: a flat grep returns two rows per card, and a mask ordinal
+    indexed into that list reads the wrong device. A stub emitting one line per GPU would
+    pass whether or not the parsing splits on agent headers.
+    """
+    blocks = ["Agent 1", "*******", "  Name:                    AMD Ryzen 9",
+              "  Marketing Name:          AMD Ryzen 9", "  Device Type:             CPU"]
+    for _i, _gfx in enumerate(devices):
+        blocks += [
+            "*******", f"Agent {_i + 2}", "*******",
+            f"  Name:                    {_gfx}",
+            "  Marketing Name:          AMD Radeon Graphics",
+            "  Device Type:             GPU",
+            "  ISA Info:", "    ISA 1",
+            f"      Name:                    amdgcn-amd-amdhsa--{_gfx}",
+        ]
+    body = "\n".join(blocks).replace("'", "")
+    return "rocminfo() { cat <<'ROCMINFO_EOF'\n" + body + "\nROCMINFO_EOF\n}"
+
+
 def _index_url(env: str, stubs: str) -> str:
     """get_torch_index_url() under a stubbed host, returning the wheel index it picks.
 
@@ -150,6 +178,11 @@ def _index_url(env: str, stubs: str) -> str:
             _shell_function("_amd_generic_tag_carries_gfx"),
             _shell_function("_amd_mask_survivors"),
             _shell_function("_amd_runtime_gfx_target"),
+            _shell_function("_amd_masks_lead_with_the_first_device"),
+            _shell_function("_rocminfo_gpu_records"),
+            _shell_function("_amd_ordered_gfx_devices"),
+            "_ensure_rocm_probe_env() { :; }",
+            _rocminfo_stub,
             _shell_function("_amd_request_has_a_wheel_route"),
             _shell_function("get_torch_index_url"),
             f"{env} get_torch_index_url",
@@ -320,6 +353,11 @@ def _nvidia_wins(env: str, stubs: str) -> bool:
             _shell_function("_amd_generic_tag_carries_gfx"),
             _shell_function("_amd_mask_survivors"),
             _shell_function("_amd_runtime_gfx_target"),
+            _shell_function("_amd_masks_lead_with_the_first_device"),
+            _shell_function("_rocminfo_gpu_records"),
+            _shell_function("_amd_ordered_gfx_devices"),
+            "_ensure_rocm_probe_env() { :; }",
+            _rocminfo_stub,
             _shell_function("_amd_request_has_a_wheel_route"),
             _shell_function("_nvidia_gpu_wins_over_amd"),
             f"{env} _nvidia_gpu_wins_over_amd && echo NVIDIA || echo AMD",
@@ -740,6 +778,11 @@ def _route_shell(probe: str, inferred: str, pci_ok: bool) -> bool:
             _shell_function("_amd_generic_tag_carries_gfx"),
             _shell_function("_amd_mask_survivors"),
             _shell_function("_amd_runtime_gfx_target"),
+            _shell_function("_amd_masks_lead_with_the_first_device"),
+            _shell_function("_rocminfo_gpu_records"),
+            _shell_function("_amd_ordered_gfx_devices"),
+            "_ensure_rocm_probe_env() { :; }",
+            _rocminfo_stub,
             _shell_function("_amd_request_has_a_wheel_route"),
             "_detect_rocm_version_tag() { printf '%s\\n' rocm7.2; }",
             "_amd_request_has_a_wheel_route && echo yes || echo no",
@@ -811,7 +854,9 @@ def _viable(
     corroborated: bool,
     archs: list,
     miscomputing = False,
+    machine: str = "x86_64",
 ):
+    monkeypatch.setattr(stack.platform, "machine", lambda: machine)
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
     monkeypatch.setattr(stack, "IS_MACOS", False)
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: corroborated)
@@ -821,6 +866,24 @@ def _viable(
     monkeypatch.setattr(stack, "_physical_amd_gfx_archs", lambda: archs)
     monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: miscomputing)
     return stack._forced_rocm_route_is_viable()
+
+
+def test_a_host_with_no_published_rocm_wheels_is_not_a_viable_route(stack, monkeypatch):
+    """_ensure_rocm_torch() returns on its Linux-x86_64 gate without installing anything,
+    because ROCm wheels are published nowhere else. Answering "viable" on an aarch64 host
+    stands the CUDA repair down for a swap that then never happens, and the venv keeps
+    whatever CPU or stale HIP torch it had -- on a machine with a usable NVIDIA GPU."""
+    assert _viable(
+        stack, monkeypatch, corroborated = True, archs = ["gfx1100"], machine = "aarch64"
+    ) is False
+
+
+def test_the_same_host_on_x86_64_is_still_viable(stack, monkeypatch):
+    """The control: same card, same corroboration, an architecture the wheels exist for.
+    Without it the gate above could be "never viable"."""
+    assert _viable(
+        stack, monkeypatch, corroborated = True, archs = ["gfx1100"], machine = "x86_64"
+    ) is True
 
 
 def test_the_python_route_test_matches_the_shell_one(stack, monkeypatch):
@@ -1035,13 +1098,22 @@ def test_trimming_does_not_widen_what_counts_as_a_request(value):
     assert _shell_request_flag(value) is False
 
 
-def _route_shell_masked(physical: "list[str]", rocm_tag: str = "rocm7.2", **mask: str) -> bool:
+def _route_shell_masked(
+    physical: "list[str]",
+    rocm_tag: str = "rocm7.2",
+    devices: "list[str] | None" = None,
+    **mask: str,
+) -> bool:
     """The request route test on a masked host, with the mask resolution left live.
 
     Only _probe_amd_gfx_arch is stubbed, and it returns the WHOLE inventory in every mode --
     which is what the real one does here, because rocminfo honours only ROCR_VISIBLE_DEVICES
     and amd-smi honours neither. So this harness reproduces the condition the resolution has
     to survive rather than assuming a probe that narrows for it.
+
+    ``devices`` is the same host as rocminfo enumerates it, one row per GPU agent, and
+    defaults to ``physical``. They differ where the real flat probe would: rocminfo names
+    each agent's target twice, so a two-card host greps as four rows.
 
     The arches are passed as a list and emitted as separate printf arguments: a "\n" inside
     a bash single-quoted string is a literal backslash-n, so a harness that joined them would
@@ -1063,6 +1135,11 @@ def _route_shell_masked(physical: "list[str]", rocm_tag: str = "rocm7.2", **mask
             _shell_function("_amd_generic_tag_carries_gfx"),
             _shell_function("_amd_mask_survivors"),
             _shell_function("_amd_runtime_gfx_target"),
+            _shell_function("_amd_masks_lead_with_the_first_device"),
+            _shell_function("_rocminfo_gpu_records"),
+            _shell_function("_amd_ordered_gfx_devices"),
+            "_ensure_rocm_probe_env() { :; }",
+            _fake_rocminfo(physical if devices is None else devices),
             _shell_function("_amd_request_has_a_wheel_route"),
             f"_detect_rocm_version_tag() {{ printf '%s\\n' {rocm_tag!r}; }}",
             "_amd_request_has_a_wheel_route && echo yes || echo no",
@@ -1094,6 +1171,49 @@ def test_a_mask_that_selects_a_routable_card_still_deposes_it():
     "a mask always keeps CUDA", which passes the test above and removes the feature on
     every masked host."""
     assert _route_shell_masked(["gfx1100", "gfx1010"], HIP_VISIBLE_DEVICES = "0") is True
+
+
+def test_the_flat_probes_duplicate_rows_do_not_shift_the_ordinals():
+    """rocminfo names each agent's target twice, so the flat probe returns four rows for a
+    two-card host. Indexing THAT by a mask ordinal reads the wrong device: HIP=1 lands on
+    the second row, which is still card 0. The route test then approves ROCm on the
+    strength of a gfx1100 the mask had hidden, and the gfx1010 that will actually run has
+    no kernels in any wheel. Resolved against one row per agent instead."""
+    assert _route_shell_masked(
+        ["gfx1100", "gfx1100", "gfx1010", "gfx1010"],
+        devices = ["gfx1100", "gfx1010"],
+        HIP_VISIBLE_DEVICES = "1",
+    ) is False
+
+
+def test_the_same_duplicated_host_still_yields_for_the_routable_card():
+    """The control: same duplicated inventory, mask pointing at the card that does have a
+    route. Without it the fix could be "duplicated rows always keep CUDA"."""
+    assert _route_shell_masked(
+        ["gfx1100", "gfx1100", "gfx1010", "gfx1010"],
+        devices = ["gfx1100", "gfx1010"],
+        HIP_VISIBLE_DEVICES = "0",
+    ) is True
+
+
+def test_a_mask_past_the_first_device_fails_closed_with_no_per_device_list():
+    """Only rocminfo enumerates in the order the masks index -- amd-smi orders by KFD
+    discovery, which is why _amd_smi_hip_order exists -- so a host without it cannot say
+    which card an ordinal names. Guessing from the flat list is what the test above shows
+    to be wrong, and guessing yes replaces a working CUDA stack."""
+    assert _route_shell_masked(
+        ["gfx1010", "gfx1100"], devices = [], HIP_VISIBLE_DEVICES = "1"
+    ) is False
+
+
+def test_the_first_device_is_still_answerable_without_a_per_device_list():
+    """The control, and the reason this is not simply "no rocminfo, no route": a mask that
+    leads with ordinal 0 selects the first device, and the first row of the flat inventory
+    names that same device however many duplicates follow it. Denying here would strand
+    every host that sets CUDA_VISIBLE_DEVICES=0 and has no rocminfo installed."""
+    assert _route_shell_masked(
+        ["gfx1100", "gfx1010"], devices = [], HIP_VISIBLE_DEVICES = "0"
+    ) is True
 
 
 def test_the_rocr_layer_is_resolved_the_same_way():
@@ -1465,3 +1585,88 @@ def test_an_arch_with_its_own_index_is_not_held_to_the_generic_floor():
     AMD index that carries it, and the reroute is what serves it. Holding it to the generic
     floor would keep CUDA on a host this feature is meant to move."""
     assert _route_shell_masked(["gfx1200"], rocm_tag = "rocm6.0") is True
+
+
+def _corroborated_on_wsl(
+    stack, monkeypatch, *, nvidia: bool, rocm_sees_a_gpu: bool = False
+) -> bool:
+    """_amd_hardware_is_corroborated() on a WSL box, with the WSL evidence present."""
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: rocm_sees_a_gpu)
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [])
+    monkeypatch.setattr(stack, "_is_wsl", lambda: True)
+    monkeypatch.setattr(stack, "_wsl_rocm_runtime_present", lambda: True)
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: nvidia)
+    return stack._amd_hardware_is_corroborated()
+
+
+def test_leftover_wsl_rocm_files_are_not_a_card_beside_an_nvidia_gpu(stack, monkeypatch):
+    """/dev/dxg is the generic WSL GPU bridge an NVIDIA passthrough creates too, and
+    librocdxg is a file an uninstalled ROCm leaves behind, so neither names a vendor.
+    _has_rocm_gpu() has already answered no by this point, so on an NVIDIA-only WSL box
+    the pair is the whole evidence -- and taking it would let a stale UNSLOTH_ROCM_GFX_ARCH
+    force AMD wheels over a working CUDA stack, which is the one thing this predicate
+    exists to prevent."""
+    assert _corroborated_on_wsl(stack, monkeypatch, nvidia = True) is False
+
+
+def test_the_same_wsl_box_with_no_nvidia_card_still_counts(stack, monkeypatch):
+    """The control, and why this is not simply "WSL never corroborates": with no NVIDIA
+    GPU there is no working stack to lose, so the leftover reading still beats declining
+    and a WSL AMD host whose runtime cannot answer keeps its route."""
+    assert _corroborated_on_wsl(stack, monkeypatch, nvidia = False) is True
+
+
+def test_a_wsl_box_whose_runtime_names_an_agent_counts_beside_nvidia(stack, monkeypatch):
+    """The other control: a real AMD adapter under WSL is still corroborated with an NVIDIA
+    card present, because the ROCm runtime enumerates it rather than a leftover file
+    standing in for it. That answer comes from the _has_rocm_gpu() arm above the WSL
+    branch, which is where install.sh reaches for _probe_amd_gfx_arch physical."""
+    assert _corroborated_on_wsl(
+        stack, monkeypatch, nvidia = True, rocm_sees_a_gpu = True
+    ) is True
+
+
+def _needs_repair_passes_the_nvidia_gate(stack, monkeypatch, *, viable: bool) -> bool:
+    """Whether _amd_torch_needs_dependency_pass() gets past its NVIDIA fast path.
+
+    Read by sentinel rather than by the return value: everything after that gate would
+    have to be stubbed to reach a True, and stubbing it would be asserting about the
+    stubs. The next gate raises instead, so "passed" and "returned False here" are
+    distinguishable.
+    """
+    class _Reached(Exception):
+        pass
+
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "IS_LINUX", True)
+    monkeypatch.setattr(stack.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(stack, "_TORCH_BACKEND", "rocm")
+    monkeypatch.setattr(stack, "_explicit_rocm_torch_index_url", lambda: None)
+    monkeypatch.setattr(stack, "_explicit_torch_index_url", lambda: None)
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_rocm_torch_explicitly_requested", lambda: True)
+    monkeypatch.setattr(stack, "_forced_rocm_route_is_viable", lambda: viable)
+    def _sentinel():
+        raise _Reached
+    monkeypatch.setattr(stack, "_visible_masks_select_no_gpu", _sentinel)
+    try:
+        assert stack._amd_torch_needs_dependency_pass() is False
+    except _Reached:
+        return True
+    return False
+
+
+def test_an_unroutable_request_does_not_bypass_the_nvidia_fast_path(stack, monkeypatch):
+    """On a mixed host whose selected AMD card has no wheel route, _ensure_cuda_torch()
+    and _ensure_rocm_torch() both leave CUDA in place. Reporting "needs repair" there is
+    answered by studio/setup.sh running the whole dependency pass, and the flag does not
+    clear itself, so that pass reruns on every launch for a swap that can never happen."""
+    assert _needs_repair_passes_the_nvidia_gate(stack, monkeypatch, viable = False) is False
+
+
+def test_a_routable_request_still_bypasses_it(stack, monkeypatch):
+    """The control: the request is the whole feature, so a viable one must still outrank
+    the NVIDIA card here or the repair it gates can never run."""
+    assert _needs_repair_passes_the_nvidia_gate(stack, monkeypatch, viable = True) is True

@@ -3379,10 +3379,18 @@ _has_amd_rocm_gpu() {
 # evidence sources that function applies on its own non-declared path.
 _amd_hardware_corroborated() {
     _amd_gpu_present_via_pci && return 0
-    # WSL enumerates no PCI display device, so /dev/dxg plus librocdxg IS the evidence there.
+    # WSL enumerates no PCI display device, so /dev/dxg plus librocdxg is the only evidence
+    # available there. Neither names a vendor, though: /dev/dxg is the generic WSL GPU
+    # bridge an NVIDIA passthrough creates too, and librocdxg is a file an uninstalled ROCm
+    # leaves behind. With no NVIDIA card in the box that reading still beats declining, since
+    # there is no working stack to lose. Beside one there is, so the runtime has to name an
+    # agent itself -- "physical" mode, so a declared arch cannot answer for the silicon.
     if [ -e /dev/dxg ] || grep -qi microsoft /proc/version 2>/dev/null; then
         for _ahc_d in /opt/rocm/lib /opt/rocm/lib64 /opt/rocm-*/lib /opt/rocm-*/lib64; do
-            { [ -e "$_ahc_d/librocdxg.so" ] || [ -e "$_ahc_d/librocdxg.so.1" ]; } && return 0
+            { [ -e "$_ahc_d/librocdxg.so" ] || [ -e "$_ahc_d/librocdxg.so.1" ]; } || continue
+            _has_usable_nvidia_gpu || return 0
+            [ -n "$(_probe_amd_gfx_arch physical 2>/dev/null)" ] && return 0
+            return 1
         done
     fi
     return 1
@@ -3565,7 +3573,19 @@ _amd_request_has_a_wheel_route() {
     # either, and the harm is asymmetric: a wrong yes replaces a working CUDA stack with
     # wheels carrying no kernels for the card that runs, while a wrong no leaves the user
     # exactly where they were.
-    _arwr_sel=$(_amd_runtime_gfx_target "$_arwr_archs")
+    _arwr_devs=$(_amd_ordered_gfx_devices 2>/dev/null | sed 's/:.*$//' \
+        | tr '[:upper:]' '[:lower:]' | awk 'NF')
+    if [ -n "$_arwr_devs" ]; then
+        _arwr_sel=$(_amd_runtime_gfx_target "$_arwr_devs")
+    elif _amd_masks_lead_with_the_first_device; then
+        # The target is the first device, which the flat inventory still names correctly.
+        _arwr_sel=$(_amd_runtime_gfx_target "$_arwr_archs")
+    else
+        # A mask reaches past the first device and the flat inventory cannot be indexed by
+        # an ordinal, so which card the runtime hands torch is unanswerable here. Same
+        # asymmetry as below: a wrong yes replaces a working CUDA stack, a wrong no does not.
+        return 1
+    fi
     [ -n "$_arwr_sel" ] || return 1
     # gfx906's only route is the rocm6.3 legacy tag, which opens solely when gfx906 is the
     # sole arch, so a second AMD arch anywhere on the host makes it unroutable however the
@@ -3950,6 +3970,76 @@ _probe_amd_gfx_arch() {
         fi
     fi
     printf '%s\n' "$_pg"
+}
+
+# Pair each rocminfo GPU gfx id with its marketing name instead of using the CPU-first
+# global name (#7307). Blank names keep device ordinals; no GPU keeps the old fallback.
+# Keep in sync with studio/setup.sh.
+_rocminfo_gpu_records() {
+    awk '
+        # Split at the first colon so embedded colons survive.
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        /^[[:space:]]*Name:/ {
+            # Keep a slot for a nameless GPU.
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            gfx = ""; named = 0
+            name = value($0)
+            # Accept target suffixes such as gfx90a:sramecc+, but reject ISA names.
+            if (match(name, /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
+                rest = substr(name, RLENGTH + 1)
+                if (rest == "" || rest ~ /^[^0-9a-z]/) gfx = substr(name, 1, RLENGTH)
+            }
+            next
+        }
+        /^[[:space:]]*Marketing Name:/ {
+            mkt = value($0)
+            if (gfx != "" && !named) { print gfx "|" mkt; gpus++; named = 1 }
+            else if (first == "") first = mkt
+            next
+        }
+        END {
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            if (gpus == 0 && first != "") print "|" first
+        }
+    '
+}
+
+# One gfx per GPU, in the order ROCr enumerates them, which is the order a visible-device
+# mask indexes. _probe_amd_gfx_arch cannot be used for that: rocminfo names an agent's
+# target in BOTH "Name:" and its "ISA Info" block, so a flat grep returns two rows per
+# card and an ordinal past the first lands on the wrong device. amd-smi is excluded for a
+# separate reason -- it enumerates in KFD discovery order, which is the whole reason
+# _amd_smi_hip_order exists -- so an unreadable rocminfo means unresolvable, not "guess".
+# Twin of install_python_stack._detect_amd_gfx_codes(dedup = False).
+_amd_ordered_gfx_devices() {
+    _ensure_rocm_probe_env
+    command -v rocminfo >/dev/null 2>&1 || return 0
+    (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES HSA_OVERRIDE_GFX_VERSION; rocminfo 2>/dev/null) \
+        | _rocminfo_gpu_records | sed 's/|.*$//' | awk 'NF'
+}
+
+# Whether every mask layer this run applies leads with ordinal 0. When they all do, the
+# device the runtime hands torch is the first one, and the first row of the flat inventory
+# names that same device however many duplicate rows follow it -- so the per-device list is
+# not needed to answer. Any other ordinal indexes past a row the probe duplicated, which is
+# the defect. CUDA_VISIBLE_DEVICES counts only where clr reads it: as the HIP alias, and
+# only when HIP_VISIBLE_DEVICES is unset.
+_amd_masks_lead_with_the_first_device() {
+    _amlf_hip="${HIP_VISIBLE_DEVICES:-}"
+    if [ -z "${HIP_VISIBLE_DEVICES+x}" ]; then
+        _amlf_hip="${CUDA_VISIBLE_DEVICES:-}"
+    fi
+    for _amlf_v in "${ROCR_VISIBLE_DEVICES:-}" "$_amlf_hip"; do
+        [ -n "$_amlf_v" ] || continue
+        _amlf_head=$(printf '%s' "$_amlf_v" | cut -d, -f1 | tr -d '[:space:]')
+        [ "$_amlf_head" = 0 ] || return 1
+    done
+    return 0
 }
 
 # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
@@ -5391,42 +5481,6 @@ fi
 _TAURI_GPU_BRANCH=$(_tauri_gpu_branch "$_TAURI_TORCH_INDEX_FAMILY" "$_amd_gpu_radeon")
 tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 
-# Pair each rocminfo GPU gfx id with its marketing name instead of using the CPU-first
-# global name (#7307). Blank names keep device ordinals; no GPU keeps the old fallback.
-# Keep in sync with studio/setup.sh.
-_rocminfo_gpu_records() {
-    awk '
-        # Split at the first colon so embedded colons survive.
-        function value(line,   v) {
-            v = line
-            sub(/^[^:]*:[[:space:]]*/, "", v)
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
-            return v
-        }
-        /^[[:space:]]*Name:/ {
-            # Keep a slot for a nameless GPU.
-            if (gfx != "" && !named) { print gfx "|"; gpus++ }
-            gfx = ""; named = 0
-            name = value($0)
-            # Accept target suffixes such as gfx90a:sramecc+, but reject ISA names.
-            if (match(name, /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
-                rest = substr(name, RLENGTH + 1)
-                if (rest == "" || rest ~ /^[^0-9a-z]/) gfx = substr(name, 1, RLENGTH)
-            }
-            next
-        }
-        /^[[:space:]]*Marketing Name:/ {
-            mkt = value($0)
-            if (gfx != "" && !named) { print gfx "|" mkt; gpus++; named = 1 }
-            else if (first == "") first = mkt
-            next
-        }
-        END {
-            if (gfx != "" && !named) { print gfx "|"; gpus++ }
-            if (gpus == 0 && first != "") print "|" first
-        }
-    '
-}
 
 # amd-smi enumerates in discovery order over its KFD view; HIP_VISIBLE_DEVICES and
 # ROCR_VISIBLE_DEVICES index HIP/ROCr order, which the library derives from the KFD node

@@ -2103,8 +2103,13 @@ def _amd_hardware_is_corroborated() -> bool:
     if _has_rocm_gpu() or _kfd_gfx_targets():
         return True
     if _is_wsl():
-        # WSL enumerates no PCI display device; /dev/dxg plus librocdxg is the evidence.
-        return _wsl_rocm_runtime_present()
+        # WSL enumerates no PCI display device, so /dev/dxg plus librocdxg is the only
+        # evidence there -- and neither names a vendor: /dev/dxg is the generic WSL GPU
+        # bridge an NVIDIA passthrough creates too, and librocdxg is a file an uninstalled
+        # ROCm leaves behind. _has_rocm_gpu() already answered no above, so beside a usable
+        # NVIDIA card this would trade a working CUDA stack on the strength of a leftover.
+        # With no NVIDIA card there is nothing to lose and the reading still beats declining.
+        return _wsl_rocm_runtime_present() and not _has_usable_nvidia_gpu()
     return _linux_amd_display_device_present()
 
 
@@ -2121,6 +2126,11 @@ def _forced_rocm_route_is_viable() -> bool:
     requiring rocminfo here would answer differently for the same silicon depending only
     on whether an NVIDIA card sits beside it.
     """
+    # _ensure_rocm_torch() returns without installing anything on a Linux host that is not
+    # x86_64, since ROCm wheels are published nowhere else. Standing the CUDA repair down
+    # for a swap that then never happens leaves the venv on whatever broken torch it had.
+    if platform.machine().lower() not in {"x86_64", "amd64"}:
+        return False
     if not _amd_hardware_is_corroborated():
         return False
     if _miscomputing_arch_host():
@@ -4291,7 +4301,14 @@ def _amd_torch_needs_dependency_pass() -> bool:
     if _explicit_rocm_torch_index_url() is None:
         if _explicit_torch_index_url() is not None:
             return False
-        if _has_usable_nvidia_gpu() and not _rocm_torch_explicitly_requested():
+        # The request outranks NVIDIA only where it has somewhere to go. On a mixed host
+        # whose selected AMD card has no wheel route, _ensure_cuda_torch() and
+        # _ensure_rocm_torch() both leave CUDA in place, so bypassing here answers True
+        # forever and studio/setup.sh reruns the whole dependency pass on every launch for
+        # a swap that can never happen. Same predicate the repair itself is gated on.
+        if _has_usable_nvidia_gpu() and not (
+            _rocm_torch_explicitly_requested() and _forced_rocm_route_is_viable()
+        ):
             return False
         # A hidden layer either side leaves no target to classify. Same reading the routing
         # guard uses, so the two can never drift.
