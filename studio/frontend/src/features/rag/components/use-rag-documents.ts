@@ -31,6 +31,7 @@ import { resolveVisionOverrides } from "./vision-overrides";
 
 export interface TrackedDocument extends RagDocument {
   progress?: number | null;
+  stage?: string | null;
 }
 
 /** Matches the backend's folder scan interval, so a job it starts is counted
@@ -191,6 +192,7 @@ export function useRagDocuments(
               patchDoc(documentId, {
                 status: "running",
                 progress: ev.progress ?? null,
+                stage: ev.stage ?? null,
               });
             } else if (ev.type === "complete") {
               finish("completed", null, ev.num_chunks);
@@ -206,36 +208,40 @@ export function useRagDocuments(
           // Stream ended with no terminal frame: reconcile.
           const job = await getJob(jobId);
           const terminal = terminalJobStatus(job.status);
-          finish(terminal ?? "completed", job.error, job.numChunks);
+          if (terminal) {
+            finish(terminal, job.error, job.numChunks);
+            return;
+          }
         } catch {
           if (controller.signal.aborted) {
             trackedJobs.current.delete(jobId);
             return;
           }
-          // SSE unavailable: poll to a terminal state.
-          try {
-            for (let i = 0; i < 600; i++) {
-              if (controller.signal.aborted) break;
-              const job = await getJob(jobId);
-              const terminal = terminalJobStatus(job.status);
-              if (terminal) {
-                return finish(
-                  terminal,
-                  terminal === "failed"
-                    ? (job.error ?? "Indexing failed")
-                    : job.error,
-                  job.numChunks,
-                );
-              }
-              patchDoc(documentId, {
-                status: job.status === "running" ? "running" : "pending",
-                progress: job.progress ?? null,
-              });
-              await new Promise((r) => setTimeout(r, 1500));
+        }
+        // An interrupted or unavailable SSE stream is not completion. Keep
+        // following the persisted job, including a duplicate's original job.
+        try {
+          while (!controller.signal.aborted) {
+            const job = await getJob(jobId);
+            const terminal = terminalJobStatus(job.status);
+            if (terminal) {
+              return finish(
+                terminal,
+                terminal === "failed"
+                  ? (job.error ?? "Indexing failed")
+                  : job.error,
+                job.numChunks,
+              );
             }
-          } catch {
-            trackedJobs.current.delete(jobId);
+            patchDoc(documentId, {
+              status: job.status === "running" ? "running" : "pending",
+              progress: job.progress ?? null,
+              stage: job.stage ?? null,
+            });
+            await new Promise((r) => setTimeout(r, 1500));
           }
+        } catch {
+          trackedJobs.current.delete(jobId);
         }
       })();
     },
@@ -262,7 +268,7 @@ export function useRagDocuments(
             return tracked &&
               tracked.progress != null &&
               row.status !== "completed"
-              ? { ...row, progress: tracked.progress }
+              ? { ...row, progress: tracked.progress, stage: tracked.stage }
               : row;
           });
           // Keep optimistic chips (not yet listed) so a refresh racing an upload
@@ -496,9 +502,8 @@ export function useRagDocuments(
         sigByDocId.current.set(result.documentId, itemSignature(item));
         if (seenIds.has(result.documentId)) {
           setDocuments((rows) => rows.filter((row) => row.id !== tempId));
-          toast.info(
-            `${result.filename || name} is already indexed - skipping`,
-          );
+          // Keep following the real job: a duplicate can still be indexing.
+          trackJob(result.jobId, result.documentId, result.filename || name);
           return;
         }
         seenIds.add(result.documentId);
@@ -531,7 +536,10 @@ export function useRagDocuments(
   const upload = useCallback(
     async (
       files: FileList | File[] | RagUploadItem[],
-      overrideScope?: RagDocumentScope | Promise<RagDocumentScope | null>,
+      overrideScope?:
+        | RagDocumentScope
+        | Promise<RagDocumentScope | null>
+        | (() => Promise<RagDocumentScope | null>),
     ) => {
       // Flip the in-flight guard synchronously, before awaiting a thread id that
       // may still be materializing, so the scope-change effect reads it and leaves
@@ -543,7 +551,9 @@ export function useRagDocuments(
       // The composer passes its project scope explicitly, since the hook's own
       // can still be null on the render that starts the upload.
       const knownScope =
-        overrideScope instanceof Promise ? null : (overrideScope ?? scope);
+        overrideScope instanceof Promise || typeof overrideScope === "function"
+          ? null
+          : (overrideScope ?? scope);
       const uploadingProjectId =
         knownScope?.type === "project" ? knownScope.projectId : null;
       if (uploadingProjectId) {
@@ -561,7 +571,6 @@ export function useRagDocuments(
           const item: RagUploadItem =
             entry instanceof File ? { kind: "file", file: entry } : entry;
           if (sigBlocksReupload(itemSignature(item))) {
-            toast.info(`${itemName(item)} is already indexed - skipping`);
             continue;
           }
           fresh.push({
@@ -581,17 +590,23 @@ export function useRagDocuments(
           })),
         ]);
 
-        const resolved =
-          overrideScope instanceof Promise
-            ? await overrideScope
-            : overrideScope;
-        const activeScope = resolved ?? scope;
-        if (!activeScope) {
+        let activeScope: RagDocumentScope | null;
+        try {
+          activeScope =
+            overrideScope === undefined
+              ? scope
+              : typeof overrideScope === "function"
+                ? await overrideScope()
+                : await overrideScope;
+          if (!activeScope) {
+            throw new Error("Could not start a chat to attach them to.");
+          }
+        } catch (err) {
           // Materialization failed: drop the chips so they don't hang "pending".
           const tempIds = new Set(fresh.map((f) => f.tempId));
           setDocuments((rows) => rows.filter((row) => !tempIds.has(row.id)));
           toast.error("Couldn't attach documents", {
-            description: "Could not start a chat to attach them to.",
+            description: err instanceof Error ? err.message : String(err),
           });
           return;
         }

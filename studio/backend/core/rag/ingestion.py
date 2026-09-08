@@ -14,6 +14,7 @@ import os
 import queue
 import re
 import threading
+from collections.abc import Callable
 
 from storage import rag_db
 
@@ -110,7 +111,11 @@ def _abort_if_document_deleted(conn, job_id: str, document_id: str) -> bool:
     return True
 
 
-def _embed_pass(texts: list[str], model_name: str | None):
+def _embed_pass(
+    texts: list[str],
+    model_name: str | None,
+    on_progress: Callable[[int, int], None] | None = None,
+):
     """One batched pass. Returns ``(vectors, identity, changed)``, ``changed`` when the
     embedder swapped part way and the vectors therefore span two spaces."""
     vectors: list = []
@@ -124,17 +129,23 @@ def _embed_pass(texts: list[str], model_name: str | None):
         changed = changed or (identity is not None and batch_identity != identity)
         identity = batch_identity
         vectors.extend(out)
+        if on_progress is not None:
+            on_progress(min(i + _EMBED_BATCH, len(texts)), len(texts))
     return vectors, identity or embeddings.embedding_identity(model_name), changed
 
 
-def _embed_all(texts: list[str], model_name: str | None):
+def _embed_all(
+    texts: list[str],
+    model_name: str | None,
+    on_progress: Callable[[int, int], None] | None = None,
+):
     """Embed texts in batches. Returns ``(vectors, identity)`` of the embedder that
     produced them. An ST encode failure swaps the process to llama-server, and a swap
     between batches would leave one document holding vectors from two spaces, so the
     document restarts under the backend that took over. That swap is one-way, so the
     second pass is uniform."""
     for _ in range(2):
-        vectors, identity, changed = _embed_pass(texts, model_name)
+        vectors, identity, changed = _embed_pass(texts, model_name, on_progress)
         if not changed:
             return vectors, identity
         logger.warning("embedder changed mid-document; re-embedding under the new one")
@@ -173,7 +184,10 @@ def _ocr_scanned_pages(
     scanned = scanned[: config.OCR_MAX_PAGES]
     _progress(conn, job_id, "ocr", 0.25)
     page_pngs = parsers.render_pdf_pages(stored_path, scanned, dpi = config.OCR_DPI)
-    texts = captioner.ocr_pages(page_pngs)
+    texts = captioner.ocr_pages(
+        page_pngs,
+        on_progress = lambda done, total: _progress(conn, job_id, "ocr", 0.25 + 0.15 * done / total),
+    )
     if not texts:
         return pages, set()
 
@@ -239,6 +253,7 @@ def _run(
         caption_on = config.CAPTION_IMAGES if caption is None else caption
         # Skip all figure work (PDF rasterization included) without a vision model.
         if caption_on and is_pdf and captioner.vision_endpoint() is not None:
+            _progress(conn, job_id, "captioning", 0.4)
             # Tile figure pages, transcribe+describe each tile, then merge/dedup/splice into the page text so
             # small labels and every sub-figure are captured.
             try:
@@ -266,11 +281,17 @@ def _run(
                 logger.warning("figure tiling failed for job %s", job_id, exc_info = True)
                 tiles = []
             if tiles:
-                _progress(conn, job_id, "captioning", 0.28)
-                captions = captioner.merge_page_captions(captioner.caption_images(tiles))
+                captions = captioner.merge_page_captions(
+                    captioner.caption_images(
+                        tiles,
+                        on_progress = lambda done, total: _progress(
+                            conn, job_id, "captioning", 0.4 + 0.2 * done / total
+                        ),
+                    )
+                )
                 pages = captioner.splice_captions(pages, captions)
 
-        _progress(conn, job_id, "chunking", 0.3)
+        _progress(conn, job_id, "chunking", 0.6)
         count = embeddings.token_counter(model_name)
         chunks = chunking.chunk_pages(
             pages,
@@ -292,10 +313,18 @@ def _run(
             _emit(job_id, {"type": "complete", "num_chunks": 0})
             return
 
-        _progress(conn, job_id, "embedding", 0.5)
+        _progress(conn, job_id, "embedding", 0.65)
         # An ST encode failure swaps the process to llama-server, so the embedder that produced these
         # vectors is only known once they exist.
-        vectors, identity = _embed_all([c.text for c in chunks], model_name)
+        embedded_progress = 0.65
+
+        def report_embeddings(done, total):
+            nonlocal embedded_progress
+            # A backend swap may repeat a batch; progress must not go backwards.
+            embedded_progress = max(embedded_progress, 0.65 + 0.25 * done / total)
+            _progress(conn, job_id, "embedding", embedded_progress)
+
+        vectors, identity = _embed_all([c.text for c in chunks], model_name, report_embeddings)
         store.set_document_embedding_model(conn, document_id, identity)
 
         # Locate each chunk's highlight regions (non-PDFs/failures yield none).
@@ -308,7 +337,7 @@ def _run(
                 logger.warning("pdf region location failed for job %s", job_id, exc_info = True)
                 regions = None
 
-        _progress(conn, job_id, "storing", 0.9)
+        _progress(conn, job_id, "storing", 0.95)
         if _abort_if_document_deleted(conn, job_id, document_id):
             return
         store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
@@ -361,7 +390,8 @@ def start_ingestion(
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
-    existing id with an already-completed job (no re-ingest).
+    existing id and its active job while indexing, or an already-completed job
+    when the document is ready (no re-ingest).
 
     ``content_hash`` lets a caller that already hashed ``stored_path`` (linked-folder
     reconciliation hashes it to detect content-identical renames) pass that digest
@@ -398,6 +428,17 @@ def start_ingestion(
         existing = store.document_by_hash(conn, scope, sha) if dedupe else None
         if existing is not None:
             doc = store.get_document(conn, existing)
+            in_progress = doc.get("status") in {"pending", "running"}
+            if in_progress:
+                job = conn.execute(
+                    "SELECT id FROM ingestion_jobs WHERE document_id=? "
+                    "AND status IN ('pending','running') ORDER BY created_at DESC LIMIT 1",
+                    (existing,),
+                ).fetchone()
+                if job is not None:
+                    conn.commit()
+                    _remove_upload(stored_path, keep_path = doc.get("stored_path"))
+                    return existing, job["id"]
             empty_completed = (
                 doc is not None and doc.get("status") == "completed" and not doc.get("num_chunks")
             )
@@ -411,12 +452,13 @@ def start_ingestion(
                     doc.get("embedding_model"), effective_identity
                 )
             )
-            if empty_completed or stale_model:
-                # Zero chunks previously, or a different embedder: re-ingest rather than dedupe.
+            if empty_completed or stale_model or in_progress:
+                # Empty/stale vectors, or an orphan with no active job: retry and keep
+                # the original until the replacement has completed.
                 replaces = (existing, doc.get("stored_path"))
             else:
                 job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
-                _remove_upload(stored_path)
+                _remove_upload(stored_path, keep_path = doc.get("stored_path"))
                 with _jobs_lock:
                     _jobs[job_id] = queue.Queue()
                 _emit(
