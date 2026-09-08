@@ -47,3 +47,32 @@ test("selection falls back through default, first variant, and empty state", () 
   assert.equal(resolveLocalGgufVariant([], {}), null);
   assert.equal(resolveLocalGgufVariant(null, {}), null);
 });
+
+test("an absent selection never resolves to a quant-less artifact", () => {
+  // An absent candidate and an unparsed quant both normalize to "". The fallback is the
+  // first variant, not whichever one happens to lack a quant.
+  const withUnparsed = [{ quant: "Q4_K_M" }, { quant: "" }];
+  assert.equal(resolveLocalGgufVariant(withUnparsed, {})?.quant, "Q4_K_M");
+  assert.equal(
+    resolveLocalGgufVariant(withUnparsed, {
+      selectedVariant: null,
+      activeVariant: null,
+      defaultVariant: null,
+    })?.quant,
+    "Q4_K_M",
+  );
+  assert.equal(
+    resolveLocalGgufVariant(withUnparsed, {
+      selectedVariant: "   ",
+      activeVariant: "",
+    })?.quant,
+    "Q4_K_M",
+  );
+  // A real selection still wins.
+  assert.equal(
+    resolveLocalGgufVariant([{ quant: "" }, { quant: "Q8_0" }], {
+      selectedVariant: "Q8_0",
+    })?.quant,
+    "Q8_0",
+  );
+});

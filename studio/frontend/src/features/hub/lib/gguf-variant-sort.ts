@@ -119,6 +119,11 @@ export function resolveLocalGgufVariant<T extends { quant: string }>(
     options.activeVariant,
     options.defaultVariant,
   ]) {
+    // An absent candidate and an unparsed quant both normalize to "", so matching on one
+    // would load the quant-less file whenever nothing is selected, resident, or default.
+    if (!candidate?.trim()) {
+      continue;
+    }
     const match = variants.find((variant) =>
       ggufVariantsMatch(variant.quant, candidate),
     );
