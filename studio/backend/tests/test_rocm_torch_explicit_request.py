@@ -280,31 +280,39 @@ def _nvidia_wins(env: str, stubs: str) -> bool:
     """
     import subprocess
 
-    script = "\n".join([
-        _shell_function("_rocm_torch_explicitly_requested"),
-        stubs,
-        _shell_function("_nvidia_gpu_wins_over_amd"),
-        f"{env} _nvidia_gpu_wins_over_amd && echo NVIDIA || echo AMD",
-    ])
+    script = "\n".join(
+        [
+            _shell_function("_rocm_torch_explicitly_requested"),
+            stubs,
+            _shell_function("_nvidia_gpu_wins_over_amd"),
+            f"{env} _nvidia_gpu_wins_over_amd && echo NVIDIA || echo AMD",
+        ]
+    )
     out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
     assert out.stdout.strip() in ("NVIDIA", "AMD"), out
     return out.stdout.strip() == "NVIDIA"
 
 
-_PURE_NVIDIA = "\n".join([
-    "_has_usable_nvidia_gpu() { return 0; }",
-    "_has_amd_rocm_gpu() { return 1; }",
-])
+_PURE_NVIDIA = "\n".join(
+    [
+        "_has_usable_nvidia_gpu() { return 0; }",
+        "_has_amd_rocm_gpu() { return 1; }",
+    ]
+)
 
-_PURE_AMD = "\n".join([
-    "_has_usable_nvidia_gpu() { return 1; }",
-    "_has_amd_rocm_gpu() { return 0; }",
-])
+_PURE_AMD = "\n".join(
+    [
+        "_has_usable_nvidia_gpu() { return 1; }",
+        "_has_amd_rocm_gpu() { return 0; }",
+    ]
+)
 
-_MIXED = "\n".join([
-    "_has_usable_nvidia_gpu() { return 0; }",
-    "_has_amd_rocm_gpu() { return 0; }",
-])
+_MIXED = "\n".join(
+    [
+        "_has_usable_nvidia_gpu() { return 0; }",
+        "_has_amd_rocm_gpu() { return 0; }",
+    ]
+)
 
 
 def test_the_reroute_predicate_yields_to_the_request_on_a_mixed_host():
@@ -342,7 +350,7 @@ def test_the_reroutes_ask_the_request_aware_predicate():
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     body = install_sh.read_text(encoding = "utf-8")
     marker = "_amd_no_rocm_version_reroute=false"
-    tail = body[body.index(marker):]
+    tail = body[body.index(marker) :]
     assert "! _nvidia_gpu_wins_over_amd" in tail
     assert "! _has_usable_nvidia_gpu" not in tail, (
         "a per-arch reroute still asks the bare NVIDIA probe, so the explicit "
