@@ -213,12 +213,8 @@ def test_orphaned_duplicate_is_reindexed_instead_of_reported_complete(
 def test_failed_orphan_retry_retires_the_document_it_replaced(
     rag_home, stub_embeddings, monkeypatch, tmp_path, status
 ):
-    """A retry that fails must not leave the orphan indexing.
-
-    Startup repair scans jobs, and the orphan has none in flight (that is why it was
-    retried), so nothing else would ever move it off ``pending``: the chat would hold
-    queued sends behind a document that can no longer make progress.
-    """
+    """A failed retry must not leave the orphan indexing: startup repair scans jobs, and
+    the orphan has none in flight, so nothing else would move it off ``pending``."""
     path = tmp_path / "orphan.txt"
     path.write_text("Revenue doubled this quarter.")
     scope = store.thread_scope("orphan-failure")

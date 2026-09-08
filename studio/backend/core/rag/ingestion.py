@@ -243,11 +243,9 @@ def _retire_orphan_after_failure(
 ) -> None:
     """Drop a never-indexed document whose replacement did not complete.
 
-    Only the orphan retry qualifies. An ``empty_completed`` / stale-embedder original is
-    still ``completed`` and searchable, so a failed re-index has to leave it alone; a
-    ``pending``/``running`` original has no live job (that is why it was retried) and no
-    reconciliation reaches it, since startup repair scans jobs rather than documents. Left
-    behind it keeps the scope indexing forever and holds queued chat sends.
+    Orphans only: an ``empty_completed`` / stale-embedder original is still searchable. The
+    orphan has no live job, so startup repair (which scans jobs) never reaches it and the
+    scope would stay indexing forever, holding queued chat sends.
     """
     if replaces is None:
         return
@@ -383,8 +381,7 @@ def _run(
         _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
     except job_leases.JobLeaseLost:
-        # The owner that reclaimed the lease re-runs this job with the same ``replaces``, so the
-        # orphan is still someone's to retire.
+        # The reclaiming owner re-runs with the same ``replaces``, so the orphan is still its job.
         reclaimed = True
         logger.info("ingestion job %s stopped after its lease was reclaimed", job_id)
     except Exception as exc:  # noqa: BLE001 - report any failure to the client
@@ -399,8 +396,7 @@ def _run(
         _emit(job_id, {"type": "error", "stage": "error", "error": str(exc)})
     finally:
         if conn is not None:
-            # Covers every exit that is not a completed ingestion: a failure, and the cancellation
-            # a deleted document returns through. A completed one already retired its orphan.
+            # Every exit but a completed one, which already retired its orphan.
             if not reclaimed:
                 _retire_orphan_after_failure(conn, replaces, stored_path)
             conn.close()
