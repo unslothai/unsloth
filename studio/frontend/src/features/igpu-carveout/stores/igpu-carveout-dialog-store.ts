@@ -24,10 +24,17 @@ export const useIgpuCarveoutDialogStore = create<IgpuCarveoutDialogStore>((set, 
 
   show: (value) => {
     const advice = parseCarveoutAdvice(value);
-    if (!advice) return;
     // A load that arrives while the dialog is already up must not replace the
     // text under the user's cursor mid-read.
     if (get().open) return;
+    if (!advice) {
+      // Every load calls this, so a load carrying no advice is where the previous
+      // load's numbers stop being true. Dropping them here rather than in `close`
+      // is deliberate: `close` runs at the start of a 100ms exit animation, and
+      // clearing then would blank the dialog's text instead of fading it out.
+      if (get().advice) set({ advice: null });
+      return;
+    }
     set({ open: true, advice });
   },
 

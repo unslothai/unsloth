@@ -15,6 +15,7 @@ worth saying once more. A bare flag would silence the second case forever.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Optional
 
 IGPU_CARVEOUT_NOTICE_KEY = "igpu_carveout_notice_dismissed_at_gb"
@@ -29,14 +30,25 @@ def _coerce_gb(value: Any) -> Optional[float]:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value) if value > 0 else None
+        return float(value) if _is_plausible_gb(value) else None
     if isinstance(value, str):
         try:
             parsed = float(value.strip())
         except ValueError:
             return None
-        return parsed if parsed > 0 else None
+        return parsed if _is_plausible_gb(parsed) else None
     return None
+
+
+def _is_plausible_gb(value: float) -> bool:
+    """Whether a number could be a GPU allocation someone actually has.
+
+    Infinity is the one that matters. JSON as Python parses it accepts
+    ``Infinity``, so without this a client could dismiss the notice at an
+    allocation no machine will ever exceed and silence it permanently -- the
+    opposite of the "fail toward showing it" rule above.
+    """
+    return math.isfinite(value) and 0 < value < 1024 * 1024
 
 
 def get_dismissed_at_gb() -> Optional[float]:
@@ -81,7 +93,7 @@ def dismiss_notice(current_gb: Optional[float]) -> Optional[float]:
         value = float(current_gb)
     except (TypeError, ValueError):
         return get_dismissed_at_gb()
-    if value <= 0:
+    if not _is_plausible_gb(value):
         return get_dismissed_at_gb()
 
     existing = get_dismissed_at_gb()

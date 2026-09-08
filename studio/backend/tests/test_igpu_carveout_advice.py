@@ -9,8 +9,11 @@ worth telling the user about, but only when raising the setting would actually
 help, and only on hardware where the setting exists.
 """
 
+import re
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -219,3 +222,106 @@ class TestTheMessage:
         msg = _message(_advice(gb(42.90), gb(32), gb(95.78), is_igpu = True))
         for vendor in ("AMD", "Adrenalin", "Intel", "NVIDIA", "HP", "Ryzen", "Radeon"):
             assert vendor not in msg
+
+
+class TestPropertiesOverEveryPlausibleMachine:
+    """Swept rather than exampled. These caught three defects that the chosen
+    examples above did not: a negative allocation read as truthy, a sub-1 GB
+    allocation printing as "0 GB", and the integrated-GPU probe running on loads
+    that could never produce advice."""
+
+    MACHINES_GB = [8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 512, 1024]
+    ALLOCATIONS_GB = [0.125, 0.5, 1, 2, 4, 8, 16, 24, 32, 48, 64, 96]
+    MODELS_GB = [0.5, 2, 7, 13, 20, 30, 43, 60, 80, 110, 200, 400]
+
+    def _cases(self):
+        for machine in self.MACHINES_GB:
+            for carve in self.ALLOCATIONS_GB:
+                if carve >= machine:
+                    continue
+                host = gb(machine - carve)
+                for model in self.MODELS_GB:
+                    yield machine, carve, model, host
+
+    def test_following_the_advice_always_ends_it(self):
+        # The property the whole feature rests on. An advisory that survives
+        # being followed is a nag, and one that cannot be satisfied is a bug.
+        checked = 0
+        for machine, carve, model, host in self._cases():
+            first = _advice(gb(model), gb(carve), host, is_igpu = True)
+            if first is None:
+                continue
+            applied = float(first["suggested_gb"])
+            again = _advice(gb(model), gb(applied), gb(machine - applied), is_igpu = True)
+            assert again is None, (machine, carve, model, first, again)
+            checked += 1
+        assert checked > 200, checked
+
+    def test_the_host_always_keeps_a_workable_share(self):
+        for machine, carve, model, host in self._cases():
+            result = _advice(gb(model), gb(carve), host, is_igpu = True)
+            if result is None:
+                continue
+            floor = max(8, result["machine_gb"] * 0.20)
+            assert result["host_left_gb"] >= floor - 0.15, (result, floor)
+
+    def test_the_suggestion_is_always_an_increase_that_covers_the_model(self):
+        for machine, carve, model, host in self._cases():
+            result = _advice(gb(model), gb(carve), host, is_igpu = True)
+            if result is None:
+                continue
+            assert result["suggested_gb"] > result["current_gb"], result
+            assert result["suggested_gb"] >= result["needed_gb"] - 0.05, result
+
+    def test_a_discrete_gpu_is_never_advised_anywhere_in_the_sweep(self):
+        for machine, carve, model, host in self._cases():
+            assert _advice(gb(model), gb(carve), host, is_igpu = False) is None
+
+    @pytest.mark.parametrize("bad", [-1, -(10**12), 0, None, float("nan"), float("inf")])
+    def test_a_nonsense_reading_produces_no_advice(self, bad):
+        # -1 is truthy, so a bare falsiness test carried it into the arithmetic
+        # and produced confident wrong advice.
+        assert _advice(bad, gb(32), gb(96), is_igpu = True) is None
+        assert _advice(gb(43), bad, gb(96), is_igpu = True) is None
+        assert _advice(gb(43), gb(32), bad, is_igpu = True) is None
+
+
+class TestASmallAutomaticAllocation:
+    """An APU left on its automatic setting reports a few hundred megabytes, not
+    a round number of GB. The DirectX record really does read that way."""
+
+    def test_it_is_described_rather_than_rounded_to_zero(self):
+        result = _advice(gb(12), gb(0.5), gb(31.5), is_igpu = True)
+        assert result is not None
+        msg = _message(result)
+        assert "0.5 GB" in msg, msg
+        assert not re.search(r"(?<![\d.])0 GB", msg), msg
+
+    def test_no_sweep_case_prints_a_zero_or_negative_quantity(self):
+        for carve in (0.125, 0.25, 0.5, 0.75, 1, 2):
+            for model in (1, 4, 12, 30):
+                result = _advice(gb(model), gb(carve), gb(64 - carve), is_igpu = True)
+                if result is None:
+                    continue
+                msg = _message(result)
+                assert not re.search(r"(?<![\d.])0 GB", msg), msg
+                assert not re.search(r"-\d", msg), msg
+
+
+class TestTheLadderTerminates:
+    """It is a `while` loop on the model-load path, and the caller's try/except
+    cannot rescue a hang."""
+
+    @pytest.mark.parametrize("cap", [float("inf"), float("-inf"), float("nan"), 0, -5, 2**60])
+    def test_it_returns_promptly_for_any_cap(self, cap):
+        import threading
+        done = threading.Event()
+
+        def run():
+            LlamaCppBackend._igpu_carveout_ladder_gb(cap)
+            done.set()
+
+        thread = threading.Thread(target = run, daemon = True)
+        thread.start()
+        thread.join(timeout = 5)
+        assert done.is_set(), f"ladder({cap}) did not terminate"

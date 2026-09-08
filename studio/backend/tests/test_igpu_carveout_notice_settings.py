@@ -10,6 +10,8 @@ loads a model too big for the new one, is in a new situation and worth telling.
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils import igpu_carveout_notice_settings as notice  # noqa: E402
@@ -78,3 +80,25 @@ class TestCorruptRows:
         assert notice.dismiss_notice(None) is None
         assert notice.dismiss_notice(-1) is None
         assert notice.get_dismissed_at_gb() is None
+
+
+class TestAHostileDismissalValue:
+    """`current_gb` arrives in a POST body, so it is client-controlled. Python's
+    json accepts `Infinity` even though the spec does not, so a value no machine
+    will ever exceed really can reach this -- and storing it would silence the
+    notice permanently, the opposite of the fail-toward-showing rule above."""
+
+    @pytest.mark.parametrize("value", [
+        float("inf"), float("-inf"), float("nan"), 10**9, 2**53, -1, 0,
+    ])
+    def test_it_cannot_silence_the_notice_forever(self, value):
+        notice.dismiss_notice(value)
+        assert notice.notice_already_dismissed(32.0) is False, value
+
+    @pytest.mark.parametrize("stored", [
+        float("inf"), float("nan"), "Infinity", "1e999", "-inf",
+    ])
+    def test_a_corrupt_row_reads_as_never_dismissed(self, stored):
+        from storage.studio_db import upsert_app_settings
+        upsert_app_settings({notice.IGPU_CARVEOUT_NOTICE_KEY: stored})
+        assert notice.notice_already_dismissed(32.0) is False, stored

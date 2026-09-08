@@ -40,13 +40,19 @@ export function IgpuCarveoutDialog() {
     >
       <AlertDialogContent className="max-w-lg" data-testid="igpu-carveout-dialog">
         <AlertDialogHeader>
-          <div className="flex items-start gap-3">
+          <div className="flex w-full min-w-0 items-start gap-3">
             <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-sky-500/10 text-sky-600 dark:text-sky-400">
               <Gauge className="size-5" />
             </div>
-            <div className="space-y-1 text-left">
+            {/* min-w-0 so a long unbreakable token in the backend's prose wraps
+                instead of stretching the flex track past the dialog. */}
+            <div className="min-w-0 flex-1 space-y-1 text-left">
+
               <AlertDialogTitle>This model could run faster</AlertDialogTitle>
-              <AlertDialogDescription className="whitespace-pre-line">
+              {/* break-words as well as min-w-0 above: constraining the flex
+                  track stops the box growing, but only wrapping inside a word
+                  stops a long unbreakable token overflowing it. */}
+              <AlertDialogDescription className="break-words whitespace-pre-line">
                 {advice.message}
               </AlertDialogDescription>
             </div>

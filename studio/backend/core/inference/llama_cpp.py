@@ -10662,15 +10662,20 @@ class LlamaCppBackend:
 
         ``None`` whenever the reading would be a guess, since every caller treats
         absence as "say nothing".
+
+        The registry is asked first even though ROCm is the more authoritative
+        answer, because it is the cheap one: a handful of ``winreg`` queries against
+        ``_rocm_selected_pool_mib``'s ``import torch`` and a
+        ``get_device_properties`` per device, which this file documents as leaking a
+        ~700 MiB primary context. On Windows the registry answers, and the torch
+        path is never reached; off Windows it returns nothing instantly and costs
+        one function call.
         """
-        pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
-        if pool_mib:
-            return int(pool_mib) * 1024 * 1024
         try:
             from utils.hardware.hardware import _windows_amd_adapter_records_by_luid
             records = _windows_amd_adapter_records_by_luid() or {}
         except Exception:
-            return None
+            records = {}
         sizes = [
             int(record["dedicated_memory_bytes"])
             for record in records.values()
@@ -10678,8 +10683,14 @@ class LlamaCppBackend:
         ]
         # Only with exactly one such adapter. Picking between two needs the
         # LUID-to-device join the inventory does, and attributing the wrong
-        # adapter's allocation would produce advice about the wrong GPU.
-        return sizes[0] if len(sizes) == 1 else None
+        # adapter's allocation would produce advice about the wrong GPU. A machine
+        # pairing an APU with a discrete Radeon lands here, and silence is right.
+        if len(sizes) == 1 and sizes[0] > 0:
+            return sizes[0]
+        if len(sizes) > 1:
+            return None
+        pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
+        return int(pool_mib) * 1024 * 1024 if pool_mib and pool_mib > 0 else None
 
     @staticmethod
     def _igpu_carveout_ladder_gb(cap_gb: float) -> list[int]:
@@ -10692,6 +10703,13 @@ class LlamaCppBackend:
         fits, so an entry this offers that the user's firmware does not is a
         recommendation one notch off, not a wrong one.
         """
+        # Guarded rather than trusting the caller. This is a `while` on the
+        # model-load path, and a hang here would not be caught by the try/except
+        # around it -- only a raise would. A non-finite cap makes the condition
+        # permanently true, so it is rejected before the loop rather than after
+        # ~1024 doublings overflow the float conversion.
+        if not isinstance(cap_gb, (int, float)) or not math.isfinite(cap_gb):
+            return []
         rungs: set[int] = set()
         step = 4
         while step <= cap_gb:
@@ -10729,7 +10747,15 @@ class LlamaCppBackend:
         """
         if not is_igpu:
             return None
-        if not model_size_bytes or not carve_out_bytes or not host_total_bytes:
+        # Strictly positive, not merely truthy: a driver or registry that reports a
+        # negative size is nonsense, and -1 is truthy, so a bare falsiness test would
+        # carry the nonsense into arithmetic and produce confident wrong advice.
+        if not all(
+            isinstance(value, (int, float))
+            and math.isfinite(value)
+            and value > 0
+            for value in (model_size_bytes, carve_out_bytes, host_total_bytes)
+        ):
             return None
         if model_size_bytes <= carve_out_bytes:
             return None  # already fits: nothing to advise
@@ -10774,15 +10800,22 @@ class LlamaCppBackend:
 
         Never raises. An advisory that breaks a model load is worse than no
         advisory, so every reading is best-effort and any failure means silence.
+
+        Ordered cheapest test first, and deliberately so. This runs on every load,
+        including the Vulkan ones where the managed-memory branch above is skipped
+        entirely, so it must not be the thing that makes loading slower. The
+        allocation reading and the size comparison are arithmetic over a registry
+        query; the integrated-GPU probe behind them imports torch and reads device
+        properties. Nearly every load has a model that fits, and those loads now pay
+        only the cheap half.
         """
         self._last_carveout_advice = None
         try:
-            is_igpu = self._amd_apu_wants_unified_memory(
-                gpu_indices
-            ) or self._integrated_cuda_unified_memory(gpu_indices)
-            if not is_igpu:
+            if not need_bytes:
                 return
             carve_out = self._igpu_dedicated_memory_bytes(gpu_indices)
+            if not carve_out or need_bytes <= carve_out:
+                return  # fits, or nothing to compare it against
             total_mib = self._total_system_memory_mib()
             advice = self._igpu_carveout_advice(
                 need_bytes,
@@ -10791,6 +10824,17 @@ class LlamaCppBackend:
                 is_igpu = True,
             )
             if advice is None:
+                return
+            # Only now, with a shortfall confirmed and a followable suggestion in
+            # hand, is it worth paying for the probe.
+            #
+            # AMD only. _integrated_cuda_unified_memory would also answer this, but
+            # it cannot lead anywhere: a CUDA integrated part has no readable
+            # allocation on either branch above -- the ROCm pool needs a ROCm torch,
+            # and the registry records are filtered to one vendor -- so carve_out is
+            # already None there and we returned. Calling it anyway would create a
+            # CUDA primary context per device on machines this can never advise.
+            if not self._amd_apu_wants_unified_memory(gpu_indices):
                 return
             # Asked last, so a dismissed notice still costs only the cheap readings
             # above and never a database round trip on the common path.
@@ -10817,6 +10861,19 @@ class LlamaCppBackend:
         return getattr(self, "_last_carveout_advice", None)
 
     @staticmethod
+    def _fmt_gb(value: float) -> str:
+        """A GB quantity as the user should read it.
+
+        Whole numbers above 10 GB, one decimal below. An APU left on its automatic
+        setting reports a dedicated pool of a few hundred megabytes, and rounding
+        that to whole GB prints "only about 0 GB is allocated", which reads as a bug
+        rather than as the small allocation it is describing.
+        """
+        if value < 10:
+            return f"{value:.1f}".rstrip("0").rstrip(".")
+        return f"{value:.0f}"
+
+    @staticmethod
     def _igpu_carveout_advice_message(advice: dict) -> str:
         """The advice as user-facing prose.
 
@@ -10825,14 +10882,15 @@ class LlamaCppBackend:
         confident wrong instruction costs the user more than being sent to their own
         manufacturer's documentation.
         """
+        fmt = LlamaCppBackend._fmt_gb
         return (
-            f"This model's weights are about {advice['needed_gb']:.0f} GB, but only about "
-            f"{advice['current_gb']:.0f} GB of this machine's memory is allocated to the "
+            f"This model's weights are about {fmt(advice['needed_gb'])} GB, but only about "
+            f"{fmt(advice['current_gb'])} GB of this machine's memory is allocated to the "
             "integrated GPU. The rest runs from shared system memory, which is "
             "substantially slower than memory the GPU holds directly.\n\n"
-            f"This machine has about {advice['machine_gb']:.0f} GB in total. Allocating about "
+            f"This machine has about {fmt(advice['machine_gb'])} GB in total. Allocating about "
             f"{advice['suggested_gb']} GB to the GPU would let this model's weights sit in "
-            f"GPU memory, leaving about {advice['host_left_gb']:.0f} GB for everything else.\n\n"
+            f"GPU memory, leaving about {fmt(advice['host_left_gb'])} GB for everything else.\n\n"
             "This setting is changed outside Unsloth, in your system firmware (BIOS/UEFI) or "
             "your GPU vendor's control panel, and takes effect after a restart. Its name and "
             "location differ between manufacturers, so please search your manufacturer's "
@@ -10966,6 +11024,10 @@ class LlamaCppBackend:
         reverse -- the placement everything was priced against is the one that just
         died."""
         self._last_load_warning = None
+        # Same lifetime, for the same reason: the carve-out advice describes the
+        # placement the dying child was priced against, so it must not outlive it
+        # and be reported against whatever replaces it.
+        self._last_carveout_advice = None
 
     def _record_load_warning(self, message: Optional[str]) -> None:
         """Log an advisory memory notice and keep it for the route to hand back.
