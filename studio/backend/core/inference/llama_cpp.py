@@ -10873,27 +10873,27 @@ class LlamaCppBackend:
 
     @staticmethod
     def _igpu_carveout_advice_message(advice: dict) -> str:
-        """The advice as user-facing prose.
+        """The advice as user-facing prose: two sentences, because it is a toast.
 
         Names no vendor, no menu and no key. The control lives in firmware on one
         machine and in the driver panel on the next, under different names, and a
-        confident wrong instruction costs the user more than being sent to their own
-        manufacturer's documentation.
+        confident wrong instruction costs the user more than a neutral one.
+
+        Length is a correctness constraint here, not a preference, for the reason
+        xet_progress_notice.ts records: a toast tall enough to cover the controls
+        under it takes them away for as long as it is up. So this carries the four
+        numbers that make the advice actionable -- what the weights need, what is
+        allocated, what to allocate instead, and what the system keeps -- and stops.
+        The machine total, the restart and the pointer to the manufacturer's
+        documentation are gone with the dialog that had room for them.
         """
         fmt = LlamaCppBackend._fmt_gb
         return (
-            f"This model's weights are about {fmt(advice['needed_gb'])} GB, but only about "
-            f"{fmt(advice['current_gb'])} GB of this machine's memory is allocated to the "
-            "integrated GPU. The rest runs from shared system memory, which is "
-            "substantially slower than memory the GPU holds directly.\n\n"
-            f"This machine has about {fmt(advice['machine_gb'])} GB in total. Allocating about "
-            f"{advice['suggested_gb']} GB to the GPU would let this model's weights sit in "
-            f"GPU memory, leaving about {fmt(advice['host_left_gb'])} GB for everything else.\n\n"
-            "This setting is changed outside Unsloth, in your system firmware (BIOS/UEFI) or "
-            "your GPU vendor's control panel, and takes effect after a restart. Its name and "
-            "location differ between manufacturers, so please search your manufacturer's "
-            "official documentation for how to change the memory allocated to the integrated "
-            "GPU."
+            f"Weights need about {fmt(advice['needed_gb'])} GB but only "
+            f"{fmt(advice['current_gb'])} GB is allocated to the integrated GPU, so the rest "
+            f"runs from slower shared memory. Raising it to {advice['suggested_gb']} GB in "
+            "your firmware or GPU control panel leaves about "
+            f"{fmt(advice['host_left_gb'])} GB for the system."
         )
 
     @staticmethod

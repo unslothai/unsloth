@@ -151,7 +151,7 @@ class TestRecordingItOnALoad:
         advice = backend.last_carveout_advice
         assert advice is not None
         assert advice["suggested_gb"] == 48
-        assert "official documentation" in advice["message"]
+        assert "48 GB" in advice["message"]
 
     def test_a_discrete_gpu_records_nothing(self, monkeypatch):
         backend = self._backend(monkeypatch, is_igpu = False)
@@ -202,21 +202,31 @@ class TestTheMessage:
     def test_it_names_the_numbers_and_the_cost(self):
         msg = _message(_advice(gb(42.90), gb(32), gb(95.78), is_igpu = True))
         assert "43 GB" in msg and "32 GB" in msg and "48 GB" in msg
-        assert "128 GB" in msg  # the machine
         assert "80 GB" in msg  # what the host keeps: the trade-off, stated
 
-    def test_it_sends_the_user_to_their_own_documentation(self):
+    def test_it_says_where_the_setting_lives_without_claiming_a_menu(self):
         # The control is firmware on one machine and a driver panel on the next,
-        # under different names. A confident wrong instruction costs more than a
-        # pointer to the manufacturer. (On the machine this was developed against
-        # the setting is in firmware and absent from the vendor's control panel,
-        # which is exactly the trap this avoids.)
+        # under different names. Naming both and neither specifically is as far as
+        # this can honestly go. (On the machine this was developed against the
+        # setting is in firmware and absent from the vendor's control panel, which
+        # is exactly the trap this avoids.)
         msg = _message(_advice(gb(42.90), gb(32), gb(95.78), is_igpu = True))
-        assert "official documentation" in msg
-        assert "restart" in msg
+        assert "firmware" in msg and "control panel" in msg
         # No menu path, key or control name is claimed.
         for invented in ("F10", "UMA Frame Buffer", "Variable Graphics Memory", "Advanced >"):
             assert invented not in msg
+
+    def test_it_stays_short_enough_for_a_toast(self):
+        # A toast is only harmless while it is small: sonner grows downwards over
+        # whatever is under it, and a tall one takes those controls away for as long
+        # as it is up (studio/frontend .../xet-progress-notice.ts records the same
+        # constraint after #9293). The widest plausible reading is the bound, since a
+        # 4-digit machine renders longer than the development one.
+        widest = _message(_advice(gb(400), gb(0.5), gb(1023.5), is_igpu = True))
+        assert len(widest) <= 260, (len(widest), widest)
+        # Two sentences, and no paragraph breaks: the dialog's three-paragraph body
+        # is what this replaced.
+        assert "\n" not in widest
 
     def test_it_names_no_vendor(self):
         msg = _message(_advice(gb(42.90), gb(32), gb(95.78), is_igpu = True))
