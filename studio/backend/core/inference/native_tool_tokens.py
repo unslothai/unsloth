@@ -52,9 +52,9 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
         "<|tool_call_begin|>",
         "<|tool_call_argument_begin|>",
         "<|tool_call_end|>",
-        # TML Inkling's role opener is deliberately absent: nothing consumes a standalone one,
-        # so it would prefix every ordinary reply with raw markup. The marker below is what
-        # makes the call recognizable, and the span swallows the name echo either way.
+        # TML Inkling's role opener is deliberately absent: nothing consumes a standalone
+        # one, so it would prefix every ordinary reply with raw markup. The marker below is
+        # what makes the call recognizable.
         "<|content_invoke_tool_json|>",
         "<|end_message|>",
         # Kept with the tool controls: the parser skips a call rehearsed inside one, so
@@ -245,7 +245,7 @@ class NativeToolTokenDecoder:
         if not self._special_ids:
             return False
         for token_id in self._tool_ids:
-            # The two steps `_special_token_sets` retained the id by; an adapter may only
+            # The two steps `_special_token_sets` retained the id by; some adapters only
             # answer the second.
             for lookup in (
                 lambda: self._tokenizer.convert_ids_to_tokens(token_id),

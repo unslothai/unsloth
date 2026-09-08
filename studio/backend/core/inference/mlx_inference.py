@@ -2690,10 +2690,10 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
-        # The provenance the text path recovers: mlx-vlm's ``response.text`` has dropped the
-        # native tool controls, so a genuine wrapped call would reach the parser markerless and
-        # the guard would refuse it. Text-only requests on a VLM come through here too.
-        # Delimiters that are special-token ids need preserving too, as on the text path:
+        # Same provenance the text path recovers: mlx-vlm's ``response.text`` has dropped the
+        # native tool controls, so a genuine wrapped call would reach the parser markerless
+        # and be refused. Text-only requests on a VLM come through here too, and reasoning
+        # delimiters that are special ids need preserving as well, since
         # ``decode_stream_token`` drops any special id outside the preserved set.
         vlm_token_decoder = (
             NativeToolTokenDecoder(
@@ -2704,7 +2704,7 @@ class MLXInferenceBackend:
             else None
         )
         # The runtime EOS can itself be an allowlisted control, and this path appends every
-        # decoded token into the snapshot, so it would trail each answer. As in _generate_text.
+        # decoded token to the snapshot, so it would trail each answer. As in _generate_text.
         vlm_stop_ids = (
             _mlx_stop_token_ids(self._tokenizer, self._model)
             if vlm_token_decoder is not None

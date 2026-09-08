@@ -2732,10 +2732,10 @@ def detect_think_prefill(
     so re-emitting the open would leave an unclosed block that swallows the
     answer. In that case return ``""`` and fall back to plain text.
 
-    ``preserves_think_close`` says the stream keeps that closer anyway --
-    ``NativeToolTokenDecoder`` does, since the parser has to see whether a call was
-    rehearsed inside the block. Then the special-token list says nothing, and skipping
-    the opener is the bug it was meant to avoid, just mirrored: a stray ``</think>``.
+    ``preserves_think_close`` says the stream keeps that closer anyway, as
+    ``NativeToolTokenDecoder`` does so the parser can see a call rehearsed inside the
+    block. The special-token list then says nothing, and skipping the opener is the same
+    bug mirrored: a stray ``</think>``.
     """
     if not prompt:
         return ""

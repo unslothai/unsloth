@@ -1570,10 +1570,9 @@ _GGUF_REHEARSAL_ARGS_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]")
 
 
 def _gguf_rehearsal_signal_pos(text: str, active_tools: list[dict]) -> int:
-    """Index of the first ``NAME[ARGS]`` whose NAME is markerless-promotable, else -1. A
-    bare/inactive-name ``foo[ARGS]`` in prose is not a call, and neither is an
-    execution-class ``terminal[ARGS]`` the parser refuses to promote from a bare span;
-    mirrors the safetensors ``_earliest_tool_signal`` gating (no unrestricted GGUF mode)."""
+    """Index of the first ``NAME[ARGS]`` whose NAME is markerless-promotable, else -1. An
+    inactive-name ``foo[ARGS]`` in prose is not a call, nor is a bare execution-class
+    ``terminal[ARGS]``; mirrors the safetensors ``_earliest_tool_signal`` gating."""
     active = set(_gguf_active_tool_names(active_tools))
     if not active:
         return -1
@@ -1613,10 +1612,10 @@ def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
 
     The two anchored arms only match a MARKERLESS leading call (a wrapper pushes the shape
     off position 0), so they take the parser's gate: a card for a bare ``call:terminal{``
-    would show a terminal call that never runs. The ``"name":`` arm searches the whole prefix
-    and also sees a trusted ``[TOOL_CALLS][{"name":"terminal",..}]``, and the markerless
-    bare-JSON form cannot reach it -- ``strip_leading_bare_json_call`` refuses to drain it."""
-    # A blocked leading object will NOT run, so naming the card after it gives the client a
+    would show a call that never runs. The ``"name":`` arm searches the whole prefix and so
+    also sees a trusted ``[TOOL_CALLS][{"name":"terminal",..}]``; the markerless bare-JSON
+    form cannot reach it, since ``strip_leading_bare_json_call`` refuses to drain it."""
+    # A blocked leading object will NOT run, so naming the card after it hands the client a
     # terminal card that the real web_search call then reuses by id.
     text = text[leading_blocked_bare_json_end(text, enabled_names) :]
     m = _TEXT_TOOL_NAME_RE.search(text[:4096])
@@ -1633,14 +1632,14 @@ def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
 
 def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
     """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for a
-    markerless-promotable tool -- the bare tool name arriving in its own chunk before
+    markerless-promotable tool: the bare name arriving in its own chunk before
     ``[ARGS]{...}``. An execution-class name is prose here, so it streams rather than being
     held. Mirrors the safetensors loop so the split rehearsal is not leaked."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
     for name in _gguf_active_tool_names(active_tools):
-        # Active by construction, so only the class is left, and it must stay an O(1) test:
-        # this loop runs per streamed chunk over the whole catalog.
+        # Active by construction, so only the class is left; O(1) because this loop runs
+        # per streamed chunk over the whole catalog.
         if name in EXECUTION_CLASS_TOOL_NAMES:
             continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
@@ -1652,7 +1651,7 @@ def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
     """Length of a trailing bare tool-name token that may be a split rehearsal call
     (``...web_search`` with ``[ARGS]{...}`` still to arrive), so STREAMING can hold it
     instead of leaking the name. Returns 0 for ordinary prose. Mirrors safetensors, including
-    the trailing bare-Gemma ``call:NAME{..`` the signal scan cannot see until its ``{``."""
+    the trailing bare-Gemma ``call:NAME{..`` the signal scan misses until its ``{``."""
     i = len(text)
     while i > 0 and not text[i - 1].isspace():
         i -= 1
@@ -29288,9 +29287,9 @@ class LlamaCppBackend:
                                                     if len(stripped_buf) < _MAX_BARE_JSON_BUFFER:
                                                         _hold_buffer = True
                                                     else:
-                                                        # Bound the private buffer and fail
-                                                        # closed instead of exposing text a
-                                                        # later peer could make executable.
+                                                        # Bounded buffer: fail closed rather
+                                                        # than expose text a later peer
+                                                        # could make executable.
                                                         _drain_silently = True
                                             elif (
                                                 "call:".startswith(stripped_buf)
@@ -29308,8 +29307,8 @@ class LlamaCppBackend:
                                                 elif blocked_gemma_chain_may_continue(
                                                     stripped_buf, _enabled_tool_names
                                                 ):
-                                                    # A promotable peer behind a blocked call
-                                                    # must not stream before promotion.
+                                                    # A promotable peer behind a blocked
+                                                    # call must not stream first.
                                                     if self._parse_tool_calls_from_text(
                                                         content_buffer,
                                                         allow_incomplete = auto_heal_tool_calls,

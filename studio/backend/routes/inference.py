@@ -5196,10 +5196,9 @@ def _strip_tool_xml_for_display(
     DeepSeek / Kimi / orphan forms. ``<think>`` blocks are preserved verbatim and the
     ``\\Z``-anchored tail arms run only on the last segment (prose ``foo[ARGS]`` before a
     block survives). The ambiguous bare-rehearsal ``NAME[ARGS]{...}`` and wrapper-less Gemma
-    ``call:NAME{...}`` strips run only on a markerless-promotable NAME, so prose is kept: a
-    name outside ``enabled_tool_names`` (when not None), or an execution-class one, which the
-    parser never promotes bare even when enabled. The ``[TOOL_CALLS]`` control-token arms strip
-    unconditionally regardless of NAME."""
+    ``call:NAME{...}`` strips run only on a markerless-promotable NAME, so a name outside
+    ``enabled_tool_names`` or an execution-class one is kept as prose. The ``[TOOL_CALLS]``
+    control-token arms strip unconditionally regardless of NAME."""
     if not auto_heal_tool_calls:
         return text
     from core.tool_healing import (
@@ -5209,8 +5208,8 @@ def _strip_tool_xml_for_display(
     )
 
     def _keep_inactive_rehearsal(m) -> str:
-        # Only the bare-rehearsal arm captures ``reh``. A NAME[ARGS]{...} the parser will not
-        # promote is prose, and deleting it leaves the turn with no call AND no text.
+        # Only the bare-rehearsal arm captures ``reh``. Deleting one the parser will not
+        # promote leaves the turn with no call AND no text.
         name = m.groupdict().get("reh")
         if name is not None and not _markerless_promotable(name, enabled_tool_names):
             return m.group(0)
