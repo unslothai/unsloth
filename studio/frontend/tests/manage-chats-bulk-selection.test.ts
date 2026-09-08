@@ -24,7 +24,9 @@ const { rangeBetween } = await import(
 );
 
 async function manageChatsSource(): Promise<string> {
-  return await readSrcAsync("features/settings/components/manage-chats-view.tsx");
+  return await readSrcAsync(
+    "features/settings/components/manage-chats-view.tsx",
+  );
 }
 
 function reset(ids: string[] = []): void {

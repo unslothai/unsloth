@@ -62,7 +62,9 @@ test("the composer exception frees the composer and nothing else", () => {
 });
 
 test("the decline chord takes the exception and the approve chord does not", async () => {
-  const controls = await readSrcAsync("components/assistant-ui/tool-confirmation-controls.tsx");
+  const controls = await readSrcAsync(
+    "components/assistant-ui/tool-confirmation-controls.tsx",
+  );
   // Escape leaves the text alone. Enter sends, so it stays behind the gate.
   assert.match(
     controls,

@@ -178,7 +178,9 @@ test("recording is gated on the preference, not on whether the card shows", () =
   assert.match(subscribe, /if \(!track\) return;/);
   assert.doesNotMatch(subscribe, /if \(!enabled\) return;/);
 
-  const INDICATOR = readSrc("features/loaded-models/loaded-models-indicator.tsx");
+  const INDICATOR = readSrc(
+    "features/loaded-models/loaded-models-indicator.tsx",
+  );
   // Dismissal must not stop the recording, or the card cannot reopen for the
   // load. Reachability must, since it carries the auth gate: tracking on the
   // preference alone polled four protected endpoints every 5s on /login.

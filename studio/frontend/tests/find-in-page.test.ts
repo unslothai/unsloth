@@ -44,8 +44,12 @@ import {
 import { readSrc, readSrcAsync } from "./helpers/kit.ts";
 
 const FIND_BAR = readSrc("features/find-in-page/components/find-bar.tsx");
-const FIND_IN_PAGE = readSrc("features/find-in-page/components/find-in-page.tsx");
-const USE_FIND_IN_PAGE = readSrc("features/find-in-page/hooks/use-find-in-page.ts");
+const FIND_IN_PAGE = readSrc(
+  "features/find-in-page/components/find-in-page.tsx",
+);
+const USE_FIND_IN_PAGE = readSrc(
+  "features/find-in-page/hooks/use-find-in-page.ts",
+);
 const FIND_DOM = readSrc("features/find-in-page/lib/find-dom.ts");
 const FIND_TEXT_INDEX = readSrc("features/find-in-page/lib/find-text-index.ts");
 const USE_SHORTCUT = readSrc("features/settings/hooks/use-shortcut.ts");
@@ -53,7 +57,9 @@ const INDEX = readSrc("index.css");
 
 /** The feature's component module as one string. */
 async function readComponentSource(): Promise<string> {
-  return await readSrcAsync("features/find-in-page/components/find-in-page.tsx");
+  return await readSrcAsync(
+    "features/find-in-page/components/find-in-page.tsx",
+  );
 }
 
 function text(data: string): FindTextNodeLike {
@@ -1482,7 +1488,9 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   // 22.25/28.25rem is exactly the previous short-counter width: fixed input + 12rem chrome.
   assert.match(surface[1], /(?:^|\s)w-\[22\.25rem\](?:\s|$)/);
   assert.match(surface[1], /(?:^|\s)sm:w-\[28\.25rem\](?:\s|$)/);
-  const input = /<input[\s\S]*?className=\{cn\([\s\S]*?"([^"]*)"/.exec(FIND_BAR);
+  const input = /<input[\s\S]*?className=\{cn\([\s\S]*?"([^"]*)"/.exec(
+    FIND_BAR,
+  );
   assert.ok(input);
   assert.match(input[1], /\bflex-1\b/);
   assert.equal(/\bw-(?:40|64)\b/.test(input[1]), false);
@@ -1506,7 +1514,10 @@ test("the reveal looks again while the scroll is still moving", async () => {
   assert.match(body, /requestAnimationFrame\(/);
   assert.match(body, /range\.startContainer\.isConnected/);
   assert.match(USE_FIND_IN_PAGE, /revealRangeWhenPainted\(activeRange\)/);
-  assert.equal(/scrollRangeIntoView\(activeRange\)/.test(USE_FIND_IN_PAGE), false);
+  assert.equal(
+    /scrollRangeIntoView\(activeRange\)/.test(USE_FIND_IN_PAGE),
+    false,
+  );
 });
 
 test("a dismissed or superseded search abandons its queued reveal passes", async () => {
@@ -1782,7 +1793,11 @@ test("the grapheme fences do not depend on lookbehind", async () => {
   // JavaScriptCore only shipped lookbehind in Safari 16.4, and a pattern using one throws on older
   // engines straight into the unfenced literal scan, quietly undoing both boundaries. So the start
   // of the fence is checked in code and the pattern carries none.
-  assert.equal(FIND_TEXT_INDEX.includes("(?<"), false, "no lookbehind in the pattern");
+  assert.equal(
+    FIND_TEXT_INDEX.includes("(?<"),
+    false,
+    "no lookbehind in the pattern",
+  );
 
   const real = globalThis.RegExp;
   const refuse = (pattern: string, flags?: string) => {
@@ -1912,7 +1927,10 @@ test("the seek probe is asked once, on a fixture the spec settles", () => {
   // `containing(1)` over a code unit and a surrogate pair is the start of the pair, per the spec.
   assert.match(FIND_TEXT_INDEX, /probe\.containing\(1\)\?\.index === 1/);
   // The definition, the seek in `startsGrapheme`, and the junction check a cut asks.
-  assert.equal((FIND_TEXT_INDEX.match(/segmenterSeeksBoundaries\(/g) ?? []).length, 3);
+  assert.equal(
+    (FIND_TEXT_INDEX.match(/segmenterSeeksBoundaries\(/g) ?? []).length,
+    3,
+  );
 });
 
 test("a query that needs no pattern is not given one", () => {
@@ -1927,8 +1945,13 @@ test("a query that needs no pattern is not given one", () => {
 test("plain text does not pay for the boundary check", () => {
   // The segmenter is asked only where something could actually join, which nothing below U+0300
   // can. Latin prose therefore costs one comparison per match rather than a segmentation.
-  assert.match(FIND_TEXT_INDEX, /const JOINS_GRAPHEME = \/\[\^\\u0000-\\u02ff\]\//);
-  const guard = FIND_TEXT_INDEX.slice(FIND_TEXT_INDEX.indexOf("function alignsToGraphemes"));
+  assert.match(
+    FIND_TEXT_INDEX,
+    /const JOINS_GRAPHEME = \/\[\^\\u0000-\\u02ff\]\//,
+  );
+  const guard = FIND_TEXT_INDEX.slice(
+    FIND_TEXT_INDEX.indexOf("function alignsToGraphemes"),
+  );
   const before = guard.indexOf("JOINS_GRAPHEME");
   const asks = guard.indexOf("graphemeSegmenter()");
   assert.ok(before > 0 && before < asks, "the cheap test comes first");
@@ -2370,9 +2393,15 @@ test("a match with no geometry is aimed at through its nearest laid-out ancestor
     FIND_DOM,
     /export function revealRect\(range: Range\): DOMRect \| null/,
   );
-  assert.match(FIND_DOM, /export function rangeTop\(range: Range\): number \| null/);
+  assert.match(
+    FIND_DOM,
+    /export function rangeTop\(range: Range\): number \| null/,
+  );
   assert.match(USE_FIND_IN_PAGE, /const top = rangeTop\(range\);/);
-  assert.equal(/range\.getBoundingClientRect\(\)/.test(USE_FIND_IN_PAGE), false);
+  assert.equal(
+    /range\.getBoundingClientRect\(\)/.test(USE_FIND_IN_PAGE),
+    false,
+  );
 });
 
 test("a fresh query starts from the scroll container's top, not the window's", async () => {
@@ -2385,7 +2414,10 @@ test("a pending query clears the previous highlight before the next paint", asyn
   // The input value is committed during the event. A passive effect may run only after the browser
   // has painted that new value beside the old query's ranges, which is the visible `sta`/`stan`
   // mismatch this guards. A layout effect clears those ranges in the same commit, before paint.
-  assert.match(USE_FIND_IN_PAGE, /import \{[^}]*useLayoutEffect[^}]*\} from "react";/);
+  assert.match(
+    USE_FIND_IN_PAGE,
+    /import \{[^}]*useLayoutEffect[^}]*\} from "react";/,
+  );
   assert.match(
     USE_FIND_IN_PAGE,
     /useLayoutEffect\(\(\) => \{\s*if \(queryPending\) \{\s*cancelRevealPasses\(\);\s*clearHighlights\(\);/,
@@ -2409,7 +2441,10 @@ test("the bar has no border, and its buttons have a hover that shows", async () 
   );
   // The ghost variant's own `--muted/50` hover lands within a shade of this surface.
   assert.match(FIND_BAR, /hover:bg-black\/\[0\.06\] dark:hover:bg-white\/10/);
-  assert.equal((FIND_BAR.match(/className=\{FIND_BUTTON_CLASS\}/g) ?? []).length, 3);
+  assert.equal(
+    (FIND_BAR.match(/className=\{FIND_BUTTON_CLASS\}/g) ?? []).length,
+    3,
+  );
 });
 
 test("a long query rewinds to its first character when focus leaves", async () => {
@@ -2429,7 +2464,10 @@ test("the observer watches the attributes a workspace switch flips", async () =>
   // Not the whole stream: `class` changes on every hover. Scanned, not matched, since the
   // comments in between make a regex backtrack badly.
   const opensAttributes = USE_FIND_IN_PAGE.indexOf("attributes: true,");
-  const opensFilter = USE_FIND_IN_PAGE.indexOf("attributeFilter:", opensAttributes);
+  const opensFilter = USE_FIND_IN_PAGE.indexOf(
+    "attributeFilter:",
+    opensAttributes,
+  );
   assert.ok(opensAttributes !== -1 && opensFilter > opensAttributes);
   const between = USE_FIND_IN_PAGE.slice(
     opensAttributes + "attributes: true,".length,
@@ -2573,7 +2611,9 @@ test("only threads this search can read are forced to finish mounting", async ()
     USE_FIND_IN_PAGE,
     /completeProgressiveMounts\(\(viewport\) =>\s*\n?\s*indexReaches\(scope, viewport\)/,
   );
-  const progressive = await readSrcAsync("components/assistant-ui/progressive-messages.tsx");
+  const progressive = await readSrcAsync(
+    "components/assistant-ui/progressive-messages.tsx",
+  );
   // The exit has to read the filtered set, or a declined completer holds it open forever.
   assert.match(
     progressive,
@@ -2587,7 +2627,9 @@ test("the chord is left to the browser when the scope is behind a modal", async 
   assert.match(controller, /claims: \(\) => !isSurfaceBackgrounded\(/);
   const consume = USE_SHORTCUT.indexOf("event.preventDefault();");
   assert.ok(consume > 0);
-  assert.ok(USE_SHORTCUT.lastIndexOf("latestRef.current.claims?.()", consume) > 0);
+  assert.ok(
+    USE_SHORTCUT.lastIndexOf("latestRef.current.claims?.()", consume) > 0,
+  );
 });
 
 test("the Enter that commits an IME candidate is left alone", async () => {
@@ -2631,8 +2673,13 @@ test("the reader is kept on the occurrence, not on the number", async () => {
     /activeStartRef\.current = active >= 0 \? matches\[active\]\.start : null;/,
   );
   // Read BEFORE the new list is installed, or it is the new list's answer being read back.
-  const read = USE_FIND_IN_PAGE.indexOf("const wasAt = activeStartRef.current;");
-  const install = USE_FIND_IN_PAGE.indexOf("matchesRef.current = matches;", read - 400);
+  const read = USE_FIND_IN_PAGE.indexOf(
+    "const wasAt = activeStartRef.current;",
+  );
+  const install = USE_FIND_IN_PAGE.indexOf(
+    "matchesRef.current = matches;",
+    read - 400,
+  );
   assert.ok(read > 0 && read < install);
   assert.match(USE_FIND_IN_PAGE, /ordinalOfStart\(matches, wasAt\)/);
   assert.match(
@@ -2650,7 +2697,10 @@ test("the ordinal survives an append and nothing else", async () => {
     /return renumbersMatches\(before, indexRef\.current, activeStartRef\.current\);/,
   );
   assert.equal(USE_FIND_IN_PAGE.includes("search(false, false)"), false);
-  assert.equal((USE_FIND_IN_PAGE.match(/search\(false, reindex\(\)\)/g) ?? []).length, 2);
+  assert.equal(
+    (USE_FIND_IN_PAGE.match(/search\(false, reindex\(\)\)/g) ?? []).length,
+    2,
+  );
   assert.match(
     USE_FIND_IN_PAGE,
     /reindex\(\);\n\s*\/\/[^\n]*\n\s*search\(false, true\);/,
@@ -2844,8 +2894,14 @@ test("history arriving above the reader still renumbers the list", () => {
 
 test("a breakpoint that changes what is rendered invalidates the index", async () => {
   // Crossing one reveals whole columns with nothing in the DOM to observe.
-  assert.match(USE_FIND_IN_PAGE, /window\.addEventListener\("resize", invalidate\);/);
-  assert.match(USE_FIND_IN_PAGE, /window\.removeEventListener\("resize", invalidate\);/);
+  assert.match(
+    USE_FIND_IN_PAGE,
+    /window\.addEventListener\("resize", invalidate\);/,
+  );
+  assert.match(
+    USE_FIND_IN_PAGE,
+    /window\.removeEventListener\("resize", invalidate\);/,
+  );
   assert.match(
     USE_FIND_IN_PAGE,
     /const invalidate = \(\) => \{[\s\S]*?REINDEX_INTERVAL_MS\);/,
@@ -2992,7 +3048,10 @@ test("the cap flag is what the bar renders, not the count", async () => {
     USE_FIND_IN_PAGE,
     /findMatches\(\s*\n\s*index,\s*\n\s*queryRef\.current,\s*\n\s*MAX_MATCHES \+ 1,/,
   );
-  assert.match(USE_FIND_IN_PAGE, /cappedRef\.current = matches\.length > MAX_MATCHES;/);
+  assert.match(
+    USE_FIND_IN_PAGE,
+    /cappedRef\.current = matches\.length > MAX_MATCHES;/,
+  );
   // Trimmed from the end the reader is further from: a window anchored near the bottom ends at
   // the document's last match.
   assert.match(
@@ -3068,7 +3127,9 @@ test("the selection fallback only clears what it put there", () => {
 
 test("the generated-image actions are out of the index too", async () => {
   // Persistently transparent text has to say so, since the index cannot tell it from a fade-in.
-  const tool = await readSrcAsync("components/assistant-ui/tool-ui-image-generation.tsx");
+  const tool = await readSrcAsync(
+    "components/assistant-ui/tool-ui-image-generation.tsx",
+  );
   const at = tool.indexOf("sm:group-hover/generated-image:opacity-100");
   assert.notEqual(at, -1);
   assert.match(
@@ -3080,7 +3141,9 @@ test("the generated-image actions are out of the index too", async () => {
 test("a hover-only badge is out of the index", async () => {
   // An affordance, not an entrance animation, so it is marked at the call site rather than by
   // turning the opacity check on.
-  const sheet = await readSrcAsync("components/assistant-ui/message-response-details-sheet.tsx");
+  const sheet = await readSrcAsync(
+    "components/assistant-ui/message-response-details-sheet.tsx",
+  );
   const badge = sheet.slice(sheet.indexOf("aui-response-model-badge") - 400);
   assert.match(
     badge.slice(0, badge.indexOf("aui-response-model-badge")),

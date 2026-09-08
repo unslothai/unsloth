@@ -86,7 +86,9 @@ test("failed image and video picks release their recipe hydration claims", () =>
     assert.match(source, /revertPick[\s\S]*r\.releaseRecipeClaim\?\.\(\)/);
   }
 
-  const hook = readSrc("features/generation-presets/use-media-generation-presets.ts");
+  const hook = readSrc(
+    "features/generation-presets/use-media-generation-presets.ts",
+  );
   assert.match(
     hook,
     /deferredSavedSettingsRef\.current = committed \? null : settings/,

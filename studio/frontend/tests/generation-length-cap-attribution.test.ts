@@ -4,7 +4,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-
 import { maxTokensIsTheLimit } from "../src/features/chat/api/generation-length.ts";
 
 import { readSrc } from "./helpers/kit.ts";

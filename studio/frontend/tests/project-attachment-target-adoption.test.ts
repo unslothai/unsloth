@@ -12,8 +12,12 @@ import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "../src/features/chat/utils/p
 
 import { readSrc } from "./helpers/kit.ts";
 
-const CHAT_RUNTIME_STORE = readSrc("features/chat/stores/chat-runtime-store.ts");
-const THREAD_DOCUMENTS_BAR = readSrc("features/rag/components/thread-documents-bar.tsx");
+const CHAT_RUNTIME_STORE = readSrc(
+  "features/chat/stores/chat-runtime-store.ts",
+);
+const THREAD_DOCUMENTS_BAR = readSrc(
+  "features/rag/components/thread-documents-bar.tsx",
+);
 
 const PENDING = "__pending__";
 type Target = "project" | "chat";
@@ -200,7 +204,10 @@ test("both writers of the pending entry move the claim", () => {
     THREAD_DOCUMENTS_BAR,
     /const claim = readPendingAttachmentTargetClaim\(\);[\s\S]{0,200}?\.initialize\(\)/,
   );
-  assert.match(THREAD_DOCUMENTS_BAR, /adoptPendingProjectAttachmentTarget\(remoteId, claim\)/);
+  assert.match(
+    THREAD_DOCUMENTS_BAR,
+    /adoptPendingProjectAttachmentTarget\(remoteId, claim\)/,
+  );
 });
 
 // Sending a normal message in a project composer creates the chat, and the page
@@ -234,7 +241,10 @@ test("the project composer's choice survives the swap to a thread", () => {
 
   // Why the bar cannot cover it: the Thread's bar starts with an id, so the
   // first-id branch never fires for it.
-  assert.match(THREAD_DOCUMENTS_BAR, /const hadThreadIdRef = useRef\(threadId !== null\);/);
+  assert.match(
+    THREAD_DOCUMENTS_BAR,
+    /const hadThreadIdRef = useRef\(threadId !== null\);/,
+  );
 });
 
 // A browser-local preference that a reset leaves behind outlives the reset: new

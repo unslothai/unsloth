@@ -81,7 +81,9 @@ test("percentToFraction tolerates an off-grid slider value", () => {
 // chat-adapter tests do. The bug it guards: clearing the timer without sending the
 // pending fraction discarded a drag followed within 400ms by Run, the Advanced
 // toggle or closing the panel, and the server-wide budget lives nowhere else.
-const pageSource = readSrc("features/model-picker/components/model-config-page.tsx");
+const pageSource = readSrc(
+  "features/model-picker/components/model-config-page.tsx",
+);
 
 function vramBudgetRowSource(): string {
   const start = pageSource.indexOf("function VramBudgetRow()");
@@ -214,7 +216,10 @@ test("Run also waits for a save the debounce already sent", () => {
     /vramBudgetWritesOpen > 0 \? vramBudgetNewestWrite : null/,
   );
   // The counter has to come back down however the write ends.
-  assert.match(VRAM_BUDGET, /\.finally\(\(\) => \{\s*vramBudgetWritesOpen -= 1;/);
+  assert.match(
+    VRAM_BUDGET,
+    /\.finally\(\(\) => \{\s*vramBudgetWritesOpen -= 1;/,
+  );
 });
 
 test("a read waits behind an open write", () => {

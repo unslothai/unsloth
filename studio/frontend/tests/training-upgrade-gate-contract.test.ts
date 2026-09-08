@@ -75,7 +75,9 @@ test("both gates on a start path inspect the same copy of the model", () => {
 test("the resume gate names the run it precedes", () => {
   // Without the run id the check cannot tell that installing would permanently strand
   // a checkpoint attested against a 4-bit model load the latest sidecar refuses.
-  const source = readText("../src/features/training/lib/resume-training-run.ts");
+  const source = readText(
+    "../src/features/training/lib/resume-training-run.ts",
+  );
   assert.ok(source.includes("resumeRunId"));
 });
 

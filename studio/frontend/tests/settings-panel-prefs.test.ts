@@ -196,9 +196,9 @@ test("the remembered quant is scoped through modelKey, not an exact compare", as
     /modelKey\(chosen\.model\) === modelKey\(model\)/,
     "rememberedVariant must compare through modelKey",
   );
-  const exact = AGENTS_TAB
-    .split("\n")
-    .filter((line) => line.includes("chosenVariant.current?.model ==="));
+  const exact = AGENTS_TAB.split("\n").filter((line) =>
+    line.includes("chosenVariant.current?.model ==="),
+  );
   assert.deepEqual(
     exact,
     [],

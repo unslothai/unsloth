@@ -122,7 +122,9 @@ test("hasPrefix agrees with startsWith under randomised growth", () => {
 // helper cannot express takes a start position and compares a fixed block, so
 // it does not grow with the reply and is left alone.
 test("the incremental cache tests prefixes without scanning the reply", () => {
-  const source = readSrc("components/assistant-ui/streaming-render-schedule.ts");
+  const source = readSrc(
+    "components/assistant-ui/streaming-render-schedule.ts",
+  );
   const bare = [...source.matchAll(/\.startsWith\(([^)]*)\)/g)].filter(
     (match) => !match[1].includes(","),
   );

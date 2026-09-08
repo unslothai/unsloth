@@ -69,13 +69,17 @@ test("an unreadable folder points at the drive", () => {
 });
 
 test("the model picker renders the status on its folder rows too", async () => {
-  const source = await readSrcAsync("features/model-picker/components/model-selector/pickers.tsx");
+  const source = await readSrcAsync(
+    "features/model-picker/components/model-selector/pickers.tsx",
+  );
   assert.match(source, /scanFolderStatusCopy\(f\.status\)/);
   assert.match(source, /\{problem\.title\}/);
 });
 
 test("the folders dialog renders the status on the row", async () => {
-  const source = await readSrcAsync("features/hub/catalog/on-device-folders-dialog.tsx");
+  const source = await readSrcAsync(
+    "features/hub/catalog/on-device-folders-dialog.tsx",
+  );
   assert.match(source, /scanFolderStatusCopy\(folder\.status\)/);
   assert.match(source, /\{problem\.title\}\. \{problem\.hint\}/);
 });

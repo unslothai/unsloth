@@ -10,7 +10,9 @@ import test from "node:test";
 
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
-const LOADED_MODELS_INDICATOR = readSrc("features/loaded-models/loaded-models-indicator.tsx");
+const LOADED_MODELS_INDICATOR = readSrc(
+  "features/loaded-models/loaded-models-indicator.tsx",
+);
 
 const { store } = installLocalStorageFake();
 
@@ -160,7 +162,10 @@ test("a row ejects with the eject glyph, the header closes with an X", () => {
 // Asserted by reading the source, since the node suite has no DOM to mount in.
 test("recording follows the route and auth gate, but not the dismissal", () => {
   // The auth gate lives in canShowIndicator, so `reachable` is what carries it.
-  assert.match(LOADED_MODELS_INDICATOR, /const reachable = canShowIndicator\(pathname\);/);
+  assert.match(
+    LOADED_MODELS_INDICATOR,
+    /const reachable = canShowIndicator\(pathname\);/,
+  );
   assert.match(
     LOADED_MODELS_INDICATOR,
     /hasAuthToken\(\) && !mustChangePassword\(\)/,

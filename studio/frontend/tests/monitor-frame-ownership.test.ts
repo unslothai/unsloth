@@ -24,7 +24,9 @@ import { readSrc } from "./helpers/kit.ts";
 const PANEL_SOURCE = readSrc("components/floating-monitor.tsx");
 
 const ROOT_SOURCE = readSrc("app/routes/__root.tsx");
-const SETTINGS_MOUNT_SOURCE = readSrc("features/settings/settings-dialog-mount.tsx");
+const SETTINGS_MOUNT_SOURCE = readSrc(
+  "features/settings/settings-dialog-mount.tsx",
+);
 
 /** The Live monitor where it opens by default: bottom-right, w-64, inset-4. */
 function corner(height = 300): MonitorFrame {

@@ -30,7 +30,9 @@ import { readText } from "./helpers/kit.ts";
  * change that does nothing.
  */
 
-const MARKDOWN_TEXT = readText("../src/components/assistant-ui/markdown-text.tsx");
+const MARKDOWN_TEXT = readText(
+  "../src/components/assistant-ui/markdown-text.tsx",
+);
 const INDEX_CSS = readText("../src/index.css");
 const MAIN_TSX = readText("../src/main.tsx");
 const MATH_BLOCK_MODE = readText(

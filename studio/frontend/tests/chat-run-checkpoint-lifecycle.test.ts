@@ -320,7 +320,11 @@ test("an isActive that throws is treated as not running", async () => {
 
   scheduler.start("thread-a");
   await clock.advance(INTERVAL);
-  assert.equal(saved.length, 1, "a throwing probe must still yield the final save");
+  assert.equal(
+    saved.length,
+    1,
+    "a throwing probe must still yield the final save",
+  );
   assert.equal(clock.pending(), 0, "a throwing probe must end the schedule");
   await clock.advance(INTERVAL * 10);
   assert.equal(saved.length, 1);
@@ -772,7 +776,11 @@ test("flushAll after stopAll saves nothing", async () => {
   scheduler.stopAll();
   scheduler.flushAll();
   await flushMicrotasks();
-  assert.equal(saved.length, 0, "unmount must not be followed by a flush write");
+  assert.equal(
+    saved.length,
+    0,
+    "unmount must not be followed by a flush write",
+  );
 });
 
 test("a synchronous throw inside flushAll does not break the scheduler", async () => {
@@ -1037,7 +1045,11 @@ test("a run shorter than one interval produces no checkpoints", async () => {
   await clock.advance(INTERVAL - 1);
   scheduler.stop("thread-a");
   await clock.advance(INTERVAL * 10);
-  assert.equal(saved.length, 0, "a short run must not write a checkpoint at all");
+  assert.equal(
+    saved.length,
+    0,
+    "a short run must not write a checkpoint at all",
+  );
   assert.equal(clock.pending(), 0);
 });
 

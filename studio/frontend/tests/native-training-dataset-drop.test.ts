@@ -156,7 +156,9 @@ test("native dataset drops track runtime window scale changes", () => {
 });
 
 test("frontend, backend, and Rust accept the same native dataset extensions", () => {
-  const backendSource = readText("../../backend/hub/services/datasets/local.py");
+  const backendSource = readText(
+    "../../backend/hub/services/datasets/local.py",
+  );
   const rustSource = readText("../../src-tauri/src/native_path_policy.rs");
   const backend = [
     ...(backendSource
@@ -183,7 +185,9 @@ test("frontend, backend, and Rust accept the same native dataset extensions", ()
 
 test("training document redirects match Data Recipes", () => {
   const backendSource = readText("../../backend/routes/data_recipe/seed.py");
-  const recipeSource = readSrc("features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx");
+  const recipeSource = readSrc(
+    "features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx",
+  );
   const backend = extractLiteralExtensions(
     backendSource,
     BACKEND_DOCUMENT_EXTENSIONS_PATTERN,

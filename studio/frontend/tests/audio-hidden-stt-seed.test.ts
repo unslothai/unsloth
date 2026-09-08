@@ -11,7 +11,9 @@ import {
 
 import { readSrc } from "./helpers/kit.ts";
 
-const pickerSource = readSrc("features/model-picker/components/model-selector/pickers.tsx");
+const pickerSource = readSrc(
+  "features/model-picker/components/model-selector/pickers.tsx",
+);
 
 const row = {
   isHidden: true,

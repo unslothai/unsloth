@@ -258,21 +258,27 @@ test("right-edge action lists reserve the gutter they publish", async () => {
     ),
   );
 
-  const pickers = await readSrcAsync("features/model-picker/components/model-selector/pickers.tsx");
+  const pickers = await readSrcAsync(
+    "features/model-picker/components/model-selector/pickers.tsx",
+  );
   // Every model row must sit inside the gutter wrapper.
   assert.match(
     pickers,
     /"model-list-scroll[^"]*overflow-y-auto[^"]*"[\s\S]{0,800}"overlay-scrollbar-gutter",/,
   );
 
-  const apiKeysTab = await readSrcAsync("features/settings/tabs/api-keys-tab.tsx");
+  const apiKeysTab = await readSrcAsync(
+    "features/settings/tabs/api-keys-tab.tsx",
+  );
   // Preserve classic padding and move every API-key row into the gutter.
   assert.match(
     apiKeysTab,
     /"hover-scrollbar[^"]*overflow-y-auto[^"]*\bpr-1\b[^"]*"[\s\S]{0,200}<div className="overlay-scrollbar-gutter">[\s\S]{0,300}<ApiKeyRow/,
   );
 
-  const projectSourceDropzone = await readSrcAsync("features/rag/components/project-source-dropzone.tsx");
+  const projectSourceDropzone = await readSrcAsync(
+    "features/rag/components/project-source-dropzone.tsx",
+  );
   // Keep staged-source remove actions inside the gutter.
   assert.match(
     projectSourceDropzone,

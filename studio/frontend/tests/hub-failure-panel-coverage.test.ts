@@ -23,7 +23,9 @@ test("every renderable Hub failure kind has a branch in the panel", async () => 
   const kinds = [...decl[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
   assert.ok(kinds.length >= 5, `parsed too few kinds: ${kinds.join(", ")}`);
 
-  const states = await readText("../src/features/hub/catalog/catalog-states.tsx");
+  const states = await readText(
+    "../src/features/hub/catalog/catalog-states.tsx",
+  );
   const start = states.indexOf("function describeFailure");
   assert.notEqual(start, -1, "could not find describeFailure");
   const body = states.slice(start, states.indexOf("\nexport function", start));

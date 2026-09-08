@@ -12,7 +12,9 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-const SOURCE = readSrc("features/api-monitor/components/saved-model-settings.tsx");
+const SOURCE = readSrc(
+  "features/api-monitor/components/saved-model-settings.tsx",
+);
 
 const LOAD = SOURCE.slice(
   SOURCE.indexOf("const load = useCallback("),

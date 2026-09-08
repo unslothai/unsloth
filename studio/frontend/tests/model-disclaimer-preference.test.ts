@@ -84,7 +84,9 @@ test("the model disclaimer is hidden by default", () => {
 });
 
 test("a saved payload without the model disclaimer key defaults to hidden", async () => {
-  const source = await readSrcAsync("features/chat/stores/chat-preferences-store.ts");
+  const source = await readSrcAsync(
+    "features/chat/stores/chat-preferences-store.ts",
+  );
   assert.match(source, MISSING_DISCLAIMER_DEFAULT_PATTERN);
 });
 

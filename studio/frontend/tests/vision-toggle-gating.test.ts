@@ -21,7 +21,9 @@ import { readSrc } from "./helpers/kit.ts";
 
 const APPLIER = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
 const API_TYPES = readSrc("features/chat/types/api.ts");
-const CONFIG_PAGE = readSrc("features/model-picker/components/model-config-page.tsx");
+const CONFIG_PAGE = readSrc(
+  "features/model-picker/components/model-config-page.tsx",
+);
 
 test("both response types carry the raw disable_vision echo", () => {
   // vision_disabled_by_user is additionally gated on the model HAVING a

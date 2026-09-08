@@ -19,7 +19,9 @@ const UUID_V4 =
 // Check every HTML entry as raw markup so comments cannot satisfy the patterns.
 const PAGES = readdirSync(new URL("../", import.meta.url))
   .filter((name) => name.endsWith(".html"))
-  .map((name) => [name, readText(`../${name}`).replace(HTML_COMMENT, "")] as const);
+  .map(
+    (name) => [name, readText(`../${name}`).replace(HTML_COMMENT, "")] as const,
+  );
 const BOOT_SCRIPT = readText("../public/crypto-boot.js");
 
 function boot(cryptoStub: unknown): { randomUUID?: () => string } {

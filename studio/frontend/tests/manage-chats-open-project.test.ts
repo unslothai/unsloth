@@ -10,7 +10,9 @@ import test from "node:test";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 async function openChatSource(): Promise<string> {
-  const src = await readSrcAsync("features/settings/components/manage-chats-view.tsx");
+  const src = await readSrcAsync(
+    "features/settings/components/manage-chats-view.tsx",
+  );
   const start = src.indexOf("function openChat(");
   assert.ok(start !== -1, "openChat not found in manage-chats-view.tsx");
   const end = src.indexOf("\n  }", start);
