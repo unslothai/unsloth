@@ -53,6 +53,9 @@ check "current: unsloth_studio owner marker" own managed "unsloth_studio/.unslot
 check "legacy .venv carrying the owner marker" own managed ".venv/.unsloth-studio-owned"
 check "pre-marker unsloth_studio venv" own managed "unsloth_studio/bin/unsloth" "unsloth_studio/bin/python"
 check "pre-marker legacy .venv" own managed ".venv/bin/unsloth" ".venv/bin/python"
+# An install that died before the marker was written. The root is ours and holds nothing else.
+check "partial install: rollback copy only" own managed "unsloth_studio.rollback.20260908120000.4242/pyvenv.cfg"
+check "partial install: invalid legacy venv only" own managed ".venv.invalid.20260908120000.4242/pyvenv.cfg"
 
 echo
 echo "A custom root proves itself with a marker, wherever the user put it:"
@@ -73,6 +76,10 @@ check "a project venv with unsloth pip-installed, as a custom root" foreign cust
     ".venv/bin/unsloth" ".venv/bin/python" "pyproject.toml" "src/main.py"
 check "a project whose venv is NAMED unsloth_studio, as a custom root" foreign custom \
     "unsloth_studio/bin/unsloth" "unsloth_studio/bin/python"
+check "a partial-install leftover at a custom root" foreign custom \
+    ".venv.invalid.20260908120000.4242/pyvenv.cfg"
+# The literal glob must not match itself when the directory holds nothing.
+check "a directory named like the glob is not conjured" foreign managed "notes.txt"
 
 echo
 echo "Edge cases:"

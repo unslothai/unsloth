@@ -374,6 +374,12 @@ _is_studio_root() {
     for _v in unsloth_studio .venv; do
         [ -f "$_r/$_v/bin/unsloth" ] && return 0
     done
+    # An install that died between moving the old venv aside (install.sh:3027, :819) and writing
+    # the marker (install.sh:3190) leaves the root with neither, so it would be refused as
+    # somebody else's. Only install.sh produces either name.
+    for _p in "$_r"/unsloth_studio.rollback.* "$_r"/.venv.invalid.*; do
+        [ -e "$_p" ] && return 0
+    done
     return 1
 }
 

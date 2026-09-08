@@ -14,6 +14,13 @@ function Uninstall-UnslothStudio {
     # second run in the same window would otherwise inherit the first run's flags.
     $script:RemoveFailed = $false
     $script:StudioDbRemoved = $false
+    # ONE waiting budget for the run, not per path. What _RemovePath waits out is wall clock and
+    # shared -- the seconds torch inductor holds handles after the server stops -- so whatever the
+    # first blocked path waits, the next no longer has to. Without this, a root that can NEVER be
+    # deleted costs the full escalation at each of the 18 call sites. The error cannot be
+    # classified out instead: Windows reports a delete-pending file, and antivirus a transient
+    # failure, as access denied, and the provider mislabels either type both ways.
+    $script:RemoveWaitBudgetMs = 20000
 
     function _Usage {
         Write-Host @'
@@ -64,13 +71,28 @@ Environment:
         # Escalating: torch inductor holds DATA handles under TORCHINDUCTOR_CACHE_DIR for
         # seconds, and _StopProcessesLockingRoots cannot attribute those to a process.
         $delays = @(250, 500, 1000, 2000, 4000, 4000, 4000, 4000)
+        # The two cheap waits are always free; the long ones come out of the run's budget, and
+        # $false means it is spent, so stop rather than retry with no wait in between.
+        $wait = {
+            param([int]$Index)
+            $ms = $delays[$Index]
+            if ($Index -ge 2) {
+                if ($script:RemoveWaitBudgetMs -le 0) { return $false }
+                $ms = [Math]::Min($ms, $script:RemoveWaitBudgetMs)
+                $script:RemoveWaitBudgetMs -= $ms
+            }
+            Start-Sleep -Milliseconds $ms
+            return $true
+        }
         for ($attempt = 0; $attempt -le $delays.Count; $attempt++) {
             $lastTry = ($attempt -eq $delays.Count)
             try {
                 Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
             } catch {
-                if (-not $lastTry) { Start-Sleep -Milliseconds $delays[$attempt]; continue }
-                _Substep "could not remove: $Path ($($_.Exception.Message))" "Yellow"
+                # Read before $wait runs, so nothing can shadow the error record.
+                $failure = $_.Exception.Message
+                if (-not $lastTry -and (& $wait $attempt)) { continue }
+                _Substep "could not remove: $Path ($failure)" "Yellow"
                 # The closing summary must not promise the data is gone.
                 $script:RemoveFailed = $true
                 return
@@ -82,9 +104,10 @@ Environment:
                 _Substep "removed: $Path" "Green"
                 return
             }
-            if (-not $lastTry) { Start-Sleep -Milliseconds $delays[$attempt]; continue }
+            if (-not $lastTry -and (& $wait $attempt)) { continue }
             _Substep "still present (files held open): $Path" "Yellow"
             $script:RemoveFailed = $true
+            return
         }
     }
 
@@ -414,6 +437,12 @@ Environment:
             foreach ($pkg in @("unsloth_cli", "unsloth")) {
                 if (Test-Path -LiteralPath (Join-Path $Path "$venv\Lib\site-packages\$pkg") -PathType Container) { return $true }
             }
+        }
+        # An install that died between moving the old venv aside (install.ps1:4487, :4165) and
+        # writing the marker (install.ps1:4524) leaves the root with neither, so it would be
+        # refused as somebody else's. Only install.ps1 produces either name.
+        foreach ($leftover in @("unsloth_studio.rollback.*", ".venv.invalid.*")) {
+            if (Get-ChildItem -LiteralPath $Path -Filter $leftover -Force -ErrorAction SilentlyContinue) { return $true }
         }
         return $false
     }

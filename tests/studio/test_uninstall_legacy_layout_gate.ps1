@@ -75,6 +75,12 @@ try {
     Check "pre-marker venv whose unsloth.exe antivirus quarantined" `
         (_IsStudioRoot (Make "quarantined" @(".venv\Scripts\python.exe", ".venv\Lib\site-packages\unsloth_cli\__init__.py")) -ManagedDefaultRoot)
 
+    # An install that died before the marker was written. The root is ours and holds nothing else.
+    Check "partial install: rollback copy only" `
+        (_IsStudioRoot (Make "partial-rollback" @("unsloth_studio.rollback.20260908120000.4242\pyvenv.cfg")) -ManagedDefaultRoot)
+    Check "partial install: invalid legacy venv only" `
+        (_IsStudioRoot (Make "partial-invalid" @(".venv.invalid.20260908120000.4242\pyvenv.cfg")) -ManagedDefaultRoot)
+
     # A marker is proof wherever the root sits; it is the only thing a custom root can offer.
     Check "a custom root with the venv owner marker" `
         (_IsStudioRoot (Make "custom-marker" @("unsloth_studio\.unsloth-studio-owned")))
@@ -94,6 +100,8 @@ try {
         (-not (_IsStudioRoot (Make "custom-project" @(".venv\Scripts\python.exe", ".venv\Scripts\unsloth.exe", "pyproject.toml"))))
     Check "that project's site-packages is refused as a custom root too" `
         (-not (_IsStudioRoot (Make "custom-pkg" @(".venv\Scripts\python.exe", ".venv\Lib\site-packages\unsloth_cli\__init__.py"))))
+    Check "a partial-install leftover is refused at a custom root" `
+        (-not (_IsStudioRoot (Make "custom-partial" @(".venv.invalid.20260908120000.4242\pyvenv.cfg"))))
     $foreign = Make "foreign-shim" @()
     New-Item -ItemType Directory -Path (Join-Path $foreign "bin") -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $foreign "bin\unsloth.cmd") -Value "@echo off`r`npython -m mytool %*`r`n"
