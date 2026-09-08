@@ -6948,26 +6948,10 @@ def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
 def _windows_shared_groups(source_label: str | None) -> list[list[str]]:
     """Runtime files every Windows install kind owes, before its backend DLL.
 
-    Only ``llama.dll`` used to be required here, while the Linux kinds each
-    required six libraries including ``libllama-common.so*``. That asymmetry let
-    a Windows tree missing ``llama-common.dll`` report "prebuilt installed and
-    validated" and then fail at exec, which is what a user sees as
-
-        llama-server.exe - Bad Image
-        ...\\llama-common.dll is either not designed to run on Windows or it
-        contains an error. Error status 0xc0e90002.
-
-    That status is a code integrity refusal, so on those machines the file is
-    present and simply cannot be loaded. Requiring it does not make Smart App
-    Control let go, but it does mean a truncated or partially extracted install
-    is caught here rather than surfacing as an unexplained runtime failure.
-
-    Gated on the prebuilt sources. Both our bundles and upstream's are built
-    with ``BUILD_SHARED_LIBS`` on, so they ship ``llama-common.dll`` and the
-    thin ``llama-server.exe`` beside ``llama-server-impl.dll``. The from source
-    path in ``setup.ps1`` passes ``-DBUILD_SHARED_LIBS=OFF`` and links the same
-    code statically, so none of those files exist there and requiring them
-    would fail a healthy tree.
+    Requiring only ``llama.dll`` let a truncated extract validate and then fail at
+    exec. Gated on the prebuilt sources, which build with ``BUILD_SHARED_LIBS``
+    on; ``setup.ps1`` links statically, so requiring these there fails a healthy
+    tree.
     """
     groups: list[list[str]] = [["llama.dll"]]
     if source_label in {"published", "upstream"}:
@@ -7357,17 +7341,9 @@ def validate_prebuilt_choice(
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
     server_path, quantize_path = install_from_archives(choice, host, install_dir, work_dir)
-    # Every WINDOWS kind, not just Vulkan. The reuse path checks all kinds, so
-    # limiting the FRESH install to Vulkan meant a windows-cpu, windows-cuda or
-    # windows-rocm tree missing llama-common.dll was activated and reported
-    # successful, with the new requirement only biting on some later installer
-    # run. That is the gap this change exists to close, so it has to hold where
-    # the bundle is first unpacked.
-    #
-    # Deliberately not widened to Linux and macOS here. Their groups are
-    # unchanged by this PR and their bundles are built differently, so turning
-    # a previously unchecked path into a hard fallback for them belongs in its
-    # own change with its own evidence.
+    # Every WINDOWS kind, not just Vulkan: gating only Vulkan here activated a
+    # fresh tree missing llama-common.dll and reported success. Not widened to
+    # Linux or macOS, whose groups this change does not touch.
     if (
         choice.install_kind in VULKAN_INSTALL_KINDS or choice.install_kind.startswith("windows-")
     ) and not runtime_payload_is_healthy(install_dir, host, choice):

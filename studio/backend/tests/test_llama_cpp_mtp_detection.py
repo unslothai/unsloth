@@ -3112,17 +3112,10 @@ def test_probe_reports_no_draft_ngl_flag_when_the_build_has_neither(tmp_path):
 
 @_NEEDS_BASH
 def test_a_code_integrity_block_escalates_the_retry_window(tmp_path, monkeypatch):
-    """Only a confirmed policy block earns the doubling.
-
-    A binary Windows refuses to load is permanent until the file or the policy
-    changes, so re-probing it every 30s costs a 10s subprocess timeout forever.
-    A merely loaded machine, which times out a few probes and then recovers,
-    must NOT inherit that wait: see
-    test_inconclusive_probe_retries_after_a_bounded_cache_window.
-
-    The block arrives here the way Windows actually delivers it: the process is
-    created and its loader kills it, so subprocess.run returns a
-    CompletedProcess carrying the NTSTATUS rather than raising.
+    """Only a confirmed block earns the doubling; a merely loaded machine that
+    times out a few probes and recovers must not inherit that wait. It arrives
+    the way Windows delivers it: subprocess.run returns the NTSTATUS from a
+    loader-killed process rather than raising.
     """
     import types as _types
 
@@ -3146,13 +3139,10 @@ def test_a_code_integrity_block_escalates_the_retry_window(tmp_path, monkeypatch
     assert first["mtp_probe_inconclusive"] is True
     assert len(calls) == 1
 
-    # First window is the base 30s.
     now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
     LlamaCppBackend.probe_server_capabilities(str(fake))
     assert len(calls) == 2
 
-    # Second window is DOUBLED, so the wait that sufficed a moment ago no
-    # longer reaches the next probe.
     now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
     LlamaCppBackend.probe_server_capabilities(str(fake))
     assert len(calls) == 2, "a confirmed block must not be re-probed on the flat window"
@@ -3207,11 +3197,7 @@ def test_inconclusive_probe_retries_after_a_bounded_cache_window(tmp_path, monke
     assert LlamaCppBackend.probe_server_capabilities(str(fake)) is retried
     assert len(calls) == 2
 
-    # A plain timeout is a TRANSIENT failure, so the window stays flat at 30s
-    # rather than escalating; only a confirmed code integrity block earns the
-    # doubling (see test_a_code_integrity_block_escalates_the_retry_window).
-    # Once a later retry succeeds, the result returns to the normal long-lived
-    # cache.
+    # A timeout is TRANSIENT, so the window stays flat; only a confirmed block doubles.
     now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
     recovered = LlamaCppBackend.probe_server_capabilities(str(fake))
     assert recovered["mtp_probe_inconclusive"] is False

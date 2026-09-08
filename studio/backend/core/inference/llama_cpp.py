@@ -7771,9 +7771,7 @@ class LlamaCppBackend:
     # Nanoseconds and size, not int(st_mtime): an update landing in the same second as
     # the probe kept the key identical and got the old build's capabilities.
     _CAPABILITY_PROBE_RETRY_SECONDS = 30.0
-    # Ceiling for the backoff below. A binary blocked by Application Control or
-    # Smart App Control stays blocked until the file or the policy changes, so
-    # re-probing it every 30s buys nothing and costs a 10s timeout each time.
+    # A blocked binary stays blocked until the file or the policy changes.
     _CAPABILITY_PROBE_RETRY_MAX_SECONDS = 600.0
     _capability_cache: dict[tuple[str, int, int], dict[str, object]] = {}
     _capability_retry_after: dict[tuple[str, int, int], float] = {}
@@ -7949,22 +7947,15 @@ class LlamaCppBackend:
                 timeout = 10,
                 check = False,
                 env = probe_env,
-                # Every other subprocess in this module passes these. Without
-                # them the probe flashes a console window, and this one runs on
-                # a status poll rather than a user action, so it flashes
-                # repeatedly while the panel is open.
+                # Else the probe flashes a console window on every status poll.
                 **_windows_hidden_subprocess_kwargs(),
             )
             probe_ok = result.returncode == 0
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
             if not probe_ok:
-                # Windows can create the process successfully and have its
-                # LOADER terminate it, which returns a CompletedProcess with the
-                # NTSTATUS as the exit code rather than raising. Classifying
-                # only in the except block below missed exactly the shape this
-                # module was written for. The status also appears in the child's
-                # own output when a dependent DLL is the refused one, so both
-                # are offered to the classifier.
+                # Windows creates the process and its LOADER kills it, so this
+                # returns the NTSTATUS rather than raising; the status lands in
+                # the output instead when a dependent DLL was the refused image.
                 code_integrity_blocked = code_integrity_block_reason(
                     result.returncode
                 ) or code_integrity_block_reason(help_text)
@@ -8161,9 +8152,7 @@ class LlamaCppBackend:
             blocked = code_integrity_block_reason(exc)
             code_integrity_blocked = blocked
             if blocked is not None:
-                # Not a debug-level detail: nothing the user does inside Studio
-                # can recover from this, and without the log line the only
-                # symptom is a probe that never answers.
+                # Warning, not debug: the only other symptom is a silent probe.
                 logger.warning(
                     f"llama-server is blocked by Windows code integrity policy: {blocked}. "
                     f"Binary: {bin_path}"
@@ -8265,13 +8254,9 @@ class LlamaCppBackend:
                 # Bound both failure modes: do not pin a transient failure for
                 # the process lifetime, and do not make every caller repeat a
                 # 10-second timeout while a persistent failure remains (#8317).
-                #
-                # The doubling is reserved for a CONFIRMED code integrity block.
-                # Escalating on every inconclusive probe was wrong: a machine
-                # that is merely loaded times out a few probes and then carries
-                # a ten-minute stale capability set long after it recovers. A
-                # policy refusal is different in kind, being permanent until the
-                # file or the policy changes, so only that earns the long wait.
+                # Only a CONFIRMED block doubles, being permanent until the file
+                # or the policy changes. Escalating on any inconclusive probe
+                # would strand a merely loaded machine on a stale capability set.
                 if code_integrity_blocked is not None:
                     delay = cls._capability_retry_backoff.get(
                         cache_key, cls._CAPABILITY_PROBE_RETRY_SECONDS
@@ -8280,8 +8265,6 @@ class LlamaCppBackend:
                         delay * 2.0, cls._CAPABILITY_PROBE_RETRY_MAX_SECONDS
                     )
                 else:
-                    # Ordinary transient failure: flat window, and drop any
-                    # escalation a previous block had built up.
                     delay = cls._CAPABILITY_PROBE_RETRY_SECONDS
                     cls._capability_retry_backoff.pop(cache_key, None)
                 cls._capability_retry_after[cache_key] = time.monotonic() + delay
@@ -16233,15 +16216,9 @@ class LlamaCppBackend:
         """
         lowered = (output or "").lower()
 
-        # Checked first, because it is the most specific thing that can be true
-        # and because every other branch here gives advice that is actively
-        # wrong for it. A code integrity refusal is not a bad GGUF, not memory,
-        # and not a missing library: the file is present and Windows will not
-        # load it. Reinstalling, freeing memory and running as administrator all
-        # fail, which is what users end up doing when the message does not say
-        # so. The status arrives either as the child's exit code or in its
-        # output, depending on whether the refused image was llama-server itself
-        # or one of its dependent DLLs, so both are offered.
+        # First, because every branch below advises reinstall, free memory or
+        # run as administrator, all of which fail when the file is present and
+        # Windows simply refuses to load it.
         blocked = code_integrity_block_reason(returncode) or code_integrity_block_reason(output)
         if blocked is not None:
             return code_integrity_user_message(binary or "the llama.cpp runtime", blocked)

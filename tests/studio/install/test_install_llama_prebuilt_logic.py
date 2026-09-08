@@ -2408,9 +2408,7 @@ def write_windows_install_shape(
     (runtime_dir / "llama-server.exe").write_bytes(b"MZ")
     (runtime_dir / "llama-quantize.exe").write_bytes(b"MZ")
     if include_shared_runtime:
-        # Everything a published or upstream Windows bundle carries alongside
-        # llama.dll. Both are built with BUILD_SHARED_LIBS on, so llama-server.exe
-        # is a thin launcher and the real code lives in these libraries.
+        # What a BUILD_SHARED_LIBS bundle carries alongside llama.dll.
         for name in (
             "llama-common.dll",
             "llama-server-impl.dll",
@@ -6913,13 +6911,8 @@ def _flat(groups: list[list[str]]) -> set[str]:
     ],
 )
 def test_windows_prebuilt_health_requires_the_shared_runtime(install_kind: str):
-    """Every Windows install kind owes llama-common.dll, not just llama.dll.
-
-    Windows used to require only llama.dll while each Linux kind required six
-    libraries including libllama-common.so*. A tree missing llama-common.dll
-    therefore reported "prebuilt installed and validated" and then failed at
-    exec with a Bad Image dialog naming that file.
-    """
+    """Requiring only llama.dll let a tree missing llama-common.dll validate and
+    then fail at exec."""
     patterns = _flat(runtime_payload_health_groups(install_kind, source_label = "published"))
     for required in (
         "llama.dll",
@@ -6935,10 +6928,8 @@ def test_windows_prebuilt_health_requires_the_shared_runtime(install_kind: str):
 
 
 def test_windows_source_build_does_not_require_the_shared_runtime():
-    """setup.ps1 builds with -DBUILD_SHARED_LIBS=OFF, so those files never exist.
-
-    Requiring them for a source build would fail a healthy tree on every check.
-    """
+    """setup.ps1 builds with -DBUILD_SHARED_LIBS=OFF, so requiring these would
+    fail a healthy tree."""
     patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label = None))
     assert "llama.dll" in patterns
     for absent in ("llama-common.dll", "llama-server-impl.dll", "mtmd.dll"):
@@ -6952,7 +6943,6 @@ def test_windows_upstream_bundles_require_the_shared_runtime_too():
 
 
 def test_existing_install_matches_plan_windows_rejects_missing_llama_common(tmp_path: Path):
-    """A published Windows tree without llama-common.dll is not healthy."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     write_windows_install_shape(install_dir, include_llama_dll = True)
@@ -6982,15 +6972,8 @@ def test_existing_install_matches_plan_windows_rejects_missing_llama_common(tmp_
 
 
 def test_a_fresh_windows_install_is_payload_checked_not_just_vulkan():
-    """The check has to run where the bundle is first unpacked.
-
-    runtime_payload_is_healthy was called on a fresh install only for the Vulkan
-    kinds, so a newly extracted windows-cpu, windows-cuda or windows-rocm tree
-    missing llama-common.dll was activated and reported successful, and the
-    requirement bit only on a later run through the existing-install reuse path.
-    A source guard rather than a behavioural one because reaching that call
-    needs a full download, extract and activate; the behaviour it gates is
-    covered by test_existing_install_matches_plan_windows_rejects_missing_llama_common.
+    """The check has to run where the bundle is first unpacked, not only on the
+    reuse path. A source guard because reaching that call needs a real download.
     """
     source = MODULE_PATH.read_text(encoding = "utf-8")
     gate = source[source.index("overlaying prebuilt bundle") :]
