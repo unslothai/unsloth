@@ -250,6 +250,25 @@ class _GenerationThreadError(RuntimeError):
     """Generation worker failures that should propagate through stream routes."""
 
 
+def _prompt_already_has_bos(tokenizer, prompt):
+    """Did the rendered chat template emit BOS itself?
+
+    Most templates do, so the tokenizer must not add a second one. Some do not (zephyr,
+    tinyllama-chat), and suppressing special tokens for those would drop BOS entirely.
+    """
+    tok = getattr(tokenizer, "tokenizer", tokenizer)
+    bos_token_id = getattr(tok, "bos_token_id", None)
+    if bos_token_id is None:
+        return False
+    try:
+        ids = tok(prompt, add_special_tokens = False)["input_ids"]
+    except Exception:
+        return False
+    while isinstance(ids, (list, tuple)) and ids and isinstance(ids[0], (list, tuple)):
+        ids = ids[0]
+    return bool(len(ids)) and ids[0] == bos_token_id
+
+
 class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""
 
@@ -1262,8 +1281,8 @@ class InferenceBackend:
             formatted_prompt = render_result.prompt
             reasoning_channel_markers = render_result.reasoning_channel_markers
             reasoning_channel_markers_resolved = True
-            # Chat templates already supply the model-specific special tokens.
-            add_special_tokens = False
+            # Suppress the tokenizer's BOS only when the template already emitted one.
+            add_special_tokens = not _prompt_already_has_bos(tokenizer, formatted_prompt)
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
@@ -1490,7 +1509,11 @@ class InferenceBackend:
             formatted_prompt = self.format_chat_prompt(
                 messages, system_prompt, continue_final_message = continue_final_message
             )
-            inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(model.device)
+            inputs = raw_tokenizer(
+                formatted_prompt,
+                return_tensors = "pt",
+                add_special_tokens = not _prompt_already_has_bos(raw_tokenizer, formatted_prompt),
+            ).to(model.device)
             prompt_text = formatted_prompt
 
         # Stream with TextIteratorStreamer + background thread
