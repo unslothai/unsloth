@@ -984,29 +984,24 @@ def test_a_cpu_pinned_projector_is_charged_to_host_ram():
         mmproj_bytes = mmproj,
         mmproj_movable = True,
     )
-    # Enough RAM for the embedding under the headroom, but not for the projector too.
-    ram = o.host_ram_headroom_bytes + layout.token_embd_bytes + mmproj // 2
+    # Just enough RAM for the embedding and the projector under the headroom.
+    ram = o.host_ram_headroom_bytes + layout.token_embd_bytes + mmproj
 
     plan = plan_placement(layout, [card], ram, ctx, kv_bytes_floor = floor, opts = o)
     assert plan.mmproj_to_host and not plan.spilled_blocks, plan.reason
-    assert (
-        plan.host_bytes == layout.token_embd_bytes + mmproj
-    ), "a CPU-pinned projector is host RAM this plan has to pay for"
-    assert (
-        not plan.load_mode_none
-    ), "the host cannot hold the projector, so mmap has to stay and page it"
-    assert "--load-mode" not in plan_to_args(plan)
-
-    # With the room for it, nothing changes but the answer.
-    roomy = plan_placement(
-        layout,
-        [card],
-        ram + mmproj,
-        ctx,
-        kv_bytes_floor = floor,
-        opts = o,
+    assert plan.host_bytes == layout.token_embd_bytes + mmproj, (
+        "a CPU-pinned projector is host RAM this plan has to pay for"
     )
-    assert roomy.mmproj_to_host and roomy.load_mode_none
+    assert plan.load_mode_none
+    assert plan.cache_ram_mib == 0, "nothing is left under the headroom for the prompt cache"
+
+    # One byte short of the projector, and the plan is refused rather than
+    # launched: the projector sits in a CPU backend buffer, so mmap could not
+    # page it, and nothing else in a projector-only plan scores the host side.
+    short = plan_placement(layout, [card], ram - 1, ctx, kv_bytes_floor = floor, opts = o)
+    assert short.declined_by_gate and not short.changed, short.reason
+    assert "host RAM" in short.reason
+    assert not short.mmproj_to_host and plan_to_args(short) == []
 
 
 def test_the_per_device_selection_grades_its_boundary_block_too():

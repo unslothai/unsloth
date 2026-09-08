@@ -2350,6 +2350,33 @@ def _plan_at(
     return None
 
 
+def _host_ram_refusal(
+    opts: PlanOptions, n_ctx: int, host_bytes: int, host_ram_bytes: Optional[int]
+) -> Optional[Plan]:
+    """The one hard host-RAM admission check, shared by every plan that moves
+    bytes onto the host.
+
+    A spilled weight can at least page through mmap; a projector pinned to the
+    CPU cannot, since clip.cpp allocates it in a CPU backend buffer of its own,
+    so both are refused at the same line rather than only the one the cost gate
+    happens to score.
+    """
+    if host_ram_bytes is None:
+        return None
+    spendable = max(0, host_ram_bytes - opts.host_ram_headroom_bytes)
+    if host_bytes <= spendable:
+        return None
+    return Plan(
+        n_ctx = n_ctx,
+        declined_by_gate = True,
+        reason = (
+            f"the plan needs {host_bytes / GIB:.2f} GiB of host RAM and only "
+            f"{spendable / GIB:.2f} GiB is spendable, so it would page from disk "
+            "without even the mmap that makes that survivable; left to --fit on"
+        ),
+    )
+
+
 def _cost_gate(
     layout: ModelLayout,
     opts: PlanOptions,
@@ -2395,22 +2422,9 @@ def _cost_gate(
     #   ... preferred buffer type CUDA0, using CUDA_Host instead   then   Killed
     #
     # while ``--fit on`` completed both times on the same host.
-    if host_ram_bytes is not None:
-        spendable = max(0, host_ram_bytes - opts.host_ram_headroom_bytes)
-        if host_bytes > spendable:
-            return (
-                Plan(
-                    n_ctx = n_ctx,
-                    declined_by_gate = True,
-                    reason = (
-                        f"the spill needs {host_bytes / GIB:.2f} GiB of host RAM and only "
-                        f"{spendable / GIB:.2f} GiB is spendable, so it would page from disk "
-                        "without even the mmap that makes that survivable; left to --fit on"
-                    ),
-                ),
-                0.0,
-                0.0,
-            )
+    refused = _host_ram_refusal(opts, n_ctx, host_bytes, host_ram_bytes)
+    if refused is not None:
+        return refused, 0.0, 0.0
     n_slots = max(1, knobs.n_parallel if knobs is not None else opts.n_parallel)
     # One shared stream under --kv-unified, so the window a single request may
     # fill is the whole n_ctx however many slots are served; N private windows
@@ -2597,6 +2611,22 @@ def _finish(
     # the surcharge is the caller's measured allowance for the second
     # (_MMPROJ_VRAM_SAFETY, ~1.3x runtime over file size).
     mmproj_host_bytes = opts.mmproj_bytes if (knobs is not None and knobs.mmproj_to_host) else 0
+
+    # A projector alone can close the deficit, and then nothing below scores the
+    # plan: ``units`` and ``spill_lm_head`` are both empty, the cost gate is
+    # skipped, and with it the only refusal that keeps a host side out of swap.
+    # The projector on the host is resident, not pageable (clip.cpp allocates it
+    # in a CPU backend buffer; mmap covers the model file, not that), so a host
+    # that cannot hold it gets the same refusal a weight spill would.
+    if mmproj_host_bytes:
+        refused = _host_ram_refusal(
+            opts,
+            n_ctx,
+            layout.token_embd_bytes + spilled_weight_bytes + mmproj_host_bytes,
+            host_ram_bytes,
+        )
+        if refused is not None:
+            return refused
 
     plan_ms = fit_ms = 0.0
     if opts.require_cost_win and budget is not None and (units or spill_lm_head):
