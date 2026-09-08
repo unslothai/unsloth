@@ -31,6 +31,10 @@ import click
 import typer
 from typer.core import TyperCommand
 
+from studio.backend.utils.coding_agents import (
+    deepseek_harness_executables_on_path,
+    is_deepseek_harness_executable,
+)
 from unsloth_cli._inference import (
     _USER_AGENT,
     _studio_token,
@@ -99,6 +103,14 @@ _HERMES_POSIX_INSTALL_HINT = (
 # overrides in config.yaml. write_hermes_config claims this value for smaller
 # windows and scales the compaction threshold back down to the real window.
 _HERMES_MIN_CONTEXT = 65536
+_DSH_PROVIDER = "unsloth"
+_DSH_ENV_KEY = "UNSLOTH_API_KEY"
+_DSH_PACKAGE = "@deepseek-ai/dsh"
+# dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it
+# would inherit a danger-full-access exported in the parent shell, and "" is not unset
+# to ??. Pin the mode in both directions instead of only setting it for --yolo.
+_DSH_SAFE_PERMISSION_MODE = "workspace-write"
+_DSH_YOLO_PERMISSION_MODE = "danger-full-access"
 _PI_PROVIDER = "unsloth"
 _SUBAGENT_NAME = "unsloth"
 _SUBAGENT_DESCRIPTION = (
@@ -371,7 +383,7 @@ _PERSIST_OPTION = typer.Option(
     rich_help_panel = _PANEL_SESSION,
     help = (
         "Keep this agent's Unsloth-managed session dir so you can resume it later. "
-        "codex/openclaw/hermes/pi have their whole home relocated into an Unsloth dir "
+        "codex/openclaw/hermes/pi/dsh have their whole home relocated into an Unsloth dir "
         "that is a throwaway temp dir (wiped on exit) by default; with --persist it "
         "lives under the Unsloth agents dir and survives, so their own resume can reopen "
         "it. claude and opencode keep sessions in your own stores (~/.claude, "
@@ -444,6 +456,8 @@ def _opencode_supports_native_auto(command: str = "opencode") -> bool:
         output = subprocess.check_output(
             [executable, "--version"],
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 10,
             stderr = subprocess.DEVNULL,
             env = _probe_env(),
@@ -592,6 +606,18 @@ def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
         rewritten = prefix + rewritten
         return rewritten
     return args
+
+
+_DSH_LAUNCHER_ARGS = frozenset(
+    "--profile --patch --dump-config --dump-default-config -V --version plugin web".split()
+)
+
+
+def _dsh_command(args: list[str]) -> list[str]:
+    head = args[0] if args else ""
+    if head in _DSH_LAUNCHER_ARGS or head.startswith(("--profile=", "--patch=")):
+        return ["dsh", *args]
+    return ["dsh", "web", *args]
 
 
 class LoadOptions(NamedTuple):
@@ -1483,6 +1509,20 @@ def _write_private_text(path: Path, text: str) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding = "utf-8") as handle:
         handle.write(text)
+
+
+def _read_yaml_object(path: Path) -> Optional[dict]:
+    import yaml
+
+    if not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding = "utf-8"))
+    except (yaml.YAMLError, OSError):
+        return None
+    if data is None:
+        return {}
+    return data if isinstance(data, dict) else None
 
 
 def _read_json_object(path: Path) -> Optional[dict]:
@@ -2875,7 +2915,13 @@ def _claude_version() -> Optional[tuple]:
         return None
     try:
         result = subprocess.run(
-            [executable, "--version"], capture_output = True, text = True, timeout = 10, env = _probe_env()
+            [executable, "--version"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            env = _probe_env(),
         )
         # Pull the X.Y.Z out of the output rather than assuming it is the first token.
         # claude prints it first today ("2.1.98 (Claude Code)"), but a format change
@@ -2990,6 +3036,8 @@ def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]
         output = subprocess.check_output(
             [executable, "--version"],
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 10,
             stderr = subprocess.DEVNULL,
             env = _probe_env(),
@@ -3116,9 +3164,17 @@ def _wsl_windows_user_profile(executable: str) -> Path:
             profile = subprocess.check_output(
                 ["cmd.exe", "/d", "/c", "echo %USERPROFILE%"],
                 text = True,
+                encoding = "utf-8",
+                # The path is the value: a corrupted home is worse than a loud failure.
+                errors = "strict",
                 stderr = subprocess.DEVNULL,
                 cwd = str(Path(executable).parent),
             ).strip()
+        except UnicodeDecodeError as exc:
+            _fail(
+                f"Could not read the Windows user profile for Codex ({exc}); "
+                "set USERPROFILE in the WSL environment, for example through WSLENV."
+            )
         except (OSError, subprocess.CalledProcessError) as exc:
             _fail(f"Could not find the Windows user profile for Codex: {exc}")
     if not profile or profile == "%USERPROFILE%":
@@ -3129,6 +3185,8 @@ def _wsl_windows_user_profile(executable: str) -> Path:
         translated = subprocess.check_output(
             ["wslpath", "-u", profile],
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             stderr = subprocess.DEVNULL,
         ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -3147,6 +3205,8 @@ def _codex_source_home(*, ignore_configured: bool = False) -> Path:
                     configured = subprocess.check_output(
                         ["wslpath", "-u", configured],
                         text = True,
+                        encoding = "utf-8",
+                        errors = "replace",
                         stderr = subprocess.DEVNULL,
                     ).strip()
                 except (OSError, subprocess.CalledProcessError) as exc:
@@ -3180,6 +3240,8 @@ def _create_directory_junction(source: Path, target: Path) -> bool:
             ["cmd.exe", "/d", "/c", "mklink", "/J", str(target), str(source)],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 30,
             check = False,
         )
@@ -3357,6 +3419,8 @@ def _opencode_subagent_inline_config(
                 [executable, "debug", "config"],
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 15,
                 env = env,
             )
@@ -3569,7 +3633,9 @@ def _wsl_windows_executable(command: list) -> Optional[str]:
 
 def _wsl_windows_path(path: Path) -> str:
     try:
-        translated = subprocess.check_output(["wslpath", "-w", str(path)], text = True).strip()
+        translated = subprocess.check_output(
+            ["wslpath", "-w", str(path)], text = True, encoding = "utf-8", errors = "replace"
+        ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         _fail(f"Could not translate WSL path {path}: {exc}")
     if not translated:
@@ -3844,6 +3910,23 @@ def _which_with_install_dirs(name: str) -> Optional[str]:
             os.environ["PATH"] = original
 
 
+def _which_deepseek_harness_with_install_dirs() -> Optional[str]:
+    """Find the first valid DeepSeek Harness even when another ``dsh`` shadows it."""
+    original = os.environ.get("PATH")
+    _augment_path_with_install_dirs()
+    try:
+        for executable in deepseek_harness_executables_on_path():
+            executable = _prefer_windows_cmd_sibling(executable)
+            if executable is not None and is_deepseek_harness_executable(executable):
+                return executable
+        return None
+    finally:
+        if original is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = original
+
+
 def _install_source(install_hint: str) -> Optional[str]:
     """The first http(s) URL an install hint fetches, or None (e.g. an npm install)."""
     match = re.search(r"https?://[^\s'\")]+", install_hint)
@@ -3991,10 +4074,32 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
 
 
 def _resolve_or_install_agent(name: str, install_hint: str, resolver) -> str:
-    executable = resolver(name) or _install_agent(name, install_hint)
-    if executable is None:
-        _fail(f"`{name}` not found on PATH. Install it with: {install_hint}")
-    return executable
+    executable = resolver(name)
+    invalid_executable = None
+    if executable is not None:
+        if name != "dsh" or is_deepseek_harness_executable(executable):
+            return executable
+        invalid_executable = executable
+        executable = _which_deepseek_harness_with_install_dirs()
+        if executable is not None:
+            return executable
+
+    executable = _install_agent(name, install_hint)
+    if executable is not None:
+        if name != "dsh" or is_deepseek_harness_executable(executable):
+            return executable
+        invalid_executable = executable
+    if name == "dsh":
+        executable = _which_deepseek_harness_with_install_dirs()
+        if executable is not None:
+            return executable
+
+    if invalid_executable is not None:
+        _fail(
+            f"`{invalid_executable}` is not DeepSeek Harness. Install DeepSeek Harness "
+            f"with: {install_hint}"
+        )
+    _fail(f"`{name}` not found on PATH. Install it with: {install_hint}")
 
 
 def _require_agent_for_launch(name: str, install_hint: str, launch: bool) -> Optional[str]:
@@ -4540,6 +4645,26 @@ def _session_config(
         yield path
 
 
+def _studio_embedding_model(base: str, key: str) -> Optional[str]:
+    """Studio's configured embedding model, or None when this server cannot say.
+
+    Not a model name: a name this server will not serve, beside fallback "none", is the one
+    combination OpenClaw cannot degrade out of. The caller writes provider "none" instead.
+    """
+    try:
+        info = _http_json("GET", f"{base}/api/settings/embedding-model", key, timeout = 10)
+    # typer.Exit is a RuntimeError subclass: the broad catch would swallow a deliberate abort.
+    except (typer.Exit, typer.Abort, click.exceptions.Exit, click.exceptions.Abort):
+        raise
+    except Exception:  # noqa: BLE001 - an older or unreachable server still gets a working config
+        return None
+    name = info.get("embedding_model") if isinstance(info, dict) else None
+    if not isinstance(name, str) or not name.strip():
+        return None
+    # OpenClaw sends this to /v1/embeddings verbatim; Settings stores what was typed.
+    return name.strip()
+
+
 def write_openclaw_config(
     base: str,
     key: str,
@@ -4547,6 +4672,7 @@ def write_openclaw_config(
     path: Path,
     yolo: bool = False,
     workspace_path: Optional[str] = None,
+    embedding_model: Optional[str] = None,
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -4570,6 +4696,24 @@ def write_openclaw_config(
         "api": "openai-completions",
         "models": [provider_model],
     }
+    # Memory search is on by default and defaults to openai, so a local session reaches
+    # OpenAI unless this block is written.
+    search = _subdict(_subdict(config, "memory"), "search")
+    if embedding_model:
+        search.update(
+            {
+                "provider": "openai-compatible",
+                "model": embedding_model,
+                "fallback": "none",
+                "remote": {"baseUrl": f"{base}/v1", "apiKey": key},
+            }
+        )
+    else:
+        # "none" is OpenClaw's keyword-only mode: no network call, and search still returns
+        # hits. Clearing the remote stops a reused --persist config aiming at a dead endpoint.
+        search.update({"provider": "none", "fallback": "none"})
+        search.pop("model", None)
+        search.pop("remote", None)
     # Pin a default model, else OpenClaw drops into its setup agent ("no models available").
     agents = _subdict(config, "agents")
     defaults = _subdict(agents, "defaults")
@@ -4892,6 +5036,43 @@ def write_pi_subagent_config(
             "approve": approve,
         },
     )
+
+
+def write_dsh_config(base: str, model: dict, path: Path) -> None:
+    import yaml
+
+    config = _read_yaml_object(path)
+    if config is None:
+        typer.echo(
+            f"Warning: couldn't parse {path} — add an '{_DSH_PROVIDER}' provider "
+            "there yourself, or move the file aside and re-run.",
+            err = True,
+        )
+        return
+    model_entry = {"id": model["id"]}
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        window = int(window)
+        model_entry["contextWindow"] = window
+        model_entry["maxTokens"] = min(window // 4, 8192)
+    _subdict(_subdict(config, "llm-pi-ai"), "providers")[_DSH_PROVIDER] = {
+        "displayName": "Unsloth Studio",
+        "api": "openai-completions",
+        "baseURL": f"{base}/v1",
+        "apiKeyEnv": _DSH_ENV_KEY,
+        # pi-ai reads an unknown base URL as OpenAI itself.
+        "compat": {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"},
+        "models": [model_entry],
+    }
+    _subdict(config, "agent-default-model").update(
+        provider = _DSH_PROVIDER,
+        model = model["id"],
+    )
+    text = yaml.safe_dump(config, sort_keys = False)
+    if not path.exists() or path.read_text(encoding = "utf-8") != text:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(text, encoding = "utf-8")
+        typer.echo(f"Updated {path}")
 
 
 @start_app.command("claude", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
@@ -5222,6 +5403,7 @@ def openclaw(
             config_path,
             yolo = yolo,
             workspace_path = "${OPENCLAW_WORKSPACE_DIR}",
+            embedding_model = _studio_embedding_model(base, key),
         )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
         env = {"OPENCLAW_CONFIG_PATH": str(config_path), "OPENCLAW_STATE_DIR": str(cfg)}
@@ -5624,3 +5806,69 @@ def pi(
             install_hint = install_hint,
             clear_screen = True,
         )
+
+
+@start_app.command("dsh", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+def dsh(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
+    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    serve: bool = _SERVE_OPTION,
+    yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
+):
+    """Point DeepSeek Harness (dsh) at the running Unsloth server and start it."""
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    _reject_as_subagent("dsh", ctx.args)
+    command = _dsh_command(ctx.args)
+    install_hint = _npm_install_hint(_DSH_PACKAGE)
+    _require_agent_for_launch("dsh", install_hint, launch)
+    base, key, entry = _connect(
+        api_key,
+        model,
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        serve = serve,
+        launch = launch,
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
+    )
+    with _session_config("dsh", launch, persist = persist) as home:
+        write_dsh_config(base, entry, home / "settings.yaml")
+        env = {
+            _DSH_ENV_KEY: key,
+            "DSH_HOME": str(home),
+            # dsh uploads session records once a user records /feedback.
+            "DSH_TELEMETRY_DISABLED": "1",
+            "DSH_PERMISSION_MODE": (
+                _DSH_YOLO_PERMISSION_MODE if yolo else _DSH_SAFE_PERMISSION_MODE
+            ),
+        }
+        _run(base, entry, env, command, launch = launch, install_hint = install_hint)

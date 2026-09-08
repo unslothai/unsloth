@@ -331,6 +331,8 @@ async def load_video_model_gated(
 
         if device != "cpu":
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO
+            # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission
+            # wraps the same span.
             from routes.inference import _diffusion_training_admission
             def _acquire_and_begin():
                 with _diffusion_training_admission():

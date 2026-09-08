@@ -1323,7 +1323,6 @@ class UnslothTrainer:
                     logger.info(f"  - Finetune language layers: {finetune_language_layers}")
                     logger.info(f"  - Finetune attention modules: {finetune_attention_modules}")
                     logger.info(f"  - Finetune MLP modules: {finetune_mlp_modules}")
-                logger.info()
 
                 peft_kwargs = dict(
                     r = lora_r,
@@ -2363,6 +2362,37 @@ class UnslothTrainer:
         logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
         return result_dataset
 
+    def _preprocess_audio_eval_split(self, eval_dataset, preprocess, custom_format_mapping):
+        """Preprocess eval data, warning and dropping it on failure."""
+        if eval_dataset is None:
+            return None
+        try:
+            return preprocess(eval_dataset, custom_format_mapping)
+        except Exception as e:
+            self._record_warning(
+                "The eval dataset could not be prepared for this audio model, so this run has "
+                f"no evaluation: {e}"
+            )
+            return None
+
+    def _audio_eval_config(self, training_args):
+        """Build audio evaluation arguments and return the eval dataset."""
+        eval_dataset = training_args.get("eval_dataset", None)
+        eval_steps = training_args.get("eval_steps", 0.00)
+        if eval_dataset is None:
+            return {}, None
+        if not eval_steps or eval_steps <= 0:
+            logger.info(f"⚠️  Eval dataset provided but eval_steps={eval_steps} (disabled)\n")
+            return {}, None
+        rows = len(eval_dataset) if hasattr(eval_dataset, "__len__") else "?"
+        logger.info(f"✅ Evaluation enabled: eval_steps={eval_steps}, eval rows={rows}\n")
+        return {
+            "eval_strategy": "steps",
+            "eval_steps": eval_steps,
+            # Avoid HF's default of 8, which can OOM audio runs.
+            "per_device_eval_batch_size": training_args.get("batch_size", 2),
+        }, eval_dataset
+
     def _preprocess_whisper_dataset(
         self,
         dataset,
@@ -2504,6 +2534,7 @@ class UnslothTrainer:
         dataset_local_path: Optional[str] = None,
         dataset_revision: Optional[str] = None,
         require_exact_resume_resources: bool = False,
+        hf_token: Optional[str] = None,
         max_train_rows: Optional[int] = None,
         max_train_rows_seed: int = 3407,
     ) -> Optional[tuple]:
@@ -2518,6 +2549,9 @@ class UnslothTrainer:
 
         Returns (dataset_info, eval_dataset) or None on error; eval_dataset
         may be None if no eval split is available.
+
+        hf_token must reach every load_dataset and get_dataset_split_names call below,
+        or a gated dataset is read under the ambient HF_TOKEN instead of the request.
         """
         from core.training.s3_dataset import S3DownloadCancelled
 
@@ -2644,6 +2678,8 @@ class UnslothTrainer:
                     load_kwargs["name"] = subset
                 if dataset_revision:
                     load_kwargs["revision"] = dataset_revision
+                if hf_token:
+                    load_kwargs["token"] = hf_token
 
                 if dataset_streaming:
                     self._update_progress(status_message = f"Streaming dataset: {dataset_source}...")
@@ -2787,6 +2823,8 @@ class UnslothTrainer:
                             eval_load_kwargs["name"] = subset
                         if dataset_revision:
                             eval_load_kwargs["revision"] = dataset_revision
+                        if hf_token:
+                            eval_load_kwargs["token"] = hf_token
 
                         if dataset_streaming:
                             # load_dataset(streaming=True) returns an IterableDataset without validating the
@@ -2799,6 +2837,8 @@ class UnslothTrainer:
                                 probe_kwargs["config_name"] = subset
                             if dataset_revision:
                                 probe_kwargs["revision"] = dataset_revision
+                            if hf_token:
+                                probe_kwargs["token"] = hf_token
                             try:
                                 available_splits = get_dataset_split_names(**probe_kwargs)
                             except Exception as probe_err:
@@ -2898,6 +2938,7 @@ class UnslothTrainer:
                                 train_split or "train"
                             ),
                             revision = dataset_revision,
+                            token = hf_token,
                             strict_split_loading = (
                                 require_exact_resume_resources and dataset_loaded_from_cache
                             ),
@@ -3004,7 +3045,12 @@ class UnslothTrainer:
                     )
             if self._audio_type == "csm":
                 processed = self._preprocess_csm_dataset(dataset, custom_format_mapping)
-                return (processed, None)
+                return (
+                    processed,
+                    self._preprocess_audio_eval_split(
+                        eval_dataset, self._preprocess_csm_dataset, custom_format_mapping
+                    ),
+                )
 
             elif self._audio_type == "whisper":
                 train_data, eval_data = self._preprocess_whisper_dataset(
@@ -3016,15 +3062,30 @@ class UnslothTrainer:
 
             elif self._audio_type == "snac":
                 processed = self._preprocess_snac_dataset(dataset, custom_format_mapping)
-                return (processed, None)
+                return (
+                    processed,
+                    self._preprocess_audio_eval_split(
+                        eval_dataset, self._preprocess_snac_dataset, custom_format_mapping
+                    ),
+                )
 
             elif self._audio_type == "bicodec":
                 processed = self._preprocess_bicodec_dataset(dataset, custom_format_mapping)
-                return ({"dataset": processed, "final_format": "audio_bicodec"}, None)
+                return (
+                    {"dataset": processed, "final_format": "audio_bicodec"},
+                    self._preprocess_audio_eval_split(
+                        eval_dataset, self._preprocess_bicodec_dataset, custom_format_mapping
+                    ),
+                )
 
             elif self._audio_type == "dac":
                 processed = self._preprocess_dac_dataset(dataset, custom_format_mapping)
-                return ({"dataset": processed, "final_format": "audio_dac"}, None)
+                return (
+                    {"dataset": processed, "final_format": "audio_dac"},
+                    self._preprocess_audio_eval_split(
+                        eval_dataset, self._preprocess_dac_dataset, custom_format_mapping
+                    ),
+                )
 
             # ========== RAW TEXT BYPASS ==========
             if raw_text_mode:
@@ -3161,6 +3222,7 @@ class UnslothTrainer:
         split_loader: Optional[Callable[[str], Dataset]] = None,
         excluded_split: Any = None,
         revision: Optional[str] = None,
+        token: Optional[str] = None,
         strict_split_loading: bool = False,
     ) -> Optional[Dataset]:
         """Auto-detect an eval split from an HF dataset (named split only)."""
@@ -3173,6 +3235,8 @@ class UnslothTrainer:
                     load_kwargs["config_name"] = subset
                 if revision:
                     load_kwargs["revision"] = revision
+                if token:
+                    load_kwargs["token"] = token
                 available_splits = get_dataset_split_names(**load_kwargs)
             elif available_splits is None or split_loader is None:
                 raise ValueError("Cached split names and loader must be provided together")
@@ -3193,6 +3257,8 @@ class UnslothTrainer:
                             eval_load_kwargs["name"] = subset
                         if revision:
                             eval_load_kwargs["revision"] = revision
+                        if token:
+                            eval_load_kwargs["token"] = token
                         candidate_ds = load_dataset(**eval_load_kwargs)
                     if len(candidate_ds) >= MIN_EVAL_ROWS:
                         logger.info(
@@ -3648,18 +3714,23 @@ class UnslothTrainer:
 
                 self._apply_csm_forward_fix()
 
+                eval_args, eval_dataset = self._audio_eval_config(training_args)
                 config = self._build_audio_training_args(
                     training_args,
                     output_dir,
                     extra_args = {
                         "remove_unused_columns": False,
+                        **eval_args,
                     },
                 )
-                self.trainer = HFTrainer(
-                    model = self.model,
-                    train_dataset = dataset,
-                    args = TrainingArguments(**config),
-                )
+                trainer_kwargs = {
+                    "model": self.model,
+                    "train_dataset": dataset,
+                    "args": TrainingArguments(**config),
+                }
+                if eval_dataset is not None:
+                    trainer_kwargs["eval_dataset"] = eval_dataset
+                self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
                 # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has
                 # no terminal; --verbose keeps them.
@@ -3691,17 +3762,23 @@ class UnslothTrainer:
                     DataCollatorForSeq2Seq,
                 )
 
-                config = self._build_audio_training_args(training_args, output_dir)
-                self.trainer = HFTrainer(
-                    model = self.model,
-                    train_dataset = dataset,
-                    args = TrainingArguments(**config),
-                    data_collator = DataCollatorForSeq2Seq(
+                eval_args, eval_dataset = self._audio_eval_config(training_args)
+                config = self._build_audio_training_args(
+                    training_args, output_dir, extra_args = eval_args
+                )
+                trainer_kwargs = {
+                    "model": self.model,
+                    "train_dataset": dataset,
+                    "args": TrainingArguments(**config),
+                    "data_collator": DataCollatorForSeq2Seq(
                         tokenizer = self.tokenizer,
                         padding = True,
                         pad_to_multiple_of = 8,
                     ),
-                )
+                }
+                if eval_dataset is not None:
+                    trainer_kwargs["eval_dataset"] = eval_dataset
+                self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
                 _drop_hf_stdout_callbacks(self.trainer)
 

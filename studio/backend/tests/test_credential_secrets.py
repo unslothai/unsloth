@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 
+import base64
 import os
 import subprocess
 import sys
@@ -12,8 +13,14 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from auth import storage as auth_storage
+from core.inference import key_exchange
+from core.inference.key_exchange import decrypt_api_key, init_key_pair
 from storage import credential_secrets
 
 
@@ -224,3 +231,117 @@ assert seen["api_key"] == "sk_restart"
         check = True,
         timeout = 30,
     )
+
+
+# ── API key transport envelope ──────────────────────────────────────
+#
+# Keys reach the backend as "v1.<RSA-wrapped AES key>.<nonce>.<ciphertext||tag>", each part
+# base64. Builds predating the envelope send bare RSA ciphertext instead.
+
+# The reported OVH key length, and the last length bare RSA-OAEP-SHA256 could carry.
+OVH_KEY_LENGTH = 238
+LEGACY_MAX_LENGTH = 190
+
+# Spelled out rather than imported: this is the contract encryptProviderApiKey writes, so
+# reading it from the module would let both sides drift together.
+ENVELOPE_VERSION = "v1"
+ENVELOPE_AAD = b"unsloth-studio-provider-key-v1"
+
+OAEP = padding.OAEP(
+    mgf = padding.MGF1(algorithm = hashes.SHA256()),
+    algorithm = hashes.SHA256(),
+    label = None,
+)
+
+
+@pytest.fixture(scope = "module", autouse = True)
+def key_pair():
+    init_key_pair()
+
+
+def _b64(raw: bytes) -> str:
+    return base64.b64encode(raw).decode("utf-8")
+
+
+def encrypt_envelope(
+    plaintext: str,
+    *,
+    aad: bytes = ENVELOPE_AAD,
+    nonce: bytes = b"\x00" * 12,
+    version: str = ENVELOPE_VERSION,
+) -> str:
+    """The frontend half of the envelope, mirroring encryptProviderApiKey."""
+    aes_key = b"\x11" * 32
+    wrapped = key_exchange._private_key.public_key().encrypt(aes_key, OAEP)
+    sealed = AESGCM(aes_key).encrypt(nonce, plaintext.encode("utf-8"), aad)
+    return ".".join([version, _b64(wrapped), _b64(nonce), _b64(sealed)])
+
+
+def encrypt_legacy(plaintext: str) -> str:
+    """A build predating the envelope: bare RSA-OAEP ciphertext, base64."""
+    return _b64(key_exchange._private_key.public_key().encrypt(plaintext.encode("utf-8"), OAEP))
+
+
+@pytest.mark.parametrize(
+    "length",
+    [1, LEGACY_MAX_LENGTH - 1, LEGACY_MAX_LENGTH, LEGACY_MAX_LENGTH + 1, OVH_KEY_LENGTH, 4096],
+)
+def test_envelope_round_trips_at_any_length(length):
+    api_key = "k" + "x" * (length - 1)
+    assert decrypt_api_key(encrypt_envelope(api_key)) == api_key
+
+
+def test_envelope_round_trips_a_non_ascii_key():
+    api_key = "sk-café-日本語-🔑-Ünïcödé"
+    assert decrypt_api_key(encrypt_envelope(api_key)) == api_key
+
+
+def test_the_envelope_carries_a_key_bare_rsa_cannot():
+    api_key = "k" * OVH_KEY_LENGTH
+    with pytest.raises(ValueError):
+        encrypt_legacy(api_key)
+    assert decrypt_api_key(encrypt_envelope(api_key)) == api_key
+
+
+def test_legacy_bare_rsa_ciphertext_still_decrypts():
+    assert decrypt_api_key(encrypt_legacy("sk-legacy")) == "sk-legacy"
+
+
+def test_a_tampered_ciphertext_is_rejected():
+    parts = encrypt_envelope("sk-tamper").split(".")
+    sealed = bytearray(base64.b64decode(parts[3]))
+    sealed[0] ^= 0x01
+    parts[3] = _b64(bytes(sealed))
+    with pytest.raises(InvalidTag):
+        decrypt_api_key(".".join(parts))
+
+
+def test_a_different_nonce_is_rejected():
+    parts = encrypt_envelope("sk-nonce").split(".")
+    parts[2] = _b64(b"\x09" * 12)
+    with pytest.raises(InvalidTag):
+        decrypt_api_key(".".join(parts))
+
+
+def test_an_envelope_sealed_under_other_associated_data_is_rejected():
+    with pytest.raises(InvalidTag):
+        decrypt_api_key(encrypt_envelope("sk-aad", aad = b"some-other-protocol"))
+
+
+@pytest.mark.parametrize("parts", [2, 3, 5])
+def test_a_v1_envelope_with_the_wrong_part_count_is_rejected(parts):
+    with pytest.raises(ValueError):
+        decrypt_api_key(".".join(["v1"] + ["QUJD"] * (parts - 1)))
+
+
+def test_envelope_parts_are_decoded_strictly():
+    """Whitespace a permissive decoder would drop, restoring an otherwise valid envelope."""
+    parts = encrypt_envelope("sk-b64").split(".")
+    parts[3] = parts[3][:4] + "\n" + parts[3][4:]
+    with pytest.raises(ValueError):
+        decrypt_api_key(".".join(parts))
+
+
+def test_an_unknown_version_is_rejected_rather_than_read_as_legacy():
+    with pytest.raises(ValueError, match = "Unsupported"):
+        decrypt_api_key(encrypt_envelope("sk-future", version = "v2"))

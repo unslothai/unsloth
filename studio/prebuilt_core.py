@@ -2197,6 +2197,8 @@ def validate_staged_server(ops: ModuleOps, staged_root: Path, host: Any) -> None
             [str(server), "--help"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 60,
             env = env,
             **ops.windows_hidden_subprocess_kwargs(),

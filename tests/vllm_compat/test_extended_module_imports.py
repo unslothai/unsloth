@@ -84,8 +84,6 @@ def _has_unsloth() -> bool:
 
 
 # unsloth-zoo modules with no top-level vllm/CUDA import: must load cleanly under spoof.
-
-
 _ZOO_VLLM_FREE_MODULES = [
     "unsloth_zoo.compiler",
     "unsloth_zoo.compiler_replacements",
@@ -125,8 +123,6 @@ def test_unsloth_zoo_module_imports_under_spoof(modname: str):
 
 
 # Spoof correctness: _IS_MLX stays False on a non-Mac runner.
-
-
 @pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
 def test_unsloth_is_mlx_false_under_spoof():
     """CUDA spoof must not flip _IS_MLX on non-Apple-Silicon hosts."""
@@ -139,9 +135,7 @@ def test_unsloth_is_mlx_false_under_spoof():
     )
 
 
-# unsloth.models.* — core surfaces loaded transitively by `from unsloth import FastLanguageModel`.
-
-
+# unsloth.models.* - core surfaces loaded transitively by `from unsloth import FastLanguageModel`.
 _UNSLOTH_CORE_MODULES = [
     "unsloth.models.rl",
     "unsloth.models.rl_replacements",
@@ -166,23 +160,16 @@ def test_unsloth_core_module_imports_under_spoof(modname: str):
     try:
         importlib.import_module(modname)
     except Exception as e:
-        # OSError("could not get source code") used to be skipped here as an
-        # "editable-install + frozen sub-import quirk". It was not an
-        # environment quirk: popping the module and importing it again is
-        # exactly the second import that unsloth/models/_utils.py could not
-        # survive, because it read the source of BitsAndBytesConfig.__init__
-        # and then replaced that __init__ with an exec'd function having no
-        # source. The skip meant _utils, loader, loader_utils and
-        # rl_replacements were silently uncovered here, and the bug it hid
-        # broke any test file that imported unsloth after this one ran in the
-        # same worker. Failing is the point of the case, so it fails now.
+        # OSError("could not get source code") used to be skipped here as an "editable-install + frozen sub-import
+        # quirk".
+        # It was not an environment quirk: popping the module and importing it again is exactly the second import that
+        # unsloth/models/_utils.py could not survive, because it read the source of BitsAndBytesConfig.__init__ and then
+        # replaced that __init__ with an exec'd function having no source.
+        # The skip meant _utils, loader, loader_utils and rl_replacements were silently uncovered here, and the bug it
+        # hid broke any test file that imported unsloth after this one ran in the same worker.
         pytest.fail(
             f"{modname} failed to import under CUDA spoof: " f"{type(e).__name__}: {str(e)[:300]}"
         )
-
-
-# FastLanguageModel/FastVisionModel/FastModel surface must be non-empty
-# with the notebook-relied methods present.
 
 
 @pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
@@ -209,10 +196,8 @@ def test_fast_model_class_surface_under_spoof():
     )
 
 
-# RL surface: GRPO/SFT/DPO dispatch table must be populated, not silently
-# empty while rl_replacements imports cleanly.
-
-
+# FastLanguageModel/FastVisionModel/FastModel surface must be non-empty with the notebook-relied methods present.
+# RL surface: GRPO/SFT/DPO dispatch table must be populated, not silently empty while rl_replacements imports cleanly.
 @pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
 def test_unsloth_rl_replacements_dispatch_populated():
     try:
@@ -220,10 +205,7 @@ def test_unsloth_rl_replacements_dispatch_populated():
     except Exception as e:
         pytest.skip(f"`import unsloth` failed under spoof: {e}")
     sys.modules.pop("unsloth.models.rl_replacements", None)
-    # Not wrapped in a skip-on-OSError any more: see the note in
-    # test_unsloth_core_module_imports_under_spoof. The OSError that used to be
-    # skipped here was unsloth's re-import bug, not the environment, and
-    # skipping it left this case asserting nothing.
+    # Not wrapped in a skip-on-OSError any more: see the note in test_unsloth_core_module_imports_under_spoof.
     rl = importlib.import_module("unsloth.models.rl_replacements")
     funcs = getattr(rl, "RL_FUNCTIONS", None)
     if funcs is None:
@@ -241,8 +223,6 @@ def test_unsloth_rl_replacements_dispatch_populated():
 
 
 # unsloth-zoo compiler test_apply_fused_lm_head (compiler.py:1983) must be callable.
-
-
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 def test_zoo_compiler_apply_fused_lm_head_callable():
     sys.modules.pop("unsloth_zoo.compiler", None)
@@ -255,8 +235,6 @@ def test_zoo_compiler_apply_fused_lm_head_callable():
 
 
 # FastModel.from_pretrained kwarg stability: removal becomes silent positional drift.
-
-
 @pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
 def test_fast_model_from_pretrained_kwargs_under_spoof():
     sys.modules.pop("unsloth", None)

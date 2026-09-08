@@ -1113,8 +1113,9 @@ class DiffusionTrainableFamily(BaseModel):
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False
-    # save_steps is refused, not ignored, for a checkpointless family, so offering the control means
-    # offering a value that rejects Start; defaults True so an older backend's payload keeps it.
+    # Whether this family's loop writes checkpoint bundles. False makes the panel drop the "Checkpoint
+    # every" control: save_steps is refused, not ignored, for a checkpointless family, so offering the
+    # control means offering a value that rejects Start; defaults True so an older backend's payload keeps it.
     supports_checkpoints: bool = True
     # 1 for a family whose forward covers one packed sequence: a value above the cap is refused rather
     # than clamped, and declaring it here is what stops Pydantic dropping it from the response.

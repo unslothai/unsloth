@@ -151,6 +151,7 @@ def _wsl_networking_mode() -> Optional[str]:
                 check = False,
                 text = True,
                 encoding = "utf-8",
+                errors = "replace",
                 timeout = 1,
             )
         except (OSError, subprocess.SubprocessError):
@@ -450,7 +451,8 @@ def stop_lan_listener() -> bool:
         server.should_exit = True
         if _running_on_event_loop():
             # /api/shutdown tears down from a task on this very loop, so waiting would deadlock; ownership is
-            # kept because uvicorn cannot close the sockets until the loop is free again
+            # kept because uvicorn cannot close the sockets until the loop is free again, and
+            # _graceful_shutdown blocks it for seconds stopping subprocesses
             logger.info("LAN access stopping")
             return True
         if loop is None or loop.is_closed() or not loop.is_running():

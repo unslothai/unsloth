@@ -134,12 +134,16 @@ const DOC_LINKS = [
     label: "Hermes Agent",
     href: "https://unsloth.ai/docs/integrations/hermes-agent",
   },
+  {
+    label: "DeepSeek Harness",
+    href: "https://github.com/deepseek-ai/deepseek-harness",
+  },
 ];
 
 // Fallback until the backend's installed-CLI check resolves. Mirrors
 // CODING_AGENTS in studio/backend/utils/coding_agents.py, minus HIDDEN_AGENTS
 // (see ../api/coding-agents.ts).
-const DEFAULT_AGENTS = ["claude", "codex", "openclaw", "opencode", "hermes"];
+const DEFAULT_AGENTS = ["claude", "codex", "openclaw", "opencode", "hermes", "dsh"];
 // The agent selection resets to this whenever an auto-pick is no longer
 // trustworthy (leaving loopback, or the only compatible detected agent
 // stops being compatible) rather than lingering on a stale choice.
@@ -150,6 +154,7 @@ const AGENT_LABELS: Record<string, string> = {
   openclaw: "OpenClaw",
   opencode: "OpenCode",
   hermes: "Hermes",
+  dsh: "DeepSeek Harness",
 };
 
 const j = (s: string): string => JSON.stringify(s);

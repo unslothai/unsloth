@@ -78,7 +78,8 @@ _tracked_pgids: "dict[int, int]" = {}
 _record_lock = threading.Lock()
 
 
-# Whether cleanup-on-abnormal-exit is in force, and why not.
+# Whether cleanup-on-abnormal-exit is in force, and why not. A silent failure here leaks every
+# child on a crash, so record it and log it.
 _win_job_status: "tuple[bool, str]" = (False, "not attempted")
 
 
@@ -498,7 +499,8 @@ def _pid_identity(pid: int) -> Optional[str]:
         except Exception:
             return None
     if _is_windows():
-        # Creation time, so a recycled pid is never mistaken for the child
+        # Creation time, so a recycled pid is never mistaken for the child that was recorded. Same purpose as starttime
+        # on Linux.
         try:
             import ctypes
             from ctypes import wintypes
@@ -1021,7 +1023,8 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
         if current is not None and identity is not None and not _same_identity(identity, current):
             continue
         if identity is None or current is None:
-            # Cannot prove this is still our child, so do not signal it.
+            # Cannot prove this is still our child, so do not signal it. Keep it recorded while it
+            # is alive: the startup sweep runs the same test.
             if _pid_alive(pid) and not _pid_is_zombie(pid):
                 with _record_lock:
                     _tracked_pids[pid] = identity

@@ -94,7 +94,8 @@ def managed_node_bin_dir() -> Path | None:
         return None
 
 
-# Success-only memoization, like _resolved_node: the installer may finish
+# Success-only memoization, like _resolved_node: the installer may finish after the first probe, so a negative verdict
+# must not stick until restart.
 _managed_node_ok: bool = False
 _usable_node_cache: dict[tuple[str, str | None], bool] = {}
 

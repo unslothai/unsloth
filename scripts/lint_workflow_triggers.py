@@ -38,7 +38,6 @@ DEFAULT_WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
 BANNED_TRIGGERS: tuple[str, ...] = ("pull_request_target",)
 RESTRICTED_TRIGGERS: tuple[str, ...] = ("workflow_run",)
-# Match both workflow extensions by stem.
 PUBLISH_WORKFLOW_STEMS: tuple[str, ...] = ("release-desktop",)
 
 # The host must run on every PR and be able to fail.
@@ -311,7 +310,6 @@ def main() -> int:
         require_host = workflows_dir.resolve() == DEFAULT_WORKFLOWS_DIR.resolve()
 
     findings: list[str] = []
-    # GitHub Actions loads both workflow extensions.
     workflows = sorted(list(workflows_dir.glob("*.yml")) + list(workflows_dir.glob("*.yaml")))
     pr_triggered: list[tuple[Path, list[str]]] = []
     publish_triggered: list[tuple[Path, list[str]]] = []

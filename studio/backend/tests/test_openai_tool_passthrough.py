@@ -4,6 +4,7 @@
 """Tests for the OpenAI /v1/chat/completions client-side tool pass-through."""
 
 import os
+import re
 import sys
 import asyncio
 import base64
@@ -62,7 +63,9 @@ from routes.inference import (
     _normalize_openai_passthrough_sse_line,
     _openai_compat_stream_stall_timeout,
     _openai_llama_admission_capacity,
+    _image_bytes_to_png_b64,
     _openai_messages_for_gguf_chat,
+    _openai_messages_for_passthrough,
     _openai_passthrough_sse_line_terminal_state,
     _openai_passthrough_upstream_headers,
     _openai_passthrough_non_streaming,
@@ -161,9 +164,205 @@ class TestFriendlyUpstreamError:
         # An unrelated upstream error still passes through verbatim.
         assert "llama-server error:" in _openai_passthrough_error(500, "disk full").detail
 
+    def test_anthropic_upstream_error_rewords_context_overflow(self):
+        from routes.inference import _anthropic_upstream_error
+
+        raw = (
+            '{"error":{"code":500,"message":"the request exceeds the available context '
+            'size. try increasing the context size or enable context shift",'
+            '"type":"server_error"}}'
+        )
+        msg = _anthropic_upstream_error(raw)
+        assert "prompt is too long" in msg.lower()
+        assert "llama-server error:" not in msg
+
+    def test_anthropic_upstream_error_includes_token_counts_when_known(self):
+        from routes.inference import _anthropic_upstream_error
+
+        msg = _anthropic_upstream_error(
+            "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        )
+        m = re.search(r"prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)", msg, re.I)
+        assert m and m.groups() == ("214331", "131072")
+
+    def test_anthropic_upstream_error_leaves_other_failures_alone(self):
+        from routes.inference import _anthropic_upstream_error
+        assert _anthropic_upstream_error("disk full") == "llama-server error: disk full"
+        assert "compile a grammar" in _anthropic_upstream_error("failed to parse grammar")
+
+    def test_anthropic_upstream_error_keeps_kv_starvation_out_of_the_overflow_rewrite(self):
+        """llama-server says "Context size has been exceeded" when concurrent
+        generations drain the shared KV cache. Nothing about the request was too
+        long, so rewording it as an oversized prompt sends the client compacting a
+        valid conversation instead of retrying."""
+        from routes.inference import _anthropic_upstream_error, _classify_llama_generation_error
+        from core.inference.stream_errors import KV_STARVATION_MESSAGE
+
+        for raw in (
+            "Context size has been exceeded.",
+            '{"error":{"message":"Context size has been exceeded.","code":500}}',
+        ):
+            assert _anthropic_upstream_error(raw) == KV_STARVATION_MESSAGE
+            assert "too long" not in _anthropic_upstream_error(raw).lower()
+            # None keeps the upstream status: a 400 would blame the caller's request.
+            assert _classify_llama_generation_error(Exception(raw)) is None
+
+    def test_in_band_sse_recovers_counts_from_the_chunk_the_message_came_from(self):
+        """`_monitor_openai_error_message` returns only the message string. When that
+        string carries no numbers but the chunk around it does, the totals -- and the
+        window `oversize_advice` needs -- have to come from the payload."""
+        import json as _json
+
+        from core.inference import context_refusal
+        from routes.inference import (
+            _anthropic_upstream_stream_error_event,
+            _json_dumps_safe,
+            _monitor_openai_error_message,
+        )
+
+        chunk = {
+            "error": {
+                "code": 400,
+                "message": "the request exceeds the available context size",
+                "type": "exceed_context_size_error",
+                "n_prompt_tokens": 70494,
+                "n_ctx": 67584,
+            }
+        }
+        message = _monitor_openai_error_message(chunk)
+        source = _json_dumps_safe(chunk.get("error", chunk))
+
+        def body(text, counts_source):
+            event = _anthropic_upstream_stream_error_event(text, counts_source = counts_source)
+            return _json.loads(event.split("data: ", 1)[1].strip().splitlines()[0])["error"]
+
+        assert "70494" not in body(message, None)["message"]
+        assert (
+            "Prompt is too long: 70494 tokens > 67584 maximum" in body(message, source)["message"]
+        )
+
+        try:
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 67584,
+                    "irreducible_tokens": 70000,
+                    "latest_turn_tokens": 500,
+                }
+            )
+            # The recovered window is what lets the fit be consulted at all.
+            assert "shortening the conversation will not help" in body(message, source)["message"]
+        finally:
+            context_refusal.clear()
+
+        # An unrelated error must not have the payload spliced into its text.
+        assert body("disk full", source)["message"] == "llama-server error: disk full"
+
+    def test_counts_come_from_the_structured_fields_when_the_message_has_none(self):
+        """An exceed_context_size_error body carries n_prompt_tokens/n_ctx even when its
+        message spells out no numbers. These paths are handed the whole body, so the
+        totals are right there; dropping them sends the client a count-less refusal."""
+        from routes.inference import _anthropic_upstream_error, _oversize_counts
+
+        body = (
+            '{"error":{"code":400,"message":"the request exceeds the available context '
+            'size","type":"exceed_context_size_error","n_prompt_tokens":70494,'
+            '"n_ctx":67584}}'
+        )
+        assert _oversize_counts(body) == (70494, 67584)
+        assert "Prompt is too long: 70494 tokens > 67584 maximum" in _anthropic_upstream_error(body)
+
+    def test_the_remedy_comes_from_the_fit_not_a_flat_shorten_the_conversation(self):
+        """When the latest turn or the irreducible floor is what does not fit, compacting
+        the history cannot make it fit, and a client told to compact just retries."""
+        from core.inference import context_refusal
+        from routes.inference import _anthropic_upstream_error
+
+        body = "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        try:
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 131072,
+                    "irreducible_tokens": 140000,
+                    "latest_turn_tokens": 500,
+                }
+            )
+            msg = _anthropic_upstream_error(body)
+            # The head Anthropic clients key on survives.
+            assert msg.startswith("Prompt is too long: 214331 tokens > 131072 maximum.")
+            assert "shortening the conversation will not help" in msg
+
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 131072,
+                    "irreducible_tokens": 140000,
+                    "latest_turn_tokens": 139000,
+                    "latest_turn_role": "tool",
+                    "latest_turn_counted": True,
+                }
+            )
+            msg = _anthropic_upstream_error(body)
+            assert "A tool returned more than this context window can hold" in msg
+            assert "shortening the conversation will not help" in msg
+        finally:
+            context_refusal.clear()
+
+        # With no recorded fit it stays the generic wording.
+        assert "Try increasing the Context Length" in _anthropic_upstream_error(body)
+
+    def test_in_band_sse_error_gets_the_same_wording_as_the_non_200_branch(self):
+        """A 200 stream that later emits data: {"error": ...} used to be wrapped in a
+        plain RuntimeError, and _friendly_error flattens the count-less oversize
+        refusal to "An internal error occurred" -- a 400/invalid_request_error with
+        nothing the client can read or compact on."""
+        import json as _json
+
+        from routes.inference import _anthropic_upstream_stream_error_event
+
+        def body(text):
+            event = _anthropic_upstream_stream_error_event(text)
+            return _json.loads(event.split("data: ", 1)[1].strip().splitlines()[0])["error"]
+
+        no_counts = body(
+            "the request exceeds the available context size. try increasing the context size"
+        )
+        assert "internal error" not in no_counts["message"].lower()
+        assert no_counts["message"].startswith("Prompt is too long")
+        assert no_counts["type"] == "invalid_request_error"
+
+        counted = body(
+            "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        )
+        assert "Prompt is too long: 214331 tokens > 131072 maximum" in counted["message"]
+        assert counted["type"] == "invalid_request_error"
+
+        # Starvation keeps the retry advice and must not become a 400.
+        starved = body("Context size has been exceeded.")
+        assert "shared pool of context" in starved["message"]
+        assert "too long" not in starved["message"].lower()
+        assert starved["type"] == "api_error"
+
+        unrelated = body("disk full")
+        assert unrelated["message"] == "llama-server error: disk full"
+        assert unrelated["type"] == "api_error"
+
+    def test_a_genuine_oversize_body_is_still_classified_as_an_overflow(self):
+        from routes.inference import _classify_llama_generation_error
+        assert (
+            _classify_llama_generation_error(
+                Exception(
+                    "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+                )
+            )
+            is True
+        )
+
 
 # =====================================================================
-# ChatMessage — tool role, tool_calls, optional content
+
+# ChatMessage - tool role, tool_calls, optional content
 # =====================================================================
 
 
@@ -331,7 +530,8 @@ class TestChatMessageToolRoles:
 
 
 # =====================================================================
-# ChatCompletionRequest — standard OpenAI tool fields
+
+# ChatCompletionRequest - standard OpenAI tool fields
 # =====================================================================
 
 
@@ -2145,7 +2345,11 @@ class TestChatCompletionRequestToolFields:
         )
         self._assert_unsupported_param(resp, param)
 
-    def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(self, monkeypatch):
+    # Same two rejection sites, and same reason to pin one, as the GGUF case below.
+    @pytest.mark.parametrize("validate_before_switch", [False, True])
+    def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(
+        self, monkeypatch, validate_before_switch
+    ):
         import routes.inference as inference_route
 
         class _NoGGUFBackend:
@@ -2167,6 +2371,9 @@ class TestChatCompletionRequestToolFields:
             "_detect_safetensors_features",
             lambda backend, chat_template, tools = None: {"supports_tools": True},
         )
+        monkeypatch.setattr(
+            inference_route, "_should_validate_before_switch", lambda: validate_before_switch
+        )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
         client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
@@ -2185,9 +2392,13 @@ class TestChatCompletionRequestToolFields:
         body = resp.json()
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "requires stream=true" in body["error"]["message"]
-        [entry] = monitor.snapshot()
-        assert entry["status"] == "error"
-        assert "confirm_tool_calls requires stream=true" in entry["error"]
+        if validate_before_switch:
+            # Early site rejects before the monitor row is opened.
+            assert monitor.snapshot() == []
+        else:
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "confirm_tool_calls requires stream=true" in entry["error"]
         assert monitor.active_count() == 0
 
     def test_multiturn_tool_loop_messages(self):
@@ -2233,7 +2444,8 @@ class TestChatCompletionRequestToolFields:
 
 
 # =====================================================================
-# anthropic_tool_choice_to_openai — pure translation helper
+
+# anthropic_tool_choice_to_openai - pure translation helper
 # =====================================================================
 
 
@@ -2264,7 +2476,8 @@ class TestAnthropicToolChoiceToOpenAI:
 
 
 # =====================================================================
-# _build_passthrough_payload — tool_choice propagation
+
+# _build_passthrough_payload - tool_choice propagation
 # =====================================================================
 
 
@@ -2572,6 +2785,8 @@ class TestOpenAIPassthroughSSETerminalState:
 
 
 # =====================================================================
+
+# =====================================================================
 # Passthrough reasoning kwargs — enable_thinking / reasoning_effort /
 # preserve_thinking must reach llama-server via chat_template_kwargs,
 # gated on template capabilities like the non-passthrough paths.
@@ -2682,7 +2897,8 @@ class TestPassthroughReasoningKwargs:
 
 
 # =====================================================================
-# OpenAI API compatibility helpers — verified spec edge cases
+
+# OpenAI API compatibility helpers - verified spec edge cases
 # =====================================================================
 
 
@@ -3246,7 +3462,8 @@ class TestOpenAICompatibilityHelpers:
 
 
 # =====================================================================
-# _friendly_error — httpx transport failures
+
+# _friendly_error - httpx transport failures
 # =====================================================================
 
 
@@ -3272,7 +3489,7 @@ class TestFriendlyErrorHttpx:
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the substring heuristics
-        # — a context-size message must still produce "Message too long".
+        # - a context-size message must still produce "Message too long".
         ctx_msg = "request (4096 tokens) exceeds the available context size (2048 tokens)"
         assert "Message too long" in _friendly_error(ValueError(ctx_msg))
 
@@ -3283,7 +3500,6 @@ class TestFriendlyErrorHttpx:
 from routes.inference import (  # noqa: E402
     _drop_empty_assistant_sentinels,
     _openai_messages_for_gguf_chat,
-    _openai_messages_for_passthrough,
 )
 
 
@@ -3999,7 +4215,14 @@ class TestGgufVisionToolRouting:
         assert exc.value.status_code == 400
         assert exc.value.detail["error"]["param"] == "tool_choice"
 
-    def test_confirm_tool_calls_requires_streaming_for_gguf_tools(self, monkeypatch):
+    # Two sites reject this shape and `_should_validate_before_switch()` picks
+    # which; the early one runs before the api_monitor row is opened. It reads
+    # process-wide state, so unpinned this asserted whichever site the xdist
+    # worker happened to leave reachable. Pinned, both sites are covered.
+    @pytest.mark.parametrize("validate_before_switch", [False, True])
+    def test_confirm_tool_calls_requires_streaming_for_gguf_tools(
+        self, monkeypatch, validate_before_switch
+    ):
         import routes.inference as inf_mod
 
         def _plain(**kwargs):
@@ -4018,6 +4241,9 @@ class TestGgufVisionToolRouting:
             generate_chat_completion_with_tools = _tools,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(
+            inf_mod, "_should_validate_before_switch", lambda: validate_before_switch
+        )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
 
@@ -4040,9 +4266,15 @@ class TestGgufVisionToolRouting:
             )
         assert exc.value.status_code == 400
         assert "requires stream=true" in exc.value.detail["error"]["message"]
-        [entry] = monitor.snapshot()
-        assert entry["status"] == "error"
-        assert "confirm_tool_calls requires stream=true" in entry["error"]
+        if validate_before_switch:
+            # Early site rejects before the monitor row is opened, so there is no
+            # row to fail; opening one here would be a behaviour change, not a fix.
+            assert monitor.snapshot() == []
+        else:
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "confirm_tool_calls requires stream=true" in entry["error"]
+        # Neither site may leave a row running.
         assert monitor.active_count() == 0
 
     def test_standard_gguf_stream_splits_reasoning_content(self, monkeypatch):
@@ -9940,6 +10172,8 @@ class TestApiMonitorAudioInput:
 
 
 # =====================================================================
+
+# =====================================================================
 # Responses API -> Chat Completions translation: chat_template_kwargs
 # (e.g. {"enable_thinking": true}) sent via the Responses extra-body must
 # reach the built ChatCompletionRequest's typed ``enable_thinking`` field,
@@ -10098,6 +10332,8 @@ class TestResponsesChatTemplateKwargs:
 
         asyncio.run(_run())
 
+
+# =====================================================================
 
 # =====================================================================
 # GGUF chat-template role alternation: coalesce orphaned user turns left
@@ -10322,3 +10558,216 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
             payload = {}
             _apply_seeded_llama_request(payload, value)
             assert payload["cache_prompt"] is False, (seed, value)
+
+
+class TestPassthroughImageNormalization:
+    @staticmethod
+    def _data_url(fmt: str) -> str:
+        from io import BytesIO
+
+        from PIL import Image
+
+        buf = BytesIO()
+        Image.new("RGB", (2, 2), (0, 128, 255)).save(buf, format = fmt)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/{fmt.lower()};base64,{b64}"
+
+    def _req(self, url: str, **kwargs):
+        return ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this"},
+                        {"type": "image_url", "image_url": {"url": url}},
+                    ],
+                },
+            ],
+            **kwargs,
+        )
+
+    def test_webp_data_url_is_reencoded_to_png(self):
+        original = self._data_url("WEBP")
+        assert original.startswith("data:image/webp;base64,")
+
+        messages = _openai_messages_for_passthrough(self._req(original))
+
+        url = messages[0]["content"][1]["image_url"]["url"]
+        assert url.startswith("data:image/png;base64,")
+        assert url != original
+
+    def test_body_builder_forwards_png_with_tools_enabled(self):
+        req = self._req(
+            self._data_url("WEBP"),
+            tools = [
+                {
+                    "type": "function",
+                    "function": {"name": "noop", "parameters": {"type": "object"}},
+                }
+            ],
+        )
+
+        body = _build_openai_passthrough_body(req)
+
+        url = body["messages"][0]["content"][1]["image_url"]["url"]
+        assert url.startswith("data:image/png;base64,")
+
+    def test_requested_detail_survives_the_conversion(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": self._data_url("WEBP"), "detail": "high"},
+                        },
+                    ],
+                },
+            ],
+        )
+
+        part = _openai_messages_for_passthrough(req)[0]["content"][0]["image_url"]
+        assert part["url"].startswith("data:image/png;base64,")
+        assert part["detail"] == "high"
+
+    @staticmethod
+    def _gray16_ramp_png(width: int = 256) -> bytes:
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.new("I;16", (width, 2))
+        img.putdata([(x % width) * 257 for _ in range(2) for x in range(width)])
+        buf = BytesIO()
+        img.save(buf, format = "PNG")
+        return buf.getvalue()
+
+    def test_sixteen_bit_grayscale_keeps_its_levels(self):
+        # convert("RGB") reads a 16-bit source as 8-bit and clips: the whole ramp
+        # above 255 collapses to white. llama-server reading the same PNG itself
+        # scales instead, so re-encoding must not throw the picture away.
+        from io import BytesIO
+
+        from PIL import Image
+
+        raw = self._gray16_ramp_png()
+        out = base64.b64decode(_image_bytes_to_png_b64(raw))
+
+        row = [Image.open(BytesIO(out)).getpixel((x, 0))[0] for x in range(256)]
+        assert len(set(row)) == 256, f"levels collapsed to {len(set(row))}"
+        assert row.count(255) == 1, f"{row.count(255)} white pixels, expected 1"
+        assert row[0] == 0 and row[-1] == 255
+
+    def test_endian_tagged_sixteen_bit_mode_does_not_raise(self):
+        # I;16B rejects point() outright, and the caller turns any exception into
+        # a 400, so scaling without normalising the mode is worse than clipping.
+        # PNG cannot carry the tagged modes; a 16-bit TIFF reopens as I;16B.
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.new("I;16B", (256, 2))
+        img.putdata([(x % 256) * 257 for _ in range(2) for x in range(256)])
+        buf = BytesIO()
+        img.save(buf, format = "TIFF")
+        assert Image.open(BytesIO(buf.getvalue())).mode == "I;16B"
+
+        out = base64.b64decode(_image_bytes_to_png_b64(buf.getvalue()))
+        row = [Image.open(BytesIO(out)).getpixel((x, 0))[0] for x in range(256)]
+        assert len(set(row)) == 256, f"collapsed to {len(set(row))} levels"
+
+    def test_plain_int_mode_is_not_scaled(self):
+        # "I" and "F" declare no range. A 32-bit TIFF whose samples already sit
+        # in 0..255 must keep them: scaling it by 1/257 would black the picture
+        # out, which is worse than the clipping the scaling was added to fix.
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.new("I", (256, 2))
+        img.putdata([x % 256 for _ in range(2) for x in range(256)])
+        buf = BytesIO()
+        img.save(buf, format = "TIFF")
+        assert Image.open(BytesIO(buf.getvalue())).mode == "I"
+
+        out = base64.b64decode(_image_bytes_to_png_b64(buf.getvalue()))
+        row = [Image.open(BytesIO(out)).getpixel((x, 0))[0] for x in range(256)]
+        assert row == list(range(256)), f"0..255 ramp altered: max={max(row)}"
+
+    def test_eight_bit_images_are_unchanged_by_the_scaling_branch(self):
+        from io import BytesIO
+
+        from PIL import Image
+        for mode, colour in (("RGB", (10, 20, 30)), ("RGBA", (10, 20, 30, 255)), ("L", 77)):
+            buf = BytesIO()
+            Image.new(mode, (4, 4), colour).save(buf, format = "PNG")
+
+            out = base64.b64decode(_image_bytes_to_png_b64(buf.getvalue()))
+            px = Image.open(BytesIO(out)).getpixel((0, 0))
+            assert px == ((77, 77, 77) if mode == "L" else (10, 20, 30)), (mode, px)
+
+    def test_remote_url_is_forwarded_unchanged(self):
+        messages = _openai_messages_for_passthrough(self._req("https://x.example/a.webp"))
+        assert messages[0]["content"][1]["image_url"]["url"] == "https://x.example/a.webp"
+
+    def test_local_template_caller_leaves_a_payloadless_data_url_alone(self):
+        # The safetensors/MLX client-tools path only gets here when the turn has no
+        # decodable image, and flattens image parts away straight after. A payloadless
+        # data URL was ignored with a warning before; it must not become a 400.
+        req = self._req("data:image/png;base64,")
+
+        messages = _openai_messages_for_passthrough(req, normalize_images = False)
+
+        assert messages[0]["content"][1]["image_url"]["url"] == "data:image/png;base64,"
+
+    def test_the_local_template_call_site_opts_out_of_normalization(self):
+        # The guard that keeps the re-encode on llama-server bodies only. Reverting it
+        # brings the 400 above back to the safetensors/MLX client-tools path.
+        import inspect
+
+        import routes.inference as inference_mod
+
+        src = inspect.getsource(inference_mod)
+        _, _, after = src.partition("_flatten_content_parts_for_local_template(")
+        assert after, "the local-template call site moved"
+        assert "normalize_images = False" in after[:300]
+
+    def test_undecodable_data_url_raises_400(self):
+        with pytest.raises(HTTPException) as exc:
+            _openai_messages_for_passthrough(self._req("data:image/webp;base64,!!!nope!!!"))
+        assert exc.value.status_code == 400
+
+    def test_echoed_legacy_image_is_not_spliced_twice(self):
+        from io import BytesIO
+
+        from PIL import Image
+
+        buf = BytesIO()
+        Image.new("RGB", (2, 2), (1, 2, 3)).save(buf, format = "WEBP")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        req = ChatCompletionRequest(
+            model = "default",
+            image_base64 = b64,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/webp;base64,{b64}"},
+                        },
+                    ],
+                },
+            ],
+        )
+
+        messages = _openai_messages_for_passthrough(req)
+
+        parts = [p for p in messages[0]["content"] if p.get("type") == "image_url"]
+        assert len(parts) == 1
+        assert parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
