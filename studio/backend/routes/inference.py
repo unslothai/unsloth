@@ -2018,11 +2018,23 @@ def _openai_llama_admission_media_tokens(
     extra += max(0, message_image_parts) * image_tokens
     if _legacy_image_is_distinct(payload):
         extra += image_tokens
+    return extra + _openai_llama_admission_transport_tokens(payload)
+
+
+def _openai_llama_admission_transport_tokens(payload) -> int:
+    """Audio and video, charged by encoded length because nothing here can size their KV.
+
+    A LEDGER figure only, and a deliberately high one: it keeps a request carrying either
+    from sharing the cache with anything it might collide with. It is not a prompt count,
+    so it never reaches the wire bound (see
+    ``_openai_llama_admission_unpriceable_media``).
+    """
+    total = 0
     for attribute in ("audio_base64", "video_base64"):
         value = getattr(payload, attribute, None)
         if isinstance(value, str) and value:
-            extra += max(1, len(value) // 4)
-    return extra
+            total += max(1, len(value) // 4)
+    return total
 
 
 def _openai_llama_admission_injected_tool_tokens(injected_tools) -> int:
@@ -2089,6 +2101,7 @@ def _openai_llama_admission_tokens(
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     injected_tools = None,
     context_window: Optional[int] = None,
+    conversation = None,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -2102,9 +2115,21 @@ def _openai_llama_admission_tokens(
     """
     if not budget:
         return None
-    prompt_tokens = _openai_llama_admission_prompt_tokens(
-        payload, image_tokens = image_tokens, injected_tools = injected_tools
-    )
+    if conversation is not None:
+        # The messages the request will actually send, so the lease and the wire bound are
+        # taken on ONE figure. `payload.messages` is what the client sent, and the GGUF
+        # builders splice a current-date prompt, a tool nudge and any media part into it
+        # afterwards; a lease that does not know about them lets a full set of requests in
+        # while each occupies more than the share it was charged. Transport bytes are
+        # added back because they belong on the ledger even though they are not a prompt
+        # count.
+        prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
+            conversation, image_tokens = image_tokens, injected_tools = injected_tools
+        ) + _openai_llama_admission_transport_tokens(payload)
+    else:
+        prompt_tokens = _openai_llama_admission_prompt_tokens(
+            payload, image_tokens = image_tokens, injected_tools = injected_tools
+        )
     if prompt_tokens is None:
         return max(1, budget // max(1, capacity))
     # The same helper generation honours, not the raw field. A request that sets only
@@ -2248,7 +2273,7 @@ def _openai_llama_admission_unpriceable_media(payload, conversation = None) -> b
 def _openai_llama_admission_wire_prompt_tokens(
     conversation,
     *,
-    llama_backend,
+    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     injected_tools = None,
 ) -> int:
     """What the NEXT request carries, which is not what the ledger charges.
@@ -2284,7 +2309,7 @@ def _openai_llama_admission_wire_prompt_tokens(
     return (
         estimate_messages_tokens_dense(estimate_messages)
         + _openai_llama_admission_injected_tool_tokens(injected_tools)
-        + max(0, message_image_parts) * _openai_llama_admission_image_tokens(llama_backend)
+        + max(0, message_image_parts) * image_tokens
     )
 
 
@@ -2341,7 +2366,7 @@ def _openai_llama_admission_enforced_max_tokens(
     if prompt_tokens is None and conversation is not None:
         prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation,
-            llama_backend = llama_backend,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = injected_tools,
         )
     if prompt_tokens is None:
@@ -2382,7 +2407,7 @@ def _openai_llama_admission_retry_max_tokens(
         return None
     prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
         retry_body.get("messages") or [],
-        llama_backend = llama_backend,
+        image_tokens = _openai_llama_admission_image_tokens(llama_backend),
         injected_tools = injected_tools,
     )
     bound = max(1, share - prompt_tokens)
@@ -2397,6 +2422,7 @@ def _openai_llama_admission_reserve(
     payload = None,
     tool_loop: bool = False,
     injected_tools = None,
+    conversation = None,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
@@ -2414,6 +2440,7 @@ def _openai_llama_admission_reserve(
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = injected_tools,
             context_window = _openai_llama_admission_context_window(llama_backend),
+            conversation = conversation,
         )
         if payload is not None
         else None,
@@ -2500,7 +2527,7 @@ def _openai_llama_admission_recost(
         # every one of those comes off the answer.
         wire_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation,
-            llama_backend = llama_backend,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = injected_tools if wire_sends_tools else None,
         )
         # Reading "Max" literally here would put the run back on the whole cache at its
@@ -22567,6 +22594,10 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
+                    # The finalized messages, the same ones the wire bound is priced from,
+                    # so the opening lease and the opening cap agree. Round zero re-costs
+                    # from the live conversation either way.
+                    conversation = gguf_messages,
                     # The catalogue Unsloth resolves server-side: payload.tools does not
                     # carry it and it is roughly 1250 prompt tokens.
                     injected_tools = tools_to_use,
@@ -23328,6 +23359,9 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
+                    # The finalized messages, so the lease is taken on the prompt the
+                    # request actually sends. This path has no re-cost to correct it.
+                    conversation = gguf_messages,
                 )
             except LlamaAdmissionQueueFull as exc:
                 _tracker.__exit__(None, None, None)
@@ -23669,6 +23703,9 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
+                    # The finalized messages, so the lease is taken on the prompt the
+                    # request actually sends. This path has no re-cost to correct it.
+                    conversation = gguf_messages,
                 )
             except LlamaAdmissionQueueFull as exc:
                 _llama_admission_log(

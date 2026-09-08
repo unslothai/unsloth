@@ -605,7 +605,7 @@ class TestWhatTheWireActuallyCarries:
         )
         share = 65536 // 4
         conversation_tokens = _openai_llama_admission_wire_prompt_tokens(
-            conversation, llama_backend = backend
+            conversation, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
         assert wire == share - conversation_tokens, (wire, share, conversation_tokens)
 
@@ -700,7 +700,10 @@ class TestWhatTheWireActuallyCarries:
         )
         assert wire < raw, (raw, wire)
         assert (
-            _openai_llama_admission_wire_prompt_tokens(injected, llama_backend = backend) + wire
+            _openai_llama_admission_wire_prompt_tokens(
+                injected, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+            )
+            + wire
             <= 16384 // 4
         )
 
@@ -775,9 +778,12 @@ class TestWhatTheWireActuallyCarries:
                 ],
             }
         ]
-        one_image = _openai_llama_admission_wire_prompt_tokens(spliced, llama_backend = backend)
+        one_image = _openai_llama_admission_wire_prompt_tokens(
+            spliced, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        )
         text_only = _openai_llama_admission_wire_prompt_tokens(
-            [{"role": "user", "content": "what is this?"}], llama_backend = backend
+            [{"role": "user", "content": "what is this?"}],
+            image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
         )
         assert one_image - text_only < 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS, (
             one_image,
@@ -787,6 +793,69 @@ class TestWhatTheWireActuallyCarries:
             payload, request = None, llama_backend = backend, conversation = spliced
         )
         assert bound is not None and bound > 1
+
+    def test_the_lease_is_taken_on_the_same_finalized_messages(self):
+        """Charged and permitted have to be the same prompt.
+
+        The bound is priced from `gguf_messages`, so the lease has to be too: a request
+        whose raw payload sits just under its share and whose finalized prompt sits just
+        over it was charged one share and permitted `finalized_prompt + 1`, so a full set
+        of them overruns the cache by the injected prefix.
+        """
+        budget, slots = 16384, 4
+        share = budget // slots
+        # Sized so the raw payload sits just under its share and the finalized prompt,
+        # with the date prefix in front of it, sits just over.
+        turn = "word " * 3200
+        payload = _chat(turn, max_tokens = budget)
+        injected = [
+            {"role": "system", "content": "Today's date is 2026-09-08. " * 40},
+            {"role": "user", "content": turn},
+        ]
+        charged = _openai_llama_admission_tokens(
+            payload,
+            budget = budget,
+            capacity = slots,
+            context_window = budget,
+            conversation = injected,
+        )
+        backend = _backend_stub(window = budget, total = budget, slots = slots)
+        bound = _openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, conversation = injected
+        )
+        prompt = _openai_llama_admission_wire_prompt_tokens(
+            injected, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        )
+        raw = _openai_llama_admission_prompt_tokens(payload)
+        assert raw < share < prompt, (raw, share, prompt)
+        assert charged >= prompt + bound, (charged, prompt, bound)
+
+    def test_transport_bytes_stay_on_the_ledger(self):
+        """Dropping them from the wire count must not drop them from the charge: they are
+        what keeps an audio request from sharing the cache with anything."""
+        budget, slots = 262144, 4
+        clip = "A" * 400000
+        conversation = [{"role": "user", "content": "listen"}]
+        without = _openai_llama_admission_tokens(
+            _chat("listen", max_tokens = budget),
+            budget = budget,
+            capacity = slots,
+            context_window = budget,
+            conversation = conversation,
+        )
+        with_clip = _openai_llama_admission_tokens(
+            _Payload(
+                messages = [{"role": "user", "content": "listen"}],
+                audio_base64 = clip,
+                max_tokens = budget,
+            ),
+            budget = budget,
+            capacity = slots,
+            context_window = budget,
+            conversation = conversation,
+        )
+        assert with_clip > without
+        assert with_clip >= len(clip) // 4
 
 
 class TestARetryThatGrewItsPrompt:
@@ -806,7 +875,9 @@ class TestARetryThatGrewItsPrompt:
         )
         assert bound is not None and bound < first["max_tokens"]
         assert (
-            _openai_llama_admission_wire_prompt_tokens(grown["messages"], llama_backend = backend)
+            _openai_llama_admission_wire_prompt_tokens(
+                grown["messages"], image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+            )
             + bound
             <= 16384 // 4
         )
