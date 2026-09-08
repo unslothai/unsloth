@@ -264,17 +264,17 @@ def _load_model_source() -> str:
 
 def test_split_mode_tensor_is_gated_on_the_toggle():
     src = _load_model_source()
-    assert (
-        'cmd.extend(["--split-mode", "tensor"])' in src
-    ), "the tensor-parallel flag emission must be present in load_model"
+    assert 'cmd.extend(["--split-mode", "tensor"])' in src, (
+        "the tensor-parallel flag emission must be present in load_model"
+    )
     # The emission lives behind `if tensor_parallel:` -- it must never be
     # part of the unconditional base cmd list.
     base_start = src.find("cmd = [")
     base_end = src.find("\n                ]", base_start)
     base_block = src[base_start:base_end] if base_end > base_start else ""
-    assert (
-        "--split-mode" not in base_block
-    ), "--split-mode must be conditional, not in the base cmd list"
+    assert "--split-mode" not in base_block, (
+        "--split-mode must be conditional, not in the base cmd list"
+    )
     gate = src.find("if tensor_parallel:")
     emit = src.find('cmd.extend(["--split-mode", "tensor"])')
     assert 0 <= gate < emit, "emission must sit under `if tensor_parallel:`"
@@ -918,9 +918,9 @@ def test_a_transient_error_against_a_live_server_costs_nothing(monkeypatch):
         elapsed = time.monotonic() - started
 
         assert loads == [], "a live server must not be reloaded"
-        assert (
-            elapsed < llama_cpp_module._RESPAWN_REAP_GRACE_S / 2
-        ), f"waited {elapsed:.2f}s on a server that is still accepting"
+        assert elapsed < llama_cpp_module._RESPAWN_REAP_GRACE_S / 2, (
+            f"waited {elapsed:.2f}s on a server that is still accepting"
+        )
     finally:
         listener.close()
 
@@ -1265,9 +1265,9 @@ def test_tensor_plan_leaves_the_floor_reserve_at_a_full_budget():
     *_, split_floor = _plan(floor_frac, 40)
     *_, split_default = _plan(lc._CTX_FIT_VRAM_FRACTION, 40)
     assert split_full is not None, "expected a weighted split at this model size"
-    assert (
-        split_full == split_floor
-    ), f"100% spent {split_full} per card where the floor allows {split_floor}"
+    assert split_full == split_floor, (
+        f"100% spent {split_full} per card where the floor allows {split_floor}"
+    )
     # The default still reserves its full 3% (737 MiB > the floor), so the floor
     # must not have flattened every budget onto the same number.
     assert all(d < f for d, f in zip(split_default, split_full))
@@ -1284,8 +1284,7 @@ def test_tensor_plan_leaves_the_floor_reserve_at_a_full_budget():
 
 def test_split_mode_tensor_arch_failure_message():
     msg = LlamaCppBackend._classify_llama_start_failure(
-        "llama_model_create: LLAMA_SPLIT_MODE_TENSOR not implemented for "
-        "architecture 'deepseek2'",
+        "llama_model_create: LLAMA_SPLIT_MODE_TENSOR not implemented for architecture 'deepseek2'",
         None,
         "unsloth/DeepSeek-V3-GGUF",
     )
