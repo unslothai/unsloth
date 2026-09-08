@@ -161,9 +161,7 @@ def test_a_lone_tagged_build_keeps_its_bare_label():
     sibling exists (``google/gemma-4-31B-it-qat-q4_0-gguf`` ships one build). No second row
     carries the token there, so nothing needs telling apart and the row reads as it always has."""
     path = "gemma-4-31B_q4_0-it.gguf"
-    variants = [
-        GgufVariantInfo(filename = path, quant = gguf_variant_key(path), size_bytes = 17)
-    ]
+    variants = [GgufVariantInfo(filename = path, quant = gguf_variant_key(path), size_bytes = 17)]
     _apply_gguf_display_labels(variants)
     assert variants[0].display_label == "q4_0"
 
