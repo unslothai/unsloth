@@ -104,6 +104,37 @@ def _function_declarations(captured):
     return next((t["functionDeclarations"] for t in tools if "functionDeclarations" in t), None)
 
 
+def _capture_responses_input(monkeypatch, messages):
+    """Drive one OpenAI Responses stream and return the ``input`` items it put on the wire."""
+    captured: dict = {"input_items": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured["input_items"] = body.get("input")
+        return httpx.Response(
+            200,
+            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = messages, model = "gpt-5.5", temperature = 0.7, top_p = 1.0, max_tokens = 16
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    return captured["input_items"] or []
+
+
 def _event(parts, *, finish_reason = "STOP", usage = None, **candidate):
     """One Gemini SSE event: a model turn carrying ``parts``, plus optional usage metadata."""
     event = {
@@ -2862,61 +2893,33 @@ def test_user_function_named_with_server_tool_arg_not_dropped(monkeypatch):
     whose JSON arguments contain `_server_tool: true` UNLESS the function name
     is also a canonical builtin name. Otherwise a user schema with an
     `_server_tool` field becomes invisible to the model."""
-    captured: dict = {"input_items": None}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content.decode("utf-8"))
-        captured["input_items"] = body.get("input")
-        return httpx.Response(
-            200,
-            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-            headers = {"content-type": "text/event-stream"},
-        )
-
-    _mock_http(monkeypatch, handler)
-
-    async def run():
-        client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-test",
-        )
-        async for _ in client.stream_chat_completion(
-            messages = [
-                {"role": "user", "content": "hi"},
+    items = _capture_responses_input(
+        monkeypatch,
+        [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
                 {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_user",
-                            "type": "function",
-                            "function": {
-                                "name": "user_function",
-                                "arguments": json.dumps({"_server_tool": True, "q": "x"}),
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "content": "result",
-                    "tool_call_id": "call_user",
-                    "name": "user_function",
-                },
-                {"role": "user", "content": "continue"},
+                    "id": "call_user",
+                    "type": "function",
+                    "function": {
+                        "name": "user_function",
+                        "arguments": json.dumps({"_server_tool": True, "q": "x"}),
+                    },
+                }
             ],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 1.0,
-            max_tokens = 16,
-        ):
-            pass
-        await client.close()
-
-    _drive(run())
-
-    items = captured["input_items"] or []
+        },
+        {
+            "role": "tool",
+            "content": "result",
+            "tool_call_id": "call_user",
+            "name": "user_function",
+        },
+        {"role": "user", "content": "continue"},
+        ],
+    )
     fn_calls = [i for i in items if i.get("type") == "function_call"]
     fn_outs = [i for i in items if i.get("type") == "function_call_output"]
     # User function call must survive (call + output).
@@ -2927,55 +2930,27 @@ def test_user_function_named_with_server_tool_arg_not_dropped(monkeypatch):
 def test_builtin_named_with_server_tool_marker_dropped(monkeypatch):
     """Round 17 control: a builtin (web_search) tagged with `_server_tool:
     true` continues to be filtered from outbound history."""
-    captured: dict = {"input_items": None}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content.decode("utf-8"))
-        captured["input_items"] = body.get("input")
-        return httpx.Response(
-            200,
-            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-            headers = {"content-type": "text/event-stream"},
-        )
-
-    _mock_http(monkeypatch, handler)
-
-    async def run():
-        client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-test",
-        )
-        async for _ in client.stream_chat_completion(
-            messages = [
-                {"role": "user", "content": "search please"},
+    items = _capture_responses_input(
+        monkeypatch,
+        [
+        {"role": "user", "content": "search please"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
                 {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_b",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"_server_tool": True, "query": "x"}),
-                            },
-                        }
-                    ],
-                },
-                {"role": "user", "content": "continue"},
+                    "id": "call_b",
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": json.dumps({"_server_tool": True, "query": "x"}),
+                    },
+                }
             ],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 1.0,
-            max_tokens = 16,
-        ):
-            pass
-        await client.close()
-
-    _drive(run())
-
-    items = captured["input_items"] or []
+        },
+        {"role": "user", "content": "continue"},
+        ],
+    )
     fn_calls = [i for i in items if i.get("type") == "function_call"]
     # Builtin server-side tool call must be filtered out.
     assert all(c.get("name") != "web_search" for c in fn_calls), items
@@ -3640,61 +3615,33 @@ def test_orphan_function_call_output_dropped_when_call_skipped(monkeypatch):
     """Round 19: when a marked server-side builtin `function_call` is dropped
     from OpenAI Responses input items, the matching role=tool follow-up must
     also be dropped to avoid an orphan `function_call_output`."""
-    captured: dict = {"input_items": None}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content.decode("utf-8"))
-        captured["input_items"] = body.get("input")
-        return httpx.Response(
-            200,
-            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-            headers = {"content-type": "text/event-stream"},
-        )
-
-    _mock_http(monkeypatch, handler)
-
-    async def run():
-        client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-test",
-        )
-        async for _ in client.stream_chat_completion(
-            messages = [
-                {"role": "user", "content": "search please"},
+    items = _capture_responses_input(
+        monkeypatch,
+        [
+        {"role": "user", "content": "search please"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
                 {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_b",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"_server_tool": True, "query": "x"}),
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "content": "result_text",
-                    "tool_call_id": "call_b",
-                    "name": "web_search",
-                },
-                {"role": "user", "content": "continue"},
+                    "id": "call_b",
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": json.dumps({"_server_tool": True, "query": "x"}),
+                    },
+                }
             ],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 1.0,
-            max_tokens = 16,
-        ):
-            pass
-        await client.close()
-
-    _drive(run())
-
-    items = captured["input_items"] or []
+        },
+        {
+            "role": "tool",
+            "content": "result_text",
+            "tool_call_id": "call_b",
+            "name": "web_search",
+        },
+        {"role": "user", "content": "continue"},
+        ],
+    )
     fn_calls = [i for i in items if i.get("type") == "function_call"]
     fn_outs = [i for i in items if i.get("type") == "function_call_output"]
     assert all(c.get("call_id") != "call_b" for c in fn_calls), items
@@ -4051,61 +3998,33 @@ def test_openai_responses_assistant_text_serialized_before_function_call(monkeyp
     function_call item, matching the prior response.output sequence. Otherwise
     function_call_output (the role=tool follow-up) appears to follow an
     unrelated assistant message."""
-    captured: dict = {"input_items": None}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content.decode("utf-8"))
-        captured["input_items"] = body.get("input")
-        return httpx.Response(
-            200,
-            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-            headers = {"content-type": "text/event-stream"},
-        )
-
-    _mock_http(monkeypatch, handler)
-
-    async def run():
-        client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-test",
-        )
-        async for _ in client.stream_chat_completion(
-            messages = [
-                {"role": "user", "content": "weather?"},
+    items = _capture_responses_input(
+        monkeypatch,
+        [
+        {"role": "user", "content": "weather?"},
+        {
+            "role": "assistant",
+            "content": "Let me check that.",
+            "tool_calls": [
                 {
-                    "role": "assistant",
-                    "content": "Let me check that.",
-                    "tool_calls": [
-                        {
-                            "id": "call_w",
-                            "type": "function",
-                            "function": {
-                                "name": "get_weather",
-                                "arguments": "{}",
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "content": "sunny",
-                    "tool_call_id": "call_w",
-                    "name": "get_weather",
-                },
-                {"role": "user", "content": "thanks"},
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": "{}",
+                    },
+                }
             ],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 1.0,
-            max_tokens = 16,
-        ):
-            pass
-        await client.close()
-
-    _drive(run())
-
-    items = captured["input_items"] or []
+        },
+        {
+            "role": "tool",
+            "content": "sunny",
+            "tool_call_id": "call_w",
+            "name": "get_weather",
+        },
+        {"role": "user", "content": "thanks"},
+        ],
+    )
     types = [i.get("type") or i.get("role") for i in items]
     # Expected order:
     #   user ("weather?")
