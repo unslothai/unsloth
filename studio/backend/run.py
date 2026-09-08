@@ -1616,12 +1616,13 @@ def _graceful_shutdown(server = None):
     # every spawn covers the gaps between the steps.
     _sweep_generation = None
     try:
-        from utils.process_lifetime import mark_process_shutting_down, process_lifecycle_generation
-        mark_process_shutting_down()
-        # Captured here so step 7's sweep belongs to THIS shutdown. A concurrent
-        # embedded restart advances the generation, and children it adopts must
-        # outlive a sweep that was started before they existed.
-        _sweep_generation = process_lifecycle_generation()
+        from utils.process_lifetime import mark_process_shutting_down
+
+        # Returned by the marking call itself, under the lock that sets the latch, so
+        # step 7's sweep belongs to THIS shutdown. Reading it in a separate call let a
+        # restart advance the generation in between, and the sweep would then adopt the
+        # new session's number and terminate the children it had just started.
+        _sweep_generation = mark_process_shutting_down()
     except Exception as e:
         logger.warning("Could not latch the process shutdown flag: %s", e)
 

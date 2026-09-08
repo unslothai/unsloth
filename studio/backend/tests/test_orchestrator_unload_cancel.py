@@ -3730,3 +3730,32 @@ def test_forgetting_a_pid_drops_its_adoption_record_too():
             pl._tracked_pids.pop(child.pid, None)
             pl._tracked_pgids.pop(child.pid, None)
             pl._adoption_generation.pop(child.pid, None)
+
+
+def test_the_shutdown_generation_is_captured_by_the_marking_call():
+    """Marking and reading must be one operation. As two calls, a restart landing
+    between them gave the shutdown the NEW session's number, and its sweep would then
+    terminate the children that session had just started -- the very thing the sweep
+    scoping exists to prevent.
+    """
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    from utils import process_lifetime as pl
+
+    assert isinstance(
+        pl.mark_process_shutting_down(), int
+    ), "the marking call does not report the lifecycle it latched"
+    pl.begin_process_lifecycle()
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    fn = next(
+        n
+        for n in ast.walk(ast.parse(run_py))
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "_graceful_shutdown"
+    )
+    body = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
+    assert (
+        "process_lifecycle_generation()" not in body
+    ), "the shutdown reads the generation separately from marking, reopening the race"

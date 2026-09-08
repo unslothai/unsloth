@@ -1014,7 +1014,7 @@ def process_lifecycle_generation() -> int:
         return _lifecycle_generation
 
 
-def mark_process_shutting_down() -> None:
+def mark_process_shutting_down() -> int:
     """Latch "this process is quitting" for every spawner in it.
 
     Each subsystem already refuses to spawn during its OWN teardown, but that state
@@ -1025,9 +1025,15 @@ def mark_process_shutting_down() -> None:
 
     Under the generation lock, so that a set racing begin_process_lifecycle's clear
     cannot be erased by it: whichever transition happens second is the one that stands.
+
+    Returns the lifecycle this shutdown belongs to, read under the same lock that sets
+    the latch. Reading it in a separate call would let a restart advance the generation
+    in between, and the sweep would then adopt the NEW session's number and terminate
+    the children it had just started.
     """
     with _generation_lock:
         _shutdown_latch.set()
+        return _lifecycle_generation
 
 
 def is_process_shutting_down(admitted_generation: "Optional[int]" = None) -> bool:
