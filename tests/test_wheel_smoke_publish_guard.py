@@ -3,15 +3,8 @@
 
 """Regression tests for the "Publishing path uploads the wheel only" guard.
 
-The guard lives inside a heredoc in .github/workflows/wheel-smoke.yml, so these
-tests extract the shipped script text rather than a copy of it, and run it
-against synthetic build.sh files. Two ways a guard like this silently passes a
-release that publishes an sdist:
-
-  - it inspects only the first argument, so `dist/*.whl dist/*.tar.gz` passes;
-  - the workflow never runs at all, because build.sh is not in the path filters.
-
-Both are covered below.
+The guard text is extracted from .github/workflows/wheel-smoke.yml rather than
+copied, then run against synthetic build.sh files.
 """
 
 import subprocess
@@ -73,13 +66,10 @@ PROLOGUE = "#!/bin/bash\nset -euo pipefail\npython -m build\n"
         "python -m twine upload --repository-url https://upload.pypi.org/legacy/ dist/*.whl",
         "python -m twine upload --non-interactive dist/*.whl",
         "python -m twine upload dist/a-1-py3-none-any.whl dist/b-1-py3-none-any.whl",
-        # -s is store_true, so the wheel after it is an artifact, not its value.
         "python -m twine upload -s dist/*.whl",
-        # A command may be preceded by variable assignments; twine's credential
-        # env vars are the obvious reason build.sh would do that.
+        # twine's credential env vars put an assignment in front of the command.
         "TWINE_USERNAME=__token__ python -m twine upload dist/*.whl",
         "TWINE_USERNAME=__token__ TWINE_PASSWORD=x twine upload dist/*.whl",
-        # These two do consume a value, and the value is not an artifact.
         "python -m twine upload --sign-with gpg2 dist/*.whl",
         "python -m twine upload -i me@example.com dist/*.whl",
     ],
@@ -92,17 +82,13 @@ def test_wheel_only_uploads_pass(tmp_path, upload_line):
 @pytest.mark.parametrize(
     "upload_line",
     [
-        # The regression #10419 exists to catch.
         "python -m twine upload dist/*",
-        # The bypass: wheel first, sdist second. A first-argument-only check
-        # passes this while PyPI receives the ~86MB sdist.
+        # Wheel first, sdist second: a first-argument-only check passes this.
         "python -m twine upload dist/*.whl dist/*.tar.gz",
         "python -m twine upload dist/*.tar.gz dist/*.whl",
         "python -m twine upload -r pypi dist/*.whl dist/unsloth-1.0.tar.gz",
         "python -m twine upload dist/*.zip",
-        # Signing on with the sdist listed first. Treating -s as value-taking
-        # swallowed the tarball, leaving only the wheel visible, so the guard
-        # passed while twine uploaded both.
+        # -s is store_true, so the sdist after it is an artifact, not its value.
         "python -m twine upload -s dist/*.tar.gz dist/*.whl",
         "TWINE_REPOSITORY_URL=https://example.invalid python -m twine upload dist/*",
     ],
@@ -130,12 +116,7 @@ def test_missing_upload_line_fails(tmp_path):
     ],
 )
 def test_a_shell_no_op_is_not_an_upload(tmp_path, no_op):
-    """A line that names twine but never runs it must not satisfy the check.
-
-    Unanchored, `: twine upload dist/*.whl` registered a wheel target, so a
-    build.sh whose real upload had been deleted still reported PASS. That is
-    precisely what the missing-upload check exists to catch.
-    """
+    """A line that names twine but never runs it must not satisfy the check."""
     r = _run_guard(tmp_path, PROLOGUE + no_op + "\n")
     assert r.returncode == 1, r.stdout + r.stderr
     assert "no twine upload line" in r.stdout
@@ -147,9 +128,7 @@ def test_a_shell_no_op_is_not_an_upload(tmp_path, no_op):
         "cat <<'USAGE'\ntwine upload dist/*.whl\nUSAGE\n",
         "cat <<USAGE\ntwine upload dist/*.whl\nUSAGE\n",
         "cat <<-USAGE\n\ttwine upload dist/*.whl\n\tUSAGE\n",
-        # The delimiter is a shell word, not an identifier: bash accepts these
-        # and treats the body as text, but an identifier-shaped pattern misses
-        # the heredoc and reads the usage output as the release path.
+        # The delimiter is a shell word, not an identifier.
         "cat <<'PUBLISH-USAGE'\ntwine upload dist/*.whl\nPUBLISH-USAGE\n",
         "cat <<PUBLISH-USAGE\ntwine upload dist/*.whl\nPUBLISH-USAGE\n",
         "cat <<'EOF.TXT'\ntwine upload dist/*.whl\nEOF.TXT\n",
@@ -210,34 +189,14 @@ def test_real_build_sh_passes_the_guard(tmp_path):
 
 @pytest.mark.parametrize("event", ["pull_request", "push"])
 def test_build_sh_is_in_the_path_filters(event):
-    """The guard reads build.sh, so build.sh must trigger the workflow.
-
-    GitHub skips a `paths`-filtered workflow entirely when no changed file
-    matches, so a PR touching only build.sh would otherwise never run this.
-    """
+    """GitHub skips the workflow entirely on a PR that touches only build.sh."""
     paths = _on_block(_workflow())[event]["paths"]
     assert "build.sh" in paths, f"{event} paths filter omits build.sh: {paths}"
 
 
-# --------------------------------------------------------------------------
-# The tests above only bite if something actually collects THIS module.
-#
-# `pyproject.toml` sets testpaths = ["tests/security"], and pytest uses that
-# list "when no specific directories, files or test ids are given in the
-# command line" -- so a bare `pytest` never reaches this file, and every
-# invocation that would has to name it. Meanwhile the change these tests exist
-# to reject (reintroducing the first-argument-only parser) edits
-# `wheel-smoke.yml` and nothing else, and GitHub only runs a `paths`-filtered
-# workflow when "at least one path matches a pattern in the paths filter".
-#
-# wheel-smoke.yml does trigger on its own YAML, but that run only executes the
-# guard against the current, single-target build.sh: a broken parser still says
-# PASS. So the regression is caught only by a job that both collects this
-# module and starts on a workflow-only diff. workflow-trigger-lint.yml is the
-# one job in the repo with no paths filter, which makes it the only candidate.
-# tests/studio/test_workflow_guards_run_unfiltered.py enforces this rule for
-# tests/studio; this module lives in tests/, so it asserts it for itself.
-# --------------------------------------------------------------------------
+# testpaths = ["tests/security"] means a bare `pytest` never collects this module,
+# and a parser regression edits only wheel-smoke.yml. workflow-trigger-lint.yml is
+# the only job with no paths filter, so it is the only one that can catch that PR.
 
 
 def _lint_doc():
@@ -262,10 +221,8 @@ def test_the_job_that_runs_this_module_has_no_paths_filter():
     doc = _lint_doc()
     on = _on_block(doc)
     for trigger in ("pull_request", "push"):
-        # Presence first. `continue` on a missing key let the trigger be deleted
-        # outright and still pass, which is a bigger hole than filtering it:
-        # dropping `push` keeps the PR check green while removing this guard from
-        # every later direct push to main.
+        # Presence first: `continue` on a missing key let the trigger be deleted
+        # outright and still pass.
         assert trigger in on, (
             f"workflow-trigger-lint no longer runs on {trigger}, so this module stops "
             f"being collected for that event."
@@ -283,8 +240,7 @@ def test_the_job_that_runs_this_module_has_no_paths_filter():
 @pytest.mark.parametrize(
     ("body", "rc"),
     [
-        # << closes only on an exact delimiter, so an indented copy stays body
-        # and the text after it is not a command.
+        # << closes on an exact delimiter, so an indented copy stays body.
         ("cat <<'USAGE'\n    USAGE\ntwine upload dist/*.whl\nUSAGE\n", 1),
         # <<- strips leading tabs, so a tab-indented delimiter does close it.
         ("cat <<-USAGE\n\tUSAGE\nUSAGE\npython -m twine upload dist/*.whl\n", 0),
@@ -327,12 +283,7 @@ def test_a_redirection_does_not_hide_a_non_wheel(tmp_path):
     ],
 )
 def test_a_second_chained_upload_is_still_inspected(tmp_path, upload_line):
-    """Every command on the line counts, not just the first.
-
-    Stopping at the first control operator kept the guard from reading a pipe's
-    right-hand side, but it also discarded a chained SECOND upload, so the wheel
-    was recorded, the sdist was not, and the guard passed while both shipped.
-    """
+    """Every command on the line counts, not just the first."""
     r = _run_guard(tmp_path, PROLOGUE + upload_line + "\n")
     assert r.returncode == 1, r.stdout + r.stderr
     assert "non-wheel" in r.stdout
@@ -352,11 +303,7 @@ def test_a_chained_non_upload_is_not_an_artifact(tmp_path, upload_line):
 
 
 def test_an_assignment_prefix_does_not_hide_a_second_upload(tmp_path):
-    """An assignment-prefixed sdist upload ran, but read as a non-twine command.
-
-    The visible wheel-only line kept `uploads` nonempty, so the guard passed
-    while twine published the tarball as well.
-    """
+    """The visible wheel-only line must not cover for an assignment-prefixed one."""
     body = PROLOGUE + "python -m twine upload dist/*.whl\n"
     body += "TWINE_REPOSITORY_URL=https://example.invalid twine upload dist/*.tar.gz\n"
     r = _run_guard(tmp_path, body)

@@ -22,10 +22,8 @@ on:
     paths:
       - 'pyproject.toml'
       - 'MANIFEST.in'
-      # The "Publishing path uploads the wheel only" step reads build.sh. A guard
-      # that does not run when its own subject changes cannot guard it: without
-      # this entry, a PR that only reverts the upload glob to dist/* skips the
-      # workflow entirely.
+      # Required: the publish guard reads build.sh, so a PR reverting the upload
+      # glob must not skip this workflow.
       - 'build.sh'
       - 'studio/**'
       - 'unsloth/**'
@@ -128,28 +126,17 @@ jobs:
           PY
 
       - name: Publishing path uploads the wheel only
-        # #10202 made `./build.sh publish` upload dist/*.whl rather than dist/*,
-        # because the sdist is the larger half of a ~169MB release and the PyPI
-        # project limit is 10GB. It did not stick: 2026.9.2 was published the
-        # same day with an 86.6MB sdist, because the release was driven by a
-        # hand-typed `twine upload dist/*` instead of build.sh.
-        #
-        # build.sh still BUILDS the sdist on purpose, so --verify-dist can check
-        # the Studio release stamp in both artifacts. The thing that must not
-        # regress is the upload glob, so that is what this asserts.
+        # #10202 set the publish glob to dist/*.whl; 2026.9.2 shipped an 86.6MB
+        # sdist anyway. build.sh must still BUILD the sdist for --verify-dist, so
+        # only the upload glob is asserted here.
         run: |
           python - <<'PY'
           import re, shlex, sys
 
-          # `twine upload` takes `dist [dist ...]`, so every positional counts:
-          # checking only the first would pass `twine upload dist/*.whl dist/*.tar.gz`,
-          # which publishes the sdist. Flags that consume a value are skipped by
-          # name rather than by position, so `-r pypi dist/*.whl` stays a PASS.
+          # twine upload takes `dist [dist ...]`, so every positional counts. Flags
+          # are skipped by name, not by position; -s/--sign is store_true, and
+          # listing it here swallowed the sdist after it.
           VALUED_FLAGS = {
-              # -s/--sign is store_true and consumes nothing; only --sign-with
-              # takes a value. Listing -s here made the parser swallow the next
-              # argument, so `twine upload -s dist/*.tar.gz dist/*.whl` hid the
-              # tarball and passed.
               "-r", "--repository", "--repository-url", "--sign-with",
               "-i", "--identity", "-u", "--username", "-p", "--password",
               "-c", "--comment", "--config-file", "--cert", "--client-cert",
@@ -160,18 +147,13 @@ jobs:
           def segments(line):
               """One token list per command on the line, split on control operators.
 
-              Ending the scan at the first operator was wrong in one direction:
-              it correctly ignored the right-hand side of a pipe, but it also
-              discarded a SECOND upload, so
-              `twine upload dist/*.whl && twine upload dist/*.tar.gz` recorded
-              only the wheel and passed while the sdist was published too. Each
-              segment is a command in its own right and is judged on its own.
+              `twine upload dist/*.whl && twine upload dist/*.tar.gz` publishes
+              both, so stopping at the first operator is not enough.
               """
               try:
                   toks = shlex.split(line, comments=True)
               except ValueError:
-                  # Unbalanced quoting: not something this guard can read, so
-                  # refuse rather than wave it through.
+                  # Unbalanced quoting: refuse rather than wave it through.
                   return None
               out, current = [], []
               for t in toks:
@@ -186,12 +168,8 @@ jobs:
           def upload_args(seg):
               """twine's positional arguments, or None when seg is not an upload."""
               head = list(seg)
-              # A command may be preceded by variable assignments, and twine's
-              # own credential story drives people straight to it
-              # (TWINE_USERNAME=__token__ python -m twine upload dist/*.whl).
-              # Reading the assignment as the command hid the whole invocation:
-              # a wheel-only build.sh failed with "no twine upload line", and an
-              # sdist upload alongside a visible wheel one went uncounted.
+              # `TWINE_USERNAME=__token__ twine upload ...` still runs twine: an
+              # assignment prefix is not the command.
               while head and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\+?=.*", head[0], re.S):
                   head = head[1:]
               if head[:3] == ["python", "-m", "twine"] or (
@@ -209,9 +187,8 @@ jobs:
                   if skip:
                       skip = False
                       continue
-                  # Redirections are shell syntax, not artifacts. `>twine.log`
-                  # arrives as one token and used to be reported as a non-wheel
-                  # artifact, failing CI on a perfectly valid upload line.
+                  # Redirections are shell syntax, not artifacts; `>twine.log`
+                  # arrives as one token.
                   redirect = re.match(r"^\d*(?:>>|>&|>|<<?|&>)(.*)$", t)
                   if redirect:
                       # Bare operator: its target is the next token.
@@ -226,32 +203,21 @@ jobs:
           def executable_lines(text):
               """build.sh lines the shell would actually run.
 
-              Comments and heredoc bodies are text, not commands, but both can
-              contain a line that starts with `twine upload dist/*.whl` -- usage
-              output being the obvious one. Counting that as the upload lets a
-              build.sh whose real publish line was deleted still report PASS,
-              which is the one thing the has-an-upload check exists to catch.
+              Usage text inside a heredoc names `twine upload dist/*.whl` too, and
+              counting it lets a build.sh with no publish line report PASS.
               """
               out, terminator, dash = [], None, False
               for line in text.splitlines():
                   if terminator is not None:
-                      # Bash closes <<WORD only on an EXACT match; an indented
-                      # copy of the delimiter stays part of the body. <<-WORD
-                      # strips leading TABS (not spaces) before comparing. Using
-                      # .strip() for both closed a << heredoc early, so the text
-                      # after it was read as commands.
+                      # Bash closes <<WORD on an EXACT match only; <<-WORD strips
+                      # leading TABS, not spaces, before comparing.
                       candidate = line.lstrip("\t") if dash else line
                       if candidate == terminator:
                           terminator = None
                       continue
-                  # The delimiter is a shell WORD, not an identifier, so
-                  # `cat <<'PUBLISH-USAGE'` is a heredoc and its body is text.
-                  # Requiring [A-Za-z_][A-Za-z0-9_]* read that body as commands.
-                  # A quoted delimiter may hold anything; unquoted it still has
-                  # to start with a letter, because `$((1<<2))` is a shift, not
-                  # a heredoc. The lookbehind is what keeps `cmd <<<'a-b'` out:
-                  # a here-string contains `<<`, and matching it swallowed the
-                  # rest of the file as a heredoc body.
+                  # The delimiter is a shell WORD, so `<<'PUBLISH-USAGE'` opens a
+                  # heredoc. Unquoted it must still start with a letter, or
+                  # `$((1<<2))` opens one too; the lookbehind excludes `<<<`.
                   opened = re.search(
                       r"(?<!<)<<(-?)\s*(?:'([^']*)'|\"([^\"]*)\"|\\?([A-Za-z_][A-Za-z0-9_.-]*))",
                       line,
@@ -274,11 +240,8 @@ jobs:
               if parts is None:
                   unreadable = True
                   continue
-              # Every command on the line, judged separately. A segment only
-              # counts when twine IS the command: a shell no-op that merely names
-              # it (`: twine upload dist/*.whl`) has ':' as its command, so it no
-              # longer satisfies the has-an-upload check below, which is the one
-              # thing that check exists to catch.
+              # A segment counts only when twine IS the command, so the no-op
+              # `: twine upload dist/*.whl` is not an upload.
               for seg in parts:
                   args = upload_args(seg)
                   if args is not None:
@@ -303,10 +266,8 @@ jobs:
         # tests/security/fixtures embeds a real supply-chain IOC literal, which got
         # the published sdist flagged by antivirus vendors (discussion #9577).
         #
-        # Both artifacts, still: the sdist is built locally by build.sh even
-        # though it is not uploaded, and a bare `python -m build` builds the
-        # wheel FROM the sdist, so a test suite reaching the sdist reaches the
-        # wheel too.
+        # Both artifacts: `python -m build` builds the wheel FROM the sdist, so a
+        # test suite reaching one reaches the other.
         run: |
           python - <<'PY'
           import glob, sys, tarfile, zipfile
