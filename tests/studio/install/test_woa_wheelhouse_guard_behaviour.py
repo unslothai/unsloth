@@ -174,14 +174,14 @@ def test_pypi_counts_only_when_the_resolve_would_reach_it(env, reaches):
 def test_a_wheel_taken_from_pypi_is_not_then_excluded_on_arm64():
     """Bug 1, the one that matters: skipping our copy must not read as "no wheel exists"."""
     nothing_anywhere = _dropped_names("@{}")
-    assert {"brotli", "hf-transfer", "hf_transfer"} <= nothing_anywhere, (
-        f"a name with no wheel anywhere must be dropped on ARM64, got {nothing_anywhere}"
-    )
+    assert (
+        {"brotli", "hf-transfer", "hf_transfer"} <= nothing_anywhere
+    ), f"a name with no wheel anywhere must be dropped on ARM64, got {nothing_anywhere}"
 
     from_pypi = _dropped_names('@{ "brotli" = @("1.3.0"); "hf-transfer" = @("0.2.0") }')
-    assert not ({"brotli", "hf-transfer", "hf_transfer"} & from_pypi), (
-        f"PyPI supplies these, so they must not be excluded on ARM64; dropped {from_pypi}"
-    )
+    assert not (
+        {"brotli", "hf-transfer", "hf_transfer"} & from_pypi
+    ), f"PyPI supplies these, so they must not be excluded on ARM64; dropped {from_pypi}"
     # What is genuinely unavailable is still dropped, so the fix did not blanket-allow.
     assert {"xformers", "torchcodec", "brotlicffi"} <= from_pypi
 

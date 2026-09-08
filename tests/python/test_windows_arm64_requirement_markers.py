@@ -155,16 +155,16 @@ def test_arm64_marker_is_case_sensitive_and_windows_only():
     for plat in PLATFORMS:
         env = _env(plat, "3.13")
         live = woa.marker.evaluate(env)
-        assert live == ((plat[0], plat[2]) == ("win32", "ARM64")), (
-            f"win-ARM64 marker fired on {plat[0]}/{plat[2]}"
-        )
+        assert live == (
+            (plat[0], plat[2]) == ("win32", "ARM64")
+        ), f"win-ARM64 marker fired on {plat[0]}/{plat[2]}"
     # The complement really is the complement.
     other = Requirement('x==1; sys_platform != "win32" or platform_machine != "ARM64"')
     for plat, py in itertools.product(PLATFORMS, PYTHONS):
         env = _env(plat, py)
-        assert woa.marker.evaluate(env) != other.marker.evaluate(env), (
-            f"the two halves are not complementary on {plat[0]}/{plat[2]}"
-        )
+        assert woa.marker.evaluate(env) != other.marker.evaluate(
+            env
+        ), f"the two halves are not complementary on {plat[0]}/{plat[2]}"
 
 
 @pytest.mark.parametrize("label,reqs", ALL_SOURCES, ids = [s[0] for s in ALL_SOURCES])
@@ -292,9 +292,9 @@ def test_the_woa_pandas_split_covers_every_supported_python():
                 f"rows, expected exactly 1: {[str(r) for r in live]}"
             )
             if _minor(py) < (3, 11):
-                assert "3.0" not in str(live[0].specifier), (
-                    f"{label}: Python {py} must not be handed the pandas 3 row"
-                )
+                assert "3.0" not in str(
+                    live[0].specifier
+                ), f"{label}: Python {py} must not be handed the pandas 3 row"
 
 
 # install_python_stack.py, loaded so the skip list is read rather than copied here.

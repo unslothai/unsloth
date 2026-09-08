@@ -275,9 +275,9 @@ class TestReadSide:
             encoding = "utf-8",
         )
         got = self._invoke(tmp_path)
-        assert got == (url.strip().rstrip("/") if allowed else ""), (
-            f"{url!r} ({why}) came back as {got!r} and would be passed to uv"
-        )
+        assert got == (
+            url.strip().rstrip("/") if allowed else ""
+        ), f"{url!r} ({why}) came back as {got!r} and would be passed to uv"
 
     @requires_pwsh
     def test_a_missing_or_unreadable_manifest_is_empty_not_an_error(self, tmp_path: pathlib.Path):
@@ -455,9 +455,9 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
             SETUP_SRC,
             "$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $_woaMarkerIndex",
         )
-        assert not any("NoTorchMode" in b for b in blocks), (
-            f"the manifest is rewritten in no-torch mode too. Enclosing blocks: {blocks}"
-        )
+        assert not any(
+            "NoTorchMode" in b for b in blocks
+        ), f"the manifest is rewritten in no-torch mode too. Enclosing blocks: {blocks}"
 
     def test_the_recovered_index_is_put_back_in_the_environment(self):
         """The bug this guards: recovering the index into a local variable only."""
@@ -466,18 +466,18 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
         stack = SETUP_SRC.index('python "$PSScriptRoot\\install_python_stack.py"')
         assert assign < export < stack, "recovered, re-exported, then read by the stack"
         block = SETUP_SRC.rindex("if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {", 0, export)
-        assert "$_woaMarkerIndex = $_woaPinnedIndex" in SETUP_SRC[block:export], (
-            "guarded: neither record present must not export an empty value"
-        )
+        assert (
+            "$_woaMarkerIndex = $_woaPinnedIndex" in SETUP_SRC[block:export]
+        ), "guarded: neither record present must not export an empty value"
 
     def test_studio_txt_is_installed_in_no_torch_mode(self):
         """The premise of the placement test above."""
         call = STACK_SRC.index('req = REQ_ROOT / "studio.txt"')
         line_start = STACK_SRC.rfind("\n", 0, STACK_SRC.rindex("pip_install(", 0, call)) + 1
         indent = len(STACK_SRC[line_start:]) - len(STACK_SRC[line_start:].lstrip())
-        assert indent == 4, (
-            "the studio.txt install is no longer unconditional inside install_python_stack()"
-        )
+        assert (
+            indent == 4
+        ), "the studio.txt install is no longer unconditional inside install_python_stack()"
         skip_list = STACK_SRC[STACK_SRC.index("NO_TORCH_SKIP_PACKAGES = {") :][:400]
         assert "ddgs" not in skip_list, "ddgs is still installed when NO_TORCH is set"
 
@@ -514,9 +514,9 @@ class TestThePublishedIndexIsTheOneTorchCameFrom:
         assign = SETUP_SRC.index("$_effectiveTorchIndexUrl = $_cudaIndexUrl")
         publish = SETUP_SRC.index("$_expectedLeaf = Get-TorchIndexLeaf $_effectiveTorchIndexUrl")
         assert default < assign < publish, "default, then the install, then the publish"
-        assert SETUP_SRC.count("$_effectiveTorchIndexUrl = ") == 2, (
-            "only the CUDA install may move it"
-        )
+        assert (
+            SETUP_SRC.count("$_effectiveTorchIndexUrl = ") == 2
+        ), "only the CUDA install may move it"
 
     def test_the_nvidia_channel_publishes_no_flavor_tag(self):
         """Get-TorchIndexLeaf on the NVIDIA channel yields `nvtorch_oot`, which is not a
@@ -636,9 +636,9 @@ class TestTheLlamaArm64CudaOptOut:
         body = LLAMA_SRC[start:end]
         marker = body.index("if host.is_windows and host.is_arm64:")
         arm64_block = body[marker : marker + 900]
-        assert "_upstream_arm64_cuda_allowed()" in arm64_block, (
-            "the Windows ARM64 CUDA branch of resolve_upstream_asset_choice is ungated"
-        )
+        assert (
+            "_upstream_arm64_cuda_allowed()" in arm64_block
+        ), "the Windows ARM64 CUDA branch of resolve_upstream_asset_choice is ungated"
 
 
 class TestAMigratedX64VenvIsRebuiltAsArm64:
@@ -758,9 +758,9 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         the flag asks for, so the opt-out arm expects the CPU kind INSTEAD of the CUDA
         kind.
         """
-        assert self._kinds("0") == "windows-arm64 windows-vulkan", (
-            "opted out: CUDA is no longer valid"
-        )
+        assert (
+            self._kinds("0") == "windows-arm64 windows-vulkan"
+        ), "opted out: CUDA is no longer valid"
         assert self._kinds("") == "windows-arm64-cuda windows-arm64 windows-vulkan"
 
     @staticmethod
@@ -794,9 +794,9 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         """
         raise_at = LLAMA_SRC.index("raise ExistingInstallSatisfied(attempt, tried_fallback)")
         window = LLAMA_SRC[max(0, raise_at - 1200) : raise_at]
-        assert "choice = attempt" in window, (
-            "the reuse check is per attempt; a plan-level one would pin the user to CPU"
-        )
+        assert (
+            "choice = attempt" in window
+        ), "the reuse check is per attempt; a plan-level one would pin the user to CPU"
 
     def test_the_falsy_spellings_match_the_python_helper(self):
         """One vocabulary; the two must not drift apart."""
@@ -1126,9 +1126,9 @@ class TestCallerResolverConfigurationSurvives:
             "a file that names none of our packages is passed to uv where it is, which "
             "keeps its relative -r and wheel paths resolving"
         )
-        assert "$WoaOverrideLines += (Resolve-WoaOverrideLine" in block, (
-            "and a conflicting one is folded line by line, rebased as it goes"
-        )
+        assert (
+            "$WoaOverrideLines += (Resolve-WoaOverrideLine" in block
+        ), "and a conflicting one is folded line by line, rebased as it goes"
         assert "$_woaOwnNames.ContainsKey($_woaOvName)" in block, (
             "minus the packages this file declares -- uv combines override files and "
             "errors on a duplicate package, so a blind append could fail the resolve"
@@ -1139,9 +1139,9 @@ class TestCallerResolverConfigurationSurvives:
             '$env:UV_FIND_LINKS = if ($_woaCallerUvLinks) { "$WoaWheelDir,$_woaCallerUvLinks" }'
             in INSTALL_SRC
         ), "UV_FIND_LINKS is comma-separated"
-        assert '"$_woaSafeWheelDir $_woaCallerPipLinks"' in INSTALL_SRC, (
-            "PIP_FIND_LINKS is split on whitespace, and ours must be the 8.3-safe form"
-        )
+        assert (
+            '"$_woaSafeWheelDir $_woaCallerPipLinks"' in INSTALL_SRC
+        ), "PIP_FIND_LINKS is split on whitespace, and ours must be the 8.3-safe form"
 
     def test_ours_is_searched_first(self):
         """A win_arm64 wheel staged for this host must win a tie against the same name."""
@@ -1241,9 +1241,9 @@ class TestTheProbeAsksForTheInterpretersAbi:
         """
         assert "$WoaWheelAbi = Get-WoaAbiTag -PythonMinor $WoaVenvMinor" in INSTALL_SRC
         assert "($abiTags -contains $WoaWheelAbi)" in INSTALL_SRC
-        assert "($WoaWheelStable -and ($abiTags -contains 'abi3'))" in INSTALL_SRC, (
-            "free-threaded builds do not implement the stable ABI"
-        )
+        assert (
+            "($WoaWheelStable -and ($abiTags -contains 'abi3'))" in INSTALL_SRC
+        ), "free-threaded builds do not implement the stable ABI"
         assert (
             "$script:WoaVenvFreeThreaded = Test-PythonFreeThreaded -PythonExe $VenvPython"
             in INSTALL_SRC
@@ -1278,9 +1278,9 @@ class TestTheAbiReprobeFiresOnAMatchingMinor:
 
     def test_the_guard_compares_the_abi_as_well_as_the_minor(self):
         assert "$WoaProbedFreeThreaded = $false" in INSTALL_SRC
-        assert "($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded)" in INSTALL_SRC, (
-            "a 3.13t selected for a 3.13 request matches on minor and must still re-probe"
-        )
+        assert (
+            "($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded)" in INSTALL_SRC
+        ), "a 3.13t selected for a 3.13 request matches on minor and must still re-probe"
 
     def test_the_second_reprobe_compares_it_too(self):
         """After Install-PythonFromPythonOrg the ABI can change without the minor doing so."""
@@ -1406,9 +1406,9 @@ class TestTheRestoreMergesRatherThanStandsDown:
             "reaching the drop list must not depend on the caller having set nothing; "
             f"head still tests it: {head[-300:]}"
         )
-        assert "elseif (-not $env:UV_OVERRIDE) {" in body, (
-            "the no-caller case still assigns ours alone"
-        )
+        assert (
+            "elseif (-not $env:UV_OVERRIDE) {" in body
+        ), "the no-caller case still assigns ours alone"
 
 
 class TestThePurgeKeepsWhatIsNotOurs:
@@ -1525,9 +1525,9 @@ class TestAStaleTorchaudioIsRemoved:
             and "Test-WoaAudioMatchesTorchParity -TorchVersion $_woaTorchVer -AudioVersion $_woaAudioVer"
             in block
         ), "a matching audio wheel is the one this venv was installed with and stays"
-        assert "$_woaAudioProbe.Ok" in block, (
-            "a probe that did not answer says nothing; it must not trigger a removal"
-        )
+        assert (
+            "$_woaAudioProbe.Ok" in block
+        ), "a probe that did not answer says nothing; it must not trigger a removal"
 
     def test_it_only_runs_where_audio_was_dropped(self):
         block = self._block()
@@ -1538,9 +1538,9 @@ class TestAStaleTorchaudioIsRemoved:
 
     def test_it_runs_after_the_install_succeeded(self):
         failed = SETUP_SRC.index('Exit-SetupFailure "PyTorch CUDA installation failed')
-        assert SETUP_SRC.index("if ($WinArm64Venv -and $WinArm64NoAudio) {") > failed, (
-            "removing audio before knowing torch installed would strip a working venv"
-        )
+        assert (
+            SETUP_SRC.index("if ($WinArm64Venv -and $WinArm64NoAudio) {") > failed
+        ), "removing audio before knowing torch installed would strip a working venv"
 
 
 class TestTheWheelTagsAreMatchedAsFields:
@@ -1654,9 +1654,9 @@ class TestAHostedDropCandidateMustMeetItsFloor:
     def test_the_floor_still_matches_the_metadata(self):
         """The one duplicated constant, pinned to its source so it cannot drift."""
         pyproject = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding = "utf-8")
-        assert "xformers>=0.0.22.post7 ; (sys_platform == 'win32')" in pyproject, (
-            "if this floor moves, $WoaDropFloors in install.ps1 moves with it"
-        )
+        assert (
+            "xformers>=0.0.22.post7 ; (sys_platform == 'win32')" in pyproject
+        ), "if this floor moves, $WoaDropFloors in install.ps1 moves with it"
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -1807,18 +1807,16 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
         assert "$_woaOvConflicts" in block, "only a package clash forces a rewrite"
         assert (
             "Resolve-WoaOverrideLine -Line $_woaOvEntry.Line -BaseDir $_woaOvEntry.BaseDir" in block
-        ), (
-            "and a folded line has its relative references made absolute, against the file it came from"
-        )
+        ), "and a folded line has its relative references made absolute, against the file it came from"
 
     def test_the_kept_files_reach_uv(self):
         assert (
             "foreach ($_woaKeepFile in $_woaKeepFiles) { $_woaOverrideValue += (Get-UvSafePath $_woaKeepFile) }"
             in INSTALL_SRC
         )
-        assert '$env:UV_OVERRIDE = ($_woaOverrideValue -join " ")' in INSTALL_SRC, (
-            "uv splits UV_OVERRIDE on whitespace and combines the files"
-        )
+        assert (
+            '$env:UV_OVERRIDE = ($_woaOverrideValue -join " ")' in INSTALL_SRC
+        ), "uv splits UV_OVERRIDE on whitespace and combines the files"
 
     # The rewriter calls GetFullPath, and os.path.abspath applies the same rule on every host.
     BASE = "/opt/corp/ov"
@@ -1924,9 +1922,9 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
             assert value == [str(managed)], why
             # The include is FLATTENED as it folds, rebased against its own directory: the only
             # way a conflict one level down can be removed.
-            assert "idna==3.10" in written, (
-                "the include's own lines did not come across, so folding dropped them"
-            )
+            assert (
+                "idna==3.10" in written
+            ), "the include's own lines did not come across, so folding dropped them"
             assert "-r " not in written, "an include line copied verbatim would move its base"
             assert "torch==2.9.0" not in written, "our own declaration still wins"
         else:
@@ -1944,12 +1942,12 @@ class TestTheRecoveryPrependsRatherThanStandsDown:
 
     def test_it_prepends(self):
         block = self._block()
-        assert '$env:UV_FIND_LINKS = "$wheels,$($env:UV_FIND_LINKS)"' in block, (
-            "UV_FIND_LINKS is comma-separated, and ours goes first"
-        )
-        assert '$env:PIP_FIND_LINKS = "$_woaSafeWheels $($env:PIP_FIND_LINKS)"' in block, (
-            "PIP_FIND_LINKS is split on whitespace, and ours must be the 8.3-safe form"
-        )
+        assert (
+            '$env:UV_FIND_LINKS = "$wheels,$($env:UV_FIND_LINKS)"' in block
+        ), "UV_FIND_LINKS is comma-separated, and ours goes first"
+        assert (
+            '$env:PIP_FIND_LINKS = "$_woaSafeWheels $($env:PIP_FIND_LINKS)"' in block
+        ), "PIP_FIND_LINKS is split on whitespace, and ours must be the 8.3-safe form"
         assert "-notcontains" in block, "a second run must not keep prepending"
 
     @requires_pwsh
@@ -2019,12 +2017,12 @@ class TestAWheelhouseThatIsTheStagingDirectory:
     """
 
     def test_every_staging_copy_is_guarded(self):
-        assert "if (-not (Test-WoaSamePath $found.FullName $_woaDest)) {" in INSTALL_SRC, (
-            "the wheelhouse pyarrow copy, which is not inside a try and so was fatal"
-        )
-        assert "if (-not (Test-WoaSamePath $wheel.FullName $_woaExtraDest)) {" in INSTALL_SRC, (
-            "the extra-wheel loop, which swallowed the error but miscounted"
-        )
+        assert (
+            "if (-not (Test-WoaSamePath $found.FullName $_woaDest)) {" in INSTALL_SRC
+        ), "the wheelhouse pyarrow copy, which is not inside a try and so was fatal"
+        assert (
+            "if (-not (Test-WoaSamePath $wheel.FullName $_woaExtraDest)) {" in INSTALL_SRC
+        ), "the extra-wheel loop, which swallowed the error but miscounted"
         assert "if (-not (Test-WoaSamePath $srcWheel $_woaLocalDest)) {" in INSTALL_SRC, (
             "and the supplied-wheel copy, where the failure was caught but disabled "
             "native mode after the ARM64 venv had already been chosen"
@@ -2456,13 +2454,13 @@ class TestAnOverrideConflictCanHideInAnInclude:
             "# a comment\nrich>=13\n-r managed/nested.txt\n", encoding = "utf-8"
         )
         lines = self._names(tmp_path, install)
-        assert any(line.startswith("torch<2.9|managed") for line in lines), (
-            f"the include was not followed, so a torch conflict reads as disjoint: {lines}"
-        )
+        assert any(
+            line.startswith("torch<2.9|managed") for line in lines
+        ), f"the include was not followed, so a torch conflict reads as disjoint: {lines}"
         assert any(line.startswith("rich>=13|") for line in lines)
-        assert not any(line.startswith("-r ") for line in lines), (
-            "the include line survived as a line"
-        )
+        assert not any(
+            line.startswith("-r ") for line in lines
+        ), "the include line survived as a line"
 
     @requires_pwsh
     @pytest.mark.parametrize("install", [True, False], ids = ["install.ps1", "setup.ps1"])
@@ -2484,9 +2482,9 @@ class TestAnOverrideConflictCanHideInAnInclude:
         """Detecting a conflict one level down and then folding only the top file would
         drop the line that caused the conflict, which is worse than not folding at all.
         """
-        assert INSTALL_SRC.count("$_woaOvEntries") == 3, (
-            "the conflict scan and the fold have diverged"
-        )
+        assert (
+            INSTALL_SRC.count("$_woaOvEntries") == 3
+        ), "the conflict scan and the fold have diverged"
         assert "foreach ($_woaEntry in (Get-RequirementEntries -Path $_woaFile))" in SETUP_SRC
 
 
@@ -2560,9 +2558,9 @@ class TestAFloorIsPep440AboutPrereleases:
             "-PyTag 'cp313' -AbiTag 'cp313t'))",
         )
         done = _ps_ok(script)
-        assert done.stdout.strip() == "False", (
-            "an abi3 wheel was accepted on a free-threaded venv, where it cannot import"
-        )
+        assert (
+            done.stdout.strip() == "False"
+        ), "an abi3 wheel was accepted on a free-threaded venv, where it cannot import"
 
     @requires_pwsh
     def test_the_wheel_the_gb10_run_staged_is_still_accepted(self):
@@ -2643,9 +2641,9 @@ class TestThePipFallbackKeepsTheIndexArguments:
     """
 
     def test_the_arguments_are_not_gated_on_uv(self):
-        assert "$WinArm64IndexArgs = if ($WinArm64Venv) {" in SETUP_SRC, (
-            "gating on $UseUv means the pip fallback gets no --extra-index-url at all"
-        )
+        assert (
+            "$WinArm64IndexArgs = if ($WinArm64Venv) {" in SETUP_SRC
+        ), "gating on $UseUv means the pip fallback gets no --extra-index-url at all"
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -2674,9 +2672,9 @@ class TestThePipFallbackKeepsTheIndexArguments:
             "Write-Output ('[' + ($pipArgs -join ' ') + ']')",
         )
         got = _ps_last(script)[1:-1]
-        assert "--extra-index-url https://pypi.org/simple" in got, (
-            f"pip cannot resolve the trio's shared dependencies without it: {got!r}"
-        )
+        assert (
+            "--extra-index-url https://pypi.org/simple" in got
+        ), f"pip cannot resolve the trio's shared dependencies without it: {got!r}"
         assert "--index-strategy" not in got, "a uv-only flag would make pip print usage"
         assert "--prerelease" not in got, "likewise the uv spelling"
         assert ("--pre" in got) is expect_pre, got
@@ -2878,9 +2876,9 @@ class TestTheTorchMergeRebasesWhatItFolds:
         merged = self._merge(tmp_path, [first / "a.txt", second / "b.txt"])
         assert "idna==3.6" in merged, "the include one directory down was not followed"
         assert "-r " not in merged, "a relative include survived as a relative line"
-        assert str(second / "local.whl") in merged.replace("/", os.sep), (
-            f"the bare relative wheel path was not rebased onto its own directory: {merged!r}"
-        )
+        assert str(second / "local.whl") in merged.replace(
+            "/", os.sep
+        ), f"the bare relative wheel path was not rebased onto its own directory: {merged!r}"
         assert "rich>=13" in merged and "plainpkg==2.0" in merged
 
     @requires_pwsh
@@ -2942,9 +2940,9 @@ class TestThePipFallbackIsRefusedOnTheNativeStack:
         assert after_uv_failed < pip_build, "the check has to precede the pip command"
 
     def test_the_message_names_the_remedy(self):
-        assert "Install uv and re-run" in STACK_SRC, (
-            "a refusal with no way forward is worse than the silent fallback it replaces"
-        )
+        assert (
+            "Install uv and re-run" in STACK_SRC
+        ), "a refusal with no way forward is worse than the silent fallback it replaces"
 
 
 class TestAnAnnotatedIncludeStillOpens:
@@ -3055,9 +3053,9 @@ class TestALocalWheelIsOpenedBeforeItCounts:
             f"open what they count: {block.count('Test-ZipArchiveReadable')}"
         )
         local = block[: block.index("} else {")]
-        assert "Test-ZipArchiveReadable" in local, (
-            "the local branch counted a wheel on its filename alone"
-        )
+        assert (
+            "Test-ZipArchiveReadable" in local
+        ), "the local branch counted a wheel on its filename alone"
 
     def test_the_check_precedes_the_copy(self):
         start = INSTALL_SRC.index("$WoaExtraStaged = 0")
@@ -3189,18 +3187,18 @@ class TestARebasedOptionPathKeepsItsQuoting:
     def test_the_result_is_quoted_exactly_when_it_has_to_be(self, install, line, base, quoted, why):
         source = INSTALL_PS1 if install else SETUP_PS1
         got = self._rebase(source, line, base)
-        assert got.split(None, 1)[0] == line.split(None, 1)[0], (
-            f"the option itself was dropped, leaving a bare path: {got!r}"
-        )
+        assert (
+            got.split(None, 1)[0] == line.split(None, 1)[0]
+        ), f"the option itself was dropped, leaving a bare path: {got!r}"
         has_quotes = '"' in got
         assert has_quotes is quoted, f"{why}: {got!r}"
         if quoted:
             # The quotes wrap the WHOLE path, or they solve nothing.
             inner = got[got.index('"') + 1 : got.rindex('"')]
             assert " " in inner, f"quoted but the space is outside them: {got!r}"
-            assert got.rindex('"') == len(got.rstrip()) - 1, (
-                f"the closing quote has to end the value: {got!r}"
-            )
+            assert (
+                got.rindex('"') == len(got.rstrip()) - 1
+            ), f"the closing quote has to end the value: {got!r}"
 
     @requires_pwsh
     @pytest.mark.parametrize("install", [True, False], ids = ["install.ps1", "setup.ps1"])
@@ -3215,9 +3213,9 @@ class TestARebasedOptionPathKeepsItsQuoting:
         got = self._rebase(source, "-c constraints.txt", base.as_posix())
         argument = got.split(None, 1)[1].strip()
         assert argument.startswith('"') and argument.endswith('"'), got
-        assert pathlib.Path(argument[1:-1]).exists(), (
-            f"the rebased path does not resolve to the file it names: {got!r}"
-        )
+        assert pathlib.Path(
+            argument[1:-1]
+        ).exists(), f"the rebased path does not resolve to the file it names: {got!r}"
 
     def test_the_two_copies_stay_identical(self):
         """setup.ps1 carries a parity copy; a fix applied to one is a bug in the other."""
@@ -3261,9 +3259,9 @@ class TestALocalDirectoryRequirementIsRebasedToo:
         got = TestARebasedOptionPathKeepsItsQuoting._rebase(source, line, base.as_posix())
         # The value, not the option token in front of it, and without any extras suffix.
         value = got.split(None, 1)[1] if got.startswith("-") else got
-        assert os.path.isabs(re.sub(r"\[[^\]]*\]$", "", value.strip())), (
-            f"{why}: the line was left relative and now resolves against %TEMP%: {got!r}"
-        )
+        assert os.path.isabs(
+            re.sub(r"\[[^\]]*\]$", "", value.strip())
+        ), f"{why}: the line was left relative and now resolves against %TEMP%: {got!r}"
         assert got.rstrip().replace(os.sep, "/").endswith(expected_suffix), f"{why}: {got!r}"
 
     @requires_pwsh
@@ -3409,12 +3407,12 @@ class TestThePypiPyarrowWheelIsPinnedToo:
         start = INSTALL_SRC.index("function Get-WoaPyarrowSource")
         end = INSTALL_SRC.index("function Test-WoaNvidiaPresent", start)
         body = INSTALL_SRC[start:end]
-        assert "$script:WoaPyarrowWheelName = $match.Value" in body, (
-            "the PyPI branch returns without naming the wheel it cleared"
-        )
-        assert "$script:WoaPyarrowWheelName = $null" in body, (
-            "and it clears the name on entry, so a re-probe cannot inherit the first answer"
-        )
+        assert (
+            "$script:WoaPyarrowWheelName = $match.Value" in body
+        ), "the PyPI branch returns without naming the wheel it cleared"
+        assert (
+            "$script:WoaPyarrowWheelName = $null" in body
+        ), "and it clears the name on entry, so a re-probe cannot inherit the first answer"
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -3562,9 +3560,9 @@ class TestEveryPyarrowRouteOpensWhatItKeeps:
         )
         assert _ps_last(script, timeout = 180)[1:-1] == expect_native, why
         staged = list(wheel_dir.glob("*.whl"))
-        assert bool(staged) is readable, (
-            f"a rejected wheel must not stay in the managed directory: {staged}"
-        )
+        assert (
+            bool(staged) is readable
+        ), f"a rejected wheel must not stay in the managed directory: {staged}"
 
 
 class TestAnExplicitPinIsPersistedWithoutAnOldRecord:
@@ -3593,9 +3591,9 @@ class TestAnExplicitPinIsPersistedWithoutAnOldRecord:
         assert "$_woaMarkerIndex = $_woaPinnedIndex" in SETUP_SRC
         opens = SETUP_SRC.index("if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {")
         closes = SETUP_SRC.index("Restore-WoaResolverEnvironment", opens)
-        assert "Get-PinnedTorchIndexUrl" not in SETUP_SRC[opens:closes], (
-            "the block calls the getter again instead of using the value the guard tested"
-        )
+        assert (
+            "Get-PinnedTorchIndexUrl" not in SETUP_SRC[opens:closes]
+        ), "the block calls the getter again instead of using the value the guard tested"
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -3788,9 +3786,9 @@ class TestTheCompanionWheelsArePairedWithTorch:
                 if f'-Project "{project}"' in l and "Get-WoaCudaWheelVersion" in l
             ]
             assert line, f"{project} is not probed"
-            assert all("-PairWith $_woaTorchVersion" in l for l in line), (
-                f"{project} is still maximized independently of torch"
-            )
+            assert all(
+                "-PairWith $_woaTorchVersion" in l for l in line
+            ), f"{project} is still maximized independently of torch"
 
     def test_an_unpaired_torchvision_is_a_gate_not_a_floor(self):
         """A pin the index cannot satisfy is worse than the floor it replaced, and the floor
@@ -3821,9 +3819,9 @@ class TestTheRepairPathPinsTheSameWayTheInstallDoes:
         """Best effort: no probe, no change, which is exactly today's behaviour."""
         start = SETUP_SRC.index('$WinArm64TorchSpec = "torch>=2.4"')
         block = SETUP_SRC[start : SETUP_SRC.index("$_tritonSpec = ", start)]
-        assert block.index('"torch>=2.4"') < block.index("Get-WoaCudaWheelVersionParity"), (
-            "the floor must be the default the probe overrides, not the other way round"
-        )
+        assert block.index('"torch>=2.4"') < block.index(
+            "Get-WoaCudaWheelVersionParity"
+        ), "the floor must be the default the probe overrides, not the other way round"
         assert "if ($_woaTorchV) {" in block, "an empty probe must not pin anything"
 
     @pytest.mark.parametrize(
@@ -4090,9 +4088,9 @@ class TestSetupSwapsTheOverrideAroundItsOwnTorchInstall:
     def test_the_swap_wraps_the_install_and_restores_in_finally(self):
         restore = SETUP_SRC.index("\nRestore-WoaResolverEnvironment")
         swap = SETUP_SRC.index("New-WoaTorchStepOverrideValueParity -Value $_woaStepSaved")
-        assert restore < swap, (
-            "the swap must come after the overrides are restored, or it swaps nothing"
-        )
+        assert (
+            restore < swap
+        ), "the swap must come after the overrides are restored, or it swaps nothing"
         tail = SETUP_SRC[swap : swap + 3000]
         assert "Fast-Install @_cudaTrio" in tail
         fin = tail.index("} finally {")
@@ -5012,13 +5010,13 @@ class TestTheMergedOverrideFileDoesNotOutliveTheRun:
         assert (
             'Remove-Item -LiteralPath (Join-Path $woaDir "overrides.merged.txt") -Force' in restore
         ), "a stale copy is removed first"
-        assert "$script:WoaMergedOverrides = $_woaMerged" in restore, (
-            "the written one is recorded for removal"
-        )
+        assert (
+            "$script:WoaMergedOverrides = $_woaMerged" in restore
+        ), "the written one is recorded for removal"
         assert "Remove-WoaMergedOverrides" in _function_source(SETUP_SRC, "Exit-SetupFailure")
-        assert SETUP_SRC.rstrip().endswith("Remove-WoaMergedOverrides"), (
-            "the last statement of the script"
-        )
+        assert SETUP_SRC.rstrip().endswith(
+            "Remove-WoaMergedOverrides"
+        ), "the last statement of the script"
 
     @requires_pwsh
     def test_the_removal(self, tmp_path):
@@ -5337,9 +5335,9 @@ class TestAReselectedInterpreterIsProbedBeforeItIsTaken:
         out = self._run(("3.13", "arm64"), ("3.12", "arm64"), ["3.13"])
         assert out["PY"] == "3.13", out["MSG"]
         assert out["NATIVE"] == "True" and out["PROBED"] == "3.13"
-        assert out["PROBES"] == "3.13,3.12,3.13", (
-            "probed the offer, then restored the accepted answer"
-        )
+        assert (
+            out["PROBES"] == "3.13,3.12,3.13"
+        ), "probed the offer, then restored the accepted answer"
         assert "keeping Python 3.13, which has one" in out["MSG"]
 
     @requires_pwsh
@@ -5374,9 +5372,9 @@ class TestTheResolverVariablesDoNotOutliveTheInstaller:
         run = INSTALL_SRC.index("    Install-UnslothStudio @args\n} finally {")
         assert "$script:WoaResolverEnvSaved" in INSTALL_SRC[run:]
         reset = INSTALL_SRC.rindex("$script:WoaResolverEnvSaved = $null\n", 0, run)
-        assert INSTALL_SRC.index("try {", reset) < run, (
-            "cleared right before the run, so an earlier session value cannot leak in"
-        )
+        assert (
+            INSTALL_SRC.index("try {", reset) < run
+        ), "cleared right before the run, so an earlier session value cannot leak in"
 
     @staticmethod
     def _restore_block():
@@ -5630,9 +5628,9 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
         assert "$_woaDependencyIndexArgs = @(Get-WoaDependencyIndexArgs)" in trio
         assert '"--extra-index-url", "https://pypi.org/simple"' not in trio
         shared = SETUP_SRC[SETUP_SRC.index("$WinArm64IndexArgs = if ($WinArm64Venv) {") :][:500]
-        assert '$_woaResolver = if ($UseUv) { "uv" } else { "pip" }' in shared, (
-            "the resolver that runs the install"
-        )
+        assert (
+            '$_woaResolver = if ($UseUv) { "uv" } else { "pip" }' in shared
+        ), "the resolver that runs the install"
         assert "@(Get-WoaDependencyIndexArgs -Resolver $_woaResolver)" in shared
         assert '"--extra-index-url", "https://pypi.org/simple"' not in shared
 
@@ -5678,9 +5676,9 @@ class TestATerminatingErrorStillRemovesTheMergedOverrides:
         )
         assert done.returncode != 0
         assert "REACHED_UNREACHABLE" not in done.stdout
-        assert "Vulkan was requested" in done.stderr + done.stdout, (
-            "the error is rethrown, not swallowed"
-        )
+        assert (
+            "Vulkan was requested" in done.stderr + done.stdout
+        ), "the error is rethrown, not swallowed"
         assert not merged.exists()
 
 

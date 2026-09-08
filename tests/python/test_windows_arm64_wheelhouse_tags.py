@@ -265,12 +265,12 @@ class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
         first = block[block.index("foreach ($pyTag in") :]
         first = first[: first.index("$compatible = $true; break") + 30]
         # $WoaWheelAbi, not $WoaWheelTag: a free-threaded venv installs cp313t but is tagged cp313.
-        assert "$abiTags -contains $WoaWheelAbi" in first, (
-            "the exact-python-TAG branch must also require a usable ABI"
-        )
-        assert "$WoaWheelStable -and ($abiTags -contains 'abi3')" in first, (
-            "and abi3 is not installable on a free-threaded build"
-        )
+        assert (
+            "$abiTags -contains $WoaWheelAbi" in first
+        ), "the exact-python-TAG branch must also require a usable ABI"
+        assert (
+            "$WoaWheelStable -and ($abiTags -contains 'abi3')" in first
+        ), "and abi3 is not installable on a free-threaded build"
 
 
 class TestAHostedWheelMustAlsoSatisfyThePin:
@@ -327,9 +327,9 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
         """
         (wheelhouse / _wheel("grpcio", TAG, TAG, version = "1.60.0")).write_bytes(b"")
         req = self._req(wheelhouse.parent, "tensorboard==2.21.0\n")
-        assert "tensorboard" in ips._windows_arm64_skip_packages(req), (
-            "grpcio 1.60.0 is below tensorboard's grpcio>=1.74.0"
-        )
+        assert "tensorboard" in ips._windows_arm64_skip_packages(
+            req
+        ), "grpcio 1.60.0 is below tensorboard's grpcio>=1.74.0"
 
     def test_a_blocker_at_its_floor_lifts_the_skip(self, ips, wheelhouse):
         (wheelhouse / _wheel("grpcio", TAG, TAG, version = "1.74.0")).write_bytes(b"")
@@ -434,9 +434,9 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
         req.write_text(self._rows(), encoding = "utf-8")
         monkeypatch.setenv("UV_FIND_LINKS", str(wheels))
         monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
-        assert "mecab" in ips._windows_arm64_skip_packages(req), (
-            "the hosted 0.996.5 satisfies only the row that does not apply here"
-        )
+        assert "mecab" in ips._windows_arm64_skip_packages(
+            req
+        ), "the hosted 0.996.5 satisfies only the row that does not apply here"
 
     def test_the_active_row_still_unskips(self, ips, tmp_path, monkeypatch):
         wheels = tmp_path / "wheels"
@@ -698,9 +698,9 @@ class TestAHostedOptionalIsActuallyInstalled:
         for version in ("0.0.23", "0.0.100"):
             (tmp_path / _wheel("xformers", TAG, TAG, version = version)).write_text("")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
-        assert ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") == "0.0.100", (
-            "sorted as text 0.0.23 would win"
-        )
+        assert (
+            ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") == "0.0.100"
+        ), "sorted as text 0.0.23 would win"
 
     def test_an_xformers_built_for_another_torch_is_removed(self, ips, monkeypatch):
         """Its extension links against one exact pair; beside any other the ops vanish
@@ -813,9 +813,9 @@ class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
             if floor is None:
                 continue
             for version in tags.values():
-                assert ips._version_satisfies(version, floor[0]) is not False, (
-                    f"{name} {version} does not satisfy {floor[0]}"
-                )
+                assert (
+                    ips._version_satisfies(version, floor[0]) is not False
+                ), f"{name} {version} does not satisfy {floor[0]}"
 
     def test_nothing_is_claimed_off_win_arm64(self, ips, monkeypatch):
         """Every other platform must see exactly the availability it saw before."""
@@ -927,9 +927,9 @@ class TestThePublicIndexClaimNeedsTheIndex:
         monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "https://pypi.org/simple")
         assert ips._public_index_win_arm64_versions("numba") == set()
         monkeypatch.setattr(ips, "USE_UV", False)
-        assert ips._public_index_win_arm64_versions("numba") == {"0.67.0"}, (
-            "pip: its own default is PyPI"
-        )
+        assert ips._public_index_win_arm64_versions("numba") == {
+            "0.67.0"
+        }, "pip: its own default is PyPI"
 
     def test_a_pypi_mirror_url_still_counts(self, ips, monkeypatch):
         """Replacing the default index with PyPI itself changes nothing about availability."""

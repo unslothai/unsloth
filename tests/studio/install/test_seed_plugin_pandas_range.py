@@ -41,9 +41,9 @@ def test_every_constrained_pandas_is_inside_the_plugins_range():
     for pin in _constraint_pandas_pins():
         # The lowest version each constraint admits is the one that gets installed.
         floor = next(s.version for s in pin if s.operator in ("==", ">="))
-        assert plugin.contains(floor), (
-            f"constraints install pandas {floor}, outside the plugin's {plugin}"
-        )
+        assert plugin.contains(
+            floor
+        ), f"constraints install pandas {floor}, outside the plugin's {plugin}"
 
 
 def test_the_arm64_row_installs_pandas_3():
