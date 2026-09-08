@@ -186,7 +186,8 @@ WIN_ARM64_FLOORS = [
 
 
 @pytest.mark.parametrize(
-    "relpath, dist, floor", WIN_ARM64_FLOORS,
+    "relpath, dist, floor",
+    WIN_ARM64_FLOORS,
     ids = [f"{r.split('/')[-1]}:{d}" for r, d, _ in WIN_ARM64_FLOORS],
 )
 def test_the_win_arm64_floor_is_the_first_release_that_has_a_wheel(relpath, dist, floor):
