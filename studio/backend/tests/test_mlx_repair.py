@@ -20,14 +20,11 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 import utils.mlx_repair as mr  # noqa: E402
-import importlib.metadata as metadata
-import utils.hardware.hardware as hw
 
 
 class _Result:
     returncode = 0
     stdout = ""
-
 
 
 @pytest.fixture(autouse = True)
@@ -256,6 +253,8 @@ def test_repair_invalidates_import_caches_before_stack_check(monkeypatch):
 
 
 def test_stack_unavailable_without_mlx(monkeypatch):
+    import importlib.metadata as metadata
+
     def _missing(_name):
         raise metadata.PackageNotFoundError(_name)
 
@@ -264,6 +263,8 @@ def test_stack_unavailable_without_mlx(monkeypatch):
 
 
 def test_stack_unavailable_checks_versions_before_imports(monkeypatch):
+    import importlib.metadata as metadata
+
     def _version(name):
         if name == "mlx":
             return "0.21.0"
@@ -278,6 +279,8 @@ def test_stack_unavailable_checks_versions_before_imports(monkeypatch):
 
 
 def test_stack_unavailable_when_companion_import_fails(monkeypatch):
+    import importlib.metadata as metadata
+
     monkeypatch.setattr(metadata, "version", lambda name: mr._MLX_MIN_VERSIONS[name])
 
     def _import_module(name):
@@ -290,6 +293,8 @@ def test_stack_unavailable_when_companion_import_fails(monkeypatch):
 
 
 def test_stack_available_requires_runtime_imports_and_versions(monkeypatch):
+    import importlib.metadata as metadata
+
     imported = []
 
     def _import_module(name):
@@ -328,6 +333,8 @@ def test_disable_env_skips(monkeypatch):
 
 
 def test_apple_silicon_missing_mlx_starts_repair_and_redetects(monkeypatch):
+    import utils.hardware.hardware as hw
+
     import threading
 
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
@@ -509,6 +516,8 @@ def _published_verdict(monkeypatch, *, chat_only: bool, reason):
     """Settled means a device and a set event beside the reason (a chat-only Mac measured its
     way to CPU, not to nothing), or a success check ignoring the verdict would pass. The state
     is monkeypatched, so nothing leaks to the next test."""
+    import utils.hardware.hardware as hw
+
     settled = threading.Event()
     settled.set()
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU if chat_only else hw.DeviceType.MLX)
@@ -551,6 +560,8 @@ def _join_the_repair_worker():
 
 def test_a_stack_that_measures_usable_overturns_the_verdict(monkeypatch):
     # The #9120 shape: chat-only cached from a race the warm has since finished importing.
+
+    import utils.hardware.hardware as hw
 
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
@@ -615,6 +626,8 @@ def test_the_overturn_cannot_republish_into_a_stopped_lifespan(monkeypatch):
     """detect_hardware() reads the current epoch when it owns none, so an unscoped re-detect
     adopts the one shutdown moved to and publishes for a dead lifespan, which the next then
     inherits instead of measuring for itself."""
+    import utils.hardware.hardware as hw
+
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
     _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
     settled = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON)
@@ -636,6 +649,8 @@ def test_the_overturn_cannot_republish_into_a_stopped_lifespan(monkeypatch):
 def test_a_redetect_that_publishes_nothing_is_not_announced(monkeypatch):
     """Nothing is published either way, and #9120 was diagnosed entirely from these lines:
     one claiming a recovery that did not happen is worse than silence."""
+    import utils.hardware.hardware as hw
+
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
     _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
     announced = _recorded_announcements(monkeypatch)
@@ -693,6 +708,8 @@ def test_an_opted_out_host_with_nothing_to_overturn_imports_nothing(monkeypatch)
 def test_the_repair_worker_is_scoped_to_the_epoch_read_before_the_measurement(monkeypatch):
     """The measurement imports the MLX runtime, so shutdown can land inside it: reading the
     epoch afterwards binds the repair to the one shutdown moved to."""
+    import utils.hardware.hardware as hw
+
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
     _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
     before = hw.current_detection_epoch()

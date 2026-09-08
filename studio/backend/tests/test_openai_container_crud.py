@@ -24,14 +24,10 @@ from fastapi import HTTPException
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
-from models.inference import ChatCompletionRequest
-from models.inference import OpenAIContainerRequest
-from routes import inference as inf_mod
 
 
 class ResolverReached(Exception):
     pass
-
 
 
 def _drive(coro):
@@ -168,6 +164,9 @@ def test_delete_propagates_openai_4xx(monkeypatch):
 
 
 def test_external_chat_route_resolves_saved_provider_key(monkeypatch):
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf_mod
+
     monkeypatch.setattr(
         inf_mod.providers_db,
         "get_provider",
@@ -195,6 +194,9 @@ def test_external_chat_route_resolves_saved_provider_key(monkeypatch):
 
 
 def test_external_chat_api_keys_cannot_use_saved_provider_key(monkeypatch):
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf_mod
+
     monkeypatch.setattr(
         inf_mod.providers_db,
         "get_provider",
@@ -227,6 +229,9 @@ def test_external_chat_api_keys_cannot_use_saved_provider_key(monkeypatch):
 
 
 def test_external_chat_explicit_key_honors_edited_target(monkeypatch):
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf_mod
+
     class ClientReached(Exception):
         pass
 
@@ -267,6 +272,9 @@ def test_external_chat_explicit_key_honors_edited_target(monkeypatch):
 
 
 def test_container_client_explicit_key_honors_request_target(monkeypatch):
+    from models.inference import OpenAIContainerRequest
+    from routes import inference as inf_mod
+
     monkeypatch.setattr(
         inf_mod.providers_db,
         "get_provider",
@@ -293,6 +301,9 @@ def test_container_client_explicit_key_honors_request_target(monkeypatch):
 
 
 def test_container_client_uses_saved_provider_key(monkeypatch):
+    from models.inference import OpenAIContainerRequest
+    from routes import inference as inf_mod
+
     calls: list[tuple[str | None, str | None, bool]] = []
 
     def resolve(
@@ -332,6 +343,9 @@ def test_container_client_uses_saved_provider_key(monkeypatch):
 
 
 def test_container_route_blocks_saved_keys_for_internal_api_key(monkeypatch):
+    from models.inference import OpenAIContainerRequest
+    from routes import inference as inf_mod
+
     def fake_resolve(_body, *, allow_saved_key):
         raise ResolverReached(allow_saved_key)
 
@@ -353,6 +367,9 @@ def test_container_route_blocks_saved_keys_for_internal_api_key(monkeypatch):
 
 
 def test_container_client_rejects_openai_lookalike_host(monkeypatch):
+    from models.inference import OpenAIContainerRequest
+    from routes import inference as inf_mod
+
     monkeypatch.setattr(
         inf_mod.providers_db,
         "get_provider",
@@ -376,6 +393,9 @@ def test_list_route_filters_expired_containers(monkeypatch):
     """OpenAI keeps containers in /v1/containers with status="expired"
     after their idle TTL passes — unusable but still listed. The list
     route must drop them so the picker shows only usable containers."""
+    from models.inference import OpenAIContainerRequest
+    from routes import inference as inf_mod
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,

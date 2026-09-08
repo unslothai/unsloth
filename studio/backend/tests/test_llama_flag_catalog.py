@@ -17,7 +17,6 @@ import importlib.util
 from pathlib import Path
 
 import pytest
-import routes.inference as inference_route
 
 _LSA_PATH = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_server_args.py"
 _spec = importlib.util.spec_from_file_location("_lsa_catalog_test", _LSA_PATH)
@@ -32,6 +31,8 @@ def _call(
     raises = False,
 ):
     """Run the route with a stubbed probe, returning the response model."""
+    import routes.inference as inference_route
+
     class _Backend:
         @staticmethod
         def probe_server_capabilities():
@@ -208,6 +209,8 @@ def test_the_denylist_can_be_read_without_probing(monkeypatch):
     # request, and a cold --help takes up to ten seconds. Waiting for the probe would
     # leave a flag denied since that list was saved sitting in the request.
 
+    import routes.inference as inference_route
+
     probed = False
 
     class _Backend:
@@ -232,6 +235,8 @@ def test_the_published_slot_default_is_the_effective_one(monkeypatch):
     # load_model clamps to that before launch. An editor sizing its batch floor from
     # the raw default would refuse "--batch-size 2" against a command that runs it.
 
+    import routes.inference as inference_route
+
     monkeypatch.setattr(
         inference_route.LlamaCppBackend,
         "probe_server_capabilities",
@@ -254,6 +259,8 @@ def test_an_unreadable_probe_keeps_the_asked_for_slot_count(monkeypatch):
     # Refusing to answer is not a reason to clamp: every other caller of the probe
     # here keeps the ask when it cannot be read.
 
+    import routes.inference as inference_route
+
     def _boom(*_a, **_k):
         raise RuntimeError("no binary")
 
@@ -270,6 +277,8 @@ def test_the_slot_probe_never_runs_on_the_event_loop(monkeypatch):
     # that is `llama-server --help` with a ten second timeout. Computed inline it
     # stalled every other request on the first open of the panel after an update, and
     # the managed-only answer too, which exists precisely to avoid waiting for a probe.
+    import routes.inference as inference_route
+
     import threading
 
     loop_thread = None
@@ -302,6 +311,8 @@ def test_a_single_slot_default_still_reports_the_clamp(monkeypatch):
     # this build clamps is a different question and still has to be answered: the
     # editor sizes an EXPLICIT Slots value the user may raise without re-reading
     # this route, and off the loop like the rest of it.
+    import routes.inference as inference_route
+
     import threading
 
     loop_thread = None
@@ -329,6 +340,8 @@ def test_a_single_slot_default_still_reports_the_clamp(monkeypatch):
 
 
 def test_the_clamp_is_read_from_the_same_helper_the_load_uses(monkeypatch):
+    import routes.inference as inference_route
+
     monkeypatch.setattr(
         inference_route.LlamaCppBackend,
         "probe_server_capabilities",

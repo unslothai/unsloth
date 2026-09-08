@@ -14,8 +14,6 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from utils import llama_cpp_path_settings as path_settings
-from core.inference.llama_cpp import LlamaCppBackend
-from routes import settings as settings_route
 
 
 @pytest.fixture()
@@ -146,6 +144,8 @@ def test_direct_environment_binary_has_highest_priority(settings_store, monkeypa
 def test_studio_managed_environment_path_does_not_lock_out_the_ui(
     settings_store, monkeypatch, tmp_path
 ):
+    from core.inference.llama_cpp import LlamaCppBackend
+
     managed = tmp_path / "managed"
     _binary(managed)
     selected = tmp_path / "selected"
@@ -182,6 +182,8 @@ def test_inherited_managed_path_is_marked_even_when_launcher_exported_it(
 def test_runtime_skips_non_executable_root_entrypoint_for_valid_build_layout(
     settings_store, monkeypatch, tmp_path
 ):
+    from core.inference.llama_cpp import LlamaCppBackend
+
     root = tmp_path / "custom"
     root_binary = _binary(root, platform = "linux", layout = "root")
     build_binary = _binary(root, platform = "linux", layout = "build")
@@ -201,6 +203,8 @@ def test_runtime_skips_non_executable_root_entrypoint_for_valid_build_layout(
 def test_runtime_resolver_uses_studio_path_and_does_not_silently_fallback(
     settings_store, monkeypatch, tmp_path
 ):
+    from core.inference.llama_cpp import LlamaCppBackend
+
     selected = tmp_path / "selected"
     binary = _binary(selected)
     settings_store[path_settings.CUSTOM_LLAMA_CPP_PATH_SETTING_KEY] = str(selected)
@@ -215,6 +219,8 @@ def test_runtime_resolver_uses_studio_path_and_does_not_silently_fallback(
 def test_runtime_resolver_rejects_a_selected_binary_that_loses_execute_permission(
     settings_store, monkeypatch, tmp_path
 ):
+    from core.inference.llama_cpp import LlamaCppBackend
+
     from core.inference import llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import (
         LLAMA_SERVER_NOT_FOUND_DETAIL,
@@ -260,6 +266,8 @@ def test_backend_updater_never_replaces_a_studio_selected_tree(monkeypatch):
 
 
 def test_selected_checkout_is_not_given_managed_runtime_repair_advice(settings_store, tmp_path):
+    from core.inference.llama_cpp import LlamaCppBackend
+
     root = tmp_path / "llama.cpp"
     binary = _binary(root)
     path_settings.set_custom_llama_cpp_path(str(root))
@@ -271,6 +279,8 @@ def test_selected_checkout_is_not_given_managed_runtime_repair_advice(settings_s
 
 
 def test_settings_route_round_trips_the_selected_folder(settings_store, monkeypatch, tmp_path):
+    from routes import settings as settings_route
+
     root = tmp_path / "route-selected"
     binary = _binary(root)
     monkeypatch.setattr(settings_route, "_llama_cpp_path_reload_required", lambda: False)
@@ -289,6 +299,8 @@ def test_settings_route_round_trips_the_selected_folder(settings_store, monkeypa
 
 
 def test_settings_route_reports_reload_while_old_binary_launch_is_pending(monkeypatch):
+    from routes import settings as settings_route
+
     from routes import inference as inference_route
 
     class _PendingBackend:
@@ -305,6 +317,8 @@ def test_settings_route_reports_reload_while_old_binary_launch_is_pending(monkey
 
 
 def test_settings_route_rejects_api_key_writes_before_mutation(monkeypatch):
+    from routes import settings as settings_route
+
     from fastapi import HTTPException
 
     mutated = False
@@ -327,6 +341,8 @@ def test_settings_route_rejects_api_key_writes_before_mutation(monkeypatch):
 
 
 def test_settings_route_returns_the_specific_validation_error(settings_store, tmp_path):
+    from routes import settings as settings_route
+
     from fastapi import HTTPException
 
     empty = tmp_path / "empty"

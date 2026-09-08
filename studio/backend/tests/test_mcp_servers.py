@@ -8,18 +8,6 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from storage import mcp_servers_db
-from core.inference import mcp_client
-from core.inference import tools as tools_mod
-from core.inference.tools import _mcp_specs_for_server
-from core.inference.tools import execute_tool
-from core.tool_healing import strip_tool_call_markup
-from models.mcp_servers import McpServerUpdate
-from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
-from routes.mcp_servers import _changes_from_payload
-import asyncio
-import json as _json
-import routes.mcp_servers as routes_mcp
-import threading
 
 
 def _reset_db(tmp_path, monkeypatch):
@@ -93,6 +81,8 @@ def test_validate_url_accepts_http_and_https():
 
 
 def test_validate_url_stdio_keeps_posix_outer_normalization(monkeypatch):
+    import routes.mcp_servers as routes_mcp
+
     import sys
 
     monkeypatch.setattr(sys, "platform", "linux")
@@ -109,6 +99,9 @@ def test_validate_url_rejects_bad(bad):
 
 
 def test_stdio_command_codec_roundtrip_preserves_order_empty_and_url_argument(monkeypatch):
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+    import routes.mcp_servers as routes_mcp
+
     monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
     payload = McpStdioCommand(
         command = "python",
@@ -125,6 +118,9 @@ def test_stdio_command_codec_roundtrip_preserves_order_empty_and_url_argument(mo
 
 
 def test_stdio_command_codec_strips_only_executable_outer_padding(monkeypatch):
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+    import routes.mcp_servers as routes_mcp
+
     monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
     arguments = ["  keep outer spaces  ", "\nkeep control whitespace\n", ""]
     encoded = routes_mcp.encode_stdio_command(
@@ -152,6 +148,12 @@ def test_stdio_command_codec_strips_only_executable_outer_padding(monkeypatch):
 def test_stdio_command_codec_windows_preserves_final_whitespace_argument_end_to_end(
     tmp_path, monkeypatch, final_argument
 ):
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     import sys
 
     import fastmcp
@@ -245,6 +247,9 @@ def test_stdio_command_codec_windows_preserves_final_whitespace_argument_end_to_
 
 
 def test_stdio_command_codec_is_stateless_and_never_probes(monkeypatch):
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+    import routes.mcp_servers as routes_mcp
+
     monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
 
     def _never(*args, **kwargs):
@@ -264,6 +269,9 @@ def test_stdio_command_codec_is_stateless_and_never_probes(monkeypatch):
 
 
 def test_stdio_command_codec_remains_available_when_execution_is_disabled(monkeypatch):
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+    import routes.mcp_servers as routes_mcp
+
     monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: False)
     encoded = routes_mcp.encode_stdio_command(
         McpStdioCommand(command = "python", arguments = ["a b", ""]),
@@ -287,6 +295,9 @@ def test_stdio_command_codec_remains_available_when_execution_is_disabled(monkey
     ],
 )
 def test_stdio_command_codec_rejects_invalid_input_before_probe(monkeypatch, operation, detail):
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+    import routes.mcp_servers as routes_mcp
+
     monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
 
     async def _never(**kwargs):
@@ -316,6 +327,8 @@ def test_stdio_command_codec_rejects_invalid_input_before_probe(monkeypatch, ope
 
 @pytest.mark.parametrize("bad", [1, True, None, {"value": "x"}])
 def test_stdio_command_codec_rejects_non_string_arguments(bad):
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+
     from models.mcp_servers import McpStdioCommand
     with pytest.raises(ValidationError):
         McpStdioCommand.model_validate({"command": "python", "arguments": [bad]})
@@ -329,6 +342,9 @@ def test_stdio_command_codec_rejects_non_string_arguments(bad):
     ],
 )
 def test_stdio_command_codec_rejects_json_nul(payload, monkeypatch):
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+    import routes.mcp_servers as routes_mcp
+
     from models.mcp_servers import McpStdioCommand
 
     monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
@@ -342,6 +358,11 @@ def test_stdio_command_codec_rejects_json_nul(payload, monkeypatch):
 
 
 def test_stdio_raw_nul_is_rejected_before_route_side_effects(tmp_path, monkeypatch):
+    from models.mcp_servers import McpServerUpdate
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     from models.mcp_servers import (
         McpServerCreate,
         McpServerImportRequest,
@@ -423,6 +444,10 @@ def test_normalize_headers():
 def test_invalid_headers_and_environment_are_rejected_before_side_effects(
     headers, tmp_path, monkeypatch
 ):
+    from models.mcp_servers import McpServerUpdate
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     from models.mcp_servers import (
         McpServerCreate,
         McpServerImportRequest,
@@ -485,6 +510,9 @@ def test_invalid_headers_and_environment_are_rejected_before_side_effects(
 
 def test_changes_from_payload_tristate_headers():
     # omitted → key absent
+    from models.mcp_servers import McpServerUpdate
+    from routes.mcp_servers import _changes_from_payload
+
     assert "headers_json" not in _changes_from_payload(McpServerUpdate(display_name = "x"))
     # null → stored as None (clear all headers)
     assert _changes_from_payload(McpServerUpdate(headers = None))["headers_json"] is None
@@ -498,6 +526,8 @@ def test_changes_from_payload_tristate_headers():
 
 
 def test_mcp_specs_skip_oversized_names():
+    from core.inference.tools import _mcp_specs_for_server
+
     server = {"id": "s" * 30, "display_name": "S"}
     tools = [
         {"name": "ok", "description": "fine"},
@@ -510,11 +540,15 @@ def test_mcp_specs_skip_oversized_names():
 
 
 def test_execute_tool_malformed_mcp_name():
+    from core.inference.tools import execute_tool
+
     out = execute_tool("mcp__no_double_underscore", {})
     assert out.startswith("Error: malformed MCP tool name")
 
 
 def test_execute_tool_unknown_server(tmp_path, monkeypatch):
+    from core.inference.tools import execute_tool
+
     _reset_db(tmp_path, monkeypatch)
     assert (
         execute_tool("mcp__missing__do_thing", {})
@@ -523,6 +557,8 @@ def test_execute_tool_unknown_server(tmp_path, monkeypatch):
 
 
 def test_execute_tool_disabled_server(tmp_path, monkeypatch):
+    from core.inference.tools import execute_tool
+
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(
         id = "srv1",
@@ -536,6 +572,8 @@ def test_execute_tool_disabled_server(tmp_path, monkeypatch):
 
 def test_mcp_specs_skip_invalid_openai_function_names():
     """OpenAI requires function.name ^[a-zA-Z0-9_-]{1,64}$; bad names 400 the request."""
+    from core.inference.tools import _mcp_specs_for_server
+
     server = {"id": "srv", "display_name": "S"}
     tools = [
         {"name": "ok"},
@@ -550,6 +588,8 @@ def test_mcp_specs_skip_invalid_openai_function_names():
 
 
 def test_mcp_specs_skip_empty_tool_name():
+    from core.inference.tools import _mcp_specs_for_server
+
     server = {"id": "srv", "display_name": "S"}
     specs = _mcp_specs_for_server(server, [{"name": "", "description": "x"}])
     assert specs == []
@@ -558,6 +598,8 @@ def test_mcp_specs_skip_empty_tool_name():
 def test_mcp_specs_skip_app_only_tools():
     """MCP Apps tools marked _meta.ui.visibility without "model" are for the
     server's rendered widget, not the LLM; keep them out of the schema set."""
+    from core.inference.tools import _mcp_specs_for_server
+
     server = {"id": "srv", "display_name": "S"}
     tools = [
         {"name": "shown"},
@@ -574,6 +616,8 @@ def test_mcp_specs_skip_app_only_tools():
 
 def test_mcp_specs_read_visibility_from_either_meta_spelling():
     """A "meta" holding unrelated keys must not mask an app-only "_meta"."""
+    from core.inference.tools import _mcp_specs_for_server
+
     server = {"id": "srv", "display_name": "S"}
     tools = [
         {
@@ -599,6 +643,8 @@ def test_mcp_specs_read_visibility_from_either_meta_spelling():
     ],
 )
 def test_mcp_specs_visibility_shapes(visibility, visible):
+    from core.inference.tools import _mcp_specs_for_server
+
     tool = {"name": "t", "meta": {"ui": {"visibility": visibility}}}
     specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, [tool])
     assert bool(specs) is visible
@@ -608,6 +654,8 @@ def test_mcp_specs_visibility_shapes(visibility, visible):
 def test_mcp_specs_keep_the_tool_arguments(schema_key):
     """Reading one spelling only would leave every tool argument-less after an
     mcp 2.x bump."""
+    from core.inference.tools import _mcp_specs_for_server
+
     schema = {"type": "object", "properties": {"q": {"type": "string"}}}
     tool = {"name": "search", "description": "d", schema_key: schema}
     specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, [tool])
@@ -616,6 +664,8 @@ def test_mcp_specs_keep_the_tool_arguments(schema_key):
 
 def test_mcp_specs_match_the_installed_sdk_dump():
     """Whichever spelling the pinned SDK emits, the arguments must survive."""
+    from core.inference.tools import _mcp_specs_for_server
+
     from mcp.types import Tool
 
     schema = {"type": "object", "properties": {"q": {"type": "string"}}}
@@ -626,6 +676,8 @@ def test_mcp_specs_match_the_installed_sdk_dump():
 
 def test_mcp_specs_drops_duplicate_names():
     """Duplicate tool names from one server -> OpenAI rejects; drop before forwarding."""
+    from core.inference.tools import _mcp_specs_for_server
+
     server = {"id": "srv", "display_name": "S"}
     tools = [{"name": "echo"}, {"name": "echo"}]
     specs = _mcp_specs_for_server(server, tools)
@@ -634,6 +686,9 @@ def test_mcp_specs_drops_duplicate_names():
 
 def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
     """Pre-set cancel_event -> immediate cancellation, no network round-trip."""
+    from core.inference import mcp_client
+    import threading
+
     # Stub _client so the test doesn't need a real MCP server.
     class _StubClient:
         async def __aenter__(self):
@@ -669,6 +724,9 @@ def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
 def test_clear_oauth_tokens_async_no_op_safe(tmp_path, monkeypatch):
     """clear_oauth_tokens_async on a URL with no stored token must not raise;
     the delete + update handlers call it best-effort regardless of state."""
+    from core.inference import mcp_client
+    import asyncio
+
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
 
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
@@ -678,6 +736,10 @@ def test_clear_oauth_tokens_async_no_op_safe(tmp_path, monkeypatch):
 def test_delete_server_calls_oauth_cleanup_when_oauth_was_on(tmp_path, monkeypatch):
     """delete_mcp_server route helper must call clear_oauth_tokens_async
     when the deleted row had use_oauth=true."""
+    from core.inference import mcp_client
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
@@ -705,6 +767,10 @@ def test_delete_server_calls_oauth_cleanup_when_oauth_was_on(tmp_path, monkeypat
 
 def test_delete_server_skips_oauth_cleanup_when_oauth_off(tmp_path, monkeypatch):
     """No OAuth token cleanup when the deleted server never had OAuth."""
+    from core.inference import mcp_client
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
@@ -728,6 +794,11 @@ def test_delete_server_skips_oauth_cleanup_when_oauth_off(tmp_path, monkeypatch)
 def test_update_server_clears_oauth_on_url_change(tmp_path, monkeypatch):
     """Changing the URL on an OAuth server must drop the old URL's tokens
     so the new URL doesn't inherit credentials."""
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
@@ -758,6 +829,11 @@ def test_update_server_clears_oauth_on_url_change(tmp_path, monkeypatch):
 
 def test_update_server_clears_oauth_when_oauth_disabled(tmp_path, monkeypatch):
     """Flipping use_oauth false must drop the old URL's tokens."""
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
@@ -786,6 +862,9 @@ def test_update_server_clears_oauth_when_oauth_disabled(tmp_path, monkeypatch):
 
 def test_changes_from_payload_rejects_null_is_enabled():
     """Explicit null for is_enabled used to hit int(None) -> TypeError 500."""
+    from models.mcp_servers import McpServerUpdate
+    from routes.mcp_servers import _changes_from_payload
+
     with pytest.raises(HTTPException) as exc:
         _changes_from_payload(McpServerUpdate(is_enabled = None))
     assert exc.value.status_code == 400
@@ -793,6 +872,9 @@ def test_changes_from_payload_rejects_null_is_enabled():
 
 def test_changes_from_payload_rejects_null_use_oauth():
     """Explicit null for use_oauth used to hit int(None) -> TypeError 500."""
+    from models.mcp_servers import McpServerUpdate
+    from routes.mcp_servers import _changes_from_payload
+
     with pytest.raises(HTTPException) as exc:
         _changes_from_payload(McpServerUpdate(use_oauth = None))
     assert exc.value.status_code == 400
@@ -801,6 +883,8 @@ def test_changes_from_payload_rejects_null_use_oauth():
 def test_test_endpoint_surfaces_url_validation_as_400(tmp_path, monkeypatch):
     """POST /api/mcp/servers/test must 400 on invalid URL like create/update;
     it previously returned 200 with {"ok": false}."""
+    import asyncio
+
     _reset_db(tmp_path, monkeypatch)
     from routes.mcp_servers import test_mcp_server
     from models.mcp_servers import McpServerTestRequest
@@ -818,6 +902,8 @@ def test_test_endpoint_surfaces_url_validation_as_400(tmp_path, monkeypatch):
 def test_tool_xml_parser_handles_hyphenated_parameter_names():
     """Hyphenated property names like `issue-number` must round-trip through the
     XML parser (the old `<parameter=\\w+>` regex dropped them)."""
+    import json as _json
+
     from core.inference.tool_call_parser import parse_tool_calls_from_text
 
     calls = parse_tool_calls_from_text(
@@ -834,6 +920,8 @@ def test_tool_xml_parser_handles_hyphenated_parameter_names():
 def test_tool_healing_strip_handles_hyphenated_function_names():
     """core/tool_healing.py has its own copy of the XML strip regex that the
     shared-parser fix missed."""
+    from core.tool_healing import strip_tool_call_markup
+
     out = strip_tool_call_markup(
         "before <function=mcp__srv__list-issues><parameter=q>x</parameter></function> after"
     )
@@ -841,6 +929,8 @@ def test_tool_healing_strip_handles_hyphenated_function_names():
 
 
 def test_tool_healing_strip_handles_gemma_native_tool_call():
+    from core.tool_healing import strip_tool_call_markup
+
     out = strip_tool_call_markup(
         'before <|tool_call>call:mcp__srv__list-issues{repo:"octocat/hello"}<tool_call|> after'
     )
@@ -848,11 +938,15 @@ def test_tool_healing_strip_handles_gemma_native_tool_call():
 
 
 def test_tool_healing_strip_handles_gemma_close_only_marker():
+    from core.tool_healing import strip_tool_call_markup
+
     assert strip_tool_call_markup("before <tool_call|> after") == "before  after"
     assert strip_tool_call_markup("before <tool_call|> after", final = True) == "before  after"
 
 
 def test_tool_healing_parser_handles_gemma_native_windows_path():
+    import json as _json
+
     from core.tool_healing import parse_tool_calls_from_text
 
     calls = parse_tool_calls_from_text(
@@ -864,6 +958,8 @@ def test_tool_healing_parser_handles_gemma_native_windows_path():
 
 
 def test_tool_healing_json_parser_preserves_literal_gemma_quote_token():
+    import json as _json
+
     from core.tool_healing import parse_tool_calls_from_text
 
     text = (
@@ -879,6 +975,8 @@ def test_tool_healing_json_parser_preserves_literal_gemma_quote_token():
 def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):
     """A tool call not in the per-request list must be refused by the GGUF
     agentic loop (mirroring the safetensors path)."""
+    from core.inference import tools as tools_mod
+
     captured: list[str] = []
 
     def fake_execute(name, args, **kw):
@@ -919,6 +1017,9 @@ def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):
 def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
     """Pre-set cancel_event -> no HTTP request (task used to open a transport
     before the cancel check)."""
+    from core.inference import mcp_client
+    import threading
+
     opened: list[str] = []
 
     class _StubClient:
@@ -957,6 +1058,9 @@ def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
 def test_clear_oauth_tokens_swallows_constructor_errors(tmp_path, monkeypatch):
     """clear_oauth_tokens_async is best-effort; an OAuth constructor failure
     must not bubble into a 500 from the delete/update routes."""
+    from core.inference import mcp_client
+    import asyncio
+
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
 
@@ -977,6 +1081,8 @@ def test_clear_oauth_tokens_swallows_constructor_errors(tmp_path, monkeypatch):
 def test_tool_xml_parser_handles_hyphenated_function_names():
     """Hyphenated tool names like `mcp__srv__list-issues` must parse, else the
     model can call the tool but Unsloth can't dispatch."""
+    import json as _json
+
     from core.inference.tool_call_parser import parse_tool_calls_from_text
 
     calls = parse_tool_calls_from_text(
@@ -1016,6 +1122,8 @@ def test_safetensors_agentic_empty_allowlist_still_means_allow_all():
     """Contract: at the safetensors_agentic layer tools=[] means "no
     constraint". The MCP-only-no-discovery fix lives at the route level in
     inference.py, which refuses use_tools when the resolved list is empty."""
+    import threading
+
     from core.inference.safetensors_agentic import run_safetensors_tool_loop
 
     calls: list[str] = []
@@ -1060,6 +1168,10 @@ def _one_tool(name = "echo"):
 
 def test_get_enabled_mcp_tools_caches_discovery(tmp_path, monkeypatch):
     """A second send must serve tools from cache instead of re-probing."""
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    import asyncio
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
@@ -1088,6 +1200,10 @@ def test_get_enabled_mcp_tools_caches_discovery(tmp_path, monkeypatch):
 
 def test_get_enabled_mcp_tools_does_not_cache_failures(tmp_path, monkeypatch):
     """A failed probe isn't cached: once the cool-off elapses, it's retried."""
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    import asyncio
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
@@ -1119,6 +1235,11 @@ def test_get_enabled_mcp_tools_does_not_cache_failures(tmp_path, monkeypatch):
 
 def test_refresh_warms_tool_cache(tmp_path, monkeypatch):
     """Clicking Refresh must populate the cache the chat path reads."""
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
@@ -1146,6 +1267,11 @@ def test_refresh_warms_tool_cache(tmp_path, monkeypatch):
 
 def test_update_url_evicts_tool_cache(tmp_path, monkeypatch):
     """Re-pointing the URL must drop the old endpoint's cached tools."""
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool("stale")})
@@ -1161,6 +1287,11 @@ def test_update_url_evicts_tool_cache(tmp_path, monkeypatch):
 
 def test_update_display_name_keeps_tool_cache(tmp_path, monkeypatch):
     """A rename touches no endpoint, so the cache must survive it."""
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     cached = _one_tool()
@@ -1177,6 +1308,10 @@ def test_update_rename_keeps_stdio_session(tmp_path, monkeypatch):
     """The edit dialog resends url/headers/oauth unchanged on a rename, so gating
     the close on field presence would drop the live stdio session. Only a real
     endpoint/auth change may close it."""
+    from models.mcp_servers import McpServerUpdate
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     import json
 
     _reset_db(tmp_path, monkeypatch)
@@ -1209,6 +1344,10 @@ def test_update_rename_keeps_stdio_session(tmp_path, monkeypatch):
 
 def test_update_stdio_command_change_closes_session(tmp_path, monkeypatch):
     """A real command change must still close the old stdio session."""
+    from models.mcp_servers import McpServerUpdate
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     closed: list = []
@@ -1231,6 +1370,12 @@ def test_update_stdio_command_change_closes_session(tmp_path, monkeypatch):
 def test_stdio_arguments_update_preserves_untouched_bytes_then_invalidates_once(
     tmp_path, monkeypatch
 ):
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     import json
 
     from models.mcp_servers import McpServerUpdate, McpStdioCommand
@@ -1287,6 +1432,11 @@ def test_stdio_arguments_update_preserves_untouched_bytes_then_invalidates_once(
 
 def test_update_disable_evicts_tool_cache(tmp_path, monkeypatch):
     """Disabling a server must drop its cached tools, not leave them unread."""
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool()})
@@ -1300,6 +1450,10 @@ def test_update_disable_evicts_tool_cache(tmp_path, monkeypatch):
 
 def test_delete_evicts_tool_cache(tmp_path, monkeypatch):
     """Deleting a server must not leave its tools cached."""
+    from core.inference import mcp_client
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool()})
@@ -1309,6 +1463,8 @@ def test_delete_evicts_tool_cache(tmp_path, monkeypatch):
 
 
 def test_invalidate_tool_cache_clears_all(monkeypatch):
+    from core.inference import mcp_client
+
     monkeypatch.setattr(mcp_client, "_tool_cache", {"a": _one_tool(), "b": _one_tool()})
     mcp_client.invalidate_tool_cache()
     assert mcp_client.get_cached_tools("a") is None
@@ -1317,6 +1473,10 @@ def test_invalidate_tool_cache_clears_all(monkeypatch):
 
 def test_get_enabled_mcp_tools_probes_only_uncached(tmp_path, monkeypatch):
     """An already-cached server must not be re-probed alongside a cold one."""
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    import asyncio
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool("cached")})
@@ -1343,6 +1503,10 @@ def test_get_enabled_mcp_tools_probes_only_uncached(tmp_path, monkeypatch):
 
 def test_get_enabled_mcp_tools_partial_failure_caches_healthy(tmp_path, monkeypatch):
     """One server failing must not stop the others from being cached/served."""
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    import asyncio
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
@@ -1370,6 +1534,10 @@ def test_get_enabled_mcp_tools_partial_failure_caches_healthy(tmp_path, monkeypa
 
 def test_get_enabled_mcp_tools_caches_empty_tool_list(tmp_path, monkeypatch):
     """A server exposing zero tools is cached as [] (a hit), not re-probed."""
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    import asyncio
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
@@ -1396,6 +1564,11 @@ def test_get_enabled_mcp_tools_caches_empty_tool_list(tmp_path, monkeypatch):
 
 def test_update_headers_evicts_tool_cache(tmp_path, monkeypatch):
     """Changing auth headers must drop tools discovered under the old headers."""
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": _one_tool()})
@@ -1414,6 +1587,10 @@ def test_update_headers_evicts_tool_cache(tmp_path, monkeypatch):
 def test_get_enabled_mcp_tools_skips_cache_when_config_changes_mid_probe(tmp_path, monkeypatch):
     """A config edit landing during an in-flight probe must not be clobbered
     by the now-stale probe result (TOCTOU on the cache write)."""
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    import asyncio
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
@@ -1442,6 +1619,10 @@ def test_get_enabled_mcp_tools_no_cooloff_when_config_changes_mid_failed_probe(
     """An edit landing while a probe of the OLD config is failing must not park
     a cool-off on the now-fresh config -- else the re-pointed server the user
     just fixed is needlessly skipped for the whole cool-off window."""
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    import asyncio
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
@@ -1470,6 +1651,10 @@ def test_get_enabled_mcp_tools_no_cooloff_when_server_deleted_mid_failed_probe(
 ):
     """A delete landing while a probe fails must not leave an orphan cool-off
     entry keyed by the since-removed server id."""
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    import asyncio
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
@@ -1494,6 +1679,10 @@ def test_get_enabled_mcp_tools_no_cooloff_when_server_deleted_mid_failed_probe(
 def test_get_enabled_mcp_tools_skips_failed_server_during_cooloff(tmp_path, monkeypatch):
     """A down server is probed once, then skipped during the cool-off instead
     of being re-probed (and re-hung) on every send."""
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    import asyncio
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
@@ -1521,6 +1710,8 @@ def test_get_enabled_mcp_tools_skips_failed_server_during_cooloff(tmp_path, monk
 
 def test_cache_tools_clears_failure_cooloff(monkeypatch):
     """A successful probe lifts a server's failure cool-off."""
+    from core.inference import mcp_client
+
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
     mcp_client.record_probe_failure("s1")
@@ -1532,6 +1723,8 @@ def test_cache_tools_clears_failure_cooloff(monkeypatch):
 def test_oauth_failure_cools_off_longer_than_plain(monkeypatch):
     """An OAuth server's failure cools off longer than a plain server's, so its
     multi-minute probe hang doesn't recur every minute."""
+    from core.inference import mcp_client
+
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
     mcp_client.record_probe_failure("plain", use_oauth = False)
     mcp_client.record_probe_failure("oauth", use_oauth = True)
@@ -1540,6 +1733,8 @@ def test_oauth_failure_cools_off_longer_than_plain(monkeypatch):
 
 def test_invalidate_clears_failure_cooloff(monkeypatch):
     """Eviction drops the failure cool-off so an edited server re-probes at once."""
+    from core.inference import mcp_client
+
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {"s1": 1.0, "s2": 2.0})
     mcp_client.invalidate_tool_cache("s1")
@@ -1552,6 +1747,10 @@ def test_invalidate_clears_failure_cooloff(monkeypatch):
 def test_refresh_failure_records_cooloff(tmp_path, monkeypatch):
     """A failed manual refresh starts the cool-off so the next chat send does
     not immediately hang on the down server."""
+    from core.inference import mcp_client
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
@@ -1575,6 +1774,10 @@ def test_refresh_failure_records_cooloff(tmp_path, monkeypatch):
 def test_refresh_drops_result_when_config_changes_mid_probe(tmp_path, monkeypatch):
     """A manual refresh must not warm the chat cache with tools discovered
     under an old config if the server is edited while the probe is in flight."""
+    from core.inference import mcp_client
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
@@ -1598,6 +1801,10 @@ def test_refresh_drops_result_when_config_changes_mid_probe(tmp_path, monkeypatc
 def test_refresh_failure_no_cooloff_when_config_changes_mid_probe(tmp_path, monkeypatch):
     """A manual refresh failure for an old config must not cool off the freshly
     edited server."""
+    from core.inference import mcp_client
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
@@ -1623,6 +1830,10 @@ def test_get_enabled_mcp_tools_drops_result_when_server_deleted_mid_probe(tmp_pa
     """A delete landing while a probe is in flight must drop the now-orphan
     result -- the `fresh is None` arm of the mid-probe TOCTOU guard. The
     result is neither served nor cached under the since-removed id."""
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    import asyncio
+
     _reset_db(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
@@ -1650,6 +1861,10 @@ def test_oauth_probe_failure_in_chat_path_uses_long_cooloff(tmp_path, monkeypatc
     """When an OAuth server fails discovery during a send, the chat path must
     record the OAuth (long) cool-off, not the plain one -- otherwise its
     multi-minute browser hang recurs every minute."""
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    import asyncio
+
     import time
 
     _reset_db(tmp_path, monkeypatch)
@@ -1741,6 +1956,8 @@ def test_provisional_tool_provenance_stamps_mcp_display_name(tmp_path, monkeypat
 def test_display_names_never_reach_the_callable_tool_name(tmp_path, monkeypatch):
     """Routing, approvals and replay all key off mcp__<serverId>__<tool>, so the
     display name must stay presentation only."""
+    from core.inference.tools import _mcp_specs_for_server
+
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
     from core.inference.tool_loop_controller import (
@@ -1760,6 +1977,8 @@ def test_display_names_never_reach_the_callable_tool_name(tmp_path, monkeypatch)
 
 def test_two_servers_sharing_a_display_name_stay_separately_routable(tmp_path, monkeypatch):
     """Duplicate display names must not collapse two servers into one route."""
+    from core.inference.tools import _mcp_specs_for_server
+
     _reset_db(tmp_path, monkeypatch)
     for sid in ("srv1", "srv2"):
         mcp_servers_db.create_server(id = sid, display_name = "GitHub", url = f"https://{sid}/m")

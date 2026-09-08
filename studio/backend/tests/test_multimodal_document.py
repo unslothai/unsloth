@@ -22,8 +22,6 @@ import httpx
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
-from models.inference import ChatMessage
-from routes.inference import _build_external_messages
 
 
 def _drive(coro):
@@ -446,6 +444,8 @@ def test_openai_empty_document_part_is_dropped(monkeypatch):
 
 
 def test_chat_message_accepts_input_document_part():
+    from models.inference import ChatMessage
+
     msg = ChatMessage.model_validate(
         {
             "role": "user",
@@ -471,6 +471,9 @@ def test_build_external_messages_passes_input_document_for_anthropic_and_openai(
     # Both providers' stream helpers translate input_document (Anthropic ->
     # {type:"document"}, OpenAI Responses -> {type:"input_file"}), so the
     # part round-trips through the builder unchanged on those routes.
+
+    from models.inference import ChatMessage
+    from routes.inference import _build_external_messages
 
     msgs = [
         ChatMessage.model_validate(
@@ -506,6 +509,9 @@ def test_build_external_messages_strips_input_document_for_unmapped_providers():
     # validator. The builder must strip it for any provider whose stream
     # helper doesn't translate it.
 
+    from models.inference import ChatMessage
+    from routes.inference import _build_external_messages
+
     msgs = [
         ChatMessage.model_validate(
             {
@@ -535,6 +541,9 @@ def test_build_external_messages_strips_input_document_when_provider_type_unknow
     # Defensive: legacy callers without provider_type must not leak the
     # part to an unknown destination.
 
+    from models.inference import ChatMessage
+    from routes.inference import _build_external_messages
+
     msgs = [
         ChatMessage.model_validate(
             {
@@ -556,6 +565,9 @@ def test_build_external_messages_strips_input_document_when_provider_type_unknow
 
 
 def test_build_external_messages_drops_input_document_for_non_vision_provider():
+    from models.inference import ChatMessage
+    from routes.inference import _build_external_messages
+
     msgs = [
         ChatMessage.model_validate(
             {

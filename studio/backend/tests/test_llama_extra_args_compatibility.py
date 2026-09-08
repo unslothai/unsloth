@@ -19,7 +19,6 @@ import importlib.util
 from pathlib import Path
 
 import pytest
-import routes.inference as inference_route
 
 
 class _Config:
@@ -143,6 +142,8 @@ def test_a_control_character_in_a_stored_value_is_dropped_too():
 
 
 def test_the_inherited_load_path_drops_only_the_denied_flag(monkeypatch):
+    import routes.inference as inference_route
+
     assert hasattr(inference_route, "drop_managed_flags"), (
         "the resolver reads this from module globals; an unlisted import NameErrors "
         "only when a model with stored flags is loaded"
@@ -170,6 +171,8 @@ def test_the_inherited_load_path_drops_only_the_denied_flag(monkeypatch):
 
 def _inherit_with_ctx_flag(monkeypatch, stored, fields_set, max_seq_length):
     """Drive the real resolver for a same-model reload that inherits its extras."""
+    import routes.inference as inference_route
+
     class _Backend:
         extra_args = list(stored)
         extra_args_source = ("local/x", "")
@@ -321,6 +324,8 @@ def test_validate_sizes_itself_with_the_arguments_the_caller_sent():
     # --ctx-size in the extras changes that estimate. The resolver hands back its
     # fourth argument unchanged for an explicit list, so passing None there meant the
     # preflight approved a different command from the one that runs.
+    import routes.inference as inference_route
+
     import inspect
 
     source = inspect.getsource(inference_route)

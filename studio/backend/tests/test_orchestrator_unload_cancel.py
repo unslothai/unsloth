@@ -13,17 +13,6 @@ import pytest
 
 from core.inference import orchestrator as orch_mod
 from core.inference.orchestrator import InferenceOrchestrator
-from core.inference import llama_keepwarm
-from fastapi import HTTPException
-from models.inference import LoadRequest, UnloadRequest
-from utils import transformers_version as _tv
-from utils import transformers_version as tv
-import asyncio
-import asyncio as _asyncio
-import queue as _queue
-import routes.inference as inference_route
-import routes.inference as ri
-import types
 
 
 class _Llama:
@@ -35,7 +24,6 @@ class _Llama:
 class _Unsloth:
     def get_loading_model(self):
         return None  # no Unsloth load in flight -> Unsloth fast path skipped
-
 
 
 def _bare_orchestrator():
@@ -349,6 +337,8 @@ def test_worker_drain_skip_emits_cancelled_gen_done_when_draining():
     # is the durable signal: while it is set the worker skips the generate (emitting an
     # immediate gen_done so the stream/mailbox drains) instead of running it.
 
+    import queue as _queue
+
     from core.inference.worker import _drain_skip_generate
 
     drain = threading.Event()
@@ -390,6 +380,8 @@ def test_worker_generate_rechecks_drain_after_clearing_cancel():
     # parent sets drain+cancel for an unload, then the worker clears cancel_event
     # (erasing that cancel). A second drain check *after* the clear catches it and
     # skips the generate instead of running the outgoing model to completion.
+
+    import queue as _queue
 
     from core.inference.worker import _drain_skip_generate
 
@@ -595,6 +587,9 @@ def test_load_does_not_accumulate_stale_models_defeating_the_unload_guard(monkey
     # passes the "not in self.models" guard and the worker's absent-name fallback
     # unloads the *active* model B.
 
+    from utils import transformers_version as _tv
+    import types
+
     o = _bare_orchestrator()
     o.active_model_name = None
     o.models = {}
@@ -636,6 +631,10 @@ def test_load_does_not_accumulate_stale_models_defeating_the_unload_guard(monkey
 def test_unload_route_serializes_with_loads_via_lifecycle_gate(monkeypatch):
     # Item #5: /unload must hold the same lifecycle gate as /load so a concurrent load
     # can't swap the backend subprocess/queues mid-unload.
+
+    from models.inference import LoadRequest, UnloadRequest
+    import asyncio
+    import routes.inference as inference_route
 
     from core.inference import llama_keepwarm as kw
     from models.inference import UnloadRequest
@@ -732,6 +731,10 @@ def test_unload_route_cancels_in_flight_load_without_waiting_on_gate(monkeypatch
     # Stop-loading button (cancelLoading -> /unload) could not interrupt a safetensors
     # load that holds the gate for its full duration. The cancel must run off-gate.
 
+    from models.inference import LoadRequest, UnloadRequest
+    import asyncio
+    import routes.inference as inference_route
+
     from core.inference import llama_keepwarm as kw
     from models.inference import UnloadRequest
 
@@ -771,6 +774,10 @@ def test_unload_route_cancels_in_flight_load_without_waiting_on_gate(monkeypatch
 
 
 def test_scoped_unload_cancels_only_its_running_standard_load(monkeypatch):
+    from models.inference import LoadRequest, UnloadRequest
+    import asyncio
+    import routes.inference as inference_route
+
     cancelled = []
 
     class _Backend:
@@ -805,6 +812,10 @@ def test_scoped_unload_cancels_only_its_running_standard_load(monkeypatch):
 
 
 def test_scoped_unload_cannot_cancel_a_newer_same_model_load(monkeypatch):
+    from models.inference import LoadRequest, UnloadRequest
+    import asyncio
+    import routes.inference as inference_route
+
     def _unexpected_backend():
         pytest.fail("a stale scoped cancel must not inspect or mutate any backend")
 
@@ -831,6 +842,11 @@ def test_scoped_unload_cannot_cancel_a_newer_same_model_load(monkeypatch):
 
 
 def test_scoped_cancel_before_load_registration_is_consumed(monkeypatch):
+    from fastapi import HTTPException
+    from models.inference import LoadRequest, UnloadRequest
+    import asyncio
+    import routes.inference as inference_route
+
     def _unexpected_backend():
         pytest.fail("cancel-first cleanup must not inspect a backend")
 
@@ -864,6 +880,12 @@ def test_scoped_cancel_before_load_registration_is_consumed(monkeypatch):
 
 
 def test_scoped_cancel_holds_load_ownership_until_backend_cancel_finishes(monkeypatch):
+    from core.inference import llama_keepwarm
+    from fastapi import HTTPException
+    from models.inference import LoadRequest, UnloadRequest
+    import asyncio
+    import routes.inference as inference_route
+
     backend_cancel_entered = threading.Event()
     release_backend_cancel = threading.Event()
 
@@ -944,6 +966,11 @@ def test_scoped_cancel_holds_load_ownership_until_backend_cancel_finishes(monkey
 
 
 def test_scoped_unload_of_queued_attempt_never_unloads_or_deadlocks(monkeypatch):
+    from fastapi import HTTPException
+    from models.inference import LoadRequest, UnloadRequest
+    import asyncio
+    import routes.inference as inference_route
+
     def _unexpected_backend():
         pytest.fail("cancel-only cleanup must never unload a resident model")
 
@@ -984,6 +1011,10 @@ def test_scoped_unload_of_queued_attempt_never_unloads_or_deadlocks(monkeypatch)
 
 
 def test_scoped_unload_cancels_only_its_running_gguf_load(monkeypatch):
+    from models.inference import LoadRequest, UnloadRequest
+    import asyncio
+    import routes.inference as inference_route
+
     class _Backend:
         def get_loading_model(self):
             return None
@@ -1040,6 +1071,9 @@ def test_standard_load_honors_scoped_cancel_before_worker_start():
 
 
 def test_gguf_load_cancellation_includes_the_backend_unload_event():
+    import asyncio
+    import routes.inference as inference_route
+
     from core.inference.llama_cpp import GgufDownloadCancelled
 
     class _Llama:
@@ -1083,6 +1117,9 @@ def test_cancelled_gguf_download_uses_the_typed_signal():
 
 
 def test_gguf_load_attempt_does_not_hide_a_real_resolver_failure():
+    import asyncio
+    import routes.inference as inference_route
+
     class _Llama:
         def load_cancelled(self):
             return True
@@ -1101,6 +1138,9 @@ def test_gguf_load_attempt_does_not_hide_a_real_resolver_failure():
 
 
 def test_stale_unload_does_not_hide_an_update_refusal():
+    import asyncio
+    import routes.inference as inference_route
+
     from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
     llama = LlamaCppBackend()
@@ -1267,6 +1307,8 @@ def test_load_model_aborts_when_cancelled_before_spawn(monkeypatch):
     # Stop-loading during GPU placement discards the loading marker (cancel_load) with
     # no child yet to kill. load_model must observe the removal and not spawn a worker
     # that loads the model after /unload already reported it unloaded.
+    from utils import transformers_version as tv
+
     o = _bare_orchestrator()
     o.active_model_name = None
     o.models = {}
@@ -1304,6 +1346,9 @@ def test_load_model_aborts_when_old_worker_survives_shutdown(monkeypatch):
     # False. load_model must not spawn a second worker over it (double GPU allocation +
     # the survivor's handle is lost); it aborts so the load can retry once it exits.
 
+    from utils import transformers_version as tv
+    import types
+
     o = _bare_orchestrator()
     o.active_model_name = "old"
     o.models = {"old": {}}
@@ -1327,6 +1372,8 @@ def test_load_model_aborts_when_old_worker_survives_shutdown(monkeypatch):
 
 def test_load_model_proceeds_when_not_cancelled(monkeypatch):
     # Guard against a false abort: an uncancelled load keeps its marker and spawns.
+    from utils import transformers_version as tv
+
     o = _bare_orchestrator()
     o.active_model_name = None
     o.models = {}
@@ -1362,6 +1409,9 @@ def test_load_model_reaps_worker_after_inactivity_timeout(monkeypatch):
     # A quiet install can trip the inactivity timeout; the failure path must
     # still tear its worker down (#9398).
 
+    from utils import transformers_version as tv
+    import types
+
     o = _bare_orchestrator()
     o.active_model_name = None
     o.models = {}
@@ -1395,6 +1445,9 @@ def test_load_model_reaps_worker_after_inactivity_timeout(monkeypatch):
 
 
 def test_worker_reported_load_failure_reaps_worker(monkeypatch):
+    from utils import transformers_version as tv
+    import types
+
     o = _bare_orchestrator()
     o.active_model_name = None
     o.models = {}
@@ -1425,6 +1478,9 @@ def test_worker_reported_load_failure_reaps_worker(monkeypatch):
 
 def test_failed_load_keeps_timeout_after_cancel_teardown(monkeypatch):
     # Both paths may request teardown; the serialized second call is harmless.
+
+    from utils import transformers_version as tv
+    import types
 
     o = _bare_orchestrator()
     o.active_model_name = None
@@ -1486,6 +1542,9 @@ def test_failed_load_keeps_timeout_after_cancel_teardown(monkeypatch):
 def test_failed_load_keeps_the_timeout_when_teardown_raises(monkeypatch):
     # A teardown failure must stay a warning, not replace the load error.
 
+    from utils import transformers_version as tv
+    import types
+
     o = _bare_orchestrator()
     o.active_model_name = None
     o.models = {}
@@ -1526,6 +1585,9 @@ def test_load_model_aborts_when_cancelled_during_spawn(monkeypatch):
     # recheck the marker once the child exists and tear the orphaned worker down,
     # instead of waiting for "loaded" and publishing a model /unload already
     # reported as unloaded (a live subprocess nothing later reaps).
+
+    from utils import transformers_version as tv
+    import types
 
     o = _bare_orchestrator()
     o.active_model_name = None
@@ -1572,6 +1634,10 @@ def test_unload_cancels_loading_gguf_off_gate(monkeypatch):
     # /load holds the lifecycle gate for the whole load, so a gated unload would wait
     # it out. Assert the gate is never entered and unload_model() runs.
 
+    from core.inference import llama_keepwarm
+    import asyncio as _asyncio
+    import routes.inference as ri
+
     gate_entered = {"v": False}
 
     class _Gate:
@@ -1611,6 +1677,10 @@ def test_unload_cancels_loading_gguf_off_gate(monkeypatch):
 def test_unload_loaded_gguf_still_uses_gate(monkeypatch):
     # Guard: an already-loaded GGUF (is_loaded True) is NOT caught by the off-gate
     # fast path; it goes through the gate as before.
+
+    from core.inference import llama_keepwarm
+    import asyncio as _asyncio
+    import routes.inference as ri
 
     gate_entered = {"v": False}
 
@@ -1657,6 +1727,10 @@ def test_unload_of_mismatched_loading_gguf_skips_off_gate_fast_path(monkeypatch)
     # load (e.g. a second tab unloading Y kills the load of X). A mismatched target must
     # fall through to the lifecycle gate (where, in production, it waits out X's /load and
     # then no-ops) instead of taking the off-gate teardown.
+
+    from core.inference import llama_keepwarm
+    import asyncio as _asyncio
+    import routes.inference as ri
 
     gate_entered = {"v": False}
 
@@ -1748,6 +1822,9 @@ def test_cancel_load_reclears_state_when_racing_load_repopulates_during_teardown
     # mirrors, so without a second clear /unload reports success while the backend keeps
     # advertising a model whose worker was just killed. cancel_load must re-clear after the
     # teardown so no phantom loaded model survives.
+
+    from utils import transformers_version as _tv
+    import types
 
     o = _bare_orchestrator()
     o.loading_models = {"m"}
@@ -1951,6 +2028,9 @@ def test_load_model_aborts_publish_when_cancelled_after_wait_response(monkeypatc
     # over a subprocess cancel_load just killed. The recheck must observe the discarded
     # marker and abort the publish.
 
+    from utils import transformers_version as _tv
+    import types
+
     o = _bare_orchestrator()
     o.loading_models = {"m"}
     o.active_model_name = None
@@ -2028,6 +2108,8 @@ def test_load_model_aborts_publish_when_cancelled_after_wait_response(monkeypatc
 
 
 def test_concurrent_start_dispatcher_spawns_exactly_one():
+    import queue as _queue
+
     o = _bare_orchestrator()
     o._resp_queue = _queue.Queue()  # real queue so the dispatcher loop blocks and stays alive
     o._mailbox_lock = threading.Lock()
@@ -2095,6 +2177,8 @@ def test_start_dispatcher_refuses_while_unload_pending():
     # lifecycle lock by unload_model), _start_dispatcher must refuse and spawn nothing,
     # even though no dispatcher is currently running.
 
+    import queue as _queue
+
     o = _bare_orchestrator()
     o._resp_queue = _queue.Queue()  # a spawned dispatcher would block-read here and stay alive
     o._dispatcher_thread = None
@@ -2114,6 +2198,8 @@ def test_start_dispatcher_resumes_after_unload_clears():
     # Guard the other direction: once the unload finishes and clears _unload_pending, a
     # later compare request must be able to start the dispatcher again (the gate must not
     # wedge). Proves the refusal above is scoped to the unload, not permanent.
+
+    import queue as _queue
 
     o = _bare_orchestrator()
     o._resp_queue = _queue.Queue()
@@ -2140,6 +2226,8 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
     # it on the same lock. When the stop releases the lock the queued start must observe
     # _unload_pending (set under the lock ahead of the stop) and refuse: no fresh
     # dispatcher may be left running to steal the "unloaded" reply.
+
+    import queue as _queue
 
     o = _bare_orchestrator()
     o._resp_queue = _queue.Queue()  # a spawned dispatcher would block-read here and stay alive
@@ -2203,6 +2291,8 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
 
 def _dispatch(o, resps):
     """Run the dispatcher over a fixed response list and stop it."""
+    import queue as _queue
+
     o._resp_queue = _queue.Queue()
     for r in resps:
         o._resp_queue.put(r)
@@ -2220,6 +2310,8 @@ def test_worker_ownership_follows_the_worker_not_the_consumer():
     # The subprocess runs one generation at a time and can start B while A's consumer has yet to
     # drain its mailbox. A must stop owning the worker the moment its gen_done is routed, else
     # a late Stop for A cancels B.
+
+    import queue as _queue
 
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
@@ -2251,6 +2343,8 @@ def test_worker_ownership_follows_the_worker_not_the_consumer():
 
 def test_status_responses_do_not_transfer_worker_ownership():
     # Status lines are not an answer to any request; the dispatcher drops them before routing.
+
+    import queue as _queue
 
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
@@ -2289,6 +2383,8 @@ def test_a_stale_mailbox_read_does_not_cancel_the_running_generation():
     # A dispatched consumer can still be draining tokens after the dispatcher retired its request
     # and started the next one. Stopping it then must tear down only its own stream: signalling
     # the shared worker event would end its successor.
+
+    import queue as _queue
 
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
@@ -2374,6 +2470,8 @@ def test_the_direct_reader_hands_back_a_compare_response_it_took():
     # dispatcher starts, so it can take that request's response first. Consuming it would
     # corrupt this chat and hang the compare pane.
 
+    import queue as _queue
+
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     compare_box: _queue.Queue = _queue.Queue()
@@ -2413,6 +2511,8 @@ def test_replacing_the_subprocess_clears_worker_scoped_state():
     # Ownership is keyed only by cancel-event identity, so a consumer still blocked on its
     # mailbox when the worker was replaced stayed recorded as the executor. A generation on
     # the fresh worker then failed _owns_worker and could not be stopped.
+
+    import queue as _queue
 
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
@@ -2505,6 +2605,9 @@ def test_a_scoped_load_cancel_that_never_reports_back_releases_the_load():
     two leaves nobody to set it. An unbounded wait parks the load under
     inference_lifecycle_gate for the process lifetime, and asyncio.to_thread's executor
     threads are non-daemon, so it also blocks exit."""
+    from models.inference import LoadRequest, UnloadRequest
+    import asyncio
+
     import routes.inference as inf
 
     request = LoadRequest(model_path = "org/a", load_request_id = "handshake-drop")

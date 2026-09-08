@@ -27,8 +27,6 @@ from auth.authentication import (
     get_current_subject,
     security,
 )
-import storage.studio_db as studio_db
-import utils.keyless_api_access as keyless
 from utils.keyless_api_access import (
     KeylessToolPolicyMiddleware,
     KEYLESS_ADMISSION_STATE_KEY,
@@ -135,6 +133,8 @@ def test_exact_route_matrix_matches_registered_topology():
 
 
 def test_settings_are_immediate_and_fail_closed(monkeypatch):
+    import storage.studio_db as studio_db
+
     set_keyless_api_access("full", tools = True)
     assert keyless_request_allowed(request_for()) is True
     assert get_keyless_api_tools_enabled() is True
@@ -150,6 +150,8 @@ def test_settings_are_immediate_and_fail_closed(monkeypatch):
 
 
 def test_stale_refresh_cannot_reopen_a_closed_scope(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     set_keyless_api_access("full", tools = True)
     _reset_scope_cache()
     read_done, write_done = threading.Event(), threading.Event()
@@ -175,6 +177,8 @@ def test_stale_refresh_cannot_reopen_a_closed_scope(monkeypatch):
 
 
 def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     set_keyless_api_access("inference", tools = False)
     _reset_scope_cache()
 
@@ -218,6 +222,8 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
 
 
 def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     from utils.keyless_api_access import asgi_request_is_keyless
 
     set_keyless_api_access("inference", tools = False)
@@ -260,6 +266,8 @@ def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monk
 
 
 def test_async_stale_cache_miss_broadcasts_one_refresh_result(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     set_keyless_api_access("inference", tools = True)
     _reset_scope_cache()
 
@@ -308,6 +316,8 @@ def test_async_stale_cache_miss_broadcasts_one_refresh_result(monkeypatch):
 
 
 def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     import anyio.to_thread
     from starlette.concurrency import run_in_threadpool
 
@@ -375,6 +385,8 @@ def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
 
 
 def test_failed_refresh_does_not_reuse_permissive_stale_settings(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     set_keyless_api_access("inference", tools = True)
     keyless._cached_settings = (
         time.monotonic() - keyless._SETTINGS_CACHE_TTL_S - 1,
@@ -417,6 +429,8 @@ def test_failed_refresh_does_not_reuse_permissive_stale_settings(monkeypatch):
 
 
 def test_async_settings_tasks_do_not_retain_closed_event_loops(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     import gc
     import weakref
 
@@ -439,6 +453,8 @@ def test_async_settings_tasks_do_not_retain_closed_event_loops(monkeypatch):
 
 
 def test_scope_write_preserves_tools_during_an_inflight_refresh(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     set_keyless_api_access("full", tools = True)
     _reset_scope_cache()
 
@@ -473,6 +489,8 @@ def test_scope_write_preserves_tools_during_an_inflight_refresh(monkeypatch):
 
 
 def test_scope_write_aborts_when_preserved_tools_cannot_be_read(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     set_keyless_api_access("full", tools = True)
     monkeypatch.setattr(
         keyless,
@@ -487,6 +505,8 @@ def test_scope_write_aborts_when_preserved_tools_cannot_be_read(monkeypatch):
 
 
 def test_disable_without_tools_does_not_depend_on_a_preservation_read(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     set_keyless_api_access("full", tools = True)
     monkeypatch.setattr(
         keyless,
@@ -499,6 +519,9 @@ def test_disable_without_tools_does_not_depend_on_a_preservation_read(monkeypatc
 
 
 def test_keyless_write_has_no_fallible_post_commit_read(monkeypatch):
+    import storage.studio_db as studio_db
+    import utils.keyless_api_access as keyless
+
     real_get_connection = studio_db.get_connection
     result_read_attempted = False
 
@@ -534,6 +557,9 @@ def test_keyless_write_has_no_fallible_post_commit_read(monkeypatch):
 
 
 def test_committed_disable_is_fail_closed_before_cache_publication(monkeypatch):
+    import storage.studio_db as studio_db
+    import utils.keyless_api_access as keyless
+
     set_keyless_api_access("inference", tools = True)
     keyless._cached_settings = (
         time.monotonic() - keyless._SETTINGS_CACHE_TTL_S - 1,
@@ -587,6 +613,8 @@ def test_committed_disable_is_fail_closed_before_cache_publication(monkeypatch):
 
 
 def test_middleware_rechecks_a_setting_changed_during_classification(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     set_keyless_api_access("inference", tools = True)
     classification_started = threading.Event()
     release_classification = threading.Event()
@@ -666,6 +694,8 @@ def test_middleware_linearizes_admission_before_a_concurrent_disable():
 
 
 def test_overlapping_writes_publish_in_commit_order(monkeypatch):
+    import storage.studio_db as studio_db
+
     first_committed = threading.Event()
     release_first = threading.Event()
     second_committed = threading.Event()

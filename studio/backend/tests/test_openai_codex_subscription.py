@@ -48,12 +48,6 @@ from core.inference import openai_codex_client as codex_client
 
 from core.inference.openai_responses_shared import normalize_function_schema
 from core.inference.providers import get_provider_info, list_available_providers
-from core.inference import openai_codex_tool_loop as tool_loop
-from core.inference import studio_tool_loop as loop_core
-from fastapi import HTTPException
-from models.inference import ChatCompletionRequest
-from routes import inference as inf
-from routes import openai_codex_auth as codex_routes
 
 
 async def _is_disconnected():
@@ -71,7 +65,6 @@ class AlwaysRejecting:
 
     async def aclose(self):
         return None
-
 
 
 def _jwt(payload: dict) -> str:
@@ -999,6 +992,8 @@ def test_subscription_model_list_rejects_non_200(monkeypatch):
 
 
 def test_model_route_falls_back_to_curated_when_upstream_is_unusable(monkeypatch):
+    from routes import openai_codex_auth as codex_routes
+
     curated = get_provider_info("openai_codex")["default_models"]
     monkeypatch.setattr(codex_routes, "_provider", lambda provider_id: {"id": provider_id})
 
@@ -1285,6 +1280,9 @@ def test_transient_refresh_failure_does_not_require_reauthorization(monkeypatch)
 
 
 def test_codex_tool_loop_autoinjects_rag_before_first_model_call(monkeypatch):
+    from core.inference import openai_codex_tool_loop as tool_loop
+    from core.inference import studio_tool_loop as loop_core
+
     class FakeCodexClient:
         def __init__(self):
             self.messages = []
@@ -1358,6 +1356,9 @@ def test_codex_tool_loop_autoinjects_rag_before_first_model_call(monkeypatch):
 
 
 def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
+    from core.inference import openai_codex_tool_loop as tool_loop
+    from core.inference import studio_tool_loop as loop_core
+
     class FakeCodexClient:
         def __init__(self):
             self.messages = []
@@ -1434,6 +1435,9 @@ def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
 
 
 def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monkeypatch):
+    from core.inference import openai_codex_tool_loop as tool_loop
+    from core.inference import studio_tool_loop as loop_core
+
     class FakeCodexClient:
         def __init__(self):
             self.requests = []
@@ -1510,6 +1514,10 @@ def _codex_chat_gate(
     401 means the model was accepted and the request moved on, a 400 means it
     was refused.
     """
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf
+
     monkeypatch.setattr(
         inf.providers_db,
         "get_provider",
@@ -1545,6 +1553,9 @@ def _codex_chat_gate(
 
 
 def test_codex_chat_receives_the_current_date(monkeypatch):
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf
+
     model = get_provider_info("openai_codex")["default_models"][0]
     monkeypatch.setattr(
         inf.providers_db,
@@ -1731,6 +1742,10 @@ def test_chat_asks_for_reconnection_rather_than_another_model(monkeypatch):
 
 def test_chat_reads_vision_support_from_the_plan_catalog(monkeypatch):
     """A dynamic slug's image support comes from /codex/models, not the static registry."""
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf
+
     listed = "gpt-5.7-nova"
     assert listed not in get_provider_info("openai_codex")["model_capabilities"]
 
@@ -1845,6 +1860,10 @@ def test_chat_retires_a_saved_slug_the_new_account_does_not_carry(monkeypatch):
 
 def test_chat_reports_reconnection_when_an_image_needs_the_catalog(monkeypatch):
     """The image gate must not report a text-only model when the connection is dead."""
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf
+
     saved = "gpt-5.7-nova"
     forget_subscription_models("codex-1")
     monkeypatch.setattr(
@@ -2081,6 +2100,8 @@ def test_chat_drops_a_catalog_another_worker_rebound(monkeypatch):
 
 def test_the_model_route_reports_a_dead_connection(monkeypatch):
     """The editor route must say reconnect rather than answer with a healthy seed list."""
+    from routes import openai_codex_auth as codex_routes
+
     curated = get_provider_info("openai_codex")["default_models"]
     monkeypatch.setattr(codex_routes, "_provider", lambda provider_id: {"id": provider_id})
     monkeypatch.setattr(codex_routes.codex_auth, "auth_status", lambda _id: "connected")
@@ -2273,6 +2294,8 @@ def test_a_catalog_is_not_committed_for_an_account_another_worker_replaced(monke
 
 def test_the_model_route_reports_an_already_marked_connection(monkeypatch):
     """A bundle marked by someone else still has to reach the editor as reconnect."""
+    from routes import openai_codex_auth as codex_routes
+
     curated = get_provider_info("openai_codex")["default_models"]
     monkeypatch.setattr(codex_routes, "_provider", lambda provider_id: {"id": provider_id})
     monkeypatch.setattr(
