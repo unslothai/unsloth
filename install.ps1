@@ -1501,11 +1501,11 @@ public static class UnslothStudioFinalPathV2
         }
     }
 
+    # Managed llama.cpp access check. This script cannot dot-source setup.ps1, so
+    # it holds byte-identical copies; test_denied_llama_cpp_preflight.py enforces that.
     # ── BEGIN SHARED WITH studio/setup.ps1 ──
-    # Managed llama.cpp access check. This script cannot dot-source setup.ps1, so it holds byte-identical copies; test_denied_llama_cpp_preflight.py enforces that.
 
     # Recognize ERROR_ACCESS_DENIED through PowerShell's wrapper exceptions.
-    # ── BEGIN SHARED WITH studio/setup.ps1 ──
     function Test-AccessDeniedError {
         param($ErrorRecord)
 
@@ -1681,8 +1681,9 @@ public static class UnslothStudioFinalPathV2
     }
 
 
-    # Redact index-URL credentials (userinfo, ?query=, #fragment) from captured output before printing on failure: uv/pip errors echo the failing --index-url verbatim. Verbose mode streams uncaptured, so it is not redacted.
     # ── END SHARED WITH studio/setup.ps1 ──
+
+    # Redact index-URL credentials (userinfo, ?query=, #fragment) from captured output before printing on failure: uv/pip errors echo the failing --index-url verbatim. Verbose mode streams uncaptured, so it is not redacted.
     function Redact-InstallOutput {
         param([string]$Text)
         if (-not $Text) { return $Text }

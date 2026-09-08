@@ -716,7 +716,8 @@ _resolve_studio_destinations
 _UNSLOTH_LOGIN_PATH="$PATH"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 
-# Keep uv's cache on the same filesystem as the venv it fills: uv hardlinks wheels within one filesystem and copies across a boundary, so a moved STUDIO_HOME paid double the disk and stranded the cache. An explicit UV_CACHE_DIR wins. The fallback is required, since uv aborts on a cache it cannot create; mkdir -p exits 0 for an existing unwritable directory and -w reads the mode rather than the filesystem, so probe with a real create.
+# Keep uv's cache on the same filesystem as the venv it fills.
+# uv hardlinks wheels within one filesystem and copies across a boundary, so a moved STUDIO_HOME paid double the disk and stranded the cache. An explicit UV_CACHE_DIR wins. The fallback is required, since uv aborts on a cache it cannot create; mkdir -p exits 0 for an existing unwritable directory and -w reads the mode rather than the filesystem, so probe with a real create.
 if [ -z "${UV_CACHE_DIR:-}" ]; then
     UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
     export UV_CACHE_DIR
@@ -3112,7 +3113,7 @@ EOF
     return 1
 }
 
-# Best-effort gfx inference when ROCm tools cannot see the GPU (#7301). Mirrors install.ps1 arch resolution on Windows ($HasROCm false, $ROCmGfxArch set).
+# Best-effort gfx inference when ROCm tools cannot see the GPU (unslothai#7301). Mirrors install.ps1 arch resolution on Windows ($HasROCm false, $ROCmGfxArch set).
 _infer_linux_amd_gfx_arch() {
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
         printf '%s\n' "$(printf '%s' "$UNSLOTH_ROCM_GFX_ARCH" | tr '[:upper:]' '[:lower:]')"
@@ -3546,7 +3547,8 @@ get_torch_index_url() {
                 echo "[WARN] Details: studio/ROCM_RDNA2_APU.md. Override with UNSLOTH_TORCH_INDEX_URL if you want ROCm anyway." >&2
                 echo "$_base/cpu"; return ;;
         esac
-        # End of the miscomputing-arch gate: tests/sh/test_rocm_bad_arch_gate.sh lifts the block between the header comment above and this line, so keep both exact.
+        # end of the miscomputing-arch gate -- tests/sh/test_rocm_bad_arch_gate.sh lifts
+        # the block between the header comment above and this line, so keep both exact.
         _rocm_tag=""
         _rocm_tag=$(_detect_rocm_version_tag) || _rocm_tag=""
         # The `||` guard is belt and braces on the set -e contract the helpers hold, so a fresh AMD host with no version source at all still reaches the actionable no-version WARN below. stderr is deliberately not redirected: each source already silences its own noise, leaving only the sources-disagree breadcrumb, which belongs in the install log. The shape gate on "rocmX.Y" with major >= 1 is kept, though _highest_rocm_tag enforces it too, so a future source cannot leak garbage into the cases below.
@@ -4074,7 +4076,7 @@ _ROCM_TAG_MEMO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-rocm.XXXXXX" 2>/dev/null
 
 TORCH_INDEX_URL=$(get_torch_index_url)
 
-# Linux: ROCm runtime missing but a supported AMD gfx arch is inferable (Strix Halo in /proc/cpuinfo, lspci marketing name, UNSLOTH_ROCM_GFX_ARCH). Route to AMD's per-arch wheels like install.ps1 does on Windows (#7301). Gated on the runtime probes NOT naming a gfx: either no AMD GPU is detected at all, or the GPU is visible only through the env-independent KFD topology while rocminfo/amd-smi cannot read its arch (#7314; before the KFD detection fix these hosts reached this reroute via the false branch, so the empty-probe condition preserves that routing). A */cpu index chosen WITH a readable gfx and a readable but UNSUPPORTED ROCm version is a deliberate fallback and stays excluded, since the shared probe returns its gfx; an UNREADABLE version is only a detection miss, so it gets its own way in below (#8731). UNSLOTH_ROCM_GFX_ARCH stays authoritative either way.
+# Linux: ROCm runtime missing but a supported AMD gfx arch is inferable (Strix Halo in /proc/cpuinfo, lspci marketing name, UNSLOTH_ROCM_GFX_ARCH). Route to AMD's per-arch wheels like install.ps1 does on Windows (unslothai#7301). Gated on the runtime probes NOT naming a gfx: either no AMD GPU is detected at all, or the GPU is visible only through the env-independent KFD topology while rocminfo/amd-smi cannot read its arch (#7314; before the KFD detection fix these hosts reached this reroute via the false branch, so the empty-probe condition preserves that routing). A */cpu index chosen WITH a readable gfx and a readable but UNSUPPORTED ROCm version is a deliberate fallback and stays excluded, since the shared probe returns its gfx; an UNREADABLE version is only a detection miss, so it gets its own way in below (#8731). UNSLOTH_ROCM_GFX_ARCH stays authoritative either way.
 
 _amd_no_rocm_version_reroute=false
 _amd_probed_gfx_first=""
@@ -4462,7 +4464,10 @@ _rocminfo_gpu_records() {
 
 # amd-smi enumerates in discovery order over its KFD view, while HIP_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES index HIP/ROCr order, which the library derives from the KFD node id instead. The two disagree on real hardware (MI350X SPX/NPS1), and _gfx here becomes --rocm-gfx, so an untranslated ordinal can fetch a prebuilt for another card's arch. `amd-smi list -e` is the map AMD publishes for this (HIP_ID, ROCm 6.4.0+); utils/hardware/amd.py get_hip_id_by_gpu_index reads the same field. Keep in sync with studio/setup.sh.
 _amd_smi_hip_order() {
-    # POSIX awk forbids a physical newline in a -v value (gawk --posix makes it fatal), so the records arrive on stdin ahead of the map, separated by a sentinel. The first output line reports which index space the records came back in; the caller needs to know, because a mask cannot be applied to an untranslated list of unlike adapters.
+    # POSIX awk forbids a physical newline in a -v value (gawk --posix makes it fatal),
+    # so the records arrive on stdin ahead of the map, separated by a sentinel. The first
+    # output line reports which index space the records came back in; the caller needs to
+    # know, because a mask cannot be applied to an untranslated list of unlike adapters.
     { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
         function value(line,   v) {
             v = line

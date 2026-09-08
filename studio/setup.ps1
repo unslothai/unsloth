@@ -1833,7 +1833,8 @@ if (-not $StageRoot) {
     }
 }
 
-# PHASE 1: system-level prerequisites (winget installs, env vars). All heavy system tool installs happen here BEFORE touching Python.
+#  PHASE 1: System-level prerequisites (winget installs, env vars)
+#  All heavy system tool installs happen here BEFORE touching Python.
 
 # 1a. GPU detection. A wedged driver can block nvidia-smi during init or after a reset; WaitForExit bounds it.
 function Invoke-NvidiaSmiBounded {
@@ -4937,7 +4938,8 @@ step "transformers" "5.10.2 pre-installed"
 
 } # end $_NeedT5Install
 
-# PHASE 3.4: prefer prebuilt llama.cpp bundles before a source build. Reuse the managed path resolved and preflighted before phase 1.
+#  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
+# Reuse the managed path resolved and preflighted before phase 1.
 if (-not (Test-Path -LiteralPath $UnslothHome)) { [System.IO.Directory]::CreateDirectory($UnslothHome) | Out-Null }
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
@@ -5297,7 +5299,8 @@ if ($LocalLlamaCppLinked) {
         }
 }
 
-# PHASE 3.4: install the whisper.cpp prebuilt (dictation runtime). Mirrors the llama.cpp prebuilt install above; current whisper releases are slim bundles that reuse the llama install's ggml runtime, so this runs after llama. Failure is never fatal: local dictation falls back to Transformers STT.
+#  PHASE 3.4: Install the whisper.cpp prebuilt (dictation runtime)
+# Mirrors the llama.cpp prebuilt install above; current whisper releases are slim bundles that reuse the llama install's ggml runtime, so this runs after llama. Failure is never fatal: local dictation falls back to Transformers STT.
 $WhisperCppDir = Join-Path $UnslothHome "whisper.cpp"
 $WhisperInstaller = Join-Path $PSScriptRoot "install_whisper_prebuilt.py"
 # Same opt-outs as setup.sh: a user-configured binary/dir or an explicit skip disables the managed install entirely.
