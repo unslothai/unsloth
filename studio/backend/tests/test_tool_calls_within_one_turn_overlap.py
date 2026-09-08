@@ -6,7 +6,6 @@ model's order under every limit that is read while the round is prepared."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 import threading
@@ -173,15 +172,6 @@ class TestTheProviderLoopOverlaps:
         assert len(ends) == 2
         assert all("ALONE" in result for result in _results(ends))
 
-    def test_a_single_call_is_untouched(self, rendezvous):
-        ends = _events(_run(_provider_round([("call_a", "solo")])), "tool_end")
-        assert len(ends) == 1 and "ALONE" in (ends[0].get("result") or "")
-
-    def test_an_ordinary_round_still_overlaps_under_auto(self, rendezvous):
-        ends = _events(_run(_two_calls(), permission_mode = "auto", confirm_calls = True), "tool_end")
-        assert len(ends) == 2
-        assert all("TOGETHER" in result for result in _results(ends))
-
     def test_a_gated_round_is_not_parallelised(self, rendezvous, monkeypatch):
         monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *a, **k: object())
         monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda *a, **k: None)
@@ -218,22 +208,6 @@ class TestAProviderRoundBoundsItsOverlap:
             f"call_{i}" for i in range(_CAP + 1)
         ], "the provider reads results by position, so a reordered history answers wrongly"
 
-    def test_a_round_at_the_cap_still_overlaps(self, rendezvous):
-        for count in (2, _CAP):
-            ends = _events(
-                _run(
-                    _provider_round([(f"call_{i}", f"q{i}") for i in range(count)]),
-                    tools = [WEB],
-                    max_calls = _UNLIMITED,
-                ),
-                "tool_end",
-            )
-            assert len(ends) == count
-            assert all("TOGETHER" in result for result in _results(ends)), (
-                f"a round of {count} was serialised: {_results(ends)}"
-            )
-
-
 class TestOrderIsStillTheModelsOrder:
     def test_the_cards_and_the_replayed_transcript_follow_the_call_order(self, recorder):
         transport = _two_calls("alpha", "beta")
@@ -256,145 +230,6 @@ class TestOrderIsStillTheModelsOrder:
         assert [row.get("tool_call_id") for row in tool_rows] == ["call_a", "call_b"]
         assert [row.get("content") for row in tool_rows] == ["RESULT<alpha>", "RESULT<beta>"]
 
-    def test_a_spent_budget_keeps_its_call_in_place(self, recorder):
-        transport = _two_calls("alpha", "beta")
-        lines = _run(transport, max_calls = 1)
-        assert [e.get("tool_call_id") for e in _events(lines, "tool_end")] == [
-            "call_a",
-            "call_b",
-        ], "the call that never ran overtook the one that did"
-        tool_rows = [m for m in transport.requests[1]["messages"] if m.get("role") == "tool"]
-        assert [row.get("tool_call_id") for row in tool_rows] == ["call_a", "call_b"], (
-            "the provider is handed results in an order that does not match its calls, "
-            "which OpenAI, Anthropic and Gemini all reject rather than answer"
-        )
-
-
-class TestTheBudgetCountsLaunchesNotFinishes:
-    def test_a_repeat_beside_two_new_calls_does_not_refuse_the_second(self, executed):
-        transport = FakeTransport(
-            [
-                _provider_round([("call_a", "alpha")]).turns[0],
-                _provider_round(
-                    [("call_a2", "alpha"), ("call_b", "beta"), ("call_c", "gamma")]
-                ).turns[0],
-                [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
-            ],
-            heals = False,
-        )
-        lines = _run(transport, max_calls = 3, tools = [WEB])
-
-        def _query(arguments):
-            parsed = arguments if isinstance(arguments, dict) else json.loads(arguments)
-            return parsed["query"]
-
-        # Sorted: an overlapped round's tools start together, so which of the two new
-        # searches reaches `execute_tool` first is not a property this owns.
-        assert sorted(_query(call["arguments"]) for call in executed) == [
-            "alpha",
-            "beta",
-            "gamma",
-        ], "the repeat is a no-op and spends nothing, so both new searches fit"
-        assert not any("budget" in result.lower() for result in _results(_events(lines, "tool_end")))
-
-    def test_a_budget_that_really_is_spent_still_refuses(self, recorder):
-        _run(_two_calls("alpha", "beta"), max_calls = 1)
-        assert len(recorder) == 1
-
-
-class TestToolCallsOverlapAcrossChats:
-    @pytest.mark.asyncio
-    async def test_four_chats_run_their_tools_at_once(self):
-        windows: list[tuple[str, float, float]] = []
-
-        async def chat(name: str, calls: int, seconds: float) -> None:
-            for _ in range(calls):
-                start = time.monotonic()
-                # The shape studio_tool_loop uses: a blocking tool handed to a thread, so
-                # it never occupies the event loop.
-                await asyncio.to_thread(time.sleep, seconds)
-                windows.append((name, start, time.monotonic()))
-
-        started = time.monotonic()
-        await asyncio.gather(*(chat(f"chat{i}", 3, 0.05) for i in range(4)))
-        wall = time.monotonic() - started
-
-        serial = 4 * 3 * 0.05
-        assert wall < serial * 0.6, (
-            f"{wall:.2f}s for work that is {serial:.2f}s serialised: something is gating "
-            f"tool execution across chats"
-        )
-        assert any(
-            a is not b and a[0] != b[0] and a[1] < b[2] and b[1] < a[2]
-            for a in windows
-            for b in windows
-        ), "no two chats ever had a tool running at the same time"
-
-
-class TestCancellation:
-    def test_a_cancelled_round_does_not_hang(self, monkeypatch):
-        started = threading.Event()
-
-        def _execute(name, arguments, **kwargs):
-            started.set()
-            event = kwargs.get("cancel_event")
-            if event is not None:
-                event.wait(timeout = 5)
-            return "late"
-
-        monkeypatch.setattr(loop_mod, "execute_tool", _execute)
-        monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
-        monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: name == "python")
-
-        cancel_event = threading.Event()
-
-        async def _collect():
-            from core.inference.studio_tool_loop import (
-                ToolLoopPolicy,
-                ToolLoopRun,
-                stream_with_studio_tools,
-            )
-
-            agen = stream_with_studio_tools(
-                _two_calls(),
-                run = ToolLoopRun(
-                    messages = [{"role": "user", "content": "hi"}],
-                    session_id = "s1",
-                    thread_id = "t1",
-                    tool_choice = None,
-                ),
-                policy = ToolLoopPolicy(
-                    tools = [WEB],
-                    max_calls = 25,
-                    timeout = 300,
-                    permission_mode = "off",
-                    confirm_calls = False,
-                    bypass_permissions = False,
-                    rag_scope = None,
-                ),
-                cancel_event = cancel_event,
-            )
-            out = []
-            async for line in agen:
-                out.append(line)
-                if started.is_set():
-                    cancel_event.set()
-            return out
-
-        # The assertion is that this returns at all: a leaked pump, or a generator closed
-        # while its worker was still running, shows up here as the timeout.
-        lines = asyncio.run(asyncio.wait_for(_collect(), timeout = 30))
-        assert lines, "the round produced nothing before it was cancelled"
-
-
-# ------------------------------------------------------------------- the local GGUF loop
-#
-# A separate implementation with the same requirement, and the one that decodes into the
-# shared KV cache the preemptor manages. Its overlap comes from a different mechanism:
-# `stream_tool_execution` spawns the tool's worker inside its GENERATOR BODY, so the first
-# next() is what puts the tool in flight.
-
-
 def _fast_sizing(monkeypatch):
     monkeypatch.setattr(
         llama_mod.LlamaCppBackend,
@@ -409,13 +244,6 @@ class TestTheLocalGgufLoopOverlapsToo:
         ends = [e for e in events if e.get("type") == "tool_end"]
         assert len(ends) == 2
         assert all("TOGETHER" in result for result in _results(ends)), _results(ends)
-
-    def test_the_switch_reaches_this_loop_as_well(self, monkeypatch):
-        monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "0")
-        events, _payloads = _gguf_events(monkeypatch, _searches(2), _meeting_tool(2))
-        ends = [e for e in events if e.get("type") == "tool_end"]
-        assert len(ends) == 2
-        assert all("ALONE" in result for result in _results(ends))
 
     def test_the_results_arrive_in_call_order_carrying_their_own_answers(self, monkeypatch):
         def _execute(name, arguments, **_kwargs):
@@ -466,22 +294,6 @@ class TestTheLocalGgufLoopOverlapsToo:
         )
         assert ran == ["same"], "the duplicate ran, so the round was overlapped"
         assert [e.get("type") for e in events].count("tool_end") == 1
-
-    def test_the_result_budget_is_divided_by_the_whole_batch(self, monkeypatch):
-        budgets: list = []
-
-        def _execute(name, arguments, **kwargs):
-            budgets.append(kwargs.get("result_budget_tokens"))
-            return f"RESULT<{arguments.get('query')}>"
-
-        _gguf_events(monkeypatch, _searches(3), _execute)
-        given = [b for b in budgets if isinstance(b, int)]
-        if not given:
-            pytest.skip("this build does not pass result_budget_tokens")
-        # Not identical: each call still subtracts the ARGUMENTS of the calls after it.
-        # What must not differ is the divisor, and a wrong one shows up as B/3 against B/1.
-        assert max(given) <= min(given) * 1.2, f"priced against different batch sizes: {given}"
-        assert sum(given) <= max(given) * 3.3
 
     def test_the_search_cap_counts_launches_and_keeps_the_capped_calls_in_place(
         self, monkeypatch

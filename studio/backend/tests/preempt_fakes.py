@@ -52,33 +52,17 @@ def usage(prompt_tokens: int, completion_tokens: int) -> str:
     return "data: " + json.dumps(chunk) + "\n"
 
 
-def tool_call_chunk(
-    call_id: str = "call_search",
-    name: str = "web_search",
-    arguments: dict | None = None,
-) -> str:
-    chunk = {
-        "choices": [
-            {
-                "index": 0,
-                "delta": {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": call_id,
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": json.dumps(
-                                    {"query": "kernel"} if arguments is None else arguments
-                                ),
-                            },
-                        }
-                    ]
-                },
-            }
-        ]
+def tool_call_chunk(call_id = "call_search", name = "web_search", arguments = None) -> str:
+    call = {
+        "index": 0,
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": json.dumps({"query": "kernel"} if arguments is None else arguments),
+        },
     }
+    chunk = {"choices": [{"index": 0, "delta": {"tool_calls": [call]}}]}
     return "data: " + json.dumps(chunk) + "\n"
 
 
@@ -90,10 +74,7 @@ def web_search_tool(*, required: bool = False) -> dict:
     parameters: dict = {"type": "object", "properties": {"query": {"type": "string"}}}
     if required:
         parameters["required"] = ["query"]
-    return {
-        "type": "function",
-        "function": {"name": "web_search", "description": "search", "parameters": parameters},
-    }
+    return {"type": "function", "function": {"name": "web_search", "parameters": parameters}}
 
 
 class FakeResponse:
@@ -101,14 +82,9 @@ class FakeResponse:
 
     status_code = 200
 
-    def __init__(
-        self,
-        chunks,
-        on_close = None,
-    ):
+    def __init__(self, chunks):
         self._chunks = list(chunks)
         self.closed = False
-        self._on_close = on_close
         self.request = None
 
     def iter_text(self):
@@ -116,8 +92,6 @@ class FakeResponse:
 
     def close(self):
         self.closed = True
-        if self._on_close is not None:
-            self._on_close()
 
 
 class RecordingPolicy:
@@ -160,21 +134,15 @@ class ServerHookPolicy(RecordingPolicy):
         self.events.append("server-resumed")
 
 
-def bare_backend(
-    *,
-    port: int = 48851,
-    supports_reasoning: bool = False,
-    reasoning_always_on: bool = False,
-    **attributes,
-) -> LlamaCppBackend:
+def bare_backend(*, port: int = 48851, **attributes) -> LlamaCppBackend:
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
     backend._process = object()
     backend._healthy = True
     backend._port = port
     backend._api_key = None
     backend._effective_context_length = 4096
-    backend._supports_reasoning = supports_reasoning
-    backend._reasoning_always_on = reasoning_always_on
+    backend._supports_reasoning = False
+    backend._reasoning_always_on = False
     backend._reasoning_style = "enable_thinking"
     backend._supports_preserve_thinking = False
     for name, value in attributes.items():
@@ -193,10 +161,10 @@ class PreemptRecorder:
         signal = None,
         pause_attempts = (),
         pause_after = None,
-        request_pressure: bool = True,
-        patch_iter: bool = True,
-        execute_tool: bool = False,
-        port: int = 48851,
+        request_pressure = True,
+        patch_iter = True,
+        execute_tool = False,
+        port = 48851,
         response_factory = None,
         **backend_attributes,
     ):
@@ -267,14 +235,7 @@ class PreemptRecorder:
             )
 
 
-def run_plain(
-    backend,
-    *,
-    signal,
-    policy,
-    prompt: str = "write me a poem",
-    **kwargs,
-):
+def run_plain(backend, *, signal, policy, prompt = "write me a poem", **kwargs):
     return list(
         backend.generate_chat_completion(
             messages = [{"role": "user", "content": prompt}],
@@ -286,15 +247,7 @@ def run_plain(
     )
 
 
-def run_tool_loop(
-    backend,
-    *,
-    signal,
-    policy,
-    tools,
-    prompt: str = "write me a poem",
-    **kwargs,
-):
+def run_tool_loop(backend, *, signal, policy, tools, prompt = "write me a poem", **kwargs):
     return list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": prompt}],

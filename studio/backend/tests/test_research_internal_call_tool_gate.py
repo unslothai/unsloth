@@ -112,10 +112,8 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     assert (before_entry, after_entry) == ("plain", "plain")
     # Both are fresh per request (a new Event, and the monitor's per-request tok/s closure), so
     # comparing them by identity would fail for any pair of requests.
-    # `preempt_event` and `preempt_policy` join the same list and for the same stated
-    # reason: they are fresh per request, so comparing them by identity fails for any pair
-    # of requests. They are asserted for presence below, exactly as perf_callback is, so
-    # dropping them cannot hide a path that quietly stopped arming preemption.
+    # The preemption arguments join the same list for the same stated reason: fresh per
+    # request, so identity comparison fails for any pair. Presence is asserted below.
     drop = {
         "cancel_event",
         "perf_callback",
@@ -129,16 +127,11 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     assert callable(before_kwargs.get("perf_callback")) == callable(
         after_kwargs.get("perf_callback")
     ), "the opt-out must not decide whether llama.cpp timings are collected"
-    # Same shape for preemption: presence first, then excluded from the comparison. A
-    # surface that takes an admission lease and does not arm decodes with no preemption at
-    # all, and that absence is invisible to every behavioural test, which is how it went
-    # unnoticed on this path for its whole life.
+    # Presence first, then excluded: a surface that takes a lease and does not arm
+    # decodes with no preemption at all, and armed without the sweep it is inert.
     for _kwargs in (before_kwargs, after_kwargs):
         assert _kwargs.get("preempt_event") is not None
         assert _kwargs.get("preempt_policy") is not None
-        # And the sweep. Armed without this, preemption is inert: four chats reached
-        # 16354 of a 16384 cache with zero evictions because nothing told the controller
-        # they had grown.
         assert callable(_kwargs.get("on_tokens"))
     # `tools_withheld` reaches the compaction gate, never the prompt: it tells
     # `_can_reset_epoch` that THIS request withdrew the tool loop, which the process-wide
