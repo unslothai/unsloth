@@ -95,14 +95,18 @@ def _assert_same_text(actual: str, expected: str, note: str) -> None:
         f"    actual   {describe(actual[head:])}",
         f"    expected {describe(expected[head:])}",
     ]
-    # Only claim a cause when the bytes show one. A wrong explanation on a real restore bug
-    # costs more than none: mojibake is the actual reading as expected's UTF-8 bytes back
-    # through a single-byte code page, so test that directly rather than pattern-matching.
+    # Only claim a cause when the bytes show one, and only the cause that is still possible.
+    # _run_powershell decodes stdout as strict UTF-8, so a transport mis-decode raises there
+    # rather than arriving here: mojibake that reaches this point was produced inside the
+    # script, which is the product defect these cases exist to catch. Saying "the script did
+    # not lose the path" would be exactly backwards, and a wrong explanation on a real
+    # restore bug costs more than none.
     if _looks_like_a_mis_decode(actual[head:], expected[head:]):
         lines.append(
-            "  actual is expected's UTF-8 bytes decoded as a single-byte code page, i.e. this "
-            "shell's stdout was read with the Windows ANSI code page. The script did not lose "
-            "the path."
+            "  actual is expected's UTF-8 bytes read back through a single-byte code page. "
+            "Stdout is decoded strictly as UTF-8 here, so the shell handed us these "
+            "characters: the mis-decode happened inside the script, not in transport. Check "
+            "the marker read/write path for a missing -Encoding utf8."
         )
     raise AssertionError("\n".join(lines))
 
