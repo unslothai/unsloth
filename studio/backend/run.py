@@ -1638,6 +1638,7 @@ def _graceful_shutdown(server = None):
     # 5. Kill llama-server subprocess (if loaded).
     try:
         from routes.inference import _llama_cpp_backend, cancel_pending_loads
+
         # Before the kill: a /load still in the lifecycle gate or preflight holds
         # nothing the backend's shutdown flag can see, so it would reach the
         # backend in a lifecycle that has since been reset and load a model the

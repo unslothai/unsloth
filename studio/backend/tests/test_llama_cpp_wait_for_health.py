@@ -1591,6 +1591,6 @@ def test_the_shutdown_cancels_loads_before_it_kills_the_server():
     src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
 
     assert "cancel_pending_loads()" in src, "shutdown does not cancel in-flight loads"
-    assert src.index("cancel_pending_loads()") < src.index("_kill_process(teardown = True)"), (
-        "the loads are cancelled after the kill, so one can still spawn into the teardown"
-    )
+    assert src.index("cancel_pending_loads()") < src.index(
+        "_kill_process(teardown = True)"
+    ), "the loads are cancelled after the kill, so one can still spawn into the teardown"
