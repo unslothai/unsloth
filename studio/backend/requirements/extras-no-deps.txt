@@ -27,7 +27,7 @@ sentence_transformers==5.1.2; python_version < "3.10"
 # 0.23.0 was never published, so this resolves to 0.22.2, whose cp39-abi3 wheels
 # cover every platform and interpreter this file reaches.
 tokenizers>=0.22.0,<=0.23.0
-transformers==5.5.0; python_version >= "3.10"
+transformers==5.10.1; python_version >= "3.10"
 transformers==4.57.6; python_version < "3.10"
 # No macOS x86_64 wheel at any version, so uv falls back to an sdist that shells out to
 # cmake. Skipping it on Intel Macs keeps that install compiler-free.
