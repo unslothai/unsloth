@@ -95,11 +95,15 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
   chat: [
     "settings.general.chatDefaults",
+    "settings.chat.currentDate.label",
     "settings.general.autoTitleNewChats",
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
+    "settings.chat.autoCompact",
+    "settings.chat.compactionStyle",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.collapseByDefault",
+    "settings.chat.tools.collapseByDefault",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
@@ -193,6 +197,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.switchToVideo.label",
     "settings.keyboardShortcuts.actions.switchToAudio.label",
     "settings.keyboardShortcuts.actions.switchToExport.label",
+    "settings.keyboardShortcuts.actions.findInPage.label",
     "settings.keyboardShortcuts.actions.toggleApiMonitor.label",
     "settings.keyboardShortcuts.actions.toggleSidebar.label",
     "settings.keyboardShortcuts.actions.openMcpServers.label",
@@ -256,6 +261,12 @@ export function createSettingsSearchIndex({
       "settings.general.startup.sectionTitle",
       "settings.general.startup.launchAtLogin",
       ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
+      // Desktop only, like the row itself: DesktopRepairControl renders nothing without a
+      // Tauri repair controller, so indexing it on the web build would scroll to a row
+      // that is not there. Worth indexing at all because the capability message for a host
+      // whose PyTorch cannot use its GPUs says to "use Repair installation in Settings",
+      // and searching Settings for "repair" answered "No settings found."
+      "settings.general.repairInstall.label",
     ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
@@ -281,4 +292,6 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
+  "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
+  "settings.chat.compactionStyle": "settings.chat.autoCompactKeywords",
 };

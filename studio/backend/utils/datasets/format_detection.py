@@ -213,7 +213,7 @@ def detect_custom_format_heuristic(dataset):
         "problem",
         "exercise",
     ]
-    user_words_low_priority = ["task"]  # Ambiguous - can be user OR system
+    user_words_low_priority = ["task"]
     user_words = user_words_high_priority + user_words_low_priority
 
     system_words = [
@@ -223,7 +223,7 @@ def detect_custom_format_heuristic(dataset):
         "persona",
         "role",
         "template",
-        "task",  # also a system keyword
+        "task",
     ]
 
     # Metadata columns to ignore.
@@ -557,7 +557,7 @@ def _is_image_value(value) -> bool:
     # Exclude audio dicts (decoded audio has "array" + "sampling_rate").
     if isinstance(value, dict):
         if "array" in value and "sampling_rate" in value:
-            return False  # audio, not image
+            return False
         if "bytes" in value and "path" in value:
             # Use path extension to exclude audio files.
             path = value.get("path") or ""
@@ -620,15 +620,15 @@ def _has_image_header(data: bytes) -> bool:
     """Quick magic-byte check for common image formats."""
     if len(data) < 4:
         return False
-    if data[:2] == b"\xff\xd8":  # JPEG
+    if data[:2] == b"\xff\xd8":
         return True
-    if data[:4] == b"\x89PNG":  # PNG
+    if data[:4] == b"\x89PNG":
         return True
-    if data[:3] == b"GIF":  # GIF
+    if data[:3] == b"GIF":
         return True
-    if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":  # WebP
+    if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
         return True
-    if data[:2] == b"BM":  # BMP
+    if data[:2] == b"BM":
         return True
     return False
 
@@ -798,9 +798,9 @@ def detect_vlm_dataset_structure(dataset):
             return 75
 
         if isinstance(sample_value, str):
-            if sample_value.startswith(("http://", "https://")):  # URL
+            if sample_value.startswith(("http://", "https://")):
                 return 70 if not is_metadata_column(col) else 55
-            if is_metadata_column(col):  # bare file path
+            if is_metadata_column(col):
                 return 30
             return 50
 
@@ -810,15 +810,15 @@ def detect_vlm_dataset_structure(dataset):
         """Probe whether an image candidate is reachable (True unless definitely broken)."""
         import os
 
-        # PIL / dict — already loaded.
+        # PIL / dict - already loaded.
         if not isinstance(sample_value, str):
             return True
 
-        # Local file — check it exists.
+        # Local file - check it exists.
         if not sample_value.startswith(("http://", "https://")):
-            return os.path.exists(sample_value)  # bare filenames return False, that's OK
+            return os.path.exists(sample_value)
 
-        # URL — quick HEAD with short timeout.
+        # URL - quick HEAD with short timeout.
         try:
             import urllib.request
 
@@ -857,17 +857,17 @@ def detect_vlm_dataset_structure(dataset):
 
         candidates.sort(key = lambda x: x[1], reverse = True)
 
-        # Single candidate or top is PIL/dict — no probing needed.
+        # Single candidate or top is PIL/dict - no probing needed.
         if len(candidates) == 1 or candidates[0][1] >= 75:
             return candidates[0][0]
 
-        # Multiple string candidates — probe for one that works.
+        # Multiple string candidates - probe for one that works.
         for col, score in candidates:
             sample_value = sample[col]
             if _probe_image_candidate(col, sample_value):
                 return col
 
-        # None probed OK — return highest-scored; conversion may still resolve it.
+        # None probed OK - return highest-scored; conversion may still resolve it.
         return candidates[0][0]
 
     def find_text_column():
@@ -890,7 +890,7 @@ def detect_vlm_dataset_structure(dataset):
                     and len(sample_value) > 0
                     and isinstance(sample_value[0], str)
                 ):
-                    # List of strings (e.g. captions) — lower priority than plain str.
+                    # List of strings (e.g. captions) - lower priority than plain str.
                     priority = min(len(sample_value[0]), 1000) // 2
                     candidates.append((col, priority))
 

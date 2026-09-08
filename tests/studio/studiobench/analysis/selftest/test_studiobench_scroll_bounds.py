@@ -291,7 +291,7 @@ def test_an_arm_with_no_extent_does_not_borrow_its_partners_ceiling():
 
 
 def test_the_lower_bound_still_catches_a_gesture_that_was_snapped_back():
-    """The bound this invariant was written for: Studio's intent-aware autoscroll snapping a
+    """The bound this invariant was written for: Unsloth's intent-aware autoscroll snapping a
     programmatic move straight back to the bottom left the gesture having covered nothing."""
     base = _scroll_row(18, fraction = 1.0, bottom = 9_200, client = 800)
     treat = _scroll_row(6, fraction = 0.1, bottom = 9_200, client = 800)

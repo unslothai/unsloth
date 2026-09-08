@@ -131,8 +131,8 @@ def exact_resume_requires_current_4bit(config: dict[str, Any]) -> bool:
         return False
     except Exception:
         return False
-    # The same disjunction effective_training_load_in_4bit tests: routes/training.py
-    # fills require_exact_model_resource from exact_resume_resource_requirements and
+    # The same disjunction effective_training_load_in_4bit tests: routes/training.py fills
+    # require_exact_model_resource from exact_resume_resource_requirements and
     # require_exact_resume_resources from resource_provenance_is_complete.
     return bool(requires_exact_model or resource_provenance_is_complete(config))
 

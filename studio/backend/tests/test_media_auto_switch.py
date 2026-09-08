@@ -594,7 +594,7 @@ def test_the_video_route_switches_before_it_touches_the_backend(monkeypatch):
     )
 
     assert resp.status_code == 200
-    # Not the OpenAI envelope: this route is a Studio surface and its errors are plain details.
+    # Not the OpenAI envelope: this route is an Unsloth surface and its errors are plain details.
     assert calls == [("unsloth/Wan2.2", arb.VIDEO, False, "hf_abc")]
 
 

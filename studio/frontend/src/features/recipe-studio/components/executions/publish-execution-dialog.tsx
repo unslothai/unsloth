@@ -2,7 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useMemo, useState, type ReactElement } from "react";
-import { ArrowRight01Icon, CheckmarkCircle02Icon, Copy01Icon, Key01Icon } from "@hugeicons/core-free-icons";
+import {
+  CheckmarkCircle02Icon,
+  Copy01Icon,
+  Key01Icon,
+} from "@hugeicons/core-free-icons";
+import {
+  ChevronRightIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -194,7 +201,7 @@ export function PublishExecutionDialog({
               <Button asChild={true}>
                 <a href={publishedUrl} target="_blank" rel="noreferrer">
                   Open repo
-                  <HugeiconsIcon icon={ArrowRight01Icon} className="ml-2 size-4" />
+                  <ChevronRightIcon className="ml-2 size-4" />
                 </a>
               </Button>
               <Button variant="ghost" onClick={() => onOpenChange(false)}>

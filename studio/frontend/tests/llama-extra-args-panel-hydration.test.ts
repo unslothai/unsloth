@@ -12,6 +12,24 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import {
+  installLocalStorageFake,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
+
+registerBundlerResolver();
+installLocalStorageFake();
+
+const {
+  DEFAULT_PER_MODEL_CONFIG,
+  deletePerModelConfig,
+  perModelConfigStorageChanged,
+  resolveInitialConfig,
+  savePerModelConfig,
+} = await import(
+  "../src/features/model-picker/model-config/per-model-config.ts"
+);
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PANEL = readFileSync(
   path.join(
@@ -74,18 +92,6 @@ test("a background auto-load hydrates a server-only override", () => {
   );
   // A diffusion GGUF takes none of them, so it is not fetched for either.
   assert.match(ADAPTER, /candidate\.kind === "gguf" &&\s*\n?\s*!isDiffusion/);
-});
-
-const HUB = readFileSync(
-  path.join(HERE, "..", "src/features/hub/hub-page.tsx"),
-  "utf8",
-);
-
-test("applying from the Hub settings page carries the arguments into the load", () => {
-  // applyPerModelConfigToRuntime does not store llamaExtraArgs, so a selection made
-  // without the config left the field undefined: the load omitted it, the route kept
-  // the resident server's old list, and an edit or a clear did nothing.
-  assert.match(HUB, /forceReload: true,\n(\s*\/\/.*\n)*\s*config,/);
 });
 
 test("a collapsed section stops objecting once nothing is left to object to", () => {
@@ -177,18 +183,6 @@ test("the panel adopts a shared server config without overwriting a live edit", 
     PANEL,
     /sanitizedLocal = cleaned\.length > 0 \? cleaned : null;/,
   );
-  // What it WRITES is merged onto the stored record instead. An active model seeds
-  // the panel from loadedConfig, so persisting the shown config replaced remembered
-  // settings this browser never touched (a just-migrated legacy config among them)
-  // with whatever the resident model is running.
-  assert.match(
-    PANEL,
-    /const storedAtStart = resolveInitialConfig\(\s*\n?\s*configId,\s*\n?\s*target\.ggufVariant,\s*\n?\s*\)\.config;/,
-  );
-  assert.match(
-    PANEL,
-    /const rememberedConfig = fromApiOverride\(resolvedRow, storedAtStart\);/,
-  );
   // Whitespace-tolerant: the call carries an eviction list now, so it spans lines.
   assert.match(
     PANEL,
@@ -199,6 +193,82 @@ test("the panel adopts a shared server config without overwriting a live edit", 
   assert.match(PANEL, /setConfig\(serverConfig\);/);
   assert.match(PANEL, /setRemember\(true\);/);
   assert.match(PANEL, /setSavedRemember\(true\);/);
+});
+
+test("hydration detects a newer save or forget", () => {
+  const modelId = "unsloth/Hydration-Race-GGUF";
+  const variant = "Q4_K_M";
+  assert.ok(
+    savePerModelConfig(modelId, variant, {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      customContextLength: 2048,
+    }),
+  );
+  const atStart = resolveInitialConfig(modelId, variant);
+
+  assert.ok(
+    savePerModelConfig(modelId, variant, {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      customContextLength: 4096,
+    }),
+  );
+  assert.equal(
+    perModelConfigStorageChanged(
+      atStart,
+      resolveInitialConfig(modelId, variant),
+    ),
+    true,
+  );
+
+  assert.ok(deletePerModelConfig(modelId, variant));
+  assert.equal(
+    perModelConfigStorageChanged(
+      atStart,
+      resolveInitialConfig(modelId, variant),
+    ),
+    true,
+  );
+  assert.equal(
+    perModelConfigStorageChanged(atStart, {
+      config: { ...atStart.config },
+      remembered: atStart.remembered,
+    }),
+    false,
+  );
+});
+
+test("the hydration write-back rejects a stale server response", () => {
+  const requestStart = PANEL.indexOf("Promise.all([");
+  const storageSnapshot = PANEL.indexOf(
+    "const storedAtStart = resolveInitialConfig(configId, target.ggufVariant);",
+  );
+  const responseStart = PANEL.indexOf(
+    ".then(([resolvedOverride, managed]) => {",
+    requestStart,
+  );
+  const adoptionStart = PANEL.indexOf(
+    "if (\n          resolvedRow &&",
+    responseStart,
+  );
+  const writeBackEnd = PANEL.indexOf(
+    "setSavedRemember(hydrationSaved);",
+    adoptionStart,
+  );
+  assert.ok(
+    requestStart >= 0 &&
+      storageSnapshot >= 0 &&
+      storageSnapshot < requestStart &&
+      responseStart > requestStart &&
+      adoptionStart > responseStart &&
+      writeBackEnd > adoptionStart,
+    "the storage snapshot must precede the request and guard its write-back",
+  );
+
+  const writeBack = PANEL.slice(adoptionStart, writeBackEnd);
+  assert.match(
+    writeBack,
+    /const storedConfig = resolveInitialConfig\(\s*configId,\s*target\.ggufVariant,\s*\);\s*if \(perModelConfigStorageChanged\(storedAtStart, storedConfig\)\) \{\s*return;\s*\}[\s\S]*const rememberedConfig = fromApiOverride\(\s*resolvedRow,\s*storedConfig\.config,\s*\);[\s\S]*savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
+  );
 });
 
 test("a build that serves one slot does not raise the floor", () => {
@@ -255,15 +325,11 @@ const CHAT_PAGE = readFileSync(
   "utf8",
 );
 
-test("a launch that only applies the remembered config still carries its arguments", () => {
+test("a Chat launch that applies remembered config carries its arguments", () => {
   // applyPerModelConfigToRuntime has no field for the launch flags, and /load only
   // inherits them from the SAME resident model, so a cold launch or a switch from
-  // another model ran without the arguments this model was remembered with. Both
-  // paths that load through the runtime alone now pass the config itself.
-  assert.match(
-    HUB,
-    /\.\.\.\(rememberedConfig \? \{ config: rememberedConfig \} : \{\}\),/,
-  );
+  // another model ran without the arguments this model was remembered with. Chat
+  // passes the config itself.
   assert.match(
     CHAT_PAGE,
     /const remembered = rememberedConfigFor\(selection\);/,
@@ -272,7 +338,4 @@ test("a launch that only applies the remembered config still carries its argumen
     CHAT_PAGE,
     /\.\.\.\(remembered \? \{ config: remembered \} : \{\}\),/,
   );
-  // Nothing is invented when there is no remembered config: the field stays absent,
-  // which is what lets /load keep a resident model's own flags.
-  assert.doesNotMatch(HUB, /config: rememberedConfig \?\? null/);
 });

@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
@@ -16,8 +15,21 @@ from pathlib import Path
 from typing import Optional
 
 from loggers import get_logger
+from utils.paths import path_utils as _path_utils
+from utils.paths.path_utils import wsl_automount_root
+
+# One policy, defined in utils.paths.storage_roots: the copy that used to live here drifted, and a
+# BOM'd settings.json was honoured by one side and dropped by the other (#9748).
+from utils.paths.storage_roots import (
+    lmstudio_model_dirs,
+    ollama_model_dirs,
+    well_known_model_dirs,
+)
 
 logger = get_logger(__name__)
+
+# Re-export shim: marks them used so the import-hoist safety net does not flag them.
+_REEXPORTED = (lmstudio_model_dirs, ollama_model_dirs, well_known_model_dirs)
 
 
 def _infer_studio_home_from_venv() -> Optional[Path]:
@@ -99,41 +111,9 @@ def hf_default_cache_dir() -> Path:
     return Path.home() / ".cache" / "huggingface" / "hub"
 
 
-def _is_wsl() -> bool:
-    if sys.platform == "win32":
-        return False
-    try:
-        return "microsoft" in Path("/proc/version").read_text(encoding = "utf-8").lower()
-    except Exception:
-        return False
-
-
-_IS_WSL = _is_wsl()
-
-
-def _wsl_automount_root() -> str:
-    """DrvFs root under which WSL maps Windows drives, with a trailing slash.
-
-    Defaults to ``/mnt/`` but is user-configurable via ``/etc/wsl.conf``
-    (``[automount] root``), so hard-coding ``/mnt/`` mistranslates Windows paths
-    on a host with a custom root (e.g. ``root = /`` → ``C:`` at ``/c/``)."""
-    default = "/mnt/"
-    if not _IS_WSL:
-        return default
-    try:
-        import configparser
-
-        parser = configparser.ConfigParser(inline_comment_prefixes = ("#", ";"))
-        parser.read("/etc/wsl.conf", encoding = "utf-8")
-        root = parser.get("automount", "root", fallback = "").strip().strip("\"'")
-    except Exception:
-        return default
-    if not root:
-        return default
-    return root if root.endswith("/") else f"{root}/"
-
-
-_WSL_AUTOMOUNT_ROOT = _wsl_automount_root()
+# normalize_path reads these at call time and tests set them, so they stay attributes of this module.
+_IS_WSL = _path_utils._IS_WSL
+_WSL_AUTOMOUNT_ROOT = wsl_automount_root()
 
 
 def normalize_path(path: str) -> str:
@@ -146,10 +126,6 @@ def normalize_path(path: str) -> str:
             return f"{_WSL_AUTOMOUNT_ROOT}{drive}/{rest}"
         return path.replace("\\", "/")
     return path.replace("\\", "/")
-
-
-def _host_path(path: str | Path) -> Path:
-    return Path(normalize_path(str(path))).expanduser()
 
 
 def is_local_path(path: str) -> bool:
@@ -188,8 +164,8 @@ def is_valid_repo_id(repo_id: str) -> bool:
     segments = repo_id.split("/")
     if len(segments) not in (1, 2):
         return False
-    # Match huggingface_hub.validate_repo_id: the 96-char limit applies per segment (repo name /
-    # namespace), not to the whole "namespace/repo_name" string.
+    # Match huggingface_hub.validate_repo_id: the 96-char limit applies per segment, not to the whole
+    # "namespace/repo_name" string.
     return all(
         segment not in ("", ".", "..")
         and len(segment) <= _MAX_REPO_ID_LENGTH
@@ -219,34 +195,7 @@ def is_valid_gguf_variant(variant: str) -> bool:
     return all(segment not in ("", ".", "..") for segment in normalized.split("/"))
 
 
-def ollama_model_dirs() -> list[Path]:
-    """Return Ollama model directories that exist on disk."""
-    dirs: list[Path] = []
-    seen: set[str] = set()
-
-    def _add(p: Path | str) -> None:
-        try:
-            expanded = _host_path(p)
-            resolved = expanded.resolve()
-            is_dir = expanded.is_dir()
-        except (OSError, RuntimeError, ValueError):
-            return
-        key = str(resolved)
-        if key in seen or not is_dir:
-            return
-        seen.add(key)
-        dirs.append(expanded)
-
-    ollama_env = os.environ.get("OLLAMA_MODELS")
-    if ollama_env:
-        _add(ollama_env)
-    _add(Path.home() / ".ollama" / "models")
-    _add(Path("/usr/share/ollama/.ollama/models"))
-    _add(Path("/var/lib/ollama/.ollama/models"))
-    return dirs
-
-
-# Per-process memo for resolve_cached_repo_id_case. Bounded LRU so a long-lived process can't
+# Per-process memo for resolve_cached_repo_id_case. Bounded LRU so a long-lived process cannot
 # grow it without limit; evicted cold entries simply recompute.
 _CACHE_CASE_RESOLUTION_MEMO_MAX = 512
 _CACHE_CASE_RESOLUTION_MEMO: "OrderedDict[tuple[str, str], str]" = OrderedDict()
@@ -306,59 +255,6 @@ def _hf_hub_cache_dirs() -> list[Path]:
     return roots
 
 
-def lmstudio_model_dirs() -> list[Path]:
-    dirs: list[Path] = []
-    seen: set[str] = set()
-
-    def _add(path: Path | str) -> None:
-        try:
-            expanded = _host_path(path)
-            resolved = expanded.resolve()
-        except (OSError, RuntimeError, ValueError):
-            return
-        key = str(resolved)
-        if key in seen or not expanded.is_dir():
-            return
-        seen.add(key)
-        dirs.append(expanded)
-
-    settings_path = Path.home() / ".lmstudio" / "settings.json"
-    if settings_path.is_file():
-        try:
-            settings = json.loads(settings_path.read_text(encoding = "utf-8"))
-            downloads = settings.get("downloadsFolder", "")
-            if downloads:
-                _add(downloads)
-        except Exception:
-            pass
-    _add(Path.home() / ".lmstudio" / "models")
-    _add(Path.home() / ".cache" / "lm-studio" / "models")
-    return dirs
-
-
-def well_known_model_dirs() -> list[Path]:
-    candidates: list[Path] = []
-    candidates.extend(lmstudio_model_dirs())
-    candidates.extend(ollama_model_dirs())
-    candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
-    candidates.append(Path.home() / "models")
-    candidates.append(Path.home() / "Models")
-
-    out: list[Path] = []
-    seen: set[str] = set()
-    for path in candidates:
-        try:
-            resolved = path.resolve()
-        except OSError:
-            continue
-        key = str(resolved)
-        if key in seen or not resolved.is_dir():
-            continue
-        seen.add(key)
-        out.append(resolved)
-    return out
-
-
 def _assert_contained(resolved: Path, root: Path) -> None:
     try:
         resolved_real = Path(os.path.realpath(resolved))
@@ -391,8 +287,8 @@ def resolve_dataset_path(path_value: str) -> Path:
     raw = str(path_value or "").strip()
     if "\x00" in raw:
         raise ValueError("dataset path may not contain null bytes")
-    # Normalize first so Windows/UNC and backslash paths resolve like the rest of the Hub path
-    # layer, and a backslashed '..' is caught by the traversal guard below.
+    # Normalize first so Windows/UNC and backslash paths resolve like the rest of the Hub path layer,
+    # and a backslashed ".." is caught by the traversal guard below.
     normalized = normalize_path(raw)
     path = Path(normalized).expanduser()
     if ".." in path.parts:
@@ -478,8 +374,8 @@ def resolve_cached_repo_id_case(
                     continue
                 if entry.name.lower() != expected_lower:
                     continue
-                # The lowercased full-name match already proves the prefix matches; a case-sensitive
-                # startswith would reject a mixed-case imported dir such as Models--Org--Repo.
+                # The lowercased full-name match already proves the prefix matches; a case-sensitive startswith
+                # would reject a mixed-case imported dir such as Models--Org--Repo.
                 repo_part = entry.name[len(prefix) :]
                 if not repo_part:
                     continue

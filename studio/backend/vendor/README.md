@@ -8,7 +8,7 @@
   sha256 `adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981`
 - Licence: `LICENSE` beside this file, copied unmodified from the wheel.
 
-`utils/native_tls.py` uses it to verify TLS against the OS trust store, so Studio works behind a
+`utils/native_tls.py` uses it to verify TLS against the OS trust store, so Unsloth works behind a
 corporate TLS-inspecting proxy. See that module's docstring for the why.
 
 ### Why the source is checked in rather than installed

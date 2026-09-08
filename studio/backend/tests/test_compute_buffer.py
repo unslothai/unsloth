@@ -469,7 +469,7 @@ class TestContextBufferLayerSplit:
 
     def test_kimi_k3_1m_four_gpu_reserve(self):
         # The reported case: Kimi-K3 UD-IQ1_M, 1M ctx, 4 GPUs, ub 512. llama.cpp
-        # allocated 4.0 GiB per device; Studio reserved 1.5 GiB.
+        # allocated 4.0 GiB per device; Unsloth reserved 1.5 GiB.
         b = _backend(embd = 7168, mla = 576)
         gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16", layer_split = True) / (
             1024**3
@@ -741,7 +741,7 @@ class TestPipelineParallelPredicate:
 
     @pytest.mark.parametrize("flag", ["-ngl", "--gpu-layers", "--n-gpu-layers"])
     def test_finite_gpu_layers_below_the_count_disables(self, flag):
-        # User extras land after Studio's -ngl -1, so this last-wins.
+        # User extras land after Unsloth's -ngl -1, so this last-wins.
         assert self._off([flag, "1"], n_layers = 93) is True
         assert self._off([f"{flag}=1"], n_layers = 93) is True
 
@@ -908,26 +908,39 @@ class TestPerDeviceSplitReserve:
             return sorted(idx for idx, _ in subset), ctx
         return None, 0
 
+    def _card_at_floor_reserve(self, b, total_mib, margin_mib):
+        """Free VRAM leaving card 1 exactly ``margin_mib`` from the reserve it
+        replicates AT THE FIT FLOOR, which is the context ``_drive_reduced`` runs.
+
+        Derived rather than written out: the whole point of these two cases is a
+        card sized one MiB either side of that reserve, so the number has to follow
+        the floor. Spelled 4096 it silently stopped straddling anything when the
+        floor moved to 8192 -- the card was built against reserve(4096) == 1120 MiB
+        while the driver charged reserve(8192) == 1216.
+        """
+        reserve_mib = (
+            self._OH + b._compute_buffer_ctx_bytes(_FIT_MIN_CTX, self._UB, "f16", layer_split = True)
+        ) / MIB
+        return round(reserve_mib + margin_mib + 0.03 * total_mib)
+
     def test_reduced_context_fallback_enforces_the_same_reserve(self):
-        # Card 1 sized one MiB under the reserve it replicates at 4096 ctx: the pooled
-        # budget still admits the pair, so dropping to 4096 pinned a card that OOMs.
+        # Card 1 sized one MiB under the reserve it replicates at the floor: the
+        # pooled budget still admits the pair, so dropping to the floor pinned a
+        # card that OOMs.
         b = self._fit_backend()
         totals = {0: 49_152, 1: 24_576}
-        reserve_mib = (
-            self._OH + b._compute_buffer_ctx_bytes(4096, self._UB, "f16", layer_split = True)
-        ) / MIB
-        gpus = [(0, 40_000), (1, round(reserve_mib - 1 + 0.03 * totals[1]))]
-        assert self._drive_reduced(b, gpus, totals, 20_480, enforce = False) == ([0, 1], 4096)
+        gpus = [(0, 40_000), (1, self._card_at_floor_reserve(b, totals[1], -1))]
+        assert self._drive_reduced(b, gpus, totals, 20_480, enforce = False) == (
+            [0, 1],
+            _FIT_MIN_CTX,
+        )
         assert self._drive_reduced(b, gpus, totals, 20_480) == (None, 0)
 
     def test_reduced_context_fallback_keeps_a_card_that_holds_it(self):
         b = self._fit_backend()
         totals = {0: 49_152, 1: 24_576}
-        reserve_mib = (
-            self._OH + b._compute_buffer_ctx_bytes(4096, self._UB, "f16", layer_split = True)
-        ) / MIB
-        gpus = [(0, 40_000), (1, round(reserve_mib + 1 + 0.03 * totals[1]))]
-        assert self._drive_reduced(b, gpus, totals, 20_480) == ([0, 1], 4096)
+        gpus = [(0, 40_000), (1, self._card_at_floor_reserve(b, totals[1], +1))]
+        assert self._drive_reduced(b, gpus, totals, 20_480) == ([0, 1], _FIT_MIN_CTX)
 
     def test_pooled_budget_hides_the_small_cards_shortfall(self):
         # Pre-fix: the pair is admitted at native context even though card 1 has
@@ -1034,18 +1047,21 @@ class TestPerDeviceReserveCap:
         gpus, totals = self._HOMOGENEOUS
         assert self._drive(b, gpus, totals, 20_480, 262144) == ([0, 1], 262144)
 
-    def test_cap_floors_at_4096_and_still_rejects_below_it(self):
-        # usable 1118.72 < reserve(4096) == 1120.0: nothing to salvage.
-        b = self._fit_backend()
-        assert self._drive(
-            b, [(0, 40_000), (1, 1_856)], {0: 49_152, 1: 24_576}, 20_480, 262144
-        ) == (None, 0)
+    _card_at_floor_reserve = TestPerDeviceSplitReserve._card_at_floor_reserve
 
-    def test_cap_keeps_a_card_that_holds_exactly_4096(self):
+    def test_cap_floors_at_the_fit_minimum_and_still_rejects_below_it(self):
+        # Card 1 one MiB under reserve(_FIT_MIN_CTX): the cap has nothing to salvage,
+        # so it returns 0 rather than handing back the floor it could not price.
         b = self._fit_backend()
-        assert self._drive(
-            b, [(0, 40_000), (1, 1_858)], {0: 49_152, 1: 24_576}, 20_480, 262144
-        ) == ([0, 1], 4096)
+        totals = {0: 49_152, 1: 24_576}
+        gpus = [(0, 40_000), (1, self._card_at_floor_reserve(b, totals[1], -1))]
+        assert self._drive(b, gpus, totals, 20_480, 262144) == (None, 0)
+
+    def test_cap_keeps_a_card_that_holds_exactly_the_fit_minimum(self):
+        b = self._fit_backend()
+        totals = {0: 49_152, 1: 24_576}
+        gpus = [(0, 40_000), (1, self._card_at_floor_reserve(b, totals[1], +1))]
+        assert self._drive(b, gpus, totals, 20_480, 262144) == ([0, 1], _FIT_MIN_CTX)
 
     def test_flat_arch_term_is_not_rate_inverted(self):
         # deepseek4 carries a flat indexer term, so inverting the per-token rate
@@ -1257,7 +1273,7 @@ class TestSplitRateRecheckAfterSelection:
 
 # ── The scratch rate keys off the LIGHTER axis ───────────────────────────────
 #
-# Since ggml-org/llama.cpp#23792 Studio no longer rewrites the requested type for the
+# Since ggml-org/llama.cpp#23792 Unsloth no longer rewrites the requested type for the
 # tensor attempt, so an asymmetric pair is reachable in the one mode with no --fit
 # valve. The budget resolves ONE scalar, the heavier axis, for KV bytes; handing that
 # to _compute_buffer_ctx_bytes prices a q4_0 K cache as if nothing were quantized,
@@ -1288,7 +1304,7 @@ class TestScratchTakesTheLighterAxis:
         assert (heavier != expected) == (_kv_bytes_per_elem(k) != _kv_bytes_per_elem(v))
 
     def test_a_managed_symmetric_request_leaves_both_terms_equal(self):
-        """Studio emits one type on both axes, so nothing changes for the common
+        """Unsloth emits one type on both axes, so nothing changes for the common
         case -- this fix must not move the fit for a plain q8_0 load."""
         for kv in ("f16", "q8_0", "q4_0", "iq4_nl"):
             assert _planned_scratch_cache_type(kv, None) == kv

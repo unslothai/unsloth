@@ -8,7 +8,7 @@ per-function connections). API keys are NOT stored here: they live only in
 the browser (localStorage) and are sent encrypted per-request.
 
 Enabled model selections and discovered catalog IDs are stored server-side so
-remote Studio clients see the same connection state (#7281).
+remote Unsloth clients see the same connection state (#7281).
 """
 
 from __future__ import annotations
@@ -113,8 +113,8 @@ def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
     a new endpoint with the previous key (or the inverse) while a provider edit
     is in progress.
     """
-    # Ensure both tables exist before opening the transaction.  The credential
-    # module commits schema initialization on its own connection.
+    # Ensure both tables exist before opening the transaction. The credential module commits schema
+    # initialization on its own connection.
     from storage import credential_secrets
 
     credential_secrets.ensure_schema()

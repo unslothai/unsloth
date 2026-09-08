@@ -50,6 +50,13 @@ export const zhCN = {
     shutdown: "关闭服务",
   },
   shell: {
+    find: {
+      label: "在页面中查找",
+      previous: "上一个匹配项",
+      next: "下一个匹配项",
+      close: "关闭查找",
+      truncated: "此页面过长，无法搜索全部内容。",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -220,6 +227,10 @@ export const zhCN = {
       browserReserved:
         "浏览器可能会占用该组合键。桌面应用中可正常使用。",
       actions: {
+        findInPage: {
+          label: "在页面中查找",
+          description: "搜索此页面上的文本",
+        },
         openSettings: {
           label: "打开设置",
           description: "打开设置对话框",
@@ -479,6 +490,12 @@ export const zhCN = {
           "发送到 /v1/audio/transcriptions 的模型名称。",
         sttModelLabel: "语音识别模型",
         sttModelDescription: "选择或搜索要在本地运行的 STT 模型。",
+        sttDeviceLabel: "加载到",
+        sttDeviceAuto: "有 GPU 时使用 GPU",
+        sttDeviceCpu: "CPU 内存",
+        sttDeviceAutoDescription: "有 GPU 时使用 GPU，否则使用 CPU。",
+        sttDeviceCpuDescription:
+          "将模型保留在系统内存中。转写速度较慢，但不占用显存。",
         sttModelSearchPlaceholder: "搜索模型",
         sttModelSearching: "正在搜索 Hugging Face…",
         sttModelValidating: "正在检查 Whisper 兼容性…",
@@ -673,7 +690,7 @@ export const zhCN = {
         sectionTitle: "模型自动切换（OpenAI API）",
         enable: "按请求切换模型",
         enableDescription:
-          "在提供服务前，加载 API 请求中指定的已下载 GGUF。默认关闭。",
+          "在提供服务前，加载 API 请求中指定的已下载模型。默认关闭。",
         idleUnload: "空闲自动卸载",
         idleUnloadDescription:
           "空闲达到该秒数后释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",
@@ -775,7 +792,7 @@ export const zhCN = {
         embeddingModel: "Embedding 模型",
         embeddingModelDescription:
           "用于为文档建立索引和搜索的 Hugging Face 模型或本地路径。默认值为 {defaultModel}。",
-        searchPlaceholder: "搜索嵌入模型",
+        searchPlaceholder: "搜索 HF 上的任意模型",
         reindexWarning:
           "仅影响新建立索引的文档。更改模型后请重新上传已有文档。",
         emptyError: "请输入 Hugging Face 模型 ID 或本地路径。",
@@ -783,7 +800,23 @@ export const zhCN = {
         saveError: "保存 embedding 模型失败。",
         saved: "Embedding 模型已保存。",
         saveAnyway: "仍然保存",
-        resetAction: "重置为默认值",
+        recommended: "推荐",
+        onDevice: "本机",
+        searching: "正在搜索 Hugging Face…",
+        checking: "检查中…",
+        noResults: "未找到 embedding 模型",
+        download: "下载",
+        unload: "卸载",
+        unloadFailed: "无法卸载 embedding 模型",
+        downloadingStatus: "正在下载…",
+        notDownloaded: "未下载",
+        notDownloadedSized: "未下载 · {size}",
+        loaded: "已加载",
+        downloading: "正在下载 {model}",
+        downloadingDescription: "进度显示在下载面板中。下载完成后即可用于建立索引。",
+        downloadFailed: "无法开始下载",
+        downloadConflict: "请在 Hub 中继续此下载",
+        downloadBusy: "下载已在进行中",
       },
       storage: {
         sectionTitle: "存储",
@@ -794,6 +827,16 @@ export const zhCN = {
         copied: "路径已复制",
         openError: "无法打开文件夹",
         copyError: "无法复制路径",
+      },
+      repairInstall: {
+        label: "修复安装",
+        description:
+          "对托管环境重新运行安装程序。如果未检测到 GPU 或应用无法启动，可使用此功能。",
+        action: "修复安装",
+        confirmTitle: "要修复此安装吗？",
+        confirmDescription:
+          "停止服务器并重新运行安装程序，为本机 GPU 重新安装 PyTorch。聊天记录和设置会保留。这可能需要几分钟。",
+        confirmAction: "立即修复",
       },
       resetPreferences: {
         sectionTitle: "危险区域",
@@ -848,15 +891,19 @@ export const zhCN = {
           "下面的内容全部根据你自己的历史记录统计。不会收集任何数据，也不会发送给 Unsloth。",
         retry: "重试",
         privacyNote:
-          "统计数据由你本地 Unsloth 保存的聊天和训练历史计算得出。不收集任何数据，也不会发送给 Unsloth 或任何第三方。",
-        emptyChats: "暂无聊天。开始一段对话后，这里就会显示你的统计数据。",
+          "统计数据由本地 Unsloth 的聊天、API 使用和训练历史计算得出。统计功能绝不会保存 API 提示词、回复或密钥，也不会向 Unsloth 或任何第三方发送数据。",
+        emptyChats: "暂无聊天或 API 使用记录。请开始一段对话，或发起经过认证的本地 API 请求。",
         lifetimeTokens: "累计 token",
         peakTokens: "单日峰值",
         longestChat: "最长的聊天",
         currentStreak: "当前连续天数",
         longestStreak: "最长连续天数",
         activityTitle: "Token 活跃度",
-        activityDescription: "过去{weeks}共{total}",
+        activityDescription: {
+          daily: "过去{weeks}共{total}",
+          weekly: "峰值周 {total} · 最近{weeks}",
+          cumulative: "过去{weeks}累计{total}",
+        },
         mode: {
           daily: "按天",
           weekly: "按周",
@@ -871,6 +918,9 @@ export const zhCN = {
         totalMessages: "消息总数",
         tokensIn: "发送的 token",
         tokensOut: "生成的 token",
+        totalTokens: "Token 总数",
+        studioChatTokens: "Unsloth Chat token",
+        apiTokens: "API token",
         cachedTokens: "缓存的 token",
         cachedValue: "{tokens}（占输入的 {percent}%）",
         avgTokensPerChat: "每个聊天的平均 token",
@@ -1042,6 +1092,8 @@ export const zhCN = {
         currentLoad: "当前负载",
         free: "{value} 可用",
         noGpu: "无可见 GPU",
+        gpuUnusable: "GPU 不可用",
+        gpuUnusableDetail: "已检测到，但 PyTorch 无法使用",
       },
       gpu: {
         title: "GPU 设备",
@@ -1050,6 +1102,10 @@ export const zhCN = {
         detecting: "正在检查 GPU...",
         unreadable: "无法读取此服务器的硬件信息。",
         noGpu: "未检测到可见 GPU。上方仅显示 CPU 资源。",
+        noUsableGpu: "本机没有 PyTorch 可用的 GPU。",
+        mismatchCpuBuild: "PyTorch 是仅 CPU 版本（{version}），因此无法使用下方的 GPU。修复安装即可恢复 GPU 支持。",
+        mismatchUnavailable: "PyTorch（{version}）无法初始化下方的 GPU，因此无法使用。请检查显卡驱动，或修复安装。",
+        unusableDevice: "不可用",
         unknownDevice: "未知 GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1162,6 +1218,7 @@ export const zhCN = {
         processMemory: "进程内存",
         notInstalled: "未安装",
         unknown: "未知",
+        vramWithShared: "{vram} 显存 + {shared} 共享内存",
       },
     },
     agents: {
@@ -1169,7 +1226,7 @@ export const zhCN = {
       description:
         "使用 unsloth start 将 Claude Code、Codex 等编程智能体连接到本地模型。",
       intro:
-        "可将 Claude Code、Codex、Hermes、OpenClaw、OpenCode 等智能体连接到由 Unsloth 在本地提供服务的模型，全程离线。它会启动一个兼容 OpenAI 的服务器，并且从不改动智能体的配置文件。",
+        "可将 Claude Code、Codex、DeepSeek Harness、Hermes、OpenClaw、OpenCode 等智能体连接到由 Unsloth 在本地提供服务的模型，全程离线。它会启动一个兼容 OpenAI 的服务器，并且从不改动智能体的配置文件。",
       readDocs: "查看文档",
       copy: "复制",
       copied: "已复制",
@@ -1190,6 +1247,15 @@ export const zhCN = {
       docs: "文档",
       agentDocs: "打开 {agent} 的配置文档",
       copyGeneratedCommand: "复制生成的命令",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex 需要通过 llama-server 提供服务的 GGUF 模型。其他智能体也可以使用基于 transformers 的模型；去掉 --model 即可使用 Unsloth 中已加载的模型。",
       subagent: {
@@ -1274,6 +1340,9 @@ export const zhCN = {
         showAllQuantizations: "显示所有量化版本",
         showAllQuantizationsDescription:
           "开启：列出“On Device”中的所有量化版本，包括尚未下载的版本。关闭：仅显示已下载的量化版本。",
+        showMemoryBar: "显示显存占用条",
+        showMemoryBarDescription:
+          "在每个已下载模型的行下方显示预计显存占用：权重、按实际加载的上下文长度计算的 KV 缓存，以及推测解码草稿所需的预留。",
       },
       menu: {
         title: "聊天菜单",
@@ -1299,16 +1368,42 @@ export const zhCN = {
       rememberParamsPerModel: "按模型记住设置",
       rememberParamsPerModelDescription:
         "切换模型时会恢复你上次在该模型上使用的温度、提示词等设置。关闭后，所有模型共用一套设置。",
+      autoCompact: "自动压缩长聊天",
+      autoCompactDescription:
+        "当本地 GGUF 聊天达到你设置的上下文长度时，丢弃较早的轮次而不是返回错误。此设置与可用显存无关。",
+      compactionStyle: "上下文已满时",
+      compactionStyleDescription:
+        "使用服务器默认值会保留 UNSLOTH_CONTEXT_POLICY。重置对话会保留最新轮次和持续指令。滑动窗口会丢弃最早的轮次，并可保留更多近期历史。",
+      compactionStyleInherit: "使用服务器默认值",
+      compactionStyleCheckpoint: "重置对话",
+      compactionStyleRollingDefault: "丢弃最早的轮次（约 25% 额外空间）",
+      compactionStyleRolling10: "丢弃最早的轮次（约 10% 额外空间）",
+      compactionStyleRolling5: "丢弃最早的轮次（约 5% 额外空间）",
+      compactionStyleRollingNone: "丢弃最早的轮次（不额外裁剪）",
+      autoCompactKeywords:
+        "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "默认折叠思考过程",
         collapseByDefaultDescription:
           "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
       },
+      currentDate: {
+        label: "告诉模型今天的日期",
+        description:
+          "在提示词中加入当前日期，让联网搜索和 Deep Research 查找最新来源，而不是按模型训练数据的截止时间推断。",
+        loadError: "无法加载当前日期设置",
+        saveError: "无法更新当前日期设置",
+      },
+      tools: {
+        collapseByDefault: "默认折叠工具活动",
+        collapseByDefaultDescription:
+          "工具运行时保持输入和输出折叠。需要检查时展开对应工具行。",
+      },
       webSearch: {
         title: "网页搜索",
         images: "显示网页搜索图片",
         imagesDescription:
-          "让网页搜索返回图片，并为回答中列出的每一项各获取一张。缩略图由 Studio 获取并缩放，浏览器不会直接访问图片来源。",
+          "让网页搜索返回图片，并为回答中列出的每一项各获取一张。缩略图由 Unsloth 获取并缩放，浏览器不会直接访问图片来源。",
       },
       artifacts: {
         title: "Canvas",
@@ -1321,6 +1416,11 @@ export const zhCN = {
         blockedBanner: "已阻止来自 {hosts} 的 {count} 个外部资源。",
         blockedBannerPlural: "已阻止来自 {hosts} 的 {count} 个外部资源。",
         blockedBannerAction: "允许此 Canvas",
+        blockedTitle: "Canvas 网络访问已关闭",
+        blockedHint:
+          "在“设置 → 聊天”中开启“{setting}”以允许 Canvas 加载外部资源，或仅对此 Canvas 允许。",
+        blockedSettingsAction: "打开设置",
+        blockedDismiss: "关闭",
       },
       data: "数据",
       exportHistory: "导出聊天记录",
@@ -1329,7 +1429,7 @@ export const zhCN = {
       exportingAction: "导出中...",
       exportConversations: "导出最近对话与项目",
       exportConversationsDescription:
-        "将最近对话（或加上项目内对话）导出为 Raw JSONL、CSV 或 ShareGPT JSONL，可合并为单个文件或每个对话一个文件。",
+        "将最近对话（或加上项目内对话）导出为 Training JSONL、CSV 或 ShareGPT JSONL，可合并为单个文件或每个对话一个文件。Message JSONL 仅支持每个对话单独导出。",
       exportConversationsAction: "导出",
       exportScopeRecents: "最近对话",
       exportScopeAll: "最近对话 + 项目",
@@ -1389,6 +1489,8 @@ export const zhCN = {
       archivedImagesDescription: "查看和管理你归档的图片。",
       archivedVideos: "已归档的视频",
       archivedVideosDescription: "查看和管理你归档的视频。",
+      archivedAudio: "已归档的音频",
+      archivedAudioDescription: "查看和管理你归档的音频片段。",
       manageAction: "管理",
       manageChats: "管理聊天",
       manageChatsDescription: "选择多个聊天进行移动、置顶、归档、导出或删除。",
@@ -1564,7 +1666,7 @@ export const zhCN = {
         desktopChecking: "正在检查更新",
         desktopCheckingDescription: "通常只需几秒钟。",
         desktopAvailable: "桌面应用 {version} 已可用",
-        desktopAvailableDescription: "立即更新，完成后桌面应用将自动重启。",
+        desktopAvailableDescription: "立即更新，更新将在后台准备。你可以继续工作，准备好后再重启。",
         desktopExternalServer:
           "请在启动服务器的终端中运行 `unsloth studio update`。",
         desktopManualInstall: "打开发布页面，安装最新的 Linux 软件包。",
@@ -1572,11 +1674,17 @@ export const zhCN = {
         desktopCheckFailedDescription: "请检查网络连接后重试。",
         desktopCurrent: "桌面应用已是最新版本",
         desktopCurrentDescription: "Unsloth 会继续自动检查更新。",
+        desktopPreparingDescription: "更新正在后台准备中。你可以继续工作。",
+        desktopReadyToRestartDescription: "一切就绪。重启即可完成更新安装。",
+        desktopReadyToInstallDescription: "应用更新已下载。请完成后端更新以安装该版本。",
         checkForUpdates: "检查更新",
         checkAgain: "再次检查",
         retryCheck: "重试",
         checking: "正在检查...",
+        preparing: "正在准备...",
         updateNow: "立即更新",
+        restartToUpdate: "重启以更新",
+        finishUpdate: "完成更新",
         openReleasePage: "打开发布页面",
         unknownInstall:
           "Unsloth 无法检测安装方式。如果你使用一键安装器或 PyPI 安装，请使用上面的命令。",
@@ -1966,6 +2074,7 @@ export const zhCN = {
       memoryEfficient: "节省内存",
       weightDecomposed: "权重分解",
       notSupportedAppleSilicon: "Apple 芯片暂不支持",
+      doraNeedsVisionLayersOff: "关闭视觉层训练以使用 DoRA",
       optimization: "优化",
       schedule: "计划",
       memory: "内存",
@@ -2244,5 +2353,14 @@ export const zhCN = {
       datasetStreaming: "数据集：流式传输（无需完整下载）",
       modelWeights: "模型权重",
     },
+  },
+  modelMemory: {
+    readout:
+      "权重 {model} + 上下文 {context} = {total}，可用显存 {budget}",
+    readoutWithSpec:
+      "权重 {model} + KV {kv} + MTP 草稿 {spec} = {total}，可用显存 {budget}",
+    kvRate: "KV 预先分配，约 {rate}/token",
+    oomLikely: "按当前设置可能显存不足",
+    tooLarge: "超出显存，将卸载到 CPU 运行。更小的量化版本速度更快",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

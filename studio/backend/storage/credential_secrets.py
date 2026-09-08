@@ -3,7 +3,7 @@
 
 """Encrypted installation-wide credential persistence in ``studio.db``.
 
-Studio is a single-user local application. Credentials belong to the installation,
+Unsloth is a single-user local application. Credentials belong to the installation,
 not to an authenticated subject. The AES key lives separately in auth.db and the
 credential kind/scope are authenticated so ciphertext rows cannot be swapped.
 """

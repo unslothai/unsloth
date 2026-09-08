@@ -67,7 +67,7 @@ test("a trailing abandoned turn keeps the prompt it followed", () => {
 test("the send and token-count paths prune through the same helper", () => {
   assert.match(
     adapter,
-    /const outboundMessages = pruneOutboundHistory\(messages, true\)/,
+    /const survivingMessages = pruneOutboundHistory\(messages, true\)/,
   );
   assert.match(
     adapter,

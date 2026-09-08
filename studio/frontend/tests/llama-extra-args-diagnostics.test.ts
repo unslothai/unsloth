@@ -929,7 +929,7 @@ test("a catalogued flag left without its value is refused", () => {
 });
 
 test("an unverified flag keeps the benefit of the doubt at the end", () => {
-  // A build this Studio could not probe, or a flag newer than the help it read:
+  // A build this Unsloth could not probe, or a flag newer than the help it read:
   // calling either a missing value would disable Load over a launch that works.
   const unverified: LlamaFlagCatalog = {
     flags: {},

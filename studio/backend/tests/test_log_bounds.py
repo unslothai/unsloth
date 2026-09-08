@@ -7,7 +7,7 @@ The volume guards cap how many lines get written. This one caps what is left on 
 afterwards, which is a separate failure: a family that writes one file per operation and
 never prunes grows for the life of the install, and nothing in the line budget notices.
 
-``utils.debug_log_sources.FAMILIES`` is the authoritative inventory of what Studio writes,
+``utils.debug_log_sources.FAMILIES`` is the authoritative inventory of what Unsloth writes,
 so it is the list a new family cannot avoid appearing on.
 """
 

@@ -9,6 +9,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
+// eslint-disable-next-line no-restricted-imports -- the feature barrel imports this component
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import {
   formatMcpToolName,
@@ -38,6 +40,7 @@ import {
   useState,
 } from "react";
 import { toolArgText } from "./tool-arg-text";
+import { syncToolActivityPreference } from "./tool-activity-open-state";
 
 const ANIMATION_DURATION = 200;
 
@@ -48,6 +51,12 @@ export type ToolFallbackRootProps = Omit<
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   defaultOpen?: boolean;
+  /**
+   * Parked on an allow/deny decision. Pins the card open above `open` and the
+   * collapse preference, so what is being approved stays readable. Groups do
+   * the same with `hasPendingConfirmation`.
+   */
+  awaitingApproval?: boolean;
 };
 
 function ToolFallbackRoot({
@@ -55,15 +64,34 @@ function ToolFallbackRoot({
   open: controlledOpen,
   onOpenChange: controlledOnOpenChange,
   defaultOpen = false,
+  awaitingApproval = false,
   children,
   ...props
 }: ToolFallbackRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  const collapseByDefault = useChatPreferencesStore(
+    (state) => state.collapseToolActivityByDefault,
+  );
+  const [uncontrolledState, setUncontrolledState] = useState(
+    () => ({
+      collapseByDefault,
+      open: defaultOpen && !collapseByDefault,
+    }),
+  );
+  const syncedUncontrolledState = syncToolActivityPreference(
+    uncontrolledState,
+    collapseByDefault,
+    defaultOpen,
+  );
+  if (syncedUncontrolledState !== uncontrolledState) {
+    setUncontrolledState(syncedUncontrolledState);
+  }
   const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
 
   const isControlled = controlledOpen !== undefined;
-  const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
+  const isOpen =
+    awaitingApproval ||
+    (isControlled ? controlledOpen : syncedUncontrolledState.open);
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
@@ -71,11 +99,14 @@ function ToolFallbackRoot({
         lockScroll();
       }
       if (!isControlled) {
-        setUncontrolledOpen(open);
+        setUncontrolledState({
+          collapseByDefault,
+          open,
+        });
       }
       controlledOnOpenChange?.(open);
     },
-    [lockScroll, isControlled, controlledOnOpenChange],
+    [collapseByDefault, lockScroll, isControlled, controlledOnOpenChange],
   );
 
   return (

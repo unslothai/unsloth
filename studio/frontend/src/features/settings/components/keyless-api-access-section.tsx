@@ -84,6 +84,7 @@ export function KeylessApiAccessSection({
   const [saving, setSaving] = useState(false);
   const [pending, setPending] = useState<PendingGrant | null>(null);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cloudflareUrl is a trigger, not an input -- exposure is recomputed by the backend when a tunnel appears or goes away
   useEffect(() => {
     let cancelled = false;
     loadKeylessApiAccess()

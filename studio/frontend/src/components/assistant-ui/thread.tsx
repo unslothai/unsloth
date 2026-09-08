@@ -59,7 +59,7 @@ import {
   promptQueueActiveItemChanged,
   reorderPromptQueueItems,
   pasteClipboardFiles,
-  extractYoutubeVideoId,
+  extractYoutubeVideoUrlFromClipboard,
   pasteLongTextAsFile,
   isPlainPasteChord,
   plainPasteStillCounts,
@@ -101,6 +101,7 @@ import {
   PromptStorageDialog,
   exportConversationShareGPT,
   exportConversationRawJsonl,
+  exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
@@ -127,6 +128,7 @@ import {
   ingestResearchUpdate,
   useResearchRunStore,
 } from "@/features/chat/stores/research-run-store";
+import { researchReplyOwnsRun } from "@/features/chat/utils/research-run-binding";
 import {
   parseExternalModelId,
   providerModelSupportsStudioTools,
@@ -148,11 +150,13 @@ import {
 } from "@/features/chat/utils/continuation";
 import { holdAutoContinueRun } from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
+import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-accept";
 import {
   COMPOSER_INPUT_SELECTOR,
   isSurfaceInForeground,
   useShortcut,
 } from "@/features/settings";
+import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { create } from "zustand";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
@@ -162,13 +166,15 @@ import {
   settleThreadScopedSettingsForCopy,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
+import {
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  PROMPT_QUEUE_STOP_EVENT,
+} from "@/features/chat/utils/prompt-queue-events";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
   PLUS_MENU_ORDER,
   CONVERSATION_MARKDOWN_LABEL,
-  PROMPT_QUEUE_RUN_FAILED_EVENT,
-  PROMPT_QUEUE_STOP_EVENT,
   addQueuedChatRunSettingsThreadIds,
   adoptPreStreamRunReservation,
   chatHistoryClearBoundary,
@@ -179,6 +185,8 @@ import {
   localPromptQueueModelBoundary,
   notifyPromptQueueRunFailed,
   planLocalPromptQueueStop,
+  planUserPromptQueueStop,
+  userStopTargetCancelMode,
   registerQueuedChatRunSettings,
   releasePreStreamRunReservation,
   reservePreStreamRun,
@@ -245,6 +253,7 @@ import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
+import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
@@ -287,12 +296,13 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
   CornerDownRightIcon,
-  GitBranchIcon,
   FastForwardIcon,
+  GitBranchIcon,
   GlobeIcon,
   HeadphonesIcon,
   Loader2Icon,
@@ -349,10 +359,13 @@ type PromptQueueTarget = {
   append: (prompt: string) => void | Promise<void>;
   complete: () => void;
   cancel: () => void;
+  cancelActiveRun: () => void;
   isIndexing: () => boolean;
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
   usesDeepResearch: boolean;
+  /** Whether a research run now holds this queue's thread. */
+  researchStarted: () => boolean;
   temporary: boolean;
   consumeDeepResearch: () => void;
 };
@@ -372,6 +385,7 @@ type PromptQueueRun = {
   generation: number;
   prevStoreRunning: boolean;
   waitingForTargetIdle: boolean;
+  paused: boolean;
   retryTimer: ReturnType<typeof setTimeout> | null;
   deepResearchConsumed: boolean;
 };
@@ -501,7 +515,13 @@ function consumePromptQueueDeepResearch(
   run: PromptQueueRun,
   item: PromptQueueItem,
 ) {
-  if (run.deepResearchConsumed || !item.target.usesDeepResearch) {
+  // The model decides whether an armed prompt becomes research, so the queue's one research
+  // is spent only once a run actually started, not on the first prompt that was merely armed.
+  if (
+    run.deepResearchConsumed ||
+    !item.target.usesDeepResearch ||
+    !item.target.researchStarted()
+  ) {
     return;
   }
   run.deepResearchConsumed = true;
@@ -633,6 +653,7 @@ function isPromptQueueRunReadyToDispatch(run: PromptQueueRun) {
       run.index >= 0 &&
       !item.dispatched &&
       !run.waitingForTargetIdle &&
+      !run.paused &&
       !run.retryTimer &&
       !promptQueueActiveRunIds.has(run.id) &&
       !promptQueueDispatchingRunIds.has(run.id),
@@ -682,10 +703,18 @@ function pumpPromptQueues() {
       deletePromptQueueRun(run);
       continue;
     }
+    const dispatchGeneration = run.generation;
     promptQueueDispatchingRunIds.add(run.id);
     dispatchQueuedPrompt(run, item, run.generation)
       .catch(() => undefined)
       .finally(() => {
+        // Releasing a live attempt's flag makes Stop then Resume append twice.
+        if (
+          promptQueueRuns.get(run.id) === run &&
+          dispatchGeneration !== run.generation
+        ) {
+          return;
+        }
         promptQueueDispatchingRunIds.delete(run.id);
         syncPromptQueueUI();
         if (!promptQueueActiveRunIds.has(run.id)) {
@@ -854,6 +883,9 @@ function getPromptQueueItemStatus(
   index: number,
   activeItemIndex: number,
 ): PromptQueueUIItemStatus {
+  if (run.paused && run.index >= 0 && index === activeItemIndex) {
+    return "paused";
+  }
   if (run.index >= 0 && index === activeItemIndex) {
     return run.waitingForTargetIdle ? "waiting" : "next";
   }
@@ -917,6 +949,7 @@ function syncPromptQueueUI() {
       local: promptQueueRunUsesLocalModel(run),
       temporary: promptQueueRunIsTemporary(run),
       dispatched: Boolean(getActivePromptQueueItem(run)?.dispatched),
+      paused: run.paused,
     };
     for (const id of ids) {
       byThreadId[id] = entry;
@@ -1154,6 +1187,9 @@ function handlePromptQueueRunState(
   if (!wasRunning || isRunning) {
     return;
   }
+  if (run.paused) {
+    return;
+  }
   if (run.waitingForTargetIdle) {
     clearPromptQueueRetryTimer(run);
     run.waitingForTargetIdle = false;
@@ -1228,6 +1264,7 @@ function startPromptQueue(
     generation: 0,
     prevStoreRunning: shouldWaitForCurrentRun,
     waitingForTargetIdle: false,
+    paused: false,
     retryTimer: null,
     deepResearchConsumed: false,
   };
@@ -1259,6 +1296,71 @@ function getPromptQueueRunsForThreadIds(threadIds?: string[]) {
     }
   }
   return Array.from(runs);
+}
+
+function pausePromptQueueRun(threadIds?: string[]) {
+  for (const run of getPromptQueueRunsForThreadIds(threadIds)) {
+    const activeItem = getActivePromptQueueItem(run);
+    const plan = planUserPromptQueueStop(
+      run.items.map((item) => ({ dispatched: item.dispatched })),
+      run.index,
+    );
+    const cancelMode = userStopTargetCancelMode(plan);
+    if (plan.retainedItemIndexes.length === 0) {
+      deletePromptQueueRun(run);
+    } else {
+      run.items = plan.retainedItemIndexes.map((index) => run.items[index]);
+      // From 0 this rewinds onto an item already passed, replaying it out of order.
+      const resumeFrom = plan.retainedItemIndexes.findIndex(
+        (index) => index >= Math.max(run.index, 0),
+      );
+      const searchFrom = resumeFrom < 0 ? 0 : resumeFrom;
+      const nextIndex = run.items.findIndex(
+        (item, index) => index >= searchFrom && !item.dispatched,
+      );
+      if (nextIndex < 0) {
+        deletePromptQueueRun(run);
+      } else {
+        run.generation += 1;
+        run.index = nextIndex;
+        run.paused = plan.pause;
+        run.waitingForTargetIdle = false;
+        run.prevStoreRunning = false;
+        clearPromptQueueRetryTimer(run);
+        promptQueueActiveRunIds.delete(run.id);
+        promptQueueDispatchingRunIds.delete(run.id);
+        syncPromptQueueUI();
+      }
+    }
+    if (cancelMode === "none") {
+      continue;
+    }
+    try {
+      if (cancelMode === "permanent") {
+        activeItem?.target.cancel();
+      } else {
+        activeItem?.target.cancelActiveRun();
+      }
+    } catch {
+      // The active run may have already ended.
+    }
+  }
+  requestPromptQueuePumpIfReady();
+}
+
+function resumePromptQueueRun(threadIds?: string[]) {
+  for (const run of getPromptQueueRunsForThreadIds(threadIds)) {
+    if (!run.paused) {
+      continue;
+    }
+    run.paused = false;
+    // prevStoreRunning outlives the paused early-return; a stale edge skips a prompt.
+    run.waitingForTargetIdle = false;
+    run.prevStoreRunning = false;
+    clearPromptQueueRetryTimer(run);
+    syncPromptQueueUI();
+  }
+  requestPromptQueuePumpIfReady();
 }
 
 function stopPromptQueueRun(threadIds?: string[]) {
@@ -1360,6 +1462,9 @@ function stopLocalPromptQueueRunsForThreadIds(threadIds: string[]) {
 }
 
 function retainPendingPromptQueueItemsAfterFailure(run: PromptQueueRun) {
+  if (run.paused) {
+    return true;
+  }
   const activeIndex = Math.max(run.index, 0);
   const activeItem = run.items[activeIndex];
   if (run.index < 0 || !activeItem?.dispatched) {
@@ -2268,6 +2373,9 @@ const Composer: FC<{
   const researchThreadClaimed = useResearchRunStore((state) =>
     researchThreadId ? Boolean(state.claimedThreadIds[researchThreadId]) : false,
   );
+  const liveResearchRunId = useResearchRunStore((state) =>
+    researchThreadId ? state.latestRunByThreadId[researchThreadId] : undefined,
+  );
   // Derive in the selector, as useThreadResearchActive does: a bare run selector re-renders the
   // composer on every streamed research delta.
   const isResearchActive = useResearchRunStore((state) => {
@@ -2280,7 +2388,7 @@ const Composer: FC<{
     );
   });
   const hasResearchMessage = useAuiState(({ thread }) =>
-    threadHasResearchMessage(thread.messages),
+    threadHasResearchMessage(thread.messages, liveResearchRunId),
   );
   const researchUsed = researchThreadClaimed || hasResearchMessage;
   const effectiveDeepResearchEnabled = deepResearchEnabled && !researchUsed;
@@ -2384,17 +2492,17 @@ const Composer: FC<{
       );
       plainPasteAtRef.current = 0;
       const pastedText = event.clipboardData?.getData("text/plain") ?? "";
-      if (extractYoutubeVideoId(pastedText)) {
-        setYoutubeLink(pastedText.trim());
-      }
+      const pastedYoutubeUrl = extractYoutubeVideoUrlFromClipboard(
+        event.clipboardData,
+      );
       // Bulk text pastes attach as a file instead of filling the input, except
       // in image-edit mode, whose submit path takes an inline instruction only.
       const input = event.currentTarget;
+      const { selectionStart, selectionEnd, value } = input;
       // An attachment is serialised after all inline text, so only a paste that
       // was already heading to the end can become one. Mid-text pastes stay
       // inline, where the order the user typed them in survives.
       const pasteGoesLast = input.selectionEnd === input.value.length;
-      const { selectionStart, selectionEnd, value } = input;
       // Swallowing the paste also swallowed the replacement the browser would
       // have made. Only once the attachment is in, and only if the composer is
       // still the one that was pasted into, or a failed paste eats the text.
@@ -2433,6 +2541,30 @@ const Composer: FC<{
             description: "The clipboard item is unsupported, unreadable, or exceeds its size limit.",
           }),
       );
+      if (event.defaultPrevented) return;
+      if (pastedYoutubeUrl) {
+        setYoutubeLink(pastedYoutubeUrl);
+        if (!pastedText.includes(pastedYoutubeUrl)) {
+          event.preventDefault();
+          const youtubePasteText =
+            pastedText.length === 0
+              ? pastedYoutubeUrl
+              : `${pastedText}${pastedText.endsWith("\n") ? "" : "\n"}${pastedYoutubeUrl}`;
+          const caret = selectionStart + youtubePasteText.length;
+          aui
+            .composer()
+            .setText(
+              value.slice(0, selectionStart) +
+                youtubePasteText +
+                value.slice(selectionEnd),
+            );
+          requestAnimationFrame(() => input.setSelectionRange(caret, caret));
+          if (justSentRef.current?.draftKey === draftKeyRef.current) {
+            justSentRef.current = null;
+          }
+          return;
+        }
+      }
       // A paste is a gesture, so it retires the guard and re-pasting the sent
       // prompt goes through. Last, and only when the browser will really insert
       // the text: a payload carrying files is preventDefaulted above, so
@@ -3472,6 +3604,7 @@ const Composer: FC<{
     };
     const pendingSettingsIds = new Set<number>();
     let cancelled = false;
+    let appendEpoch = 0;
     let shouldCorrectPersistedModel: boolean | null = null;
     let initializedFreshThreadId: string | null = null;
     let freshThreadAppendAccepted = false;
@@ -3520,6 +3653,7 @@ const Composer: FC<{
         hasPreStreamRunReservation(getQueueThreadIds()) ||
         Boolean(getThreadRuntime()?.getState().isRunning),
       append: async (prompt) => {
+        const epoch = appendEpoch;
         const thread = getThreadRuntime();
         if (!thread) {
           throw new Error("Prompt queue thread runtime is unavailable");
@@ -3557,6 +3691,7 @@ const Composer: FC<{
               projectId: projectIdAtQueueStart,
               incognito: incognitoAtQueueStart,
               modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
+              modelGgufVariant: runSettingsAtQueueStart.activeGgufVariant,
               createdAt: Date.now(),
             });
           }
@@ -3572,6 +3707,7 @@ const Composer: FC<{
           if (
             removeFreshThreadPersistedAfterAbort() ||
             cancelled ||
+            epoch !== appendEpoch ||
             !pendingSettingsIds.has(settingsId)
           ) {
             return;
@@ -3586,11 +3722,13 @@ const Composer: FC<{
             // before any later navigation or compatibility check can observe it.
             await updateStoredChatThread(remoteId, {
               modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
+              modelGgufVariant: runSettingsAtQueueStart.activeGgufVariant,
             });
             shouldCorrectPersistedModel = false;
             if (
               removeFreshThreadPersistedAfterAbort() ||
               cancelled ||
+              epoch !== appendEpoch ||
               !pendingSettingsIds.has(settingsId)
             ) {
               return;
@@ -3632,6 +3770,11 @@ const Composer: FC<{
         pendingSettingsIds.clear();
         getThreadRuntime()?.cancelRun();
       },
+      cancelActiveRun: () => {
+        appendEpoch += 1;
+        discardOldestPendingSettings();
+        getThreadRuntime()?.cancelRun();
+      },
       isIndexing: () =>
         promptQueueTargetMountedRef.current &&
         isTargetCurrentThread() &&
@@ -3642,6 +3785,10 @@ const Composer: FC<{
       usesLocalModel:
         parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,
       usesDeepResearch: runSettingsAtQueueStart.deepResearchEnabled,
+      researchStarted: () => {
+        const claimed = useResearchRunStore.getState().claimedThreadIds;
+        return getQueueThreadIds().some((id) => Boolean(claimed[id]));
+      },
       temporary: incognitoAtQueueStart,
       consumeDeepResearch: () => {
         runSettingsAtQueueStart.deepResearchEnabled = false;
@@ -4088,6 +4235,7 @@ const Composer: FC<{
         projectId: projectScope,
         incognito: chatStateAtSend.incognito,
         modelId: chatStateAtSend.params.checkpoint ?? "",
+        modelGgufVariant: chatStateAtSend.activeGgufVariant,
         createdAt: Date.now(),
       });
       aui.composer().send();
@@ -4166,24 +4314,63 @@ const Composer: FC<{
     setPendingSend(false);
     dismissWaitToast();
     if (text.trim().length > 0 || attachments.length > 0) {
-      clearStoredDraft();
-      if (forceQueue) {
-        // Wait mode read now, not carried from the parked submit: a run can
-        // start while the settings load, and ignoring it would dispatch on top
-        // of the response already streaming.
-        const waitForCurrentRun = aui.thread().getState().isRunning;
-        // The chord's own two branches from handleSubmit, in the same order. A
-        // long paste lives in an attachment, so queueing the text alone queues
-        // nothing at all when that is all there is.
-        if (canQueueCurrentPrompt) {
-          queueComposerText(waitForCurrentRun);
-          return;
-        }
-        if (canQueuePastedTextPrompt && queuePastedTextPrompt(waitForCurrentRun)) {
-          return;
-        }
-        // Nothing queueable: send, as this path did before it carried intent.
+      // Wait mode read now, not carried from the parked submit: a run can
+      // start while the settings load, and ignoring it would dispatch on top
+      // of the response already streaming.
+      const waitForCurrentRun =
+        aui.thread().getState().isRunning ||
+        hasPreStreamRunReservation(preStreamThreadIds);
+      // A parked send is a submit arriving late, so mirror handleSubmit's
+      // branches. Sending regardless is how a message vanished: on a throttled
+      // browser a follow-up parked 786 ms in was released 236 ms later with
+      // the first turn still streaming, went to sendReservedComposer(), and
+      // was refused by the runtime -- neither queued nor sent, and the wait
+      // toast already dismissed above, so nothing on screen said so.
+      //
+      // Research refuses every submit and swaps Send for Stop research, so a
+      // release here would start a turn from a state where input is disabled.
+      if (isResearchActive) {
+        return;
       }
+      if (waitForCurrentRun) {
+        // Queueing on the project new-chat composer binds the follow-up to a
+        // thread that does not exist yet.
+        if (disableQueue) {
+          toast.error("Wait for the current response to finish");
+          return;
+        }
+        // queueComposerText clears the draft from its onStarted callback, so a
+        // queue that never starts leaves the text recoverable.
+        if (canQueueCurrentPrompt) {
+          queueComposerText(true);
+          return;
+        }
+        // A long paste lives in an attachment, so queueing the text alone
+        // queues nothing when that is all there is.
+        if (canQueuePastedTextPrompt && queuePastedTextPrompt(true)) {
+          return;
+        }
+        // Nothing queueable while a run is live: keep it and say why. Sending
+        // would push the attachment into the running thread.
+        if (overlay || hasAttachments || hasPendingAudio) {
+          toast.error("Wait for the current response to finish", {
+            description:
+              "Only text prompts can be queued while a response is running or the prompt queue is active.",
+          });
+        }
+        return;
+      }
+      // Nothing running: the chord still queues up front, as it does live.
+      if (forceQueue && !disableQueue) {
+        if (canQueueCurrentPrompt) {
+          queueComposerText(false);
+          return;
+        }
+        if (canQueuePastedTextPrompt && queuePastedTextPrompt(false)) {
+          return;
+        }
+      }
+      clearStoredDraft();
       sendReservedComposer();
     }
   }, [
@@ -4201,6 +4388,12 @@ const Composer: FC<{
     queueComposerText,
     queuePastedTextPrompt,
     sendReservedComposer,
+    preStreamThreadIds,
+    disableQueue,
+    isResearchActive,
+    overlay,
+    hasAttachments,
+    hasPendingAudio,
   ]);
 
   // Drop any queued send + toast on unmount (e.g. thread switch).
@@ -4575,7 +4768,11 @@ const Composer: FC<{
   );
 
   const stopQueue = useCallback(() => {
-    stopPromptQueueRunForThreadIds(promptQueueThreadIds);
+    pausePromptQueueRun(promptQueueThreadIds);
+  }, [promptQueueThreadIds]);
+
+  const resumeQueue = useCallback(() => {
+    resumePromptQueueRun(promptQueueThreadIds);
   }, [promptQueueThreadIds]);
 
   const startQueue = useCallback(
@@ -4736,6 +4933,7 @@ const Composer: FC<{
               // submitting the form, so run the complete queue/capacity path.
               onSendClick={handleSubmit}
               onStopClick={stopQueue}
+              onResumeClick={resumeQueue}
               onDictateClick={startDictation}
               pendingSend={pendingSend}
               menuSide={effectiveMenuSide}
@@ -4755,6 +4953,10 @@ const Composer: FC<{
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Root
       ref={attachComposer}
+      // Out of find-in-page's reach: the draft itself lives in a textarea the index cannot read, so
+      // all this leaves to find are the pill labels, and a search for "code" or "images" would land
+      // on the toolbar instead of on the conversation.
+      {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
       onSubmit={handleSubmit}
@@ -5064,22 +5266,6 @@ function useImeComposerInputHandlers({
 }
 
 // HugeIcons arrow-down-01 (stroke-standard): straight-line chevron.
-const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
-  </svg>
-);
-
 // svgrepo.com lightbulb (filled, with base).
 const BulbIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
@@ -5207,9 +5393,14 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
 
   if (useDropdown) {
     return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild={true}>
+      <NonModalDropdownMenu
+        side={side}
+        align="end"
+        avoidCollisions={true}
+        className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[176px]"
+        trigger={(triggerRef) => (
           <button
+            ref={triggerRef}
             type="button"
             disabled={disabled}
             className="unsloth-thinking-pill"
@@ -5227,128 +5418,122 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 {isEffort ? `Thinking · ${effortLabel}` : "Thinking"}
               </span>
             ) : null}
-            <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
+            <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[15px]" />
           </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          side={side}
-          align="end"
-          avoidCollisions={true}
-          className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[176px]"
-        >
-          {isEffort ? (
-            <>
-              {effectiveSupportsReasoningOff && (
-                <DropdownMenuItem
-                  onSelect={() => {
-                    setReasoningEnabled(false);
-                    applyQwenThinkingParams(false);
-                    // Preserve thinking needs thinking on, so turn it off too.
-                    setPreserveThinking(false);
-                  }}
-                >
-                  <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
-                    className={cn(
-                      "unsloth-tick size-4",
-                      effectiveReasoningVisualEnabled && "opacity-0",
-                    )}
-                  />
-                  None
-                </DropdownMenuItem>
-              )}
-              {effectiveReasoningEffortLevels
-                // 'none' is a real template level for models like Inkling
-                // (effort 0 = thinking off); show it as a pick unless the
-                // dedicated off item above already covers it.
-                .filter(
-                  (level) =>
-                    level !== "none" || !effectiveSupportsReasoningOff,
-                )
-                .map((level) => (
-                  <DropdownMenuItem
-                    key={level}
-                    onSelect={() => {
-                      setReasoningEffort(level);
-                      setReasoningEnabled(true);
-                      applyQwenThinkingParams(true);
-                      // Kimi's $web_search builtin forbids thinking, so
-                      // enabling thinking flips the Search pill off.
-                      if (isKimiExternal && toolsEnabled) {
-                        setToolsEnabled(false, { persist: false });
-                      }
-                    }}
-                  >
-                    <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
-                      className={cn(
-                        "unsloth-tick size-4",
-                        !(
-                          effectiveReasoningVisualEnabled &&
-                          reasoningEffort === level
-                        ) && "opacity-0",
-                      )}
-                    />
-                    {formatEffortLabel(level)}
-                  </DropdownMenuItem>
-                ))}
-            </>
-          ) : (
-            effectiveSupportsReasoningOff &&
-            !reasoningLockedOn && (
+        )}
+      >
+        {isEffort ? (
+          <>
+            {effectiveSupportsReasoningOff && (
               <DropdownMenuItem
                 onSelect={() => {
-                  const next = !reasoningEnabled;
-                  setReasoningEnabled(next);
-                  applyQwenThinkingParams(next);
-                  // Preserve thinking cannot run without thinking.
-                  if (!next) setPreserveThinking(false);
-                  if (isKimiExternal && next && toolsEnabled) {
-                    setToolsEnabled(false, { persist: false });
-                  }
+                  setReasoningEnabled(false);
+                  applyQwenThinkingParams(false);
+                  // Preserve thinking needs thinking on, so turn it off too.
+                  setPreserveThinking(false);
                 }}
               >
                 <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                  icon={Tick02Icon}
+                  strokeWidth={2}
                   className={cn(
                     "unsloth-tick size-4",
-                    !effectiveReasoningEnabled && "opacity-0",
+                    effectiveReasoningVisualEnabled && "opacity-0",
                   )}
                 />
-                Thinking
+                None
               </DropdownMenuItem>
-            )
-          )}
-          {supportsPreserveThinking && (
+            )}
+            {effectiveReasoningEffortLevels
+              // 'none' is a real template level for models like Inkling
+              // (effort 0 = thinking off); show it as a pick unless the
+              // dedicated off item above already covers it.
+              .filter(
+                (level) =>
+                  level !== "none" || !effectiveSupportsReasoningOff,
+              )
+              .map((level) => (
+                <DropdownMenuItem
+                  key={level}
+                  onSelect={() => {
+                    setReasoningEffort(level);
+                    setReasoningEnabled(true);
+                    applyQwenThinkingParams(true);
+                    // Kimi's $web_search builtin forbids thinking, so
+                    // enabling thinking flips the Search pill off.
+                    if (isKimiExternal && toolsEnabled) {
+                      setToolsEnabled(false, { persist: false });
+                    }
+                  }}
+                >
+                  <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                    className={cn(
+                      "unsloth-tick size-4",
+                      !(
+                        effectiveReasoningVisualEnabled &&
+                        reasoningEffort === level
+                      ) && "opacity-0",
+                    )}
+                  />
+                  {formatEffortLabel(level)}
+                </DropdownMenuItem>
+              ))}
+          </>
+        ) : (
+          effectiveSupportsReasoningOff &&
+          !reasoningLockedOn && (
             <DropdownMenuItem
-              disabled={disabled}
-              onSelect={(e) => {
-                e.preventDefault();
-                const next = !preserveThinking;
-                setPreserveThinking(next);
-                // Preserve thinking requires thinking on.
-                if (next) {
-                  setReasoningEnabled(true);
-                  applyQwenThinkingParams(true);
+              onSelect={() => {
+                const next = !reasoningEnabled;
+                setReasoningEnabled(next);
+                applyQwenThinkingParams(next);
+                // Preserve thinking cannot run without thinking.
+                if (!next) setPreserveThinking(false);
+                if (isKimiExternal && next && toolsEnabled) {
+                  setToolsEnabled(false, { persist: false });
                 }
               }}
             >
               <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                  icon={Tick02Icon}
+                  strokeWidth={2}
                 className={cn(
                   "unsloth-tick size-4",
-                  !preserveThinking && "opacity-0",
+                  !effectiveReasoningEnabled && "opacity-0",
                 )}
               />
-              Preserve thinking
+              Thinking
             </DropdownMenuItem>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
+          )
+        )}
+        {supportsPreserveThinking && (
+          <DropdownMenuItem
+            disabled={disabled}
+            onSelect={(e) => {
+              e.preventDefault();
+              const next = !preserveThinking;
+              setPreserveThinking(next);
+              // Preserve thinking requires thinking on.
+              if (next) {
+                setReasoningEnabled(true);
+                applyQwenThinkingParams(true);
+              }
+            }}
+          >
+            <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+              className={cn(
+                "unsloth-tick size-4",
+                !preserveThinking && "opacity-0",
+              )}
+            />
+            Preserve thinking
+          </DropdownMenuItem>
+        )}
+      </NonModalDropdownMenu>
     );
   }
 
@@ -5660,18 +5845,18 @@ const ToolStatusDisplay: FC = () => {
 // Plus menu: attachment and workflow actions. Opens downward in the welcome
 // composer; the docked composer passes side="top" to open upward.
 const AUDIO_ACCEPT_TOKEN_RE =
-  /^(audio\/|\.(?:wav|mp3|m4a|ogg|oga|flac)$)/i;
+  /^(audio\/|\.(?:wav|mp3|mp2|m4a|ogg|oga|opus|flac|aac|aiff|aif|aifc|caf|wma|amr)$)/i;
 
 function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): string {
-  if (audioEnabled || accept === "*") {
-    return accept;
-  }
-  const filtered = accept
-    .split(",")
-    .map((token) => token.trim())
-    .filter((token) => token && !AUDIO_ACCEPT_TOKEN_RE.test(token))
-    .join(",");
-  return filtered || accept;
+  const enabledAccept =
+    audioEnabled || accept === "*"
+      ? accept
+      : accept
+          .split(",")
+          .map((token) => token.trim())
+          .filter((token) => token && !AUDIO_ACCEPT_TOKEN_RE.test(token))
+          .join(",") || accept;
+  return pickerAcceptForTextBasenames(enabledAccept);
 }
 
 const ComposerToolsMenu: FC<{
@@ -5937,7 +6122,17 @@ const ComposerToolsMenu: FC<{
               });
             }}
           >
-            Raw JSONL
+            Training JSONL
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationMessagesJsonl(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
+            }}
+          >
+            Message JSONL
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() => {
@@ -6199,6 +6394,8 @@ function promptQueueStatusLabel(status: PromptQueueUIItemStatus) {
       return "Waiting";
     case "next":
       return "Next";
+    case "paused":
+      return "Paused";
     case "queued":
       return "Queued";
     default: {
@@ -6446,6 +6643,7 @@ const ComposerRightControls: FC<{
   onQueueClick?: () => void;
   onSendClick?: (event: { preventDefault: () => void }) => void;
   onStopClick?: () => void;
+  onResumeClick?: () => void;
   onDictateClick?: () => void;
   pendingSend?: boolean;
   menuSide?: "top" | "bottom";
@@ -6456,6 +6654,7 @@ const ComposerRightControls: FC<{
   onQueueClick,
   onSendClick,
   onStopClick,
+  onResumeClick,
   onDictateClick,
   pendingSend,
   menuSide,
@@ -6571,7 +6770,20 @@ const ComposerRightControls: FC<{
       </AuiIf>
       {isQueueRunning && !isResearchActive ? (
         <AuiIf condition={({ thread }) => !thread.isRunning}>
-          {queueEntry?.dispatched ? (
+          {queueEntry?.paused && queueDisabled ? (
+            <TooltipIconButton
+              tooltip="Resume queue"
+              side="bottom"
+              type="button"
+              variant="default"
+              size="icon"
+              onClick={onResumeClick}
+              className="aui-composer-send ml-1.5 size-9 rounded-full"
+              aria-label="Resume queue"
+            >
+              <FastForwardIcon className="size-[18px] stroke-2" />
+            </TooltipIconButton>
+          ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button
               type="button"
               variant="default"
@@ -6580,7 +6792,7 @@ const ComposerRightControls: FC<{
               aria-label="Stop queued message"
               onClick={stop}
             >
-              <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+              <SquareIcon className="size-3 fill-current" />
             </Button>
           ) : (
             <TooltipIconButton
@@ -6612,7 +6824,7 @@ const ComposerRightControls: FC<{
           {researchStopping ? (
             <Spinner className="size-3.5" />
           ) : (
-            <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+            <SquareIcon className="size-3 fill-current" />
           )}
         </Button>
       ) : (
@@ -6628,7 +6840,7 @@ const ComposerRightControls: FC<{
                 aria-label="Stop generating"
                 onClick={stop}
               >
-                <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+                <SquareIcon className="size-3 fill-current" />
               </Button>
             </ComposerPrimitive.Cancel>
             ) : (
@@ -6780,9 +6992,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
     const activeModel = s.models.find((m) => m.id === s.params.checkpoint);
     return Boolean(activeModel?.isAudio && !activeModel.hasAudioInput);
   });
-  // Research armed after the cut owns no run yet, so the gates above stay clear.
-  const deepResearchArmed = useChatRuntimeStore((s) => s.deepResearchEnabled);
-
   // Cancelled comes through status (the adapter yields nothing after an abort); the
   // other two are stamped on metadata so they survive a reload.
   const stamped = readIncompleteInfo(metadata);
@@ -6802,7 +7011,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
     modeAllowsContinuation({
       fromAudioInput,
       audioOutputModel,
-      deepResearchArmed,
     }) &&
     Boolean(partial.trim());
 
@@ -7238,6 +7446,8 @@ function useActionBarFocusReveal() {
   return { ref: rootRef, onFocus: handleFocus, onBlur: handleBlur };
 }
 
+const ResearchMessageRunIdContext = createContext<string | null>(null);
+
 /**
  * AssistantMessage handles the display and inline-editing of AI responses.
  *
@@ -7250,16 +7460,19 @@ const AssistantMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
-  const researchRunId = useAuiState(({ message }) => {
-    const custom = (
-      message.metadata as
-        | { custom?: { researchRunId?: unknown } }
-        | undefined
-    )?.custom;
-    return typeof custom?.researchRunId === "string"
-      ? custom.researchRunId
+  const metadataResearchRunId = useAuiState(({ message }) =>
+    getResearchRunId(message.metadata),
+  );
+  const boundResearchAssistantMessageId = useResearchRunStore((state) =>
+    metadataResearchRunId
+      ? state.sessions[metadataResearchRunId]?.run?.assistantMessageId
+      : undefined,
+  );
+  const researchRunId =
+    metadataResearchRunId &&
+    researchReplyOwnsRun(boundResearchAssistantMessageId, messageId)
+      ? metadataResearchRunId
       : null;
-  });
   // Persisted on the assistant turn that compacted, so the notice survives a reload.
   const contextTruncation = useAuiState(({ message }) => {
     const custom = (
@@ -7351,7 +7564,8 @@ const AssistantMessage: FC = () => {
   };
 
   return (
-    <MessagePrimitive.Root
+    <ResearchMessageRunIdContext.Provider value={researchRunId}>
+      <MessagePrimitive.Root
       className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
       // The message itself is the tab stop that lets the reveal below fire. Without it, a reply
@@ -7465,7 +7679,8 @@ const AssistantMessage: FC = () => {
         tabIndex={0}
         aria-label="Message actions"
       />
-    </MessagePrimitive.Root>
+      </MessagePrimitive.Root>
+    </ResearchMessageRunIdContext.Provider>
   );
 };
 
@@ -7662,7 +7877,7 @@ const getResearchRunId = (metadata: unknown): string | null => {
 };
 
 const useResearchMessageRunId = () => {
-  return useAuiState(({ message }) => getResearchRunId(message.metadata));
+  return useContext(ResearchMessageRunIdContext);
 };
 
 // Boolean(), not `!== null`: getResearchRunId returns whatever string it found, and an empty one
@@ -7855,6 +8070,7 @@ async function exportMessageMarkdown(content: string): Promise<void> {
 }
 const AssistantActionBar: FC = () => {
   const aui = useAui();
+  const moreMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const researchRunId = useResearchMessageRunId();
   const researchActive = useThreadResearchActive();
@@ -7925,6 +8141,7 @@ const AssistantActionBar: FC = () => {
         <ActionBarMorePrimitive.Root modal={false}>
           <ActionBarMorePrimitive.Trigger asChild={true}>
             <TooltipIconButton
+              ref={moreMenuTriggerRef}
               tooltip="More"
               className="data-[state=open]:bg-accent"
             >
@@ -7938,7 +8155,7 @@ const AssistantActionBar: FC = () => {
             className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[9px] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
           >
             {/* Prevent an outside dismissal from triggering Delete. */}
-            <MenuDismissGuard />
+            <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
             <ActionBarMorePrimitive.Item
               disabled={forkDisabled}
               onSelect={() => void forkMessage()}

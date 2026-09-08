@@ -188,7 +188,7 @@ test("every card reads its text arguments through toolArgText", () => {
       assert.match(
         initializer,
         COERCION_CALL,
-        `${file} reads ${prop} without coercing it; a model that sends a number there takes all of Studio down`,
+        `${file} reads ${prop} without coercing it; a model that sends a number there takes all of Unsloth down`,
       );
     }
   }

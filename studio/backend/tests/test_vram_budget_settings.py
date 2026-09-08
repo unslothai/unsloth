@@ -644,7 +644,7 @@ class TestFitTarget:
     """The budget has to reach llama.cpp's own fitter on the --fit fallback.
 
     ``--fit-target`` is documented by the bundled llama-server as the "target
-    margin per device for --fit ... default: 1024". Studio passes a tighter 512
+    margin per device for --fit ... default: 1024". Unsloth passes a tighter 512
     under Manual + Auto and nothing at all on the legacy auto path, so a lowered
     budget stopped at the planner and the fitter still packed to its own margin.
     """

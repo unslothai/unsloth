@@ -75,7 +75,12 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
 
   return (
     // Open mid-run so command and live output show, collapsed from history.
-    <ToolFallbackRoot defaultOpen={isRunning}>
+    // awaitingApproval overrides the preference: the command lives inside the
+    // content, Allow/Deny outside it, and the trigger shows only 60 characters.
+    <ToolFallbackRoot
+      defaultOpen={isRunning}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={command ? `$ ${command.slice(0, 60)}` : "Terminal"}
         status={status}

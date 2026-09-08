@@ -268,7 +268,7 @@ def test_liveness_covers_the_image_persist_tail():
 
 
 def test_both_image_routes_publish_the_persist_marker():
-    """The Studio route and the OpenAI-compatible one write the gallery on separate paths.
+    """The Unsloth route and the OpenAI-compatible one write the gallery on separate paths.
     Only the first used to count, so an OpenAI client's persist was invisible to both
     generate-progress and liveness."""
     import inspect

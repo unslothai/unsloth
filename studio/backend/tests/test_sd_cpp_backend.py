@@ -625,7 +625,7 @@ def test_asset_specs_flux2_klein_selects_encoder_by_variant():
 
 
 # A rename or takedown in a community repack breaks every no-GPU load needing the file, so each
-# one Studio depended on now has a byte-identical unsloth mirror.
+# one Unsloth depended on now has a byte-identical unsloth mirror.
 _REPACKER_ORGS = frozenset(
     {"comfy-org", "comfyanonymous", "quantstack", "city96", "calcuis", "orabazes"}
 )
@@ -996,7 +996,7 @@ _H3_HELP = _PRE_H3_HELP + (
 
 
 def test_h3_binary_gate_replaces_a_stale_managed_install(monkeypatch, tmp_path):
-    # An upgraded Studio still carrying an older managed sd-cli got that binary handed straight
+    # An upgraded Unsloth still carrying an older managed sd-cli got that binary handed straight
     # back: only runnability was probed, so the H3 load reported ready on a build with no H3
     # support and the first generation failed, after the whole bundle had already downloaded.
     stale = tmp_path / "stale" / "sd-cli"
@@ -1058,7 +1058,7 @@ def test_h3_binary_gate_refuses_but_keeps_a_user_supplied_build(monkeypatch, tmp
     with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
         bk.ensure_h3_sd_cpp_binary()
     assert own.exists()
-    # Not Studio's to delete, so the refusal must not ask for anything to be removed. The old
+    # Not Unsloth's to delete, so the refusal must not ask for anything to be removed. The old
     # wording said "remove that directory" whatever the binary was, and PATH discovery hands this
     # branch /usr/bin/sd, i.e. it read as "remove /usr/bin".
     assert "remove" not in str(excinfo.value)
@@ -2102,7 +2102,7 @@ def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirro
 def test_a_repack_left_in_the_pre_change_cache_root_still_wins_over_the_mirror(
     monkeypatch, tmp_path
 ):
-    """Changing Studio's cache folder must not cost the user the repack they already hold.
+    """Changing Unsloth's cache folder must not cost the user the repack they already hold.
 
     The fetch passes reuse_other_cache_root, so a file cached only under huggingface_hub's
     import-time root resolves through that root -- but only under the repo id it was filed as.

@@ -22,23 +22,38 @@ function summaryForLabel(sourceText: string, label: string): string {
   return sourceText.slice(start, end);
 }
 
-test("Tauri detail toggles put a custom down chevron after their labels", async () => {
+test("the shared detail toggle puts a custom down chevron after its label", async () => {
+  const summary = summaryForLabel(await source("log-details.tsx"), "Show {label}");
+
+  assert.match(summary, /\blist-none\b/);
+  assert.match(summary, /\[&::\-webkit-details-marker\]:hidden/);
+  assert.match(summary, /\bflex\b/);
+  assert.ok(
+    summary.indexOf("<HugeiconsIcon") > summary.indexOf("Show {label}") &&
+      summary.includes("icon={ChevronDownIcon}"),
+    "the chevron must be on the right",
+  );
+});
+
+test("every Tauri screen names its logs through the shared toggle", async () => {
   const startup = await source("startup-screen.tsx");
   const update = await source("update-screen.tsx");
 
   for (const [sourceText, label] of [
-    [startup, "Show installation details"],
-    [startup, "Show setup details"],
-    [update, "Show update details"],
+    [startup, "installation details"],
+    [startup, "setup details"],
+    [update, "update details"],
   ] as const) {
-    const summary = summaryForLabel(sourceText, label);
-    assert.match(summary, /\blist-none\b/);
-    assert.match(summary, /\[&::\-webkit-details-marker\]:hidden/);
-    assert.match(summary, /\bflex\b/);
-    assert.ok(
-      summary.indexOf("<HugeiconsIcon") > summary.indexOf(label) &&
-        summary.includes("icon={ChevronDownIcon}"),
-      `${label} chevron must be on the right`,
+    assert.match(
+      sourceText,
+      new RegExp(`<LogDetails label="${label}" lines=`),
+      `${label} must render through LogDetails`,
     );
+  }
+
+  // The copies these replaced drifted apart on spacing and wording; a hand-rolled
+  // <details> back in a screen is the shape that let that happen.
+  for (const sourceText of [startup, update]) {
+    assert.doesNotMatch(sourceText, /<details/);
   }
 });

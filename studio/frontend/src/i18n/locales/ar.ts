@@ -52,6 +52,13 @@ export const ar = {
     shutdown: "إيقاف التشغيل",
   },
   shell: {
+    find: {
+      label: "البحث في الصفحة",
+      previous: "التطابق السابق",
+      next: "التطابق التالي",
+      close: "إغلاق البحث",
+      truncated: "هذه الصفحة أطول من أن يتم البحث فيها بالكامل.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -222,6 +229,10 @@ export const ar = {
       browserReserved:
         "قد يحتفظ متصفحك بهذه التركيبة لنفسه. تعمل في تطبيق سطح المكتب.",
       actions: {
+        findInPage: {
+          label: "البحث في الصفحة",
+          description: "البحث في نص هذه الصفحة",
+        },
         openSettings: {
           label: "فتح الإعدادات",
           description: "فتح مربع حوار الإعدادات",
@@ -480,6 +491,13 @@ export const ar = {
         customModelDescription: "اسم النموذج المرسل إلى /v1/audio/transcriptions.",
         sttModelLabel: "نموذج التعرّف على الكلام",
         sttModelDescription: "اختر نموذج STT أو ابحث عنه لتشغيله محليًا.",
+        sttDeviceLabel: "التحميل إلى",
+        sttDeviceAuto: "وحدة معالجة الرسومات عند توفرها",
+        sttDeviceCpu: "ذاكرة المعالج",
+        sttDeviceAutoDescription:
+          "استخدم وحدة معالجة الرسومات إن وُجدت، وإلا فالمعالج.",
+        sttDeviceCpuDescription:
+          "احتفظ بالنموذج في ذاكرة النظام. النسخ أبطأ، لكن دون استخدام ذاكرة الرسومات.",
         sttModelSearchPlaceholder: "ابحث عن نموذج",
         sttModelSearching: "جارٍ البحث في Hugging Face…",
         sttModelValidating: "جارٍ التحقق من التوافق مع Whisper…",
@@ -688,7 +706,7 @@ export const ar = {
         sectionTitle: "التبديل التلقائي للنموذج (OpenAI API)",
         enable: "تبديل النموذج حسب الطلب",
         enableDescription:
-          "تحميل ملف GGUF منزّل ومذكور في طلب API قبل تلبية الطلب. مُعطّل افتراضيًا.",
+          "تحميل نموذج منزّل ومذكور في طلب API قبل تلبية الطلب. مُعطّل افتراضيًا.",
         idleUnload: "التفريغ التلقائي عند الخمول",
         idleUnloadDescription:
           "حرّر ذاكرة VRAM بعد هذا العدد من ثواني الخمول. تُبقي القيمة 0 النموذج محمّلًا، والحد الأدنى 60 ثانية.",
@@ -794,7 +812,7 @@ export const ar = {
         embeddingModel: "نموذج التضمين (Embedding)",
         embeddingModelDescription:
           "نموذج Hugging Face أو مسار محلي يُستخدم لفهرسة مستنداتك والبحث فيها. القيمة الافتراضية هي {defaultModel}.",
-        searchPlaceholder: "ابحث عن نماذج التضمين",
+        searchPlaceholder: "ابحث عن أي نموذج على HF",
         reindexWarning:
           "يؤثر فقط في المستندات التي تُفهرس حديثًا. أعِد رفع المستندات الحالية بعد تغيير النموذج.",
         emptyError: "أدخل معرّف نموذج Hugging Face أو مسارًا محليًا.",
@@ -802,7 +820,24 @@ export const ar = {
         saveError: "فشل حفظ نموذج التضمين.",
         saved: "تم حفظ نموذج التضمين.",
         saveAnyway: "الحفظ على أي حال",
-        resetAction: "إعادة التعيين إلى الافتراضي",
+        recommended: "موصى به",
+        onDevice: "على الجهاز",
+        searching: "جارٍ البحث في Hugging Face…",
+        checking: "جارٍ التحقق…",
+        noResults: "لم يتم العثور على نماذج تضمين",
+        download: "تنزيل",
+        unload: "إلغاء التحميل",
+        unloadFailed: "تعذّر إلغاء تحميل نموذج التضمين",
+        downloadingStatus: "جارٍ التنزيل…",
+        notDownloaded: "غير مُنزّل",
+        notDownloadedSized: "غير مُنزّل · {size}",
+        loaded: "مُحمّل",
+        downloading: "جارٍ تنزيل {model}",
+        downloadingDescription:
+          "يظهر التقدم في لوحة التنزيلات. ستستخدمه الفهرسة بمجرد اكتماله.",
+        downloadFailed: "تعذّر بدء التنزيل",
+        downloadConflict: "استأنف هذا التنزيل من Hub",
+        downloadBusy: "التنزيل قيد التقدم بالفعل",
       },
       storage: {
         sectionTitle: "التخزين",
@@ -813,6 +848,16 @@ export const ar = {
         copied: "تم نسخ المسار",
         openError: "تعذّر فتح المجلد",
         copyError: "تعذّر نسخ المسار",
+      },
+      repairInstall: {
+        label: "إصلاح التثبيت",
+        description:
+          "يعيد تشغيل المثبّت على البيئة المُدارة. استخدمه إذا لم يتم اكتشاف وحدة معالجة الرسومات أو إذا تعذّر بدء التطبيق.",
+        action: "إصلاح التثبيت",
+        confirmTitle: "هل تريد إصلاح هذا التثبيت؟",
+        confirmDescription:
+          "يوقف الخادم ويعيد تشغيل المثبّت، الذي يعيد تثبيت PyTorch لوحدة معالجة الرسومات في هذا الجهاز. تُحفظ المحادثات والإعدادات. قد يستغرق ذلك عدة دقائق.",
+        confirmAction: "إصلاح الآن",
       },
       resetPreferences: {
         sectionTitle: "منطقة الخطر",
@@ -867,16 +912,20 @@ export const ar = {
           "كل ما يلي محسوب من سجلك الخاص. لا يُجمَع أي شيء ولا يُرسَل إلى Unsloth.",
         retry: "إعادة المحاولة",
         privacyNote:
-          "تُحسب الإحصاءات من سجل المحادثات والتدريب المحفوظ في نسخة Unsloth لديك. لا يُجمَع أي شيء، ولا يُرسَل شيء إلى Unsloth أو إلى أي طرف ثالث.",
+          "تُحسب الإحصاءات من سجل المحادثات واستخدام API والتدريب المحلي في نسخة Unsloth لديك. لا تُحفظ مطالبات API أو ردوده أو مفاتيحه للإحصاءات، ولا يُرسل شيء إلى Unsloth أو أي طرف ثالث.",
         emptyChats:
-          "لا توجد محادثات بعد. ابدأ محادثة وستظهر إحصاءاتك هنا.",
+          "لا يوجد استخدام للمحادثات أو API بعد. ابدأ محادثة أو أرسل طلب API محليًا ومصادقًا عليه لتظهر إحصاءاتك هنا.",
         lifetimeTokens: "إجمالي التوكنات",
         peakTokens: "يوم الذروة",
         longestChat: "أطول محادثة",
         currentStreak: "التتابع الحالي",
         longestStreak: "أطول تتابع",
         activityTitle: "نشاط التوكنات",
-        activityDescription: "{total} خلال آخر {weeks}",
+        activityDescription: {
+          daily: "{total} خلال آخر {weeks}",
+          weekly: "أسبوع الذروة {total} · آخر {weeks}",
+          cumulative: "{total} متراكمة خلال آخر {weeks}",
+        },
         mode: {
           daily: "يومي",
           weekly: "أسبوعي",
@@ -891,6 +940,9 @@ export const ar = {
         totalMessages: "إجمالي الرسائل",
         tokensIn: "التوكنات المُرسَلة",
         tokensOut: "التوكنات المُولَّدة",
+        totalTokens: "إجمالي التوكنات",
+        studioChatTokens: "توكنات محادثة Unsloth",
+        apiTokens: "توكنات API",
         cachedTokens: "التوكنات المخزّنة مؤقتًا",
         cachedValue: "{tokens} ({percent}% من المُدخَلات)",
         avgTokensPerChat: "متوسط التوكنات لكل محادثة",
@@ -1066,6 +1118,8 @@ export const ar = {
         currentLoad: "الحمل الحالي",
         free: "{value} متاح",
         noGpu: "لا يوجد GPU مرئي",
+        gpuUnusable: "GPU غير قابل للاستخدام",
+        gpuUnusableDetail: "تم اكتشافه، لكن PyTorch لا يستطيع استخدامه",
       },
       gpu: {
         title: "أجهزة GPU",
@@ -1074,6 +1128,12 @@ export const ar = {
         detecting: "جارٍ البحث عن وحدات GPU...",
         unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
         noGpu: "لم يُكتشف أي GPU مرئي. تُعرض موارد CPU فقط أعلاه.",
+        noUsableGpu: "لا يوجد على هذا الجهاز أي GPU يمكن لـ PyTorch استخدامه.",
+        mismatchCpuBuild:
+          "PyTorch إصدار للـ CPU فقط ({version})، لذا لا يمكن استخدام وحدات GPU أدناه. أصلح التثبيت لاستعادة دعم GPU.",
+        mismatchUnavailable:
+          "لا يستطيع PyTorch ({version}) تهيئة وحدات GPU أدناه، لذا لا يمكن استخدامها. تحقق من تعريف كرت الشاشة أو أصلح التثبيت.",
+        unusableDevice: "غير قابل للاستخدام",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1186,6 +1246,7 @@ export const ar = {
         processMemory: "ذاكرة العملية",
         notInstalled: "غير مثبّت",
         unknown: "غير معروف",
+        vramWithShared: "{vram} VRAM + {shared} ذاكرة مشتركة",
       },
     },
     agents: {
@@ -1193,7 +1254,7 @@ export const ar = {
       description:
         "اربط وكلاء البرمجة مثل Claude Code وCodex بنموذج محلي باستخدام unsloth start.",
       intro:
-        "يربط Claude Code وCodex وHermes وOpenClaw وOpenCode وغيرها من الوكلاء بنموذج يقدّمه Unsloth محليًا، دون اتصال بالإنترنت تمامًا. يشغّل خادمًا متوافقًا مع OpenAI ولا يمسّ ملفات إعدادات وكيلك إطلاقًا.",
+        "يربط Claude Code وCodex وDeepSeek Harness وHermes وOpenClaw وOpenCode وغيرها من الوكلاء بنموذج يقدّمه Unsloth محليًا، دون اتصال بالإنترنت تمامًا. يشغّل خادمًا متوافقًا مع OpenAI ولا يمسّ ملفات إعدادات وكيلك إطلاقًا.",
       readDocs: "قراءة التوثيق",
       copy: "نسخ",
       copied: "تم النسخ",
@@ -1215,6 +1276,15 @@ export const ar = {
       docs: "التوثيق",
       agentDocs: "فتح توثيق إعداد {agent}",
       copyGeneratedCommand: "نسخ الأمر المُنشأ",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "يتطلب Codex نموذج GGUF يقدّمه llama-server. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في Unsloth.",
       subagent: {
@@ -1301,6 +1371,9 @@ export const ar = {
         showAllQuantizations: "إظهار جميع خيارات التكميم",
         showAllQuantizationsDescription:
           "عند التفعيل: تُدرج جميع خيارات التكميم ضمن «On Device»، بما فيها الخيارات غير المُنزَّلة. عند التعطيل: لا تظهر إلا خيارات التكميم المُنزَّلة.",
+        showMemoryBar: "إظهار شريط استخدام VRAM",
+        showMemoryBarDescription:
+          "يعرض أسفل صف كل نموذج تم تنزيله الاستخدام التقديري لذاكرة VRAM: الأوزان، وذاكرة KV المؤقتة عند طول السياق الذي سيُحمَّل به، وأي حجز لمسودة فك التشفير التخميني.",
       },
       menu: {
         title: "قائمة المحادثة",
@@ -1327,16 +1400,42 @@ export const ar = {
       rememberParamsPerModel: "تذكر الإعدادات لكل نموذج",
       rememberParamsPerModelDescription:
         "عند تبديل النموذج تُستعاد درجة الحرارة والموجّه وبقية الإعدادات التي استخدمتها آخر مرة مع ذلك النموذج. عند الإيقاف تبقى مجموعة إعدادات واحدة لكل النماذج.",
+      autoCompact: "ضغط المحادثات الطويلة تلقائيًا",
+      autoCompactDescription:
+        "عندما تصل محادثة GGUF محلية إلى طول السياق المحدد، احذف الأدوار الأقدم بدلًا من إرجاع خطأ. لا يعتمد ذلك على ذاكرة VRAM المتاحة.",
+      compactionStyle: "عند امتلاء السياق",
+      compactionStyleDescription:
+        "يُبقي الخيار الافتراضي للخادم UNSLOTH_CONTEXT_POLICY. تحتفظ إعادة ضبط المحادثة بأحدث دور والتعليمات الدائمة. تحذف النافذة المنزلقة الأدوار الأقدم ويمكنها الاحتفاظ بمزيد من السجل الحديث.",
+      compactionStyleInherit: "استخدام إعداد الخادم الافتراضي",
+      compactionStyleCheckpoint: "إعادة ضبط المحادثة",
+      compactionStyleRollingDefault: "حذف الأدوار الأقدم (مساحة إضافية نحو 25%)",
+      compactionStyleRolling10: "حذف الأدوار الأقدم (مساحة إضافية نحو 10%)",
+      compactionStyleRolling5: "حذف الأدوار الأقدم (مساحة إضافية نحو 5%)",
+      compactionStyleRollingNone: "حذف الأدوار الأقدم (دون اقتطاع إضافي)",
+      autoCompactKeywords:
+        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "طيّ التفكير افتراضيًا",
         collapseByDefaultDescription:
           "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
       },
+      currentDate: {
+        label: "إخبار النموذج بتاريخ اليوم",
+        description:
+          "أضف التاريخ الحالي إلى المطالبة حتى يبحث البحث على الويب و Deep Research عن مصادر حديثة بدلًا من افتراض تاريخ انتهاء تدريب النموذج.",
+        loadError: "تعذّر تحميل إعدادات التاريخ الحالي",
+        saveError: "تعذّر تحديث إعدادات التاريخ الحالي",
+      },
+      tools: {
+        collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
+        collapseByDefaultDescription:
+          "إبقاء مدخلات الأدوات ومخرجاتها مطوية أثناء التشغيل. وسّع أي صف أداة لفحصه.",
+      },
       webSearch: {
         title: "البحث على الويب",
         images: "عرض الصور من البحث على الويب",
         imagesDescription:
-          "يتيح للبحث على الويب إرجاع صور، ويجلب صورة لكل عنصر تعدّده الإجابة. يجلب Studio الصور المصغّرة ويغيّر حجمها، لذا لا يتصل المتصفح بمضيفي الصور أبدًا.",
+          "يتيح للبحث على الويب إرجاع صور، ويجلب صورة لكل عنصر تعدّده الإجابة. يجلب Unsloth الصور المصغّرة ويغيّر حجمها، لذا لا يتصل المتصفح بمضيفي الصور أبدًا.",
       },
       artifacts: {
         title: "Canvas",
@@ -1349,6 +1448,11 @@ export const ar = {
         blockedBanner: "تم حظر {count} مورد خارجي من {hosts}.",
         blockedBannerPlural: "تم حظر {count} موارد خارجية من {hosts}.",
         blockedBannerAction: "السماح لهذا الـ Canvas",
+        blockedTitle: "الوصول إلى الشبكة لـ Canvas معطّل",
+        blockedHint:
+          "فعّل «{setting}» في الإعدادات ← الدردشة للسماح لـ Canvas بتحميل الموارد الخارجية، أو اسمح بذلك لهذا الـ Canvas فقط.",
+        blockedSettingsAction: "فتح الإعدادات",
+        blockedDismiss: "تجاهل",
       },
       data: "البيانات",
       exportHistory: "تصدير سجل المحادثات",
@@ -1357,7 +1461,7 @@ export const ar = {
       exportingAction: "جارٍ التصدير...",
       exportConversations: "تصدير العناصر الأخيرة والمشاريع",
       exportConversationsDescription:
-        "نزّل العناصر الأخيرة وحدها أو مع محادثات المشاريع بصيغة JSONL خام أو CSV أو ShareGPT JSONL، في ملف مجمّع أو في ملف لكل محادثة.",
+        "نزّل العناصر الأخيرة وحدها أو مع محادثات المشاريع بصيغة Training JSONL أو CSV أو ShareGPT JSONL، في ملف مجمّع أو في ملف لكل محادثة. يتوفر Message JSONL لكل محادثة فقط.",
       exportConversationsAction: "تصدير",
       exportScopeRecents: "العناصر الأخيرة",
       exportScopeAll: "العناصر الأخيرة + المشاريع",
@@ -1422,6 +1526,8 @@ export const ar = {
       archivedImagesDescription: "اعرض الصور التي أرشفتها وأدرها.",
       archivedVideos: "الفيديوهات المؤرشفة",
       archivedVideosDescription: "اعرض الفيديوهات التي أرشفتها وأدرها.",
+      archivedAudio: "الصوتيات المؤرشفة",
+      archivedAudioDescription: "اعرض المقاطع الصوتية التي أرشفتها وأدرها.",
       manageAction: "إدارة",
       manageChats: "إدارة المحادثات",
       manageChatsDescription:
@@ -1604,7 +1710,7 @@ export const ar = {
         desktopCheckingDescription: "يستغرق ذلك عادةً بضع ثوانٍ.",
         desktopAvailable: "يتوفر إصدار جديد من تطبيق سطح المكتب: {version}",
         desktopAvailableDescription:
-          "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
+          "حدّث الآن ليُجهَّز التحديث في الخلفية. يمكنك متابعة عملك وإعادة التشغيل عندما يصبح جاهزًا.",
         desktopExternalServer:
           "شغّل الأمر `unsloth studio update` في الطرفية التي شغّلت الخادم.",
         desktopManualInstall:
@@ -1613,11 +1719,20 @@ export const ar = {
         desktopCheckFailedDescription: "تحقق من اتصالك ثم حاول مرة أخرى.",
         desktopCurrent: "تطبيق سطح المكتب محدّث",
         desktopCurrentDescription: "سيواصل Unsloth التحقق تلقائيًا.",
+        desktopPreparingDescription:
+          "يجري تجهيز التحديث في الخلفية. يمكنك متابعة عملك.",
+        desktopReadyToRestartDescription:
+          "كل شيء جاهز. أعد التشغيل لإكمال تثبيت التحديث.",
+        desktopReadyToInstallDescription:
+          "تم تنزيل تحديث التطبيق. أكمل تحديث الواجهة الخلفية لتثبيته.",
         checkForUpdates: "التحقق من وجود تحديثات",
         checkAgain: "التحقق مرة أخرى",
         retryCheck: "إعادة المحاولة",
         checking: "جارٍ التحقق...",
+        preparing: "جارٍ التجهيز...",
         updateNow: "التحديث الآن",
+        restartToUpdate: "إعادة التشغيل للتحديث",
+        finishUpdate: "إكمال التحديث",
         openReleasePage: "فتح صفحة الإصدار",
         unknownInstall:
           "تعذّر اكتشاف طريقة تثبيت Unsloth. لعمليات تثبيت المثبّت أو PyPI، استخدم الأوامر أعلاه.",
@@ -2030,6 +2145,7 @@ export const ar = {
       memoryEfficient: "موفّر للذاكرة",
       weightDecomposed: "أوزان مُفكَّكة",
       notSupportedAppleSilicon: "غير مدعوم على Apple Silicon",
+      doraNeedsVisionLayersOff: "أوقف تدريب طبقات الرؤية لاستخدام DoRA",
       optimization: "التحسين",
       schedule: "الجدولة",
       memory: "الذاكرة",
@@ -2322,5 +2438,14 @@ export const ar = {
       datasetStreaming: "مجموعة البيانات: تُقرأ بالتدفّق (من دون تنزيل كامل)",
       modelWeights: "أوزان النموذج",
     },
+  },
+  modelMemory: {
+    readout:
+      "الأوزان {model} + السياق {context} = {total} من {budget} من VRAM القابلة للاستخدام",
+    readoutWithSpec:
+      "الأوزان {model} + KV {kv} + مسودة MTP {spec} = {total} من {budget} من VRAM القابلة للاستخدام",
+    kvRate: "KV محجوزة مسبقًا، ~{rate}/توكن",
+    oomLikely: "مع الإعدادات الحالية يُرجَّح نفاد الذاكرة",
+    tooLarge: "أكبر من ذاكرة الرسوميات، وسيُفرَّغ جزء منه إلى المعالج. التكميم الأصغر أسرع",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

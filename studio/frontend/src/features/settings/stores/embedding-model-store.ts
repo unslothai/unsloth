@@ -19,11 +19,26 @@ interface EmbeddingModelState {
   /** Bumped by every committed mutation, so a slower read cannot undo it. */
   revision: number;
   applySettings: (settings: EmbeddingModelSettings) => void;
+  /** Reserve mutation order before an async preflight such as model resolution. */
+  beginSave: () => number;
+  isSaveCurrent: (reservation: number) => boolean;
   /**
    * Run a write and commit its answer. Returns false when a later write
    * started first, so the caller leaves the field to that one.
    */
-  save: (request: () => Promise<EmbeddingModelSettings>) => Promise<boolean>;
+  save: (
+    request: () => Promise<EmbeddingModelSettings>,
+    reservation?: number,
+  ) => Promise<boolean>;
+  /**
+   * Run a write that changes residency rather than the selection, such as
+   * unloading. It claims no place in save order: doing so retired the
+   * reservation a selection still running its preflight on the other surface
+   * was holding, and that selection then returned without ever persisting.
+   */
+  applyResidency: (
+    request: () => Promise<EmbeddingModelSettings>,
+  ) => Promise<void>;
   load: () => Promise<void>;
 }
 
@@ -53,8 +68,13 @@ export const useEmbeddingModelStore = create<EmbeddingModelState>(
         loadError: null,
         revision: state.revision + 1,
       })),
-    save: async (request) => {
-      const save = ++latestSave;
+    beginSave: () => ++latestSave,
+    isSaveCurrent: (reservation) => reservation === latestSave,
+    save: async (request, reservation) => {
+      const save = reservation ?? ++latestSave;
+      // Resolution belonging to an older cross-surface selection must never
+      // become a newer write merely because its preflight finished last.
+      if (save !== latestSave) return false;
       savesInFlight += 1;
       try {
         const settings = await request();
@@ -67,8 +87,32 @@ export const useEmbeddingModelStore = create<EmbeddingModelState>(
       } catch (error) {
         // A failed write leaves the backend on whatever the others wrote, so
         // an overlap has to be settled by a read, not by request order.
-        if (save !== latestSave || savesInFlight > 1) saveWasSuperseded = true;
+        if (save !== latestSave) {
+          saveWasSuperseded = true;
+          return false;
+        }
+        if (savesInFlight > 1) saveWasSuperseded = true;
         throw error;
+      } finally {
+        savesInFlight -= 1;
+        if (savesInFlight === 0 && saveWasSuperseded) {
+          saveWasSuperseded = false;
+          void get().load();
+        }
+      }
+    },
+    applyResidency: async (request) => {
+      savesInFlight += 1;
+      try {
+        const settings = await request();
+        // A selection is still out, and this answer was formed before whatever
+        // it persists. Applying it would show the old model; let the settling
+        // re-read below carry the residency change instead.
+        if (savesInFlight > 1) {
+          saveWasSuperseded = true;
+          return;
+        }
+        get().applySettings(settings);
       } finally {
         savesInFlight -= 1;
         if (savesInFlight === 0 && saveWasSuperseded) {

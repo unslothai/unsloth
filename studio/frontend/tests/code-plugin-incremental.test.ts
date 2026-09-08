@@ -11,7 +11,10 @@ import type {
 import { createHighlighter } from "shiki";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
-import { createCodePlugin } from "../src/components/assistant-ui/code-plugin.ts";
+import {
+  createCodePlugin,
+  TOKENIZE_LIMITS,
+} from "../src/components/assistant-ui/code-plugin.ts";
 
 const THEMES: [ThemeInput, ThemeInput] = ["github-light", "github-dark"];
 
@@ -98,6 +101,10 @@ async function reference(code: string, language: HighlightOptions["language"]) {
   return highlighter.codeToTokens(code, {
     lang: language,
     themes: { light: "github-light", dark: "github-dark" },
+    // The reference must run under the plugin's own tokenizer limits, or shiki's
+    // default wall-clock bail can degrade whichever side of the comparison is
+    // unlucky on a slow runner.
+    ...TOKENIZE_LIMITS,
   });
 }
 
@@ -300,7 +307,7 @@ test("a failed grammar load releases pending callbacks before retry", async () =
   let staleCallbacks = 0;
   try {
     console.error = (message?: unknown) => {
-      if (message === "[Studio Code] Failed to highlight code:") {
+      if (message === "[Unsloth Code] Failed to highlight code:") {
         reportFailure();
       }
     };
@@ -363,7 +370,7 @@ test("a transiently failed grammar load is retried under the same cache key", as
   const originalError = console.error;
   try {
     console.error = (message?: unknown) => {
-      if (message === "[Studio Code] Failed to highlight code:") reportFailure();
+      if (message === "[Unsloth Code] Failed to highlight code:") reportFailure();
     };
     assert.equal(
       plugin.highlight({ code: "value = 1\n", language, themes }, () => {

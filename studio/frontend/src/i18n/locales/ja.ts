@@ -54,6 +54,13 @@ export const ja = {
     shutdown: "シャットダウン",
   },
   shell: {
+    find: {
+      label: "ページ内検索",
+      previous: "前の一致",
+      next: "次の一致",
+      close: "検索を閉じる",
+      truncated: "このページは長すぎるため、全体を検索できません。",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -224,6 +231,10 @@ export const ja = {
       browserReserved:
         "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
       actions: {
+        findInPage: {
+          label: "ページ内検索",
+          description: "このページ内のテキストを検索します",
+        },
         openSettings: {
           label: "設定を開く",
           description: "設定ダイアログを開きます",
@@ -484,6 +495,13 @@ export const ja = {
         sttModelLabel: "音声認識モデル",
         sttModelDescription:
           "ローカルで実行する STT モデルを選択または検索します。",
+        sttDeviceLabel: "読み込み先",
+        sttDeviceAuto: "GPU（利用できる場合）",
+        sttDeviceCpu: "CPU メモリ",
+        sttDeviceAutoDescription:
+          "GPU があれば GPU を、なければ CPU を使用します。",
+        sttDeviceCpuDescription:
+          "モデルをシステムメモリに保持します。文字起こしは遅くなりますが、GPU メモリを使いません。",
         sttModelSearchPlaceholder: "モデルを検索",
         sttModelSearching: "Hugging Face を検索中…",
         sttModelValidating: "Whisper との互換性を確認中…",
@@ -683,7 +701,7 @@ export const ja = {
         sectionTitle: "モデル自動切り替え (OpenAI API)",
         enable: "リクエストごとにモデルを切り替え",
         enableDescription:
-          "API リクエストで指定されたダウンロード済みの GGUF を、応答前に読み込みます。デフォルトではオフです。",
+          "API リクエストで指定されたダウンロード済みのモデルを、応答前に読み込みます。デフォルトではオフです。",
         idleUnload: "アイドル時の自動アンロード",
         idleUnloadDescription:
           "指定した秒数だけアイドル状態が続くと、モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
@@ -783,14 +801,30 @@ export const ja = {
         sectionTitle: "ドキュメントと RAG",
         embeddingModel: "埋め込みモデル",
         embeddingModelDescription: "ドキュメントのインデックス作成と検索に使用する Hugging Face モデルまたはローカルパス。デフォルトは {defaultModel} です。",
-        searchPlaceholder: "埋め込みモデルを検索",
+        searchPlaceholder: "HF 上の任意のモデルを検索",
         reindexWarning: "新しくインデックスされるドキュメントにのみ影響します。モデルを変更した後は、既存のドキュメントを再アップロードしてください。",
         emptyError: "Hugging Face モデル ID またはローカルパスを入力してください。",
         loadError: "埋め込みモデル設定の読み込みに失敗しました。",
         saveError: "埋め込みモデルの保存に失敗しました。",
         saved: "埋め込みモデルを保存しました。",
         saveAnyway: "そのまま保存",
-        resetAction: "デフォルトに戻す",
+        recommended: "推奨",
+        onDevice: "このデバイス",
+        searching: "Hugging Face を検索中…",
+        checking: "確認中…",
+        noResults: "埋め込みモデルが見つかりません",
+        download: "ダウンロード",
+        unload: "アンロード",
+        unloadFailed: "埋め込みモデルをアンロードできませんでした",
+        downloadingStatus: "ダウンロード中…",
+        notDownloaded: "未ダウンロード",
+        notDownloadedSized: "未ダウンロード · {size}",
+        loaded: "読み込み済み",
+        downloading: "{model} をダウンロード中",
+        downloadingDescription: "進捗はダウンロードパネルに表示されます。完了後にインデックス作成で使用されます。",
+        downloadFailed: "ダウンロードを開始できませんでした",
+        downloadConflict: "このダウンロードは Hub から再開してください",
+        downloadBusy: "ダウンロードはすでに進行中です",
       },
       storage: {
         sectionTitle: "ストレージ",
@@ -801,6 +835,16 @@ export const ja = {
         copied: "パスをコピーしました",
         openError: "フォルダを開けませんでした",
         copyError: "パスをコピーできませんでした",
+      },
+      repairInstall: {
+        label: "インストールを修復",
+        description:
+          "管理環境に対してインストーラーを再実行します。GPU が検出されない場合やアプリが起動しない場合に使用します。",
+        action: "インストールを修復",
+        confirmTitle: "このインストールを修復しますか？",
+        confirmDescription:
+          "サーバーを停止してインストーラーを再実行し、このマシンの GPU に合わせて PyTorch を再インストールします。チャットと設定は保持されます。数分かかる場合があります。",
+        confirmAction: "今すぐ修復",
       },
       resetPreferences: {
         sectionTitle: "危険ゾーン",
@@ -851,16 +895,20 @@ export const ja = {
           "以下はすべてご自身の履歴から集計しています。収集も Unsloth への送信も行いません。",
         retry: "再試行",
         privacyNote:
-          "統計は、お使いの Unsloth が保持しているチャットとトレーニングの履歴から計算されます。データの収集は行わず、Unsloth や第三者への送信も行いません。",
+          "統計は、お使いの Unsloth にあるローカルのチャット、API 利用、トレーニング履歴から計算されます。統計用に API のプロンプト、応答、キーを保存することはありません。Unsloth や第三者への送信も行いません。",
         emptyChats:
-          "チャットがまだありません。会話を始めると、ここに統計が表示されます。",
+          "チャットまたは API の利用履歴がまだありません。会話を始めるか、認証済みのローカル API リクエストを実行してください。",
         lifetimeTokens: "累計トークン",
         peakTokens: "トークン最多の日",
         longestChat: "最長のチャット",
         currentStreak: "現在の連続日数",
         longestStreak: "最長の連続日数",
         activityTitle: "トークンの推移",
-        activityDescription: "直近{weeks}で{total}",
+        activityDescription: {
+          daily: "直近{weeks}で{total}",
+          weekly: "ピーク週 {total} · 直近{weeks}",
+          cumulative: "直近{weeks}で累計{total}",
+        },
         mode: {
           daily: "日次",
           weekly: "週次",
@@ -875,6 +923,9 @@ export const ja = {
         totalMessages: "メッセージ総数",
         tokensIn: "送信トークン",
         tokensOut: "生成トークン",
+        totalTokens: "合計トークン",
+        studioChatTokens: "Unsloth Chat トークン",
+        apiTokens: "API トークン",
         cachedTokens: "キャッシュされたトークン",
         cachedValue: "{tokens} (入力の {percent}%)",
         avgTokensPerChat: "チャットあたりの平均トークン",
@@ -1048,6 +1099,8 @@ export const ja = {
         currentLoad: "現在の負荷",
         free: "{value} 空き",
         noGpu: "認識できる GPU がありません",
+        gpuUnusable: "GPU を利用できません",
+        gpuUnusableDetail: "検出されましたが、PyTorch から利用できません",
       },
       gpu: {
         title: "GPU デバイス",
@@ -1057,6 +1110,12 @@ export const ja = {
         unreadable: "このサーバーのハードウェアを読み取れませんでした。",
         noGpu:
           "利用可能な GPU が検出されませんでした。CPU のみの環境向けのリソース情報は上に表示されています。",
+        noUsableGpu: "このマシンの GPU はいずれも PyTorch から利用できません。",
+        mismatchCpuBuild:
+          "PyTorch は CPU 専用ビルド ({version}) のため、下の GPU は利用できません。インストールを修復すると GPU サポートが復元されます。",
+        mismatchUnavailable:
+          "PyTorch ({version}) は下の GPU を初期化できないため、利用できません。GPU ドライバーを確認するか、インストールを修復してください。",
+        unusableDevice: "利用不可",
         unknownDevice: "不明な GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1169,6 +1228,7 @@ export const ja = {
         processMemory: "プロセスメモリ",
         notInstalled: "未インストール",
         unknown: "不明",
+        vramWithShared: "{vram} VRAM + {shared} 共有メモリ",
       },
     },
     agents: {
@@ -1176,7 +1236,7 @@ export const ja = {
       description:
         "unsloth start で Claude Code や Codex などのコーディングエージェントをローカルモデルに接続します。",
       intro:
-        "は Claude Code、Codex、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
+        "は Claude Code、Codex、DeepSeek Harness、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
       readDocs: "ドキュメントを読む",
       copy: "コピー",
       copied: "コピーしました",
@@ -1198,6 +1258,15 @@ export const ja = {
       docs: "ドキュメント",
       agentDocs: "{agent} のセットアップドキュメントを開く",
       copyGeneratedCommand: "生成されたコマンドをコピー",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex には llama-server が提供する GGUF モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth に読み込み済みのモデルを使うには --model を外してください。",
       subagent: {
@@ -1290,6 +1359,9 @@ export const ja = {
         showAllQuantizations: "すべての量子化オプションを表示",
         showAllQuantizationsDescription:
           "オン: 「On Device」にあるすべての量子化オプションを、未ダウンロードのものも含めて一覧表示します。オフ: ダウンロード済みの量子化オプションのみを表示します。",
+        showMemoryBar: "VRAM 使用量バーを表示",
+        showMemoryBarDescription:
+          "ダウンロード済みモデルの行の下に、推定 VRAM 使用量を表示します。内訳は重み、実際に読み込まれるコンテキスト長での KV キャッシュ、および投機的デコードの下書き用に確保される領域です。",
       },
       menu: {
         title: "チャットメニュー",
@@ -1315,16 +1387,42 @@ export const ja = {
       rememberParamsPerModel: "モデルごとに設定を記憶",
       rememberParamsPerModelDescription:
         "モデルを切り替えると、そのモデルで最後に使った温度やプロンプトなどの設定が復元されます。オフの場合は、すべてのモデルで同じ設定を使います。",
+      autoCompact: "長いチャットを自動圧縮",
+      autoCompactDescription:
+        "ローカル GGUF チャットが設定したコンテキスト長に達したら、エラーを返す代わりに古いターンを削除します。空き VRAM には基づきません。",
+      compactionStyle: "コンテキストが満杯になったとき",
+      compactionStyleDescription:
+        "サーバー既定値を使うと UNSLOTH_CONTEXT_POLICY が維持されます。会話をリセットすると最新ターンと継続指示が残ります。スライディングウィンドウは古いターンを削除し、より多くの最近の履歴を残せます。",
+      compactionStyleInherit: "サーバー既定値を使用",
+      compactionStyleCheckpoint: "会話をリセット",
+      compactionStyleRollingDefault: "古いターンを削除（約 25% の追加余裕）",
+      compactionStyleRolling10: "古いターンを削除（約 10% の追加余裕）",
+      compactionStyleRolling5: "古いターンを削除（約 5% の追加余裕）",
+      compactionStyleRollingNone: "古いターンを削除（追加の切り詰めなし）",
+      autoCompactKeywords:
+        "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 compaction rolling headroom",
       thinking: {
         collapseByDefault: "思考をデフォルトで折りたたむ",
         collapseByDefaultDescription:
           "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",
       },
+      currentDate: {
+        label: "今日の日付をモデルに伝える",
+        description:
+          "現在の日付をプロンプトに追加し、ウェブ検索や Deep Research がモデルの学習データの締め切りを前提とせず、最新の情報源を探すようにします。",
+        loadError: "現在の日付の設定を読み込めませんでした",
+        saveError: "現在の日付の設定を更新できませんでした",
+      },
+      tools: {
+        collapseByDefault: "ツールの動作をデフォルトで折りたたむ",
+        collapseByDefaultDescription:
+          "ツールの実行中は入力と出力を折りたたんだままにします。確認するにはツール行を展開してください。",
+      },
       webSearch: {
         title: "ウェブ検索",
         images: "ウェブ検索の画像を表示",
         imagesDescription:
-          "ウェブ検索で画像も取得し、回答に列挙された項目ごとに1枚ずつ探します。サムネイルは Studio が取得して縮小するため、ブラウザが画像ホストに接続することはありません。",
+          "ウェブ検索で画像も取得し、回答に列挙された項目ごとに1枚ずつ探します。サムネイルは Unsloth が取得して縮小するため、ブラウザが画像ホストに接続することはありません。",
       },
       artifacts: {
         title: "Canvas",
@@ -1336,6 +1434,11 @@ export const ja = {
         blockedBanner: "{hosts} からの外部リソース {count} 件をブロックしました。",
         blockedBannerPlural: "{hosts} からの外部リソース {count} 件をブロックしました。",
         blockedBannerAction: "この Canvas で許可",
+        blockedTitle: "Canvas のネットワークアクセスはオフです",
+        blockedHint:
+          "設定 → チャットで「{setting}」をオンにすると Canvas が外部リソースを読み込めます。この Canvas だけ許可することもできます。",
+        blockedSettingsAction: "設定を開く",
+        blockedDismiss: "閉じる",
       },
       data: "データ",
       exportHistory: "チャット履歴をエクスポート",
@@ -1344,7 +1447,7 @@ export const ja = {
       exportingAction: "エクスポート中...",
       exportConversations: "履歴とプロジェクトをエクスポート",
       exportConversationsDescription:
-        "履歴、または履歴とプロジェクトのチャットを、Raw JSONL、CSV、ShareGPT JSONL のいずれかで、一括またはチャットごとにダウンロードします。",
+        "履歴、または履歴とプロジェクトのチャットを、Training JSONL、CSV、ShareGPT JSONL のいずれかで、一括またはチャットごとにダウンロードします。Message JSONL はチャットごとのみ利用できます。",
       exportConversationsAction: "エクスポート",
       exportScopeRecents: "履歴",
       exportScopeAll: "履歴 + プロジェクト",
@@ -1398,6 +1501,8 @@ export const ja = {
       archivedImagesDescription: "アーカイブした画像を表示・管理します。",
       archivedVideos: "アーカイブ済み動画",
       archivedVideosDescription: "アーカイブした動画を表示・管理します。",
+      archivedAudio: "アーカイブした音声",
+      archivedAudioDescription: "アーカイブした音声クリップを表示・管理します。",
       manageAction: "管理",
       manageChats: "チャットを管理",
       manageChatsDescription:
@@ -1576,7 +1681,7 @@ export const ja = {
         desktopCheckingDescription: "通常は数秒で完了します。",
         desktopAvailable: "デスクトップアプリ {version} を利用できます",
         desktopAvailableDescription:
-          "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
+          "今すぐアップデートすると、バックグラウンドで準備されます。作業を続けたまま、準備ができたら再起動してください。",
         desktopExternalServer:
           "サーバーを起動したターミナルで `unsloth studio update` を実行してください。",
         desktopManualInstall:
@@ -1587,11 +1692,19 @@ export const ja = {
         desktopCurrent: "デスクトップアプリは最新です",
         desktopCurrentDescription:
           "Unsloth は今後も自動的にアップデートを確認します。",
+        desktopPreparingDescription: "アップデートをバックグラウンドで準備しています。作業を続けられます。",
+        desktopReadyToRestartDescription:
+          "準備が完了しました。再起動するとアップデートのインストールが完了します。",
+        desktopReadyToInstallDescription:
+          "アプリのアップデートをダウンロードしました。インストールするにはバックエンドのアップデートを完了してください。",
         checkForUpdates: "アップデートを確認",
         checkAgain: "もう一度確認",
         retryCheck: "再試行",
         checking: "確認中...",
+        preparing: "準備中...",
         updateNow: "今すぐアップデート",
+        restartToUpdate: "再起動して更新",
+        finishUpdate: "アップデートを完了",
         openReleasePage: "リリースページを開く",
         unknownInstall: "Unsloth がどのようにインストールされたか検出できませんでした。インストーラーまたは PyPI インストールの場合は、上記のコマンドを使用してください。",
         localCheckout:
@@ -1995,6 +2108,7 @@ export const ja = {
       memoryEfficient: "メモリ効率化",
       weightDecomposed: "重み分解",
       notSupportedAppleSilicon: "Apple Silicon ではサポートされていません",
+      doraNeedsVisionLayersOff: "DoRA を使うにはビジョンレイヤーの学習をオフにしてください",
       optimization: "最適化",
       schedule: "スケジュール",
       memory: "メモリ",
@@ -2276,5 +2390,14 @@ export const ja = {
       datasetStreaming: "データセット: ストリーミング（完全なダウンロードなし）",
       modelWeights: "モデルの重み",
     },
+  },
+  modelMemory: {
+    readout:
+      "重み {model} + コンテキスト {context} = 使用可能な VRAM {budget} 中 {total}",
+    readoutWithSpec:
+      "重み {model} + KV {kv} + MTP 下書き {spec} = 使用可能な VRAM {budget} 中 {total}",
+    kvRate: "KV は事前確保、約 {rate}/トークン",
+    oomLikely: "現在の設定ではメモリ不足になる可能性があります",
+    tooLarge: "VRAM を超えるため CPU にオフロードされます。より小さい量子化の方が高速です",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

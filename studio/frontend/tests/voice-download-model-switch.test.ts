@@ -2,10 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Switching straight from one dictation download to another must restart the
-// estimator. The guard once sat AFTER the ref it compares against was assigned,
-// so it never fired and the new run was priced over the old one's samples: a
-// 5 MB/s download read as 200 MB/s with 20s left. appendSample cannot save it
-// either, since a resumed model can start above where the last one stopped.
+// estimator, or the new run is priced over the old one's samples: a 5 MB/s
+// download reads as 200 MB/s with 20s left. appendSample cannot save it either,
+// since a resumed model can start above where the last one stopped.
+//
+// Voice settings used to keep its own estimator, reset by watching the model
+// name. That copy is gone: the shared manager owns the only estimator and gets
+// the property structurally, since samples live on the per-job runtime and
+// another model is another job. The second test pins what the reset is worth.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -24,19 +28,27 @@ const voiceTabSource = readFileSync(
   "utf8",
 );
 
-test("the watched model is compared before it is adopted", () => {
-  const compare = voiceTabSource.indexOf(
-    "download.model !== watchedDownloadRef.current",
+test("each download's samples belong to its own job, not to the tab", () => {
+  const pollLoopSource = readFileSync(
+    new URL("../src/features/hub/download-manager/poll-loop.ts", import.meta.url),
+    "utf8",
   );
-  const assign = voiceTabSource.indexOf(
-    "watchedDownloadRef.current = download.model",
-  );
-  assert.ok(compare > 0, "the model-change guard should still exist");
-  assert.ok(assign > 0, "the watched model should still be recorded");
+  // Empty per job, so a second model cannot inherit the first one's samples.
   assert.ok(
-    compare < assign,
-    "comparing after assigning makes the guard unreachable",
+    /speedSamples:\s*\[\]/.test(pollLoopSource),
+    "each job runtime should start with its own empty sample buffer",
   );
+  // And voice settings must not grow a second estimator back.
+  const voiceTabSource = readFileSync(
+    new URL("../src/features/settings/tabs/voice-tab.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const gone of ["computeTransferStats", "appendSample", "downloadSamplesRef"]) {
+    assert.ok(
+      !voiceTabSource.includes(gone),
+      `voice-tab should not re-implement the estimator (${gone})`,
+    );
+  }
 });
 
 // What that guard is worth: the same two downloads, with and without the reset.
