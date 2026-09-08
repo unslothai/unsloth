@@ -2375,6 +2375,32 @@ class UnslothTrainer:
             )
             return None
 
+    def _format_audio_vlm_eval_split(self, eval_dataset, custom_format_mapping):
+        """Format the audio VLM eval split without letting it redefine the train columns.
+
+        _format_audio_vlm_dataset records the resolved audio column on the instance, and
+        audio_vlm_collate_fn reads that one name for every batch it builds, train and eval
+        alike. A second call for an eval split whose audio column resolves differently would
+        leave the collator asking every train row for a column it does not have, so keep the
+        train answer and drop an eval split that disagrees.
+        """
+        if eval_dataset is None:
+            return None
+        train_audio_col = getattr(self, "_audio_vlm_audio_col", None)
+        formatted = self._preprocess_audio_eval_split(
+            eval_dataset, self._format_audio_vlm_dataset, custom_format_mapping
+        )
+        eval_audio_col = getattr(self, "_audio_vlm_audio_col", None)
+        if formatted is not None and eval_audio_col != train_audio_col:
+            self._record_warning(
+                f"The eval dataset stores audio in '{eval_audio_col}' but the training dataset "
+                f"uses '{train_audio_col}', so this run has no evaluation. Give both splits the "
+                "same audio column name."
+            )
+            formatted = None
+        self._audio_vlm_audio_col = train_audio_col
+        return formatted
+
     def _audio_eval_config(self, training_args):
         """Build audio evaluation arguments and return the eval dataset."""
         eval_dataset = training_args.get("eval_dataset", None)
@@ -3167,9 +3193,7 @@ class UnslothTrainer:
                 formatted = self._format_audio_vlm_dataset(dataset, custom_format_mapping)
                 return (
                     formatted,
-                    self._preprocess_audio_eval_split(
-                        eval_dataset, self._format_audio_vlm_dataset, custom_format_mapping
-                    ),
+                    self._format_audio_vlm_eval_split(eval_dataset, custom_format_mapping),
                 )
 
             # ========== FORMAT FIRST ==========

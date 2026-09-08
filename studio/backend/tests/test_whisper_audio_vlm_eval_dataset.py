@@ -322,3 +322,116 @@ def test_audio_vlm_unpreparable_eval_split_warns_instead_of_failing_the_run(
     assert _texts(train) == ["tr-1", "tr-2"]
     assert evaluation is None
     assert any("no evaluation" in w for w in audio_trainer.training_progress.warnings)
+
+
+def test_whisper_length_less_eval_split_warns_instead_of_crashing(audio_trainer):
+    """The row count in the log line must not be able to take the run down."""
+
+    class _NoLen(_FakeAudioDataset):
+        def __len__(self):
+            raise TypeError("object of type 'IterableDataset' has no len()")
+
+    audio_trainer.tokenizer = _FakeWhisperTokenizer()
+
+    train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
+        _audio_rows(["tr-1", "tr-2"]),
+        eval_split = None,
+        eval_dataset = _NoLen(["ev-1"]),
+    )
+
+    assert len(train_data) == 2
+    assert not eval_data
+    assert any("no evaluation" in w for w in audio_trainer.training_progress.warnings)
+
+
+def test_whisper_zero_row_eval_split_is_falsy(audio_trainer):
+    """An empty eval split must not configure evaluation: the Whisper trainer branch gates
+    on truthiness, so [] reads as no eval."""
+    audio_trainer.tokenizer = _FakeWhisperTokenizer()
+
+    train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
+        _audio_rows(["tr-1", "tr-2"]),
+        eval_split = None,
+        eval_dataset = _audio_rows([]),
+    )
+
+    assert len(train_data) == 2
+    assert not eval_data
+
+
+def test_whisper_cancel_during_eval_preprocessing_leaves_no_eval(audio_trainer):
+    """Stopping after the train split is processed must leave eval empty, not raise."""
+    tokenizer = _FakeWhisperTokenizer()
+    real_extractor = tokenizer.feature_extractor
+    calls = {"n": 0}
+
+    def counting_extractor(array, sampling_rate = None):
+        calls["n"] += 1
+        if calls["n"] == 2:  # both train rows are done
+            audio_trainer.should_stop = True
+        return real_extractor(array, sampling_rate = sampling_rate)
+
+    tokenizer.feature_extractor = counting_extractor
+    audio_trainer.tokenizer = tokenizer
+
+    train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
+        _audio_rows(["tr-1", "tr-2"]),
+        eval_split = None,
+        eval_dataset = _audio_rows(["ev-1"]),
+    )
+
+    assert len(train_data) == 2
+    assert not eval_data
+
+
+def test_audio_vlm_eval_split_with_a_different_audio_column_is_refused(
+    audio_trainer, tmp_path, monkeypatch
+):
+    """_format_audio_vlm_dataset records the resolved audio column on the instance and
+    audio_vlm_collate_fn reads that one name for every batch, so an eval split that resolves
+    a different column would make the collator ask every train row for a missing column."""
+    audio_trainer._audio_type = None
+    audio_trainer.is_audio_vlm = True
+    columns = iter(["audio", "speech"])
+
+    def fake_format(dataset, custom_format_mapping = None):
+        audio_trainer._audio_vlm_audio_col = next(columns)
+        return dataset
+
+    monkeypatch.setattr(audio_trainer, "_format_audio_vlm_dataset", fake_format, raising = True)
+
+    _train, evaluation = audio_trainer.load_and_format_dataset(
+        None,
+        local_datasets = [_rows(tmp_path / "train.jsonl", ["tr-1"])],
+        local_eval_datasets = [_rows(tmp_path / "eval.jsonl", ["ev-1"])],
+        eval_steps = 0.1,
+    )
+
+    assert evaluation is None
+    assert audio_trainer._audio_vlm_audio_col == "audio", (
+        "the eval split redefined the column the train collator reads"
+    )
+    assert any("same audio column name" in w for w in audio_trainer.training_progress.warnings)
+
+
+def test_audio_vlm_matching_eval_split_leaves_the_column_alone(
+    audio_trainer, tmp_path, monkeypatch
+):
+    audio_trainer._audio_type = None
+    audio_trainer.is_audio_vlm = True
+
+    def fake_format(dataset, custom_format_mapping = None):
+        audio_trainer._audio_vlm_audio_col = "audio"
+        return dataset
+
+    monkeypatch.setattr(audio_trainer, "_format_audio_vlm_dataset", fake_format, raising = True)
+
+    _train, evaluation = audio_trainer.load_and_format_dataset(
+        None,
+        local_datasets = [_rows(tmp_path / "train.jsonl", ["tr-1"])],
+        local_eval_datasets = [_rows(tmp_path / "eval.jsonl", ["ev-1"])],
+        eval_steps = 0.1,
+    )
+
+    assert evaluation is not None
+    assert audio_trainer._audio_vlm_audio_col == "audio"
