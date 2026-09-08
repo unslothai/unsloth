@@ -340,6 +340,48 @@ def test_declared_latin1_cp1252_punctuation_kept(monkeypatch, charset):
     assert "binary content" not in out
 
 
+@pytest.mark.parametrize("charset", ["unicode", "utf8mb4", "x-user-defined"])
+def test_unknown_charset_falls_back_instead_of_failing_the_fetch(monkeypatch, charset):
+    body = b"<html><body><p>MARKERWORD in a page a browser renders fine.</p></body></html>"
+    out = _fetch_with(monkeypatch, body, f"text/html; charset={charset}")
+    assert "MARKERWORD" in out
+    assert "unknown encoding" not in out
+
+
+def test_unknown_charset_still_reaches_the_bom_codec(monkeypatch):
+    body = codecs.BOM_UTF16_LE + "MARKERWORD and more text".encode("utf-16-le")
+    out = _fetch_with(monkeypatch, body, "text/plain; charset=utf16le")
+    assert "MARKERWORD" in out
+
+
+@pytest.mark.parametrize(
+    "charset",
+    ["base64", "hex", "zlib", "quopri", "rot13", "uu", "bz2", "undefined", "idna"],
+)
+def test_unusable_codec_charset_falls_back(monkeypatch, charset):
+    # These pass codecs.lookup and fail at decode: guarding the lookup alone lost the page.
+    body = b"<html><body><p>MARKERWORD in a page a browser renders fine.</p></body></html>"
+    out = _fetch_with(monkeypatch, body, f"text/html; charset={charset}")
+    assert "MARKERWORD" in out
+    assert "not a text encoding" not in out
+
+
+def test_malformed_charset_falls_back(monkeypatch):
+    # A NUL in the label raises ValueError out of codecs.lookup, not LookupError.
+    body = b"<html><body><p>MARKERWORD in a page a browser renders fine.</p></body></html>"
+    out = _fetch_with(monkeypatch, body, 'text/html; charset="utf-8\x00"')
+    assert "MARKERWORD" in out
+    assert "Failed to fetch URL" not in out
+
+
+@pytest.mark.parametrize("charset", ["utf-16", "utf-16-le", "utf-32"])
+def test_declared_wide_codec_still_honoured(monkeypatch, charset):
+    # The guard discards a label whose decode raises; a codec decoding ITS OWN page must not.
+    body = "MARKERWORD and more text".encode(charset)
+    out = _fetch_with(monkeypatch, body, f"text/plain; charset={charset}")
+    assert "MARKERWORD" in out
+
+
 def test_high_byte_binary_not_rescued_as_cp1252(monkeypatch):
     # cp1252 maps these bytes to printable characters, but they lack ASCII structure.
     body = bytes(range(0xA0, 0x100)) * 40

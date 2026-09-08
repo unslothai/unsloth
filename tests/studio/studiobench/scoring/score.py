@@ -102,16 +102,16 @@ def score_metric(anchor: MetricAnchor, measure: Measure) -> MetricScore:
         )
 
     value = float(measure.value)
-    # A sub-floor reading is at least as good as the floor; scoring the raw value would let
-    # instrument noise on a fast machine invent a difference between two perfect builds.
+    # A sub-floor reading is at least as good as the floor; scoring the raw value would let instrument
+    # noise on a fast machine invent a difference between two perfect builds.
     if measure.sub_floor and measure.floor is not None and anchor.lower_is_better:
         value = min(abs(value), float(measure.floor))
 
     good, bad = float(anchor.good), float(anchor.bad)
     if value <= 0:
-        # Log space has no zero. A non-positive reading on a positive-only metric is either
-        # perfect (below every floor) or a broken instrument; the floor logic above has already
-        # handled the honest case, so clamp to the good anchor and say so.
+        # Log space has no zero. A non-positive reading on a positive-only metric is either perfect (below
+        # every floor) or a broken instrument, and the floor logic above has handled the honest case, so
+        # clamp to the good anchor and say so.
         value = good if anchor.lower_is_better else bad
 
     span = math.log(bad) - math.log(good)
@@ -202,8 +202,8 @@ def score_rung(
 
     zeroed_by = [m.key for m in scored if float(m.score) <= 0.0]
     if zeroed_by:
-        # Geometric mean of a set containing zero IS zero. Written out rather than left to
-        # log(0) so the reason travels with the number.
+        # Geometric mean of a set containing zero IS zero. Written out rather than left to log(0) so the
+        # reason travels with the number.
         rung_score = 0.0
     else:
         numerator = sum(m.weight * math.log(float(m.score)) for m in scored)
@@ -314,9 +314,9 @@ def score_ladder(rungs: Sequence[RungScore]) -> LadderScore:
                 "is above what this ladder measures"
             )
 
-    # Usability is expected to be monotone in thread size. When it is not, something other than
-    # thread size moved -- thermal throttling, a background process, an unstable machine -- and
-    # the onset rung is not trustworthy on its own. Say so rather than quietly reporting the max.
+    # Usability is expected to be monotone in thread size. When it is not, something other than thread
+    # size moved (throttling, a background process, an unstable machine) and the onset rung is not
+    # trustworthy on its own.
     non_monotonic = False
     seen_unusable = False
     for rung in ordered:

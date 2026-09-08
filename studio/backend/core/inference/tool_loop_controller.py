@@ -27,15 +27,14 @@ _CANONICAL_HEAL_ARG = {
     "python": "code",
     "terminal": "command",
     "render_html": "code",
-    # Not derivable: web_search declares no REQUIRED argument, because a call carrying
-    # only `url` fetches that page without searching. A bare string is still a query,
-    # which is what the old catch-all default got right for this tool and only this one.
+    # Not derivable: web_search declares no REQUIRED argument, because a call carrying only `url` fetches that page
+    # without searching. A bare string is still a query, which is what the old catch-all default got right for this tool
+    # and only this one.
     "web_search": "query",
 }
 
-# Where a bare string lands when the tool it was sent to has no argument that could hold
-# it. Read by `execute_tool`, which answers with what actually went wrong instead of
-# letting the tool report a missing key it was never given.
+# Where a bare string lands when the tool it was sent to has no argument that could hold it. Read by `execute_tool`,
+# which answers with what actually went wrong instead of letting the tool report a missing key it was never given.
 UNPARSED_ARGUMENTS_KEY = "__unsloth_unparsed_arguments__"
 
 
@@ -63,17 +62,16 @@ def _looks_like_broken_json(raw: str) -> bool:
     except json.JSONDecodeError as error:
         if error.msg.startswith("Unterminated string") or error.pos >= len(text):
             return True
-        # A value cut mid-token reports at the token's START, not at the end of input, so
-        # the two tests above miss `{"flag":tru` (Expecting value) and `{"n":1e`
-        # (Expecting ',' delimiter). What they share is that everything from the failure
-        # to the end is one unfinished token: no delimiter, no quote, no space.
-        #
-        # Excluded: a bad PROPERTY NAME. After `{` a bare word is malformed rather than
-        # cut off, which is what keeps `{oops` and `{not json at all` healable.
+        # A value cut mid-token reports at the token's START, not at the end of input, so the two tests above miss
+        # `{"flag":tru` (Expecting value) and `{"n":1e` (Expecting ',' delimiter). What they share is that everything
+        # from the failure to the end is one unfinished token: no delimiter, no quote, no space. Excluded: a bad
+        # PROPERTY NAME. After `{` a bare word is malformed rather than cut off, which is what keeps `{oops` and `{not
+        # json at all` healable.
         if error.msg.startswith("Expecting property name"):
             return False
-        # Excluded for the opposite reason: a COMPLETE document with something after it.
-        # `{"a": 1} trailing` decodes fully and then finds junk, so nothing was lost.
+        # excluded for the opposite reason: `{"a": 1} trailing` decodes fully and then finds junk
+        # Excluded for the opposite reason: a COMPLETE document with something after it. `{"a": 1} trailing` decodes
+        # fully and then finds junk, so nothing was lost.
         if error.msg.startswith("Extra data"):
             return False
         remainder = text[error.pos :]
@@ -154,8 +152,9 @@ def _heal_arg_key(tool_name: str, tool_schemas = None) -> "str | None":
     key = _HEAL_ARG_CACHE.get(tool_name)
     if key is not None or not tool_schemas:
         return key
-    # Not cached: the request's tools belong to the request, and caching them by name
-    # would let one chat's MCP server decide another chat's healing.
+    # not cached: caching by name would let one chat's MCP server decide another chat's healing
+    # Not cached: the request's tools belong to the request, and caching them by name would let one chat's MCP server
+    # decide another chat's healing.
     return _healable_keys_from(tool_schemas).get(tool_name)
 
 
@@ -198,9 +197,9 @@ class ToolCallDecision:
     tool_name: str
     arguments: dict[str, Any]
     tool_call_id: str = ""
-    # The id the card carries on screen. For an id-less call that is the
-    # spelling the client minted, not the id the conversation replays;
-    # otherwise the two are the same.
+    # for an id-less call this is the spelling the client minted
+    # The id the card carries on screen. For an id-less call that is the spelling the client minted, not the id the
+    # conversation replays; otherwise the two are the same.
     card_call_id: str = ""
     key: str = ""
     provenance: dict[str, Any] = field(default_factory = dict)
@@ -243,9 +242,8 @@ class ToolCallDecision:
     def tool_start_payload(self) -> dict[str, Any]:
         """Build the payload fields for a real tool_start event."""
         fragment = self.unparsed_fragment
-        # `raw` is the shape this module already uses for arguments it could not read into
-        # a schema, so the card shows the model's own text under a name that means
-        # something rather than an internal sentinel.
+        # `raw` is the shape this module already uses for arguments it could not read into a schema, so the card shows
+        # the model's own text under a name that means something rather than an internal sentinel.
         arguments = {"raw": fragment} if fragment is not None else self.arguments
         return {
             "tool_name": self.tool_name,
@@ -267,12 +265,11 @@ class ToolCallDecision:
             "type": "function",
             "function": {
                 "name": self.tool_name,
-                # Whatever goes here MUST parse as JSON. llama-server parses it while
-                # rendering the template and answers 500 otherwise, which is what replaying
-                # the fragment verbatim caused: it is unparseable by definition, that being
-                # why it is here. So the replay is a short valid object that says the call
-                # was cut off, and the tool result carries the detail. The fragment itself
-                # is not worth resending -- it is the content that overflowed the window.
+                # Whatever goes here MUST parse as JSON. llama-server parses it while rendering the template and answers
+                # 500 otherwise, which is what replaying the fragment verbatim caused: it is unparseable by definition,
+                # that being why it is here. So the replay is a short valid object that says the call was cut off, and
+                # the tool result carries the detail. The fragment itself is not worth resending -- it is the content
+                # that overflowed the window.
                 "arguments": json.dumps(_unreadable_arguments_summary(fragment))
                 if fragment is not None
                 else canonical_arguments_text(self.arguments),
@@ -359,17 +356,18 @@ def canonical_tool_call_key(tool_name: str, arguments: Mapping[str, Any]) -> str
     return f"{tool_name}:{canonical_args}"
 
 
-# "0"/"1" are left out: a native `0` arrives already typed, so they would mean two things.
+# "0"/"1" are left out: a native `0` arrives already typed, so they would mean two things
 _SCHEMA_TRUE_WORDS = frozenset({"true", "yes"})
 _SCHEMA_FALSE_WORDS = frozenset({"false", "no"})
-# Not ValueErrors, so a decode-shaped except would let deep model output escape as a 500.
+# not ValueErrors, so a decode-shaped except would let deep model output escape as a 500
 _DECODE_ERRORS = (ValueError, RecursionError)
 _LITERAL_ERRORS = (*_DECODE_ERRORS, SyntaxError, MemoryError)
 
 
-# A JSON string, open or closed; group 1 is the closing quote, which `endswith` cannot stand
-# in for because an open string can end on an escaped one. The `\?$` tail stops a started
-# match from ever failing, which would send `finditer` back over every later quote.
+# group 1 is the closing quote, which `endswith` cannot stand in for because an open string can end on an escaped one;
+# A JSON string, open or closed; group 1 is the closing quote, which `endswith` cannot stand in for because an open
+# string can end on an escaped one. The `\?$` tail stops a started match from ever failing, which would send `finditer`
+# back over every later quote.
 _JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*(?:(")|\\?$)', re.S)
 _JSON_CLOSER = {"[": "]", "{": "}"}
 
@@ -381,7 +379,7 @@ def _balanced(segment: str, opened: "list[str]") -> str:
             opened.append(_JSON_CLOSER[ch])
             kept.append(ch)
         elif ch in "]}":
-            # The commonest slip: a closer of the wrong kind becomes the right one.
+            # the commonest slip: a closer of the wrong kind becomes the right one
             if opened:
                 kept.append(opened.pop())
         else:
@@ -418,7 +416,7 @@ _READ_KEYWORDS = frozenset(
         "additionalProperties",
     }
 )
-# Cannot move a declaration out of reach: annotations, and constraints that only reject.
+# cannot move a declaration out of reach: annotations, and constraints that only reject
 _INERT_KEYWORDS = frozenset(
     {
         "title",
@@ -543,8 +541,8 @@ def _coerce_declared_value(text: str, declared: str, repair: bool) -> Any:
             number = float(stripped)
         except (ValueError, OverflowError):
             return text
-        # "nan"/"inf" parse, but json.dumps writes them bare and the client rejects that.
-        # Exactness is unguarded: float64 IS JSON's number type, so a JSON call agrees.
+        # "nan"/"inf" parse, but json.dumps writes them bare and the client rejects that. Exactness is unguarded:
+        # float64 IS JSON's number type, so a JSON call agrees.
         if math.isfinite(number) and (declared == "number" or number.is_integer()):
             return number
     elif declared == "array":
@@ -602,8 +600,8 @@ def _coerce_by_property(value: Any, spec: Any, depth: int, repair: bool) -> Any:
         if declared is None:
             return value
         value = _coerce_declared_value(value, declared, repair)
-    # Descent needs the SAME declaration the conversion needs: without one a text value is
-    # not decoded, so descending into an already-decoded one would make the syntaxes disagree.
+    # Descent needs the SAME declaration the conversion needs: without one a text value is not decoded, so descending
+    # into an already-decoded one would make the syntaxes disagree.
     if declared == "object" and isinstance(value, Mapping):
         nested = spec.get("properties")
         nested = nested if isinstance(nested, Mapping) else {}
@@ -684,15 +682,13 @@ def coerce_tool_arguments(
         except (json.JSONDecodeError, ValueError):
             pass
         if heal:
-            # Healing exists for a model that sends its ONE argument as a bare string
-            # instead of an object. Text that opens like JSON and fails to parse is not
-            # that -- it is a broken object, usually one cut off mid-stream, and wrapping
-            # it whole becomes the argument's value. Observed on `python`, which has a
-            # single `code` argument and so was healable: a truncated call arrived as
-            # `{"code":"html = ...`, the entire fragment was passed as the PROGRAM, and the
-            # model read its own file back as `{"code":"html = ...` and spent the rest of
-            # the turn convinced the sandbox had mangled it. Same defect `edit_file` had;
-            # having a single string argument only hid it.
+            # Healing exists for a model that sends its ONE argument as a bare string instead of an object. Text that
+            # opens like JSON and fails to parse is not that -- it is a broken object, usually one cut off mid-stream,
+            # and wrapping it whole becomes the argument's value. Observed on `python`, which has a single `code`
+            # argument and so was healable: a truncated call arrived as `{"code":"html = ...`, the entire fragment was
+            # passed as the PROGRAM, and the model read its own file back as `{"code":"html = ...` and spent the rest of
+            # the turn convinced the sandbox had mangled it. Same defect `edit_file` had; having a single string
+            # argument only hid it.
             key = (
                 None
                 if _looks_like_broken_json(raw_args)
@@ -700,11 +696,10 @@ def coerce_tool_arguments(
             )
             if key is not None:
                 return CoercedArguments({key: raw_args}, True)
-            # No single argument this text could be. Inventing one used to default to
-            # "query", which edit_file -- three required arguments, none of them a
-            # query -- then reported as "'old_string' and 'new_string' must both be
-            # strings": a type error blaming the model for a key it never sent, on a
-            # call whose real problem was that its JSON never finished arriving.
+            # No single argument this text could be. Inventing one used to default to "query", which edit_file -- three
+            # required arguments, none of them a query -- then reported as "'old_string' and 'new_string' must both be
+            # strings": a type error blaming the model for a key it never sent, on a call whose real problem was that
+            # its JSON never finished arriving.
             return CoercedArguments({UNPARSED_ARGUMENTS_KEY: raw_args}, False)
         return CoercedArguments({"raw": raw_args}, False)
     return CoercedArguments({}, False)
@@ -750,15 +745,15 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "web_search":
         url = str(arguments.get("url") or "").strip()
         if url:
-            # Bare hosts are fetched as https, so normalize first or the badge
-            # stays generic for exactly the URLs the fetch layer accepts.
+            # bare hosts are fetched as https, so normalize first or the badge stays generic for exactly the URLs the
+            # fetch layer accepts
             from core.inference.tools import _normalize_url_scheme
 
             try:
                 parsed = urlparse(_normalize_url_scheme(url))
             except ValueError:
-                # Runs in prepare_call, outside the fetch's exception handler:
-                # raising here kills the turn instead of returning "Blocked:".
+                # Runs in prepare_call, outside the fetch's exception handler: raising here kills the turn instead of
+                # returning "Blocked:".
                 return "Reading page..."
             if parsed.scheme in ("http", "https") and parsed.hostname:
                 host = parsed.hostname
@@ -858,8 +853,8 @@ def _strip_files_sentinel(result: str) -> str:
         entries = json.loads(result[payload_start:end])
     except (ValueError, TypeError, RecursionError):
         return result
-    # Every entry, not just the list: the executor emits {"name": str, "size":
-    # int | None}, and anything else is a tool that happened to print the marker.
+    # Every entry, not just the list: the executor emits {"name": str, "size": int | None}, and anything else is a tool
+    # that happened to print the marker.
     if not isinstance(entries, list) or not all(_is_file_entry(e) for e in entries):
         return result
     return result[:start] + result[end:]
@@ -874,9 +869,8 @@ def _is_file_entry(entry: object) -> bool:
     )
 
 
-# Only these emit the file envelope, and only their output is defused first. An
-# MCP tool or a fetched page ending in a well-formed __FILES__ line is content,
-# not an envelope, and stripping it would take that line away from the model.
+# Only these emit the file envelope, and only their output is defused first. An MCP tool or a fetched page ending in a
+# well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 
 

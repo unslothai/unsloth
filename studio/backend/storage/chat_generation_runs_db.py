@@ -22,9 +22,8 @@ _EVENTS_CHANGED = threading.Condition()
 _RUN_TOMBSTONE_PREFIX = "chat-generation-run-tombstone:"
 ChatGenerationEventInput = Union[tuple[str, dict[str, Any]], tuple[str, dict[str, Any], int]]
 
-# Progress lease columns, added here rather than in _ensure_schema so the base table
-# definition stays owned by studio_db. Named _schema_ready to match the flag the test
-# harness resets on every storage module when it swaps UNSLOTH_STUDIO_HOME.
+# Progress lease columns live here rather than in _ensure_schema so the base table stays owned by
+# studio_db; named _schema_ready to match the flag the test harness resets.
 _schema_ready = False
 _schema_lock = threading.Lock()
 
@@ -65,9 +64,8 @@ def _connect() -> sqlite3.Connection:
                 conn.commit()
                 _schema_ready = True
     except sqlite3.OperationalError:
-        # A writer holds the database. The columns are additive, so let this call through
-        # and migrate later rather than turning contention into a failed history read;
-        # _without_lease_columns below covers the paths that then cannot assume them.
+        # A writer holds the database, and the columns are additive, so let this call through and migrate
+        # later rather than turning contention into a failed history read.
         conn.rollback()
     except Exception:
         conn.close()
@@ -208,8 +206,8 @@ def _touch_progress_locked(conn: sqlite3.Connection, run_id: str, tokens: int) -
             (now, now, max(0, int(tokens)), run_id),
         )
     except sqlite3.OperationalError as exc:
-        # The migration has not landed yet. The run keeps streaming and simply ages out
-        # on started_at/created_at, which the sweep already falls back to.
+        # The migration has not landed yet, so the run ages out on started_at/created_at, which the sweep
+        # already falls back to.
         if not _missing_lease_columns(exc):
             raise
 
@@ -548,8 +546,8 @@ def append_events(
             conn.commit()
             return []
         sequences = _append_events_locked(conn, run_id, batch)
-        # The producer's only regular write, so it is also the lease renewal: output
-        # reaching the database is the definition of progress this sweep reaps on.
+        # The producer's only regular write, so it is also the lease renewal: output reaching the database
+        # is the definition of progress this sweep reaps on.
         _touch_progress_locked(conn, run_id, sum(1 for event in batch if event[0] == "chunk"))
         _commit(conn, notify = True)
         return sequences
@@ -769,8 +767,8 @@ def reconcile_runs(
                  WHERE status IN ('queued','running','cancelling')"""
         args: tuple[Any, ...] = ()
         if stale_after_ms is not None:
-            # started_at/created_at carry a run that has not streamed anything yet,
-            # so a producer wedged before its first token still ages out.
+            # started_at/created_at carry a run that has not streamed anything yet, so a producer wedged before
+            # its first token still ages out.
             sql += " AND COALESCE(progress_at, started_at, created_at) <= ?"
             args = (completed - int(stale_after_ms),)
         try:
@@ -778,11 +776,9 @@ def reconcile_runs(
         except sqlite3.OperationalError as exc:
             if not _missing_lease_columns(exc):
                 raise
-            # Contention blocked the migration, so no run can persist progress. Falling
-            # back to started_at/created_at is not conservative but the opposite: those
-            # stamps are older by the whole life of the run, so one that streamed a chunk
-            # moments ago is reaped once its total AGE passes the timeout. Boot reconcile
-            # passes no stale_after_ms and is unaffected.
+            # Contention blocked the migration, so falling back to started_at/created_at is the opposite of
+            # conservative: those stamps are older by the whole life of the run, so one that streamed moments
+            # ago is reaped once its total AGE passes the timeout. Boot reconcile passes no stale_after_ms.
             if stale_after_ms is not None:
                 conn.rollback()
                 return []
@@ -793,9 +789,8 @@ def reconcile_runs(
             ).fetchall()
         for row in rows:
             run_id = row["id"]
-            # A Stop that was already recorded outlives the restart. Reporting it as a
-            # backend failure would tell the user Studio broke when they stopped it, and
-            # finish_run settles this same case as cancelled.
+            # A Stop that was already recorded outlives the restart, and reporting it as a backend failure
+            # would tell the user Studio broke when they stopped it; finish_run settles this case as cancelled.
             if str(row["status"]) == "cancelling" or bool(row["cancel_requested"]):
                 status, finish_reason, message = "cancelled", "cancelled", None
                 terminal = ("run.cancelled", {"status": status, "finishReason": finish_reason})
@@ -809,8 +804,8 @@ def reconcile_runs(
                        updated_at=?, completed_at=? WHERE id=?""",
                 (status, finish_reason, message, completed, completed, run_id),
             )
-            # Stamps incomplete: {reason: "interrupted"} on the assistant message, which
-            # is what releases the frontend's "generating" state and restores Send.
+            # Stamps incomplete on the assistant message, which is what releases the frontend's "generating"
+            # state and restores Send.
             _sync_assistant_status_locked(conn, run_id, status)
             settled.append(str(run_id))
         _commit(conn, notify = bool(settled))

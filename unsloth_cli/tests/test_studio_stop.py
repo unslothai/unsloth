@@ -96,9 +96,8 @@ def test_stop_does_not_leave_the_older_instance_running(monkeypatch, tmp_path):
 
 
 def test_stop_signals_each_server_once(monkeypatch, tmp_path):
-    # A server writes its per-port file AND studio.pid. It stays alive while it
-    # shuts down gracefully, so a second SIGTERM would hit the SIG_DFL the first
-    # one installs and hard-kill it mid-cleanup.
+    # A server writes its per-port file AND studio.pid. It stays alive while it shuts down gracefully,
+    # so a second SIGTERM would hit the SIG_DFL the first installs and hard-kill it mid-cleanup.
     studio_mod = _studio()
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
     monkeypatch.setattr(studio_mod, "_PID_FILE", tmp_path / "studio.pid")
@@ -131,8 +130,8 @@ def test_stop_removes_every_stale_file_for_one_pid(monkeypatch, tmp_path):
 
 
 def test_stop_does_not_signal_a_reused_pid(monkeypatch, tmp_path):
-    # Crash leaves a per-port file behind, the OS hands that PID to something
-    # else: stop must drop the record, not SIGTERM an unrelated process.
+    # Crash leaves a per-port file behind, the OS hands that PID to something else: stop must drop the
+    # record, not SIGTERM an unrelated process.
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
     monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created_times = (): False)
     _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
@@ -145,8 +144,8 @@ def test_stop_does_not_signal_a_reused_pid(monkeypatch, tmp_path):
 
 
 def test_stop_signals_a_live_server_whose_pid_has_a_stale_record(monkeypatch, tmp_path):
-    # Crash leaves studio-8888-8550.pid, the OS reuses 8550 for a new server on
-    # another port. The stale timestamp must not veto the live one.
+    # Crash leaves studio-8888-8550.pid, the OS reuses 8550 for a new server on another port. The
+    # stale timestamp must not veto the live one.
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
     monkeypatch.setattr(studio_mod, "_pid_is_studio_server", _REAL_IS_STUDIO_SERVER)
 
@@ -169,8 +168,8 @@ def test_stop_signals_a_live_server_whose_pid_has_a_stale_record(monkeypatch, tm
 
 
 def test_a_bare_run_py_command_line_is_not_rejected(monkeypatch):
-    # `cd studio/backend && python run.py --port 8901` has no "studio" or "unsloth"
-    # in argv. Guessing from the command line deleted its record without stopping it.
+    # `cd studio/backend && python run.py --port 8901` has no "studio" or "unsloth" in argv; guessing
+    # from the command line deleted its record without stopping it.
     studio_mod = _studio()
 
     class _FakeProcess:
@@ -189,8 +188,8 @@ def test_a_bare_run_py_command_line_is_not_rejected(monkeypatch):
 
 
 def test_an_untimed_record_is_trusted(monkeypatch):
-    # A legacy `python run.py --port 8901` has no telltale argv, and the in-venv
-    # path runs in-process. Guessing from the command line rejected real servers.
+    # A legacy `python run.py --port 8901` has no telltale argv and the in-venv path runs in-process;
+    # guessing from the command line rejected real servers.
     studio_mod = _studio()
 
     assert studio_mod._pid_is_studio_server(8550) is True
@@ -198,9 +197,9 @@ def test_an_untimed_record_is_trusted(monkeypatch):
 
 
 def test_an_unverifiable_record_is_still_stopped(monkeypatch):
-    # psutil is not a base CLI dependency, so the CLI meets timestamped records it
-    # cannot check. The old `stop` signalled with no checks at all -- skipping one
-    # would leave a live server running, the orphan bug this exists to fix.
+    # psutil is not a base CLI dependency, so the CLI meets timestamped records it cannot check. The
+    # old `stop` signalled with no checks at all, and skipping one would leave a live server
+    # running.
     studio_mod = _studio()
     monkeypatch.setitem(sys.modules, "psutil", None)
 
@@ -209,8 +208,8 @@ def test_an_unverifiable_record_is_still_stopped(monkeypatch):
 
 
 def test_stop_signals_a_timestamped_record_without_psutil(monkeypatch, tmp_path):
-    # Multiple servers on different ports: only the newest is also in studio.pid,
-    # so the earlier ones are timestamp-only and must still be stopped.
+    # Multiple servers on different ports: only the newest is also in studio.pid, so the earlier ones
+    # are timestamp-only and must still be stopped.
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
     monkeypatch.setattr(studio_mod, "_pid_is_studio_server", _REAL_IS_STUDIO_SERVER)
     monkeypatch.setitem(sys.modules, "psutil", None)
@@ -224,11 +223,10 @@ def test_stop_signals_a_timestamped_record_without_psutil(monkeypatch, tmp_path)
 
 
 def test_the_untimed_legacy_record_does_not_cancel_a_timed_one(monkeypatch):
-    # Every current server writes BOTH a timed per-port record and an untimed
-    # studio.pid, so letting the untimed half win made this check inert exactly
-    # where it matters: after a crash and a PID reuse, `stop` SIGTERMed whatever
-    # unrelated process had inherited the PID. An untimed record carries no
-    # information, so it must not overrule a start time that says "not ours".
+    # Every current server writes BOTH a timed per-port record and an untimed studio.pid, so letting
+    # the untimed half win made this check inert exactly where it matters: after a crash and a PID
+    # reuse, `stop` SIGTERMed whatever unrelated process inherited the PID. An untimed record carries
+    # no information, so it must not overrule a start time that says 'not ours'.
     studio_mod = _studio()
 
     class _FakeProcess:
@@ -248,8 +246,8 @@ def test_the_untimed_legacy_record_does_not_cancel_a_timed_one(monkeypatch):
 
 
 def test_stop_does_not_signal_a_reused_pid_recorded_in_both_files(monkeypatch, tmp_path):
-    # End to end for the case above: a crashed server left studio-8901-8550.pid
-    # and studio.pid, and 8550 now belongs to something else entirely.
+    # End to end for the case above: a crashed server left studio-8901-8550.pid and studio.pid, and
+    # 8550 now belongs to something else.
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
     monkeypatch.setattr(studio_mod, "_pid_is_studio_server", _REAL_IS_STUDIO_SERVER)
 
@@ -430,8 +428,8 @@ def test_stop_discards_a_corrupt_pid_file(monkeypatch, tmp_path):
 
 
 def test_stop_keeps_a_record_it_cannot_read(monkeypatch, tmp_path):
-    # A root-owned record, or one caught mid-write, still belongs to a live
-    # server. Deleting it is `stop` manufacturing the orphan it exists to fix.
+    # A root-owned record, or one caught mid-write, still belongs to a live server. Deleting it is
+    # `stop` manufacturing the orphan it exists to fix.
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
     path = tmp_path / "studio-8901-8550.pid"
     path.write_text("8550", encoding = "utf-8")
@@ -451,8 +449,8 @@ def test_stop_keeps_a_record_it_cannot_read(monkeypatch, tmp_path):
 
 
 def test_stop_does_not_claim_success_when_the_only_record_is_unreadable(monkeypatch, tmp_path):
-    # A server started under sudo leaves a record we cannot read. Printing "no
-    # running server" and exiting 0 tells the user the opposite of the truth.
+    # A server started under sudo leaves a record we cannot read. Printing "no running server" and
+    # exiting 0 tells the user the opposite of the truth.
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
     path = tmp_path / "studio-8901-8550.pid"
     path.write_text("8550", encoding = "utf-8")
@@ -476,8 +474,7 @@ def test_stop_does_not_claim_success_when_the_only_record_is_unreadable(monkeypa
 def test_stop_reports_failure_when_one_record_is_unreadable_but_another_stops(
     monkeypatch, tmp_path
 ):
-    # Stopping the servers we can see is still a partial result, and exiting 0
-    # would hide the one we could not.
+    # Stopping the servers we can see is still a partial result, and exiting 0 would hide the one we could not.
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550, 8600})
     _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
     hidden = tmp_path / "studio-8902-8600.pid"
@@ -519,8 +516,8 @@ def test_stop_reaches_every_server_when_one_record_cannot_be_removed(monkeypatch
 
 
 def test_a_record_whose_pid_is_not_ascii_digits_is_discarded(monkeypatch, tmp_path):
-    # A superscript two passes isdigit() but int() rejects it, so that gate alone
-    # let a ValueError escape _read_pid_record and abort the whole command.
+    # A superscript two passes isdigit() but int() rejects it, so that gate alone let a ValueError
+    # escape _read_pid_record and abort the whole command.
     studio_mod, _live, _killed = _install(monkeypatch, tmp_path, alive = set())
     (tmp_path / "studio-8901-1.pid").write_text("²", encoding = "utf-8")
 

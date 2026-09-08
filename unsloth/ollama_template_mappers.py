@@ -20,6 +20,7 @@ __all__ = [
 
 OLLAMA_TEMPLATES = {}
 
+
 # =========================================== Unsloth
 
 unsloth_ollama = '''
@@ -35,6 +36,7 @@ SYSTEM """You are a helpful assistant to the user"""
 '''
 
 OLLAMA_TEMPLATES["unsloth"] = unsloth_ollama
+
 
 # =========================================== Zephyr
 
@@ -72,10 +74,8 @@ PARAMETER min_p 0.1
 
 OLLAMA_TEMPLATES["chatml"] = chatml_ollama
 
+# Ollama templates from ollama.com/library/mistral (v0.1 blob 22e1b2e8dc2f, v0.2 blob e6836092461f).
 # =========================================== Mistral-1
-# Ollama from https://www.ollama.com/library/mistral
-# Mistral v0.1 https://ollama.com/library/mistral:v0.1/blobs/22e1b2e8dc2f
-# Mistral v0.2 https://ollama.com/library/mistral:v0.2/blobs/e6836092461f
 mistral_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """[INST] {{ if .System }}{{ .System }} {{ end }}{{ .Prompt }} [/INST]"""
@@ -83,8 +83,7 @@ PARAMETER stop "[INST]"
 PARAMETER stop "[/INST]"
 '''
 
-# mistral:v0.3 https://ollama.com/library/mistral:v0.3/blobs/1ff5b64b61b9
-# mistral-large https://ollama.com/library/mistral-large:latest/blobs/96adabcf2c08
+# mistral:v0.3 blob 1ff5b64b61b9; mistral-large blob 96adabcf2c08.
 mistral_v03_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- if .Messages }}
@@ -439,8 +438,8 @@ OLLAMA_TEMPLATES["magistral"] = magistral_ollama
 OLLAMA_TEMPLATES["codestral"] = codestral_ollama
 
 
-# =========================================== Llama-2
 # Ollama from https://www.ollama.com/library/llama3
+# =========================================== Llama-2
 llama_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """[INST] <<SYS>>{{ .System }}<</SYS>>
@@ -453,8 +452,8 @@ PARAMETER min_p 0.1
 
 OLLAMA_TEMPLATES["llama"] = llama_ollama
 
-# ===========================================  Vicuna
 # Ollama from https://www.ollama.com/library/vicuna
+# ===========================================  Vicuna
 vicuna_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}{{ .System }} {{ end }}{{ if .Prompt }}USER: {{ .Prompt }} {{ end }}ASSISTANT: {{ .Response }} {__EOS_TOKEN__}"""
@@ -501,8 +500,8 @@ SYSTEM """Below are some instructions that describe some tasks. Write responses 
 
 OLLAMA_TEMPLATES["alpaca"] = alpaca_ollama
 
-# =========================================== Gemma
 # Ollama from https://www.ollama.com/library/gemma
+# =========================================== Gemma
 gemma_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """<start_of_turn>user
@@ -540,9 +539,8 @@ PARAMETER min_p 0.1
 
 OLLAMA_TEMPLATES["gemma_chatml"] = gemma_chatml_ollama
 
+# Same as Gemma 1, but with sliding window attention; ollama.com/library/gemma2 blob 6522ca797f47.
 # =========================================== Gemma 2
-# Same as Gemma 1, but with sliding window attention!
-# https://ollama.com/library/gemma2/blobs/6522ca797f47
 gemma2_ollama = gemma_ollama + "PARAMETER num_ctx 4096\n"
 OLLAMA_TEMPLATES["gemma2"] = gemma2_ollama
 
@@ -550,8 +548,8 @@ OLLAMA_TEMPLATES["gemma2"] = gemma2_ollama
 gemma2_chatml_ollama = gemma_chatml_ollama + "PARAMETER num_ctx 4096\n"
 OLLAMA_TEMPLATES["gemma2_chatml"] = gemma2_chatml_ollama
 
-# =========================================== Llama-3
 # Ollama from https://www.ollama.com/library/llama3
+# =========================================== Llama-3
 llama3_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}<|start_header_id|>system<|end_header_id|>
@@ -573,8 +571,8 @@ OLLAMA_TEMPLATES["llama-3"] = llama3_ollama
 OLLAMA_TEMPLATES["llama3"] = llama3_ollama
 
 
-# =========================================== Phi-3
 # Ollama from https://www.ollama.com/library/phi3
+# =========================================== Phi-3
 phi3_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}<|system|>
@@ -595,7 +593,6 @@ OLLAMA_TEMPLATES["phi-3"] = phi3_ollama
 OLLAMA_TEMPLATES["phi-35"] = OLLAMA_TEMPLATES["phi-3"]
 OLLAMA_TEMPLATES["phi-3.5"] = OLLAMA_TEMPLATES["phi-3"]
 
-# =========================================== Llama-3.1
 """
 No trimming in Llama 3.1 Instruct!
 Also an extra newline for Cutting Knowledge Date
@@ -794,8 +791,8 @@ OLLAMA_TEMPLATES["llama-32-vision"] = llama_32_vision_ollama
 for version in ("llama-3.2", "llama-3.3", "llama-32", "llama-33"):
     OLLAMA_TEMPLATES[version] = OLLAMA_TEMPLATES["llama-3.1"]
 
+# tinyllama-chat from ollama.com/library/tinyllama blob af0ddbdaaa26.
 # =========================================== tinyllama
-# tinyllama-chat https://ollama.com/library/tinyllama:latest/blobs/af0ddbdaaa26
 tinyllama_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """<|system|>
@@ -813,9 +810,8 @@ SYSTEM """You are a helpful AI assistant."""
 OLLAMA_TEMPLATES["tinyllama"] = tinyllama_ollama
 
 
+# Qwen2 blob 77c91b422cc9; Qwen2.5 from ollama.com/library/qwen2.5 blob eb4402837c78.
 # =========================================== Qwen 2/2.5
-# Qwen2 https://ollama.com/library/qwen2:latest/blobs/77c91b422cc9
-# Qwen2.5 from https://ollama.com/library/qwen2.5/blobs/eb4402837c78
 qwen25_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- if .Messages }}
@@ -987,7 +983,7 @@ _phi4_ollama_template = (
     "<|im_start|><|assistant|><|im_sep|>{{ .Response }}<|im_end|>"
 )
 
-# Ollama from https://www.ollama.com/library/phi4 is different
+# The ollama.com/library/phi4 template is different.
 phi_4_ollama = f'''
 FROM {{__FILE_LOCATION__}}
 TEMPLATE """{_phi4_ollama_template}"""
@@ -1057,8 +1053,8 @@ OLLAMA_TEMPLATES["phi-4-mini"] = phi_4_mini_ollama
 OLLAMA_TEMPLATES["phi-4-mini-reasoning"] = phi_4_mini_reasoning_ollama
 
 
-# =========================================== Gemma-3
 # Ollama from https://ollama.com/library/gemma3/blobs/e0a42594d802
+# =========================================== Gemma-3
 gemma3_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- range $i, $_ := .Messages }}
@@ -1111,7 +1107,6 @@ OLLAMA_TEMPLATES["gemma3"] = gemma3_ollama
 OLLAMA_TEMPLATES["gemma3-270m"] = gemma3_270m_ollama
 
 
-# =========================================== Qwen-3
 # Ollama template for Qwen-3 (see https://ollama.com/library/qwen3/blobs/eb4402837c78)
 qwen3_ollama = '''
 FROM {__FILE_LOCATION__}
@@ -1179,8 +1174,8 @@ OLLAMA_TEMPLATES["qwen-3"] = qwen3_ollama
 OLLAMA_TEMPLATES["qwen3"] = qwen3_ollama
 
 
-# =========================================== Gemma-3n
 # Ollama from https://ollama.com/library/gemma3n/blobs/e0a42594d802
+# =========================================== Gemma-3n
 gemma3n_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- range $i, $_ := .Messages }}
@@ -1214,9 +1209,10 @@ TEMPLATE """{{- range $i, $_ := .Messages }}
 OLLAMA_TEMPLATES["gemma-4"] = gemma4_ollama
 OLLAMA_TEMPLATES["gemma4"] = gemma4_ollama
 
-# =========================================== GPT-OSS
 
 # Ollama from https://ollama.com/library/gpt-oss:latest/blobs/fa6710a93d78
+# =========================================== GPT-OSS
+
 gptoss_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
@@ -1401,7 +1397,6 @@ OLLAMA_TEMPLATES["gpt-oss"] = gptoss_ollama
 OLLAMA_TEMPLATES["gptoss"] = gptoss_ollama
 
 
-# =========================================== Qwen3
 
 # Ollama from https://ollama.com/library/qwen3/blobs/53e4ea15e8f5
 qwen3_ollama = '''
@@ -1464,10 +1459,11 @@ OLLAMA_TEMPLATES["qwen3-instruct"] = qwen3_ollama
 OLLAMA_TEMPLATES["qwen3-thinking"] = qwen3_ollama
 
 
-# =========================================== Starling-LM
 
 
 # Ollama from https://ollama.com/library/starling-lm:7b/blobs/4b21bfc435b4
+# =========================================== Starling-LM
+
 starling_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}GPT4 Correct System: {{ .System }}<|end_of_turn|>
@@ -1484,10 +1480,11 @@ PARAMETER min_p 0.1
 OLLAMA_TEMPLATES["starling"] = starling_ollama
 
 
-# =========================================== Yi-chat
 
 
 # Ollama from https://ollama.com/library/yi:34b-chat/blobs/62fbfd9ed093
+# =========================================== Yi-chat
+
 yi_chat_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}<|im_start|>system
@@ -1500,9 +1497,10 @@ TEMPLATE """{{ if .System }}<|im_start|>system
 
 OLLAMA_TEMPLATES["yi-chat"] = yi_chat_ollama
 
-# =========================================== Granite
 
 # Ollama from https://ollama.com/library/granite3.2:latest/blobs/3e7ca51acd6e
+# =========================================== Granite
+
 granite_32_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- /*
@@ -2219,7 +2217,6 @@ for key, values in OLLAMA_TEMPLATE_TO_MODEL_MAPPER.items():
     for value in values:
         MODEL_TO_OLLAMA_TEMPLATE_MAPPER[value] = key
 
-    # Get lowercased
     lowered_key = key.lower()
     for value in values:
         MODEL_TO_OLLAMA_TEMPLATE_MAPPER[value.lower()] = lowered_key

@@ -95,8 +95,8 @@ class TestSetupPs1NoWipeEscape:
             assert clause in condition, f"the escape must be gated on {clause!r}"
 
     def test_the_installed_tag_is_tested_before_the_variables_it_implies(self):
-        # $_pinnedIdx and $expectedTorchTag are assigned only inside `if (-not
-        # $shouldRebuild)`, so under Set-StrictMode the other -and order is a fatal read.
+        # $_pinnedIdx and $expectedTorchTag are assigned only inside `if (-not $shouldRebuild)`, so under
+        # Set-StrictMode the other -and order is a fatal read.
         start = _SETUP_SRC.index("if ($shouldRebuild -and -not $InstallerManagedSetup -and\n")
         condition = _SETUP_SRC[start : _SETUP_SRC.index("{", start)]
         assert condition.index("$installedTorchTag -and") < condition.index("$_pinnedIdx")
@@ -159,9 +159,15 @@ class TestInstallPs1Parity:
     same wheels, and a support log from either must read the same."""
 
     def test_the_repair_trio_matches_install_ps1(self):
-        match = re.search(r'else\s*\{\s*@\((\s*"torch[^)]*?)\)\s*\}', _INSTALL_SRC, re.S)
-        assert match is not None, "install.ps1's flavor-repair spec array moved"
-        ps_specs = tuple(re.findall(r'"([^"]+)"', match.group(1)))
+        # install.ps1 builds the non-XPU trio as three scalars; a kept pin substitutes one by one.
+        match = re.search(
+            r'\$_fixTorchSpec\s*=\s*("[^"]+")\s*;\s*'
+            r'\$_fixVisionSpec\s*=\s*("[^"]+")\s*;\s*'
+            r'\$_fixAudioSpec\s*=\s*("[^"]+")',
+            _INSTALL_SRC,
+        )
+        assert match is not None, "install.ps1's flavor-repair spec scalars moved"
+        ps_specs = tuple(re.findall(r'"([^"]+)"', "".join(match.groups())))
         py_specs = tuple(
             re.findall(
                 r'"([^"]+)"',
@@ -265,8 +271,7 @@ class TestStepThirteenWiring:
         )
 
     def test_the_existing_repair_set_is_untouched(self):
-        # Step 2b (which Windows enters; the four helpers return early there) and the
-        # Linux-only step 13.
+        # Step 2b (which Windows enters; the four helpers return early there) and the Linux-only step 13.
         guards = _guards_containing("_ensure_cuda_torch")
         assert [ast.unparse(guard.test) for guard in guards] == [
             "not IS_MACOS and (not NO_TORCH)",
@@ -295,7 +300,7 @@ def _base_total(**flags) -> int:
     total fails here instead of drawing a progress bar past 100%.
     """
     lines = _STACK_SRC.splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip().startswith("base_total = 12"))
+    start = next(i for i, line in enumerate(lines) if line.strip().startswith("base_total = "))
     end = next(i for i, line in enumerate(lines) if line.strip().startswith("base_requirements ="))
     block = textwrap.dedent("\n".join(lines[start:end]))
     namespace = {
@@ -311,20 +316,20 @@ def _base_total(**flags) -> int:
 
 
 class TestStepTotals:
-    def test_windows_gained_one_step(self):
-        assert _base_total(IS_WINDOWS = True) == 14
-        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 12
+    def test_windows_totals_include_torchcodec(self):
+        assert _base_total(IS_WINDOWS = True) == 15
+        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 13
 
     @pytest.mark.parametrize(
         "flags,total",
         [
-            ({}, 16),  # Linux, torch
-            ({"NO_TORCH": True}, 13),  # Linux, GGUF-only
-            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 13),  # Apple Silicon
-            ({"IS_MACOS": True}, 12),  # Intel Mac
+            ({}, 17),  # Linux, torch
+            ({"NO_TORCH": True}, 14),  # Linux, GGUF-only
+            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 14),  # Apple Silicon
+            ({"IS_MACOS": True}, 13),  # Intel Mac
         ],
     )
-    def test_the_other_platforms_are_unchanged(self, flags, total):
+    def test_the_other_platform_totals_include_torchcodec(self, flags, total):
         assert _base_total(**flags) == total
 
 
@@ -345,8 +350,7 @@ class TestManifestRecordsTheFlavor:
         assert install_manifest.recorded_torch_flavor(tmp_path) == "cu128"
 
     def test_absent_reads_as_unknown_not_cpu(self, tmp_path):
-        # Claiming a flavor nobody selected would let a repair reinstall over a
-        # deliberate build.
+        # Claiming a flavor nobody selected would let a repair reinstall over a deliberate build.
         install_manifest.write_manifest(root = tmp_path, req_root = tmp_path)
         assert install_manifest.recorded_torch_flavor(tmp_path) is None
 
