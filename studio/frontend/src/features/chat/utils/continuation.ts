@@ -1,14 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Resuming a response that stopped early: Max Tokens ran out (`length`), Stop was
- * pressed (`cancelled`), or the stream was cut (`interrupted`).
- *
- * Continuing re-sends the conversation with the partial as the final assistant turn
- * plus `continue_final_message`, so the prompt ends mid-sentence and the model emits
- * the next token. The new text is appended to the partial.
- */
+/** Resuming a response that stopped early (`length`, `cancelled`, `interrupted`): the conversation
+ *  is re-sent with the partial as the final assistant turn plus `continue_final_message`, so
+ *  the prompt ends mid-sentence and the new text is appended to the partial. */
 
 /** Why a turn ended before the model was done. */
 export type IncompleteReason = "length" | "cancelled" | "interrupted";
@@ -48,13 +43,9 @@ export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
   return null;
 }
 
-/**
- * assistant-ui's reason for each of ours. `length` is a truthful stop, not a failure:
- * mapping it to `error` paints MessagePrimitive.Error's red box and a Retry button over
- * a turn that already offers the Continue bar below it, on every reloaded max-tokens
- * answer including ones written before this feature existed. `interrupted` keeps `error`
- * on purpose -- a cut stream is the thing the user has to be told about.
- */
+/** assistant-ui's reason for each of ours. `length` is a truthful stop, not a failure: mapping it
+ *  to `error` paints a red box and a Retry button over a turn that already offers the Continue
+ *  bar. `interrupted` keeps `error` on purpose, since a cut stream must be told about. */
 const STATUS_REASON: Record<
   IncompleteReason,
   "cancelled" | "length" | "error"
@@ -86,11 +77,9 @@ export function incompleteLabel(reason: IncompleteReason): string {
   return INCOMPLETE_LABELS[reason];
 }
 
-/**
- * Drop text the continuation repeated from the end of the partial. Local models
- * continue token-exactly, but a provider that ignores assistant prefill can restate
- * the last few words. Only a suffix the continuation opens with is removed.
- */
+/** Drop text the continuation repeated from the end of the partial: local models continue
+ *  token-exactly, but a provider that ignores assistant prefill can restate the last few
+ *  words. Only a suffix the continuation opens with is removed. */
 export function stripContinuationOverlap(
   partial: string,
   continuation: string,
@@ -107,11 +96,8 @@ export function stripContinuationOverlap(
   return continuation;
 }
 
-/**
- * True when the "continuation" is really a fresh answer. Judged on the partial's
- * opening, which a genuine continuation never reproduces; appending a restart would
- * read as a stutter, so the caller keeps it alone.
- */
+/** True when the "continuation" is really a fresh answer, judged on the partial's opening, which a
+ *  genuine continuation never reproduces. */
 export function isRestart(partial: string, continuation: string): boolean {
   const head = partial.trimStart().slice(0, RESTART_PROBE);
   if (head.length < RESTART_PROBE) {
@@ -121,12 +107,8 @@ export function isRestart(partial: string, continuation: string): boolean {
   return continuation.trimStart().startsWith(head);
 }
 
-/**
- * Merge a partial answer with its continuation.
- *
- * `streaming` skips the restart check, which needs more text than early chunks carry;
- * it runs once at the end.
- */
+/** Merge a partial answer with its continuation. `streaming` skips the restart check, which needs
+ *  more text than early chunks carry; it runs once at the end. */
 export function joinContinuation(
   partial: string,
   continuation: string,
@@ -141,36 +123,12 @@ export function joinContinuation(
   return `${partial}${stripContinuationOverlap(partial, continuation)}`;
 }
 
-/**
- * The merge a resumed turn applies to its cumulative text, streaming and at the end.
- *
- * The bug this fixes is `isRestart` running per arrival. It cannot fire until the continuation
- * reaches RESTART_PROBE characters, and the moment it does it publishes the continuation ALONE.
- * Over a 1602-character partial that took the value from 1649 characters to 48 in one arrival,
- * measured character by character. That is not only a visible collapse: Stop persists the last
- * STREAMED yield, because assistant-ui drops what a run yields after an abort and the terminal
- * merge sits behind `!abortSignal.aborted`, so stopping in that window SAVED the 48 characters
- * and discarded the whole partial the user was reading.
- *
- * `streaming` exists for exactly this and production never passed it. It suppresses the restart
- * check, which needs more text than early chunks carry, and leaves the overlap trim, which only
- * ever removes text the continuation itself repeated. So a streamed merge keeps the partial and
- * the new text, always, and a genuine restart is collapsed once at the end where the evidence
- * for it is complete.
- *
- * Two things were tried first and are recorded because both were worse:
- *
- *   * repairing ONLY at the end. That saves `partial + repeated tail` on Stop, so a Continue
- *     built on it replays the duplicate. It swapped a display bug for a stored one.
- *   * holding the partial until the trim could no longer change (at `min(partial.length,
- *     MAX_OVERLAP)`). Monotonic, but Stop inside that window persisted the STALE PARTIAL and
- *     discarded every newly generated character, which is worse than either.
- *
- * The overlap trim can still shift the join by up to MAX_OVERLAP characters as a longer overlap
- * starts matching, so a publish is not strictly monotonic. That is bounded, rare, confined to
- * external-provider continuations, and never loses text. It is deliberately not worth holding
- * generated output back to avoid.
- */
+/** The merge a resumed turn applies to its cumulative text, streaming and at the end. `isRestart`
+ *  must not run per arrival: it cannot fire until the continuation reaches RESTART_PROBE
+ *  characters and then publishes the continuation ALONE, which on a 1602-character partial
+ *  collapsed the value to 48 characters, and Stop persists the last STREAMED yield. So a
+ *  streamed merge keeps both texts and a genuine restart is collapsed once at the end. The
+ *  overlap trim can still shift the join by up to MAX_OVERLAP, which never loses text. */
 export function createContinuationMerger(
   partial: string,
   repair: boolean,
@@ -185,14 +143,8 @@ export function createContinuationMerger(
   };
 }
 
-/**
- * Whether a finished MLX turn used its whole budget, i.e. stopped for length.
- *
- * MLX alone needs the inference: it reports finish_reason "stop" at the cap. Everyone
- * else reports "length" themselves, transformers included (from the token count
- * `generate` returned, which distinguishes an exhausted budget from a stop token that
- * happened to land at the cap), so inferring for them would relabel a finished answer.
- */
+/** Whether a finished MLX turn used its whole budget. MLX alone needs the inference: it reports
+ *  finish_reason "stop" at the cap, while everyone else reports "length" themselves. */
 export function budgetImpliesTruncation({
   isMlx,
   maxTokens,
@@ -212,13 +164,9 @@ export function budgetImpliesTruncation({
   );
 }
 
-/**
- * Whether an assistant turn can be resumed at all.
- *
- * A turn that called a tool cannot: the continuation runs as a sibling, so the call and
- * its result are absent from the outbound history and the model would be asked to carry
- * on from an answer whose evidence is missing. Matches the backend guard.
- */
+/** Whether an assistant turn can be resumed at all. A turn that called a tool cannot: the
+ *  continuation runs as a sibling, so the call and its result are absent from the outbound
+ *  history. Matches the backend guard. */
 export function isContinuableContent(
   content: readonly unknown[] | undefined,
 ): boolean {
@@ -241,11 +189,8 @@ export function isContinuableContent(
   return hasText;
 }
 
-/**
- * The newest Gemini text-part thoughtSignature on an assistant turn. The streaming
- * adapter pins it onto the final text part; the continuation carries it so the resumed
- * turn is replayed signed rather than as bare text.
- */
+/** The newest Gemini text-part thoughtSignature on an assistant turn, carried so the resumed turn
+ *  is replayed signed rather than as bare text. */
 export function readTextThoughtSignature(
   content: readonly unknown[] | undefined,
 ): string | undefined {
@@ -267,15 +212,10 @@ export function readTextThoughtSignature(
   return undefined;
 }
 
-/**
- * Providers that reject a trailing assistant turn.
- *
- * Anthropic removed assistant prefill in Claude 4.6 and never allowed it with extended
- * thinking. Gemini requires a multiturn request to end in a user turn or a function
- * response. Mistral takes a prefill only on an assistant message carrying `prefix: true`,
- * which neither the outbound message type nor the backend schema has. All get the partial
- * plus an instruction turn instead, keeping the last message a user turn.
- */
+/** Providers that reject a trailing assistant turn: Anthropic removed prefill in Claude 4.6,
+ *  Gemini requires a multiturn request to end in a user turn or function response, and Mistral
+ *  needs `prefix: true`, which neither the outbound type nor the backend schema has. All get
+ *  the partial plus an instruction turn instead. */
 const PREFILL_REJECTING_PROVIDERS = new Set(["anthropic", "gemini", "mistral"]);
 
 export function rejectsAssistantPrefill(
@@ -284,28 +224,19 @@ export function rejectsAssistantPrefill(
   return providerType != null && PREFILL_REJECTING_PROVIDERS.has(providerType);
 }
 
-/**
- * Self-hosted servers the backend sends the continuation flags to.
- *
- * Mirrors `_CONTINUATION_FLAG_PROVIDERS` in `core/inference/external_provider.py`: vLLM
- * and llama-server document `continue_final_message` + `add_generation_prompt`, so they
- * resume at the exact token boundary and need no overlap repair. Every other connection
- * may ignore the trailing assistant turn and restart.
- */
+/** Self-hosted servers the backend sends the continuation flags to. Mirrors
+ *  `_CONTINUATION_FLAG_PROVIDERS` in external_provider.py: vLLM and llama-server document
+ *  `continue_final_message` + `add_generation_prompt`, so they resume at the exact token
+ *  boundary and need no overlap repair. */
 const EXACT_RESUME_PROVIDERS = new Set(["vllm", "llama_cpp"]);
 
 export function resumesExactly(providerType: string | undefined): boolean {
   return providerType != null && EXACT_RESUME_PROVIDERS.has(providerType);
 }
 
-/**
- * Whether the run this thread would start can resume a partial at all.
- *
- * These two answer from scratch before the continuation request is read: audio input
- * re-listens and an audio-output model regenerates the clip. Continue would restart, so
- * it is hidden. Armed Deep Research is not here: the model decides whether an armed turn
- * becomes research, and a turn that did is hidden by its run, not by the toggle.
- */
+/** Whether the run this thread would start can resume a partial at all. Audio input re-listens and
+ *  an audio-output model regenerates the clip, so Continue would restart and is hidden. Armed
+ *  Deep Research is not here: such a turn is hidden by its run, not by the toggle. */
 export function modeAllowsContinuation({
   fromAudioInput,
   audioOutputModel,
@@ -327,10 +258,8 @@ export const CONTINUATION_RUN_CONFIG_KEY = "unslothContinuation";
 export type ContinuationRequest = {
   /** The partial answer to resume, exactly as it was rendered. */
   partial: string;
-  /**
-   * Gemini text-part thoughtSignature from the turn being resumed. The sibling run drops
-   * the original assistant message, so replaying it here keeps the history signed.
-   */
+  /** Gemini text-part thoughtSignature from the turn being resumed: the sibling run drops the
+   *  original assistant message, so replaying it here keeps the history signed. */
   thoughtSignature?: string;
 };
 
@@ -353,45 +282,21 @@ export function readContinuationRequest(
   return null;
 }
 
-/**
- * Resuming a Max Tokens cut WITHOUT asking.
- *
- * Hitting the cap is not a decision the user made; it is the reply running out of room
- * mid-sentence, and the only sensible answer to "the answer is not finished" is to finish
- * it. Every other reason is left alone: `cancelled` is the user pressing Stop, so
- * resuming would restart the thing they just stopped, and `interrupted` means the
- * connection dropped, where a silent retry can hide a broken link.
- *
- * Bounded, because a model that will not stop would otherwise loop forever, and each
- * round grows the transcript and drives compaction harder. After the budget is spent the
- * bar comes back and the user decides.
- */
+/** Resuming a Max Tokens cut WITHOUT asking: hitting the cap is not a decision the user made.
+ *  Every other reason is left alone, since `cancelled` would restart what the user just
+ *  stopped and `interrupted` can hide a broken link. Bounded, because a model that will not
+ *  stop would loop forever and each round drives compaction harder. */
 export const AUTO_CONTINUE_LIMIT = 3;
 
-/**
- * Rounds already spent per logical turn, keyed by the parent the continuation hangs off.
- *
- * Keyed on the PARENT, not the message: a continuation runs as a sibling of the turn it
- * resumes, so each round produces a new message id and a per-message counter would reset
- * every time and never reach its limit. The parent is the one id every round of the same
- * turn shares. In memory only; a reload is a fresh decision by a present user.
- */
+/** Rounds already spent per logical turn, keyed by the parent the continuation hangs off: a
+ *  continuation runs as a sibling, so a per-message counter would reset every round and never
+ *  reach its limit. In memory only. */
 const spent = new Map<string, number>();
 
-/**
- * Whether this cut should resume on its own.
- *
- * `fits` and `promptTarget` come from the resumed turn's own truncation metadata, and
- * both exist because resuming FIGHTS the context window. A continuation replays the
- * partial as the final assistant turn, and the fit protects the final group, so the
- * partial is the one thing compaction may not evict. Once it is large enough that the
- * system turn plus the carried-forward block will not fit beside it, the request is
- * irreducible and every further round produces the same refusal.
- *
- * Measured at a 4,864-token context: a 3,217-token partial plus system and X came to
- * 4,218 against a 3,648-token target, so the answer could not be resumed at all -- and
- * three automatic rounds each asked anyway and each failed identically.
- */
+/** Whether this cut should resume on its own. `fits` and `promptTarget` come from the resumed
+ *  turn's truncation metadata because resuming FIGHTS the context window: the partial is
+ *  replayed as the final assistant turn, which the fit protects, so once it is large enough
+ *  that the system turn will not fit beside it every further round refuses identically. */
 export function shouldAutoContinue(
   reason: IncompleteReason | null | undefined,
   key: string | null | undefined,
@@ -414,12 +319,10 @@ export function shouldAutoContinue(
     return false;
   }
   if (fits === false) {
-    // Neither shape of `fits: false` can be resumed. A refusal never fitted, and a rescue
-    // is reached only once eviction ran out of eligible turns, so its prompt is already
-    // the floor. Nothing is left to evict either way, while a continuation replays the
-    // partial as the final assistant turn, which the fit protects, asking for MORE prompt
-    // against the same window: on a 460-of-500-token rescue a 10-character partial
-    // already refuses.
+    // Neither shape of `fits: false` can be resumed: a refusal never fitted, and a rescue is reached
+    // only once eviction ran out of eligible turns. Nothing is left to evict, while a
+    // continuation asks for MORE prompt against the same window.
+    // On a 460-of-500-token rescue a 10-character partial already refuses.
     return false;
   }
   if (
@@ -428,16 +331,15 @@ export function shouldAutoContinue(
     promptTarget > 0 &&
     partialTokens >= promptTarget
   ) {
-    // The partial alone meets the budget, so nothing can be sent beside it -- not the
-    // system prompt, not the user's own question. Raising Context Length is the only
-    // remedy and the bar says so.
+    // The partial alone meets the budget, so nothing can be sent beside it. Raising Context Length is
+    // the only remedy and the bar says so.
     return false;
   }
   return (spent.get(key) ?? 0) < limit;
 }
 
-/** Record a round against `key`. Called before the run starts, so a run that fails to
- * produce anything still consumes its budget rather than retrying forever. */
+/** Record a round against `key`. Called before the run starts, so a run that fails to produce
+ *  anything still consumes its budget. */
 export function recordAutoContinue(key: string): void {
   spent.set(key, (spent.get(key) ?? 0) + 1);
 }
@@ -447,45 +349,20 @@ export function autoContinueCount(key: string | null | undefined): number {
   return key ? (spent.get(key) ?? 0) : 0;
 }
 
-/**
- * How long a lease survives without being renewed.
- *
- * A lease, not a permanent flag: the tab that wins can be closed or crash mid-run, and a
- * flag it never gets to clear would leave the message unresumable for the life of the
- * profile. The winner renews for as long as its run is live (see
- * `renewAutoContinueLease`), so the TTL is not a guess at how long a continuation takes:
- * it is how long a tab that stopped renewing is still believed to be alive.
- *
- * Three minutes because renewals are timers, and a hidden tab is throttled to roughly one
- * timer callback a minute in Chrome. Three minutes leaves a backgrounded winner about
- * three chances to check in before anyone else may touch its message, while a tab that
- * really died gives the message back inside the pause a user notices anyway. The manual
- * Continue button is never gated on any of this, so the way out is always open.
- */
+/** How long a lease survives without being renewed. A lease, not a permanent flag: the winning tab
+ *  can crash mid-run, and a flag it never clears would leave the message unresumable for the
+ *  life of the profile. Three minutes because a hidden tab is throttled to roughly one timer
+ *  callback a minute. The manual Continue button is never gated on any of this. */
 export const AUTO_CONTINUE_LEASE_TTL_MS = 180_000;
 
-/**
- * How often the holder renews while its run is live. Well inside the TTL even at the
- * once-a-minute rate a hidden tab's timers are throttled to.
- */
+/** How often the holder renews while its run is live. Well inside the TTL even at the
+ *  once-a-minute rate a hidden tab's timers are throttled to. */
 export const AUTO_CONTINUE_LEASE_RENEW_MS = 30_000;
 
-/**
- * How long a record stays behind once the run it covered has finished.
- *
- * A lease answers "is somebody running this message"; this answers "has this message
- * already been continued", which is what the per-tab claim set answers inside the tab that
- * won and what no other tab has any way of learning. Nothing tells a second tab that the
- * sibling was written: `notifyChatHistoryUpdated` dispatches a same-window event, no chat
- * key has a `storage` listener, and persisted messages are re-read only by `history.load`
- * when a thread is opened. So a tab still holding the pre-continuation branch in memory
- * takes the message straight back the moment the record goes -- on the next remount of the
- * bar, which leaving the chat and returning is enough to produce -- and the user pays for a
- * second continuation from a history that is missing the first.
- *
- * Long enough to outlive the sitting the continuation happened in, not permanent: the ids
- * are pruned like any other record, so the key cannot grow without bound.
- */
+/** How long a record stays behind once the run it covered has finished. A lease answers "is
+ *  somebody running this message"; this answers "has this message already been continued",
+ *  which nothing else tells a second tab, so a tab still holding the pre-continuation branch
+ *  takes the message straight back the moment the record goes. Not permanent. */
 export const AUTO_CONTINUE_CONTINUED_TTL_MS = 86_400_000;
 
 /** The `localStorage` key holding the leases, one record per claimed message id. */
@@ -494,16 +371,9 @@ export const AUTO_CONTINUE_LEASE_KEY = "unsloth_chat_auto_continue_leases";
 /** The Web Locks name every read-modify-write of that key is taken under. */
 export const AUTO_CONTINUE_LOCK_NAME = "unsloth_chat_auto_continue_claim";
 
-/**
- * What a claim attempt did.
- *
- * Three answers, not a boolean, because the two ways of not starting a run want opposite
- * things on screen. `held-elsewhere` is another tab running this message: this one has to
- * drop the "Continuing automatically" spinner and put its manual Continue button back, or
- * it shows a spinner for a run it will never own. `skipped` is this tab declining its own
- * duplicate call -- a `<StrictMode>` replay, or a claim already in flight -- where the run
- * IS coming and changing what is on screen would be wrong.
- */
+/** What a claim attempt did. Three answers, not a boolean, because the two ways of not starting a
+ *  run want opposite things on screen: `held-elsewhere` must drop the spinner and restore the
+ *  manual Continue button, while `skipped` is this tab declining its own duplicate call. */
 export type AutoContinueClaim = "started" | "skipped" | "held-elsewhere";
 
 /** The slice of `Storage` the lease needs. Narrow so a test can hand over a fake. */
@@ -521,22 +391,14 @@ export type AutoContinueLockManager = {
 type Lease = {
   token: string;
   expires: number;
-  /**
-   * The run this record covered reached a terminal state, so the message HAS been
-   * continued. A plain lease that lapses means only that its holder stopped answering and
-   * the message is free again; this one means the work is done and nobody should repeat it.
-   */
+  /** The run this record covered reached a terminal state, so the message HAS been continued. A
+   *  lapsed lease means only that its holder stopped answering; this means the work is done. */
   done?: boolean;
 };
 
-/**
- * The browser's own storage, or nothing when there is not one to read.
- *
- * Resolved per call rather than once at import: `localStorage` is absent under the test
- * runner and in SSR, and Safari's private mode throws on the property itself, not just on
- * a write. Every caller treats null as "no cross-tab seam" and falls back to the module
- * claim below, which is exactly what shipped before the lease existed.
- */
+/** The browser's own storage, or nothing when there is not one. Resolved per call rather than at
+ *  import: `localStorage` is absent under the test runner and in SSR, and Safari's private
+ *  mode throws on the property itself. Null falls back to the module claim. */
 function browserLeaseStorage(): AutoContinueLeaseStorage | null {
   try {
     if (typeof window === "undefined") {
@@ -550,15 +412,10 @@ function browserLeaseStorage(): AutoContinueLeaseStorage | null {
   }
 }
 
-/**
- * The browser's lock manager, or nothing where there is not one.
- *
- * `navigator.locks` is what makes the claim exclusive: read, decide and write happen
- * inside one held lock, so no other tab can be between them. localStorage alone cannot do
- * this -- its individual operations are atomic, but a read-modify-write across three
- * statements is not, and the storage mutex that used to serialize such sequences was
- * dropped from the spec, so nothing holds a lock across them.
- */
+/** The browser's lock manager, or nothing where there is not one. `navigator.locks` is what makes
+ *  the claim exclusive: localStorage's individual operations are atomic, but a
+ *  read-modify-write across three statements is not, and the storage mutex that used to
+ *  serialize such sequences was dropped from the spec. */
 function browserLockManager(): AutoContinueLockManager | null {
   try {
     const locks = (globalThis.navigator as { locks?: unknown } | undefined)
@@ -599,14 +456,9 @@ function newLeaseToken(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-/**
- * One tab's view of which messages have been continued.
- *
- * Constructible because a second instance is precisely what a second browser tab is: its
- * own module scope, its own empty claim set, the same saved thread, and the same storage
- * and lock manager underneath. That is the case the lease exists for, and the only way to
- * write it down as a test.
- */
+/** One tab's view of which messages have been continued. Constructible because a second instance is
+ *  precisely what a second browser tab is: its own module scope and claim set over the same
+ *  storage and lock manager, which is the case the lease exists for. */
 export function createAutoContinueTab({
   storage,
   locks,
@@ -637,30 +489,18 @@ export function createAutoContinueTab({
   forget: (messageId: string | null | undefined) => void;
   reset: () => void;
 } {
-  /**
-   * Messages this tab has already continued automatically, by message id.
-   *
-   * Separate from `spent`, which counts rounds per logical turn and is what bounds a
-   * runaway loop. This answers a different question: has THIS message already been
-   * resumed once. A component-local ref cannot, because it dies with the component.
-   * Leave the chat with a truncated branch selected and come back, and the ref is fresh
-   * while the parent still has budget, so the effect fires again and creates another
-   * sibling and another paid request. Module scope outlives the remount; the ids are
-   * short and bounded by how many replies a session truncates.
-   */
+  /** Messages this tab has already continued automatically, by message id. Separate from `spent`,
+   *  which counts rounds per turn: this asks whether THIS message has been resumed once. A
+   *  component-local ref dies with the component, so leaving a truncated branch and returning
+   *  fired the effect again and paid for another sibling. */
   const continued = new Set<string>();
 
   /** Claims this tab has in flight. The lock is async, so a second call can arrive. */
   const claiming = new Set<string>();
 
-  /**
-   * Lease tokens this tab holds, by message id, each tagged with the holder that took it.
-   *
-   * Tagged, because "this tab" is not one runtime. Compare mode mounts two of them side by
-   * side, each with its own thread and its own run, and either can be resuming a truncated
-   * reply while the other is idle. A holder renews and releases what IT took; the pane that
-   * finishes first must not hand the other pane's still-generating message to anyone.
-   */
+  /** Lease tokens this tab holds, by message id, each tagged with the holder that took it. Tagged
+   *  because "this tab" is not one runtime: compare mode mounts two side by side, and the pane
+   *  that finishes first must not hand the other pane's still-generating message to anyone. */
   const ownTokens = new Map<string, { token: string; holder: string }>();
 
   const leaseSeam = (): AutoContinueLeaseStorage | null =>
@@ -669,15 +509,9 @@ export function createAutoContinueTab({
   const lockSeam = (): AutoContinueLockManager | null =>
     locks === undefined ? browserLockManager() : locks;
 
-  /**
-   * Run `mutate` with nobody else inside it.
-   *
-   * With a lock manager this is genuinely exclusive across tabs. Without one -- an older
-   * browser, an embedded webview, the test runner -- it degrades to running the body
-   * straight through, which is the write-then-read-back below and no worse than what
-   * shipped before. A lock manager that rejects the request is treated the same way,
-   * and a body that has already run is never run twice.
-   */
+  /** Run `mutate` with nobody else inside it. With a lock manager this is exclusive across tabs;
+   *  without one it degrades to running the body straight through, which is the
+   *  write-then-read-back below. A body that has already run is never run twice. */
   async function exclusively<T>(mutate: () => T, fallback: T): Promise<T> {
     const manager = lockSeam();
     if (!manager) {
@@ -694,14 +528,9 @@ export function createAutoContinueTab({
     }
   }
 
-  /**
-   * Drop what has lapsed, so the key cannot grow with every truncated reply.
-   *
-   * The one mutation here that is deliberately not per message. It only ever removes
-   * records that are already dead by their own expiry -- `liveLease` reads them as free
-   * whether they are in the key or not -- so it cannot end anybody's hold, and it is the
-   * only thing bounding the size of a key every tab writes to.
-   */
+  /** Drop what has lapsed, so the key cannot grow with every truncated reply. The one mutation
+   *  deliberately not per message: it only removes records already dead by their own expiry, so
+   *  it cannot end anybody's hold. */
   function prune(
     leases: Record<string, Lease>,
     now: number,
@@ -730,13 +559,9 @@ export function createAutoContinueTab({
     }
   }
 
-  /**
-   * Take the lease, or report who has it. Runs inside the lock.
-   *
-   * A storage that cannot be read or written is not an error: the tab keeps the
-   * module-only claim, which is what single-tab use has always relied on, rather than
-   * refusing a continuation the user is waiting for.
-   */
+  /** Take the lease, or report who has it. Runs inside the lock. A storage that cannot be read or
+   *  written is not an error: the tab keeps the module-only claim rather than refusing a
+   *  continuation the user is waiting for. */
   function takeLease(
     messageId: string,
     now: number,
@@ -765,8 +590,8 @@ export function createAutoContinueTab({
     next[messageId] = { token, expires: now + AUTO_CONTINUE_LEASE_TTL_MS };
     try {
       store.setItem(AUTO_CONTINUE_LEASE_KEY, JSON.stringify(next));
-      // Read back, which is the only defence left when there is no lock manager: whoever
-      // wrote last is the token in storage, and the other tab does not find its own.
+      // Read back, which is the only defence left when there is no lock manager: whoever wrote last is
+      // the token in storage, and the other tab does not find its own.
       if (readLeases(store)[messageId]?.token !== token) {
         return "held-elsewhere";
       }
@@ -782,17 +607,10 @@ export function createAutoContinueTab({
     return ownTokens.get(messageId)?.holder === holder;
   }
 
-  /**
-   * Rewrite ONE lease with a new expiry, if this holder is the one that took it. Runs
-   * inside the lock, and reports whether the lease is still this tab's to stamp.
-   *
-   * One message, never a holder's whole set. A holder is a runtime, and a runtime outlives
-   * the run inside it: rounds of the same turn are claimed one after another under the same
-   * holder, and the next round is claimed BEFORE the finished one is given back, because
-   * React runs the bar's effect before the thread's. Anything that operated on "every lease
-   * this holder owns" would settle the round that just started along with the round that
-   * ended.
-   */
+  /** Rewrite ONE lease with a new expiry, if this holder is the one that took it, and report whether
+   *  it is still this tab's to stamp. One message, never a holder's whole set: rounds of the
+   *  same turn share a holder, and the next round is claimed BEFORE the finished one is given
+   *  back, so a holder-wide operation would settle the round that just started. */
   function restamp(
     messageId: string,
     holder: string,
@@ -832,8 +650,8 @@ export function createAutoContinueTab({
         return "skipped";
       }
       if (liveLease(messageId, now)) {
-        // Cheap answer before touching the lock. Not recorded locally: if the tab holding
-        // it dies, this one takes the message back when the lease lapses.
+        // Cheap answer before touching the lock. Not recorded locally: if the tab holding it dies, this
+        // one takes the message back when the lease lapses.
         return "held-elsewhere";
       }
       claiming.add(messageId);
@@ -854,10 +672,8 @@ export function createAutoContinueTab({
       if (!messageId) {
         return false;
       }
-      // A claim of this tab's own that is still in flight deliberately does NOT count: the
-      // spinner it is rendering is the right thing to show, and treating it as taken would
-      // flash the manual bar in the middle of winning. Its duplicate calls are refused by
-      // `claim` itself.
+      // A claim of this tab's own that is still in flight deliberately does NOT count: the spinner it is
+      // rendering is the right thing to show, and `claim` itself refuses its duplicate calls.
       return continued.has(messageId) || Boolean(liveLease(messageId, now));
     },
     async renew(messageId, holder, { now = Date.now() } = {}) {
@@ -890,26 +706,15 @@ export function createAutoContinueTab({
           ),
         false,
       );
-      // Held no longer, and marked done rather than handed back: the message HAS been
-      // continued now, and the only thing that could hand it to another tab is a lease that
-      // lapses, which is reserved for a holder that stopped answering. Only this message, so
-      // the next round of the same turn -- claimed under this same holder before this
-      // release lands -- keeps its own lease and its own renewals.
+      // Held no longer, and marked done rather than handed back: the message HAS been continued, and
+      // only a lapsing lease should hand it on. Only this message, so the next round of the same
+      // turn keeps its own lease and renewals.
       ownTokens.delete(messageId);
     },
-    /**
-     * Take back a claim whose run was never issued.
-     *
-     * Only this tab's own record of having continued the message. The storage lease is left
-     * exactly where it is, to run out its own TTL: that is what a tab closed mid-claim
-     * already leaves behind, and dropping it here would hand the message to a second tab
-     * while this one may still be deciding what to do with it.
-     *
-     * Without this the message stays in `continued` for the life of the tab, and every
-     * later claim of it -- the branch picker back to the truncated sibling, or returning to
-     * the chat -- answers "skipped", so the automatic continuation never runs again for a
-     * request that was never made.
-     */
+    /** Take back a claim whose run was never issued. Only this tab's own record: the storage lease is
+     *  left to run out its TTL, since dropping it here would hand the message to a second tab
+     *  while this one may still be deciding. Without this the message stays in `continued` for the
+     *  life of the tab and every later claim answers "skipped". */
     forget(messageId) {
       if (!messageId) {
         return;
@@ -924,8 +729,8 @@ export function createAutoContinueTab({
         ownTokens.clear();
         return;
       }
-      // Synchronous, and so outside the lock: a reset is a test seam and a new thread
-      // starting from zero, neither of which races another tab for this key.
+      // Synchronous, and so outside the lock: a reset is a test seam and a new thread starting from
+      // zero, neither of which races another tab.
       try {
         const leases = readLeases(store);
         for (const [id, held] of ownTokens) {
@@ -945,13 +750,9 @@ export function createAutoContinueTab({
 /** This tab. */
 const tab = createAutoContinueTab();
 
-/**
- * Claim `messageId` for an automatic continuation, and say what happened.
- *
- * Asynchronous because exclusivity is: the read-decide-write is taken under a Web Lock so
- * that two tabs cannot both come out of it believing they won. The caller starts its run
- * on `started` and only on `started`.
- */
+/** Claim `messageId` for an automatic continuation, and say what happened. Asynchronous because
+ *  exclusivity is: the read-decide-write is taken under a Web Lock so two tabs cannot both
+ *  believe they won. The caller starts its run only on `started`. */
 export function claimAutoContinue(
   messageId: string | null | undefined,
   holder: string,
@@ -959,43 +760,23 @@ export function claimAutoContinue(
   return tab.claim(messageId, { holder });
 }
 
-/**
- * Whether `messageId` is already being continued automatically -- by this tab, or by
- * another one whose lease is still live.
- *
- * Asked at render time, so the answer has to match what `claimAutoContinue` will do a tick
- * later as closely as a synchronous read can. It cannot be exact, because the lock that
- * decides a genuine race resolves later; the caller therefore also re-renders off the
- * claim's own answer rather than trusting this alone.
- */
+/** Whether `messageId` is already being continued automatically, by this tab or by another whose
+ *  lease is still live. Asked at render time, so it cannot be exact; the caller also
+ *  re-renders off the claim's own answer. */
 export function wasAutoContinued(messageId: string | null | undefined): boolean {
   return tab.claimed(messageId);
 }
 
-/**
- * Give a claim back when the run it was taken for turned out never to be issued.
- *
- * The claim is what stops this tab continuing the same message twice, so it is only ever
- * dropped where nothing was started: the caller checked, in the same tick and off the same
- * store it starts the run from, that the message it claimed is no longer there to resume.
- * The cross-tab lease is deliberately untouched and lapses on its own.
- */
+/** Give a claim back when the run it was taken for turned out never to be issued: only ever where
+ *  nothing was started, checked in the same tick off the same store. The cross-tab lease is
+ *  deliberately untouched and lapses on its own. */
 export function forgetAutoContinue(messageId: string | null | undefined): void {
   tab.forget(messageId);
 }
 
-/**
- * Keep ONE message's lease alive while the run resuming it is still going.
- *
- * Called on a timer for as long as that runtime's thread is running. Without it the TTL
- * would have to guess the longest continuation anyone might generate, and a slow local
- * model on a big Max Tokens would outlive that guess and have its message taken by another
- * tab mid-stream.
- *
- * Named by message and by holder, not by holder alone. The holder keeps two panes of
- * compare mode apart; the message id is what keeps one round of a turn apart from the next,
- * which the same holder claims moments later.
- */
+/** Keep ONE message's lease alive while the run resuming it is still going. Without it the TTL
+ *  would have to guess the longest continuation anyone might generate. Named by message and by
+ *  holder: the holder keeps two compare panes apart, and the message id keeps rounds apart. */
 export function renewAutoContinueLease(
   messageId: string,
   holder: string,
@@ -1003,19 +784,10 @@ export function renewAutoContinueLease(
   return tab.renew(messageId, holder);
 }
 
-/**
- * Give ONE message's lease back when the run resuming it reaches a terminal state,
- * cancelled included.
- *
- * It is cut to the settle window rather than deleted, so a tab still showing the
- * pre-continuation branch cannot immediately start the duplicate this file exists to
- * prevent, and the full TTL is left to mean one thing only: the holder stopped answering.
- *
- * By message, because a holder can own two at once and they are not in the same state. A
- * turn that hits Max Tokens again is claimed by the bar's effect before this thread's
- * effect observes the first run ending, so a holder-wide release settles a round that has
- * only just begun, and one settle window later another tab takes it.
- */
+/** Give ONE message's lease back when the run reaches a terminal state, cancelled included. Cut to
+ *  the settle window rather than deleted, so a tab still showing the pre-continuation branch
+ *  cannot start a duplicate, and the full TTL means only that the holder stopped answering. By
+ *  message, because a turn that hits Max Tokens again is claimed before the first run ends. */
 export function releaseAutoContinueLease(
   messageId: string,
   holder: string,
@@ -1023,44 +795,20 @@ export function releaseAutoContinueLease(
   return tab.release(messageId, holder);
 }
 
-/**
- * Whether the thread a lease was taken for is generating right now.
- *
- * Deliberately NOT "is the thread on screen running". A run keeps streaming when the user
- * opens another chat -- the chat view is keyed by project so the provider is not remounted,
- * and the runtime just points its selection somewhere else -- so a lease whose lifetime is
- * read off the selected thread is released the moment the user looks away, and one settle
- * window later another tab can claim a message that is still being written. The signal has
- * to be per thread and indifferent to selection.
- */
+/** Whether the thread a lease was taken for is generating right now. Deliberately NOT "is the
+ *  thread on screen running": a run keeps streaming when the user opens another chat, so a
+ *  lease read off the selected thread is released the moment they look away. */
 export type AutoContinueRunSignal = {
   isRunning(threadId: string): boolean;
   subscribe(onChange: () => void): () => void;
 };
 
-/**
- * Holds the lease of each continuation this tab is running, for as long as its own run runs.
- *
- * A hold is (message, thread) and its lifetime is the run's: it arms when THAT thread starts
- * generating and is given back when THAT thread stops, whatever is on screen meanwhile and
- * whichever component has mounted or unmounted. Nothing here reads React state.
- *
- * Arming waits for a run that starts after the hold is taken. A round that hits Max Tokens
- * again is claimed while the finished round is still winding down, so a hold that armed on
- * "the thread is running" would arm on its predecessor's run and be released when THAT one
- * ended, mid-stream. So a hold taken while the thread is busy waits to see it idle first.
- *
- * A hold whose run has not appeared YET is kept and renewed, never timed out. No deadline
- * separates "this run is never coming" from "this run is still in preflight", because the
- * preflight has no bound: `chat-adapter.ts` awaits the thread's own settings pairing (up to
- * 30 seconds by itself), then `waitForModelReady`, which polls every 500ms for as long as a
- * model is loading -- minutes for a large local GGUF, and exactly the state a tab just
- * opened on a truncated reply is in. A fixed arming timeout dropped the hold in the middle
- * of that, its renewals stopped, and the lease lapsed under a run that had since started
- * streaming, so another tab could claim the message and pay for the same continuation twice.
- * Renewing instead costs only this: a claim whose run genuinely never starts holds its lease
- * until the tab is closed, and the manual Continue button is never gated on any of it.
- */
+/** Holds the lease of each continuation this tab is running, for as long as its own run runs. A
+ *  hold is (message, thread) and arms when THAT thread starts generating; a hold taken while
+ *  the thread is busy waits to see it idle first, or it would arm on its predecessor's run. A
+ *  hold whose run has not appeared yet is renewed, never timed out: the preflight has no bound
+ *  (settings pairing, then waiting while a large local GGUF loads), and a fixed arming timeout
+ *  dropped the hold under a run that had since started streaming. */
 export function createAutoContinueLeaseKeeper({
   signal,
   renew = (messageId, holder, now) => tab.renew(messageId, holder, { now }),
@@ -1109,10 +857,9 @@ export function createAutoContinueLeaseKeeper({
         release(hold.messageId, hold.threadId, at);
         continue;
       }
-      // Not armed yet, so its run is still in preflight, which has no upper bound (see the
-      // note above this function). Kept and renewed rather than timed out: dropping it here
-      // stopped the renewals while the run was still on its way, and the lease then lapsed
-      // under a live continuation.
+      // Not armed yet, so its run is still in preflight, which has no upper bound. Kept and renewed
+      // rather than timed out: dropping it stopped the renewals while the run was on its way, and
+      // the lease then lapsed under a live continuation.
     }
     if (holds.size === 0 && unsubscribe) {
       unsubscribe();
@@ -1131,29 +878,17 @@ export function createAutoContinueLeaseKeeper({
       holds.set(key(messageId, threadId), {
         messageId,
         threadId,
-        // Claimed while the thread is between runs, which is the ordinary case: the bar
-        // only fires on a reply that has finished.
+        // Claimed while the thread is between runs, the ordinary case: the bar only fires on a reply that has finished.
         idle: !signal.isRunning(threadId),
         armed: false,
       });
       unsubscribe ??= signal.subscribe(observe);
     },
     observe,
-    /**
-     * `threadId`'s run failed on its way out, before it ever reached the run signal.
-     *
-     * The one thing that can end a hold which never armed, and it is a fact rather than a
-     * deadline: the adapter threw, so this run is not slow, it is over. Not a timeout by
-     * another name -- a preflight that is merely long emits nothing here and keeps its hold
-     * and its renewals, which is the whole reason arming has no deadline.
-     *
-     * Armed holds are left alone. Their run did reach the signal, so the thread going idle
-     * is what settles them, with the `done` marker that says the message HAS been continued
-     * -- which a run that never produced a token has no right to write. This one only
-     * discards: the lease it stops renewing lapses on its own TTL and the message comes
-     * back to whoever is still looking at it, rather than being renewed for the life of the
-     * tab and refused to every other one.
-     */
+    /** `threadId`'s run failed on its way out, before it ever reached the run signal. The one thing
+     *  that can end a hold which never armed, and a fact rather than a deadline: the adapter
+     *  threw, so the run is over. Armed holds are left alone, since the thread going idle settles
+     *  them with the `done` marker. This one only discards, so the lease lapses on its own TTL. */
     failed(threadId) {
       if (!threadId) {
         return;
@@ -1172,8 +907,7 @@ export function createAutoContinueLeaseKeeper({
       observe();
       const at = now();
       for (const hold of holds.values()) {
-        // Armed or still waiting for its run: either way this tab is alive and expects to
-        // be running that message, which is the whole question the lease asks.
+        // Armed or still waiting for its run: either way this tab is alive and expects to be running that message.
         renew(hold.messageId, hold.threadId, at);
       }
     },
@@ -1188,21 +922,10 @@ export function createAutoContinueLeaseKeeper({
   };
 }
 
-/**
- * Whether THIS message is the one to continue automatically.
- *
- * `shouldAutoContinue` answers about the turn: is the reason right, does the partial
- * still fit, is the round budget unspent. It keeps saying yes after a message has been
- * claimed, because the budget is per turn and one spent round out of three leaves the
- * turn resumable, while the claim is per message and is what actually decides whether a
- * run starts. Anything rendering off the turn's answer alone therefore reports an
- * already-claimed message as continuing while `claimAutoContinue` refuses to start
- * anything: a spinner that never resolves, over the manual Continue button it replaces.
- *
- * Reachable without a reload. The continuation runs as a sibling and the branch picker
- * leads straight back to the truncated partial, and leaving the chat and returning lands
- * on it too whenever it is still the selected branch.
- */
+/** Whether THIS message is the one to continue automatically. `shouldAutoContinue` answers about
+ *  the turn and keeps saying yes after a message has been claimed, since the budget is per
+ *  turn while the claim is per message, so rendering off the turn's answer alone showed a
+ *  spinner that never resolves over the manual Continue button. */
 export function shouldAutoContinueMessage(
   messageId: string | null | undefined,
   reason: IncompleteReason | null | undefined,
@@ -1215,18 +938,9 @@ export function shouldAutoContinueMessage(
   return shouldAutoContinue(reason, key, options);
 }
 
-/**
- * Test seam; also lets a new thread start from zero.
- *
- * A full reset gives back the leases this tab wrote as well, so "start from zero" means
- * the same thing it did before the lease existed. Leases other tabs hold are left alone:
- * they are not this tab's to release, and a run they are driving is still going.
- *
- * Deliberately wholesale, unlike renewal and release, which are per holder. A run ending
- * is one runtime saying it is finished, and says nothing about the others; a reset is the
- * whole tab being told it has no claims at all, which is what a test between cases and a
- * cleared history both mean. Nothing in the run lifecycle calls it.
- */
+/** Test seam; also lets a new thread start from zero. A full reset gives back the leases this tab
+ *  wrote, while leases other tabs hold are left alone. Deliberately wholesale, unlike renewal
+ *  and release: a reset is the whole tab being told it has no claims. */
 export function resetAutoContinue(key?: string): void {
   if (key === undefined) {
     spent.clear();

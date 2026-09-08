@@ -257,7 +257,6 @@ def test_a_cell_with_nothing_planned_is_not_checked():
 
 # ── level 2: what the cell does with it ──────────────────────────────────────────────────────
 
-
 CENSUS = {"messages": 6, "elements": 1200, "highlight_spans": 200, "assistant_chars": 1120}
 
 
@@ -394,9 +393,9 @@ def cell_runner(monkeypatch, tmp_path):
                     thread_id = "t1",
                     seconds = 0.5,
                     messages = 0,
-                    # Both markers `SeededThread` declares, present and None: the readiness gate
-                    # reads `last_marker` unconditionally, so a stub that omits it fails on the
-                    # attribute rather than on the stream accounting these tests are about.
+                    # Both markers `SeededThread` declares, present and None: the readiness gate reads `last_marker`
+                    # unconditionally, so a stub that omits it fails on the attribute rather than on the stream
+                    # accounting.
                     first_marker = None,
                     last_marker = None,
                 ),
@@ -495,7 +494,7 @@ def _scene_with(rows: list[dict]):
     return _Fixed
 
 
-#: A `send_turn` that RAN, loaded the pacer and pressed Enter, and whose own assertion failed.
+#:A `send_turn` that RAN, loaded the pacer and pressed Enter, and whose own assertion failed.
 SEND_TURN_THAT_FAILED = {
     "action": "send_turn",
     "ran": True,
@@ -688,10 +687,9 @@ class _WirePage:
         if "messageCount" in expr:
             return self.messages
         # THE THREAD'S LENGTH AS WELL AS THE MOUNTED COUNT. `send_turn` proves a send worked by
-        # `threadTotal()` growing, not `messageCount()`, so that a windowed arm whose window slides
-        # is not read as a send that did nothing. This page models a fully mounted arm, where the
-        # two are the same number; without the second name the shipped action sees 0 both sides and
-        # every follow-up reports that it never started a reply.
+        # `threadTotal()` growing, not `messageCount()`, so a windowed arm whose window slides is not read
+        # as a send that did nothing. This page models a fully mounted arm; without the second name the
+        # shipped action sees 0 both sides and every follow-up reports that it never started a reply.
         if "threadTotal" in expr:
             return self.messages
         if "assistantChars" in expr:
@@ -776,9 +774,9 @@ def test_a_healthy_multi_turn_cell_passes_the_check_over_real_wire_bytes(monkeyp
                     thread_id = "t1",
                     seconds = 0.5,
                     messages = 0,
-                    # Both markers `SeededThread` declares, present and None: the readiness gate
-                    # reads `last_marker` unconditionally, so a stub that omits it fails on the
-                    # attribute rather than on the stream accounting these tests are about.
+                    # Both markers `SeededThread` declares, present and None: the readiness gate reads `last_marker`
+                    # unconditionally, so a stub that omits it fails on the attribute rather than on the stream
+                    # accounting.
                     first_marker = None,
                     last_marker = None,
                 ),

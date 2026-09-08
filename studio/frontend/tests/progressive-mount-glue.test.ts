@@ -288,16 +288,15 @@ test("the correction advances the intent bookkeeping with its write", () => {
 test("the escape hatch exists, resolves after a paint, and is registered only while withholding", () => {
   // A DOM read during the few frames a long thread takes to converge would silently see a short
   // conversation, and a single rAF resolves before the commit it forced has painted.
-  assert.match(
-    GLUE,
-    /export async function completeProgressiveMounts\(\): Promise<void>/,
-  );
+  assert.match(GLUE, /export async function completeProgressiveMounts\(/);
+  // The filter is optional, so a caller that wants every thread still writes no argument.
+  assert.match(GLUE, /wants\?: \(viewport: HTMLElement \| null\) => boolean,/);
   assert.match(
     GLUE,
     /requestAnimationFrame\(\(\) => requestAnimationFrame\(\(\) => resolve\(\)\)\)/,
   );
   assert.match(GLUE, /if \(!isWithholding\) return;/);
-  assert.match(GLUE, /activeCompleters\.delete\(complete\)/);
+  assert.match(GLUE, /activeCompleters\.delete\(entry\)/);
 });
 
 test("the viewport comes from a ref, not a document-wide query", () => {
@@ -358,10 +357,14 @@ test("the escape hatch re-reads the completer set instead of sampling it once", 
   // the set empty (measured: returned in 0.1ms, 16 of 220 rows two frames later). Nor is an empty
   // set believed straight away, since a settled thread and one still loading history look alike.
   assert.match(GLUE, /let observed = false;/);
+  // Through `wanted()`, which reads `activeCompleters` on every call: the exit has to see the set as
+  // it is now, and it has to see the same FILTERED set the loop drains, or a completer this caller
+  // declined would hold it open forever.
   assert.match(
     GLUE,
-    /activeCompleters\.size === 0 && \(observed \|\| Date\.now\(\) >= deadline\)/,
+    /wanted\(\)\.length === 0 && \(observed \|\| Date\.now\(\) >= deadline\)/,
   );
+  assert.match(GLUE, /const wanted = \(\) =>[\s\S]*?activeCompleters/);
   // The re-read is only worth anything if the deadline is in the FUTURE. A deadline of `Date.now()`
   // keeps both lines above and still returns on the first pass, because a caller in the same task
   // as the thread opening reaches the check before any completer has registered: the read-once

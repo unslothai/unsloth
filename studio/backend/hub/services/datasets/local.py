@@ -26,8 +26,8 @@ from utils.paths.path_utils import (
     is_appledouble_metadata,
 )
 
-# Tabular formats are preferred over archives for Tier 1 preview: archives (e.g. images.zip)
-# load as ImageFolder with synthetic columns that don't match the real schema.
+# Archives load as ImageFolder with synthetic columns that do not match the real schema, so tabular
+# formats are preferred for Tier 1 preview.
 _TABULAR_EXTS = (".parquet", ".json", ".jsonl", ".csv", ".tsv", ".arrow")
 _ARCHIVE_EXTS = (".tar", ".tar.gz", ".tgz", ".gz", ".zst", ".zip", ".txt")
 DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS

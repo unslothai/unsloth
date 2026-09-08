@@ -67,3 +67,51 @@ export function llamaUpdatePresentation(
     running: true,
   };
 }
+
+/**
+ * Whether the banner's version line has anything to say.
+ *
+ * `updateAvailable` is the only field reporting that the release moved. The tags cannot:
+ * `installed_tag` is normalized (`b9596`) while `latest_tag` is the full identity
+ * (`b9596-mix-<sha>`), so a fork install shows them differing at the release it is
+ * running -- which is exactly where a migration is offered.
+ */
+export function llamaReleaseChanged(
+  updateAvailable: boolean,
+  installedTag: string | null,
+  latestTag: string | null,
+): boolean {
+  return Boolean(
+    updateAvailable && installedTag && latestTag && installedTag !== latestTag,
+  );
+}
+
+/** What to tell the user a finished Update actually did.
+ *
+ * A migration runs at the release already installed and can end on the backend already
+ * installed, so "updated to <tag>" describes neither -- and the tag is llama's even when
+ * a pending whisper update named the toast. The job's own message is accurate.
+ */
+export function llamaUpdateToastMessage({
+  component,
+  migrating,
+  jobMessage,
+  updatedTag,
+  reloadRequired,
+}: {
+  component: string;
+  migrating: boolean;
+  jobMessage: string | null | undefined;
+  updatedTag: string;
+  reloadRequired: boolean | null | undefined;
+}): string {
+  const reloadHint = reloadRequired ? " Reload your model to use it." : "";
+  const migrationMessage = migrating ? (jobMessage ?? "").trim() : "";
+  if (!migrationMessage) {
+    return `${component} updated to ${updatedTag}.${reloadHint}`;
+  }
+  // The phase appends its own reload hint when it has one to give.
+  return migrationMessage.includes("Reload")
+    ? migrationMessage
+    : `${migrationMessage}${reloadHint}`;
+}

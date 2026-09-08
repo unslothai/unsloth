@@ -76,6 +76,178 @@ class TestWaitForHealthResilience:
         assert b._wait_for_health(timeout = 0.02, interval = 0.01) is False
         assert any("health check timed out" in ln for ln in b._stdout_lines)
 
+    def test_a_teardown_during_the_wait_is_a_failed_load_not_a_crash(self, monkeypatch):
+        """Shutdown clears the reference mid-wait; reading it once and treating
+        its absence as "gone" is what stops the AttributeError the user saw as
+        "Error loading model: 'NoneType' object has no attribute 'poll'" (#10353)."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+        probes = []
+
+        def probe(*a, **kw):
+            probes.append(1)
+            if len(probes) == 2:
+                b._process = None  # what _kill_process does on shutdown
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert len(probes) == 2
+        assert not any("health check timed out" in ln for ln in b._stdout_lines)
+        assert b._health_wait_cancelled is True
+
+    def test_a_teardown_before_the_first_probe_is_still_not_a_crash(self, monkeypatch):
+        b = _make_backend()
+        b._process = None
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 200))
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert b._health_wait_cancelled is True
+
+    def test_a_teardown_is_terminal_so_the_caller_reads_no_exit_code(self, monkeypatch):
+        """False alone is not enough: _spawn_and_wait stops only on this flag, else
+        it reads the cleared reference and raises one frame up, and respawns."""
+        b = _make_backend()
+        b._process = None
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert b._health_wait_cancelled is True
+        # Exactly what the caller does at the `if not healthy` branch.
+        assert (
+            b._process is not None and b._process.poll() is not None and b._process.returncode != 0
+        ) is False
+
+    def test_a_crash_leaves_the_wait_unmarked_so_the_retries_still_run(self, monkeypatch):
+        """The other side: a real crash must NOT look terminal, or the --fit off
+        and CPU fallbacks stop recovering loads that used to recover."""
+        b = _make_backend()
+        b._process.poll.return_value = 1
+        b._process.returncode = 1
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
+        assert b._health_wait_cancelled is False
+
+    def test_a_teardown_marker_does_not_leak_into_the_next_load(self, monkeypatch):
+        b = _make_backend()
+        b._process = None
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 200))
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert b._health_wait_cancelled is True
+        b._process = mock.Mock()
+        b._process.poll.return_value = None
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is True
+        assert b._health_wait_cancelled is False
+
+    def test_a_teardown_from_a_real_thread_is_not_a_crash(self, monkeypatch):
+        """Two real threads, not a probe callback: the once-per-iteration read is
+        what makes it safe, so drive it that way."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+        in_probe = threading.Event()
+        cleared = threading.Event()
+
+        def probe(*a, **kw):
+            in_probe.set()
+            cleared.wait(2.0)
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+
+        def shutdown():
+            in_probe.wait(2.0)
+            b._process = None  # _kill_process, from run.py's shutdown path
+            cleared.set()
+
+        t = threading.Thread(target = shutdown)
+        t.start()
+        try:
+            assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        finally:
+            t.join(5.0)
+        assert b._health_wait_cancelled is True
+
+    def test_a_crash_still_reports_the_exit_code(self, monkeypatch):
+        """The teardown guard must not swallow the crash branch: an exited
+        process still has to name its exit code and its output."""
+        b = _make_backend()
+        b._process.poll.return_value = 1
+        b._process.returncode = 1
+        b._stdout_lines = ["ROCm error: out of memory"]
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        with mock.patch("core.inference.llama_cpp.logger") as log:
+            assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
+        assert any("exited with code 1" in str(c) for c in log.error.call_args_list)
+
+    def test_cancel_stops_the_wait_without_a_timeout_marker(self, monkeypatch):
+        b = _make_backend()
+        b._process.poll.return_value = None
+        b._cancel_event = threading.Event()
+        b._cancel_event.set()
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        started = time.monotonic()
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert time.monotonic() - started < 1.0
+        assert not any("health check timed out" in ln for ln in b._stdout_lines)
+
+    def test_cancel_midway_stops_a_wait_already_in_progress(self, monkeypatch):
+        b = _make_backend()
+        b._process.poll.return_value = None
+        b._cancel_event = threading.Event()
+        probes = []
+
+        def probe(*a, **kw):
+            probes.append(1)
+            if len(probes) == 3:
+                b._cancel_event.set()
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert len(probes) == 3
+
+    def test_cancel_at_the_deadline_is_not_reported_as_a_timeout(self, monkeypatch):
+        b = _make_backend()
+        b._process.poll.return_value = None
+        b._cancel_event = threading.Event()
+        b._health_probe_event = mock.Mock()
+        b._health_probe_event.wait.side_effect = lambda _interval: b._cancel_event.set()
+        ticks = iter((0.0, 0.0, 1.0))
+        monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+
+        assert b._wait_for_health(timeout = 0.5, interval = 0.5) is False
+        assert b._health_wait_cancelled is True
+        assert not any("health check timed out" in ln for ln in b._stdout_lines)
+
+    def test_a_scoped_load_cancel_stops_the_wait(self, monkeypatch):
+        """An auto-switch or a /load carrying load_request_id cancels through its own
+        event and never calls unload_model, so _cancel_event stays clear. The wait has
+        to honor the predicate load_model passes down or it polls the full timeout."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+        b._cancel_event = threading.Event()  # no unload was issued
+        scoped = threading.Event()
+        scoped.set()
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        started = time.monotonic()
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01, cancelled = scoped.is_set) is False
+        assert time.monotonic() - started < 1.0
+        assert not any("health check timed out" in ln for ln in b._stdout_lines)
+
+    def test_a_cancel_during_the_probe_does_not_publish_the_model(self, monkeypatch):
+        """The probe blocks for up to 2s. A cancel landing inside that window used to be
+        ignored because the 200 returned first, so the unwanted model went live."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+        b._cancel_event = threading.Event()
+        scoped = threading.Event()
+
+        def probe(*a, **kw):
+            scoped.set()  # the user cancels while this request is in flight
+            return mock.Mock(status_code = 200)
+
+        monkeypatch.setattr(httpx, "get", probe)
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01, cancelled = scoped.is_set) is False
+
     def test_read_error_loops_to_subprocess_poll(self, monkeypatch):
         """WinError 10054 (httpx.ReadError) must be swallowed; the next iteration sees the dead subprocess and returns False with a structured exit-code log."""
         b = _make_backend()
@@ -299,3 +471,406 @@ class TestFitOffRetryEligible:
     def test_fit_tuning_flags_do_not_block_retry(self, tuning_args):
         cmd = ["llama-server", "-m", "x.gguf", *tuning_args]
         assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit = False) is True
+
+
+class TestCancelledWaitEndsTheLoad:
+    """An auto-switch cancels through its own event and never unloads, so the child is
+    still alive and poll() reports no exit code. Classifying that as a start failure
+    raises a 500 at the caller before it can run its own cancellation handling."""
+
+    def test_a_cancelled_health_wait_returns_false_instead_of_raising(self, tmp_path):
+        from core.inference.llama_cpp import GgufLoadIntent
+
+        gguf = tmp_path / "model.gguf"
+        gguf.write_bytes(b"GGUF" + b"\0" * 4096)
+
+        b = LlamaCppBackend()
+        b._find_llama_server_binary = lambda *a, **kw: "/usr/bin/true"
+        # The header refusals read a real GGUF; this fixture stands in for a chat model.
+        b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
+        b._non_chat_gguf_refusal = lambda *a, **kw: None
+        b._kill_process = lambda *a, **kw: None
+
+        def _start(cmd, env, **kw):
+            proc = mock.Mock()
+            proc.poll.return_value = None  # alive: the cancel kills it, not a crash
+            proc.pid = 424242
+            b._process = proc
+            b._stdout_lines = ["build: 6543", "main: loading model"]
+            return proc
+
+        b._start_llama_process = _start
+        scoped = threading.Event()
+        real_wait = b._wait_for_health
+
+        def _wait(
+            timeout = 600.0,
+            interval = 0.5,
+            cancelled = None,
+        ):
+            scoped.set()
+            return real_wait(timeout = 2.0, interval = 0.05, cancelled = cancelled)
+
+        b._wait_for_health = _wait
+
+        assert (
+            b.load_model(
+                GgufLoadIntent(
+                    model_identifier = "owner/model",
+                    gguf_path = str(gguf),
+                    n_ctx = 4096,
+                ),
+                load_cancel_event = scoped,
+            )
+            is False
+        )
+
+    def test_a_teardown_mid_load_ends_the_load_instead_of_raising(self, tmp_path, monkeypatch):
+        """The whole race through the real caller (#10353): the waiter tests above
+        never reach _spawn_and_wait, which is where the traceback resurfaced."""
+        import subprocess
+
+        from core.inference.llama_cpp import GgufLoadIntent
+
+        gguf = tmp_path / "model.gguf"
+        gguf.write_bytes(b"GGUF" + b"\0" * 4096)
+
+        b = LlamaCppBackend()
+        b._find_llama_server_binary = lambda *a, **kw: "/usr/bin/true"
+        b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
+        b._non_chat_gguf_refusal = lambda *a, **kw: None
+        # The drain thread would iterate a Mock's stdout forever.
+        b._drain_stdout = lambda *a, **kw: None
+
+        def _kill():
+            b._process = None  # the one line of _kill_process this race turns on
+
+        b._kill_process = _kill
+
+        spawns = []
+        _real_popen = subprocess.Popen
+
+        def _popen(*a, **kw):
+            argv = [str(x) for x in (a[0] if a else kw.get("args") or [])]
+            # `--help` and nvidia-smi are not launches; run() needs a real Popen.
+            if str(gguf) not in argv:
+                return _real_popen(*a, **kw)
+            spawns.append(argv)
+            proc = mock.Mock()
+            proc.poll.return_value = None  # alive: shutdown kills it, it does not crash
+            proc.pid = 424242
+            return proc
+
+        monkeypatch.setattr(subprocess, "Popen", _popen)
+
+        def probe(*a, **kw):
+            _kill()  # run.py's shutdown, arriving while the load waits
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+
+        assert (
+            b.load_model(
+                GgufLoadIntent(
+                    model_identifier = "owner/model",
+                    gguf_path = str(gguf),
+                    n_ctx = 4096,
+                ),
+            )
+            is False
+        )
+        # A second server would outlive the app whose shutdown killed the first.
+        assert len(spawns) == 1, f"respawned after shutdown (spawns={len(spawns)})"
+
+
+def test_a_cancelled_diffusion_start_reaps_the_runner():
+    """An automatic switch cancels without unloading, so nothing else reaps the shim
+    and the visual server; they would keep loading and holding memory."""
+    import subprocess
+
+    b = LlamaCppBackend()
+    kills = []
+    b._kill_process = lambda *a, **kw: kills.append(1)
+    b._find_diffusion_assets = lambda *a, **kw: (["/bin/true"], "/bin/true", None)
+    b._find_free_port = lambda *a, **kw: 45999
+
+    def _wait(
+        timeout = 600.0,
+        interval = 0.5,
+        cancelled = None,
+    ):
+        b._health_wait_cancelled = True
+        return False
+
+    b._wait_for_health = _wait
+    proc = mock.Mock()
+    proc.poll.return_value = None
+    proc.pid = 999
+    with mock.patch.object(subprocess, "Popen", return_value = proc):
+        assert (
+            b._start_diffusion_server(
+                model_path = "/m/x.gguf",
+                gguf_path = "/m/x.gguf",
+                hf_repo = None,
+                hf_variant = None,
+                model_identifier = "o/m",
+                n_ctx = 4096,
+                extra_args = None,
+                cancelled = lambda: True,
+            )
+            is False
+        )
+    # One teardown before the launch, one for the cancelled runner.
+    assert len(kills) == 2, f"the cancelled runner was left running (kills={len(kills)})"
+
+
+def test_a_diffusion_cancel_after_health_reaps_the_runner():
+    import subprocess
+
+    b = LlamaCppBackend()
+    kills = []
+    b._kill_process = lambda *a, **kw: kills.append(1)
+    b._find_diffusion_assets = lambda *a, **kw: (["/bin/true"], "/bin/true", None)
+    b._find_free_port = lambda *a, **kw: 45999
+    scoped = threading.Event()
+
+    def _wait(
+        timeout = 600.0,
+        interval = 0.5,
+        cancelled = None,
+    ):
+        scoped.set()
+        return True
+
+    b._wait_for_health = _wait
+    proc = mock.Mock()
+    proc.poll.return_value = None
+    proc.pid = 999
+    with mock.patch.object(subprocess, "Popen", return_value = proc):
+        assert (
+            b._start_diffusion_server(
+                model_path = "/m/x.gguf",
+                gguf_path = "/m/x.gguf",
+                hf_repo = None,
+                hf_variant = None,
+                model_identifier = "o/m",
+                n_ctx = 4096,
+                extra_args = None,
+                cancelled = scoped.is_set,
+            )
+            is False
+        )
+    assert b._healthy is False
+    assert len(kills) == 2, f"the cancelled runner was left running (kills={len(kills)})"
+
+
+def _cancel_scaffold(tmp_path, kills):
+    """A backend wired far enough to run load_model without weights or a server."""
+    b = LlamaCppBackend()
+    b._find_llama_server_binary = lambda *a, **kw: "/usr/bin/true"
+    b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
+    b._non_chat_gguf_refusal = lambda *a, **kw: None
+    b._kill_process = lambda *a, **kw: kills.append(1)
+
+    def _start(cmd, env, **kw):
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        proc.pid = 424242
+        b._process = proc
+        b._stdout_lines = ["build: 6543", "main: loading model"]
+        return proc
+
+    b._start_llama_process = _start
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"GGUF" + b"\0" * 4096)
+    return b, gguf
+
+
+def test_combined_download_cancel_wait_observes_the_scoped_event():
+    from core.inference.llama_cpp import _CombinedCancelEvent
+
+    shared = threading.Event()
+    scoped = threading.Event()
+    timer = threading.Timer(0.01, scoped.set)
+    timer.start()
+    try:
+        assert _CombinedCancelEvent(shared, scoped).wait(0.5)
+    finally:
+        timer.cancel()
+
+
+@pytest.mark.parametrize("cancel_source", ["shared", "scoped"])
+def test_remote_download_observes_both_load_cancel_sources(tmp_path, cancel_source):
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    kills = []
+    b, gguf = _cancel_scaffold(tmp_path, kills)
+    b._remote_non_chat_gguf_refusal = lambda **_kw: None
+    scoped = threading.Event()
+    seen = []
+
+    def _download(**kwargs):
+        cancel_event = kwargs["cancel_event"]
+        seen.append(cancel_event)
+        (b._cancel_event if cancel_source == "shared" else scoped).set()
+        assert cancel_event.is_set()
+        return str(gguf)
+
+    b._download_gguf = _download
+    assert (
+        b.load_model(
+            GgufLoadIntent(
+                model_identifier = "owner/model",
+                hf_repo = "owner/model-GGUF",
+                speculative_type = "none",
+                n_ctx = 4096,
+            ),
+            load_cancel_event = scoped,
+        )
+        is False
+    )
+    assert len(seen) == 1
+
+
+def test_a_stale_cancel_marker_does_not_abort_the_next_load(tmp_path):
+    """The marker belongs to one attempt. Left set, a guard that runs before this
+    load's first health wait reads the previous request's cancellation and swallows
+    a genuine start failure."""
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    kills = []
+    b, gguf = _cancel_scaffold(tmp_path, kills)
+    b._health_wait_cancelled = True  # left over from an earlier cancelled load
+    # A genuine failure: the wait fails and does NOT mark the load cancelled.
+    b._wait_for_health = lambda timeout = 600.0, interval = 0.5, cancelled = None: False
+
+    with pytest.raises(RuntimeError):
+        b.load_model(
+            GgufLoadIntent(
+                model_identifier = "owner/model",
+                gguf_path = str(gguf),
+                n_ctx = 4096,
+            )
+        )
+
+
+def test_cancelled_health_wait_removes_the_staged_cpu_runtime(tmp_path):
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    kills = []
+    cleaned = []
+    waits = []
+    b, gguf = _cancel_scaffold(tmp_path, kills)
+    scoped = threading.Event()
+
+    def _wait(
+        timeout = 600.0,
+        interval = 0.5,
+        cancelled = None,
+    ):
+        waits.append(1)
+        b._process = mock.Mock(returncode = -9)
+        b._process.poll.return_value = -9
+        b._cpu_fallback_runtime = _types.SimpleNamespace(
+            tempdir = _types.SimpleNamespace(cleanup = lambda: cleaned.append(1))
+        )
+        scoped.set()
+        b._health_wait_cancelled = True
+        return False
+
+    b._wait_for_health = _wait
+    assert (
+        b.load_model(
+            GgufLoadIntent(
+                model_identifier = "owner/model",
+                gguf_path = str(gguf),
+                n_ctx = 4096,
+            ),
+            load_cancel_event = scoped,
+        )
+        is False
+    )
+    assert waits == [1]
+    assert b._cpu_fallback_runtime is None
+    assert cleaned == [1]
+
+
+def test_a_cancel_after_the_server_is_healthy_does_not_publish_it(tmp_path):
+    """Cancelling during the post-health setup used to leave the child resident while
+    the cancel route saw is_loaded and skipped teardown."""
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    kills = []
+    cleaned = []
+    b, gguf = _cancel_scaffold(tmp_path, kills)
+
+    def _wait(
+        timeout = 600.0,
+        interval = 0.5,
+        cancelled = None,
+    ):
+        b._cpu_fallback_runtime = _types.SimpleNamespace(
+            tempdir = _types.SimpleNamespace(cleanup = lambda: cleaned.append(1))
+        )
+        b._cancel_event.set()  # the user cancels while the load finishes publishing
+        return True
+
+    b._wait_for_health = _wait
+    assert (
+        b.load_model(
+            GgufLoadIntent(
+                model_identifier = "owner/model",
+                gguf_path = str(gguf),
+                n_ctx = 4096,
+            )
+        )
+        is False
+    )
+    assert kills, "the healthy-but-cancelled child was left resident"
+    assert b._cpu_fallback_runtime is None
+    assert cleaned == [1]
+
+
+def test_a_cancel_after_audio_setup_unloads_the_codec(tmp_path, monkeypatch):
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    kills = []
+    emptied = []
+    b, gguf = _cancel_scaffold(tmp_path, kills)
+    scoped = threading.Event()
+    codec = mock.Mock()
+    monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", None)
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        _types.SimpleNamespace(
+            cuda = _types.SimpleNamespace(
+                is_available = lambda: True,
+                empty_cache = lambda: emptied.append(1),
+            )
+        ),
+    )
+
+    def _apply_audio(_detected):
+        LlamaCppBackend._codec_mgr = codec
+        scoped.set()
+        return True
+
+    b._wait_for_health = lambda **_kwargs: True
+    b._detect_audio_type_strict = lambda: "snac"
+    b._apply_detected_audio = _apply_audio
+
+    assert (
+        b.load_model(
+            GgufLoadIntent(
+                model_identifier = "owner/model",
+                gguf_path = str(gguf),
+                n_ctx = 4096,
+            ),
+            load_cancel_event = scoped,
+        )
+        is False
+    )
+    codec.unload.assert_called_once_with()
+    assert LlamaCppBackend._codec_mgr is None
+    assert emptied == [1]

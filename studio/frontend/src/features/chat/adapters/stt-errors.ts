@@ -9,14 +9,11 @@ export class SttModelNotDownloadedError extends Error {
   }
 }
 
-/** The error for a failed STT response, typed by what its status and detail say.
- *
- * Shared by the load and transcribe calls: a segment can be the first thing to
- * learn the model is missing, when a short recording ends before the
- * fire-and-forget preload rejects, and it has to open the download prompt just
- * as the preload would. 409 also covers a load cancelled for training and a
- * model switch mid-request, so the detail is what separates them.
- */
+/** The error for a failed STT response, typed by what its status and detail say. Shared by the load
+ *  and transcribe calls: a segment can be the first thing to learn the model is missing, when a
+ *  short recording ends before the fire-and-forget preload rejects, and it has to open the
+ *  download prompt just as the preload would. 409 also covers a load cancelled for training and a
+ *  model switch mid-request, so the detail is what separates them. */
 export function sttRequestError(status: number, detail: string): Error {
   return status === 409 && /not downloaded/i.test(detail)
     ? new SttModelNotDownloadedError(detail)
