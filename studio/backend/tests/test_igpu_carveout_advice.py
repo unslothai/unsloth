@@ -315,6 +315,7 @@ class TestTheLadderTerminates:
     @pytest.mark.parametrize("cap", [float("inf"), float("-inf"), float("nan"), 0, -5, 2**60])
     def test_it_returns_promptly_for_any_cap(self, cap):
         import threading
+
         done = threading.Event()
 
         def run():

@@ -88,16 +88,32 @@ class TestAHostileDismissalValue:
     will ever exceed really can reach this -- and storing it would silence the
     notice permanently, the opposite of the fail-toward-showing rule above."""
 
-    @pytest.mark.parametrize("value", [
-        float("inf"), float("-inf"), float("nan"), 10**9, 2**53, -1, 0,
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            float("inf"),
+            float("-inf"),
+            float("nan"),
+            10**9,
+            2**53,
+            -1,
+            0,
+        ],
+    )
     def test_it_cannot_silence_the_notice_forever(self, value):
         notice.dismiss_notice(value)
         assert notice.notice_already_dismissed(32.0) is False, value
 
-    @pytest.mark.parametrize("stored", [
-        float("inf"), float("nan"), "Infinity", "1e999", "-inf",
-    ])
+    @pytest.mark.parametrize(
+        "stored",
+        [
+            float("inf"),
+            float("nan"),
+            "Infinity",
+            "1e999",
+            "-inf",
+        ],
+    )
     def test_a_corrupt_row_reads_as_never_dismissed(self, stored):
         from storage.studio_db import upsert_app_settings
         upsert_app_settings({notice.IGPU_CARVEOUT_NOTICE_KEY: stored})

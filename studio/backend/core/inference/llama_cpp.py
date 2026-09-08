@@ -10751,9 +10751,7 @@ class LlamaCppBackend:
         # negative size is nonsense, and -1 is truthy, so a bare falsiness test would
         # carry the nonsense into arithmetic and produce confident wrong advice.
         if not all(
-            isinstance(value, (int, float))
-            and math.isfinite(value)
-            and value > 0
+            isinstance(value, (int, float)) and math.isfinite(value) and value > 0
             for value in (model_size_bytes, carve_out_bytes, host_total_bytes)
         ):
             return None
