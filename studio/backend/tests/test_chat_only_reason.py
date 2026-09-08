@@ -135,6 +135,20 @@ def test_settling_leaves_any_other_verdict_alone(monkeypatch):
         assert (hw.CHAT_ONLY, hw.CHAT_ONLY_REASON) == (chat_only, reason)
 
 
+def test_a_declined_settle_does_not_mark_the_epoch(monkeypatch):
+    # A settle that arrives after another pass has enabled training declines, and must not
+    # record the epoch on the way out: the next transient MLX import failure in this
+    # lifespan would then publish no_torch, which reads as settled, and
+    # start_mlx_autorepair_if_needed() would skip the probe that restores Train.
+    _no_torch_apple_silicon(monkeypatch, mlx_on_disk = True)
+    hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = False, None
+    assert hw.settle_the_no_torch_verdict(hw.current_detection_epoch()) is False
+    assert hw._NO_TORCH_SETTLED_EPOCH != hw.current_detection_epoch()
+
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
+
+
 def test_apple_silicon_no_torch_install_with_usable_mlx_enables_training(monkeypatch):
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)

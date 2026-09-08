@@ -1610,9 +1610,14 @@ def settle_the_no_torch_verdict(epoch: int) -> bool:
     with _DETECT_LOCK:
         if epoch != current_detection_epoch():
             return False
-        _NO_TORCH_SETTLED_EPOCH = epoch
         if not CHAT_ONLY or CHAT_ONLY_REASON != "mlx_unavailable":
             return False
+        # Recorded only once the verdict this probe measured is still the live one. Set
+        # before the check, a settle that arrives after another pass has enabled training
+        # still marks the epoch, and the next transient MLX failure in that lifespan
+        # publishes no_torch straight away, which reads as settled and skips the post-warm
+        # probe that would have restored Train.
+        _NO_TORCH_SETTLED_EPOCH = epoch
         CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = "no_torch", None
         return True
 
