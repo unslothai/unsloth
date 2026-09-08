@@ -104,6 +104,8 @@ import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import type { OpenAIChatChunk } from "./types/api";
 import {
   budgetImpliesTruncation,
+  completedAfterGivingUp,
+  isPreemptGaveUp,
   restoredAssistantStatus,
 } from "./utils/continuation";
 import {
@@ -967,6 +969,11 @@ function scheduleGenerationRecovery(
           maxTokens: run.requestPayload.max_tokens,
           completionTokens,
         });
+      // The live adapter's rule: a give-up is `paused` unless the run finished after it.
+      const preemptGaveUp =
+        isPreemptGaveUp(
+          currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
+        ) && !completedAfterGivingUp(run.finishReason);
       let nextMetadata = generationRecoveryMetadata({
         current: currentMetadata,
         runId,
@@ -974,6 +981,7 @@ function scheduleGenerationRecovery(
         cursor,
         lastEventSeq: run.lastEventSeq,
         lengthLimited,
+        preemptGaveUp,
         firstChunkAt,
         totalChunks,
         usage: recoveryUsage,

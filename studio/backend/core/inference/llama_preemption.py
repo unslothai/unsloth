@@ -78,9 +78,10 @@ DEFAULT_PREEMPT_STATIC_BATCH = False
 CHARGED_PREFILL_ENV = "UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED"
 DEFAULT_PREEMPT_BATCH_ONLY_UNCHARGED = False
 
-# Backstop for an announcement that no first token, pause or departure ever clears. Long,
-# because an expiry during a real prefill drops the reserve when it is needed most.
-PENDING_PREFILL_TTL_S = 120.0
+# Backstop for an announcement that no first token, pause or departure ever clears. The
+# stream's first-token wait (`_DEFAULT_FIRST_TOKEN_TIMEOUT_S`): shorter dropped the reserve
+# under a prompt still going in.
+PENDING_PREFILL_TTL_S = 1200.0
 
 # Far above _MAX_LENGTH_CONTINUATIONS: that caps answer quality, this caps churn.
 DEFAULT_MAX_PREEMPT_RESUMES = 32
@@ -792,15 +793,21 @@ class PreemptionController:
 
     def note_tokens(self, gen_id: str, tokens: int) -> None:
         """What a round boundary says this run now holds, and the third place a prefill is
-        announced. Only the DIFFERENCE from the previous figure is submitted."""
+        announced. Only the DIFFERENCE from the previous figure is submitted, unless a reclaim
+        erased the cells and the whole prompt goes in again."""
         with self._lock:
             participant = self._participants.get(gen_id)
             if participant is not None:
                 previous = participant.tokens
                 participant.tokens = max(0, int(tokens or 0))
                 growth = participant.tokens - previous
-                if growth > 0:
+                if participant.cells_reclaimed:
+                    # A reclaim erased every cell: the whole prompt goes in again, not the
+                    # round's growth. This runs before `note_state` sees DECODING.
+                    participant.announce_prefill(participant.tokens)
+                elif growth > 0:
                     participant.announce_prefill(growth)
+                if growth > 0:
                     # Same counter as `observe`, for the same reason: a waiter must see it.
                     self._progress_tokens += growth
                 # Re-baselined: a round boundary restates the whole conversation.

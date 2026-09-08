@@ -290,6 +290,9 @@ export function generationRecoveryMetadata(options: {
   cursor: number;
   lastEventSeq: number;
   lengthLimited: boolean;
+  /** The run gave up waiting for cache room and did not finish afterwards: `paused`, never
+   *  `length`, so a reload does not turn it into a Max Tokens stop that auto-continues. */
+  preemptGaveUp?: boolean;
   firstChunkAt?: number;
   totalChunks?: number;
   usage?: unknown;
@@ -302,6 +305,7 @@ export function generationRecoveryMetadata(options: {
     cursor,
     lastEventSeq,
     lengthLimited,
+    preemptGaveUp = false,
     firstChunkAt,
     totalChunks,
     usage,
@@ -317,7 +321,9 @@ export function generationRecoveryMetadata(options: {
     serverManaged: true,
   };
   if (status === "completed") {
-    if (lengthLimited) {
+    if (preemptGaveUp) {
+      next.incomplete = { reason: "paused" };
+    } else if (lengthLimited) {
       next.incomplete = { reason: "length" };
     } else {
       next.incomplete = undefined;
