@@ -144,6 +144,38 @@ def test_a_torch_device_cpu_entry_is_never_hooked_either():
     )
 
 
+def _guards_of(tree, callee):
+    """The `if` conditions that decide whether `callee` runs, as expressions."""
+    import ast
+
+    return [
+        node.test
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(c, ast.Call) and getattr(c.func, "id", None) == callee
+            for c in ast.walk(node)
+        )
+    ]
+
+
+def _evaluate(expression, **names):
+    """Run a condition lifted out of the loader, with vLLM ownership stubbed to its contract."""
+    import ast
+
+    def _vllm_will_load_weights(fast_inference, num_labels = None):
+        # The real one probes the GPU and the vLLM install, neither of which a CPU runner has. Its
+        # one rule that matters here is asserted against the real function below.
+        return bool(fast_inference) and num_labels is None
+
+    scope = dict(names)
+    scope["_vllm_will_load_weights"] = _vllm_will_load_weights
+    return eval(
+        compile(ast.fix_missing_locations(ast.Expression(body = expression)), "<guard>", "eval"),
+        scope,
+    )
+
+
 def test_the_llama_loader_stands_aside_under_vllm():
     """vLLM owns the weights; the HF tree this would hook is not what runs."""
     import ast
@@ -162,21 +194,67 @@ def test_the_llama_loader_stands_aside_under_vllm():
     ]
     assert calls, "the llama loader no longer repairs dispatch hooks at all"
 
-    guarded = [
+    guarded = _guards_of(tree, "_repair_dispatch_hooks")
+    assert guarded, "the repair is no longer behind a condition at all"
+    # Evaluated, not matched by name: the guard is allowed to ask a predicate rather than read the raw
+    # flag, and either spelling has to keep vLLM out.
+    assert not any(_evaluate(guard, fast_inference = True, num_labels = None) for guard in guarded), (
+        "the repair runs on a real vLLM load, so a vLLM load gets accelerate hooks "
+        "on a module tree vLLM does not execute"
+    )
+
+
+def test_a_num_labels_load_is_hooked_even_when_fast_inference_was_asked_for():
+    """vLLM has no classification head, so `fast_inference` there is a request it never honours.
+
+    `AutoModelForSequenceClassification` is loaded in-process and can be split across cards, so
+    passing the raw flag on leaves it with no dispatch hooks and no end-of-load repair, and it dies
+    with `index is on cuda:0, different from other tensors on cuda:1`.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from unsloth.models.llama import FastLlamaModel, _vllm_will_load_weights
+
+    # Ties the stub in _evaluate to the real predicate: vLLM never owns a num_labels load.
+    assert _vllm_will_load_weights(True, 2) is False
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(FastLlamaModel.from_pretrained)))
+    branches = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.If)
-        and isinstance(node.test, ast.UnaryOp)
-        and isinstance(node.test.op, ast.Not)
-        and getattr(node.test.operand, "id", None) == "fast_inference"
+        and "num_labels" in ast.dump(node.test)
         and any(
-            isinstance(c, ast.Call) and getattr(c.func, "id", None) == "_repair_dispatch_hooks"
+            isinstance(c, ast.Call)
+            and getattr(c.func, "id", None) == "_attach_bnb_multidevice_hooks"
             for c in ast.walk(node)
         )
     ]
-    assert guarded, (
-        "the repair is no longer behind `if not fast_inference`, so a vLLM load "
-        "gets accelerate hooks on a module tree vLLM does not execute"
+    assert len(branches) == 1, "no single `num_labels` branch attaches the hooks; this guard has gone vacuous"
+
+    passed = [
+        keyword.value
+        for call in ast.walk(branches[0])
+        if isinstance(call, ast.Call)
+        and getattr(call.func, "id", None) == "_attach_bnb_multidevice_hooks"
+        for keyword in call.keywords
+        if keyword.arg == "fast_inference"
+    ]
+    assert passed, "the classification load no longer says whether vLLM owns its weights"
+    assert not any(
+        _evaluate(value, fast_inference = True, num_labels = 2) for value in passed
+    ), (
+        "the classification load hands _attach_bnb_multidevice_hooks a truthy fast_inference, "
+        "which returns early, so a split bnb model gets no dispatch hooks"
+    )
+
+    guarded = _guards_of(tree, "_repair_dispatch_hooks")
+    assert guarded, "the repair is no longer behind a condition at all"
+    assert all(_evaluate(guard, fast_inference = True, num_labels = 2) for guard in guarded), (
+        "the end-of-load repair is skipped for a classification load, so the modules "
+        "post_patch rebuilt keep no hook and the split model still crosses devices"
     )
 
 
