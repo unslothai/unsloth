@@ -319,6 +319,29 @@ class TestASmallAutomaticAllocation:
                 assert not re.search(r"-\d", msg), msg
 
 
+class TestTheSmallAllocationsTheLadderMustOffer:
+    """An APU on its automatic setting reports a few hundred megabytes."""
+
+    def test_the_low_rungs_exist(self):
+        # 1 and 2 GB are settings firmware offers and this feature already treats
+        # as plausible allocations, so a ladder starting at 4 could only ever
+        # advise past them.
+        assert LlamaCppBackend._igpu_carveout_ladder_gb(8) == [1, 2, 3, 4, 6, 8]
+
+    def test_a_small_model_is_advised_onto_the_smallest_rung_that_fits(self):
+        # 1 GB allocated, 2 GB of weights, a 16 GB machine. Starting at 4 took two
+        # more gigabytes from the host than the advice needed.
+        advice = _advice(gb(2), gb(1), gb(15), is_igpu = True)
+        assert advice is not None
+        assert advice["suggested_gb"] == 2
+        assert advice["host_left_gb"] == 14.0
+
+    def test_the_measured_machine_is_unchanged(self):
+        # The low rungs must not perturb the case this feature was built for.
+        advice = _advice(gb(42.90), gb(32), gb(95.78), is_igpu = True)
+        assert advice is not None and advice["suggested_gb"] == 48
+
+
 class TestTheLadderTerminates:
     """It is a `while` loop on the model-load path, and the caller's try/except
     cannot rescue a hang."""
@@ -568,6 +591,19 @@ class TestEveryCallSitePricesThePlacementItRuns:
         }
         assert "forced_cpu" in by_target["gpu_indices"]
         assert "forced_cpu" in by_target["_unified_gpu_indices"]
+
+    def test_the_proactive_arch_gate_reprices_against_the_survivors(self):
+        # The gate narrows onto the supported devices before the spawn, and on a
+        # mixed host the unnarrowed set cannot even be read for an allocation:
+        # _rocm_selected_pool_mib declines a selection holding a discrete card. So
+        # a model outgrowing the surviving APU's carve-out was never advised about.
+        by_target = {
+            ast.unparse(call.args[0]): {kw.arg for kw in call.keywords} for call in self._calls()
+        }
+        assert (
+            "_survivors" in by_target
+        ), "the proactive architecture gate does not re-price the carve-out advice"
+        assert "forced_cpu" in by_target["_survivors"]
 
     def test_the_architecture_retry_reprices_against_the_surviving_gpus(self):
         # _begin_load_warnings() drops the advice priced for the crashed placement.

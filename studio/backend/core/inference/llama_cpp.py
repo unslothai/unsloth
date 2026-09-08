@@ -10760,7 +10760,12 @@ class LlamaCppBackend:
         if not isinstance(cap_gb, (int, float)) or not math.isfinite(cap_gb):
             return []
         rungs: set[int] = set()
-        step = 4
+        # From 1 GB, not 4. An APU left on its automatic setting reports a few
+        # hundred megabytes, and a small model that outgrows it by a little is
+        # served by the 1 GB or 2 GB rung its firmware offers. Starting at 4 took
+        # two more gigabytes from the host than the advice needed, against this
+        # helper's own rule of picking the smallest setting that fits.
+        step = 1
         while step <= cap_gb:
             rungs.add(step)
             if step * 1.5 <= cap_gb:
@@ -23898,6 +23903,26 @@ class LlamaCppBackend:
                         _child_gpu_physical_ids = tuple(int(i) for i in _survivors)
                         # Narrower than any pin above, so it replaces it.
                         _launch_pinned_ids = list(_survivors)
+                        # And the carve-out advice with it. Everything upstream priced
+                        # the UNNARROWED set, which on a mixed host is not a set the
+                        # allocation can even be read for: _rocm_selected_pool_mib
+                        # declines a selection holding a discrete card, so a model that
+                        # outgrows the surviving APU's carve-out was never advised
+                        # about. Same repricing the reactive crash retry does, at the
+                        # point the same narrowing happens proactively.
+                        try:
+                            _gated_carveout_need = _unified_need_now(argv = cmd)
+                        except Exception:
+                            _gated_carveout_need = None
+                        self._record_carveout_advice(
+                            _survivors,
+                            _gated_carveout_need,
+                            is_vulkan_backend = is_vulkan_backend,
+                            shared_gpu_ids = _shared_gpu_ids,
+                            detected_gpus = _detected_gpus,
+                            target_unknown = _cache_target_unknown,
+                            forced_cpu = _arch_gate_forced_cpu,
+                        )
                     elif manual_tensor_split_emitted:
                         # A manual per-GPU ratio across ALL GPUs (no explicit pick, so
                         # no mask above): the UI built --tensor-split in ascending
