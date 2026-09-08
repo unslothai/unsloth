@@ -504,9 +504,7 @@ def test_an_opaque_mirror_replaces_a_codec_it_cannot_vouch_for(monkeypatch):
     want = ips._torchcodec_index_tag("2.14.0+cu130")
     assert want is None
     for have in ("0.16.0", "0.16.0+cu126", "0.16.0+cu130"):
-        forced = bool(have) and (
-            want is None or have.partition("+")[2].strip().lower() != want
-        )
+        forced = bool(have) and (want is None or have.partition("+")[2].strip().lower() != want)
         assert forced, have
 
 

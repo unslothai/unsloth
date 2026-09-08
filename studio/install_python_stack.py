@@ -515,8 +515,7 @@ _TORCH_ACCELERATOR_TAG_RE = re.compile(r"cpu|cu\d+|xpu|rocm\d+(\.\d+)?")
 
 
 def _torch_accelerator_index_url(
-    torch_version: "str | None",
-    substitutions: "dict[str, str] | None" = None,
+    torch_version: "str | None", substitutions: "dict[str, str] | None" = None
 ) -> "str | None":
     """The download.pytorch.org leaf serving the resident torch's build, or None.
 
@@ -580,8 +579,7 @@ def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str |
 
 
 def _torch_index_tag(
-    torch_version: "str | None",
-    substitutions: "dict[str, str] | None" = None,
+    torch_version: "str | None", substitutions: "dict[str, str] | None" = None
 ) -> "str | None":
     """The local tag of the build the index pin will fetch, or None when unknowable.
 
@@ -8027,8 +8025,7 @@ def install_python_stack() -> int:
             # and the mirror would never be reached.
             _codec_want = _torchcodec_index_tag(_codec_torch_ver)
             if _codec_have and (
-                _codec_want is None
-                or _codec_have.partition("+")[2].strip().lower() != _codec_want
+                _codec_want is None or _codec_have.partition("+")[2].strip().lower() != _codec_want
             ):
                 _codec_args += ("--force-reinstall",)
                 _codec_rebuild = True
@@ -8065,14 +8062,13 @@ def install_python_stack() -> int:
             # without it pip calls the requirement satisfied, fetches nothing, and leaves
             # that same incompatible wheel in place.
             _codec_retry_args = [
-                a for i, a in enumerate(_codec_args)
+                a
+                for i, a in enumerate(_codec_args)
                 if a != "--index-url" and _codec_args[i - 1] != "--index-url"
             ]
             # _codec_index stays set on purpose: the wheel PyPI serves for a cuNNN host is
             # still a CUDA build, so it still dlopens NPP and the step below still applies.
-            _codec_ok = pip_install_try(
-                "Installing torchcodec", *_codec_retry_args, _codec_spec
-            )
+            _codec_ok = pip_install_try("Installing torchcodec", *_codec_retry_args, _codec_spec)
         if not _codec_ok:
             _note(
                 f"could not install {_codec_spec} -- audio decoding stays disabled, "

@@ -134,8 +134,10 @@ def test_the_torchao_index_follows_the_resident_torch_build(monkeypatch, torch_v
 # everything absent from here serves its whole range.
 _TORCHAO_INDEX_GAPS = {
     "cu118": ({m: f"0.{m}.0" for m in range(3, 12)}, range(5, 8)),
-    "cu129": ({12: "0.12.0", 13: "0.13.0", 14: "0.14.1", 15: "0.15.0", 16: "0.16.0",
-               17: "0.17.0"}, range(8, 14)),
+    "cu129": (
+        {12: "0.12.0", 13: "0.13.0", 14: "0.14.1", 15: "0.15.0", 16: "0.16.0", 17: "0.17.0"},
+        range(8, 14),
+    ),
     "rocm7.0": ({16: "0.16.0"}, range(9, 11)),
 }
 
@@ -288,7 +290,7 @@ def test_torchao_is_re_selected_after_the_linux_torch_repair():
     source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
     step = source.split('_progress(_torch_step_label("final"))', 1)[1]
     step = step.split("# 13w.", 1)[0]
-    assert "_torch_before_repair = str(_probe_installed_torch_version() or \"\")" in step
+    assert '_torch_before_repair = str(_probe_installed_torch_version() or "")' in step
     assert "_install_torchao_for_torch(_torch_after_repair)" in step
     # Guarded on an actual move, so an install where nothing shifted pays no second resolve.
     assert "if _torch_after_repair and _torch_after_repair != _torch_before_repair:" in step
