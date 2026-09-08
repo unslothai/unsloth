@@ -236,10 +236,21 @@ jobs:
                       if candidate == terminator:
                           terminator = None
                       continue
-                  opened = re.search(r"<<(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2", line)
+                  # The delimiter is a shell WORD, not an identifier, so
+                  # `cat <<'PUBLISH-USAGE'` is a heredoc and its body is text.
+                  # Requiring [A-Za-z_][A-Za-z0-9_]* read that body as commands.
+                  # A quoted delimiter may hold anything; unquoted it still has
+                  # to start with a letter, because `$((1<<2))` is a shift, not
+                  # a heredoc. The lookbehind is what keeps `cmd <<<'a-b'` out:
+                  # a here-string contains `<<`, and matching it swallowed the
+                  # rest of the file as a heredoc body.
+                  opened = re.search(
+                      r"(?<!<)<<(-?)\s*(?:'([^']*)'|\"([^\"]*)\"|\\?([A-Za-z_][A-Za-z0-9_.-]*))",
+                      line,
+                  )
                   if opened:
                       dash = bool(opened.group(1))
-                      terminator = opened.group(3)
+                      terminator = next(g for g in opened.groups()[1:] if g is not None)
                       continue
                   if line.lstrip().startswith("#"):
                       continue

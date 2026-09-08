@@ -140,6 +140,14 @@ def test_a_shell_no_op_is_not_an_upload(tmp_path, no_op):
         "cat <<'USAGE'\ntwine upload dist/*.whl\nUSAGE\n",
         "cat <<USAGE\ntwine upload dist/*.whl\nUSAGE\n",
         "cat <<-USAGE\n\ttwine upload dist/*.whl\n\tUSAGE\n",
+        # The delimiter is a shell word, not an identifier: bash accepts these
+        # and treats the body as text, but an identifier-shaped pattern misses
+        # the heredoc and reads the usage output as the release path.
+        "cat <<'PUBLISH-USAGE'\ntwine upload dist/*.whl\nPUBLISH-USAGE\n",
+        "cat <<PUBLISH-USAGE\ntwine upload dist/*.whl\nPUBLISH-USAGE\n",
+        "cat <<'EOF.TXT'\ntwine upload dist/*.whl\nEOF.TXT\n",
+        "cat <<'END OF HELP'\ntwine upload dist/*.whl\nEND OF HELP\n",
+        "cat <<\\USAGE\ntwine upload dist/*.whl\nUSAGE\n",
     ],
 )
 def test_heredoc_text_is_not_an_upload(tmp_path, heredoc):
@@ -149,11 +157,20 @@ def test_heredoc_text_is_not_an_upload(tmp_path, heredoc):
     assert "no twine upload line" in r.stdout
 
 
-def test_a_heredoc_does_not_hide_the_real_upload(tmp_path):
+@pytest.mark.parametrize("delimiter", ["USAGE", "'PUBLISH-USAGE'"])
+def test_a_heredoc_does_not_hide_the_real_upload(tmp_path, delimiter):
     """Skipping heredoc bodies must not skip the invocation that follows one."""
-    body = PROLOGUE + "cat <<'USAGE'\ntwine upload dist/*.tar.gz\nUSAGE\n"
+    word = delimiter.strip("'")
+    body = PROLOGUE + f"cat <<{delimiter}\ntwine upload dist/*.tar.gz\n{word}\n"
     body += "python -m twine upload dist/*.whl\n"
     r = _run_guard(tmp_path, body)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("here_string", ['cat <<< "usage"', "cat <<<'publish-usage'"])
+def test_a_here_string_does_not_open_a_heredoc(tmp_path, here_string):
+    """`<<<` contains `<<`; reading it as a heredoc swallowed the real upload."""
+    r = _run_guard(tmp_path, PROLOGUE + here_string + "\npython -m twine upload dist/*.whl\n")
     assert r.returncode == 0, r.stdout + r.stderr
 
 
