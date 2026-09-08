@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import pathlib
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -107,3 +109,68 @@ def test_pyarrow_keeps_its_own_pypi_first_path(source):
     assert re.search(
         r'-like "pyarrow-\*"\) \{ continue \}', loop
     ), "the generic loop must leave pyarrow to Get-WoaPyarrowSource"
+
+
+# The default wheelhouse URL had no test at all: changing it to a working but wrong host left
+# the whole suite green. It is load bearing twice over. It is the only source for the pyarrow
+# that gates the native path, so a typo silently sends every Windows on ARM host back to the
+# emulated x64 stack, and it is fetched over the network, so a wrong host is a wrong download.
+DEFAULT_WHEELHOUSE = "https://huggingface.co/unsloth/windows-arm64-wheels/resolve/main"
+
+PWSH = shutil.which("pwsh")
+requires_pwsh = pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
+
+
+def _wheelhouse_assignment(source: str) -> str:
+    """The `$script:WoaWheelhouse = if (...) {...} else {...}` block, lifted verbatim."""
+    match = re.search(
+        r"(?ms)^    \$script:WoaWheelhouse = if .*?^    \}$", source
+    )
+    assert match, "install.ps1 no longer assigns $script:WoaWheelhouse in one block"
+    return match.group(0)
+
+
+def test_the_default_wheelhouse_url_is_exactly_this(source):
+    assert DEFAULT_WHEELHOUSE in _wheelhouse_assignment(source)
+
+
+def test_the_default_is_an_https_resolve_url_under_our_own_org(source):
+    """`resolve/main` serves the file; a plain repo URL serves an HTML page, which the
+    staging code would happily save as a .whl."""
+    assert DEFAULT_WHEELHOUSE.startswith("https://huggingface.co/unsloth/")
+    assert DEFAULT_WHEELHOUSE.endswith("/resolve/main")
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    ("configured", "expected", "why"),
+    [
+        (None, DEFAULT_WHEELHOUSE, "unset falls back to the published wheelhouse"),
+        ("", DEFAULT_WHEELHOUSE, "empty is not a configuration"),
+        ("https://example.test/wheels", "https://example.test/wheels", "a mirror is honoured"),
+        ("https://example.test/wheels/", "https://example.test/wheels", "one trailing slash goes"),
+        ("https://example.test/wheels///", "https://example.test/wheels", "so do several"),
+        ("  https://example.test/wheels  ", "https://example.test/wheels", "surrounding space goes"),
+        (r"C:\wheels", r"C:\wheels", "a local directory survives untouched"),
+        ("C:" + chr(92) + "wheels" + chr(92), "C:" + chr(92) + "wheels" + chr(92),
+         "TrimEnd takes '/' only, so a trailing backslash stays"),
+    ],
+)
+def test_the_wheelhouse_override_is_normalised(source, configured, expected, why):
+    script = (
+        "$ErrorActionPreference = 'Stop'; "
+        + ("Remove-Item Env:UNSLOTH_WOA_WHEELHOUSE -ErrorAction SilentlyContinue; "
+           if configured is None else
+           f"$env:UNSLOTH_WOA_WHEELHOUSE = '{configured}'; ")
+        + _wheelhouse_assignment(source).strip()
+        + "; Write-Output \"<<<$script:WoaWheelhouse>>>\""
+    )
+    done = subprocess.run(
+        [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert done.returncode == 0, done.stderr
+    out = done.stdout
+    assert out[out.index("<<<") + 3 : out.rindex(">>>")] == expected, why
