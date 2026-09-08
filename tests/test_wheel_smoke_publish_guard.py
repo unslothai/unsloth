@@ -114,6 +114,41 @@ def test_missing_upload_line_fails(tmp_path):
     assert "no twine upload line" in r.stdout
 
 
+@pytest.mark.parametrize(
+    "no_op",
+    [
+        ": twine upload dist/*.whl",
+        "true twine upload dist/*.whl",
+        "echo twine upload dist/*.whl",
+    ],
+)
+def test_a_shell_no_op_is_not_an_upload(tmp_path, no_op):
+    """A line that names twine but never runs it must not satisfy the check.
+
+    Unanchored, `: twine upload dist/*.whl` registered a wheel target, so a
+    build.sh whose real upload had been deleted still reported PASS. That is
+    precisely what the missing-upload check exists to catch.
+    """
+    r = _run_guard(tmp_path, PROLOGUE + no_op + "\n")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "no twine upload line" in r.stdout
+
+
+@pytest.mark.parametrize(
+    "invocation",
+    [
+        "twine upload dist/*.whl",
+        "python -m twine upload dist/*.whl",
+        "python3 -m twine upload dist/*.whl",
+        "    python -m twine upload dist/*.whl",
+    ],
+)
+def test_real_invocation_forms_are_still_recognised(tmp_path, invocation):
+    """Anchoring must not stop the guard seeing how build.sh actually calls it."""
+    r = _run_guard(tmp_path, PROLOGUE + invocation + "\n")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
 def test_commented_out_upload_is_not_an_artifact(tmp_path):
     """A comment mentioning the bad glob must not be read as a real upload."""
     body = PROLOGUE + "# never do: twine upload dist/*\npython -m twine upload dist/*.whl\n"

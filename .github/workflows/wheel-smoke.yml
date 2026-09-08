@@ -178,7 +178,12 @@ jobs:
           uploads = []
           unreadable = False
           for line in lines:
-              m = re.search(r"twine upload\b(.*)$", line)
+              # Anchored to the start of the command, so only an invocation
+              # counts. Unanchored, a shell no-op that never publishes anything
+              # (`: twine upload dist/*.whl`) still registered a wheel target and
+              # satisfied the has-an-upload check below, which is the one thing
+              # that check exists to catch.
+              m = re.match(r"\s*(?:python[0-9.]*\s+-m\s+)?twine\s+upload\b(.*)$", line)
               if not m:
                   continue
               args = positionals(m.group(1))
