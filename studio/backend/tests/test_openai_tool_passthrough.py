@@ -822,15 +822,7 @@ class TestChatCompletionRequestToolFields:
             "/v1/chat/completions",
             json = {
                 "messages": [{"role": "user", "content": "hi"}],
-                "tools": [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object"},
-                        },
-                    }
-                ],
+                "tools": _lookup_tools(),
                 "n": 2,
             },
         )
@@ -910,15 +902,7 @@ class TestChatCompletionRequestToolFields:
             "/v1/chat/completions",
             json = {
                 "messages": [{"role": "user", "content": "hi"}],
-                "tools": [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object"},
-                        },
-                    }
-                ],
+                "tools": _lookup_tools(),
             },
         )
 
@@ -1395,18 +1379,7 @@ class TestChatCompletionRequestToolFields:
         resp = client.post(
             "/v1/chat/completions",
             json = {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "what is this?"},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": "data:image/png;base64,AAAA"},
-                            },
-                        ],
-                    }
-                ]
+                "messages": _image_question_messages()
             },
         )
 
@@ -1701,18 +1674,7 @@ class TestChatCompletionRequestToolFields:
         resp = client.post(
             "/v1/chat/completions",
             json = {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "what is this?"},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": "data:image/png;base64,AAAA"},
-                            },
-                        ],
-                    }
-                ]
+                "messages": _image_question_messages()
             },
         )
 
@@ -1765,15 +1727,7 @@ class TestChatCompletionRequestToolFields:
             "/v1/chat/completions",
             json = {
                 "messages": [{"role": "user", "content": "use client tool"}],
-                "tools": [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object"},
-                        },
-                    }
-                ],
+                "tools": _lookup_tools(),
             },
         )
 
@@ -1815,12 +1769,7 @@ class TestChatCompletionRequestToolFields:
             inference_route.api_monitor.finish(kwargs.get("monitor_id"))
             return inference_route.JSONResponse({"ok": True, "model": model_name})
 
-        client_tools = [
-            {
-                "type": "function",
-                "function": {"name": "lookup", "parameters": {"type": "object"}},
-            }
-        ]
+        client_tools = _lookup_tools()
 
         def _setup(policy = None):
             reset_tool_policy()
@@ -1982,15 +1931,7 @@ class TestChatCompletionRequestToolFields:
             json = {
                 "messages": [{"role": "user", "content": "use client tool"}],
                 "enable_tools": True,
-                "tools": [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object"},
-                        },
-                    }
-                ],
+                "tools": _lookup_tools(),
             },
         )
 
@@ -2021,15 +1962,7 @@ class TestChatCompletionRequestToolFields:
             "/v1/chat/completions",
             json = {
                 "messages": [{"role": "user", "content": "hi"}],
-                "tools": [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object"},
-                        },
-                    }
-                ],
+                "tools": _lookup_tools(),
                 "tool_choice": "none",
             },
         )
@@ -3028,18 +2961,7 @@ class TestOpenAICompatibilityHelpers:
 
     def test_single_image_still_returned(self):
         payload = ChatCompletionRequest(
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "what is this?"},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": "data:image/png;base64,AAAA"},
-                        },
-                    ],
-                }
-            ]
+            messages = _image_question_messages()
         )
 
         _, _, image_b64 = _extract_content_parts(payload.messages)
@@ -3274,6 +3196,47 @@ from routes.inference import (  # noqa: E402
     _drop_empty_assistant_sentinels,
     _openai_messages_for_gguf_chat,
 )
+
+
+def _image_question_messages():
+    """One user turn holding a question and a tiny png."""
+    return [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "what is this?"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,AAAA"},
+                            },
+                        ],
+                    }
+                ]
+
+
+
+def _stop_metadata():
+    """The terminal usage frame the gguf generators yield."""
+    return {
+                    "type": "metadata",
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+                    "finish_reason": "stop",
+                }
+
+
+
+def _lookup_tools():
+    """The one-entry lookup tool list the passthrough tests advertise."""
+    return [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ]
+
 
 
 def _omni_backend(calls):
@@ -4237,11 +4200,7 @@ class TestGgufVisionToolRouting:
         # Same request with the frames on runs the loop: the guard refuses no one else.
         def _tools(**_kwargs):
             yield {"type": "content", "text": "done"}
-            yield {
-                "type": "metadata",
-                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
-                "finish_reason": "stop",
-            }
+            yield _stop_metadata()
 
         result = self._run_gguf_case(
             monkeypatch,
@@ -4295,11 +4254,7 @@ class TestGgufVisionToolRouting:
             yield "<think>plan"
             yield "<think>plan</think>vis"
             yield "<think>plan</think>visible"
-            yield {
-                "type": "metadata",
-                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
-                "finish_reason": "stop",
-            }
+            yield _stop_metadata()
 
         result = self._run_gguf_case(
             monkeypatch,
@@ -4987,11 +4942,7 @@ class TestGgufVisionToolRouting:
     def test_reasoning_capable_gguf_stream_splits_reasoning_by_default(self, monkeypatch):
         def _generate(**_kwargs):
             yield "<think>plan</think>visible"
-            yield {
-                "type": "metadata",
-                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
-                "finish_reason": "stop",
-            }
+            yield _stop_metadata()
 
         result = self._run_gguf_case(
             monkeypatch,
@@ -5009,11 +4960,7 @@ class TestGgufVisionToolRouting:
     def test_reasoning_capable_gguf_stream_sanitizes_think_tags_when_disabled(self, monkeypatch):
         def _generate(**_kwargs):
             yield "<think>leaked</think>visible"
-            yield {
-                "type": "metadata",
-                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
-                "finish_reason": "stop",
-            }
+            yield _stop_metadata()
 
         result = self._run_gguf_case(
             monkeypatch,
@@ -5035,11 +4982,7 @@ class TestGgufVisionToolRouting:
                 "type": "content",
                 "text": '<think>plan</think>visible <|tool_call>call:terminal{command:"ls"}<tool_call|>',
             }
-            yield {
-                "type": "metadata",
-                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
-                "finish_reason": "stop",
-            }
+            yield _stop_metadata()
 
         result = self._run_gguf_case(
             monkeypatch,
@@ -5066,11 +5009,7 @@ class TestGgufVisionToolRouting:
         def _tools(**_kwargs):
             yield {"type": "content", "text": "answer <"}
             yield {"type": "status", "text": ""}
-            yield {
-                "type": "metadata",
-                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
-                "finish_reason": "stop",
-            }
+            yield _stop_metadata()
 
         result = self._run_gguf_case(
             monkeypatch,
@@ -5094,11 +5033,7 @@ class TestGgufVisionToolRouting:
     def test_non_streaming_gguf_splits_reasoning_content(self, monkeypatch):
         def _generate(**_kwargs):
             yield "<think>plan</think>visible"
-            yield {
-                "type": "metadata",
-                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
-                "finish_reason": "stop",
-            }
+            yield _stop_metadata()
 
         result = self._run_gguf_case(monkeypatch, generate = _generate)
         body = result.body

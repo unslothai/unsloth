@@ -37,6 +37,42 @@ from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as s
 import httpx
 
 
+def _web_search_tool():
+    """The web_search tool schema the tool-loop tests advertise."""
+    return {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    }
+
+
+
+def _render_html_tools():
+    """The one-entry render_html tool list the tool-loop tests advertise."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "render_html",
+                "description": "Render HTML.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                    "required": ["code"],
+                },
+            },
+        }
+    ]
+
+
+
 def fake_execute_tool(name, arguments, **_kwargs):
     raise AssertionError(f"unexpected tool execution: {name} {arguments}")
 
@@ -527,20 +563,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "render_html",
-                "description": "Render HTML.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            },
-        }
-    ]
+    tools = _render_html_tools()
 
     events = _run_tool_loop(backend, [{"role": "user", "content": "Make a red square."}], tools)
 
@@ -1983,20 +2006,7 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "render_html",
-                "description": "Render HTML.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            },
-        }
-    ]
+    tools = _render_html_tools()
 
     events = _run_tool_loop(backend, [{"role": "user", "content": "Make a red square."}], tools)
 
@@ -2022,20 +2032,7 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "render_html",
-                "description": "Render HTML.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            },
-        }
-    ]
+    tools = _render_html_tools()
 
     events = _run_tool_loop(
         backend, [{"role": "user", "content": "Make a red square."}], tools, nudge_tool_calls = True
@@ -2071,18 +2068,7 @@ def test_post_tool_stall_still_nudged_after_a_pre_tool_reprompt(monkeypatch):
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "Search the web.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
-            },
-        }
+        _web_search_tool()
     ]
 
     events = _run_tool_loop(
@@ -2121,18 +2107,7 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
     )
 
     tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "Search the web.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
-            },
-        }
+        _web_search_tool()
     ]
 
     list(
@@ -2173,18 +2148,7 @@ def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
     )
 
     tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "Search the web.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
-            },
-        }
+        _web_search_tool()
     ]
 
     events = _run_tool_loop(
@@ -2313,18 +2277,7 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_after_a_tool(monkeyp
     )
 
     tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "Search the web.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
-            },
-        }
+        _web_search_tool()
     ]
 
     events = _run_tool_loop(
@@ -2355,18 +2308,7 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_pre_tool(monkeypatch
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "Search the web.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
-            },
-        }
+        _web_search_tool()
     ]
 
     events = _run_tool_loop(
@@ -2398,20 +2340,7 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
     events = list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "Make a red square."}],
-            tools = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "render_html",
-                        "description": "Render HTML.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"code": {"type": "string"}},
-                            "required": ["code"],
-                        },
-                    },
-                }
-            ],
+            tools = _render_html_tools(),
             max_tool_iterations = 1,
             nudge_tool_calls = True,
         )
@@ -2443,20 +2372,7 @@ def test_internal_reprompt_disabled_when_auto_heal_disabled(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "render_html",
-                "description": "Render HTML.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            },
-        }
-    ]
+    tools = _render_html_tools()
 
     events = _run_tool_loop(
         backend, [{"role": "user", "content": "Make a red square."}], tools, auto_heal_tool_calls = False
@@ -2476,20 +2392,7 @@ def test_internal_reprompt_disabled_when_nudge_tool_calls_false(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "render_html",
-                "description": "Render HTML.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            },
-        }
-    ]
+    tools = _render_html_tools()
 
     events = _run_tool_loop(
         backend, [{"role": "user", "content": "Make a red square."}], tools, auto_heal_tool_calls = True, nudge_tool_calls = False
@@ -2665,20 +2568,7 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "render_html",
-                "description": "Render HTML.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"code": {"type": "string"}},
-                    "required": ["code"],
-                },
-            },
-        }
-    ]
+    tools = _render_html_tools()
 
     events = _run_tool_loop(
         backend, [{"role": "user", "content": "Make a red square."}], tools, nudge_tool_calls = True
@@ -2695,18 +2585,7 @@ def _status_texts(events: list[dict]) -> list[str]:
     return [event["text"] for event in events if event.get("type") == "status"]
 
 
-_WEB_SEARCH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": "Search the web.",
-        "parameters": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-            "required": ["query"],
-        },
-    },
-}
+_WEB_SEARCH_TOOL = _web_search_tool()
 
 
 def _nudge_then_search_streams() -> list[list[str]]:
