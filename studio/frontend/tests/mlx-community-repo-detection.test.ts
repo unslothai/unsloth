@@ -38,18 +38,14 @@ test("the format filter routes an mlx-community repo to MLX, not Safetensors", (
   assert.equal(matchesFormatFilter(COMMUNITY, false, "all"), true);
 });
 
-// localModelIsMlx passes LocalModelInfo.id, which is a filesystem path for models_dir, lmstudio and
-// custom-folder rows, so a local model is judged by its own folder name on every platform rather
-// than by whatever the parent directories happen to be called.
+// localModelIsMlx passes LocalModelInfo.id, a filesystem path: parent directories must not decide.
 test("a local path is judged by its leaf on both separators", () => {
   assert.equal(isMlxId("/Users/me/models/Qwen3-8B-MLX"), true);
   assert.equal(isMlxId("C:\\Users\\me\\models\\Qwen3-8B-MLX"), true);
   assert.equal(isMlxId("/Users/me/Qwen-MLX-builds/Qwen3-8B"), false);
   assert.equal(isMlxId("C:\\Users\\me\\Qwen-MLX-builds\\Qwen3-8B"), false);
-  // A .gguf file under an MLX-named folder is GGUF, not MLX, on either platform.
   assert.equal(isMlxId("/Users/me/Qwen3-MLX-4bit/model.gguf"), false);
   assert.equal(isMlxId("C:\\Users\\me\\Qwen3-MLX-4bit\\model.gguf"), false);
-  // LM Studio's publisher layout reaches the same verdict through model_id.
   assert.equal(isMlxId("mlx-community/Qwen3-8B-4bit"), true);
 });
 
