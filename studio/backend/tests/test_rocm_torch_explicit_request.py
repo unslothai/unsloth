@@ -719,17 +719,19 @@ def _route_shell(probe: str, inferred: str, pci_ok: bool) -> bool:
     """
     import subprocess
 
-    script = "\n".join([
-        f'_probe_amd_gfx_arch() {{ printf "%s\\n" {probe!r}; }}',
-        "_kfd_gfx_targets() { :; }",
-        f'_infer_linux_amd_gfx_arch() {{ [ -n {inferred!r} ] && printf "%s\\n" {inferred!r}; }}',
-        f"_amd_gpu_present_via_pci() {{ return {0 if pci_ok else 1}; }}",
-        _shell_function("_amd_hardware_corroborated"),
-        _shell_function("_amd_arch_index_family_for_gfx"),
-        _shell_function("_amd_gfx_has_wheel_route"),
-        _shell_function("_amd_request_has_a_wheel_route"),
-        "_amd_request_has_a_wheel_route && echo yes || echo no",
-    ])
+    script = "\n".join(
+        [
+            f'_probe_amd_gfx_arch() {{ printf "%s\\n" {probe!r}; }}',
+            "_kfd_gfx_targets() { :; }",
+            f'_infer_linux_amd_gfx_arch() {{ [ -n {inferred!r} ] && printf "%s\\n" {inferred!r}; }}',
+            f"_amd_gpu_present_via_pci() {{ return {0 if pci_ok else 1}; }}",
+            _shell_function("_amd_hardware_corroborated"),
+            _shell_function("_amd_arch_index_family_for_gfx"),
+            _shell_function("_amd_gfx_has_wheel_route"),
+            _shell_function("_amd_request_has_a_wheel_route"),
+            "_amd_request_has_a_wheel_route && echo yes || echo no",
+        ]
+    )
     out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
     assert out.returncode == 0, out.stderr
     return out.stdout.strip() == "yes"
@@ -782,7 +784,14 @@ def test_gfx906_beside_a_second_amd_arch_is_not():
     assert _route_shell("gfx906\ngfx1010", "", pci_ok = True) is False
 
 
-def _viable(stack, monkeypatch, *, corroborated: bool, archs: list, miscomputing = False):
+def _viable(
+    stack,
+    monkeypatch,
+    *,
+    corroborated: bool,
+    archs: list,
+    miscomputing = False,
+):
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
     monkeypatch.setattr(stack, "IS_MACOS", False)
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: corroborated)
@@ -800,9 +809,16 @@ def test_the_python_route_test_matches_the_shell_one(stack, monkeypatch):
     assert _viable(stack, monkeypatch, corroborated = True, archs = ["gfx1010"]) is False
     assert _viable(stack, monkeypatch, corroborated = True, archs = ["gfx1100"]) is True
     assert _viable(stack, monkeypatch, corroborated = False, archs = ["gfx1030"]) is False
-    assert _viable(
-        stack, monkeypatch, corroborated = True, archs = ["gfx1033"], miscomputing = True,
-    ) is False
+    assert (
+        _viable(
+            stack,
+            monkeypatch,
+            corroborated = True,
+            archs = ["gfx1033"],
+            miscomputing = True,
+        )
+        is False
+    )
 
 
 def test_an_unroutable_card_keeps_the_cuda_repair(stack, monkeypatch):
@@ -889,7 +905,9 @@ def test_a_declared_arch_does_not_force_rocm_over_a_working_cuda_stack(stack, mo
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
     installed = {"ran": False}
     monkeypatch.setattr(
-        stack, "pip_install", lambda *a, **k: installed.__setitem__("ran", True),
+        stack,
+        "pip_install",
+        lambda *a, **k: installed.__setitem__("ran", True),
     )
     stack._ensure_rocm_torch()
     assert installed["ran"] is False
@@ -915,12 +933,15 @@ def test_a_real_card_with_a_declared_arch_is_still_served(stack, monkeypatch):
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
     reached = {"ran": False}
     monkeypatch.setattr(
-        stack, "_detect_rocm_version",
+        stack,
+        "_detect_rocm_version",
         lambda *a, **k: (reached.__setitem__("ran", True), (7, 2))[1],
     )
     monkeypatch.setattr(stack, "pip_install", lambda *a, **k: None)
     monkeypatch.setattr(
-        stack, "_probe_torch_runtime", lambda *a, **k: (True, True, "2.11.0", False, True),
+        stack,
+        "_probe_torch_runtime",
+        lambda *a, **k: (True, True, "2.11.0", False, True),
     )
     stack._ensure_rocm_torch()
     assert reached["ran"] is True
