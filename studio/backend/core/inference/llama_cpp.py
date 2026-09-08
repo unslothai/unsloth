@@ -10008,6 +10008,7 @@ class LlamaCppBackend:
 
             def _reason(text: str) -> str:
                 return f"{text}{_second_finding}"
+
             if node_hint:
                 # A mask hides devices whatever the node permissions are, so a host with
                 # both needs both fixes and the early return was hiding the second one.
@@ -10036,18 +10037,14 @@ class LlamaCppBackend:
                 # sibling. Still reported either way, because it is still true.
                 if _closed_nodes_block_the_runtime():
                     return node_hint
-                _second_finding = (
-                    f" Separately, and not why the probe is empty: {node_hint}"
-                )
+                _second_finding = f" Separately, and not why the probe is empty: {node_hint}"
             if _is_vulkan:
                 return _reason("the Vulkan probe reported no device")
 
             try:
                 import torch
             except Exception:  # noqa: BLE001
-                return _reason(
-                    f"torch is not importable, so no GPU could be enumerated{mask_note}"
-                )
+                return _reason(f"torch is not importable, so no GPU could be enumerated{mask_note}")
             if not hasattr(torch, "cuda") or not torch.cuda.is_available():
                 return _reason(f"torch reports no usable CUDA or HIP device{mask_note}")
             # Counting devices does not create a context; reading their memory would.
@@ -10068,9 +10065,7 @@ class LlamaCppBackend:
                     f"torch sees {count} ROCm device(s) but the probe returned none, so "
                     f"amd-smi and the torch fallback both declined{mask_note}"
                 )
-            return _reason(
-                f"torch sees {count} device(s) but the probe returned none{mask_note}"
-            )
+            return _reason(f"torch sees {count} device(s) but the probe returned none{mask_note}")
         except Exception as e:  # noqa: BLE001 -- diagnostics must not break a load
             return f"the reason could not be determined ({type(e).__name__})"
 

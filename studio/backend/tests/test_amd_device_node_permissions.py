@@ -769,7 +769,12 @@ def test_a_node_that_cannot_be_stat_contributes_nothing(monkeypatch):
     out rather than taking the whole hint down."""
     _stat_nodes(monkeypatch, {"/dev/dri/renderD128": (44, 0o660)}, {44: "video"})
     assert amd._groups_that_own(["/dev/kfd", "/dev/dri/renderD128"]) == (
-        ["video"], [], [], [], [], [],
+        ["video"],
+        [],
+        [],
+        [],
+        [],
+        [],
     )
 
 
@@ -1131,7 +1136,10 @@ def test_a_closed_kfd_node_still_suppresses_it_after_the_case():
 
 
 def _reason_with_masks(
-    monkeypatch, env: dict, backends: set, gpu_count: "int | None" = None
+    monkeypatch,
+    env: dict,
+    backends: set,
+    gpu_count: "int | None" = None,
 ) -> str:
     """The empty-probe reason on a closed-node host carrying several visibility masks.
 
@@ -1383,9 +1391,7 @@ def test_an_ordinal_naming_a_device_that_is_not_there_hides_everything(monkeypat
     """HIP reads the list left to right and stops at the first index no device answers to,
     so HIP_VISIBLE_DEVICES=3 on a one-GPU host exposes nothing -- which is exactly the
     empty probe being explained, and was read as a valid selector."""
-    reason = _reason_with_masks(
-        monkeypatch, {"HIP_VISIBLE_DEVICES": "3"}, {"hip"}, gpu_count = 1
-    )
+    reason = _reason_with_masks(monkeypatch, {"HIP_VISIBLE_DEVICES": "3"}, {"hip"}, gpu_count = 1)
     assert "visibility mask is also in force" in reason
     assert "HIP_VISIBLE_DEVICES='3'" in reason
 
@@ -1394,18 +1400,14 @@ def test_an_ordinal_that_does_name_a_device_is_still_not_a_blocker(monkeypatch, 
     """The control: the same host and the same variable pointing at a GPU it has. Without
     it the fix could be "any ordinal blocks", which sends every host with a legitimate
     selector after a change that would take its GPU away."""
-    reason = _reason_with_masks(
-        monkeypatch, {"HIP_VISIBLE_DEVICES": "0"}, {"hip"}, gpu_count = 1
-    )
+    reason = _reason_with_masks(monkeypatch, {"HIP_VISIBLE_DEVICES": "0"}, {"hip"}, gpu_count = 1)
     assert "visibility mask is also in force" not in reason
 
 
 def test_an_unreadable_device_count_leaves_the_selector_alone(monkeypatch, linux):
     """The other control: an unreadable KFD topology is a detection miss, and reading it
     as "no devices" would call every selector on the host a blocker."""
-    reason = _reason_with_masks(
-        monkeypatch, {"HIP_VISIBLE_DEVICES": "3"}, {"hip"}, gpu_count = None
-    )
+    reason = _reason_with_masks(monkeypatch, {"HIP_VISIBLE_DEVICES": "3"}, {"hip"}, gpu_count = None)
     assert "visibility mask is also in force" not in reason
 
 
@@ -1448,9 +1450,7 @@ def test_the_installer_reports_an_acl_rather_than_prescribing_membership(tmp_pat
     import subprocess
 
     try:
-        _set = subprocess.run(
-            ["setfacl", "-m", "u:nobody:rw", str(node)], capture_output = True
-        )
+        _set = subprocess.run(["setfacl", "-m", "u:nobody:rw", str(node)], capture_output = True)
     except OSError:
         pytest.skip("setfacl is not installed")
     if _set.returncode != 0:
@@ -1572,9 +1572,7 @@ def test_a_rocr_selector_naming_a_uuid_is_reported_as_unresolved(monkeypatch, li
 def test_a_rocr_ordinal_that_names_a_device_is_still_left_alone(monkeypatch, linux):
     """The control that keeps it narrow: an ordinal the count can resolve is judged as
     before, so the new sentence cannot appear on every host that sets the variable."""
-    reason = _reason_with_masks(
-        monkeypatch, {"ROCR_VISIBLE_DEVICES": "0"}, {"hip"}, gpu_count = 2
-    )
+    reason = _reason_with_masks(monkeypatch, {"ROCR_VISIBLE_DEVICES": "0"}, {"hip"}, gpu_count = 2)
     assert "cannot resolve" not in reason
     assert "visibility mask" not in reason
 
@@ -1727,7 +1725,6 @@ def test_a_closed_kfd_is_still_the_reason_for_a_hip_build(monkeypatch, linux):
     assert "/dev/kfd" in reason
 
 
-
 def test_a_missing_render_node_blocks_the_runtime(monkeypatch, linux):
     """--device /dev/kfd without --device /dev/dri. The one node mapped opens, so nothing
     is CLOSED, and this answered False -- which made hardware.py suppress the very hint
@@ -1754,9 +1751,7 @@ def test_a_container_given_only_the_render_node_is_told_about_kfd(monkeypatch, l
     `_render_missing` is false, and the hint returned None before reaching its own
     missing-KFD sentence -- leaving the caller on generic reinstall advice for a host
     where HIP has no /dev/kfd to open."""
-    _nodes(
-        monkeypatch, present = ["/dev/dri/renderD128"], openable = {"/dev/dri/renderD128"}
-    )
+    _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = {"/dev/dri/renderD128"})
     hint = amd.amd_node_permission_hint()
     assert "/dev/kfd" in hint
     assert "usermod" not in hint
@@ -1765,9 +1760,7 @@ def test_a_container_given_only_the_render_node_is_told_about_kfd(monkeypatch, l
 def test_the_same_mapping_says_nothing_to_a_vulkan_caller(monkeypatch, linux):
     """The control, and the reason needs_kfd exists: Vulkan never opens /dev/kfd, so a
     Vulkan failure with some other cause must not be sent after the ROCm kernel stack."""
-    _nodes(
-        monkeypatch, present = ["/dev/dri/renderD128"], openable = {"/dev/dri/renderD128"}
-    )
+    _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = {"/dev/dri/renderD128"})
     assert amd.amd_node_permission_hint(needs_kfd = False) is None
 
 
@@ -1823,9 +1816,7 @@ def test_an_ordinary_owning_group_is_still_prescribed(monkeypatch, linux):
 def test_the_hint_for_a_privileged_owner_says_it_is_not_the_repair(monkeypatch, linux):
     """The sentence a user actually reads, since the buckets above only decide it."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
-    monkeypatch.setattr(
-        amd, "_groups_that_own", lambda paths: ([], [], [], [], [], ["root"])
-    )
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], [], [], [], ["root"]))
     hint = amd.amd_node_permission_hint()
     assert "usermod" not in hint
     assert "root" in hint and "udev" in hint
@@ -1864,7 +1855,6 @@ def test_the_installer_stops_at_the_owner_class_too(tmp_path):
     out = _install_sh_hint(str(node), self_uid = str(os.getuid()))
     assert "usermod" not in out
     assert "owned by this account" in out
-
 
 
 def _kernel_stack_hint_text(*, topology: bool) -> str:
@@ -1936,9 +1926,7 @@ def test_a_container_missing_kfd_is_told_to_map_it_rather_than_reinstall(monkeyp
     amdkfd driver's own sysfs -- so on every host this sentence can reach, the kernel
     stack is already loaded and the advice to install it is unreachable-by-construction
     wrong."""
-    _nodes(
-        monkeypatch, present = ["/dev/dri/renderD128"], openable = {"/dev/dri/renderD128"}
-    )
+    _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = {"/dev/dri/renderD128"})
     hint = amd.amd_node_permission_hint()
     assert "--device /dev/kfd" in hint
     assert "kernel stack" not in hint

@@ -778,9 +778,7 @@ def _has_an_access_acl(path: str) -> bool:
 # Groups whose membership reaches far beyond a device node. Not exhaustive and does not
 # need to be: anything here is reported instead of prescribed, and an unlisted group that
 # turns out to be privileged is the status quo rather than a regression.
-_PRIVILEGED_GROUPS = frozenset(
-    {"root", "wheel", "sudo", "admin", "adm", "disk", "kmem", "shadow"}
-)
+_PRIVILEGED_GROUPS = frozenset({"root", "wheel", "sudo", "admin", "adm", "disk", "kmem", "shadow"})
 
 
 def _groups_that_own(paths: list) -> tuple:
@@ -925,8 +923,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     if closed:
         # Claim only what the closed set actually blocks.
         blocked = (
-            "no GPU backend can use" if any(p != _KFD_NODE for p in closed)
-            else "ROCm cannot use"
+            "no GPU backend can use" if any(p != _KFD_NODE for p in closed) else "ROCm cannot use"
         )
         user = os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
         joinable, unnamed, no_group, acl, owned, privileged = _groups_that_own(closed)

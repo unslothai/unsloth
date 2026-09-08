@@ -2119,10 +2119,7 @@ def _gpu_present_but_unusable_message(
         "rocm" in _label
         or "hip" in _label
         or _torch_reports_a_hip_runtime()
-        or (
-            not _WHEEL_LABEL_OTHER_VENDOR_RE.search(_label)
-            and _expected_rocm_flavor_was_chosen()
-        )
+        or (not _WHEEL_LABEL_OTHER_VENDOR_RE.search(_label) and _expected_rocm_flavor_was_chosen())
     )
     amd_is_the_target = vendors == {"amd"} or wheel_targets_amd
     node_hint = None
@@ -2132,6 +2129,7 @@ def _gpu_present_but_unusable_message(
                 amd_closed_nodes_block_the_runtime,
                 amd_node_permission_hint,
             )
+
             # Only when the closed set actually leaves the runtime no way in. A sibling
             # render node still open means ROCm had a complete path and failed anyway, so
             # the closed one does not explain this and must not replace the repair below.
