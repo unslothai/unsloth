@@ -147,7 +147,9 @@ def _index_url(env: str, stubs: str) -> str:
             _shell_function("_amd_hardware_corroborated"),
             _shell_function("_amd_gfx_has_wheel_route"),
             _shell_function("_amd_visible_masks_select_no_gpu"),
-            _shell_function("_amd_selected_gfx_archs"),
+            _shell_function("_amd_generic_tag_carries_gfx"),
+            _shell_function("_amd_mask_survivors"),
+            _shell_function("_amd_runtime_gfx_target"),
             _shell_function("_amd_request_has_a_wheel_route"),
             _shell_function("get_torch_index_url"),
             f"{env} get_torch_index_url",
@@ -315,7 +317,9 @@ def _nvidia_wins(env: str, stubs: str) -> bool:
             _shell_function("_amd_arch_index_family_for_gfx"),
             _shell_function("_amd_gfx_has_wheel_route"),
             _shell_function("_amd_visible_masks_select_no_gpu"),
-            _shell_function("_amd_selected_gfx_archs"),
+            _shell_function("_amd_generic_tag_carries_gfx"),
+            _shell_function("_amd_mask_survivors"),
+            _shell_function("_amd_runtime_gfx_target"),
             _shell_function("_amd_request_has_a_wheel_route"),
             _shell_function("_nvidia_gpu_wins_over_amd"),
             f"{env} _nvidia_gpu_wins_over_amd && echo NVIDIA || echo AMD",
@@ -733,12 +737,22 @@ def _route_shell(probe: str, inferred: str, pci_ok: bool) -> bool:
             _shell_function("_amd_arch_index_family_for_gfx"),
             _shell_function("_amd_gfx_has_wheel_route"),
             _shell_function("_amd_visible_masks_select_no_gpu"),
-            _shell_function("_amd_selected_gfx_archs"),
+            _shell_function("_amd_generic_tag_carries_gfx"),
+            _shell_function("_amd_mask_survivors"),
+            _shell_function("_amd_runtime_gfx_target"),
             _shell_function("_amd_request_has_a_wheel_route"),
+            "_detect_rocm_version_tag() { printf '%s\\n' rocm7.2; }",
             "_amd_request_has_a_wheel_route && echo yes || echo no",
         ]
     )
-    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    out = subprocess.run(
+        ["bash", "-c", script],
+        capture_output = True,
+        text = True,
+        # A declared arch decides before the inventory, so one inherited from the runner's
+        # environment would answer every case here instead of the probe under test.
+        env = {k: v for k, v in os.environ.items() if k != "UNSLOTH_ROCM_GFX_ARCH"},
+    )
     assert out.returncode == 0, out.stderr
     return out.stdout.strip() == "yes"
 
@@ -1021,7 +1035,7 @@ def test_trimming_does_not_widen_what_counts_as_a_request(value):
     assert _shell_request_flag(value) is False
 
 
-def _route_shell_masked(physical: "list[str]", **mask: str) -> bool:
+def _route_shell_masked(physical: "list[str]", rocm_tag: str = "rocm7.2", **mask: str) -> bool:
     """The request route test on a masked host, with the mask resolution left live.
 
     Only _probe_amd_gfx_arch is stubbed, and it returns the WHOLE inventory in every mode --
@@ -1046,12 +1060,18 @@ def _route_shell_masked(physical: "list[str]", **mask: str) -> bool:
             _shell_function("_amd_arch_index_family_for_gfx"),
             _shell_function("_amd_gfx_has_wheel_route"),
             _shell_function("_amd_visible_masks_select_no_gpu"),
-            _shell_function("_amd_selected_gfx_archs"),
+            _shell_function("_amd_generic_tag_carries_gfx"),
+            _shell_function("_amd_mask_survivors"),
+            _shell_function("_amd_runtime_gfx_target"),
             _shell_function("_amd_request_has_a_wheel_route"),
+            f"_detect_rocm_version_tag() {{ printf '%s\\n' {rocm_tag!r}; }}",
             "_amd_request_has_a_wheel_route && echo yes || echo no",
         ]
     )
-    env = {k: v for k, v in os.environ.items() if not k.endswith("VISIBLE_DEVICES")}
+    env = {
+        k: v for k, v in os.environ.items()
+        if not k.endswith("VISIBLE_DEVICES") and k != "UNSLOTH_ROCM_GFX_ARCH"
+    }
     env.update(mask)
     out = subprocess.run(
         ["bash", "-c", script], capture_output = True, text = True, env = env
@@ -1342,3 +1362,106 @@ def test_an_unknown_family_pin_is_left_alone(stack, monkeypatch):
         )
         is False
     )
+
+
+def test_the_two_mask_layers_compose_in_the_order_the_runtime_reads_them():
+    """ROCr filters the physical list and renumbers the survivors; the HIP layer then
+    indexes those. Reading either alone answers on the wrong card: here ROCr leaves only
+    gfx1010, so HIP ordinal 0 is that card, while a HIP-only reading calls it gfx1100 and
+    lets the request replace a working CUDA stack with wheels that cannot run it.
+
+    Fails before the fix, which took HIP_VISIBLE_DEVICES when both were set."""
+    assert (
+        _route_shell_masked(
+            ["gfx1100", "gfx1010"], ROCR_VISIBLE_DEVICES = "1", HIP_VISIBLE_DEVICES = "0"
+        )
+        is False
+    )
+
+
+def test_the_same_two_layers_pointing_at_the_routable_card_still_depose_cuda():
+    """The control: same host, same stacking, ROCr selecting the other card. Without it the
+    fix could be "any two stacked masks keep CUDA", which passes the test above."""
+    assert (
+        _route_shell_masked(
+            ["gfx1100", "gfx1010"], ROCR_VISIBLE_DEVICES = "0", HIP_VISIBLE_DEVICES = "0"
+        )
+        is True
+    )
+
+
+def test_two_cards_of_one_arch_do_not_shift_the_ordinals():
+    """An ordinal names a DEVICE, not an architecture. Deduplicating before indexing turns
+    [gfx1010, gfx1010, gfx1100] into a two-entry list, so ordinal 1 reads as the gfx1100
+    when the runtime will hand over the second gfx1010.
+
+    Fails before the fix, which deduped inside the resolver."""
+    assert (
+        _route_shell_masked(["gfx1010", "gfx1010", "gfx1100"], HIP_VISIBLE_DEVICES = "1")
+        is False
+    )
+
+
+def test_the_same_host_selecting_past_the_pair_is_still_routable():
+    """The control for the cardinality rule: ordinal 2 on that host really is the gfx1100,
+    and a resolver that simply refused every repeated arch would fail this."""
+    assert (
+        _route_shell_masked(["gfx1010", "gfx1010", "gfx1100"], HIP_VISIBLE_DEVICES = "2")
+        is True
+    )
+
+
+def test_the_first_listed_device_is_the_one_judged():
+    """HIP remaps runtime ordinal 0 onto the head of the mask, so HIP_VISIBLE_DEVICES=1,0
+    targets the second physical card. Judging the whole exposed set passes on a routable
+    card the runtime is not going to select.
+
+    Fails before the fix, which returned yes if ANY exposed arch had a route."""
+    assert _route_shell_masked(["gfx1100", "gfx1010"], HIP_VISIBLE_DEVICES = "1,0") is False
+
+
+def test_the_same_pair_listed_the_other_way_round_is_routable():
+    """The control: the identical two devices, mask order reversed, so the selected target
+    is the routable one and the request still wins."""
+    assert _route_shell_masked(["gfx1100", "gfx1010"], HIP_VISIBLE_DEVICES = "0,1") is True
+
+
+def test_a_declared_arch_decides_before_the_inventory():
+    """UNSLOTH_ROCM_GFX_ARCH is what _probe_amd_gfx_arch's default mode returns and what
+    get_torch_index_url installs from, so judging the physical inventory instead can pass on
+    a routable sibling while the wheels are chosen for the declared card.
+
+    Fails before the fix, which always read the physical probe."""
+    assert (
+        _route_shell_masked(["gfx1100"], UNSLOTH_ROCM_GFX_ARCH = "gfx1010") is False
+    )
+
+
+def test_a_declared_arch_that_is_routable_still_deposes_cuda():
+    """The control, and the #7301 host: the declaration exists to serve a runtime-less card,
+    so a routable one must still win even when the inventory disagrees with it."""
+    assert (
+        _route_shell_masked(["gfx1010"], UNSLOTH_ROCM_GFX_ARCH = "gfx1100") is True
+    )
+
+
+def test_a_generic_only_arch_is_judged_against_the_tag_this_host_resolves():
+    """gfx950 has no per-arch index, so its only route is the generic wheel -- and the tag
+    comes from the installed ROCm version, which a stale /opt/rocm beside a current amdgpu
+    can leave older than the card. _GENERIC_WHEEL_GFX_MIN_ROCM in install_python_stack.py
+    puts gfx950 at ROCm 7.0.
+
+    Fails before the fix, which read membership of the generic list as a route outright."""
+    assert _route_shell_masked(["gfx950"], rocm_tag = "rocm6.4") is False
+
+
+def test_the_same_arch_on_a_tag_that_carries_it_is_routable():
+    """The control: the identical host one tag later, where the wheel does carry gfx950."""
+    assert _route_shell_masked(["gfx950"], rocm_tag = "rocm7.0") is True
+
+
+def test_an_arch_with_its_own_index_is_not_held_to_the_generic_floor():
+    """The boundary: gfx1200 predates the rocm6.0 generic wheel too, but it has a per-arch
+    AMD index that carries it, and the reroute is what serves it. Holding it to the generic
+    floor would keep CUDA on a host this feature is meant to move."""
+    assert _route_shell_masked(["gfx1200"], rocm_tag = "rocm6.0") is True

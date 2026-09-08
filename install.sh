@@ -3394,11 +3394,43 @@ _amd_hardware_corroborated() {
 # keep the two in sync. An arch in neither (gfx1010, RDNA 1) cannot be fixed by picking a
 # different index, so it must never depose a card that can.
 _amd_gfx_has_wheel_route() {
+    # A per-arch index carries its arch whatever the generic tag resolves to, so it answers
+    # first and the floor below never applies to an arch that has one.
+    _amd_arch_index_family_for_gfx "$1" >/dev/null 2>&1 && return 0
     case "$1" in
-        gfx900|gfx906|gfx908|gfx90a|gfx942|gfx950) return 0 ;;
-        gfx1030|gfx1100|gfx1101|gfx1102|gfx1150|gfx1151|gfx1200|gfx1201) return 0 ;;
+        gfx900|gfx906|gfx908|gfx90a|gfx942|gfx950) : ;;
+        gfx1030|gfx1100|gfx1101|gfx1102|gfx1150|gfx1151|gfx1200|gfx1201) : ;;
+        *) return 1 ;;
     esac
-    _amd_arch_index_family_for_gfx "$1" >/dev/null 2>&1
+    _amd_generic_tag_carries_gfx "$1"
+}
+
+# Whether the generic wheel THIS host resolves carries kernels for an arch whose only route
+# is that wheel. _GENERIC_ROCM_WHEEL_GFX was measured on rocm7.0 and up, but the tag comes
+# from the installed ROCm version, so a stale /opt/rocm beside a current amdgpu resolves a
+# wheel that predates the card. _GENERIC_WHEEL_GFX_MIN_ROCM in install_python_stack.py is
+# the same table; only gfx950 reaches this, since every other arch with a floor has a
+# per-arch index above.
+#
+# No readable version answers NO rather than "unknown". The wheel that would be installed
+# still cannot run the card, and reading absence of evidence as support is what preserves
+# exactly the build that cannot run.
+_amd_generic_tag_carries_gfx() {
+    case "$1" in
+        gfx950|gfx1150|gfx1151) _agtc_min_major=7; _agtc_min_minor=0 ;;
+        gfx1200|gfx1201)        _agtc_min_major=6; _agtc_min_minor=4 ;;
+        *) return 0 ;;
+    esac
+    _agtc_tag=$(_detect_rocm_version_tag 2>/dev/null) || _agtc_tag=""
+    _agtc_ver=${_agtc_tag#rocm}
+    _agtc_major=$(printf '%s' "$_agtc_ver" | cut -d. -f1)
+    _agtc_minor=$(printf '%s' "$_agtc_ver" | cut -d. -f2)
+    case "$_agtc_major$_agtc_minor" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$_agtc_major" -gt "$_agtc_min_major" ] && return 0
+    [ "$_agtc_major" -eq "$_agtc_min_major" ] && [ "$_agtc_minor" -ge "$_agtc_min_minor" ] && return 0
+    return 1
 }
 
 # Whether the request has something to swap TO here: a corroborated AMD card whose arch an
@@ -3432,26 +3464,18 @@ _amd_visible_masks_select_no_gpu() {
     return 1
 }
 
-# The subset of an enumeration-ordered arch list that the visibility masks expose.
+# One mask layer applied to a per-DEVICE list, in mask order: the survivors, renumbered.
 #
-# Resolved here rather than delegated to a probe, which is the whole point: rocminfo honours
-# only ROCR_VISIBLE_DEVICES and amd-smi honours neither, so running either with a HIP mask in
-# place returns the WHOLE machine and answers on the very card the mask hid.
+# The list is one line per device and is never deduplicated, because an ordinal names a
+# device rather than an architecture: on [gfx1010, gfx1010, gfx1100], ordinal 1 is the
+# second gfx1010, and collapsing the pair would answer for the gfx1100 instead.
 #
-# Deduped first and indexed by arch, matching the rocm* reroute below. Two cards of one arch
-# collapse, which is wrong for "which device is selected" and right for "does the selected
-# device have a route", since they share one. HIP reads the list left to right and stops at
-# the first entry naming no device, so the exposed set is the prefix of resolvable ordinals;
-# a non-numeric entry (ROCr accepts UUIDs) cannot be resolved here and ends the prefix rather
-# than being guessed at.
-_amd_selected_gfx_archs() {
-    _asga_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
-    if [ -z "$_asga_vis" ]; then
-        printf '%s\n' "$1"
-        return 0
-    fi
-    printf '%s\n' "$1" | awk -v vis="$_asga_vis" '
-        NF && !seen[$0]++ { vals[n++] = $0 }
+# CUDA and HIP read the list left to right and stop at the first entry naming no device, so
+# what survives is the PREFIX of resolvable ordinals. A non-numeric entry cannot be resolved
+# here (ROCr accepts UUIDs) and ends the prefix rather than being guessed at.
+_amd_mask_survivors() {
+    printf '%s\n' "$1" | awk -v vis="$2" '
+        NF { vals[n++] = $0 }
         END {
             count = split(vis, want, ",")
             for (i = 1; i <= count; i++) {
@@ -3464,10 +3488,59 @@ _amd_selected_gfx_archs() {
         }'
 }
 
+# The single arch the runtime will hand torch, from a per-device arch list in enumeration
+# order. Empty when the masks name nothing this can resolve.
+#
+# Resolved here rather than delegated to a probe, which is the whole point: rocminfo honours
+# only ROCR_VISIBLE_DEVICES and amd-smi honours neither, so running either with a HIP mask in
+# place returns the WHOLE machine and answers on the very card the mask hid.
+#
+# The two layers COMPOSE, and in this order: ROCr filters the physical list and renumbers
+# what is left, then the HIP layer indexes those survivors. Applying only one of them reads
+# ROCR_VISIBLE_DEVICES=1 HIP_VISIBLE_DEVICES=0 as the first physical card when the runtime
+# will hand over the second. _runtime_gfx_target in install_python_stack.py composes them
+# the same way, and _rocm_visibility_masks_are_stacked records why.
+#
+# The FIRST survivor, not any of them: HIP remaps runtime ordinal 0 onto the head of the
+# mask, so HIP_VISIBLE_DEVICES=1,0 targets the second physical card by default. Judging the
+# whole exposed set would pass on a routable card the runtime is not going to select.
+_amd_runtime_gfx_target() {
+    _argt_list="$1"
+    if [ -n "${ROCR_VISIBLE_DEVICES:-}" ]; then
+        _argt_list=$(_amd_mask_survivors "$_argt_list" "$ROCR_VISIBLE_DEVICES")
+        [ -n "$_argt_list" ] || return 0
+    fi
+    # CUDA_VISIBLE_DEVICES is the HIP alias and clr reads it only when HIP itself is unset.
+    _argt_hip="${HIP_VISIBLE_DEVICES:-}"
+    if [ -z "${HIP_VISIBLE_DEVICES+x}" ]; then
+        _argt_hip="${CUDA_VISIBLE_DEVICES:-}"
+    fi
+    if [ -n "$_argt_hip" ]; then
+        _argt_list=$(_amd_mask_survivors "$_argt_list" "$_argt_hip")
+        [ -n "$_argt_list" ] || return 0
+    fi
+    printf '%s\n' "$_argt_list" | awk 'NF { print; exit }'
+}
+
 _amd_request_has_a_wheel_route() {
     # A mask exposing no device is a deliberate no-GPU selection rather than a detection
     # miss, so there is nothing for the request to swap TO and CUDA stays.
     _amd_visible_masks_select_no_gpu && return 1
+    # A DECLARED arch decides, when there is one. _probe_amd_gfx_arch's default mode returns
+    # UNSLOTH_ROCM_GFX_ARCH before it looks at any hardware and get_torch_index_url is what
+    # installs from it, so judging the physical inventory instead can pass on a routable
+    # sibling while the wheels are chosen for the declared card. Corroborated first, because
+    # the variable answers on a host with no AMD GPU at all -- that is the whole reason
+    # _amd_hardware_corroborated exists. Masks are not applied to it: hiding every device is
+    # a statement about this run and was answered above, while the arch names what to build
+    # for. _runtime_gfx_target resolves it in the same order.
+    _arwr_decl=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" \
+        | tr '[:upper:]' '[:lower:]' | sed 's/:.*$//' | tr -d '[:space:]')
+    if [ -n "$_arwr_decl" ]; then
+        _amd_hardware_corroborated || _kfd_gfx_targets 2>/dev/null | grep -q . || return 1
+        _amd_gfx_has_wheel_route "$_arwr_decl" && return 0
+        return 1
+    fi
     _arwr_all=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
     [ -n "$_arwr_all" ] || _arwr_all=$(_kfd_gfx_targets 2>/dev/null || true)
     if [ -z "$_arwr_all" ]; then
@@ -3486,19 +3559,20 @@ _amd_request_has_a_wheel_route() {
     # when gfx906 is the sole arch, and the reroute granting it inspects the unmasked
     # inventory. A mask selecting gfx906 beside a second AMD card does not make it routable.
     _arwr_count=$(printf '%s\n' "$_arwr_archs" | sort -u | wc -l | tr -d ' ')
-    # The cards this run will actually expose. An empty answer here means the mask named
-    # something this cannot resolve -- a UUID, or an ordinal past the deduped list on a host
-    # with two cards of one arch -- and that fails CLOSED. Not knowing which card was
-    # selected is not evidence that it has a route either, and the harm is asymmetric: a
-    # wrong yes replaces a working CUDA stack with wheels carrying no kernels for the card
-    # that runs, while a wrong no leaves the user exactly where they were.
-    _arwr_sel=$(_amd_selected_gfx_archs "$_arwr_archs")
+    # The one card this run will hand torch. An empty answer means the masks named something
+    # this cannot resolve -- a UUID, or an ordinal past the device list -- and that fails
+    # CLOSED. Not knowing which card was selected is not evidence that it has a route
+    # either, and the harm is asymmetric: a wrong yes replaces a working CUDA stack with
+    # wheels carrying no kernels for the card that runs, while a wrong no leaves the user
+    # exactly where they were.
+    _arwr_sel=$(_amd_runtime_gfx_target "$_arwr_archs")
     [ -n "$_arwr_sel" ] || return 1
-    for _arwr_g in $(printf '%s\n' "$_arwr_sel" | sort -u); do
-        [ "$_arwr_g" = gfx906 ] && [ "$_arwr_count" -gt 1 ] && continue
-        _amd_gfx_has_wheel_route "$_arwr_g" && return 0
-    done
-    return 1
+    # gfx906's only route is the rocm6.3 legacy tag, which opens solely when gfx906 is the
+    # sole arch, so a second AMD arch anywhere on the host makes it unroutable however the
+    # masks select. Counted on the physical inventory for that reason, since the reroute
+    # granting the tag inspects the unmasked machine.
+    [ "$_arwr_sel" = gfx906 ] && [ "$_arwr_count" -gt 1 ] && return 1
+    _amd_gfx_has_wheel_route "$_arwr_sel"
 }
 
 # One place answers "does the NVIDIA card still win here", so the index selection and
@@ -3847,7 +3921,7 @@ _hsa_spoofed_physical_gfx() {
 # NEITHER mode answers which device the runtime SELECTS, and leaving a mask in place would
 # not make one: rocminfo is filtered only by ROCR_VISIBLE_DEVICES and amd-smi by neither, as
 # _detect_amd_gfx_codes in install_python_stack.py records. A caller that needs the selected
-# target resolves the mask itself against this list (_amd_selected_gfx_archs), and
+# target composes the masks itself against this list (_amd_runtime_gfx_target), and
 # _runtime_gfx_target() in install_python_stack.py is the Python side of the same job.
 #
 # shellcheck disable=SC2086  # $_pg_strip is a LIST of names for unset; quoting it would
