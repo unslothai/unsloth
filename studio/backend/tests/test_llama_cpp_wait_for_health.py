@@ -1157,6 +1157,6 @@ def test_the_lifecycle_reset_stays_below_the_argument_checks():
     """A rejected invocation must not touch the backend at all."""
     body = _run_server_body()
 
-    assert body.index("choose an explicit port.") < body.index("_begin_server_lifecycle()"), (
-        "the reset runs before run_server has finished rejecting bad arguments"
-    )
+    assert body.index("choose an explicit port.") < body.index(
+        "_begin_server_lifecycle()"
+    ), "the reset runs before run_server has finished rejecting bad arguments"
