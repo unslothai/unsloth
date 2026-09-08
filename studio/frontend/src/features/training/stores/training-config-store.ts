@@ -82,7 +82,13 @@ let _trainOnCompletionsManuallySet = false;
 let _trainingMethodEditGeneration = 0;
 let _modelDefaultsEditGeneration = 0;
 let _targetModulesEditGeneration = 0;
-let _loraParamsEditGeneration = 0;
+const LORA_PARAM_KEYS = ["loraRank", "loraAlpha", "loraVariant"] as const;
+type LoraParamKey = (typeof LORA_PARAM_KEYS)[number];
+const _loraParamEditGenerations: Record<LoraParamKey, number> = {
+  loraRank: 0,
+  loraAlpha: 0,
+  loraVariant: 0,
+};
 let _modelDefaultsEditBaseline: {
   modelName: string;
   editGeneration: number;
@@ -156,7 +162,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _modelDefaultsEditGeneration;
         const requestedTargetModulesEditGeneration =
           _targetModulesEditGeneration;
-        const requestedLoraParamsEditGeneration = _loraParamsEditGeneration;
+        const requestedLoraParamEditGenerations = {
+          ..._loraParamEditGenerations,
+        };
         if (applyTrainingDefaults) {
           _modelDefaultsEditBaseline = {
             modelName,
@@ -331,8 +339,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             // An explicit LoRA edit outranks the model defaults, exactly as
             // _targetModulesEditGeneration protects an explicit target edit.
-            const loraParamsUnedited =
-              _loraParamsEditGeneration === requestedLoraParamsEditGeneration;
+            // Per field: editing the rank must not freeze alpha and variant.
+            const loraParamUnedited = (key: LoraParamKey): boolean =>
+              _loraParamEditGenerations[key] ===
+              requestedLoraParamEditGenerations[key];
             const cptProvenanceRefresh =
               get().trainingMethod === "cpt"
                 ? {
@@ -343,15 +353,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                           ],
                         }
                       : {}),
-                    ...(loraParamsUnedited &&
+                    ...(loraParamUnedited("loraRank") &&
                     modelDefaultsPatch.loraRank !== undefined
                       ? { loraRankBeforeCpt: modelDefaultsPatch.loraRank }
                       : {}),
-                    ...(loraParamsUnedited &&
+                    ...(loraParamUnedited("loraAlpha") &&
                     modelDefaultsPatch.loraAlpha !== undefined
                       ? { loraAlphaBeforeCpt: modelDefaultsPatch.loraAlpha }
                       : {}),
-                    ...(loraParamsUnedited &&
+                    ...(loraParamUnedited("loraVariant") &&
                     modelDefaultsPatch.loraVariant !== undefined
                       ? { loraVariantBeforeCpt: modelDefaultsPatch.loraVariant }
                       : {}),
@@ -1262,16 +1272,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setLrSchedulerType: (lrSchedulerType) =>
           setUserEdit({ lrSchedulerType }),
         setLoraRank: (loraRank) => {
-          _loraParamsEditGeneration += 1;
+          _loraParamEditGenerations.loraRank += 1;
           setUserEdit({ loraRank });
         },
         setLoraAlpha: (loraAlpha) => {
-          _loraParamsEditGeneration += 1;
+          _loraParamEditGenerations.loraAlpha += 1;
           setUserEdit({ loraAlpha });
         },
         setLoraDropout: (loraDropout) => setUserEdit({ loraDropout }),
         setLoraVariant: (loraVariant) => {
-          _loraParamsEditGeneration += 1;
+          _loraParamEditGenerations.loraVariant += 1;
           setUserEdit({ loraVariant });
         },
         setBatchSize: (batchSize) => setUserEdit({ batchSize }),
@@ -1341,7 +1351,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;
           _targetModulesEditGeneration += 1;
-          _loraParamsEditGeneration += 1;
+          for (const key of LORA_PARAM_KEYS) {
+            _loraParamEditGenerations[key] += 1;
+          }
           _modelDefaultsEditBaseline = null;
           setUserEdit(initialTrainingConfigState);
         },
@@ -1360,12 +1372,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (patch.targetModules !== undefined) {
             _targetModulesEditGeneration += 1;
           }
-          if (
-            patch.loraRank !== undefined ||
-            patch.loraAlpha !== undefined ||
-            patch.loraVariant !== undefined
-          ) {
-            _loraParamsEditGeneration += 1;
+          for (const key of LORA_PARAM_KEYS) {
+            if (patch[key] !== undefined) _loraParamEditGenerations[key] += 1;
           }
           setUserEdit((state) => ({
             ...patch,

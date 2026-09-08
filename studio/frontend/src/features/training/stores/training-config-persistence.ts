@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  CPT_LORA_HYPERPARAMS,
   CPT_TARGET_MODULES,
   DEFAULT_HYPERPARAMS,
   LR_DEFAULT_CPT,
@@ -23,7 +24,6 @@ import {
   createUploadBrowseDatasetSelection,
   datasetSourceInvariantPatch,
 } from "./training-config-policy";
-import { CPT_LORA_HYPERPARAMS } from "./training-method-transition";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
 export const TRAINING_CONFIG_PERSISTENCE_VERSION = 22;
@@ -244,9 +244,10 @@ function migrateThroughVersion21(
 }
 
 // v22 added the pre-CPT LoRA slots. A session persisted mid-CPT has no record of
-// them, so recover the model defaults frozen in advancedSettingsBaseline. Skip a
-// baseline that is exactly the CPT triple: it was captured after CPT overwrote the
-// hyperparams and says nothing about what preceded it.
+// them, so recover the model defaults frozen in advancedSettingsBaseline. Two
+// baselines say nothing about what preceded CPT and are skipped: one captured
+// after CPT overwrote the hyperparams, which is exactly the CPT triple, and one
+// mergeTrainingConfig is about to discard because it belongs to another model.
 function migrateThroughVersion22(
   state: PersistedTrainingConfig,
   version: number,
@@ -254,6 +255,12 @@ function migrateThroughVersion22(
   if (version >= 22 || state.trainingMethod !== "cpt") return;
   const provenance = state.trainingMethodProvenance;
   if (typeof provenance !== "object" || provenance === null) return;
+  if (
+    typeof state.modelDefaultsAppliedFor !== "string" ||
+    state.modelDefaultsAppliedFor !== state.selectedModel
+  ) {
+    return;
+  }
   const baseline = state.advancedSettingsBaseline;
   if (typeof baseline !== "object" || baseline === null) return;
   const { loraRank, loraAlpha, loraVariant } = baseline as Record<

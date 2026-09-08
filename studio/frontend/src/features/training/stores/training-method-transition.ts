@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  CPT_LORA_HYPERPARAMS,
   DEFAULT_HYPERPARAMS,
   LR_DEFAULT_CPT,
   LR_DEFAULT_FULL,
@@ -31,12 +32,6 @@ type TrainingMethodStatePatch = Partial<
     | "trainingMethodProvenance"
   >
 >;
-
-export const CPT_LORA_HYPERPARAMS = {
-  loraRank: 128,
-  loraAlpha: 32,
-  loraVariant: "rslora",
-} as const;
 
 function getCptTrainingPatch(
   currentTargetModules: readonly string[],

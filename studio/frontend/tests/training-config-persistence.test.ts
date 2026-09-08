@@ -16,6 +16,12 @@ const {
 } = await import(
   "../src/features/training/stores/training-config-persistence.ts"
 );
+const { buildTrainingMethodPatch } = await import(
+  "../src/features/training/stores/training-method-transition.ts"
+);
+const { initialTrainingConfigState } = await import(
+  "../src/features/training/stores/training-config-policy.ts"
+);
 
 test("persists the applied model defaults identity and summary baseline", () => {
   const persisted = partializeTrainingConfig({
@@ -247,6 +253,38 @@ test("persistence preserves valid Hub streaming", () => {
   assert.equal(merged.datasetStreaming, true);
 });
 
+test("a recovered CPT session restores its LoRA params on the way out", () => {
+  const persisted = {
+    selectedModel: "org/model",
+    modelDefaultsAppliedFor: "org/model",
+    trainingMethod: "cpt",
+    loraRank: 128,
+    loraAlpha: 32,
+    loraVariant: "rslora",
+    advancedSettingsBaseline: {
+      loraRank: 8,
+      loraAlpha: 8,
+      loraVariant: "lora",
+    },
+    trainingMethodProvenance: {
+      learningRateManuallySet: false,
+      modelAdapterLearningRate: null,
+      datasetFormatBeforeCpt: null,
+      targetModulesBeforeCpt: null,
+    },
+  };
+  const merged = mergeTrainingConfig(
+    migrateTrainingConfig(persisted, 21),
+    initialTrainingConfigState as never,
+  );
+
+  assert.equal(merged.trainingMethodProvenance.loraRankBeforeCpt, 8);
+  const restored = { ...merged, ...buildTrainingMethodPatch(merged, "qlora") };
+  assert.equal(restored.loraRank, 8);
+  assert.equal(restored.loraAlpha, 8);
+  assert.equal(restored.loraVariant, "lora");
+});
+
 test("a session persisted inside CPT recovers its pre-CPT LoRA params", () => {
   const migrated = migrateTrainingConfig(
     {
@@ -281,6 +319,30 @@ test("a baseline captured inside CPT is not mistaken for pre-CPT params", () => 
         loraRank: 128,
         loraAlpha: 32,
         loraVariant: "rslora",
+      },
+      trainingMethodProvenance: {
+        learningRateManuallySet: false,
+        modelAdapterLearningRate: null,
+        datasetFormatBeforeCpt: null,
+        targetModulesBeforeCpt: null,
+      },
+    },
+    21,
+  );
+
+  assert.equal(migrated.trainingMethodProvenance.loraRankBeforeCpt, undefined);
+});
+
+test("a baseline left over from another model is not used as pre-CPT params", () => {
+  const migrated = migrateTrainingConfig(
+    {
+      selectedModel: "org/other-model",
+      modelDefaultsAppliedFor: "org/model",
+      trainingMethod: "cpt",
+      advancedSettingsBaseline: {
+        loraRank: 8,
+        loraAlpha: 8,
+        loraVariant: "lora",
       },
       trainingMethodProvenance: {
         learningRateManuallySet: false,
