@@ -3953,10 +3953,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   reasoningAlwaysOn: false,
   reasoningEnabled: loadBool(CHAT_REASONING_ENABLED_KEY, true),
   reasoningStyle: "enable_thinking",
-  // Matches the load-time --chat-template-kwargs default the backend passes to
-  // llama-server, so a chat here and a raw /v1/chat/completions call that omits
-  // reasoning_effort both get the same effort out of the same model.
-  reasoningEffort: "high",
+  reasoningEffort: "medium",
   supportsReasoningOff: false,
   reasoningEffortLevels: ["low", "medium", "high"],
   lastOpenRouterChosenModel: null,
