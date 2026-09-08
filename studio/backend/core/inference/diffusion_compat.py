@@ -241,8 +241,16 @@ def _interrupt_read(response: Any) -> None:
             pass
 
 
-def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> bytes:
-    """The first ``_GGUF_HEADER_BYTES`` of a Hub-hosted GGUF, or b"" when they cannot be read.
+def _read_gguf_header(
+    repo_id: str,
+    gguf_filename: str,
+    hf_token: Optional[str],
+    *,
+    revision: Optional[str] = None,
+    max_bytes: Optional[int] = None,
+    timeout_seconds: Optional[float] = None,
+) -> bytes:
+    """A bounded prefix of a Hub-hosted GGUF, or b"" when it cannot be read.
 
     One wall-clock bound over the WHOLE operation, request included. requests' timeout is an
     inactivity timeout: a peer (or an intermediary) that trickles response HEADERS resets it on
@@ -258,6 +266,8 @@ def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str])
         from huggingface_hub.utils import build_hf_headers, get_session
     except Exception:  # noqa: BLE001 — an unexpected hub layout leaves today's behaviour
         return b""
+    max_bytes = _GGUF_HEADER_BYTES if max_bytes is None else max_bytes
+    timeout_seconds = _HEADER_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
     buffer = bytearray()
     # Published by the worker as soon as it has something interruptible; read by this thread on
     # timeout. A one-element list rather than a nonlocal, so the worker's assignment is visible.
@@ -266,9 +276,9 @@ def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str])
     def _fetch() -> None:
         try:
             headers = dict(build_hf_headers(token = hf_token))
-            headers["Range"] = f"bytes=0-{_GGUF_HEADER_BYTES - 1}"
+            headers["Range"] = f"bytes=0-{max_bytes - 1}"
             with _ranged_stream(
-                get_session(), hf_hub_url(repo_id, gguf_filename), headers
+                get_session(), hf_hub_url(repo_id, gguf_filename, revision = revision), headers
             ) as response:
                 holder[0] = response
                 # 206 or nothing. A server (or a proxy) that ignored the Range header answers 200
@@ -276,12 +286,12 @@ def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str])
                 # download this preflight exists to prevent.
                 if response.status_code != 206:
                     return
-                deadline = time.monotonic() + _HEADER_TIMEOUT_SECONDS
+                deadline = time.monotonic() + timeout_seconds
                 for chunk in _iter_body(response, 65536):
                     # extend, not `+=`: augmented assignment to a closed-over name would rebind
                     # it as a local of _fetch and lose every byte.
                     buffer.extend(chunk)
-                    if len(buffer) >= _GGUF_HEADER_BYTES or time.monotonic() > deadline:
+                    if len(buffer) >= max_bytes or time.monotonic() > deadline:
                         break
         # Keep what arrived rather than discarding it: the deadline firing on a merely SLOW link
         # still leaves the tensor table (the first ~15 KiB) in hand, and the parser is
@@ -298,19 +308,19 @@ def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str])
     # return -- on urllib3 >= 2.3, where HTTPResponse.shutdown exists. requirements/studio.txt
     # floors it, but an install predating that floor keeps whatever it resolved, so the bound
     # here cannot depend on the version underneath us: the worker is abandonable either way.
-    watchdog = threading.Timer(_HEADER_TIMEOUT_SECONDS, lambda: _interrupt_read(holder[0]))
+    watchdog = threading.Timer(timeout_seconds, lambda: _interrupt_read(holder[0]))
     watchdog.daemon = True
     watchdog.start()
     worker = threading.Thread(target = _fetch, name = "gguf-header-read", daemon = True)
     worker.start()
-    worker.join(_HEADER_TIMEOUT_SECONDS)
+    worker.join(timeout_seconds)
     if worker.is_alive():
         _interrupt_read(holder[0])
         worker.join(_ABANDON_GRACE_SECONDS)
     watchdog.cancel()
     # bytes() snapshots under the GIL, so an abandoned worker still appending cannot tear the
     # copy; it can only lose a chunk that arrived too late to matter.
-    return bytes(buffer[:_GGUF_HEADER_BYTES])
+    return bytes(buffer[:max_bytes])
 
 
 def flux2_inner_dim_for_pick(

@@ -37,8 +37,6 @@ def _load_helper():
 
 
 # Ground truth: the platform behaviours the Linux simulation asserts.
-
-
 def test_join_really_discards_the_prefix_for_a_drive_bearing_component():
     """The mechanism behind #7897, on the real platform."""
     assert os.path.join(r"C:\exp\_gguf", r"D:\M\X.Q5_K_M.gguf") == r"D:\M\X.Q5_K_M.gguf"
@@ -65,8 +63,6 @@ def test_posix_basename_would_not_have_fixed_it():
 
 
 # The fix, on real paths.
-
-
 @pytest.mark.parametrize(
     "base, expected",
     [

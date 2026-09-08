@@ -50,7 +50,18 @@ export interface LlamaUpdateStatus {
   update_size_bytes: number | null;
   // Managed source tree refresh (no matching prebuilt for this host).
   source_refresh?: boolean;
+  // The install recorded "auto" and detection now resolves elsewhere, so Update would move
+  // it. Independent of update_available: reported only when the release is current.
+  backend_migration_available: boolean;
+  from_backend: string | null;
+  to_backend: string | null;
   job: LlamaUpdateJob;
+}
+
+/** Whether the banner has anything to offer: a newer release, or a backend the
+ *  install's own recorded "auto" would resolve to today. */
+export function llamaUpdateOffered(status: LlamaUpdateStatus): boolean {
+  return status.update_available || status.backend_migration_available;
 }
 
 function parseJob(value: unknown): LlamaUpdateJob {
@@ -108,6 +119,11 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
         ? details.update_size_bytes
         : null,
     source_refresh: s.source_refresh === true,
+    // Always from the top level: the backend belongs to the llama.cpp install whatever
+    // component the version fields describe.
+    backend_migration_available: s.backend_migration_available === true,
+    from_backend: typeof s.from_backend === "string" ? s.from_backend : null,
+    to_backend: typeof s.to_backend === "string" ? s.to_backend : null,
     job: parseJob(s.job),
   };
 }
@@ -171,6 +187,9 @@ export interface LlamaApplyResult {
   tag?: string | null;
   reloadRequired?: boolean | null;
   error?: string | null;
+  // What the job says it did: a migration can finish at the release and on the backend it
+  // started from, so "updated to <tag>" fits neither.
+  message?: string;
 }
 
 /** Tracks llama.cpp update visibility and apply progress. */
@@ -236,7 +255,7 @@ export function useLlamaUpdateCheck({
         const s = await fetchStatus();
         if (!s) return;
         setStatus(s);
-        const presentation = llamaUpdatePresentation(s.update_available, s.job);
+        const presentation = llamaUpdatePresentation(llamaUpdateOffered(s), s.job);
         setApplying(presentation.applying);
         setVisible(presentation.visible);
         if (presentation.running) return;
@@ -253,6 +272,7 @@ export function useLlamaUpdateCheck({
             ok: true,
             tag: s.job.to_tag,
             reloadRequired: s.job.reload_required,
+            message: s.job.message,
           });
         } else if (s.job.state === "error") {
           // Keep the banner visible so retry is available. A partial chained
@@ -272,7 +292,7 @@ export function useLlamaUpdateCheck({
       if (!next) return;
       setStatus(next);
       const presentation = llamaUpdatePresentation(
-        next.update_available,
+        llamaUpdateOffered(next),
         next.job,
       );
       setApplying(presentation.applying);

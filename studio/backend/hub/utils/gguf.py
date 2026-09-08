@@ -9,7 +9,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Iterable, Optional, Sequence
 
 from loggers import get_logger
 from utils.paths.path_utils import (
@@ -1050,22 +1050,12 @@ def list_empty_gguf_variant_dirs(repo_id: str, root: Optional[Path] = None) -> s
     return {label for key, label in empty.items() if key not in nonempty}
 
 
-def select_gguf_cache_snapshot(
-    repo_id: str, root: Optional[Path] = None
+def _select_gguf_snapshot(
+    snapshots: Iterable[Path],
 ) -> Optional[tuple[list[GgufVariantInfo], bool, set, Path]]:
-    """``list_gguf_variants_from_hf_cache`` plus the snapshot it answered from.
-
-    A repo dir holds every revision, so a caller that then reads metadata from wherever this
-    listing came from needs the snapshot, not the dir: the dir includes revisions it skipped.
-    """
     # Local import: inventory_scan imports this module.
     from hub.utils.inventory_scan import complete_snapshot_variants
 
-    snapshots = (
-        iter_hf_cache_snapshots(repo_id, root = root)
-        if root is not None
-        else iter_hf_cache_snapshots(repo_id)
-    )
     # Pick the snapshot the inventory row does: newest holding a whole quant, else first non-empty.
     fallback: Optional[tuple[list[GgufVariantInfo], bool, set, Path]] = None
     for snapshot in snapshots:
@@ -1078,6 +1068,43 @@ def select_gguf_cache_snapshot(
         if fallback is None and (variants or has_vision):
             fallback = (variants, has_vision, complete, snapshot)
     return fallback
+
+
+def select_gguf_cache_snapshot(
+    repo_id: str, root: Optional[Path] = None
+) -> Optional[tuple[list[GgufVariantInfo], bool, set, Path]]:
+    """``list_gguf_variants_from_hf_cache`` plus the snapshot it answered from.
+
+    A repo dir holds every revision, so a caller that then reads metadata from wherever this
+    listing came from needs the snapshot, not the dir: the dir includes revisions it skipped.
+    """
+    snapshots = (
+        iter_hf_cache_snapshots(repo_id, root = root)
+        if root is not None
+        else iter_hf_cache_snapshots(repo_id)
+    )
+    return _select_gguf_snapshot(snapshots)
+
+
+def select_gguf_cache_snapshot_for_repo_dir(
+    repo_dir: Path,
+) -> Optional[tuple[list[GgufVariantInfo], bool, set, Path]]:
+    """Select only among snapshots belonging to the exact scanned cache directory."""
+    from hub.utils.hf_cache_state import snapshot_selection_key
+
+    snapshots_dir = Path(repo_dir) / "snapshots"
+    snapshots = []
+    try:
+        for snapshot in snapshots_dir.iterdir():
+            try:
+                if snapshot.is_dir():
+                    snapshots.append(snapshot)
+            except OSError as exc:
+                logger.debug("Skipping unreadable cache snapshot %s: %s", snapshot, exc)
+    except OSError as exc:
+        logger.debug("Stopping at unreadable cache snapshots dir %s: %s", snapshots_dir, exc)
+    snapshots.sort(key = snapshot_selection_key, reverse = True)
+    return _select_gguf_snapshot(snapshots)
 
 
 def merge_sibling_snapshot_variants(
@@ -1408,8 +1435,19 @@ def _resolve_gguf_dir(path: Path) -> Optional[Path]:
     return None
 
 
+def _is_existing_file(path: Path) -> bool:
+    """Whether *path* exists: ``os.walk`` names a dangling link like any other file."""
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def list_local_gguf_variants(
-    directory: str, model_root: Optional[str] = None
+    directory: str,
+    model_root: Optional[str] = None,
+    *,
+    require_existing_files: bool = False,
 ) -> tuple[list[GgufVariantInfo], bool]:
     root = _resolve_gguf_dir(Path(directory))
     if root is None:
@@ -1429,12 +1467,19 @@ def list_local_gguf_variants(
     has_vision = False
     # Match the cache dir of ANY H3 bundle repo: the aggregation runs over whichever mirror the user
     # actually downloaded.
-    root_key = root.as_posix().lower()
+    # A whole SEGMENT, not a substring: "models--unsloth--MiniMax-H3-GGUF-mirror" (and -v2, -i1)
+    # contains the marker while being an ordinary chat repo, and the denoiser filter then left it
+    # with no quants -- which withholds the auto-switch entry, so a downloaded model 404s.
+    segments = set(root.as_posix().lower().split("/"))
     h3_bundle_repo = next(
-        (r for r in _H3_BUNDLE_REPOS if f"models--{r.replace('/', '--')}" in root_key), None
+        (r for r in _H3_BUNDLE_REPOS if f"models--{r.replace('/', '--')}" in segments), None
     )
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
+        # Off by default: the Hub lists the dangling link an evicted blob leaves, so a user
+        # can see and clean that quant. Only a caller advertising what it loads excludes it.
+        if require_existing_files and not _is_existing_file(file):
+            continue
         if h3_bundle_repo and not _is_selectable_repo_gguf(h3_bundle_repo, file.name):
             continue
         if is_imatrix_filename(file.name):

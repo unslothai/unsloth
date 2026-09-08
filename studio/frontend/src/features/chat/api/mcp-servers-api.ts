@@ -210,9 +210,8 @@ export function encodeMcpStdioCommand(payload: McpStdioCommand): Promise<{
   });
 }
 
-// Bulk-import servers from a standard mcpServers JSON config (Claude Desktop,
-// Cursor, Cline, VS Code). The backend skips duplicates and reports per-entry
-// errors instead of failing the whole batch.
+// Bulk-import servers from a standard mcpServers JSON config (Claude Desktop, Cursor, Cline, VS
+// Code). The backend skips duplicates and reports per-entry errors instead of failing the batch.
 export function importMcpServers(
   config: unknown,
 ): Promise<McpServerImportResult> {

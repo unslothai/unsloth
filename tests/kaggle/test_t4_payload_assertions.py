@@ -367,7 +367,6 @@ def test_an_adapter_peft_would_ignore_on_reload_does_not_pass(tmp_path):
     )
     broken = verify_saved_adapter(tmp_path, peft_keys = keys)
 
-    # Everything the bytes alone can say is unchanged.
     assert broken["tensors"] == good["tensors"]
     assert broken["nonzero_b_tensors"] == good["nonzero_b_tensors"] > 0
     assert broken["non_finite_tensors"] == []
@@ -420,8 +419,8 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
     failures = saved_adapter_failures(state)
     assert failures and "saved lora_B matrices is zero" in failures[0]
 
-    # The same file with a B matrix an optimizer moved, the only difference
-    # between an adapter that carries training and one that does not.
+    # The same file with a B matrix an optimizer moved, the only difference between an adapter that carries training and
+    # one that does not.
     save_file(
         {
             "base_model.model.layers.0.self_attn.q_proj.lora_A.weight": torch.ones(16, 8),
@@ -507,7 +506,6 @@ def test_an_adapter_config_for_a_different_adapter_than_the_one_trained_fails(tm
     failures = saved_adapter_failures(state)
     assert failures and "different adapter than the one that was trained" in failures[0]
 
-    # The same file, saved as requested: no difference and no failure.
     (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", **requested}))
     good = verify_saved_adapter(tmp_path, expected = requested, peft_keys = keys)
     assert good["config_differences"] == []
@@ -657,7 +655,6 @@ def test_a_run_that_cannot_name_its_card_is_refused_not_waved_through(tmp_path, 
         ),
         encoding = "utf-8",
     )
-    # Metrics identical to the reference, so nothing else can be what fails.
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
     verdict = check_reference(
         observed,
@@ -690,8 +687,8 @@ def test_the_committed_reference_names_the_card_the_gate_reads(tmp_path):
 
 REFERENCE_CONFIG = {
     "max_steps": 3,
-    # The rows, not the path: what trained is part of which experiment the
-    # trace is a trace of, and the payload records a digest of them.
+    # The rows, not the path: what trained is part of which experiment the trace is a trace of, and the payload records
+    # a digest of them.
     "dataset_digest": "d" * 64,
     "init_loss_scale": 0.0,
     "batch_size": 2,
@@ -769,9 +766,8 @@ def test_a_reference_that_predates_a_setting_does_not_refuse_on_it(tmp_path):
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
     verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3, config = REFERENCE_CONFIG)
     assert verdict["status"] == "ok"
-    # `model` too: the helper's reference names one and this call observed none,
-    # and a pin present on one side only did not run, so it is recorded rather
-    # than skipped in silence.
+    # `model` too: the helper's reference names one and this call observed none, and a pin present on one side only did
+    # not run, so it is recorded rather than skipped in silence.
     assert verdict["config_unchecked"] == ["gradient_checkpointing", "model"]
 
 
@@ -867,7 +863,6 @@ def test_a_pin_the_run_could_not_read_is_recorded_as_unchecked(tmp_path):
     verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3)
     assert verdict["status"] == "ok"
     assert "resolved_revision" in verdict["config_unchecked"]
-    # Neither side claims a checkpoint, so there is nothing to report on it.
     assert "resolved_checkpoint" not in verdict["config_unchecked"]
 
 
@@ -906,9 +901,6 @@ def test_the_committed_reference_pins_the_model_it_was_captured_on():
     assert reference["model"] == DEFAULT_MODEL
 
 
-# -------------------------------------------- run_t4_smoke.py: main() paths
-
-
 def _batch_record(**over):
     """A healthy batched-generation record, with fields overridable per test."""
     base = {
@@ -927,6 +919,9 @@ def _batch_record(**over):
     }
     base.update(over)
     return base
+
+
+# -------------------------------------------- run_t4_smoke.py: main() paths
 
 
 def _cycle(index: int, losses: list[float]) -> dict:
@@ -991,7 +986,6 @@ def test_every_requested_repeat_is_compared_against_the_baseline(monkeypatch, tm
     assert repro["compared_cycles"] == ["1", "2"]
     assert repro["cycles"]["1"]["identical"] is True
     assert repro["cycles"]["2"]["identical"] is False
-    # The keys report.py renders off this dict, unchanged in shape.
     assert repro["identical"] is False
     assert repro["first_diff_step"] == 3
     assert repro["max_abs_diff"]["loss"] == 98.0
@@ -1488,8 +1482,7 @@ def test_a_non_finite_lora_weight_is_not_read_as_a_successful_update(bad):
     assert update["ok"] is False
     assert update["non_finite"] is True
 
-    # And it beats a healthy grad_norm, which says nothing about weights that
-    # went non-finite two steps later.
+    # And it beats a healthy grad_norm, which says nothing about weights that went non-finite two steps later.
     healthy = [{"step": s, "loss": 1.0, "grad_norm": 2.0} for s in (1, 2)]
     assert update_verdict(healthy, update)["verdict"] == "non_finite"
     assert update_verdict([], update)["verdict"] == "non_finite"
@@ -1962,6 +1955,99 @@ def test_empty_generations_are_a_failure_even_when_every_batch_agrees():
         )
     )
     assert any("generated nothing at all" in f for f in failures), failures
+
+
+def test_an_empty_row_inside_a_batch_is_a_failure_even_when_the_singles_are_fine():
+    from run_t4_smoke import batched_generation_failures
+
+    """The hole: `empty_outputs` was derived from the SINGLES only. A row that
+    decodes to "" inside the batch of 8 while its one-at-a-time output is fine
+    is not caught by that, and the disagreement it causes is excused for a
+    model listed in KNOWN_BATCHED_GENERATION_BREAKAGE. That is #9848, a
+    left-padded row attending to nothing, reported as a pass.
+    """
+    record = _batch_record(
+        batched = {
+            "2": [f"out{i}" for i in range(8)],
+            "4": [f"out{i}" for i in range(8)],
+            "8": [f"out{i}" if i != 2 else "" for i in range(8)],
+        },
+        agrees = {"2": True, "4": True, "8": False},
+        empty_batched_outputs = {"8": [2]},
+    )
+    failures = batched_generation_failures(record, "unsloth/gemma-4-E2B-it")
+    assert any("inside the batch" in f and "[2]" in f for f in failures), failures
+
+
+def test_batched_generation_records_a_row_that_is_empty_only_inside_the_batch():
+    """The rule above is fed a dict. This drives the real `batched_generation`
+    with a stub whose row 2 comes back empty ONLY when it is generated inside
+    a batch of 8, and asserts the record says so. Reverting the payload change
+    leaves `empty_batched_outputs` absent and this goes red."""
+    import torch
+
+    from run_t4_smoke import batched_generation, batched_generation_failures
+
+    class _Enc(dict):
+        def to(self, _device):
+            return self
+
+    class _Tok:
+        padding_side = "right"
+        pad_token = "<pad>"
+        eos_token = "<eos>"
+        pad_token_id = 0
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            padding = False,
+        ):
+            texts = [text] if isinstance(text, str) else list(text)
+            ids = [[ord(c) % 100 + 1 for c in t] for t in texts]
+            if return_tensors is None:
+                return {"input_ids": ids[0] if isinstance(text, str) else ids}
+            width = max(len(i) for i in ids)
+            padded = [[0] * (width - len(i)) + i for i in ids]
+            return _Enc(
+                input_ids = torch.tensor(padded),
+                attention_mask = torch.tensor([[0] * (width - len(i)) + [1] * len(i) for i in ids]),
+            )
+
+        def decode(
+            self,
+            row,
+            skip_special_tokens = False,
+        ):
+            return "".join(chr(int(v)) for v in row if int(v) != 0)
+
+    class _EmptyRowInsideBatch8:
+        device = "cpu"
+
+        def generate(
+            self,
+            input_ids = None,
+            attention_mask = None,
+            max_new_tokens = 8,
+            **_kw,
+        ):
+            outs = []
+            for index, row in enumerate(input_ids):
+                real = [int(v) for v in row if int(v) != 0]
+                tail = [(sum(real) % 26) + 65] * max_new_tokens
+                if input_ids.shape[0] == 8 and index == 2:
+                    tail = [0] * max_new_tokens  # pad only: decodes to ""
+                outs.append([int(v) for v in row] + tail)
+            return torch.tensor(outs)
+
+    prompts = ["abcdefgh"[:n] for n in range(1, 9)]
+    record = batched_generation(_EmptyRowInsideBatch8(), _Tok(), prompts, max_new_tokens = 4)
+
+    assert record["empty_outputs"] == [], "the singles were fine; that is the point"
+    assert record["empty_batched_outputs"] == {"8": [2]}
+    failures = batched_generation_failures(record, "unsloth/gemma-4-E2B-it")
+    assert any("inside the batch" in f and "[2]" in f for f in failures), failures
 
 
 def test_too_few_prompts_to_fill_the_largest_batch_is_reported():

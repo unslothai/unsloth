@@ -35,12 +35,16 @@ BATCH_MAX = 65536
 CTX_CHECKPOINTS_MAX = 256
 CACHE_RAM_MAX_MIB = 1024 * 1024
 
+# Slot-count aliases in one place: the denial below, its #9510 hint and the single-sequence retry must cover the same
+# set, or a spelling one of them misses reaches llama-server unnoticed.
+_PARALLEL_FLAGS: frozenset[str] = frozenset({"-np", "--parallel", "--n-parallel"})
+
 # Each group = every alias (short + long) of one hard-denied flag. Extend the matching group when llama.cpp adds a new
 # alias.
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # Parallel slots: owned by typer --parallel and LoadRequest.n_parallel; a pass-through would desync the slot
     # bookkeeping from llama-server.
-    frozenset({"-np", "--parallel", "--n-parallel"}),
+    _PARALLEL_FLAGS,
     # Model identity: a second -m would load a different model than Unsloth thinks it loaded
     # Model identity: Unsloth resolves it from LoadRequest; a second -m would load a different model than Unsloth thinks
     # it loaded.
@@ -95,7 +99,7 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # --agent is --tools by another name: upstream documents it as "enable CORS proxy and ALL built-in tools", and that
     # set includes exec_shell_command. Denying --tools while allowing this left the same capability one alias away.
     frozenset({"-ag", "--agent", "-no-ag", "--no-agent"}),
-    # Where those tools run: docker:/podman: spins up a container, ssh:<target> runs them on another host
+    # Where those tools run: docker:/podman: spins up a container, ssh:<target> runs them on another host entirely.
     frozenset({"--tools-runtime"}),
     # MCP servers are tools from a config file or an inline JSON blob; upstream says "do not enable in untrusted
     # environments" for both.
@@ -275,7 +279,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
             # #9510: users reaching for `--parallel 1` hit this refusal with no pointer to the supported knob
             # Why (#9510): users reaching for `--parallel 1` to cap concurrent predictions on a local model hit this
             # refusal with no pointer to the supported knob; name it.
-            if flag in {"-np", "--parallel", "--n-parallel"}:
+            if flag in _PARALLEL_FLAGS:
                 message += "; set n_parallel on the load request (parallel decode slots) instead"
             raise ValueError(message)
         if flag is None:
@@ -1869,7 +1873,7 @@ def memory_state_satisfies_settings(
         return True
     mlock, reserves_ram = state
     if get_no_ram_reserve():
-        # mlock_applicable only excuses a MISSING lock; a live reservation still has to go, wherever the weights are
+        # mlock_applicable only excuses a MISSING lock; a live reservation still has to go, wherever the weights are.
         return not (mlock or reserves_ram)
     if get_keep_resident():
         return mlock or not mlock_applicable

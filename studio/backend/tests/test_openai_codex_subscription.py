@@ -70,6 +70,7 @@ def test_protocol_constants_and_curated_provider_contract():
         "gpt-5.6-luna",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
+        "gpt-6-astra",
     ]
     assert OPENAI_CODEX_DEVICE_REDIRECT_URI == ("https://auth.openai.com/deviceauth/callback")
     row = next(
@@ -262,7 +263,14 @@ def test_successful_callback_does_not_wait_for_its_own_connection(monkeypatch):
     assert len(persisted) == 1
 
 
-def test_fixed_host_transport_sends_subscription_headers_and_normalizes_sse():
+@pytest.mark.parametrize(
+    ("model", "reasoning_effort"),
+    [("gpt-5.4", "none")]
+    + [("gpt-6-astra", effort) for effort in ("low", "medium", "high", "xhigh", "max")],
+)
+def test_fixed_host_transport_sends_subscription_headers_and_normalizes_sse(
+    model, reasoning_effort
+):
     captured = {}
 
     class FakeResponse:
@@ -298,9 +306,9 @@ def test_fixed_host_transport_sends_subscription_headers_and_normalizes_sse():
                 provider_id = "provider-1",
                 thread_id = "thread-1",
                 messages = [{"role": "user", "content": "hello"}],
-                model = "gpt-5.4",
+                model = model,
                 max_tokens = 100,
-                reasoning_effort = "none",
+                reasoning_effort = reasoning_effort,
                 tools = None,
                 tool_choice = None,
             )
@@ -317,7 +325,8 @@ def test_fixed_host_transport_sends_subscription_headers_and_normalizes_sse():
     assert captured["json"]["store"] is False
     assert "max_output_tokens" not in captured["json"]
 
-    assert captured["json"]["reasoning"] == {"effort": "none", "summary": "auto"}
+    assert captured["json"]["model"] == model
+    assert captured["json"]["reasoning"] == {"effort": reasoning_effort, "summary": "auto"}
     assert captured["json"]["include"] == ["reasoning.encrypted_content"]
     assert any("hello" in line for line in lines)
     assert not any("secret-token" in line for line in lines)

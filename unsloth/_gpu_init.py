@@ -81,9 +81,11 @@ propagate_torchao_fix_to_subprocesses()
 check_transformers_dependency_versions()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
-# Must precede `import unsloth_zoo`: its temporary_patches reach transformers.processing_utils ->
-# audio_utils -> torchaudio, so a torchaudio raising at extension init takes the whole unsloth
-# import down before the late guard would have neutralised it.
+# Ahead of `import unsloth_zoo` below, deliberately not down with the other import fixes: unsloth_zoo's
+# temporary_patches reach transformers.processing_utils, which imports transformers.audio_utils, which
+# imports torchaudio, so a torchaudio that raises at extension init takes the whole unsloth import down at
+# that `import unsloth_zoo` line, long before the late block would have neutralised it. Measured:
+# Kaggle-Muse_Glimmer_(30B)-GRPO died at cell 4 with the guard present but not yet run.
 disable_torchaudio_if_cuda_mismatched()
 fix_diffusers_warnings()
 fix_huggingface_hub()
@@ -125,6 +127,23 @@ del maybe_set_windows_rocm_bnb_version
 # Fixes https://github.com/unslothai/unsloth/issues/1266
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
+# `docker --gpus '"device=N"'` sets NVIDIA_VISIBLE_DEVICES but not
+# CUDA_VISIBLE_DEVICES, so Inductor's compile-worker pool cannot enumerate the
+# cgroup-pinned GPU ("Could not find an active GPU backend"). Pinned ids only, not
+# "all"/"none"/"void"/"". Opt out with UNSLOTH_FORCE_SINGLE_COMPILE_WORKER=0.
+_nvd = os.environ.get("NVIDIA_VISIBLE_DEVICES", "").strip().lower()
+_cgroup_pinned = _nvd not in ("", "all", "none", "void")
+if (
+    os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "auto") != "0"
+    and _cgroup_pinned
+    and "CUDA_VISIBLE_DEVICES" not in os.environ
+):
+    # honour an existing thread count, but always plant the sentinel
+    if os.environ.get("TORCHINDUCTOR_COMPILE_THREADS") in (None, "", "1"):
+        os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
+        os.environ["UNSLOTH_FORCE_SINGLE_COMPILE_WORKER"] = "1"
+del _nvd, _cgroup_pinned
+
 
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
@@ -155,6 +174,46 @@ except ModuleNotFoundError:
     )
 except:
     raise
+
+# Re-assert after unsloth_zoo's patch_torch_compile, which historically popped
+# TORCHINDUCTOR_COMPILE_THREADS.
+if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
+    try:
+        torch._inductor.config.compile_threads = 1
+    except Exception:
+        pass
+    os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
+
+    def _force_single_compile_worker_in_zoo():
+        setattr(
+            importlib.import_module("unsloth_zoo.temporary_patches.common"),
+            "determine_compile_threads",
+            lambda: 1,
+        )
+        # `import unsloth_zoo` above already ran temporary_patches, so its
+        # module-level options dicts are snapshots of the original count and
+        # replacing the function only reaches dicts built from here on. Those
+        # snapshots go to torch.compile as `options`, which Inductor applies as a
+        # config patch outranking both the env var and the value set above. Rewrite
+        # them IN PLACE: each dict is shared by identity with every zoo module
+        # re-exporting it and with the functools.partial in `torch_compile`.
+        for module in list(sys.modules.values()):
+            name = getattr(module, "__name__", "")
+            if name != "unsloth_zoo" and not name.startswith("unsloth_zoo."):
+                continue
+            try:
+                values = list(vars(module).values())
+            except Exception:
+                continue
+            for value in values:
+                if isinstance(value, dict) and "compile_threads" in value:
+                    value["compile_threads"] = 1
+
+    try:
+        _force_single_compile_worker_in_zoo()
+    except Exception:
+        pass
+    del _force_single_compile_worker_in_zoo
 
 from unsloth_zoo.device_type import (
     is_hip,
