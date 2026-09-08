@@ -37,9 +37,9 @@ KREA2_FAMILY_NAME = "krea-2"
 
 
 def _live_cache_dir() -> str:
-    """Studio's LIVE hub cache root, which every component load here must be pinned to.
+    """Unsloth's LIVE hub cache root, which every component load here must be pinned to.
 
-    An unset ``cache_dir`` resolves through huggingface_hub's import-time constant, and Studio's
+    An unset ``cache_dir`` resolves through huggingface_hub's import-time constant, and Unsloth's
     cache folder is a setting: after a mid-session change the two roots differ. This assembler is
     reached with a repo id, and the locality gate that cleared the switch reads the live root
     (``media_locality`` passes ``cache_dir = hub_cache_dir()``), so an unpinned load looks in the
@@ -104,6 +104,20 @@ def load_krea2_text_encoder(
     return Qwen3VLModel.from_pretrained(repo_id, config = config, dtype = dtype, **kwargs)
 
 
+def _read_model_index(path: Path, source: str) -> dict[str, Any]:
+    try:
+        model_index = json.loads(path.read_text(encoding = "utf-8-sig"))
+    # A nesting bomb raises RecursionError, not a ValueError, so it needs naming separately or it stays the one raw
+    # traceback left. diffusion_families.pipeline_class_from_index does the same.
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError(
+            f"Unable to read valid model_index.json from {source} at {path}: {exc}"
+        ) from exc
+    if not isinstance(model_index, dict):
+        raise ValueError(f"model_index.json from {source} at {path} must contain a JSON object")
+    return model_index
+
+
 def _load_model_index(
     repo_id: str,
     hf_token: Optional[str] = None,
@@ -116,11 +130,12 @@ def _load_model_index(
         is_local_dir = root.is_dir()
         local = root / "model_index.json"
         if local.is_file():
-            return json.loads(local.read_text(encoding = "utf-8"))
+            return _read_model_index(local, f"local model directory {root}")
     except OSError:
         pass
     if is_local_dir:
-        # A local checkpoint dir without the file must fail clearly here, else hf_hub_download dies with an opaque HFValidationError.
+        # A local checkpoint dir without the file must fail clearly here, else hf_hub_download dies with an opaque
+        # HFValidationError.
         raise FileNotFoundError(f"model_index.json not found in local model dir {repo_id}")
     from huggingface_hub import hf_hub_download
 
@@ -131,7 +146,7 @@ def _load_model_index(
         local_files_only = local_files_only,
         cache_dir = _live_cache_dir(),
     )
-    return json.loads(Path(path).read_text(encoding = "utf-8"))
+    return _read_model_index(Path(path), f"Hub/cache for {repo_id}")
 
 
 def load_krea2_pipeline(
@@ -161,7 +176,9 @@ def load_krea2_pipeline(
     """
     import diffusers
 
-    # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain below dies with a bare AttributeError, so fail first with the fix.
+    # diffusers gained Krea2Pipeline in 0.39; fail here rather than on a bare AttributeError below
+    # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain below dies with a bare
+    # AttributeError, so fail first with the fix.
     if not hasattr(diffusers, "Krea2Pipeline"):
         raise RuntimeError(
             f"Krea 2 needs diffusers >= 0.39.0 (Krea2Pipeline); this environment has "
@@ -171,6 +188,10 @@ def load_krea2_pipeline(
 
     token = hf_token or None
     cache_dir = _live_cache_dir()
+    # read the index before the 26 GB transformer: a corrupt one used to surface only after everything was built
+    # A few KB, and it configures the components, so it is read before them: read last, a corrupt index only surfaced
+    # after the encoder, the VAE and the 26 GB transformer were already built.
+    model_index = _load_model_index(repo_id, hf_token = token, local_files_only = local_files_only)
     tokenizer = load_krea2_tokenizer(repo_id, hf_token = token, local_files_only = local_files_only)
     if text_encoder is None:
         text_encoder = load_krea2_text_encoder(
@@ -200,7 +221,6 @@ def load_krea2_pipeline(
             local_files_only = local_files_only,
             cache_dir = cache_dir,
         )
-    model_index = _load_model_index(repo_id, hf_token = token, local_files_only = local_files_only)
     return diffusers.Krea2Pipeline(
         scheduler = scheduler,
         vae = vae,

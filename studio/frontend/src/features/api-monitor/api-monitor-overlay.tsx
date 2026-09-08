@@ -6,6 +6,8 @@
 
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
+import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
+import { useShortcut } from "@/features/settings";
 import {
   useFloatingPanelOrderStore,
   useFloatingPanelZIndex,
@@ -126,6 +128,18 @@ export function ApiMonitorOverlay(): ReactElement | null {
   const [data, setData] = useState<Awaited<
     ReturnType<typeof getApiMonitor>
   > | null>(null);
+
+  // The chord lives with the panel: reaching this store from the shell would
+  // pull the whole feature index into the root chunk. The full page has
+  // nothing to toggle, being the panel's contents already.
+  useShortcut(
+    "toggleApiMonitor",
+    () => {
+      if (isOpen) close();
+      else open();
+    },
+    { enabled: !onFullPage },
+  );
 
   // What this session has already shown, and when it started watching.
   const watchRef = useRef<ApiMonitorWatch>(createWatch(0));
@@ -297,6 +311,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
           style={{ zIndex }}
         >
           <motion.div
+            {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
             ref={setPanelElement}
             onPointerDownCapture={() => raisePanel("api-monitor")}
             drag={true}

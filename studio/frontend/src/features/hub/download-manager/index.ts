@@ -48,9 +48,19 @@ export {
   useStagedDownload,
   type StagedDownloadEntry,
 } from "./use-staged-download";
-export { scopedVariant } from "./download-manager-types";
 export {
+  downloadInventoryHintKind,
+  scopedVariant,
+} from "./download-manager-types";
+export {
+  dismissStartToast,
+  dismissStartToasts,
+  dismissStartToastsForModelSelection,
+} from "./start-toast";
+export {
+  TRANSPORT_MODE_STORAGE_KEY,
   getTransportMode,
+  resolveTransportMode,
   useDownloadTransportCapabilities,
   useHttpPartialsResumable,
   useTransportMode,

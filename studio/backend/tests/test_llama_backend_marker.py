@@ -99,7 +99,7 @@ def test_the_api_offers_exactly_the_requestable_backends():
 
 
 def test_the_api_reports_an_unreadable_newer_backend_request_verbatim():
-    """A choice written by a newer Studio survives the response model.
+    """A choice written by a newer Unsloth survives the response model.
 
     Coercing it to "auto" would tell the picker this install is detecting when it
     is not, and the picker would then happily overwrite the newer choice.

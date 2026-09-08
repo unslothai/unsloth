@@ -1013,7 +1013,7 @@ else
 fi
 
 # A launcher on a UNC share is a remote script to PowerShell, and RemoteSigned refuses an
-# unsigned one, so a roaming profile would get a shortcut that exits without starting Studio.
+# unsigned one, so a roaming profile would get a shortcut that exits without starting Unsloth.
 # A mapped drive is the same share and the same zone, so it must take the same branch.
 _ps1="$SCRIPT_DIR/../../install.ps1"
 if grep -q '\$launcherIsRemote = \$launcherPs1 -like "\\\\\*"' "$_ps1" \

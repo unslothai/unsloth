@@ -6,7 +6,7 @@
 # (install.sh + binary-load assert). Regression guard for the macOS-version
 # selection in studio/install_llama_prebuilt.py.
 
-name: Mac Studio Install Matrix CI
+name: Mac Unsloth Install Matrix CI
 
 on:
   pull_request:

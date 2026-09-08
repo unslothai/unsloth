@@ -452,16 +452,30 @@ async def update_provider_config(
             logger.exception("provider.update_metadata_rollback_failed", provider_id = provider_id)
 
     with current_credential_write(credential):
-        if metadata_requested:
-            providers_db.update_provider(**metadata_updates)
-        try:
+        credential_requested = replacement_api_key is not None or payload.clear_api_key
+        if metadata_requested and credential_requested:
+            # Metadata and the saved key share studio.db.  Commit them together so
+            # another process can never route to the new endpoint with the old key.
+            with providers_db.provider_bundle_transaction() as connection:
+                providers_db.update_provider(**metadata_updates, connection = connection)
+                if replacement_api_key is not None:
+                    credential_secrets.save_provider_api_key(
+                        provider_id,
+                        replacement_api_key,
+                        connection = connection,
+                    )
+                else:
+                    credential_secrets.delete_provider_api_key(
+                        provider_id,
+                        connection = connection,
+                    )
+        else:
+            if metadata_requested:
+                providers_db.update_provider(**metadata_updates)
             if replacement_api_key is not None:
                 credential_secrets.save_provider_api_key(provider_id, replacement_api_key)
             elif payload.clear_api_key:
                 credential_secrets.delete_provider_api_key(provider_id)
-        except Exception:
-            _restore_metadata()
-            raise
 
     if not metadata_requested and not payload.encrypted_api_key and not payload.clear_api_key:
         raise HTTPException(status_code = 400, detail = "No fields to update")
@@ -602,6 +616,69 @@ def _bind_saved_provider_target(payload):
 # ── Test connectivity ─────────────────────────────────────────────
 
 
+async def _test_custom_provider_connectivity(client, model_id: str) -> ProviderTestResult:
+    """Probe a custom OpenAI-compatible endpoint without assuming /chat/completions.
+
+      TTS-only gateways such as Kokoro expose ``/models`` and ``/audio/speech`` but
+    not ``/chat/completions``. Try those first, then fall back to a chat probe."""
+    model_id = (model_id or "").strip()
+    models_error: Exception | None = None
+    try:
+        models = await client.list_models()
+        return ProviderTestResult(
+            success = True,
+            message = f"Connected successfully. Found {len(models)} model(s).",
+            models_count = len(models),
+        )
+    except Exception as exc:
+        models_error = exc
+
+    if not model_id:
+        return ProviderTestResult(
+            success = False,
+            message = (
+                "Connection failed: could not reach /models and no model ID was "
+                f"provided to test further. {safe_curated_detail(models_error)}"
+            ),
+            models_count = None,
+        )
+
+    try:
+        await client.create_speech(
+            text = ".",
+            model = model_id,
+            voice = "alloy",
+            response_format = "wav",
+        )
+        return ProviderTestResult(
+            success = True,
+            message = "Connected successfully. Audio speech endpoint responded.",
+            models_count = None,
+        )
+    except Exception:
+        pass
+
+    try:
+        await client.chat_completion(
+            messages = [{"role": "user", "content": "ping"}],
+            model = model_id,
+            temperature = 0.0,
+            top_p = 1.0,
+            max_tokens = 1,
+        )
+        return ProviderTestResult(
+            success = True,
+            message = "Connected successfully. Chat completions endpoint responded.",
+            models_count = None,
+        )
+    except Exception as exc:
+        return ProviderTestResult(
+            success = False,
+            message = f"Connection failed: {safe_curated_detail(exc)}",
+            models_count = None,
+        )
+
+
 @router.post("/test", response_model = ProviderTestResult)
 async def test_provider(
     payload: ProviderTestRequest,
@@ -611,9 +688,10 @@ async def test_provider(
     """
     Test connectivity to an external provider.
 
-    Makes a lightweight GET /models call to verify the API key works. Generic
-    custom endpoints use a chat-completions probe because /models is optional.
-    An explicit encrypted key takes precedence over the saved provider key.
+    Makes a lightweight GET /models call to verify the API key works. Custom
+    endpoints try /models first, then /audio/speech or /chat/completions when a
+    model ID is available. An explicit encrypted key takes precedence over the
+    saved provider key.
     """
 
     payload = _bind_saved_provider_target(payload)
@@ -656,25 +734,7 @@ async def test_provider(
 
     try:
         if payload.provider_type == "custom":
-            model_id = (payload.model_id or "").strip()
-            if not model_id:
-                return ProviderTestResult(
-                    success = False,
-                    message = "Connection failed: add a model ID to test custom providers.",
-                    models_count = None,
-                )
-            await client.chat_completion(
-                messages = [{"role": "user", "content": "ping"}],
-                model = model_id,
-                temperature = 0.0,
-                top_p = 1.0,
-                max_tokens = 1,
-            )
-            return ProviderTestResult(
-                success = True,
-                message = "Connected successfully. Chat completions endpoint responded.",
-                models_count = None,
-            )
+            return await _test_custom_provider_connectivity(client, payload.model_id or "")
         if info.get("model_list_mode") == "curated":
             await client.verify_models_endpoint_lightweight()
             return ProviderTestResult(
@@ -762,18 +822,25 @@ async def list_provider_models(
 
     try:
         models = await client.list_models()
-        # Registry model-id filters only apply to the native Gemini base. A
-        # custom OAI-compatible proxy returns prefixed IDs the native allowlist
-        # would strip, leaving the picker empty; match the host check here so the
-        # model list and chat dispatch agree on what counts as "native".
+        # Registry model-id filters describe one vendor's own catalog, so they
+        # only apply on that vendor's host. A Gemini OAI-compat proxy returns
+        # prefixed ids the allowlist strips, and an Azure or self-hosted OpenAI
+        # base returns operator-chosen deployment names that can carry any word
+        # the denylist reads as non-chat (`gpt-5.5-image-analysis`). Either way
+        # the picker empties out for a connection that works.
+        _NATIVE_HOSTS = {
+            "gemini": ("generativelanguage.googleapis.com",),
+            "openai": ("api.openai.com",),
+        }
         apply_registry_model_filters = True
-        if payload.provider_type == "gemini":
+        native_hosts = _NATIVE_HOSTS.get(payload.provider_type)
+        if native_hosts is not None:
             try:
                 from urllib.parse import urlparse as _urlparse
                 _host = (_urlparse(base_url).hostname or "").lower()
             except Exception:
                 _host = ""
-            apply_registry_model_filters = _host == "generativelanguage.googleapis.com"
+            apply_registry_model_filters = _host in native_hosts
 
         if apply_registry_model_filters:
             allow_prefixes = info.get("model_id_allow_prefixes")

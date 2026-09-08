@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for issue #7331 -- Studio segfaults at startup on Strix Halo.
+"""Regression tests for issue #7331 -- Unsloth segfaults at startup on Strix Halo.
 
 Reporter: Ryzen AI MAX+ 395 with Radeon 8060S (Strix Halo, physically gfx1151),
 Linux Mint, ROCm 6.3.42134, single GPU. Their rocminfo reported **gfx1100** because
@@ -70,8 +70,10 @@ def _reset_torch_runtime_probe():
     """The torch classification is memoized for the life of an install run, so one
     test's mocked probe must not leak into the next."""
     stack_mod._invalidate_torch_runtime_probe()
+    stack_mod._invalidate_rocm_version_probe()
     yield
     stack_mod._invalidate_torch_runtime_probe()
+    stack_mod._invalidate_rocm_version_probe()
 
 
 def _run_install(
@@ -984,7 +986,7 @@ class TestConfirmedSpoofIsClearedBeforeLaunch:
         assert probe["HSA_OVERRIDE_GFX_VERSION"] == "11.5.1", probe
 
     def test_install_sh_clears_it_on_the_same_branch(self):
-        """The shell path is what matters for the reported flow: install.sh execs Studio
+        """The shell path is what matters for the reported flow: install.sh execs Unsloth
         from this very shell and install_python_stack.py runs as a grandchild, so a pop
         there cannot reach the launch."""
         source = _INSTALL_SH.read_text(encoding = "utf-8")
@@ -993,21 +995,35 @@ class TestConfirmedSpoofIsClearedBeforeLaunch:
         block = source[start : source.find("\n        fi\n", start)]
         assert "unset HSA_OVERRIDE_GFX_VERSION" in block, (
             "the Strix reroute must clear a corroborated spoof before this shell "
-            "execs Studio, or the new wheels meet a runtime still claiming gfx1100"
+            "execs Unsloth, or the new wheels meet a runtime still claiming gfx1100"
         )
         assert '[ -n "$_spoof_physical" ]' in block, (
             "the clear must be guarded by the corroborated-spoof verdict, never "
             "applied to a host whose override was not disproved"
         )
-        # Exactly one clear of the caller's own environment; the only other unset scopes
+        # Two clears of the caller's own environment, one per branch that installs native
+        # per-arch wheels: the Strix rocm* reroute above, and the no-version reroute, which
+        # produces a gfx* leaf and so never reaches this branch. The only other unset scopes
         # three variables inside the re-probe's subshell. Every other branch keeps the
         # override, which on generic wheels is what makes the GPU usable at all.
+        #
+        # The count alone is the weak half of this assertion, so each clear is also required
+        # to sit under a corroborated-spoof guard. Adding an unguarded third would keep the
+        # count honest and still strand a host whose override was never disproved.
         _lasting = [
-            ln.strip()
-            for ln in source.splitlines()
+            i
+            for i, ln in enumerate(source.splitlines())
             if ln.strip().startswith("unset HSA_OVERRIDE_GFX_VERSION")
         ]
-        assert _lasting == ["unset HSA_OVERRIDE_GFX_VERSION"], _lasting
+        assert len(_lasting) == 2, _lasting
+        _lines = source.splitlines()
+        for _at in _lasting:
+            _guard = "\n".join(_lines[max(0, _at - 6) : _at])
+            assert "_spoof_physical" in _guard, (
+                f"the clear at line {_at + 1} is not guarded by a corroborated-spoof "
+                f"verdict; every clear must be, or a host whose override was not "
+                f"disproved loses the only thing making its GPU usable"
+            )
 
 
 def _spoof_clear_guard() -> str:

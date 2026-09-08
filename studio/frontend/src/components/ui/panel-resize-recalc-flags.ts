@@ -27,6 +27,35 @@
 // against `inherits: false` is 1333x on dev and 982x on prod, and elementCount
 // is a DOM property, identical on both.
 //
+// CONFIRMED ON THE REAL APP before the flag was turned on, because the numbers
+// above come off a harness whose sidebar is nearly empty and whose document is
+// a third the size of a real one. Two production builds of the same commit
+// differing only in this boolean, served by the backend, 100K rung, 42,885
+// elements, five drags of eight frames each:
+//
+//   flag off   44,141 elements restyled per frame, 1,934.87 ms per drag
+//   flag on       770 elements restyled per frame,    37.35 ms per drag
+//
+// 57x fewer elements and 52x less recalc, or 241.9 ms per frame down to 4.67 --
+// the difference between roughly 4 fps and inside the 60 fps budget. Both arms
+// were checked for potency first (40/40 samples in the expected regime: off on
+// the wrapper and <html>, on at [data-slot="sidebar"] with no <html> write), so
+// neither reading is two identical builds wearing two labels. Geometry and
+// every computed width were identical across all 40 drag positions.
+//
+// The harness's "12 elements" does NOT transfer: [data-slot="sidebar"] really
+// holds ~770 elements once the thread list is populated. The ratio is 57x, not
+// 1000x. Still worth having, but quote the 57x.
+//
+// WHAT DOES NOT MEASURE THIS. studiobench cannot see this change at all: none of
+// its actions performs a pointer drag, so the per-frame write path is never
+// entered and every timing it reports for this flag is null by construction.
+// A sweep of it (100K, n=4, concurrent in-band null) scored 0 of 36 metrics past
+// the floor, sign-consistency and scatter gates, exactly as an unexercised code
+// path should. That null is not evidence the flag is inert; the drag measurement
+// above is the evidence, and UI parity over 64 action pairs against the same
+// concurrent null found 0 stable actions rendering differently.
+//
 // WHY NOT `@property { inherits: false }`. That is right only for a property
 // whose sole consumer is the element written to (`--aui-scroll-stabilizer`).
 // Here it would silently break both: `--sidebar-width` is read by
@@ -47,4 +76,4 @@
 // 575.0 ms. It fires twice per drag rather than once per frame, so the total is
 // smaller, and it is load-bearing for cursor correctness: a separate change
 // with its own visual risk, deliberately not bundled here.
-export const PANEL_RESIZE_SCOPED_VARS_ENABLED = false;
+export const PANEL_RESIZE_SCOPED_VARS_ENABLED = true;

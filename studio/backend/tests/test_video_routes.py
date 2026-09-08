@@ -1208,6 +1208,22 @@ def test_signed_video_link_streams_without_a_bearer(client):
     assert len(ranged.content) == 4
 
 
+def test_keyless_caller_cannot_mint_a_signed_video_link(client):
+    from routes import video as video_routes
+
+    client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
+    )
+    video_id = _generate_and_wait(client, {"prompt": "a"})["id"]
+    client.app.dependency_overrides[video_routes.request_admitted_without_credential] = lambda: True
+
+    response = client.get(f"/api/inference/video/gallery/{video_id}/signed-url")
+
+    assert response.status_code == 403
+    assert "API key" in response.json()["detail"]
+
+
 def test_signed_video_link_rejects_tampering_and_other_ids(client):
     client.post(
         "/api/inference/video/load",

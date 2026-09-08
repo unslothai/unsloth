@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import asyncio
 import importlib.util
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -148,6 +149,87 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
 
     assert credential_secrets.get_provider_api_key(created.id) is None
     assert providers_db.get_provider(created.id) is None
+
+
+def test_endpoint_and_saved_key_update_is_atomic_for_independent_readers(monkeypatch):
+    """A reader on another connection sees one complete provider bundle.
+
+    The writer is paused after changing the endpoint but before replacing the
+    encrypted key.  This is the inverse interleaving that previously exposed the
+    new route with the old key.  The reader uses normal storage calls, each with
+    its own SQLite connection, so process-local route locks cannot make it pass.
+    """
+    provider_id = "atomic-provider"
+    old_base_url = "http://127.0.0.1:7770/v1"
+    new_base_url = "http://127.0.0.1:8880/v1"
+    providers_db.create_provider(
+        id = provider_id,
+        provider_type = "custom",
+        display_name = "Atomic TTS",
+        base_url = old_base_url,
+        models = ["kokoro"],
+    )
+    credential_secrets.save_provider_api_key(provider_id, "old-secret")
+    monkeypatch.setattr(
+        providers_route,
+        "resolve_provider_api_key_or_400",
+        lambda *_args, **_kwargs: "new-secret",
+    )
+
+    between_row_and_key = threading.Event()
+    finish_key_write = threading.Event()
+    original_save = credential_secrets.save_provider_api_key
+
+    def _paused_save(
+        saved_provider_id: str,
+        api_key: str,
+        *,
+        connection = None,
+    ) -> None:
+        assert connection is not None
+        between_row_and_key.set()
+        assert finish_key_write.wait(timeout = 5)
+        original_save(saved_provider_id, api_key, connection = connection)
+
+    monkeypatch.setattr(credential_secrets, "save_provider_api_key", _paused_save)
+    failures: list[BaseException] = []
+
+    def _update() -> None:
+        try:
+            asyncio.run(
+                providers_route.update_provider_config(
+                    provider_id,
+                    ProviderUpdate(
+                        base_url = new_base_url,
+                        encrypted_api_key = "replacement-envelope",
+                    ),
+                    credential = ("alice", None),
+                    via_api_key = False,
+                )
+            )
+        except BaseException as exc:
+            failures.append(exc)
+
+    writer = threading.Thread(target = _update)
+    writer.start()
+    try:
+        assert between_row_and_key.wait(timeout = 5)
+        observed_during_write = (
+            providers_db.get_provider(provider_id)["base_url"],
+            credential_secrets.get_provider_api_key(provider_id),
+        )
+    finally:
+        finish_key_write.set()
+        writer.join(timeout = 5)
+
+    assert not writer.is_alive()
+    assert failures == []
+    observed_after_commit = (
+        providers_db.get_provider(provider_id)["base_url"],
+        credential_secrets.get_provider_api_key(provider_id),
+    )
+    assert observed_during_write == (old_base_url, "old-secret")
+    assert observed_after_commit == (new_base_url, "new-secret")
 
 
 def test_custom_max_output_tokens_create_update_and_clear():
@@ -359,10 +441,10 @@ def test_provider_update_validates_before_writes_and_rolls_back_metadata(monkeyp
     )
     original_save = credential_secrets.save_provider_api_key
 
-    def fail_replacement(provider_id: str, api_key: str):
+    def fail_replacement(provider_id: str, api_key: str, **kwargs):
         if api_key == "sk-replacement":
             raise RuntimeError("simulated credential write failure")
-        original_save(provider_id, api_key)
+        original_save(provider_id, api_key, **kwargs)
 
     monkeypatch.setattr(credential_secrets, "save_provider_api_key", fail_replacement)
     with pytest.raises(RuntimeError, match = "credential write failure"):
@@ -457,6 +539,21 @@ def test_shared_provider_resolver_uses_saved_and_explicit_precedence(monkeypatch
     monkeypatch.setattr(key_exchange, "decrypt_api_key", lambda value: f"explicit:{value}")
     assert (
         providers_route.resolve_provider_api_key_or_400("provider-1", "ciphertext")
+        == "explicit:ciphertext"
+    )
+    assert (
+        providers_route.resolve_provider_api_key_or_400(
+            "provider-1", "ciphertext", prefer_saved_key = True
+        )
+        == "saved"
+    )
+    assert (
+        providers_route.resolve_provider_api_key_or_400(
+            "provider-1",
+            "ciphertext",
+            allow_saved_key = False,
+            prefer_saved_key = True,
+        )
         == "explicit:ciphertext"
     )
 
@@ -1219,9 +1316,17 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
 
     update_provider_config suspends between committing the row and recording the proof:
     remember_catalog_account awaits a 30s file lock, and the failure the rollback exists
-    for is exactly the one where that lock was contended. A save the user makes during
-    those seconds commits in between. Restoring the whole pre-request snapshot would put
-    the row back to before *both* requests and erase the second one's successful edit.
+    for is exactly the one where that lock was contended. Another write to the row lands
+    in between. Restoring the whole pre-request snapshot would put the row back to before
+    *both* writes and erase the second one's successful edit.
+
+    The interleaved write goes at providers_db directly rather than through a second
+    update_provider_config call. serialize_provider_config holds a per-provider
+    asyncio.Lock across the whole handler, so a second call on the same provider cannot
+    run while this one is parked -- awaiting one from inside this test deadlocks the
+    event loop, since the await that would release the gate sits behind it. What the
+    rollback actually defends against is the row moving under the handler, which any
+    writer can do, so the row write is both the reachable shape and the one under test.
     """
     import json
 
@@ -1262,10 +1367,13 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
     codex_client._catalog_accounts[provider_id] = "acct-1"
 
     gate = asyncio.Event()
+    parked = asyncio.Event()
 
     async def _blocked_then_busy(_provider_id, _account_id):
         # Stands in for provider_oauth_write_guard's flock acquire: a real suspension
-        # point, then the timeout it raises.
+        # point, then the timeout it raises. `parked` is the handshake, so the test
+        # resumes on the suspension itself rather than on a count of loop turns.
+        parked.set()
         await gate.wait()
         raise codex_auth.CodexAuthError("ChatGPT credential update is busy. Please retry.")
 
@@ -1282,20 +1390,14 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
                 via_api_key = False,
             )
         )
-        for _ in range(100):
-            await asyncio.sleep(0)
-            if gate._waiters:
-                break
+        await asyncio.wait_for(parked.wait(), timeout = 10)
         # Its row is committed and it is now parked in remember_catalog_account.
         assert providers_db.get_provider(provider_id)["models"] == ["gpt-5.4", listed]
 
-        # The user saves again while that one hangs. This one has no selection of its
-        # own, so it records no proof and completes.
-        await providers_route.update_provider_config(
-            provider_id,
-            ProviderUpdate(display_name = "Renamed while the first save hung"),
-            credential = ("alice", None),
-            via_api_key = False,
+        # Another write renames the row while that one hangs. It touches a column the
+        # parked request never wrote, so there is nothing of its own to undo there.
+        providers_db.update_provider(
+            id = provider_id, display_name = "Renamed while the first save hung"
         )
 
         gate.set()

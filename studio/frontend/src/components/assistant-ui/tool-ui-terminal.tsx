@@ -14,6 +14,7 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
+import { toolArgText } from "./tool-arg-text";
 import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
 import { SandboxFiles } from "./sandbox-files-view";
@@ -34,7 +35,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
-  const command = (args as { command?: string })?.command ?? "";
+  const command = toolArgText((args as { command?: unknown })?.command);
   const isRunning = status?.type === "running";
   // Args still streaming = the model is WRITING the command, not running it yet.
   const { propStatus } = useToolArgsStatus();
@@ -74,7 +75,12 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
 
   return (
     // Open mid-run so command and live output show, collapsed from history.
-    <ToolFallbackRoot defaultOpen={isRunning}>
+    // awaitingApproval overrides the preference: the command lives inside the
+    // content, Allow/Deny outside it, and the trigger shows only 60 characters.
+    <ToolFallbackRoot
+      defaultOpen={isRunning}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={command ? `$ ${command.slice(0, 60)}` : "Terminal"}
         status={status}

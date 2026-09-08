@@ -38,8 +38,8 @@ def generate_smart_vlm_instruction(
     column_names = set(next(iter(dataset)).keys())
     sample = next(iter(dataset))
 
-    # ===== LEVEL 1: Explicit Instruction Columns =====
     # Columns that hold per-sample instructions
+    # ===== LEVEL 1: Explicit Instruction Columns =====
     question_columns = ["question", "query", "prompt", "instruction", "user_prompt"]
 
     for col in question_columns:
@@ -48,7 +48,7 @@ def generate_smart_vlm_instruction(
             sample_content = sample[col]
             if sample_content and str(sample_content).strip():
                 return {
-                    "instruction": None,  # use column content
+                    "instruction": None,
                     "instruction_column": col,
                     "instruction_type": "explicit",
                     "uses_dynamic_instruction": True,
@@ -58,21 +58,21 @@ def generate_smart_vlm_instruction(
     # ===== LEVEL 2: Infer from Column Names + Content =====
     text_col_lower = text_column.lower()
 
-    text_sample = str(sample.get(text_column, ""))[:500]  # First 500 chars
+    text_sample = str(sample.get(text_column, ""))[:500]
 
     # Task-specific keywords and their instructions
     task_patterns = {
         # OCR / Transcription
         "ocr": {
             "keywords": ["ocr", "transcribe", "transcript"],
-            "content_hints": [r"[A-Za-z\u0600-\u06FF]{10,}"],  # Long Latin/Arabic passages
+            "content_hints": [r"[A-Za-z\u0600-\u06FF]{10,}"],
             "instruction": "Transcribe all the text shown in this image.",
             "confidence": 0.9,
         },
         # LaTeX / Math
         "latex": {
             "keywords": ["latex", "math", "formula", "equation"],
-            "content_hints": [r"\\[a-z]+\{", r"\^", r"_", r"\\frac"],  # LaTeX commands
+            "content_hints": [r"\\[a-z]+\{", r"\^", r"_", r"\\frac"],
             "instruction": "Convert this image to LaTeX notation.",
             "confidence": 0.95,
         },
@@ -115,7 +115,7 @@ def generate_smart_vlm_instruction(
         # Document / Text Recognition
         "document": {
             "keywords": ["document", "page", "paragraph", "article"],
-            "content_hints": [r"\n.*\n.*\n"],  # Multi-line text
+            "content_hints": [r"\n.*\n.*\n"],
             "instruction": "Extract and transcribe the text from this document image.",
             "confidence": 0.85,
         },
@@ -145,7 +145,7 @@ def generate_smart_vlm_instruction(
             best_score = score
             best_match = task_info
 
-    if best_match and best_score > 0.5:  # Confidence threshold
+    if best_match and best_score > 0.5:
         return {
             "instruction": best_match["instruction"],
             "instruction_column": None,
@@ -185,7 +185,7 @@ def generate_smart_vlm_instruction(
             row = {}
             for col in s:
                 val = s[col]
-                if hasattr(val, "size") and hasattr(val, "mode"):  # PIL Image
+                if hasattr(val, "size") and hasattr(val, "mode"):
                     row[col] = "<image>"
                 elif isinstance(val, list):
                     row[col] = str(val)[:300]
@@ -215,7 +215,6 @@ def generate_smart_vlm_instruction(
         import logging
         logging.getLogger(__name__).debug(f"LLM-assisted instruction skipped: {e}")
 
-    # ===== LEVEL 5: Generic Fallback =====
     return {
         "instruction": "Describe this image in detail.",
         "instruction_column": None,

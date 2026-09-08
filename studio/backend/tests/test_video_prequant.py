@@ -130,7 +130,7 @@ def test_h3_resolves_the_primary_name_at_the_repo_root(scheme, expected):
 
 
 def test_h3_int8_keeps_the_plain_denoiser_as_its_fallback():
-    # The rotated artifact carries the v2 format tag, which a Studio predating the online rotation
+    # The rotated artifact carries the v2 format tag, which an Unsloth predating the online rotation
     # refuses. Naming it explicitly and demoting the derived name to the fallback is what stops
     # that refusal from reaching anyone: an older install still resolves MiniMax-H3-INT8.pt, and
     # this one takes the rotated file when the repo has it.

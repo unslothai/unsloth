@@ -275,6 +275,31 @@ def test_metadata_url_mismatch_dropped(tmp_path: Path):
     assert detect_mmproj_file(str(weight)) is None
 
 
+def test_metadata_url_derivative_repack_accepts_base_mmproj(tmp_path: Path):
+    """#6305: LM Studio repack/derivative GGUF + base-projector is valid."""
+    weight = _gguf_with_general(
+        tmp_path / "gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-Q4_0.gguf",
+        {
+            "general.architecture": "gemma4",
+            "general.type": "model",
+            "general.basename": "gemma-4-26B-A4B-it",
+            "general.base_model.0.repo_url": (
+                "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-GGUF"
+            ),
+        },
+    )
+    mmproj = _gguf_with_general(
+        tmp_path / "mmproj-F16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.basename": "gemma-4-26B-A4B-it",
+            "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+        },
+    )
+    assert detect_mmproj_file(str(weight)) == str(mmproj.resolve())
+
+
 def test_metadata_identifies_mmproj_without_filename_hint(tmp_path: Path):
     """Projector named ``vision-projector.gguf`` discovered via header."""
     weight = _gguf_with_general(
@@ -340,3 +365,16 @@ def test_a_zero_byte_projector_does_not_shadow_a_whole_one(tmp_path: Path):
     whole = _touch(tmp_path / "mmproj-Q8_0.gguf")
 
     assert detect_mmproj_file(str(weight)) == str(whole.resolve())
+
+
+def test_trusted_companion_snapshot_finds_nested_projector(tmp_path: Path):
+    weights = tmp_path / "weights"
+    sibling = tmp_path / "companion"
+    weights.mkdir()
+    (sibling / "vision").mkdir(parents = True)
+    weight = _touch(weights / "Model-Q4_K_M.gguf")
+    projector = _touch(sibling / "vision" / "mmproj-Model-F16.gguf")
+    assert detect_mmproj_file(str(weight), search_root = str(sibling)) is None
+    assert detect_mmproj_file(
+        str(weight), search_root = str(sibling), allow_disjoint_search_root = True
+    ) == str(projector.resolve())

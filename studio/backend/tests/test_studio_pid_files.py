@@ -415,6 +415,15 @@ def test_address_matching(tmp_path):
     assert run._addresses_collide(None, "127.0.0.1", 8889) is True
 
 
+@pytest.mark.parametrize(
+    "wildcard",
+    ["0", "00", "0.0", "0.0.0", "::0", "0:0:0:0:0:0:0:0", "::ffff:0.0.0.0"],
+)
+def test_every_wildcard_alias_collides_with_a_specific_bind(wildcard):
+    assert run._addresses_collide("127.0.0.1", wildcard, 8889) is True
+    assert run._addresses_collide(wildcard, "127.0.0.1", 8889) is True
+
+
 def test_a_hostname_resolves_the_same_way_the_bind_does(tmp_path):
     # `localhost` and the address _is_port_free actually binds must agree, or a
     # recorded server is missed and a duplicate starts.
@@ -446,6 +455,59 @@ def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
 
     for literal in addrs:
         assert run._addresses_collide(recorded, literal, 8889) is True
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+@pytest.mark.parametrize("occupied", [False, True])
+def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, occupied):
+    monkeypatch.setattr(run, "sys", SimpleNamespace(platform = platform))
+    bind_attempts = []
+    sockets = []
+
+    class _ProbeSocket:
+        def __init__(self, family):
+            self.family = family
+            self.closed = False
+            self.options = []
+            sockets.append(self)
+
+        def setsockopt(self, *args):
+            self.options.append(args)
+
+        def bind(self, sockaddr):
+            bind_attempts.append((self.family, sockaddr))
+            if occupied and self.family == socket.AF_INET6:
+                raise OSError("address already in use")
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8888)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 8888, 0, 0)),
+        ],
+    )
+    monkeypatch.setattr(
+        socket,
+        "socket",
+        lambda family, _socktype, _proto: _ProbeSocket(family),
+    )
+
+    assert run._is_port_free("dual-stack.test", 8888) is (not occupied)
+    assert bind_attempts == [
+        (socket.AF_INET, ("127.0.0.1", 8888)),
+        (socket.AF_INET6, ("::1", 8888, 0, 0)),
+    ]
+    assert all(probe.closed for probe in sockets)
+    for probe in sockets:
+        assert ((socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) in probe.options) is (
+            platform != "win32"
+        )
+        if probe.family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
+            assert (socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1) in probe.options
 
 
 def test_a_multi_address_record_matches_either_literal(tmp_path):

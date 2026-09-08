@@ -19,25 +19,24 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-# assets live at <backend>/assets/chat_templates/. This module is at
-# <backend>/core/inference/chat_templates.py, so walk up three parents to
-# <backend> (mirrors utils/inference/inference_config.py).
+# assets live at <backend>/assets/chat_templates/. This module is at <backend>/core/inference/chat_templates.py, so walk
+# up three parents to <backend> (mirrors utils/inference/inference_config.py).
 _ASSETS_DIR = Path(__file__).parent.parent.parent / "assets" / "chat_templates"
 
-# unsloth/gemma-4-<variant>-GGUF (case-insensitive). The "-GGUF" suffix is retained
-# on ModelConfig.identifier for HF GGUF repos, so this matches E2B / E4B / 31B /
-# 26B-A4B and any future unsloth/gemma-4-*-GGUF, while excluding gemma-3,
+# the -GGUF suffix is retained on ModelConfig.identifier, so this excludes the bf16 repos
+# unsloth/gemma-4-<variant>-GGUF (case-insensitive). The "-GGUF" suffix is retained on ModelConfig.identifier for HF
+# GGUF repos, so this matches E2B / E4B / 31B / 26B-A4B and any future unsloth/gemma-4-*-GGUF, while excluding gemma-3,
 # non-Unsloth, and non-GGUF identifiers (e.g. the bf16 "unsloth/gemma-4-E2B-it").
 _GEMMA4_GGUF_RE = re.compile(r"^unsloth/gemma-4-.+-gguf$", re.IGNORECASE)
 
-# Google ships two distinct gemma-4 chat templates: E2B/E4B omit the empty
-# "<|channel>thought<channel|>" block on enable_thinking=false, while the
-# 12b/26B-A4B/31B family emits it. Route the two GGUF families to the matching
-# bundled template so each keeps its model's intended behavior.
+# E2B/E4B omit the empty thought block on enable_thinking=false
+# Google ships two distinct gemma-4 chat templates: E2B/E4B omit the empty "<|channel>thought<channel|>" block on
+# enable_thinking=false, while the 12b/26B-A4B/31B family emits it. Route the two GGUF families to the matching bundled
+# template so each keeps its model's intended behavior.
 _GEMMA4_EDGE_GGUF_RE = re.compile(r"^unsloth/gemma-4-e[24]b-it-gguf$", re.IGNORECASE)
 
-_GEMMA4_TEMPLATE_FILE = "gemma-4.jinja"            # 12b / 26B-A4B / 31B
-_GEMMA4_EDGE_TEMPLATE_FILE = "gemma-4-edge.jinja"  # E2B / E4B
+_GEMMA4_TEMPLATE_FILE = "gemma-4.jinja"
+_GEMMA4_EDGE_TEMPLATE_FILE = "gemma-4-edge.jinja"
 
 
 def _canonical_repo_id(model_identifier: str) -> str:

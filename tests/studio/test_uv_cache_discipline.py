@@ -36,8 +36,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTION = REPO_ROOT / ".github" / "actions" / "install-unsloth-local" / "action.yml"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
-# Named, not detected: a lane whose whole point is a cold machine should have to
-# be removed from this list deliberately, in a diff someone reads.
+# Named, not detected: a lane whose whole point is a cold machine should have to be removed from this list deliberately,
+# in a diff someone reads.
 COLD_INSTALL_WORKFLOWS = (
     "clean-machine-install-ci.yml",
     "desktop-app-clean-machine-ci.yml",
@@ -87,21 +87,18 @@ def _index_of(predicate) -> int:
     return -1
 
 
-# What this action is allowed to cache, and the argument for each. Anything else has
-# to be added here in a diff someone reads, with its own argument written down.
+# What this action is allowed to cache, and the argument for each. Anything else has to be added here in a diff
+# someone reads, with its own argument written down.
 #
-#   .uv-cache            uv's download cache. Content-addressed by URL and hash, so a
-#                        stale entry cannot serve wrong content; the worst it can do
-#                        is miss.
-#   studio/frontend/dist the built frontend. NOT a download, so it does not get the
-#                        argument above and needs its own: it is a directory of static
-#                        assets with no absolute paths, no interpreter coupling and no
-#                        console scripts, which is exactly what makes a venv unsafe to
-#                        cache and this safe. Its key hashes the same inputs
-#                        studio/setup.sh checks before rebuilding, so a hit means the
-#                        build inputs are byte-identical rather than merely similar.
-#                        tests/studio/test_frontend_dist_cache.py holds that agreement
-#                        together and is where the reasoning lives.
+#   .uv-cache            uv's download cache. Content-addressed by URL and hash, so a stale entry cannot serve wrong
+#                        content; the worst it can do is miss.
+#   studio/frontend/dist the built frontend. NOT a download, so it does not get the argument above and needs its own:
+#                        it is a directory of static assets with no absolute paths, no interpreter coupling and no
+#                        console scripts, which is exactly what makes a venv unsafe to cache and this safe. Its key
+#                        hashes the same inputs studio/setup.sh checks before rebuilding, so a hit means the build
+#                        inputs are byte-identical rather than merely similar.
+#                        tests/studio/test_frontend_dist_cache.py holds that agreement together and is where the
+#                        reasoning lives.
 CACHEABLE_PATHS = (".uv-cache", "studio/frontend/dist")
 
 
@@ -191,10 +188,9 @@ def test_cold_install_lanes_never_adopt_this_action(name: str) -> None:
         f"{name} uses install-unsloth-local, which warms uv's cache. A cached "
         f"cold-install test proves nothing and still goes green."
     )
-    # Named separately because the frontend dist cache can now be adopted WITHOUT this
-    # action -- that is the whole point of splitting it out for the Windows jobs, which
-    # call install.ps1 from a hand-written step. Checking only for install-unsloth-local
-    # would let a cold lane paste in the two `uses:` lines and stay green.
+    # Named separately because the frontend dist cache can now be adopted WITHOUT this action -- that is the whole
+    # point of splitting it out for the Windows jobs, which call install.ps1 from a hand-written step. Checking only
+    # for install-unsloth-local would let a cold lane paste in the two `uses:` lines and stay green.
     assert "frontend-dist-" not in text, (
         f"{name} restores a prebuilt frontend. A cold-install lane handed a bundle built "
         f"on another machine last week is not testing a cold install."
