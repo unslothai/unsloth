@@ -954,7 +954,26 @@ def amd_closed_nodes_block_the_runtime(*, needs_kfd: bool = True) -> bool:
         return False
     if needs_kfd and _KFD_NODE in closed:
         return True
+    # The open sibling only answers for a runtime free to use it. A selector narrowing to
+    # particular GPUs may well have selected the CLOSED one, and this cannot tell which,
+    # so the sibling stops being evidence: fail closed, as this already does for a host it
+    # cannot read, rather than suppressing the repair for the node the run will use.
+    if _a_per_gpu_mask_is_set():
+        return True
     return not an_amd_render_node_is_open()
+
+
+def _a_per_gpu_mask_is_set() -> bool:
+    """Whether a selector narrows the runtime to particular AMD GPUs.
+
+    Read for one purpose only: an OPEN render node is an alternative way in only when the
+    runtime is free to use it. Nothing here maps a render node back to the index a mask
+    selected it by, so under a mask the open node may belong to a GPU the mask excludes.
+    """
+    return any(
+        os.environ.get(_name, "").strip()
+        for _name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+    )
 
 
 def _repair_account() -> str:
@@ -1039,14 +1058,13 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             # A pair per GID, not just the first: the sentence already says "each of them",
             # and one groupadd names one numeric owner, so a host whose nodes differ in group
             # had every node after the first left shut by the command it was told to run.
-            _names = (
-                ["<name>"]
-                if len(unnamed) == 1
-                else [f"<name{_i}>" for _i in range(1, len(unnamed) + 1)]
-            )
+            # The name is GENERATED rather than a <name> placeholder, because these are
+            # commands to paste: angle brackets are redirection operators, so `groupadd -g
+            # 993 <name>` is a shell syntax error before groupadd runs. Derived from the GID,
+            # which has no group entry by definition here, so the name is free.
             _pairs = "; ".join(
-                f"sudo groupadd -g {_g} {_n} && sudo usermod -a -G {_n} {user}"
-                for _g, _n in zip(unnamed, _names)
+                f"sudo groupadd -g {_g} amdgpu{_g} && sudo usermod -a -G amdgpu{_g} {user}"
+                for _g in unnamed
             )
             parts.append(
                 f"Some of those nodes belong to {_noun} {_gids}, {_verb} no group entry on "

@@ -33,6 +33,22 @@ import pytest
 from utils.hardware import amd
 
 
+_GPU_MASK_VARS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+
+@pytest.fixture(autouse = True)
+def _no_inherited_gpu_mask(monkeypatch):
+    """No per-GPU selector unless a test sets one.
+
+    An open render node stops being evidence of a usable path under a mask, so any of these
+    three inherited from the runner would decide a case the test never mentioned. This box
+    exports CUDA_VISIBLE_DEVICES, and it silently answered for a control that was supposed
+    to be testing an empty HIP mask.
+    """
+    for _var in _GPU_MASK_VARS:
+        monkeypatch.delenv(_var, raising = False)
+
+
 @pytest.fixture(autouse = True)
 def _the_account_this_process_runs_as(monkeypatch):
     """The repair commands name the account os.access answered for, so fix what that is.
@@ -497,6 +513,8 @@ def _kernel_stack_hint_runs(closed_nodes: str, *, route: bool = True) -> bool:
             "OS=linux",
             # The run-scope predicate the guard now asks in place of a bare SKIP_TORCH
             # test. Lifted, not stubbed, so this arm goes through the installer's own rule.
+            _shell_fn(lines, "_torch_index_url_leaf"),
+            _shell_fn(lines, "_torch_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             # The route gate. True by default for the same reason the two probes are
             # stubbed: this harness asks about the closed-node reasoning, and the route
@@ -853,9 +871,21 @@ def _shell_fn(lines: "list[str]", name: str) -> str:
     raise AssertionError(f"unterminated {name}() in install.sh")
 
 
-def _install_sh_env(closed_nodes: str, env_user: str, backend: "str | None") -> dict:
-    """The environment install.sh reads: the closed set, the account, and the request."""
-    env = {**os.environ, "_closed_amd_nodes": closed_nodes, "USER": env_user}
+def _install_sh_env(
+    closed_nodes: str,
+    env_user: str,
+    backend: "str | None",
+    torch_index: str = "https://download.pytorch.org/whl/rocm6.4",
+) -> dict:
+    """The environment install.sh reads: the closed set, the account, the request, and the
+    torch index, which the run-scope predicates read to tell a CPU wheel from a ROCm one.
+    Defaulted to a ROCm index so every existing case keeps the run it was written for."""
+    env = {
+        **os.environ,
+        "_closed_amd_nodes": closed_nodes,
+        "USER": env_user,
+        "TORCH_INDEX_URL": torch_index,
+    }
     env.pop("UNSLOTH_LLAMA_CPP_BACKEND", None)
     if backend is not None:
         env["UNSLOTH_LLAMA_CPP_BACKEND"] = backend
@@ -871,6 +901,7 @@ def _install_sh_hint(
     repairs: "str | None" = None,
     skip_torch: bool = False,
     backend: "str | None" = None,
+    torch_index: str = "https://download.pytorch.org/whl/rocm6.4",
     env_user: str = "ada",
     id_user: str = "ada",
 ) -> str:
@@ -922,6 +953,8 @@ def _install_sh_hint(
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             # The block also asks which nodes THIS run opens, to name the right --device
             # pair, so the predicate has to exist before the span that calls it.
+            _shell_fn(lines, "_torch_index_url_leaf"),
+            _shell_fn(lines, "_torch_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             # The real derivation by default. An override stands in only where the case
             # cannot be built on disk -- a node whose GID has no entry in the group
@@ -934,7 +967,7 @@ def _install_sh_hint(
         ["bash", "-c", script],
         capture_output = True,
         text = True,
-        env = _install_sh_env(closed_nodes, env_user, backend),
+        env = _install_sh_env(closed_nodes, env_user, backend, torch_index),
     )
     assert out.returncode == 0, out.stderr
     return out.stdout
@@ -1194,6 +1227,8 @@ def _installer_index_summary(index_url: str, closed_nodes: str) -> str:
             _shell_fn(lines, "_is_pip_rocm_family_leaf"),
             # Defined above the case in install.sh, so the span lifted below calls them
             # without carrying them; a shell function has to exist before the call.
+            _shell_fn(lines, "_torch_index_url_leaf"),
+            _shell_fn(lines, "_torch_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             *lines[start : end + 1],
@@ -1998,6 +2033,8 @@ def _kernel_stack_hint_text(*, topology: bool) -> str:
             "OS=linux",
             "C_WARN=",
             "_amd_node_diag_route=true",
+            _shell_fn(lines, "_torch_index_url_leaf"),
+            _shell_fn(lines, "_torch_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             block,
         ]
@@ -2083,6 +2120,8 @@ def _install_sh_missing_kfd(
             f"SKIP_TORCH={'true' if skip_torch else 'false'}",
             "OS=linux",
             "_amd_node_diag_route=true",
+            _shell_fn(lines, "_torch_index_url_leaf"),
+            _shell_fn(lines, "_torch_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if topology else 1}; }}",
             f"_has_amd_rocm_gpu() {{ return {0 if amd_smi_sees_it else 1}; }}",
@@ -2296,8 +2335,8 @@ def test_an_unnamed_gid_hint_also_adds_the_account(monkeypatch, linux):
     assert "each of them" in hint
     # A pair per GID: one groupadd names one numeric owner, so the second node stays shut
     # for anyone who runs only the first command.
-    assert "sudo groupadd -g 993 <name1> && sudo usermod -a -G <name1> ada" in hint
-    assert "sudo groupadd -g 994 <name2> && sudo usermod -a -G <name2> ada" in hint
+    assert "sudo groupadd -g 993 amdgpu993 && sudo usermod -a -G amdgpu993 ada" in hint
+    assert "sudo groupadd -g 994 amdgpu994 && sudo usermod -a -G amdgpu994 ada" in hint
     assert "--group-add 993 --group-add 994" in hint
 
 
@@ -2316,15 +2355,21 @@ def test_the_installer_also_adds_the_account_for_unnamed_gids(tmp_path):
     """The installer twin of the rule above: it printed the container flags per GID after the
     earlier fix, but still said only "create a group" for the bare host."""
     out = _install_sh_hint("/dev/dri/renderD128", repairs = "gid:993\ngid:994")
-    assert "sudo groupadd -g 993 <name1>" in out
-    assert "sudo usermod -a -G <name1> ada" in out
-    assert "sudo groupadd -g 994 <name2>" in out
-    assert "sudo usermod -a -G <name2> ada" in out
+    assert "sudo groupadd -g 993 amdgpu993" in out
+    assert "sudo usermod -a -G amdgpu993 ada" in out
+    assert "sudo groupadd -g 994 amdgpu994" in out
+    assert "sudo usermod -a -G amdgpu994 ada" in out
     assert "--group-add 993 --group-add 994" in out
     assert "create a group for each" in out
 
 
-def _install_sh_kfd_scope(closed_nodes: str, *, skip_torch: bool, backend: "str | None") -> str:
+def _install_sh_kfd_scope(
+    closed_nodes: str,
+    *,
+    skip_torch: bool,
+    backend: "str | None",
+    torch_index: str = "https://download.pytorch.org/whl/rocm6.4",
+) -> str:
     """The closed-node message with the KFD scoping in front of it.
 
     A separate lift from _install_sh_hint because the filter sits ABOVE the block that
@@ -2351,16 +2396,15 @@ def _install_sh_kfd_scope(closed_nodes: str, *, skip_torch: bool, backend: "str 
             "OS=linux",
             f"SKIP_TORCH={'true' if skip_torch else 'false'}",
             "_amd_node_repairs() { printf '%s\\n' 'join:render'; }",
+            _shell_fn(lines, "_torch_index_url_leaf"),
+            _shell_fn(lines, "_torch_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             "\n".join(lines[_filter_start : _filter_end + 1]),
             "\n".join(lines[block_start : end + 1]),
         ]
     )
-    env = {**os.environ, "_closed_amd_nodes": closed_nodes, "USER": "ada"}
-    env.pop("UNSLOTH_LLAMA_CPP_BACKEND", None)
-    if backend is not None:
-        env["UNSLOTH_LLAMA_CPP_BACKEND"] = backend
+    env = _install_sh_env(closed_nodes, "ada", backend, torch_index)
     out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, env = env)
     assert out.returncode == 0, out.stderr
     return out.stdout
@@ -2777,3 +2821,168 @@ def test_the_same_value_spelled_properly_is_still_a_backend():
     "never recognise anything", which silently un-scopes every Vulkan install."""
     out = _install_sh_kfd_scope("/dev/kfd", skip_torch = True, backend = "  VULKAN  ")
     assert out.strip() == ""
+
+
+
+def test_the_unnamed_gid_repair_is_a_command_a_shell_will_run(monkeypatch, linux):
+    """`<name>` is not a placeholder in a shell, it is a redirection: `groupadd -g 993
+    <name>` parses as a read from ./name followed by a `>` with no target, which bash, dash
+    and sh all reject with a syntax error before groupadd runs. Every character of this
+    sentence is meant to be pasted, so it must contain no shell metacharacter it does not
+    mean. The name is derived from the GID, which by definition here has no group entry."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993, 994], [], [], [], []))
+    hint = amd.amd_node_permission_hint()
+    assert "<" not in hint and ">" not in hint
+    assert "sudo groupadd -g 993 amdgpu993 && sudo usermod -a -G amdgpu993 ada" in hint
+    assert "sudo groupadd -g 994 amdgpu994 && sudo usermod -a -G amdgpu994 ada" in hint
+
+
+def test_the_installer_unnamed_gid_repair_is_runnable_too(tmp_path):
+    """The shell twin, checked the same way and then actually parsed: `bash -n` on the two
+    emitted lines is the assertion that a placeholder would fail. Without the parse this
+    would only be testing that a string changed."""
+    import subprocess
+
+    out = _install_sh_hint("/dev/dri/renderD128", repairs = "gid:993")
+    _cmds = [
+        _line.strip() for _line in out.splitlines()
+        if _line.strip().startswith("sudo group") or _line.strip().startswith("sudo usermod")
+    ]
+    assert _cmds, out
+    for _cmd in _cmds:
+        assert "<" not in _cmd and ">" not in _cmd
+        _parsed = subprocess.run(["bash", "-n", "-c", _cmd], capture_output = True, text = True)
+        assert _parsed.returncode == 0, f"{_cmd!r}: {_parsed.stderr}"
+
+
+def test_a_render_node_the_installer_cannot_read_the_vendor_of_is_not_absent(tmp_path):
+    """The shell twin of the Python rule, which round sixteen fixed on one side only. A
+    container mapping /dev/dri while denying its sysfs attributes has a render node; calling
+    that absence told the user to recreate the container with the device it already has.
+
+    Only the two path ROOTS are substituted, so the logic under test is the shipped one.
+    """
+    import subprocess
+
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    fn = _shell_fn(lines, "_amd_render_node_present")
+    fn = fn.replace("/dev/dri/renderD*", f"{tmp_path}/dev/dri/renderD*")
+    fn = fn.replace("/sys/class/drm/", f"{tmp_path}/sys/class/drm/")
+    (tmp_path / "dev/dri").mkdir(parents = True)
+    (tmp_path / "dev/dri/renderD128").write_bytes(b"")
+    # The sysfs directory exists and the vendor file does not, which is what a container
+    # denying the attribute looks like from here.
+    (tmp_path / "sys/class/drm/renderD128/device").mkdir(parents = True)
+    out = subprocess.run(
+        ["bash", "-c", fn + "\nif _amd_render_node_present; then echo PRESENT; else echo ABSENT; fi"],
+        capture_output = True, text = True,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "PRESENT"
+
+
+def test_a_render_node_the_installer_reads_as_another_vendor_is_still_absent(tmp_path):
+    """The control, and the reason the rule is "unknown", not "any node": a readable vendor
+    that is not AMD is a real answer, and treating it as presence would claim an AMD card on
+    an NVIDIA-only host."""
+    import subprocess
+
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    fn = _shell_fn(lines, "_amd_render_node_present")
+    fn = fn.replace("/dev/dri/renderD*", f"{tmp_path}/dev/dri/renderD*")
+    fn = fn.replace("/sys/class/drm/", f"{tmp_path}/sys/class/drm/")
+    (tmp_path / "dev/dri").mkdir(parents = True)
+    (tmp_path / "dev/dri/renderD128").write_bytes(b"")
+    (tmp_path / "sys/class/drm/renderD128/device").mkdir(parents = True)
+    (tmp_path / "sys/class/drm/renderD128/device/vendor").write_text("0x10de\n")
+    out = subprocess.run(
+        ["bash", "-c", fn + "\nif _amd_render_node_present; then echo PRESENT; else echo ABSENT; fi"],
+        capture_output = True, text = True,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "ABSENT"
+
+
+def test_an_open_sibling_is_not_a_way_in_when_a_mask_selects_the_closed_one(monkeypatch, linux):
+    """HIP_VISIBLE_DEVICES=0 narrows the runtime to one GPU, and nothing here maps a render
+    node back to the index it was selected by, so an OPEN sibling may well belong to the GPU
+    the mask excludes. Reading it as an alternative suppressed the repair for the node the
+    run will actually use and sent the user to reinstall a runtime instead."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128", "/dev/dri/renderD129"],
+        openable = {"/dev/kfd", "/dev/dri/renderD129"},
+    )
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    assert amd.amd_closed_nodes_block_the_runtime() is True
+
+
+def test_the_same_host_with_no_mask_still_credits_the_open_sibling(monkeypatch, linux):
+    """The control, and the behaviour this must not undo: with no selector the runtime is
+    free to use the open node, so the closed one is a second finding rather than the cause.
+    Without this the rule could be "a closed node always blocks", which is what the open
+    sibling test was added to stop."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128", "/dev/dri/renderD129"],
+        openable = {"/dev/kfd", "/dev/dri/renderD129"},
+    )
+    # _no_inherited_gpu_mask has already cleared all three.
+    assert amd.amd_closed_nodes_block_the_runtime() is False
+
+
+def test_an_empty_mask_is_not_a_mask(monkeypatch, linux):
+    """The second control: an exported but empty variable narrows nothing, and reading it as
+    a selector would keep the repair on every host that merely has the name exported."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128", "/dev/dri/renderD129"],
+        openable = {"/dev/kfd", "/dev/dri/renderD129"},
+    )
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "  ")
+    assert amd.amd_closed_nodes_block_the_runtime() is False
+
+
+def test_a_cpu_torch_index_with_a_vulkan_bundle_is_not_sent_after_kfd():
+    """SKIP_TORCH is not the only run that opens no AMD node. An explicitly CPU index
+    installs a wheel with no ROCm runtime in it, so with a non-ROCm bundle requested as well
+    nothing in the install opens /dev/kfd -- and the early return declared otherwise purely
+    because torch was being installed at all."""
+    out = _install_sh_kfd_scope(
+        "/dev/kfd",
+        skip_torch = False,
+        backend = "vulkan",
+        torch_index = "https://download.pytorch.org/whl/cpu",
+    )
+    assert out.strip() == ""
+
+
+def test_a_cpu_torch_index_alone_still_reports_a_closed_kfd():
+    """The control, and the reason the backend still has to settle it: "cpu" is deliberately
+    kept in the diagnosis route one layer up, because the GGUF bundle is chosen later and may
+    be the ROCm one, which opens /dev/kfd exactly as ROCm torch would."""
+    out = _install_sh_kfd_scope(
+        "/dev/kfd",
+        skip_torch = False,
+        backend = None,
+        torch_index = "https://download.pytorch.org/whl/cpu",
+    )
+    assert "cannot open its device nodes" in out
+    assert "/dev/kfd" in out
+
+
+def test_a_rocm_torch_index_is_unaffected_by_a_vulkan_bundle():
+    """The second control: ROCm torch opens /dev/kfd whatever the bundle is, so the index has
+    to be read rather than assumed. Without this the rule could be "any explicit non-ROCm
+    backend suppresses", which silences the #10466 diagnosis for every ROCm torch install."""
+    out = _install_sh_kfd_scope(
+        "/dev/kfd",
+        skip_torch = False,
+        backend = "vulkan",
+        torch_index = "https://download.pytorch.org/whl/rocm6.4",
+    )
+    assert "cannot open its device nodes" in out
+    assert "/dev/kfd" in out

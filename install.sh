@@ -3415,15 +3415,24 @@ _kfd_topology_has_an_amd_gpu() {
         /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null
 }
 
+# A node whose vendor cannot be READ is not a node that is absent. A container mapping
+# /dev/dri while hiding or denying its sysfs attributes is the permission shape this whole
+# diagnosis exists for, and calling it absence sent the user to recreate a container with
+# the device it already has. Unknown counts as present, which keeps the closed-node
+# diagnosis reachable; mirrors utils/hardware/amd.py::_amd_render_node_exists.
 _amd_render_node_present() {
+    _arnp_unknown=false
     for _arnp_node in /dev/dri/renderD*; do
         [ -e "$_arnp_node" ] || continue
         _arnp_vendor_file="/sys/class/drm/${_arnp_node##*/}/device/vendor"
-        [ -r "$_arnp_vendor_file" ] || continue
-        read -r _arnp_vendor < "$_arnp_vendor_file" 2>/dev/null || continue
-        [ "$_arnp_vendor" = "0x1002" ] && return 0
+        if [ -r "$_arnp_vendor_file" ] && \
+           read -r _arnp_vendor < "$_arnp_vendor_file" 2>/dev/null; then
+            [ "$_arnp_vendor" = "0x1002" ] && return 0
+        else
+            _arnp_unknown=true
+        fi
     done
-    return 1
+    [ "$_arnp_unknown" = true ]
 }
 
 # How to open the given nodes, one classified line each, read from the nodes themselves:
@@ -5545,8 +5554,20 @@ esac
 # trim and collapse, never delete). Deleting internal whitespace made "vul kan" match here
 # and suppress the diagnosis, while setup.sh rejects that value and falls back to automatic
 # selection -- which may install ROCm and need the very nodes this went quiet about.
+# Whether the TORCH this run installs can open an AMD device node. --no-torch is not the
+# only run that cannot: an explicitly CPU index installs a wheel with no ROCm runtime in
+# it, so it opens no more than --no-torch does. Every other non-ROCm index is already
+# handled one layer up, where _amd_node_diag_route drops the whole diagnosis; "cpu" is
+# deliberately kept there because the GGUF bundle may still be the ROCm one, which is
+# exactly why the backend request below has to settle it.
+_torch_opens_amd_nodes() {
+    [ "$SKIP_TORCH" = true ] && return 1
+    [ "$(_torch_index_url_leaf "${TORCH_INDEX_URL:-}")" = "cpu" ] && return 1
+    return 0
+}
+
 _run_may_open_kfd() {
-    [ "$SKIP_TORCH" = false ] && return 0
+    _torch_opens_amd_nodes && return 0
     case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
             | awk '{$1=$1; print tolower($0)}')" in
         vulkan|cpu|cuda) return 1 ;;
@@ -5559,7 +5580,7 @@ _run_may_open_kfd() {
 # AMD node at all -- CUDA opens /dev/nvidia* -- and telling that install to join the render
 # group or fix its device mapping describes a card nothing in the run was going to touch.
 _run_may_open_a_gpu_node() {
-    [ "$SKIP_TORCH" = false ] && return 0
+    _torch_opens_amd_nodes && return 0
     case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
             | awk '{$1=$1; print tolower($0)}')" in
         cpu|cuda) return 1 ;;
@@ -5684,13 +5705,11 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
                  substep "  group entry here, so usermod cannot name it: create a group for it" ;;
         esac
         substep "  and add yourself to every one of them:"
-        _amd_gid_n=0
         for _amd_gid in $(printf '%s' "$_closed_amd_gids" | tr ',' ' '); do
-            _amd_gid_n=$((_amd_gid_n + 1))
-            case "$_closed_amd_gids" in
-                *,*) _amd_gid_name="<name$_amd_gid_n>" ;;
-                *)   _amd_gid_name="<name>" ;;
-            esac
+            # Generated, not a <name> placeholder: this is a command to paste, and angle
+            # brackets are redirection operators, so `groupadd -g 993 <name>` is a syntax
+            # error before groupadd runs. Keyed on the GID, which has no entry by definition.
+            _amd_gid_name="amdgpu$_amd_gid"
             substep "  sudo groupadd -g $_amd_gid $_amd_gid_name"
             substep "  sudo usermod -a -G $_amd_gid_name $_amd_repair_user"
         done
