@@ -243,31 +243,34 @@ _TAURI_CORS_ORIGINS = (
 _LOOPBACK_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?$"
 
 
+def _is_desktop_cors_lockdown(api_only: bool, secure: bool) -> bool:
+    """The one mode CORS is not any-origin in: the desktop app on a local backend.
+    Secure mode publishes the API over Cloudflare and must stay reachable from
+    remote browser origins."""
+    return api_only and not secure
+
+
 def cors_origins_for_mode(*, api_only: bool, secure: bool) -> list[str]:
     """Allowed CORS origins. Default is any-origin (["*"]); api-only locks down
-    to the Tauri desktop app, except in secure mode where the API is published
-    over Cloudflare and must stay reachable from remote browser origins.
-    Extra origins can be appended via UNSLOTH_CORS_ORIGINS."""
+    to the Tauri desktop app. UNSLOTH_CORS_ORIGINS only ever extends that lockdown
+    list: narrowing a mode that already allows every origin would take the desktop
+    webview's own origin away the moment a secure-mode tunnel drops."""
+    if not _is_desktop_cors_lockdown(api_only, secure):
+        return ["*"]
     custom = [
         origin.strip()
         for origin in os.environ.get("UNSLOTH_CORS_ORIGINS", "").split(",")
         if origin.strip()
     ]
-    if api_only and not secure:
-        return list(dict.fromkeys(list(_TAURI_CORS_ORIGINS) + custom))
-    if custom:
-        return custom
-    return ["*"]
+    return list(dict.fromkeys(list(_TAURI_CORS_ORIGINS) + custom))
 
 
 def cors_origin_regex_for_mode(*, api_only: bool, secure: bool) -> str | None:
-    """Allowed CORS origin regex.
-
-    In desktop api-only mode, regex matching is disabled by default to prevent
-    unauthorized credentialed cross-origin requests from arbitrary local ports.
-    It can be explicitly opted into via UNSLOTH_CORS_ALLOW_LOOPBACK=1 or
-    UNSLOTH_CORS_ORIGIN_REGEX.
-    """
+    """Origin regex for the desktop lockdown, off by default so a page served on any
+    other local port cannot make credentialed calls to the backend. Opt in with
+    UNSLOTH_CORS_ALLOW_LOOPBACK=1, or supply UNSLOTH_CORS_ORIGIN_REGEX."""
+    if not _is_desktop_cors_lockdown(api_only, secure):
+        return None
     if custom_regex := os.environ.get("UNSLOTH_CORS_ORIGIN_REGEX"):
         return custom_regex
     if os.environ.get("UNSLOTH_CORS_ALLOW_LOOPBACK") == "1":

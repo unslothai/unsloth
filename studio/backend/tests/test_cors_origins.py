@@ -15,7 +15,6 @@ from types import SimpleNamespace
 
 import pytest
 from starlette.datastructures import Headers
-from starlette.middleware.cors import CORSMiddleware
 
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
@@ -29,17 +28,36 @@ from utils.host_policy import (
 )
 
 
-class DummyRemoteAccessCORSMiddleware(CORSMiddleware):
-    """Mirror RemoteAccessCORSMiddleware in main.py for isolated testing."""
+def _middleware(
+    *,
+    api_only = True,
+    secure = False,
+    cloudflare_url = None,
+):
+    """The middleware main.py actually mounts, fed the policy main.py actually passes it.
+    A local stand-in class would keep passing after the real wiring stopped matching."""
+    from main import RemoteAccessCORSMiddleware
+    return RemoteAccessCORSMiddleware(
+        lambda *_: None,
+        remote_access_state = SimpleNamespace(cloudflare_url = cloudflare_url),
+        allow_origins = cors_origins_for_mode(api_only = api_only, secure = secure),
+        allow_origin_regex = cors_origin_regex_for_mode(api_only = api_only, secure = secure),
+        allow_credentials = True,
+        allow_methods = ["*"],
+        allow_headers = ["*"],
+    )
 
-    def __init__(self, cors_app, *, remote_access_state, **kwargs):
-        self.remote_access_state = remote_access_state
-        super().__init__(cors_app, **kwargs)
 
-    def is_allowed_origin(self, origin: str) -> bool:
-        return bool(
-            getattr(self.remote_access_state, "cloudflare_url", None)
-        ) or super().is_allowed_origin(origin)
+def _preflight(middleware, origin):
+    return middleware.preflight_response(
+        Headers(
+            {
+                "origin": origin,
+                "access-control-request-method": "POST",
+                "access-control-request-headers": "authorization,content-type",
+            }
+        )
+    )
 
 
 @pytest.mark.parametrize(
@@ -65,8 +83,18 @@ def test_cors_origins_for_mode_env_override(monkeypatch):
     origins = cors_origins_for_mode(api_only = True, secure = False)
     assert origins == list(_TAURI_CORS_ORIGINS) + ["https://foo.example", "http://localhost:9999"]
 
-    origins_wildcard = cors_origins_for_mode(api_only = False, secure = False)
-    assert origins_wildcard == ["https://foo.example", "http://localhost:9999"]
+
+@pytest.mark.parametrize("api_only,secure", [(False, False), (False, True), (True, True)])
+def test_cors_origins_env_never_narrows_any_origin_modes(monkeypatch, api_only, secure):
+    # Secure api-only serves the desktop webview AND remote browsers over the tunnel, and
+    # is_allowed_origin only waves origins through while a Cloudflare URL is published. If
+    # the env list replaced ["*"] here, a dropped tunnel would 400 tauri://localhost and the
+    # desktop app would lose its own backend.
+    monkeypatch.setenv("UNSLOTH_CORS_ORIGINS", "http://localhost:8080")
+    assert cors_origins_for_mode(api_only = api_only, secure = secure) == ["*"]
+
+    middleware = _middleware(api_only = api_only, secure = secure)
+    assert _preflight(middleware, "tauri://localhost").status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -93,6 +121,19 @@ def test_cors_origin_regex_for_mode_opt_in(monkeypatch):
     assert cors_origin_regex_for_mode(api_only = True, secure = False) == r"^https?://specific\.local$"
 
 
+@pytest.mark.parametrize("api_only,secure", [(False, False), (False, True), (True, True)])
+def test_cors_origin_regex_only_applies_to_the_desktop_lockdown(monkeypatch, api_only, secure):
+    monkeypatch.setenv("UNSLOTH_CORS_ALLOW_LOOPBACK", "1")
+    monkeypatch.setenv("UNSLOTH_CORS_ORIGIN_REGEX", r"^https?://specific\.local$")
+    assert cors_origin_regex_for_mode(api_only = api_only, secure = secure) is None
+
+
+def test_main_passes_the_origin_regex_to_the_mounted_middleware():
+    # The policy helpers are only worth anything if main.py hands them to add_middleware.
+    src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+    assert "allow_origin_regex = _cors_origin_regex" in src
+
+
 @pytest.mark.parametrize(
     "origin,should_allow",
     [
@@ -114,25 +155,7 @@ def test_cors_origin_regex_for_mode_opt_in(monkeypatch):
     ],
 )
 def test_desktop_cors_default_locked_down(origin, should_allow):
-    state = SimpleNamespace(cloudflare_url = None)
-    middleware = DummyRemoteAccessCORSMiddleware(
-        lambda *_: None,
-        remote_access_state = state,
-        allow_origins = cors_origins_for_mode(api_only = True, secure = False),
-        allow_origin_regex = cors_origin_regex_for_mode(api_only = True, secure = False),
-        allow_credentials = True,
-        allow_methods = ["*"],
-        allow_headers = ["*"],
-    )
-
-    request = Headers(
-        {
-            "origin": origin,
-            "access-control-request-method": "POST",
-            "access-control-request-headers": "authorization,content-type",
-        }
-    )
-    response = middleware.preflight_response(request)
+    response = _preflight(_middleware(), origin)
 
     if should_allow:
         assert response.status_code == 200
@@ -144,40 +167,16 @@ def test_desktop_cors_default_locked_down(origin, should_allow):
 
 def test_desktop_cors_opt_in_origins(monkeypatch):
     monkeypatch.setenv("UNSLOTH_CORS_ORIGINS", "http://localhost:3000, http://127.0.0.1:8080")
-    state = SimpleNamespace(cloudflare_url = None)
-    middleware = DummyRemoteAccessCORSMiddleware(
-        lambda *_: None,
-        remote_access_state = state,
-        allow_origins = cors_origins_for_mode(api_only = True, secure = False),
-        allow_origin_regex = cors_origin_regex_for_mode(api_only = True, secure = False),
-        allow_credentials = True,
-        allow_methods = ["*"],
-        allow_headers = ["*"],
-    )
+    middleware = _middleware()
 
-    # Allowed opt-in origins
     for origin in ("http://localhost:3000", "http://127.0.0.1:8080", "tauri://localhost"):
-        req = Headers(
-            {
-                "origin": origin,
-                "access-control-request-method": "POST",
-                "access-control-request-headers": "authorization,content-type",
-            }
-        )
-        resp = middleware.preflight_response(req)
+        resp = _preflight(middleware, origin)
         assert resp.status_code == 200
         assert resp.headers.get("access-control-allow-origin") == origin
 
-    # Still rejected origins
+    # The list is an allowlist, not a loopback pass: a port not on it stays blocked.
     for origin in ("http://localhost:9000", "http://evil.com"):
-        req = Headers(
-            {
-                "origin": origin,
-                "access-control-request-method": "POST",
-                "access-control-request-headers": "authorization,content-type",
-            }
-        )
-        resp = middleware.preflight_response(req)
+        resp = _preflight(middleware, origin)
         assert resp.status_code == 400
         assert "access-control-allow-origin" not in resp.headers
 
@@ -204,25 +203,7 @@ def test_desktop_cors_opt_in_origins(monkeypatch):
 )
 def test_desktop_cors_loopback_flag_opt_in(monkeypatch, origin, should_allow):
     monkeypatch.setenv("UNSLOTH_CORS_ALLOW_LOOPBACK", "1")
-    state = SimpleNamespace(cloudflare_url = None)
-    middleware = DummyRemoteAccessCORSMiddleware(
-        lambda *_: None,
-        remote_access_state = state,
-        allow_origins = cors_origins_for_mode(api_only = True, secure = False),
-        allow_origin_regex = cors_origin_regex_for_mode(api_only = True, secure = False),
-        allow_credentials = True,
-        allow_methods = ["*"],
-        allow_headers = ["*"],
-    )
-
-    request = Headers(
-        {
-            "origin": origin,
-            "access-control-request-method": "POST",
-            "access-control-request-headers": "authorization,content-type",
-        }
-    )
-    response = middleware.preflight_response(request)
+    response = _preflight(_middleware(), origin)
 
     if should_allow:
         assert response.status_code == 200
