@@ -653,7 +653,7 @@ test("the switch back leaves the remembered config to stageOrLoad", () => {
   );
   assert.match(
     remembered,
-    /resolveResidentInitialConfig\(selection\.id, selection\.ggufVariant\)/,
+    /resolveResidentInitialConfig\(\s*selection\.id,\s*selection\.ggufVariant,?\s*\)/,
   );
   assert.equal(
     resolveResidentInitialConfig(selection.id, selection.ggufVariant).config
@@ -686,7 +686,7 @@ test("switch back recovers a repo-keyed context through a snapshot path", () => 
   );
   assert.match(
     remembered,
-    /resolveResidentInitialConfig\(selection\.id, selection\.ggufVariant\)/,
+    /resolveResidentInitialConfig\(\s*selection\.id,\s*selection\.ggufVariant,?\s*\)/,
   );
 });
 
