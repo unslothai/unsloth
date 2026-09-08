@@ -1004,9 +1004,12 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             )
         if acl:
             parts.append(
+                # Every path, not acl[0]: the sentence lists them all, ROCm needs all of
+                # them, and their ACLs need not agree, so checking only the first can leave
+                # the second blocker undiagnosed. getfacl takes several paths.
                 f"{', '.join(acl)} carries a POSIX ACL, so the group permissions cannot be "
-                f"read from its mode: check the real grant with getfacl {acl[0]} before "
-                f"changing group membership."
+                f"read from its mode: check the real grant with getfacl {' '.join(acl)} "
+                f"before changing group membership."
             )
     # Group membership cannot create a device node, so these stand whether or not anything
     # above was said. install.sh says the same two things; this is the runtime half.

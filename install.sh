@@ -5538,32 +5538,50 @@ esac
 # has no use for it and must not be sent after a group for it. SKIP_TORCH alone is NOT
 # that run: --no-torch still installs a GGUF bundle, and the ROCm bundle opens /dev/kfd
 # exactly as torch would, which is the #10466 shape. Only an explicit backend request
-# settles it, since the bundle itself is chosen later, in setup.sh.
+# settles it, since the bundle itself is chosen later, in setup.sh. The three named here
+# are the REQUESTABLE_BACKENDS that are not ROCm (utils/prebuilt/llama_backend.py); "hip"
+# normalises to rocm and "auto" is not a decision, so both correctly fall through.
 _run_may_open_kfd() {
     [ "$SKIP_TORCH" = false ] && return 0
     case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
             | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
-        vulkan|cpu) return 1 ;;
+        vulkan|cpu|cuda) return 1 ;;
     esac
     return 0
 }
 
 # One layer wider, for the diagnoses that are not about /dev/kfd. A Vulkan bundle opens a
-# render node, so those still apply to it; a CPU bundle beside --no-torch opens no GPU node
-# at all, and telling that install to join the render group or fix its device mapping
-# describes a card nothing in the run was going to touch.
+# render node, so those still apply to it; a CPU or CUDA bundle beside --no-torch opens no
+# AMD node at all -- CUDA opens /dev/nvidia* -- and telling that install to join the render
+# group or fix its device mapping describes a card nothing in the run was going to touch.
 _run_may_open_a_gpu_node() {
     [ "$SKIP_TORCH" = false ] && return 0
     case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
             | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
-        cpu) return 1 ;;
+        cpu|cuda) return 1 ;;
     esac
     return 0
 }
 
-case "$TORCH_INDEX_URL" in
-    */cpu|*/rocm*|*/gfx*) _amd_node_diag_route=true ;;
-    *)                    _amd_node_diag_route=false ;;
+# Read from the LEAF, and through the same _is_pip_rocm_family_leaf every other index
+# classifier here uses: a whole-URL */rocm*|*/gfx* glob also matches a custom pin whose
+# final segment merely STARTS with one ("gfx-mirror", "rocm7.2-private"), which that helper
+# exists to reject, and a hybrid host on such a pin then got kernel, mapping and group
+# repairs for a card its wheels have nothing to do with. Recomputed from TORCH_INDEX_URL
+# rather than reusing $_torch_index_leaf, because the per-arch reroutes rewrite the URL
+# after that variable is set and this gate has to describe the index actually installed.
+# repo.radeon.com is named on its own: its leaf is rocm-rel-X.Y, which is a real ROCm route
+# and not a pip family, so the family test alone would drop it.
+_amd_node_diag_leaf=$(_torch_index_url_leaf "$TORCH_INDEX_URL")
+case "$_amd_node_diag_leaf" in
+    cpu|rocm-rel-[0-9]*) _amd_node_diag_route=true ;;
+    *)
+        if _is_pip_rocm_family_leaf "$_amd_node_diag_leaf"; then
+            _amd_node_diag_route=true
+        else
+            _amd_node_diag_route=false
+        fi
+        ;;
 esac
 # The two diagnoses are separate branches, not one branch with an inner test, because
 # they need DIFFERENT evidence. The mapping one below is gated on the KFD topology -- the

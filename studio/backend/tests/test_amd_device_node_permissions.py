@@ -1133,6 +1133,11 @@ def _installer_index_summary(index_url: str, closed_nodes: str) -> str:
             "SKIP_TORCH=false",
             "OS=linux",
             "_amd_render_node_present() { return 0; }",
+            # The route gate classifies the index by its canonical leaf, so both
+            # classifiers are lifted rather than stubbed: stubbing them would make the
+            # per-URL cases below assert about the stub instead of about the rule.
+            _shell_fn(lines, "_torch_index_url_leaf"),
+            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
             # Defined above the case in install.sh, so the span lifted below calls them
             # without carrying them; a shell function has to exist before the call.
             _shell_fn(lines, "_run_may_open_kfd"),
@@ -1330,12 +1335,16 @@ def _diag_route(index_url: str) -> bool:
     start = next(
         i
         for i, line in enumerate(lines)
-        if line == 'case "$TORCH_INDEX_URL" in' and "_amd_node_diag_route=true" in lines[i + 1]
+        if line.startswith("_amd_node_diag_leaf=")
     )
     end = next(i for i in range(start, len(lines)) if lines[i] == "esac")
     script = "\n".join(
         [
             f"TORCH_INDEX_URL={index_url!r}",
+            # The classifiers, not stubs: which leaves count as a ROCm route is exactly what
+            # these tests are about, so a stub would have them assert about the stub.
+            _shell_fn(lines, "_torch_index_url_leaf"),
+            _shell_fn(lines, "_is_pip_rocm_family_leaf"),
             *lines[start : end + 1],
             'echo "$_amd_node_diag_route"',
         ]
@@ -2458,3 +2467,75 @@ def test_an_unimportable_rocm_wheel_still_gets_the_node_hint_alone(monkeypatch, 
     )
     assert "Repair installation" not in message
     assert "usermod -a -G render,video ada" in message
+
+
+def test_a_no_torch_cuda_run_is_not_sent_after_the_amd_nodes():
+    """REQUESTABLE_BACKENDS is auto/cpu/cuda/rocm/vulkan, and a CUDA bundle opens
+    /dev/nvidia* and neither AMD node. The predicates listed vulkan and cpu, so a
+    --no-torch run asking for the CUDA bundle on a host with an AMD card on the bus was
+    still handed group and udev repairs for a card nothing in the run would touch."""
+    assert _install_sh_kfd_scope("/dev/kfd", skip_torch = True, backend = "cuda").strip() == ""
+    assert (
+        _install_sh_kfd_scope("/dev/dri/renderD128", skip_torch = True, backend = "cuda").strip()
+        == ""
+    )
+
+
+def test_a_no_torch_cuda_run_is_not_told_about_a_missing_kfd_node_either():
+    """The same request on the branch that reports an ABSENT node."""
+    out = _install_sh_missing_kfd(
+        topology = True, amd_smi_sees_it = True, skip_torch = True, backend = "cuda"
+    )
+    assert out.strip() == ""
+
+
+def test_a_torch_install_asking_for_cuda_llama_still_reports_its_nodes():
+    """The control: a CUDA llama.cpp bundle beside a ROCm torch install still has torch
+    opening the nodes, so the backend request alone cannot silence the diagnosis."""
+    out = _install_sh_kfd_scope("/dev/kfd", skip_torch = False, backend = "cuda")
+    assert "cannot open its device nodes" in out
+
+
+def test_the_acl_sentence_names_every_path_it_lists(monkeypatch, linux):
+    """The sentence lists every ACL-carrying node and then ran getfacl on the first one
+    alone, so a user following it read one node's grant and was left with the second
+    blocker undiagnosed. ROCm needs both nodes and their ACLs need not agree."""
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(
+        amd,
+        "_groups_that_own",
+        lambda paths: ([], [], [], ["/dev/kfd", "/dev/dri/renderD128"], [], []),
+    )
+    hint = amd.amd_node_permission_hint()
+    assert "getfacl /dev/kfd /dev/dri/renderD128" in hint
+
+
+def test_the_acl_sentence_is_unchanged_for_a_single_node(monkeypatch, linux):
+    """The control: one path in, one path out, so the fix cannot have introduced a stray
+    separator into the common case."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], [], ["/dev/kfd"], [], []))
+    hint = amd.amd_node_permission_hint()
+    assert "getfacl /dev/kfd before" in hint
+
+
+@pytest.mark.parametrize(
+    "index_url",
+    [
+        "https://download.pytorch.org/whl/gfx-mirror",
+        "https://example.invalid/wheels/rocm7.2-private/",
+    ],
+)
+def test_a_custom_pin_is_not_read_as_a_rocm_route(index_url):
+    """The gate globbed the raw URL for */rocm* and */gfx*, which matches exactly the
+    custom pins _is_pip_rocm_family_leaf exists to reject -- a mirror named for an arch, or
+    a private ROCm build -- so an install that is not on a published ROCm route was told to
+    repair the AMD kernel stack. Classifying the leaf reuses that rejection."""
+    assert _diag_route(index_url) is False
+
+
+def test_the_real_gfx_route_is_still_read_as_one():
+    """The control that keeps the rejection narrow: repo.radeon.com's arch leaf is a real
+    ROCm route and must stay one, which the parametrized case above covers by URL and this
+    one states as the rule."""
+    assert _diag_route("https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/gfx1151") is True
