@@ -440,9 +440,7 @@ def test_an_audio_extra_is_gated_to_the_hosts_and_pythons_its_wheels_cover(extra
             assert not marker.evaluate(
                 {**base, **case}
             ), f"{extra} has no wheel for {case} and must not be resolved there"
-        aarch64 = marker.evaluate(
-            {**base, "sys_platform": "linux", "platform_machine": "aarch64"}
-        )
+        aarch64 = marker.evaluate({**base, "sys_platform": "linux", "platform_machine": "aarch64"})
         assert aarch64 == allows_aarch64, (
             f"{extra} {'must not exclude' if allows_aarch64 else 'must not be resolved on'} "
             "Linux aarch64"
