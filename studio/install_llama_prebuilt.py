@@ -7251,12 +7251,16 @@ def installed_runtime_health(
     # or security software that clears the bit without deleting the file leaves
     # _find_llama_server_binary rejecting the tree (os.access X_OK, "non
     # executable", no fallback) while an exists() check here still answered Ready.
-    # os.access is F_OK in all but name on Windows, so this is the POSIX
-    # distinction only. The reason stays llama_runtime_binaries_missing: the
-    # repair is the same reinstall, and the frontend renders that reason already.
+    # Windows has no execute bit, and the host is a parameter here, so the check
+    # follows the tree being graded rather than the interpreter doing the grading:
+    # a Windows bundle unpacked on a POSIX filesystem is not a broken install. The
+    # reason stays llama_runtime_binaries_missing: the repair is the same
+    # reinstall, and the frontend renders that reason already.
     ext = ".exe" if host.is_windows else ""
     for name in ("server", "quantize"):
-        if not os.access(runtime_dir / f"llama-{name}{ext}", os.X_OK):
+        binary = runtime_dir / f"llama-{name}{ext}"
+        runnable = binary.exists() if host.is_windows else os.access(binary, os.X_OK)
+        if not runnable:
             return False, "llama_runtime_binaries_missing"
     return True, ""
 
