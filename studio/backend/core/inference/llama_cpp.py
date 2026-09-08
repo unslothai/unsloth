@@ -22612,6 +22612,7 @@ class LlamaCppBackend:
                 # -c and --cache-ram into this command.
                 self._spill_plan_flags = []
                 self._spill_plan_restore = {}
+                _spill_ctx_locals_before = None
                 # A spill plan that moved no weight (fewer slots, the projector on
                 # the CPU, the draft dropped, a shorter context) pins every layer on
                 # the GPU with -ngl -1 --fit off, exactly as the fits branch does.
@@ -22699,10 +22700,12 @@ class LlamaCppBackend:
                             int((_spill_inputs or {}).get("n_ctx") or 0) if "-c" in cmd else 0
                         ),
                         may_shrink = bool((_spill_inputs or {}).get("context_policy_fit_only")),
+                        emitted_ctx = int(effective_ctx or 0) if "-c" in cmd else 0,
                     )
                     if _spill_flags:
                         self._spill_plan_flags = _spill_flags
                         self._spill_plan_restore = {}
+                        _spill_ctx_locals_before = None
                         cmd.extend(self._spill_plan_flags)
                         _spill_keeps_every_layer_on_gpu = "-ot" not in _spill_flags
                         # The plan's other decisions rewrite values this argv already
@@ -22734,6 +22737,9 @@ class LlamaCppBackend:
                             _c_at = cmd.index("-c")
                             self._spill_plan_restore["-c"] = cmd[_c_at + 1]
                             cmd[_c_at + 1] = str(_spill.n_ctx)
+                            # The locals the argv value describes, kept so a retry
+                            # that revokes the plan can put both back with it.
+                            _spill_ctx_locals_before = (effective_ctx, max_available_ctx)
                             effective_ctx = _spill.n_ctx
                             max_available_ctx = max(max_available_ctx, effective_ctx)
                         if _spill.mmproj_to_host and not _mmproj_cpu_pinned:
@@ -24306,6 +24312,7 @@ class LlamaCppBackend:
                     corrects the slot count afterwards.
                     """
                     nonlocal n_parallel, _spill_keeps_every_layer_on_gpu
+                    nonlocal effective_ctx, max_available_ctx
                     reverted = self._drop_tensor_spill(run_cmd, why)
                     if reverted is run_cmd:
                         return run_cmd
@@ -24328,6 +24335,25 @@ class LlamaCppBackend:
                             n_parallel = max(1, int(_restored))
                         except (TypeError, ValueError):
                             pass
+                    # And the context: a plan that raised Auto's cap rebound the two
+                    # locals the post-launch commit and the ceiling are read from.
+                    # Left at the plan's value, the fallback advertises a context
+                    # the child it launched does not serve, and the /props
+                    # reconciliation never corrects the ceiling.
+                    if "-c" in (getattr(self, "_spill_plan_restore", None) or {}):
+                        if _spill_ctx_locals_before is not None:
+                            effective_ctx, max_available_ctx = _spill_ctx_locals_before
+                            # The commit below the argv build already ran with the
+                            # plan's values, ahead of the spawn; the record follows
+                            # the child that is about to be launched.
+                            self._effective_context_length = (
+                                effective_ctx if effective_ctx > 0 else self._context_length
+                            )
+                            self._max_context_length = (
+                                max_available_ctx
+                                if max_available_ctx > 0
+                                else self._effective_context_length
+                            )
                     return reverted
 
                 def _spawn_and_wait(run_cmd, *, label = ""):
@@ -28101,6 +28127,7 @@ class LlamaCppBackend:
         plan: "Optional[SpillPlan]",
         requested_ctx: int = 0,
         may_shrink: bool = True,
+        emitted_ctx: int = 0,
     ) -> "list[str]":
         """The argv tokens for ``plan``, or ``[]`` when it must not be emitted.
 
@@ -28110,6 +28137,10 @@ class LlamaCppBackend:
         field or a pass-through ``-c``): a plan below it priced a cache the launch
         will not run at, and is not emitted rather than rewriting the user's
         value or launching ``--fit off`` under a spill sized for a smaller cache.
+        ``emitted_ctx`` is the ``-c`` the argv carries right now, which Auto may
+        have capped BELOW ``requested_ctx`` before the planner was asked; a priced
+        plan that fits above it, spilling nothing, is a restore of the context
+        the coarse fit gave up, and is emitted for that alone.
 
         The emptiness test is the point. ``Plan`` is a dataclass with no
         ``__bool__``/``__len__``, so EVERY instance is truthy -- including the
@@ -28135,18 +28166,27 @@ class LlamaCppBackend:
         there (llama-kv-cache.cpp:215); the ``-ot`` patterns move only the named
         weights.
         """
-        if plan is None or plan.insufficient or not plan.changed:
+        if plan is None or plan.insufficient or plan.declined_by_gate:
+            return []
+        # A plan that fits ABOVE the emitted context is a launch of its own even
+        # when it spills nothing and moves no knob: Auto capped -c to 8192 on the
+        # coarse fit (gguf_size, host-only tensors included) before the planner
+        # was asked at the context Auto wanted, and the exact layout may prove
+        # that context fully resident. Discarding the plan launches the child at
+        # the cap and throws away the context the planner proved. Only a PRICED
+        # plan says so; an abstain carries an n_ctx too and proves nothing.
+        restores_context = may_shrink and plan.priced and 0 < emitted_ctx < plan.n_ctx
+        if not plan.changed and not restores_context:
             return []
         # A plan the context ladder settled at a SHORTER context than the one asked
-        # for is a launch of its own even when it spills nothing and moves no knob:
-        # the auto path capped -c below it before the planner was asked, so
-        # discarding the plan launches the child at the cap and throws away the
-        # context the planner proved. A plan at the requested context that spills
-        # nothing is llama.cpp's own launch and stays undisturbed.
+        # for is likewise a launch of its own; a plan at the requested context that
+        # spills nothing, with nothing capped below it, is llama.cpp's own launch.
         shrinks_context = 0 < plan.n_ctx < requested_ctx
         if shrinks_context and not may_shrink:
             return []
-        if not (plan.spills_anything or plan.reshapes_launch or shrinks_context):
+        if not (
+            plan.spills_anything or plan.reshapes_launch or shrinks_context or restores_context
+        ):
             return []
         tokens = [tok for pat in plan.ot_patterns for tok in ("-ot", f"{pat}=CPU")]
         if plan.spills_anything and not tokens:

@@ -2494,3 +2494,42 @@ def test_an_explicit_context_above_the_training_window_is_priced_as_asked():
     )
     # The default still reads the window.
     assert plan_placement(layout, [40 * GIB], 256 * GIB, 0, opts = opts).n_ctx == layout.n_ctx_train
+
+
+def test_a_resident_context_plan_is_priced_at_the_slots_it_was_checked_at():
+    """PREFER_RESIDENT charged one recurrent state per slot when it checked that
+    the requested context does not fit, then assembled the plan with no slot
+    state at all, so vram_bytes under-reported a hybrid by (slots - 1) states."""
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = q4_layout()
+    assert layout.recurrent_bytes > 0
+    plan = plan_placement(
+        layout,
+        [22 * GIB],
+        64 * GIB,
+        65536,
+        opts = PlanOptions(context_policy = ContextPolicy.PREFER_RESIDENT, n_parallel = 4),
+    )
+    assert "shrank context" in plan.reason and plan.priced and plan.n_ctx < 65536
+    assert plan.vram_bytes == all_resident_bytes(layout, plan.n_ctx, n_seq = 4)
+    assert (
+        plan.vram_bytes - all_resident_bytes(layout, plan.n_ctx, n_seq = 1)
+        == 3 * layout.recurrent_bytes
+    )
+
+
+def test_only_a_priced_plan_says_the_load_fits():
+    """A fit and an abstain both carry an n_ctx and a reason; only the fit was
+    priced. The seam reads the flag to restore a context Auto capped below one
+    the exact layout proves resident."""
+    fits = plan_placement(q4_layout(), [200 * GIB], 64 * GIB, 65536)
+    assert fits.priced and not fits.spills_anything and "fits in VRAM" in fits.reason
+    abstained = plan_placement(
+        q4_layout(),
+        [200 * GIB],
+        64 * GIB,
+        65536,
+        opts = PlanOptions(host = HostProfile(threads = 8, unified_memory = True)),
+    )
+    assert not abstained.priced and "unified memory" in abstained.reason

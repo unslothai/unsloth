@@ -557,6 +557,11 @@ class Plan:
     # device) and from "does not fit": a declined load is feasible as planned and
     # a smaller context may make it worth taking, which is what FIT_ONLY tries.
     declined_by_gate: bool = False
+    # The planner priced this launch at ``n_ctx`` and it fits as described. False
+    # on every abstain, which also carries a reason and may carry an n_ctx, so a
+    # caller cannot otherwise tell "fits at 32768, nothing to move" from "could
+    # not price this at all".
+    priced: bool = False
 
     @property
     def spills_anything(self) -> bool:
@@ -1605,13 +1610,24 @@ def plan_placement(
             kv_on_host = opts.kv_on_host,
         )
         if shrunk >= opts.min_ctx:
+            # The feasibility above charged one recurrent state per slot; the plan
+            # has to be assembled at the same count, and at the floor re-priced for
+            # the context it settled on, or vram_bytes under-reports a hybrid by
+            # (slots - 1) recurrent states.
+            resident_ctx = min(shrunk, n_ctx)
+            resident_knobs = _Knobs(n_parallel = max(1, opts.n_parallel))
+            resident_floor = _kv_floor_at(
+                layout, opts, kv_bytes_floor, n_ctx, resident_ctx, resident_knobs.n_parallel
+            )
             return _finish(
                 layout,
                 opts,
-                min(shrunk, n_ctx),
+                resident_ctx,
                 [],
                 False,
                 host_ram_bytes,
+                kv_bytes_floor = resident_floor if resident_floor is not None else 0,
+                knobs = resident_knobs,
                 requested_ctx = n_ctx,
                 reason = (
                     f"shrank context {n_ctx} -> {min(shrunk, n_ctx)} to keep every tensor "
@@ -2820,6 +2836,7 @@ def _finish(
     )
     return Plan(
         changed = changed,
+        priced = True,
         n_ctx = n_ctx,
         n_parallel = n_parallel,
         mmproj_to_host = mmproj_to_host,

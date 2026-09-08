@@ -883,3 +883,42 @@ def test_a_plan_below_an_explicit_context_is_not_emitted(tmp_path, monkeypatch):
     at = Plan(changed = True, n_ctx = asked, ot_patterns = ("x",), spilled_blocks = (1,))
     cmd, _backend, _ = _launch_with(tmp_path, monkeypatch, at, n_ctx = asked)
     assert "-ot" in cmd and _flag(cmd, "-c") == str(asked)
+
+
+def test_a_priced_fit_above_the_auto_cap_restores_the_context_the_coarse_fit_gave_up(
+    tmp_path, monkeypatch
+):
+    """Auto capped -c to 8192 on the coarse fit (gguf_size, host-only tensors and
+    all) before the planner was asked at the context Auto wanted. When the exact
+    layout proves that context fully resident the plan spills nothing and moves
+    no knob, and was discarded as llama.cpp's own launch, leaving -c 8192 --fit on.
+    A priced fit above the emitted context is a launch of its own."""
+    fits = Plan(priced = True, n_ctx = NATIVE_CTX, reason = "the whole load fits in VRAM")
+    cmd, backend, seen = _launch_with(tmp_path, monkeypatch, fits)
+    assert seen["inputs"]["n_ctx"] == NATIVE_CTX
+    assert _flag(cmd, "-c") == str(NATIVE_CTX)
+    assert _flag(cmd, "--fit") == "off" and _flag(cmd, "-ngl") == "-1" and "-ot" not in cmd
+    assert backend._spill_plan_restore.get("-c") == "8192"
+    assert backend._effective_context_length == NATIVE_CTX
+    # An abstain carries the same n_ctx and proves nothing: llama.cpp's launch at the cap.
+    abstain = Plan(n_ctx = NATIVE_CTX, reason = "layout or device inventory incomplete")
+    cmd, backend, _ = _launch_with(tmp_path, monkeypatch, abstain)
+    assert _flag(cmd, "-c") == "8192" and _flag(cmd, "--fit") == "on"
+    assert backend._spill_plan_flags == []
+    # And with nothing capped below it, a priced fit at the emitted context is untouched.
+    cmd, backend, _ = _launch_with(tmp_path, monkeypatch, fits, n_ctx = NATIVE_CTX)
+    assert _flag(cmd, "-c") == str(NATIVE_CTX) and _flag(cmd, "--fit") == "on"
+
+
+def test_a_revoked_plan_restores_the_context_locals_with_the_argv(tmp_path, monkeypatch):
+    """A plan that raised Auto's cap rewrote -c and rebound the locals the
+    post-launch commit and the ceiling are read from. The revocation put the
+    argv back and left the locals at the plan's value, so the fallback advertised
+    a context the child it launched does not serve."""
+    plan = Plan(priced = True, changed = True, n_ctx = 12288)
+    cmds, backend = _launch_crash_then_ok(tmp_path, monkeypatch, plan, n_ctx = 0)
+    assert len(cmds) == 2, cmds
+    assert _flag(cmds[0], "-c") == "12288" and _flag(cmds[0], "--fit") == "off"
+    assert _flag(cmds[1], "-c") == "8192" and _flag(cmds[1], "--fit") == "on"
+    assert backend._effective_context_length == 8192
+    assert backend._max_context_length == 8192
