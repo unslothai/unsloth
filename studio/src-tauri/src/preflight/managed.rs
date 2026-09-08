@@ -1739,7 +1739,11 @@ mod tests {
         // make every launch pay both subprocesses forever. The runtime
         // appearing later is a real change and must miss.
         let _home = CapabilityCacheHome::new("no-runtime");
-        let root = scratch_dir("runtime-absent");
+        // A path that does not exist, not merely an empty one: since a root that
+        // is present without a build/bin became its own state (a broken install),
+        // "no runtime at all" is now the absence of the tree itself.
+        let parent = scratch_dir("runtime-absent");
+        let root = parent.join("never-installed");
 
         let without = fingerprint_for_runtime(&root);
         assert_eq!(without.llama_runtime, None);
@@ -1920,7 +1924,7 @@ mod tests {
         install_fake_runtime(&root);
         assert_eq!(
             llama_runtime_fingerprint_at(&root).as_deref(),
-            Some("2:6144")
+            Some("bin:2:6144")
         );
         let _ = fs::remove_dir_all(&parent);
     }
@@ -1972,7 +1976,7 @@ mod tests {
         let started = Instant::now();
         let fingerprint = llama_runtime_fingerprint_at(&root);
         let elapsed = started.elapsed();
-        assert_eq!(fingerprint.as_deref(), Some("5000:5000"));
+        assert_eq!(fingerprint.as_deref(), Some("bin:5000:5000"));
         assert!(
             elapsed < Duration::from_secs(2),
             "5000 files took {elapsed:?}, which is too much to spend before the window opens"
@@ -2002,7 +2006,7 @@ mod tests {
         fs::remove_file(bin.join("libggml-base.so")).unwrap();
         assert_eq!(
             llama_runtime_fingerprint_at(&linked).as_deref(),
-            Some("1:4096")
+            Some("bin:1:4096")
         );
 
         let _ = fs::remove_dir_all(&parent);
@@ -2055,10 +2059,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_runtime_directory_that_cannot_be_read_fingerprints_as_no_runtime() {
+    fn a_runtime_directory_that_cannot_be_read_is_a_broken_install_not_an_absent_one() {
         // A tightened-down or half-owned install directory. read_dir fails, and
-        // the answer must be None rather than a panic: None only ever costs the
-        // probes the cache would have saved.
+        // the answer must not be a panic. It must not be None either: the tree is
+        // there, so this is the broken-install state, and sharing None with a
+        // machine that never installed a runtime is what let a cache written
+        // before the install keep matching after it broke.
         use std::os::unix::fs::PermissionsExt;
 
         let root = scratch_dir("runtime-denied");
@@ -2070,7 +2076,12 @@ mod tests {
         // Mode bits do not apply to a privileged user, and some CI images run
         // as root, so the assertion is made only where the denial is real.
         if fs::read_dir(&bin).is_err() {
-            assert_eq!(llama_runtime_fingerprint_at(&root), None);
+            let denied_fingerprint = llama_runtime_fingerprint_at(&root);
+            assert!(
+                denied_fingerprint.is_some(),
+                "a root that is present but unreadable is a broken install, not an absent one"
+            );
+            assert_ne!(denied_fingerprint, None);
         }
 
         let mut restored = fs::metadata(&bin).unwrap().permissions();
