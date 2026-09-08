@@ -32,6 +32,8 @@ if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
 from test_video_routes import _FakeBackend  # noqa: E402
+from core.inference import media_auto_switch
+import types
 
 
 @pytest.mark.parametrize(
@@ -767,10 +769,6 @@ def test_an_unservable_duration_is_refused_before_the_model_switch(client, backe
     A duration no family can serve was therefore only refused inside begin_generate --
     after the resident pipeline had been evicted and the target model fully loaded.
     """
-    import types
-
-    from core.inference import media_auto_switch
-
     switched = {"completed": False}
 
     async def _fake_switch(
@@ -796,10 +794,6 @@ def test_an_unservable_duration_is_refused_before_the_model_switch(client, backe
 def test_a_reference_only_checkpoint_is_refused_before_the_model_switch(
     client, backend, monkeypatch
 ):
-    import types
-
-    from core.inference import media_auto_switch
-
     switched = {"completed": False}
 
     async def _fake_switch(
@@ -827,9 +821,6 @@ def test_a_reference_only_checkpoint_is_refused_before_the_model_switch(
 
 @pytest.mark.parametrize("reference_size", [(8, 8), (5000, 1000)])
 def test_ref2va_routes_the_input_image_as_a_reference(client, backend, monkeypatch, reference_size):
-    import types
-
-    from core.inference import media_auto_switch
     from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
 
     switched = {"completed": False}
@@ -886,8 +877,6 @@ def test_ref2va_routes_the_input_image_as_a_reference(client, backend, monkeypat
 def test_reference_conditioning_follows_the_state_reserved_by_begin_generate(
     client, backend, monkeypatch
 ):
-    import types
-
     from core.inference.video_families import detect_video_family
     from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
 
@@ -1140,10 +1129,6 @@ def test_an_undecodable_reference_is_refused_before_the_model_switch(client, bac
     _resolve_keyframes only decodes inside begin_generate, which runs after the auto
     switch, so bad bytes used to evict the resident pipeline and load the target first.
     """
-    import types
-
-    from core.inference import media_auto_switch
-
     switched = {"completed": False}
 
     async def _fake_switch(
@@ -1256,9 +1241,6 @@ def test_the_job_describes_the_run_the_backend_reserved(client, backend, monkeyp
 def test_requested_model_cannot_change_before_the_generation_reservation(
     client, backend, monkeypatch, swap_before_snapshot
 ):
-    import types
-
-    from core.inference import media_auto_switch
     from utils import openai_auto_switch_settings
 
     requested = backend.status()["repo_id"]

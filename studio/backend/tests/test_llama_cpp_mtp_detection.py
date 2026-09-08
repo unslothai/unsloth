@@ -80,6 +80,8 @@ from core.inference.llama_cpp import (
     _mla_mtp_auto_enabled,
     _swa_full_from_args_or_env,
 )
+from core.inference import llama_cpp as mod
+import subprocess as _subprocess
 
 
 def _matches(backend: LlamaCppBackend, **kwargs) -> bool:
@@ -3114,8 +3116,6 @@ def test_probe_reports_no_draft_ngl_flag_when_the_build_has_neither(tmp_path):
 def test_inconclusive_probe_retries_after_a_bounded_cache_window(tmp_path, monkeypatch):
     """A transient timeout may not be pinned for the whole process, while a
     persistent failure may not make every capability caller wait again (#8317)."""
-    import subprocess as _subprocess
-
     fake = _make_fake_llama_server(
         tmp_path / "llama-server",
         "--spec-type none,draft-mtp,ngram-mod",
@@ -3169,7 +3169,6 @@ def test_inconclusive_probe_retries_after_a_bounded_cache_window(tmp_path, monke
 @_NEEDS_BASH
 def test_concurrent_timeout_cannot_overwrite_a_successful_probe(tmp_path, monkeypatch):
     """A late, lower-confidence result may not replace a conclusive result."""
-    import subprocess as _subprocess
     import threading as _threading
 
     fake = _make_fake_llama_server(
@@ -3258,8 +3257,6 @@ def test_a_hanging_binary_is_probed_once_per_model_load(tmp_path, monkeypatch):
     """The cost half of #8317, stated as the caller sees it. One model load makes seven
     capability calls; a binary that hangs for a permanent reason must pay the --help
     timeout once across all of them, not once each."""
-    import subprocess as _subprocess
-
     fake = _make_fake_llama_server(tmp_path / "llama-server", "--spec-type none,draft-mtp")
     _clear_caps_cache()
     now = [100.0]
@@ -3411,11 +3408,6 @@ def test_the_probe_marker_is_committed_only_once_the_runtime_is_replaced():
     degraded, or set it on a diffusion runner that would then be torn down and reloaded
     for no reason. Checked structurally because load_model is not unit-callable.
     """
-    import ast
-    import inspect
-
-    from core.inference import llama_cpp as mod
-
     source = inspect.getsource(mod)
     tree = ast.parse(source)
     load_model = next(
@@ -3483,10 +3475,6 @@ def test_a_diffusion_load_never_pays_for_the_capability_probe():
     # The probe is read at the snapshot commit, which a diffusion load returns long
     # before. Reading it beside the capability gates instead made an independent
     # diffusion launch wait out the full --help timeout this change exists to bound.
-    import ast
-    import inspect
-
-    from core.inference import llama_cpp as mod
 
     load_model = next(
         node
@@ -3557,11 +3545,6 @@ def test_the_marker_comes_from_the_launch_snapshot_not_a_probe_after_startup():
     for good -- the original bug, reintroduced. Checked structurally because load_model is
     not unit-callable.
     """
-    import ast
-    import inspect
-
-    from core.inference import llama_cpp as mod
-
     load_model = next(
         node
         for node in ast.walk(ast.parse(inspect.getsource(mod)))
@@ -3612,11 +3595,6 @@ def test_a_later_successful_probe_cannot_erase_an_earlier_degrading_one():
 
     Exercised on the accumulator itself: driving load_model would need a real download.
     """
-    import ast
-    import inspect
-
-    from core.inference import llama_cpp as mod
-
     load_model = next(
         node
         for node in ast.walk(ast.parse(inspect.getsource(mod)))
@@ -3684,11 +3662,6 @@ def test_the_dspark_pre_download_gate_latches_into_the_launch_accumulator():
     launch probe can come back conclusive and the load is remembered as a good one --
     every identical Apply after it then dedupes against a server with no drafter.
     """
-    import ast
-    import inspect
-
-    from core.inference import llama_cpp as mod
-
     tree = ast.parse(inspect.getsource(mod))
     download = next(
         node
@@ -3734,8 +3707,6 @@ def test_the_dspark_gate_uses_the_probe_it_is_given():
     drives the skip. A default is kept so the direct callers in the tests and the CLI
     keep working unchanged.
     """
-    import inspect
-
     from core.inference.llama_cpp import LlamaCppBackend
 
     signature = inspect.signature(LlamaCppBackend._download_dspark)

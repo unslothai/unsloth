@@ -29,6 +29,14 @@ resolve_effective_memory_state = _lsa.resolve_effective_memory_state
 scrub_memory_env = _lsa.scrub_memory_env
 
 import utils.model_memory_settings as mm_settings  # noqa: E402
+from core.inference.llama_cpp import LlamaCppBackend
+import ast
+import inspect
+import resource
+import routes.inference
+import routes.settings as rs
+import utils.model_memory_settings as mm
+import utils.openai_auto_switch_settings as aus
 
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 
@@ -39,8 +47,6 @@ def policy(monkeypatch):
 
     The policy imports the settings module lazily, so patch that module.
     """
-    import utils.model_memory_settings as mm
-
     def run(
         keep_resident: bool,
         no_ram_reserve: bool,
@@ -146,9 +152,6 @@ class TestFlagPolicy:
 
 class TestIdleUnloadVeto:
     def test_keep_resident_zeroes_the_effective_ttl(self, monkeypatch):
-        import utils.model_memory_settings as mm
-        import utils.openai_auto_switch_settings as aus
-
         monkeypatch.setattr(aus, "_stored_idle_seconds", lambda: 300)
         monkeypatch.setattr(aus, "get_openai_auto_switch_enabled", lambda: True)
 
@@ -163,8 +166,6 @@ class TestIdleUnloadVeto:
 
 class TestPersistence:
     def test_partial_update_leaves_the_other_key_alone(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         store: dict = {}
         monkeypatch.setattr(mm, "_cached_setting", lambda key: store.get(key))
         monkeypatch.setattr(
@@ -178,7 +179,6 @@ class TestPersistence:
 
     @pytest.mark.parametrize("value", ["banana", 2.5, object()])
     def test_rejects_non_boolean(self, value):
-        import utils.model_memory_settings as mm
         with pytest.raises(ValueError):
             mm.set_model_memory_settings(keep_resident = value)
 
@@ -196,8 +196,6 @@ class TestPersistence:
         ],
     )
     def test_coercion_defaults_to_off(self, monkeypatch, stored, expected):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "_cached_setting", lambda key: stored)
         assert mm.get_keep_resident() is expected
         assert mm.get_no_ram_reserve() is expected
@@ -209,10 +207,6 @@ class TestMemlockLimit:
     The settings response reports the cap so the UI can say so."""
 
     def test_unlimited_reports_none(self, monkeypatch):
-        import resource
-
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(
             resource,
             "getrlimit",
@@ -222,27 +216,15 @@ class TestMemlockLimit:
 
     @pytest.mark.parametrize("soft", [0, 64 * 1024, 8 * 1024 * 1024])
     def test_finite_limits_are_reported(self, monkeypatch, soft):
-        import resource
-
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(resource, "getrlimit", lambda _w: (soft, soft))
         assert mm.memlock_limit_bytes() == soft
 
     def test_negative_is_treated_as_unlimited(self, monkeypatch):
-        import resource
-
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(resource, "getrlimit", lambda _w: (-1, -1))
         assert mm.memlock_limit_bytes() is None
 
     @pytest.mark.parametrize("exc", [ValueError, OSError, AttributeError])
     def test_probe_failure_never_raises(self, monkeypatch, exc):
-        import resource
-
-        import utils.model_memory_settings as mm
-
         def boom(_w):
             raise exc("nope")
 
@@ -256,7 +238,6 @@ class TestMemoryEnv:
 
     @pytest.fixture
     def toggles(self, monkeypatch):
-        import utils.model_memory_settings as mm
         def set(keep, no_res):
             monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
             monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
@@ -378,10 +359,6 @@ class TestReloadRequired:
         is_loaded = True,
         is_active = True,
     ):
-        import routes.inference
-        import routes.settings as rs
-        import utils.model_memory_settings as mm
-
         backend = type(
             "_B",
             (),
@@ -434,10 +411,6 @@ class TestReloadRequired:
         )
 
     def test_a_skipped_mlock_is_not_a_permanent_reload_prompt(self, monkeypatch):
-        import routes.inference
-        import routes.settings as rs
-        import utils.model_memory_settings as mm
-
         backend = type(
             "_B",
             (),
@@ -526,8 +499,6 @@ class TestDuplicateLoadComparator:
     def test_forces_a_reload_only_when_the_policy_changed(
         self, monkeypatch, launched, policy_active, keep, no_res, satisfied
     ):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
         assert memory_state_satisfies_settings(launched, policy_active) is satisfied
@@ -538,8 +509,6 @@ class TestCapabilityProbeFallback:
         """A timed-out or broken --help probe must fall back conservatively,
         not raise UnboundLocalError and block the load."""
         import subprocess
-
-        from core.inference.llama_cpp import LlamaCppBackend
 
         LlamaCppBackend._capability_cache.clear()
 
@@ -553,10 +522,6 @@ class TestCapabilityProbeFallback:
     def test_an_ungoverned_process_never_asks_for_a_reload(self, monkeypatch):
         """A diffusion GGUF has no llama-server load-mode, so nothing about it
         can contradict the settings."""
-        import routes.inference
-        import routes.settings as rs
-        import utils.model_memory_settings as mm
-
         backend = type(
             "_B",
             (),
@@ -575,8 +540,6 @@ class TestCacheInvalidationRace:
 
     def test_stale_fill_is_dropped(self, monkeypatch):
         import threading
-
-        import utils.model_memory_settings as mm
 
         mm._cache.clear()
         store = {mm.KEEP_RESIDENT_SETTING_KEY: False}
@@ -612,8 +575,6 @@ class TestCacheInvalidationRace:
         assert mm.get_keep_resident() is True
 
     def test_an_uncontended_read_still_caches(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         mm._cache.clear()
         calls = []
 
@@ -683,8 +644,6 @@ class TestRacingReadReturnsTheNewValue:
     def test_a_read_invalidated_mid_flight_is_retried(self, monkeypatch):
         import threading
 
-        import utils.model_memory_settings as mm
-
         mm._cache.clear()
         store = {mm.KEEP_RESIDENT_SETTING_KEY: False}
         gate = threading.Event()
@@ -724,8 +683,6 @@ class TestRacingReadReturnsTheNewValue:
         assert seen["value"] is True, "the racing reader served the pre-write value"
 
     def test_a_write_storm_cannot_spin_forever(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         mm._cache.clear()
         reads = []
 
@@ -739,8 +696,6 @@ class TestRacingReadReturnsTheNewValue:
         assert len(reads) == mm._MAX_REREADS
 
     def test_an_unreadable_db_falls_back_to_the_default(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         mm._cache.clear()
 
         def boom(key, fallback = None):
@@ -758,8 +713,6 @@ class TestMlockApplicability:
     relaunch could satisfy, and would reject every duplicate load forever."""
 
     def test_a_skipped_mlock_satisfies_keep_resident(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         state = resolve_effective_memory_state([], {})
@@ -769,8 +722,6 @@ class TestMlockApplicability:
         assert memory_state_satisfies_settings(state, True, False) is True
 
     def test_page_lockable_launches_are_unchanged(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         unpinned = resolve_effective_memory_state([], {})
@@ -781,16 +732,12 @@ class TestMlockApplicability:
     def test_applicability_does_not_override_no_ram_reserve(self, monkeypatch):
         """no-reserve still wins: a pinned process must be relaunched even where
         mlock would not have been applicable."""
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
         state = resolve_effective_memory_state(["--mlock"], {})
         assert memory_state_satisfies_settings(state, True, False) is False
 
     def test_applicability_is_ignored_with_both_toggles_off(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         state = resolve_effective_memory_state([], {})
@@ -798,16 +745,12 @@ class TestMlockApplicability:
         assert memory_state_satisfies_settings(state, True, False) is False
 
     def test_an_ungoverned_process_still_always_matches(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         assert memory_state_satisfies_settings(None, True, False) is True
 
     def test_the_default_keeps_the_old_meaning(self, monkeypatch):
         """Callers that never pass the flag behave exactly as before."""
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         assert memory_state_satisfies_settings((False, False), True) is False
@@ -820,7 +763,6 @@ class TestFullOffloadDetection:
 
     @staticmethod
     def _backend(n_layers, n_cpu_moe = 0):
-        from core.inference.llama_cpp import LlamaCppBackend
         return type(
             "_B",
             (),
@@ -883,11 +825,7 @@ class TestFullOffloadDetection:
     def test_the_manual_branch_really_does_not_set_fully_gpu_offloaded(self):
         """Pins the premise. If a later change starts setting it there, this
         test fails and the derived check can be simplified away."""
-        import ast
-        import inspect
         import textwrap
-
-        from core.inference.llama_cpp import LlamaCppBackend
 
         source = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
         tree = ast.parse(source)
@@ -944,8 +882,6 @@ class TestNegativeDirectIoIsARamReservation:
         assert out == [flag, "--temp", "0.7"]
 
     def test_the_comparator_now_sees_the_reservation(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
         state = resolve_effective_memory_state(["--no-direct-io"], {})
@@ -987,8 +923,6 @@ class TestEnvVarsAssignTheWholeMode:
         assert resolve_effective_memory_state(["--load-mode", "mmap+mlock"], env) == (True, False)
 
     def test_residency_is_not_reported_satisfied_against_an_unlocked_child(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         state = resolve_effective_memory_state([], {"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_MMAP": "on"})
@@ -1002,10 +936,6 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
 
     @staticmethod
     def _response(keep, no_res, backend, monkeypatch):
-        import routes.inference
-        import routes.settings as rs
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
         monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
@@ -1074,7 +1004,6 @@ class TestHostMemoryGate:
         **kwargs,
     ):
         import utils.hardware
-        from core.inference.llama_cpp import LlamaCppBackend
 
         monkeypatch.setattr(utils.hardware, "is_apple_silicon", lambda: apple)
         monkeypatch.setattr(
@@ -1208,7 +1137,6 @@ class TestHostMemoryGate:
 class TestVulkanIgpuDetection:
     @staticmethod
     def _probe(monkeypatch, rows):
-        from core.inference.llama_cpp import LlamaCppBackend
         monkeypatch.setattr(
             LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary = None: rows)
         )
@@ -1238,8 +1166,6 @@ class TestVulkanIgpuDetection:
         assert self._probe(monkeypatch, [])("bin", None) is False
 
     def test_a_raising_probe_never_fails_the_load(self, monkeypatch):
-        from core.inference.llama_cpp import LlamaCppBackend
-
         def boom(binary = None):
             raise OSError("no vulkan loader")
 
@@ -1276,8 +1202,6 @@ class TestLegacyNegativeEnvAliases:
 
     @pytest.mark.parametrize("name", ["LLAMA_ARG_NO_MMAP", "LLAMA_ARG_NO_DIO"])
     def test_it_is_scrubbed_when_a_toggle_owns_placement(self, monkeypatch, name):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
         env = {name: "1", "PATH": "/usr/bin"}
@@ -1285,8 +1209,6 @@ class TestLegacyNegativeEnvAliases:
         assert env == {"PATH": "/usr/bin"}
 
     def test_both_off_leaves_it_alone(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         env = {"LLAMA_ARG_NO_MMAP": "1", "LLAMA_ARG_NO_DIO": "1"}
@@ -1362,9 +1284,6 @@ def _fake_backend(**attrs):
 
 
 def _install_backend(monkeypatch, backend, *, keep, no_res):
-    import routes.inference
-    import utils.model_memory_settings as mm
-
     monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
     monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
@@ -1376,8 +1295,6 @@ class TestPreSpawnWindow:
     still leaves a window where a save reports no reload."""
 
     def test_a_save_before_the_child_spawns_still_asks_for_a_reload(self, monkeypatch):
-        import routes.settings as rs
-
         backend = _fake_backend(
             is_active = False,
             _memory_launch_pending = True,
@@ -1388,15 +1305,11 @@ class TestPreSpawnWindow:
         assert rs._model_memory_reload_required() is True
 
     def test_nothing_running_still_never_asks(self, monkeypatch):
-        import routes.settings as rs
-
         backend = _fake_backend(_memory_state = (True, False), _memory_policy_active = True)
         _install_backend(monkeypatch, backend, keep = False, no_res = True)
         assert rs._model_memory_reload_required() is False
 
     def test_a_pending_launch_that_matches_needs_no_reload(self, monkeypatch):
-        import routes.settings as rs
-
         backend = _fake_backend(
             _memory_launch_pending = True,
             _memory_state = (True, False),
@@ -1411,8 +1324,6 @@ class TestMlockActiveReporting:
     that was actually taken once something is running."""
 
     def test_with_nothing_loaded_it_reports_the_intent(self, monkeypatch):
-        import routes.settings as rs
-
         _install_backend(monkeypatch, _fake_backend(), keep = True, no_res = False)
         body = rs._model_memory_response()
         assert body.mlock_active is True
@@ -1421,8 +1332,6 @@ class TestMlockActiveReporting:
     def test_a_diffusion_runner_reports_no_lock(self, monkeypatch):
         """It has no load-mode, so it never received a lock flag and warning
         about ulimit -l would be noise."""
-        import routes.settings as rs
-
         backend = _fake_backend(is_active = True, is_loaded = True, _memory_state = None)
         _install_backend(monkeypatch, backend, keep = True, no_res = False)
         body = rs._model_memory_response()
@@ -1431,8 +1340,6 @@ class TestMlockActiveReporting:
         assert body.keep_resident is True, "the toggle itself still reads back on"
 
     def test_a_skipped_lock_on_a_discrete_gpu_reports_no_lock(self, monkeypatch):
-        import routes.settings as rs
-
         backend = _fake_backend(
             is_active = True,
             is_loaded = True,
@@ -1443,8 +1350,6 @@ class TestMlockActiveReporting:
         assert rs._model_memory_response().mlock_active is False
 
     def test_a_lock_that_was_taken_reports_active(self, monkeypatch):
-        import routes.settings as rs
-
         backend = _fake_backend(is_active = True, is_loaded = True, _memory_state = (True, False))
         _install_backend(monkeypatch, backend, keep = True, no_res = False)
         body = rs._model_memory_response()
@@ -1454,8 +1359,6 @@ class TestMlockActiveReporting:
     def test_a_users_own_mlock_counts_as_a_real_lock(self, monkeypatch):
         """Keep resident on, full discrete offload so Unsloth emits nothing, but
         the user typed --mlock: the child IS locked, so say so."""
-        import routes.settings as rs
-
         backend = _fake_backend(
             is_active = True,
             is_loaded = True,
@@ -1466,8 +1369,6 @@ class TestMlockActiveReporting:
         assert rs._model_memory_response().mlock_active is True
 
     def test_no_reserve_still_vetoes_it_outright(self, monkeypatch):
-        import routes.settings as rs
-
         backend = _fake_backend(is_active = True, is_loaded = True, _memory_state = (True, False))
         _install_backend(monkeypatch, backend, keep = True, no_res = True)
         assert rs._model_memory_response().mlock_active is False
@@ -1512,8 +1413,6 @@ class TestFitOnRetryReArmsResidency:
 
     def test_the_re_armed_launch_satisfies_residency(self, monkeypatch):
         """Without this the retry would nag for a reload that cannot help."""
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         state = resolve_effective_memory_state(self._retry_argv(["--fit", "off"]), {})
@@ -1534,9 +1433,6 @@ class TestTheRetryCanReadTheGate:
 
     @staticmethod
     def _load_model_ast():
-        import ast
-        from pathlib import Path
-
         src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         for node in ast.walk(ast.parse(src.read_text(encoding = "utf-8"))):
             if isinstance(node, ast.FunctionDef) and node.name == "load_model":
@@ -1544,7 +1440,6 @@ class TestTheRetryCanReadTheGate:
         raise AssertionError("load_model not found")
 
     def test_every_writer_of_the_gate_can_also_read_it(self):
-        import ast
         outer = self._load_model_ast()
         for inner in ast.walk(outer):
             if not isinstance(inner, ast.FunctionDef) or inner is outer:
@@ -1592,8 +1487,6 @@ class TestInheritedCpuPlacement:
 
     def test_it_is_the_same_predicate_the_pipeline_check_uses(self):
         """Shared, so the two cannot drift apart."""
-        import inspect
-
         from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
 
         source = inspect.getsource(_pipeline_parallel_disabled_by_args)
@@ -1654,11 +1547,8 @@ class TestCpuMoeCountIsParsed:
         assert _args_place_tensors_on_cpu(extras) is expected
 
     def test_it_is_the_same_predicate_the_pipeline_check_uses(self):
-        import inspect
-
         from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
 
-        import ast
         import textwrap
 
         tree = ast.parse(textwrap.dedent(inspect.getsource(_pipeline_parallel_disabled_by_args)))
@@ -1696,8 +1586,6 @@ class TestManualModeIgnoresClearedEnv:
 
     @staticmethod
     def _child_env(parent, gpu_memory_mode):
-        from core.inference.llama_cpp import LlamaCppBackend
-
         env = dict(parent)
         if gpu_memory_mode == "manual":
             LlamaCppBackend._clear_manual_placement_env(env)
@@ -1730,8 +1618,6 @@ class TestManualModeIgnoresClearedEnv:
     def test_override_tensor_is_not_cleared_by_manual_mode(self, monkeypatch):
         """It is absent from _MANUAL_PLACEMENT_ENV_VARS, so it DOES reach the
         child and must keep counting even in manual mode."""
-        from core.inference.llama_cpp import LlamaCppBackend
-
         assert "LLAMA_ARG_OVERRIDE_TENSOR" not in LlamaCppBackend._MANUAL_PLACEMENT_ENV_VARS
         env = self._child_env({"LLAMA_ARG_OVERRIDE_TENSOR": "blk.*=CPU"}, "manual")
         assert env == {"LLAMA_ARG_OVERRIDE_TENSOR": "blk.*=CPU"}
@@ -1750,8 +1636,6 @@ class TestADefaultLaunchRecordsItsApplicability:
     full offload demanded a reload and relaunched identical argv."""
 
     def test_the_gate_is_not_skipped_when_should_mlock_is_false(self):
-        import ast
-
         outer = TestTheRetryCanReadTheGate._load_model_ast()
         parents = {}
         for node in ast.walk(outer):
@@ -1781,23 +1665,17 @@ class TestADefaultLaunchRecordsItsApplicability:
                 cur = parents.get(id(cur))
 
     def test_enabling_residency_after_a_default_full_offload_needs_no_reload(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         # What the gate records for a discrete full offload.
         assert memory_state_satisfies_settings((False, False), False, False) is True
 
     def test_a_partial_offload_still_demands_the_reload(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         assert memory_state_satisfies_settings((False, False), False, True) is False
 
     def test_the_bookkeeping_call_skips_the_vulkan_probe(self, monkeypatch):
-        from core.inference.llama_cpp import LlamaCppBackend
-
         def boom(binary = None):
             raise AssertionError("the probe must not run for a bookkeeping call")
 
@@ -1833,8 +1711,6 @@ class TestPairedWritesAreInvalidatedTogether:
     def test_a_paired_write_invalidates_once_for_both_keys(self, monkeypatch):
         """Deterministic: the timing window itself is only a few instructions, so
         pin the contract instead of racing for it."""
-        import utils.model_memory_settings as mm
-
         store: dict = {}
         monkeypatch.setattr(
             "storage.studio_db.get_app_setting", lambda key, default = None: store.get(key, default)
@@ -1852,17 +1728,12 @@ class TestPairedWritesAreInvalidatedTogether:
         assert set(calls[0]) == {mm.KEEP_RESIDENT_SETTING_KEY, mm.NO_RAM_RESERVE_SETTING_KEY}
 
     def test_invalidating_a_pair_bumps_both_generations(self):
-        import utils.model_memory_settings as mm
-
         mm._generation.clear()
         mm._invalidate(mm.KEEP_RESIDENT_SETTING_KEY, mm.NO_RAM_RESERVE_SETTING_KEY)
         assert mm._generation[mm.KEEP_RESIDENT_SETTING_KEY] == 1
         assert mm._generation[mm.NO_RAM_RESERVE_SETTING_KEY] == 1
 
     def test_one_acquisition_covers_every_key(self):
-        import ast
-        from pathlib import Path
-
         src = Path(__file__).resolve().parent.parent / "utils" / "model_memory_settings.py"
         tree = ast.parse(src.read_text(encoding = "utf-8"))
         setter = next(
@@ -1889,8 +1760,6 @@ class TestThePolicyReadsOneSnapshot:
     saved --mlock in the extras."""
 
     def test_a_save_between_the_two_reads_is_not_observable(self, monkeypatch):
-        import utils.model_memory_settings as mm
-
         # Start at (keep_resident=True, no_ram_reserve=False).
         store = {
             mm.KEEP_RESIDENT_SETTING_KEY: True,
@@ -1925,9 +1794,6 @@ class TestThePolicyReadsOneSnapshot:
         assert (keep_resident, no_ram_reserve) in {(True, False), (False, True)}
 
     def test_the_policy_derives_both_from_one_call(self):
-        import ast
-        from pathlib import Path
-
         src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_server_args.py"
         tree = ast.parse(src.read_text(encoding = "utf-8"))
         fn = next(
@@ -1987,28 +1853,22 @@ class TestResidencyDoesNotBlockReload:
     @pytest.fixture
     def idle_env(self, monkeypatch):
         """Standalone UNSLOTH_MODEL_IDLE_TTL with auto-switch off."""
-        import utils.openai_auto_switch_settings as aus
-
         monkeypatch.setattr(aus, "_stored_idle_seconds", lambda: None)
         monkeypatch.setattr(aus, "_env_idle_seconds", lambda: 300)
         monkeypatch.setattr(aus, "get_openai_auto_switch_enabled", lambda: False)
 
         def residency(on):
-            import utils.model_memory_settings as mm
             monkeypatch.setattr(mm, "get_keep_resident", lambda: on)
 
         return residency
 
     def test_the_effective_ttl_is_still_vetoed(self, idle_env):
-        import utils.openai_auto_switch_settings as aus
-
         idle_env(False)
         assert aus.get_auto_unload_idle_seconds() == 300
         idle_env(True)
         assert aus.get_auto_unload_idle_seconds() == 0, "the veto must still apply"
 
     def test_but_idle_unload_is_still_configured(self, idle_env):
-        import utils.openai_auto_switch_settings as aus
         idle_env(True)
         assert aus.idle_unload_is_configured() is True
 
@@ -2026,8 +1886,6 @@ class TestResidencyDoesNotBlockReload:
         """The converse: no TTL and no auto-switch means no automatic load, with
         or without residency, so this is not just always-true."""
         import routes.inference as ri
-        import utils.model_memory_settings as mm
-        import utils.openai_auto_switch_settings as aus
 
         monkeypatch.setattr(aus, "_stored_idle_seconds", lambda: None)
         monkeypatch.setattr(aus, "_env_idle_seconds", lambda: None)
@@ -2039,9 +1897,6 @@ class TestResidencyDoesNotBlockReload:
     def test_a_stored_ttl_still_needs_auto_switch_on(self, monkeypatch):
         """The configured reader keeps the same auto-switch gating as the
         effective one, so swapping it in changes nothing but the veto."""
-        import utils.model_memory_settings as mm
-        import utils.openai_auto_switch_settings as aus
-
         monkeypatch.setattr(aus, "_stored_idle_seconds", lambda: 300)
         monkeypatch.setattr(aus, "_env_idle_seconds", lambda: None)
         monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
@@ -2054,9 +1909,6 @@ class TestResidencyDoesNotBlockReload:
 
     def test_the_two_readers_agree_except_on_residency(self, monkeypatch):
         """Pins the substitution itself across the whole input space."""
-        import utils.model_memory_settings as mm
-        import utils.openai_auto_switch_settings as aus
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
         for stored in (None, 0, 300):
             for env in (None, 0, 300):
@@ -2070,8 +1922,6 @@ class TestResidencyDoesNotBlockReload:
 
     def test_the_idle_loop_itself_still_reads_the_vetoed_value(self):
         """Scheduling keeps the veto; only the reload-capability checks moved."""
-        import inspect
-
         from core.inference import llama_keepwarm
 
         source = inspect.getsource(llama_keepwarm)
@@ -2148,8 +1998,6 @@ class TestAGpuIdsPinOverridesADeviceFlag:
 
     @staticmethod
     def _child(extra_args, env, gpu_ids):
-        from core.inference.llama_cpp import LlamaCppBackend
-
         env = dict(env or {})
         if gpu_ids is not None:
             extra_args = LlamaCppBackend._strip_device_extra_args(extra_args)
@@ -2203,10 +2051,7 @@ class TestAGpuIdsPinOverridesADeviceFlag:
     def test_the_launch_really_sanitizes_before_classifying(self):
         """Source check: the gate call must receive the stripped extras and env,
         so this cannot regress into reading the raw ones again."""
-        import inspect
         import re
-
-        from core.inference.llama_cpp import LlamaCppBackend
 
         src = inspect.getsource(LlamaCppBackend.load_model)
         strip = src.find("_mem_extra_args = self._strip_device_extra_args(extra_args)")
@@ -2261,8 +2106,6 @@ class TestFitOffRetryDropsTheLock:
     def test_the_dropped_launch_does_not_demand_a_reload(self, monkeypatch):
         """mlock_applicable goes False with the lock, so a later residency save
         is not compared against a lock this launch deliberately dropped."""
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         managed = ["--load-mode", "mmap+mlock"]
@@ -2274,10 +2117,6 @@ class TestFitOffRetryDropsTheLock:
     def test_the_launch_really_reclassifies_the_fit_off_retry(self):
         """Source check: the branch must re-ask the gate and clear the
         bookkeeping, so it cannot drift back to reusing the fitted verdict."""
-        import inspect
-
-        from core.inference.llama_cpp import LlamaCppBackend
-
         src = inspect.getsource(LlamaCppBackend.load_model)
         branch = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
         assert branch != -1, "the --fit off retry moved"
@@ -2303,8 +2142,6 @@ class TestFitOffRetryClearsPolicyActivity:
 
     @staticmethod
     def _satisfied(monkeypatch, *, policy_active):
-        import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         # The retry child: lock dropped, so no lock and no reservation.
@@ -2320,10 +2157,6 @@ class TestFitOffRetryClearsPolicyActivity:
     def test_the_launch_recomputes_activity_without_the_managed_flag(self):
         """Source check: the retry must reuse the non-managed half of the launch
         expression, not leave the first attempt's verdict standing."""
-        import inspect
-
-        from core.inference.llama_cpp import LlamaCppBackend
-
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert (
             "self._memory_policy_active = bool(_mem_managed) or _mem_policy_touched_extras" in src
@@ -2341,9 +2174,6 @@ class TestNoDeadMemoryBookkeeping:
     fit-off retry's activity marker was missed."""
 
     def test_the_launch_records_nothing_unread(self):
-        import ast
-        from pathlib import Path
-
         backend = Path(__file__).resolve().parent.parent
         target = backend / "core" / "inference" / "llama_cpp.py"
 
@@ -2391,8 +2221,6 @@ class TestAnActiveFitterVoidsTheAllLayersVerdict:
 
     @staticmethod
     def _all_on_gpu(monkeypatch, extras, *, fit_active):
-        from core.inference.llama_cpp import LlamaCppBackend
-
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         monkeypatch.setattr(type(backend), "n_layers", property(lambda self: 32), raising = False)
         backend._n_cpu_moe = 0
@@ -2445,10 +2273,6 @@ class TestTheEffectiveFitterState:
     def test_the_launch_asks_over_the_whole_command(self):
         """Source check: Unsloth emits its own --fit into cmd, so reading the
         extras alone would miss it."""
-        import inspect
-
-        from core.inference.llama_cpp import LlamaCppBackend
-
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert "fit_active = fit_is_effectively_on(" in src
         assert "[*cmd, *(_mem_extra_args or [])], _mem_env" in src

@@ -33,6 +33,12 @@ import utils.openai_auto_switch_settings as settings
 from auth.authentication import get_current_subject
 from core.inference.openai_auto_download import preferred_quant
 from utils.api_errors import install_api_error_handlers
+from routes.video import router as video_router
+import core.inference.diffusion as diffusion_module
+import core.inference.diffusion_families as families
+import core.inference.llama_keepwarm as chat
+import core.inference.media_keepwarm as keepwarm
+import core.inference.video as video_module
 
 
 def _a_real_video_family(name = "wan2.2-ti2v-5b"):
@@ -563,9 +569,6 @@ def test_a_companion_base_repo_does_not_count_as_serving(
 
 
 def test_the_video_route_switches_before_it_touches_the_backend(monkeypatch):
-    import core.inference.video as video_module
-    from routes.video import router as video_router
-
     calls: list = []
 
     async def _switch_stub(
@@ -1047,7 +1050,6 @@ def test_setup_keeps_the_gate_and_lock_after_the_caller_gives_up(
 ):
     # Shielding alone let the caller unwind both contexts while setup was still before
     # begin_load, so a newly admitted generation could be cut short by the orphaned switch.
-    import core.inference.media_keepwarm as keepwarm
 
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1204,8 +1206,6 @@ def test_every_backend_call_the_video_route_makes_exists_on_the_backend():
 def test_the_video_load_route_records_provenance_without_raising(monkeypatch):
     # The provenance call is made positionally from both load routes, so a signature that drifts
     # from them 500s every load after the background work has already been accepted.
-    import core.inference.video as video_module
-    from routes.video import router as video_router
 
     backend = _video_load_backend(
         validate_load_request = lambda *a, **k: _a_real_video_family(),
@@ -1318,7 +1318,6 @@ def test_a_stalled_gate_does_not_pin_the_switch_lock(
 ):
     # A gate held elsewhere must not keep the setup task, and with it the switch lock, alive
     # past the budget: acquisition happens before the non-cancellable phase.
-    import core.inference.media_keepwarm as keepwarm
 
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.4)
     keepwarm._TRACKERS[arb.VIDEO].gate.acquire()
@@ -1353,7 +1352,6 @@ def test_two_switches_on_different_backends_do_not_refuse_each_other(
 def test_the_ltx23_extras_check_names_the_exact_companions(tmp_path, monkeypatch):
     # The extras repo also holds checkpoints, so any-weight-file evidence proves nothing about
     # the three variant-specific companions the assembly reads.
-    import core.inference.diffusion_families as families
     import core.inference.video_ltx2 as ltx2
     import core.inference.video_families as video_families
 
@@ -1380,7 +1378,6 @@ def test_the_ltx23_extras_check_names_the_exact_companions(tmp_path, monkeypatch
 def test_the_chat_probe_counts_a_parked_switcher_once(monkeypatch):
     # A waiter is marked inside its own switch, so counting both discounted it twice and an
     # active chat stream read as idle, which the final gated drain no longer re-checks.
-    import core.inference.llama_keepwarm as chat
     monkeypatch.setattr(chat, "other_inference_request_count", lambda **kw: 2)
     with mas.note_switcher(arb.DIFFUSION), mas.note_switcher(arb.VIDEO):
         with mas.note_waiter(arb.VIDEO):
@@ -1390,7 +1387,6 @@ def test_the_chat_probe_counts_a_parked_switcher_once(monkeypatch):
 def test_a_sharded_encoder_without_its_index_is_incomplete(monkeypatch):
     # One shard and no index is an interrupted pull of a repo that is always sharded, so
     # from_pretrained would fetch the index and the rest.
-    import core.inference.diffusion_families as families
 
     monkeypatch.setattr(families, "_upstream_is_cached", lambda *a, **k: True)
     monkeypatch.setattr(locality, "_cached_snapshot_file", lambda repo, name: None)
@@ -1437,7 +1433,6 @@ def test_a_model_unloaded_during_resolution_is_not_reported_as_resident(
 
 
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
-    import core.inference.diffusion as diffusion_module
     import core.inference.image_gallery as gallery_module
     from routes.inference import router
 
@@ -1592,8 +1587,6 @@ def test_the_video_route_refuses_what_the_target_cannot_serve(
 ):
     # begin_generate would say the same thing, but only after the switch had evicted the
     # resident model and spent minutes loading a target that was never going to serve this.
-    import core.inference.video as video_module
-    from routes.video import router as video_router
 
     generated: list = []
     path, filename = pick
@@ -1627,7 +1620,6 @@ def test_the_video_route_refuses_what_the_target_cannot_serve(
 def test_an_encoder_missing_its_config_is_incomplete(monkeypatch):
     # Every shard on disk and no config.json still reaches the Hub: the pipeline builds the
     # encoder with from_pretrained on the whole repository, not on the weights alone.
-    import core.inference.diffusion_families as families
 
     monkeypatch.setattr(families, "_upstream_is_cached", lambda *a, **k: True)
     monkeypatch.setattr(locality, "_cached_snapshot_file", lambda repo, name: None)
@@ -1645,7 +1637,6 @@ def test_a_generically_named_ltx23_checkpoint_is_still_header_checked(
 ):
     # Neither the repo nor the filename carries a family token, so only the loader's
     # general.architecture fallback resolves LTX and reaches the 2.3 extras check.
-    import core.inference.video as video_module
     import core.inference.video_ltx2 as ltx2
     from core.inference.video_families import detect_video_family
 
@@ -1715,7 +1706,6 @@ def test_a_cpu_switch_does_not_hold_the_gates_it_cannot_evict_behind(
     # A CPU load releases GPU ownership instead of taking it, so waiting on chat's lifecycle gate
     # let an unrelated teardown time the switch out, and holding it blocked new chat requests for
     # as long as the re-plan and the load registration took.
-    import core.inference.llama_keepwarm as chat
 
     monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: False)
     monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: False)
@@ -1736,8 +1726,6 @@ def test_a_cpu_switch_does_not_hold_the_gates_it_cannot_evict_behind(
 def test_the_video_route_refuses_a_flow_control_the_target_does_not_expose(monkeypatch):
     # LTX-2 exposes no audio_flow_shift, and _resolve_flow_shifts would only say so after the
     # switch had evicted the resident pipeline and loaded the target.
-    import core.inference.video as video_module
-    from routes.video import router as video_router
 
     generated: list = []
 
@@ -1846,8 +1834,6 @@ def test_a_sharded_component_missing_a_shard_is_refused(catalog, enabled, tmp_pa
 def test_a_native_h3_target_refuses_an_audio_shift_sd_cpp_cannot_apply(monkeypatch):
     # A MiniMax-H3 GGUF always loads through sd.cpp, which derives the audio schedule against a
     # fixed shift, so the engine rule is knowable before the switch rather than only after it.
-    import core.inference.video as video_module
-    from routes.video import router as video_router
 
     generated: list = []
 
@@ -2007,8 +1993,6 @@ def test_a_single_file_hidream_still_checks_its_encoder(
 def test_a_native_h3_target_refuses_max_reference_sizing(monkeypatch):
     # stable-diffusion.cpp scales every reference to the generation's pixel area, so 'max' needs
     # the Diffusers engine, and an H3 GGUF is always native.
-    import core.inference.video as video_module
-    from routes.video import router as video_router
 
     generated: list = []
 
@@ -2080,7 +2064,6 @@ def test_a_hosted_modular_component_is_checked_against_the_cache(
     # load_components pulls each repository the modular index names, and the video planner omits
     # its base manifest whenever the local path exists, so a hosted component that is not on
     # disk would be downloaded after the resident pipeline had already gone.
-    import core.inference.diffusion as diffusion_module
 
     cache = tmp_path / "hub"
     component = cache / "models--unsloth--MiniMax-H3" / "snapshots" / ("a" * 40) / "vae"
@@ -2157,7 +2140,6 @@ def test_a_stalled_load_probe_still_answers_inside_the_budget(flux, enabled, bac
 def test_setup_that_never_registers_gives_the_gates_back(flux, enabled, backend, monkeypatch):
     # A first-run native install runs for minutes before begin_load, and holding both media
     # admission gates and chat's that long blocks every unrelated request.
-    import core.inference.media_keepwarm as keepwarm
 
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.3)
     monkeypatch.setattr(mas, "_SETUP_GRACE_S", 0.5)
@@ -2198,7 +2180,6 @@ def test_a_superseded_snapshot_does_not_vouch_for_the_active_one(
 ):
     # refs/main names the revision from_pretrained resolves to, so a complete component in an
     # older snapshot must not answer for the partial one the load will actually read.
-    import core.inference.diffusion as diffusion_module
 
     cache = tmp_path / "hub"
     repo = cache / "models--unsloth--MiniMax-H3"
@@ -2231,7 +2212,6 @@ def test_a_root_level_hosted_component_needs_more_than_one_shard(
 ):
     # A component named as a whole repo went through _upstream_is_cached, whose no-manifest
     # branch is satisfied by a single weight file an interrupted sharded pull leaves behind.
-    import core.inference.diffusion as diffusion_module
 
     cache = tmp_path / "hub"
     snapshot = cache / "models--unsloth--MiniMax-H3-VAE" / "snapshots" / ("a" * 40)
@@ -2285,7 +2265,6 @@ def test_a_pinned_component_revision_is_the_one_checked(
 ):
     # ComponentSpec.load is handed the whole spec, so a pinned revision is what gets fetched;
     # a complete default snapshot must not answer for it.
-    import core.inference.diffusion as diffusion_module
 
     cache = tmp_path / "hub"
     repo = cache / "models--unsloth--MiniMax-H3"
@@ -2318,7 +2297,6 @@ def test_a_pinned_component_variant_needs_its_own_weights(
 ):
     # from_pretrained asks for the named variant's files rather than falling back to the
     # default ones, so a component holding only the default weights is not complete for it.
-    import core.inference.diffusion as diffusion_module
 
     cache = tmp_path / "hub"
     component = cache / "models--unsloth--MiniMax-H3" / "snapshots" / ("a" * 40) / "vae"
@@ -2395,7 +2373,6 @@ def test_a_shard_index_declaring_nothing_is_not_proof(catalog, enabled, tmp_path
 def test_a_cached_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path, monkeypatch):
     # An active cache is loaded by repo id, which skipped the split check entirely, while the
     # planners look only at the selected first shard and report nothing missing.
-    import core.inference.diffusion as diffusion_module
 
     repo_dir, snapshot = _hf_cache_repo(
         tmp_path,
@@ -2428,7 +2405,6 @@ def test_chat_admitted_before_the_gate_still_stops_the_switch(
 ):
     # A chat request that passed the lifecycle gate after the outer drain's last probe is
     # already running when the switch takes that gate, and the GPU handoff would terminate it.
-    import core.inference.llama_keepwarm as chat
 
     monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.3)
     outer = {"done": False}
@@ -2516,8 +2492,6 @@ def _capture_begin_load(monkeypatch, route):
         monkeypatch.setattr(router_module, "select_and_activate_engine", lambda *a, **k: _Backend())
         monkeypatch.setattr(router_module, "get_active_diffusion_engine", lambda: _Backend())
     else:
-        import core.inference.video as video_module
-
         backend = _video_load_backend(
             validate_load_request = lambda *a, **k: _a_real_video_family(),
             begin_load = _begin_load,
@@ -2598,7 +2572,6 @@ def test_a_media_request_parked_on_a_gate_is_not_read_as_running_chat_work(monke
     # gate: the in-gate drain discounted it on the media side but chat_busy(count_pending=False)
     # read the same blocked request as running chat work, so an otherwise idle switch answered
     # 409 and loaded nothing. Driven with the real gates and the real middleware.
-    import core.inference.llama_keepwarm as chat
 
     class _Backend:
         def status(self):

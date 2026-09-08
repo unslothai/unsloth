@@ -32,6 +32,9 @@ from core.inference.llama_cpp import (
 from core.inference.tool_call_parser import NUDGE_TOOL_CALLS_STATUS
 from state import tool_approvals
 from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
+from core.inference import llama_cpp
+from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
+import httpx
 
 
 def _sse(delta: dict) -> str:
@@ -2574,7 +2577,6 @@ def test_restatement_keeps_deletions_that_change_the_answer():
     """A dropped word can invert the meaning, so a subset is not a restatement."""
 
     from core.inference.tool_call_parser import is_reprompt_restatement
-    from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
 
     previous = "Now I think the feature is not supported in version 1."
     corrected = "Now I think the feature is supported in version 1."
@@ -2588,7 +2590,6 @@ def test_restatement_keeps_deletions_that_change_the_answer():
 
 
 def test_forced_turn_suppression_covers_obligation_phrasing():
-    from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
     for stall in (
         "I need to use render_html now",
         "Need to call web_search",
@@ -2648,8 +2649,6 @@ def test_forced_turn_intent_lead_in_needs_a_restatement_to_be_dropped():
     ``INTENT_SIGNAL`` fires on lead-ins that introduce a real answer ("Now I
     have the results. ..."), so matching it alone would discard the answer.
     """
-    from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
-
     stall = "I will summarize the results now"
     answer = "Now I have the search results. The capital of Japan is Tokyo."
 
@@ -3883,8 +3882,6 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
     """If llama-server drops mid tool-call after a provisional card is shown, the
     loop must close that card before surfacing the error so the UI never leaves a
     tool spinning forever."""
-    import httpx
-
     big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
     fragments = _streamed_structured_tool_call("python", {"code": big_code}, "call_py_err")
     # Drop the trailing [DONE]; raise a connection error after the fragments
@@ -3940,8 +3937,6 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
 
 def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
     """A dead server before the first tool-loop response is opened is safe to retry."""
-    import httpx
-
     payloads: list[dict] = []
     urls: list[str] = []
     backend = _make_backend(
@@ -3975,7 +3970,6 @@ def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
 
 def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(monkeypatch):
     """Both an ordinary iteration and final synthesis refit without repeating old drops."""
-    import httpx
     for max_tool_iterations in (1, 0):
         payloads: list[dict] = []
         backend = _make_backend(
@@ -4135,8 +4129,6 @@ def test_tool_loop_secondary_counts_strip_media_but_payloads_keep_it(monkeypatch
 
 @pytest.mark.parametrize("with_tools", [False, True])
 def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, with_tools):
-    from core.inference import llama_cpp
-
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [[_sse({"content": "OK"}), _done()]], payloads)
     backend._effective_context_length = 100
@@ -4214,10 +4206,6 @@ def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, wit
 
 def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monkeypatch):
     """A rescued respawn refit archives its evictions and emits metadata."""
-    import httpx
-
-    from core.inference import llama_cpp
-
     # Captured once: the second pass would otherwise wrap the first pass's spy.
     real_archive = llama_cpp._archive_and_recall
 
@@ -4287,8 +4275,6 @@ def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monke
 
 
 def test_tool_loop_retries_preflight_when_counting_failed_on_the_dead_server(monkeypatch):
-    import httpx
-
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -4328,7 +4314,6 @@ def test_tool_loop_retries_preflight_when_counting_failed_on_the_dead_server(mon
 
 
 def test_tool_loop_does_not_send_a_stale_payload_when_respawn_refit_fails(monkeypatch):
-    import httpx
     for max_tool_iterations in (1, 0):
         payloads: list[dict] = []
         backend = _make_backend(monkeypatch, [httpx.ConnectError("server is down")], payloads)
@@ -4373,8 +4358,6 @@ def test_tool_loop_does_not_send_a_stale_payload_when_respawn_refit_fails(monkey
 
 def test_connect_error_retry_reuses_rolling_preflight_without_duplicate_notice(monkeypatch):
     """A respawn retries the fitted request without reporting its dropped turns twice."""
-    import httpx
-
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -4455,9 +4438,6 @@ def test_a_respawn_refit_archives_what_it_evicts(monkeypatch):
     They evict more of the conversation, and without archiving there those turns are
     gone for good: unlike the ordinary preflight, nothing else sees them.
     """
-    import httpx
-    from core.inference import llama_cpp
-
     archived: list = []
 
     def fake_archive(conversation, before, **kwargs):
@@ -4513,9 +4493,6 @@ def test_the_respawn_retry_keeps_the_thread(monkeypatch):
     Without the thread those extra turns are archived nowhere and no reserve or boundary
     applies, on the one path that deliberately compacts a second time.
     """
-    import httpx
-    from core.inference import llama_cpp
-
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -4564,8 +4541,6 @@ def test_the_respawn_retry_keeps_the_thread(monkeypatch):
 
 def test_rolling_respawn_retry_refits_when_the_effective_context_changes(monkeypatch):
     """A smaller replacement window can evict more without repeating the first eviction."""
-    import httpx
-
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -4618,7 +4593,6 @@ def test_rolling_respawn_retry_refits_when_the_effective_context_changes(monkeyp
 
 def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypatch):
     """Recover either post-tool generation path without rerunning the tool."""
-    import httpx
     for max_tool_iterations, final_text in (
         (2, "The result is 1."),
         (1, "Final answer."),
@@ -4659,8 +4633,6 @@ def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypa
 
 def test_connect_error_retry_is_bounded(monkeypatch):
     """A failed retry surfaces the error without another respawn attempt."""
-    import httpx
-
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -4693,7 +4665,6 @@ def test_connect_error_retry_is_bounded(monkeypatch):
 def test_pre_header_transport_errors_also_respawn(monkeypatch):
     """A child that dies during prefill already accepted the socket, so it does
     not surface as ConnectError. Nothing has streamed yet, so replay is safe."""
-    import httpx
     for exc in (
         httpx.RemoteProtocolError("server disconnected without sending a response"),
         httpx.ReadError("connection reset by peer"),
@@ -4722,8 +4693,6 @@ def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
     """A closing server can beat its own exit status, so poll() briefly reports it
     alive. Without a grace wait _respawn_if_dead hands back the stale _healthy and the
     single retry is spent on the corpse rather than on a replacement."""
-    import httpx
-
     class _Dying:
         # reapable only from the 4th poll, mimicking teardown lagging the socket close
         def __init__(self):
@@ -4798,7 +4767,6 @@ def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
 
 def test_prefill_timeout_is_not_retried(monkeypatch):
     """A slow-but-alive server must not have its first-token budget spent twice."""
-    import httpx
     for exc in (httpx.ReadTimeout("no first token"), httpx.PoolTimeout("pool")):
         payloads: list[dict] = []
         backend = _make_backend(monkeypatch, [exc], payloads)
@@ -4823,7 +4791,6 @@ def test_prefill_timeout_is_not_retried(monkeypatch):
 
 def test_mtp_crash_recovery_wins_over_respawn(monkeypatch):
     """An MTP crash reloads without MTP, so never respawn the same config on top."""
-    import httpx
     for max_tool_iterations in (2, 1):
         payloads: list[dict] = []
         backend = _make_backend(monkeypatch, [httpx.ConnectError("mtp crash")], payloads)

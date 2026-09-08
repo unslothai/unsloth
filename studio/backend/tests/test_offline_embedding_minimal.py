@@ -25,6 +25,11 @@ from utils.utils import (
     hf_env_offline,
     st_repo_id_candidates,
 )
+from core.rag import embeddings
+from hub.utils import download_manifest
+from huggingface_hub.file_download import repo_folder_name
+import utils.embedding_model_settings as ems
+import utils.utils as utils
 
 # Minimal sentence-transformers modules.json (the marker the gate keys on).
 MODULES_JSON = (
@@ -80,8 +85,6 @@ def _make_cache(
 ):
     """Build a canonical HF-cache snapshot (refs/main + snapshots/<commit>/) for repo_id under
     root from {relpath: contents}; returns the snapshot dir."""
-    from huggingface_hub.file_download import repo_folder_name
-
     repo_dir = Path(root) / repo_folder_name(repo_id = repo_id, repo_type = "model")
     (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
     (repo_dir / "refs" / "main").write_text(commit)
@@ -196,8 +199,6 @@ def test_snapshot_dir_uses_st_alias_for_slashless(hf_cache):
 
 
 def test_snapshot_dir_none_when_snapshot_missing(hf_cache):
-    from huggingface_hub.file_download import repo_folder_name
-
     repo_dir = hf_cache / repo_folder_name(repo_id = "org/broken", repo_type = "model")
     (repo_dir / "refs").mkdir(parents = True)
     (repo_dir / "refs" / "main").write_text("deadbeef")  # no snapshots/deadbeef dir
@@ -288,7 +289,6 @@ def test_snapshot_is_loadable_with_a_complete_indexed_weight_family(hf_cache):
 
 def test_cancel_marker_keeps_a_snapshot_pending(monkeypatch, hf_cache):
     _make_cache(hf_cache, "org/cancelled", {"config.json": "{}", "model.safetensors": "x"})
-    from hub.utils import download_manifest
 
     monkeypatch.setattr(download_manifest, "has_cancel_marker", lambda *a, **k: True)
     assert hf_cache_snapshot_is_loadable("org/cancelled") is False
@@ -296,7 +296,6 @@ def test_cancel_marker_keeps_a_snapshot_pending(monkeypatch, hf_cache):
 
 def test_snapshot_manifest_requires_every_expected_file(monkeypatch, hf_cache):
     _make_cache(hf_cache, "org/manifest-partial", {"config.json": "{}", "model.safetensors": "x"})
-    from hub.utils import download_manifest
 
     manifest = download_manifest.Manifest(
         repo_type = "model",
@@ -320,7 +319,6 @@ def test_verified_snapshot_manifest_ignores_unrelated_incomplete_blob(monkeypatc
         "org/manifest-complete",
         {"config.json": "{}", "model.safetensors": "weights"},
     )
-    from hub.utils import download_manifest
 
     manifest = download_manifest.Manifest(
         repo_type = "model",
@@ -784,8 +782,6 @@ def test_gate_allows_symlinked_sharded_safetensors(tmp_path, monkeypatch):
     import hashlib
     import os
 
-    from huggingface_hub.file_download import repo_folder_name
-
     root = tmp_path / "hub"
     root.mkdir()
     monkeypatch.setenv("HF_HOME", str(tmp_path))
@@ -987,8 +983,6 @@ def _install_fake_sentence_transformers(monkeypatch, captured):
 
 
 def test_get_offline_loads_from_local_snapshot(hf_cache, monkeypatch):
-    from core.rag import embeddings
-
     snapshot = _make_cache(
         hf_cache, "org/st", {"modules.json": MODULES_JSON, "model.safetensors": "x"}
     )
@@ -1008,8 +1002,6 @@ def test_get_offline_loads_from_local_snapshot(hf_cache, monkeypatch):
 
 
 def test_get_offline_uncached_uses_local_files_only(tmp_path, monkeypatch):
-    from core.rag import embeddings
-
     empty = tmp_path / "hub"
     empty.mkdir()
     monkeypatch.setenv("HF_HUB_CACHE", str(empty))
@@ -1033,8 +1025,6 @@ def test_get_offline_uncached_uses_local_files_only(tmp_path, monkeypatch):
 
 
 def test_get_online_omits_local_files_only(monkeypatch):
-    from core.rag import embeddings
-
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     monkeypatch.setattr(embeddings, "_model", None, raising = False)
@@ -1085,8 +1075,6 @@ def test_get_online_loads_the_snapshot_settings_called_cached(hf_cache, monkeypa
     SentenceTransformer the repo id is what lets it fetch a revision published
     since and change the vectors without changing the identity they carry. The
     picker exists to replace exactly that transfer."""
-    from core.rag import embeddings
-
     snapshot = _make_cache(
         hf_cache, "org/fresh", {"modules.json": MODULES_JSON, "model.safetensors": "x"}
     )
@@ -1110,8 +1098,6 @@ def test_get_online_loads_the_snapshot_settings_called_cached(hf_cache, monkeypa
 def test_an_uncached_model_online_still_loads_by_repo_id(monkeypatch):
     """The pin above must not turn a first-ever load into a failure: with nothing
     cached there is no snapshot to prefer, so the repo id still goes to the Hub."""
-    from core.rag import embeddings
-
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     monkeypatch.setattr(embeddings, "_model", None, raising = False)
@@ -1159,10 +1145,6 @@ def test_an_eviction_between_the_check_and_the_snapshot_keeps_the_marker(monkeyp
     """Retired off the loadable check alone, an eviction landing before
     hf_cache_snapshot_dir cleared the marker AND raised, freeing the next attempt
     to reach the Hub."""
-    from core.rag import embeddings
-    import utils.embedding_model_settings as ems
-    import utils.utils as utils
-
     cleared = []
     monkeypatch.setattr(ems, "clear_stored_download_pending", lambda m: cleared.append(m) or True)
     monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)
@@ -1195,10 +1177,6 @@ def test_a_gguf_only_cache_does_not_retire_the_pending_st_marker(monkeypatch, tm
     """hf_cache_snapshot_is_loadable counts .gguf, so a hybrid repo whose GGUF is
     cached while its sentence-transformers snapshot is still downloading retired
     the marker and handed SentenceTransformer a GGUF-only snapshot."""
-    from core.rag import embeddings
-    import utils.embedding_model_settings as ems
-    import utils.utils as utils
-
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "config.json").write_text("{}")
@@ -1237,10 +1215,6 @@ def test_a_partial_st_transfer_keeps_the_pending_marker(monkeypatch, tmp_path):
     """ST weights alone are satisfied by the first finalized shard of a transfer
     still in flight. Clearing the marker there and loading the partial snapshot
     means a later cancel plus eviction leaves the next attempt free to download."""
-    from core.rag import embeddings
-    import utils.embedding_model_settings as ems
-    import utils.utils as utils
-
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "config.json").write_text("{}")
@@ -1280,9 +1254,6 @@ def test_the_alias_snapshot_is_the_one_loaded(monkeypatch, tmp_path):
     hf_cache_snapshot_dir lookup returns a stale literal entry. Pinning that one
     hands SentenceTransformer the wrong directory while the valid alias snapshot
     sits right there."""
-    from core.rag import embeddings
-    import utils.utils as utils
-
     literal = tmp_path / "literal"
     literal.mkdir()
     (literal / "config.json").write_text("{}")
@@ -1333,10 +1304,6 @@ def test_a_pending_transfer_does_not_make_the_security_scan_offline(monkeypatch,
     reachable. The security gate needs the second. Told offline while online it
     applies the fail-closed cached-pickle rule and rejects a .bin-only repo the
     resolver just accepted and scanned, failing the first index outright."""
-    from core.rag import embeddings
-    import utils.embedding_model_settings as ems
-    import utils.utils as utils
-
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "config.json").write_text("{}")
@@ -1395,10 +1362,6 @@ def test_a_failed_st_constructor_keeps_the_pending_marker(monkeypatch, tmp_path)
     marker before that point let _build_st_backend_or_fallback swap to
     llama-server with nothing left to stop it fetching the GGUF companion during
     the first index."""
-    from core.rag import embeddings
-    import utils.embedding_model_settings as ems
-    import utils.utils as utils
-
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "config.json").write_text("{}")
@@ -1450,9 +1413,6 @@ def test_a_local_path_is_not_replaced_by_a_hub_cache_of_the_same_name(monkeypatc
     its name with a cached Hub model. Resolving the cache for it handed
     SentenceTransformer the Hub's weights while the vectors kept the local path's
     identity: a silent swap of the artifact the user selected."""
-    from core.rag import embeddings
-    import utils.utils as utils
-
     local = tmp_path / "all-MiniLM-L6-v2"
     local.mkdir()
     (local / "config.json").write_text("{}")
@@ -1497,8 +1457,6 @@ def test_an_alias_cache_hit_names_the_namespace_that_supplied_it(monkeypatch, tm
     ST alias itself, so asking it about the literal slashless name returned the
     namespaced snapshot paired with a repo id that had supplied nothing. The
     resolver reports that id, and the PUT verifies and scans it."""
-    import utils.utils as utils
-
     hub = tmp_path / "hub"
     repo_dir = hub / "models--sentence-transformers--all-MiniLM-L6-v2"
     snapshot = repo_dir / "snapshots" / "abc123"

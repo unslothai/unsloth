@@ -28,6 +28,12 @@ from models.inference import (
     CompletionMessage,
     ResponsesRequest,
 )
+from PIL import Image
+from io import BytesIO
+from routes.inference import _anthropic_upstream_error
+import numpy as np
+import routes.inference as inf_mod
+import routes.inference as inference_route
 from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
@@ -165,8 +171,6 @@ class TestFriendlyUpstreamError:
         assert "llama-server error:" in _openai_passthrough_error(500, "disk full").detail
 
     def test_anthropic_upstream_error_rewords_context_overflow(self):
-        from routes.inference import _anthropic_upstream_error
-
         raw = (
             '{"error":{"code":500,"message":"the request exceeds the available context '
             'size. try increasing the context size or enable context shift",'
@@ -177,8 +181,6 @@ class TestFriendlyUpstreamError:
         assert "llama-server error:" not in msg
 
     def test_anthropic_upstream_error_includes_token_counts_when_known(self):
-        from routes.inference import _anthropic_upstream_error
-
         msg = _anthropic_upstream_error(
             "the request (214331 tokens) exceeds the available context size (131072 tokens)"
         )
@@ -186,7 +188,6 @@ class TestFriendlyUpstreamError:
         assert m and m.groups() == ("214331", "131072")
 
     def test_anthropic_upstream_error_leaves_other_failures_alone(self):
-        from routes.inference import _anthropic_upstream_error
         assert _anthropic_upstream_error("disk full") == "llama-server error: disk full"
         assert "compile a grammar" in _anthropic_upstream_error("failed to parse grammar")
 
@@ -276,7 +277,6 @@ class TestFriendlyUpstreamError:
         """When the latest turn or the irreducible floor is what does not fit, compacting
         the history cannot make it fit, and a client told to compact just retries."""
         from core.inference import context_refusal
-        from routes.inference import _anthropic_upstream_error
 
         body = "the request (214331 tokens) exceeds the available context size (131072 tokens)"
         try:
@@ -640,7 +640,6 @@ class TestChatCompletionRequestToolFields:
         from fastapi.responses import JSONResponse
         from fastapi.testclient import TestClient
 
-        import routes.inference as inference_route
         from auth.authentication import get_current_subject
 
         captured = {}
@@ -678,7 +677,6 @@ class TestChatCompletionRequestToolFields:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        import routes.inference as inference_route
         from auth.authentication import get_current_subject
         from utils.api_errors import install_api_error_handlers
 
@@ -824,8 +822,6 @@ class TestChatCompletionRequestToolFields:
         self._assert_unsupported_n(resp)
 
     def test_n_rejected_for_gguf_tools_passthrough_path(self, monkeypatch):
-        import routes.inference as inference_route
-
         class _GGUFBackend:
             is_loaded = True
             model_identifier = "test-gguf"
@@ -888,8 +884,6 @@ class TestChatCompletionRequestToolFields:
         the client has no way to tell. A selection that resolves to no tool routes to
         the ordinary generator, which forwards it no more than the loop does, and the
         refusal lands after the monitor row opens, so it must close it."""
-        import routes.inference as inference_route
-
         class _GGUFBackend:
             is_loaded = True
             model_identifier = "test-gguf"
@@ -913,8 +907,6 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_client_tools_rejected_when_gguf_template_has_no_tool_support(self, monkeypatch):
-        import routes.inference as inference_route
-
         class _GGUFBackend:
             is_loaded = True
             model_identifier = "test-gguf"
@@ -956,8 +948,6 @@ class TestChatCompletionRequestToolFields:
         """The single-image refusal lands after the monitor row opens, so it must
         close it: a row left running keeps Studio reporting the backend as
         generating long after the request has been answered with a 400."""
-        import routes.inference as inference_route
-
         class _LlamaOff:
             is_loaded = False
             supports_tools = False
@@ -1018,8 +1008,6 @@ class TestChatCompletionRequestToolFields:
         is_vision = True,
     ):
         """A loaded safetensors backend on the standard path, recording generation."""
-        import routes.inference as inference_route
-
         class _LlamaOff:
             is_loaded = False
             supports_tools = False
@@ -1189,8 +1177,6 @@ class TestChatCompletionRequestToolFields:
         """The TTS auto-route returns before the standard image path and speaks the
         newest user text, so an attached image is discarded. It is also why the
         text-only rejection never sees such a request."""
-        import routes.inference as inference_route
-
         class _LlamaOff:
             is_loaded = False
             supports_tools = False
@@ -1216,7 +1202,6 @@ class TestChatCompletionRequestToolFields:
 
             def generate_audio_response(self, **kwargs):
                 spoken.append(kwargs)
-                import numpy as np
                 return np.zeros(16000, dtype = "float32"), 16000
 
             def reset_generation_state(self, cancel_event = None):
@@ -1349,8 +1334,6 @@ class TestChatCompletionRequestToolFields:
         """The GGUF audio branch returns before every image check, exactly as the
         safetensors audio branch does, and speaks the newest user TEXT. An attached
         image went unread and unmentioned."""
-        import routes.inference as inference_route
-
         spoken = []
 
         class _LlamaTts:
@@ -1364,7 +1347,6 @@ class TestChatCompletionRequestToolFields:
 
             def generate_audio_response(self, **kwargs):
                 spoken.append(kwargs)
-                import numpy as np
                 return np.zeros(16000, dtype = "float32"), 16000
 
         monitor = ApiMonitor(max_entries = 3)
@@ -1476,10 +1458,6 @@ class TestChatCompletionRequestToolFields:
         """The audio-input branch returns before the standard image path and forwards
         only the flattened messages plus the audio, so an attached image is
         discarded. Any count: one is dropped here as silently as two."""
-        import numpy as np
-
-        import routes.inference as inference_route
-
         class _LlamaOff:
             is_loaded = False
             supports_tools = False
@@ -1553,10 +1531,6 @@ class TestChatCompletionRequestToolFields:
         """A client attaching its image through the top-level image_base64
         extension, with no image parts anywhere, means that image for THIS
         request. The audio branch cannot forward it, so refuse rather than drop."""
-        import numpy as np
-
-        import routes.inference as inference_route
-
         class _LlamaOff:
             is_loaded = False
             supports_tools = False
@@ -1618,10 +1592,6 @@ class TestChatCompletionRequestToolFields:
         """Studio fills image_base64 from anywhere in the thread, so it is not a
         per-turn signal. When an earlier turn carries the image the parts decide,
         and the voice follow-up must still be answered."""
-        import numpy as np
-
-        import routes.inference as inference_route
-
         class _LlamaOff:
             is_loaded = False
             supports_tools = False
@@ -1690,10 +1660,6 @@ class TestChatCompletionRequestToolFields:
         """A direct client can attach a NEW image through the legacy field while the
         newest turn stays text-only. Studio's own field is copied out of the thread
         and byte-matches a part; one matching nothing came with this request."""
-        import numpy as np
-
-        import routes.inference as inference_route
-
         class _LlamaOff:
             is_loaded = False
             supports_tools = False
@@ -1760,10 +1726,6 @@ class TestChatCompletionRequestToolFields:
         """findLatestUserImageBase64 derives the legacy field only from USER turns,
         so an image on an assistant turn is not something it could be an echo of.
         Matching any role let an explicitly attached image be discarded here."""
-        import numpy as np
-
-        import routes.inference as inference_route
-
         class _LlamaOff:
             is_loaded = False
             supports_tools = False
@@ -1832,10 +1794,6 @@ class TestChatCompletionRequestToolFields:
     def test_an_image_on_an_earlier_turn_still_allows_a_voice_follow_up(self, monkeypatch):
         """The count is scoped to the newest user turn, so asking by voice about a
         picture attached on an earlier turn keeps working."""
-        import numpy as np
-
-        import routes.inference as inference_route
-
         class _LlamaOff:
             is_loaded = False
             supports_tools = False
@@ -1931,8 +1889,6 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_client_tools_use_passthrough_capability_when_tool_loop_is_disabled(self, monkeypatch):
-        import routes.inference as inference_route
-
         captured = {}
 
         class _GGUFBackend:
@@ -2001,7 +1957,6 @@ class TestChatCompletionRequestToolFields:
         # confirm_tool_calls=True still forces the local-confirm rejection.
         # The pre-switch guard only runs when an automatic load may run, so force
         # that predicate on to exercise it against a resident passthrough backend.
-        import routes.inference as inference_route
 
         class _GGUFBackend:
             is_loaded = True
@@ -2102,7 +2057,6 @@ class TestChatCompletionRequestToolFields:
         # prompt on, so it must 400 at the pre-switch guard -- before
         # _maybe_auto_switch_model runs -- rather than evicting the resident model
         # and 400ing only at the per-backend check.
-        import routes.inference as inference_route
 
         class _GGUFBackend:
             is_loaded = True
@@ -2150,7 +2104,6 @@ class TestChatCompletionRequestToolFields:
         # DiffusionGemma forces supports_tools off while passthrough stays
         # available (#6851): enable_tools=True must not steal client tools
         # from the passthrough into an Unsloth tool loop that cannot run.
-        import routes.inference as inference_route
 
         captured = {}
 
@@ -2213,8 +2166,6 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_tool_choice_none_allows_tool_catalog_without_tool_template(self, monkeypatch):
-        import routes.inference as inference_route
-
         class _GGUFBackend:
             is_loaded = True
             model_identifier = "test-gguf"
@@ -2255,8 +2206,6 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_tool_call_history_rejected_when_gguf_template_has_no_tool_support(self, monkeypatch):
-        import routes.inference as inference_route
-
         class _GGUFBackend:
             is_loaded = True
             model_identifier = "test-gguf"
@@ -2321,8 +2270,6 @@ class TestChatCompletionRequestToolFields:
         samples, and one SSE stream, which carries a single choice whether or not
         the pre-switch check (reached only when a load may) ran. And no non-GGUF
         backend can constrain decoding at all."""
-        import routes.inference as inference_route
-
         class _NoGGUFBackend:
             is_loaded = False
             supports_tools = False
@@ -2350,8 +2297,6 @@ class TestChatCompletionRequestToolFields:
     def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(
         self, monkeypatch, validate_before_switch
     ):
-        import routes.inference as inference_route
-
         class _NoGGUFBackend:
             is_loaded = False
             supports_tools = False
@@ -3124,8 +3069,6 @@ class TestOpenAICompatibilityHelpers:
         assert usage["total_tokens"] == 7
 
     def test_completion_stream_monitor_reads_usage_before_client_strip(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -3930,8 +3873,6 @@ class TestGgufVisionToolRouting:
         backend_kwargs = None,
         request = None,
     ):
-        import routes.inference as inf_mod
-
         reset_tool_policy()
 
         def _plain(**_kwargs):
@@ -3981,8 +3922,6 @@ class TestGgufVisionToolRouting:
         return result
 
     def test_image_request_with_enabled_tools_enters_gguf_tool_loop(self, monkeypatch):
-        import routes.inference as inf_mod
-
         reset_tool_policy()
         captured = {}
 
@@ -4042,8 +3981,6 @@ class TestGgufVisionToolRouting:
         assert tool_messages[1]["content"][1]["type"] == "image_url"
 
     def test_parallel_tool_calls_false_reaches_gguf_tool_loop(self, monkeypatch):
-        import routes.inference as inf_mod
-
         reset_tool_policy()
         captured = {}
 
@@ -4088,8 +4025,6 @@ class TestGgufVisionToolRouting:
     def test_enabled_tools_web_search_only_enters_gguf_tool_loop(self, monkeypatch):
         """#9730: enable_tools + enabled_tools: ["web_search"] on a local GGUF
         must enter Studio's loop with that catalog, not answer from memory."""
-        import routes.inference as inf_mod
-
         reset_tool_policy()
         captured = {}
 
@@ -4147,8 +4082,6 @@ class TestGgufVisionToolRouting:
         assert captured["kwargs"]["permission_mode"] == "off"
 
     def test_api_server_tool_loop_keeps_the_current_date(self, monkeypatch):
-        import routes.inference as inf_mod
-
         captured = {}
 
         def _tools(**kwargs):
@@ -4184,8 +4117,6 @@ class TestGgufVisionToolRouting:
         assert system_messages[0]["content"].startswith("The current date is 2026-08-15.\n\n")
 
     def test_forced_tool_choice_must_be_in_the_selected_gguf_catalog(self, monkeypatch):
-        import routes.inference as inf_mod
-
         reset_tool_policy()
 
         def _tools(**_kwargs):
@@ -4231,8 +4162,6 @@ class TestGgufVisionToolRouting:
     def test_confirm_tool_calls_requires_streaming_for_gguf_tools(
         self, monkeypatch, validate_before_switch
     ):
-        import routes.inference as inf_mod
-
         def _plain(**kwargs):
             raise AssertionError("plain GGUF path should not be used")
 
@@ -4288,7 +4217,6 @@ class TestGgufVisionToolRouting:
     def test_streaming_confirm_gate_refuses_a_caller_that_hid_the_frames(self, monkeypatch):
         # A stream without X-Unsloth-Events has nowhere to be asked, so the loop would park
         # in wait_tool_decision for the full timeout (_confirm_gate_has_no_channel).
-        import routes.inference as inf_mod
 
         reset_tool_policy()
 
@@ -4355,7 +4283,6 @@ class TestGgufVisionToolRouting:
         # mcp_enabled arms _confirm_gate_needs_stream on intent, but discovery finds no MCP
         # tool here, so the selection is empty and the loop is skipped. Refusing on intent
         # would 400 a request that answers fine without ever prompting.
-        import routes.inference as inf_mod
 
         reset_tool_policy()
 
@@ -4414,8 +4341,6 @@ class TestGgufVisionToolRouting:
         self, monkeypatch
     ):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
 
@@ -4478,8 +4403,6 @@ class TestGgufVisionToolRouting:
 
     def test_standard_gguf_stream_close_after_first_chunk_cleans_tracker(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             cancel_id = "standard-stream-close-cleanup"
 
             def _generate(**_kwargs):
@@ -4529,8 +4452,6 @@ class TestGgufVisionToolRouting:
         self, monkeypatch
     ):
         async def _run():
-            import routes.inference as inf_mod
-
             started = threading.Event()
             released = threading.Event()
 
@@ -4589,8 +4510,6 @@ class TestGgufVisionToolRouting:
 
     def test_gguf_tool_stream_queued_request_sends_keepalive_before_generation(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
 
@@ -4667,8 +4586,6 @@ class TestGgufVisionToolRouting:
 
     def test_gguf_gated_tool_start_gets_a_separate_prompt_flush(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             async def fake_select_tools(*_args, **_kwargs):
                 return [
                     {
@@ -4751,8 +4668,6 @@ class TestGgufVisionToolRouting:
 
     def test_gguf_tool_stream_task_cancel_after_first_chunk_finalizes_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             async def fake_select_tools(*_args, **_kwargs):
                 return [
                     {
@@ -4824,8 +4739,6 @@ class TestGgufVisionToolRouting:
         asyncio.run(_run())
 
     def test_global_enable_tools_does_not_preempt_response_format_passthrough(self, monkeypatch):
-        import routes.inference as inf_mod
-
         reset_tool_policy()
         set_tool_policy(True)
         captured = {}
@@ -4888,8 +4801,6 @@ class TestGgufVisionToolRouting:
             reset_tool_policy()
 
     def test_global_enable_tools_does_not_replace_client_tools_passthrough(self, monkeypatch):
-        import routes.inference as inf_mod
-
         reset_tool_policy()
         set_tool_policy(True)
         captured = {}
@@ -4960,8 +4871,6 @@ class TestGgufVisionToolRouting:
             reset_tool_policy()
 
     def test_global_enable_tools_honors_client_tool_choice_none(self, monkeypatch):
-        import routes.inference as inf_mod
-
         reset_tool_policy()
         set_tool_policy(True)
         client_tools = [
@@ -5024,8 +4933,6 @@ class TestGgufVisionToolRouting:
     def test_enabled_tools_without_enable_tools_keeps_response_format_passthrough(
         self, monkeypatch
     ):
-        import routes.inference as inf_mod
-
         reset_tool_policy()
         captured = {}
 
@@ -5079,8 +4986,6 @@ class TestGgufVisionToolRouting:
         assert captured["body"]["response_format"] == {"type": "json_object"}
 
     def test_enabled_tools_without_enable_tools_keeps_client_tools_passthrough(self, monkeypatch):
-        import routes.inference as inf_mod
-
         reset_tool_policy()
         captured = {}
         client_tools = [
@@ -5270,8 +5175,6 @@ class TestGgufVisionToolRouting:
 
     def test_standard_gguf_non_streaming_admission_timeout_before_generation(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
 
@@ -5323,8 +5226,6 @@ class TestGgufVisionToolRouting:
         self, monkeypatch
     ):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
 
@@ -5394,8 +5295,6 @@ class TestGgufVisionToolRouting:
         self, monkeypatch
     ):
         async def _run():
-            import routes.inference as inf_mod
-
             cancel_id = "standard-nonstream-task-cancel"
 
             async def fake_wait(*_args, **_kwargs):
@@ -5443,8 +5342,6 @@ class TestGgufVisionToolRouting:
 
     def test_gguf_tool_non_streaming_admission_timeout_before_generation(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
 
@@ -5508,8 +5405,6 @@ class TestGgufVisionToolRouting:
 
     def test_gguf_tool_non_streaming_cancel_drains_worker_before_releasing_slot(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             async def fake_select_tools(*_args, **_kwargs):
                 return [
                     {
@@ -5589,8 +5484,6 @@ class TestGgufVisionToolRouting:
         asyncio.run(_run())
 
     def test_non_streaming_gguf_n_records_all_monitor_replies(self, monkeypatch):
-        import routes.inference as inf_mod
-
         calls = {"count": 0}
 
         def _generate(**kwargs):
@@ -5655,8 +5548,6 @@ class TestGgufVisionToolRouting:
         assert entry["decode_ms"] is None
 
     def test_disabled_monitor_does_not_install_gguf_perf_callback(self, monkeypatch):
-        import routes.inference as inf_mod
-
         captured = {}
 
         def _generate(**kwargs):
@@ -5700,8 +5591,6 @@ class TestGgufVisionToolRouting:
 
     def test_non_streaming_gguf_cancel_drains_worker(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             started = threading.Event()
             released = threading.Event()
 
@@ -5752,8 +5641,6 @@ class TestGgufVisionToolRouting:
 
     def _drive_standard_gguf(self, monkeypatch, date_line: str) -> list[dict]:
         """Run one non-tool GGUF completion with the current-date setting pinned."""
-        import routes.inference as inf_mod
-
         captured = {}
 
         def _generate(**kwargs):
@@ -5815,8 +5702,6 @@ class TestGgufVisionToolRouting:
         ],
     )
     def test_gguf_n_choices_vary_explicit_non_negative_seed(self, monkeypatch, seed, expected):
-        import routes.inference as inf_mod
-
         seen_seeds = []
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
@@ -5881,8 +5766,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         lines,
         stream_options = None,
     ):
-        import routes.inference as inf_mod
-
         class Request:
             async def is_disconnected(self):
                 return False
@@ -6011,8 +5894,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_preheader_dispatched_with_timeout(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             gate = asyncio.Event()
 
             async def fake_send(*_args, **_kwargs):
@@ -6068,8 +5949,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_forwards_backend_auth_headers(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             captured_headers = {}
 
             async def fake_send(_client, req, *_args, **_kwargs):
@@ -6131,8 +6010,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_keepalive_while_upstream_headers_are_pending(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             gate = asyncio.Event()
 
             async def fake_send(*_args, **_kwargs):
@@ -6196,8 +6073,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_preheader_non_200_in_window(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             async def fake_send(*_args, **_kwargs):
                 return httpx.Response(400, content = b'{"error":"bad"}')
 
@@ -6240,8 +6115,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_preheader_request_error_in_window(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             async def fake_send(*_args, **_kwargs):
                 raise httpx.ConnectError("connectivity issue")
 
@@ -6284,8 +6157,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_preheader_delayed_non_200_returns_sse_error(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             gate = asyncio.Event()
 
             async def fake_send(*_args, **_kwargs):
@@ -6347,8 +6218,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         self, monkeypatch
     ):
         async def _run():
-            import routes.inference as inf_mod
-
             gate = asyncio.Event()
             ctx_msg = "request (4096 tokens) exceeds the available context size (2048 tokens)"
 
@@ -6416,8 +6285,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         self, monkeypatch
     ):
         async def _run():
-            import routes.inference as inf_mod
-
             gate = asyncio.Event()
             calls = []
             err_body = json.dumps(
@@ -6499,8 +6366,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         self, monkeypatch
     ):
         async def _run():
-            import routes.inference as inf_mod
-
             gate = asyncio.Event()
             calls = []
             err_body = json.dumps(
@@ -6596,8 +6461,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_preheader_delayed_request_error_cleans_up(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             gate = asyncio.Event()
             cancel_id = "delayed-request-error-cancel"
 
@@ -6661,8 +6524,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_preheader_cancel_cleans_pending_send(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             entered = asyncio.Event()
             cancelled = asyncio.Event()
             cancel_id = "preheader-cancel-cleanup"
@@ -6723,8 +6584,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_unstarted_cleanup_closes_completed_send_response(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             gate = asyncio.Event()
             returned = asyncio.Event()
             cancel_id = "unstarted-completed-send-cleanup"
@@ -6792,8 +6651,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_external_non_streaming_json_updates_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class DummyExternalClient:
                 def __init__(self, **_kwargs):
                     pass
@@ -6842,8 +6699,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_external_stream_clean_eof_flushes_pending_tool_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             lines = [
                 'data: {"choices":[{"index":0,"delta":{"tool_calls":['
                 '{"index":0,"id":"call-eof","function":{"name":"lookup",'
@@ -6887,8 +6742,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_external_stream_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class DummyExternalClient:
                 def __init__(self, **_kwargs):
                     pass
@@ -6932,8 +6785,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_completions_preheader_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 state = SimpleNamespace()
                 url = SimpleNamespace(path = "/v1/completions")
@@ -6976,8 +6827,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_completions_stream_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 state = SimpleNamespace()
                 url = SimpleNamespace(path = "/v1/completions")
@@ -7031,8 +6880,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_completions_stream_requests_usage_only_for_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 state = SimpleNamespace()
                 url = SimpleNamespace(path = "/v1/completions")
@@ -7087,8 +6934,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_completions_non_streaming_post_error_finalizes_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 state = SimpleNamespace()
                 url = SimpleNamespace(path = "/v1/completions")
@@ -7146,8 +6991,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         # With no env knobs set, an omitted max_tokens must forward the
         # backend's context length, exactly as on main.
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 state = SimpleNamespace()
                 url = SimpleNamespace(path = "/v1/completions")
@@ -7205,8 +7048,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_completions_forwards_spec_valid_zero_max_tokens(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 state = SimpleNamespace()
                 url = SimpleNamespace(path = "/v1/completions")
@@ -7264,8 +7105,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_completions_rejects_non_integer_max_tokens_before_forwarding(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 state = SimpleNamespace()
                 url = SimpleNamespace(path = "/v1/completions")
@@ -7304,8 +7143,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         asyncio.run(_run())
 
     def test_monitor_openai_chunk_records_all_choice_replies(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7338,8 +7175,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         assert entry["context_length"] == 4096
 
     def test_monitor_openai_chunk_records_tool_call_reply(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7391,8 +7226,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         asyncio.run(_run())
 
     def test_streamed_tool_monitor_joins_fragmented_name_and_arguments(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7424,8 +7257,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         assert monitor.get(monitor_id)["reply"] == 'Tool call: terminal({"command":"echo"})'
 
     def test_streamed_tool_monitor_replaces_cumulative_names(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7463,8 +7294,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         assert monitor.get(monitor_id)["reply"] == "Tool call: web_search({})"
 
     def test_streamed_tool_monitor_serializes_structured_arguments(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7506,8 +7335,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         )
 
     def test_streamed_legacy_function_monitor_joins_name_and_arguments(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7534,8 +7361,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         assert monitor.get(monitor_id)["reply"] == 'Tool call: lookup({"query":"weather"})'
 
     def test_streamed_tool_monitor_keeps_interleaved_indexes_separate(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7567,8 +7392,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         )
 
     def test_streamed_tool_monitor_routes_bare_fragments_to_latest_call(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7601,8 +7424,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         )
 
     def test_streamed_tool_monitor_keeps_choice_indexes_separate(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7650,8 +7471,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         )
 
     def test_streamed_tool_monitor_uses_ids_when_indexes_are_reused_or_omitted(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7683,8 +7502,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         )
 
     def test_streamed_tool_monitor_separates_duplicate_ids_by_explicit_index(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7722,8 +7539,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     @pytest.mark.parametrize("terminal", ["cancelled", "error", "eof"])
     def test_streamed_tool_monitor_terminal_cleanup_is_request_local(self, monkeypatch, terminal):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         first_id = monitor.start(
@@ -7787,8 +7602,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         assert monitor.get(second_id)["reply"] == 'Tool call: <unknown>({"b":2})'
 
     def test_streamed_non_tool_monitor_content_is_unchanged(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7821,8 +7634,6 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_separates_mixed_text_segments(
         self, monkeypatch, tool_first, expected
     ):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7860,8 +7671,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         assert monitor.get(monitor_id)["reply"] == expected
 
     def test_streamed_tool_monitor_keeps_final_text_after_pending_tool(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7911,8 +7720,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         assert monitor.get(monitor_id)["reply"] == "Tool call: lookup({})\nDone."
 
     def test_streamed_tool_monitor_flushes_scalar_call_before_terminal_content(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -7957,8 +7764,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         assert monitor.get(monitor_id)["reply"] == "Tool call: lookup(1)\nDone."
 
     def test_streamed_tool_monitor_keeps_incomplete_call_across_content(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -8011,8 +7816,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         ["1", json.dumps({"query": "x" * 600})],
     )
     def test_streamed_tool_monitor_flushes_on_tool_event_boundary(self, monkeypatch, arguments):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -8051,8 +7854,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         assert reply.endswith("\nDone.")
 
     def test_streamed_tool_monitor_bounds_pending_preview_state(self, monkeypatch):
-        import routes.inference as inf_mod
-
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
@@ -8104,8 +7905,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_embeddings_request_is_counted_active_and_completed(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 state = SimpleNamespace()
                 url = SimpleNamespace(path = "/v1/embeddings")
@@ -8171,8 +7970,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_task_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 async def is_disconnected(self):
                     return False
@@ -8250,8 +8047,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         self, monkeypatch
     ):
         async def _run():
-            import routes.inference as inf_mod
-
             async def fake_cancel_check(*_args, **_kwargs):
                 raise asyncio.CancelledError()
 
@@ -8305,8 +8100,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         self, monkeypatch
     ):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
 
@@ -8415,8 +8208,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         self, monkeypatch
     ):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request(self._Request):
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
 
@@ -8645,8 +8436,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
                 url = SimpleNamespace(path = "/v1/chat/completions")
@@ -8715,8 +8504,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_admission_timeout_before_upstream(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
                 url = SimpleNamespace(path = "/v1/chat/completions")
@@ -8768,8 +8555,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_admission_queue_full_before_upstream(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
                 url = SimpleNamespace(path = "/v1/chat/completions")
@@ -8827,8 +8612,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_immediate_cancel_stops_before_upstream(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             async def fail_upstream(*_args, **_kwargs):
                 raise AssertionError("upstream must not start after client cancellation")
 
@@ -8877,8 +8660,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_admission_task_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             async def fake_wait(*_args, **_kwargs):
                 raise asyncio.CancelledError()
 
@@ -8931,8 +8712,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class CancellingAsyncClient:
                 async def __aenter__(self):
                     return self
@@ -8990,8 +8769,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_cancel_closes_blocked_upstream_post(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class HangingCancelableClient:
                 def __init__(self):
                     self.started = asyncio.Event()
@@ -9067,8 +8844,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_route_registers_cancel_id(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class HangingCancelableClient:
                 def __init__(self):
                     self.started = asyncio.Event()
@@ -9154,8 +8929,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_disconnect_closes_blocked_upstream_post(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class HangingCancelableClient:
                 def __init__(self):
                     self.started = asyncio.Event()
@@ -9236,8 +9009,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_forwards_backend_auth_headers(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             captured = {}
 
             class FakeNonStreamingClient:
@@ -9307,8 +9078,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_forces_upstream_stream_false(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             captured = {}
 
             class FakeNonStreamingClient:
@@ -9413,8 +9182,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         # stream open without sending [DONE]; the terminal classifier must end
         # the client stream promptly instead of hanging on the open socket.
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 async def is_disconnected(self):
                     return False
@@ -9491,8 +9258,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         # the usage chunk; if that never arrives, the post-terminal grace path
         # must close with a clean [DONE], not an in-band error.
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 async def is_disconnected(self):
                     return False
@@ -9557,8 +9322,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_stall_after_data_emits_error(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class Request:
                 async def is_disconnected(self):
                     return False
@@ -9633,8 +9396,6 @@ class TestApiMonitorSafetensorsUsage:
 
     def test_non_streaming_safetensors_keeps_event_loop_responsive(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             generation_started = threading.Event()
             generation_finished = threading.Event()
             generation_threads = []
@@ -9702,8 +9463,6 @@ class TestApiMonitorSafetensorsUsage:
 
     def test_non_streaming_safetensors_records_usage(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class DummyBackend:
                 active_model_name = "safe-model"
                 models = {"safe-model": {"context_length": 2048}}
@@ -9764,8 +9523,6 @@ class TestApiMonitorSafetensorsUsage:
 
     def test_non_streaming_safetensors_tool_cancel_records_cancelled(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             reset_tool_policy()
 
             class DummyBackend:
@@ -9835,8 +9592,6 @@ class TestApiMonitorSafetensorsUsage:
 
     def test_non_streaming_safetensors_tool_task_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             reset_tool_policy()
             reset_called = False
 
@@ -9912,8 +9667,6 @@ class TestApiMonitorSafetensorsUsage:
 
 class TestApiMonitorAudioInput:
     def _patch_audio_backend(self, monkeypatch, chunks):
-        import routes.inference as inf_mod
-
         class DummyAudioBackend:
             active_model_name = "audio-model"
             models = {
@@ -10090,8 +9843,6 @@ class TestApiMonitorAudioInput:
 
     def test_non_gguf_tts_auto_route_records_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class DummyTtsBackend:
                 active_model_name = "tts-model"
                 models = {
@@ -10157,8 +9908,6 @@ class TestApiMonitorAudioInput:
 
     def test_non_gguf_tts_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             class DummyTtsBackend:
                 active_model_name = "tts-model"
                 models = {
@@ -10211,8 +9960,6 @@ class TestApiMonitorAudioInput:
 
     def test_gguf_tts_auto_route_records_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             async def fake_generate_audio(
                 _payload,
                 _request,
@@ -10339,8 +10086,6 @@ class TestResponsesChatTemplateKwargs:
 
     def test_responses_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             async def fail_send(*_args, **_kwargs):
                 raise AssertionError("responses upstream must not start while queued")
 
@@ -10399,8 +10144,6 @@ class TestResponsesChatTemplateKwargs:
 
     def test_responses_stream_cancel_after_created_finalizes_monitor_and_slot(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
             async def fail_send(*_args, **_kwargs):
                 raise AssertionError("responses upstream must not start after created cancel")
 
@@ -10675,10 +10418,6 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
 class TestPassthroughImageNormalization:
     @staticmethod
     def _data_url(fmt: str) -> str:
-        from io import BytesIO
-
-        from PIL import Image
-
         buf = BytesIO()
         Image.new("RGB", (2, 2), (0, 128, 255)).save(buf, format = fmt)
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
@@ -10747,10 +10486,6 @@ class TestPassthroughImageNormalization:
 
     @staticmethod
     def _gray16_ramp_png(width: int = 256) -> bytes:
-        from io import BytesIO
-
-        from PIL import Image
-
         img = Image.new("I;16", (width, 2))
         img.putdata([(x % width) * 257 for _ in range(2) for x in range(width)])
         buf = BytesIO()
@@ -10761,9 +10496,6 @@ class TestPassthroughImageNormalization:
         # convert("RGB") reads a 16-bit source as 8-bit and clips: the whole ramp
         # above 255 collapses to white. llama-server reading the same PNG itself
         # scales instead, so re-encoding must not throw the picture away.
-        from io import BytesIO
-
-        from PIL import Image
 
         raw = self._gray16_ramp_png()
         out = base64.b64decode(_image_bytes_to_png_b64(raw))
@@ -10777,9 +10509,6 @@ class TestPassthroughImageNormalization:
         # I;16B rejects point() outright, and the caller turns any exception into
         # a 400, so scaling without normalising the mode is worse than clipping.
         # PNG cannot carry the tagged modes; a 16-bit TIFF reopens as I;16B.
-        from io import BytesIO
-
-        from PIL import Image
 
         img = Image.new("I;16B", (256, 2))
         img.putdata([(x % 256) * 257 for _ in range(2) for x in range(256)])
@@ -10795,9 +10524,6 @@ class TestPassthroughImageNormalization:
         # "I" and "F" declare no range. A 32-bit TIFF whose samples already sit
         # in 0..255 must keep them: scaling it by 1/257 would black the picture
         # out, which is worse than the clipping the scaling was added to fix.
-        from io import BytesIO
-
-        from PIL import Image
 
         img = Image.new("I", (256, 2))
         img.putdata([x % 256 for _ in range(2) for x in range(256)])
@@ -10810,9 +10536,6 @@ class TestPassthroughImageNormalization:
         assert row == list(range(256)), f"0..255 ramp altered: max={max(row)}"
 
     def test_eight_bit_images_are_unchanged_by_the_scaling_branch(self):
-        from io import BytesIO
-
-        from PIL import Image
         for mode, colour in (("RGB", (10, 20, 30)), ("RGBA", (10, 20, 30, 255)), ("L", 77)):
             buf = BytesIO()
             Image.new(mode, (4, 4), colour).save(buf, format = "PNG")
@@ -10853,10 +10576,6 @@ class TestPassthroughImageNormalization:
         assert exc.value.status_code == 400
 
     def test_echoed_legacy_image_is_not_spliced_twice(self):
-        from io import BytesIO
-
-        from PIL import Image
-
         buf = BytesIO()
         Image.new("RGB", (2, 2), (1, 2, 3)).save(buf, format = "WEBP")
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")

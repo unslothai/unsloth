@@ -39,6 +39,12 @@ import routes.models as models_route
 import routes.settings as settings_route
 import storage.studio_db as db
 import utils.paths as paths
+from core.inference.tools import cached_mcp_tools
+from hub.services import download_lifecycle
+from models.inference import ChatMessage, ImageContentPart, ImageUrl
+import logging
+import routes.models as model_routes
+import state.tool_policy as _tp
 
 # captured before the autouse fixture below pins it, so its own test can reach the real one.
 _REAL_HOST_HAS_NON_GGUF_BACKEND = resolver._host_has_a_non_gguf_backend
@@ -3975,7 +3981,6 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     # the projector alone: an audio model's projector carries no vision tower, so
     # requiring one would refuse the very models that serve the request. A
     # safetensors or MLX checkpoint declares audio apart, so that flag rides along.
-    from models.inference import ChatMessage, ImageContentPart, ImageUrl
 
     class _Reached(Exception):
         pass
@@ -4106,7 +4111,6 @@ def test_chat_confirm_without_stream_mcp_rejected_before_switch(monkeypatch):
     # Codex P2: mcp_enabled opens the local tool loop on its own, so confirm+no-stream
     # +mcp is the same invalid shape as confirm+no-stream+tools and must 400 before
     # the switch. The old guard only checked explicit tool fields and missed it.
-    import state.tool_policy as _tp
 
     monkeypatch.setattr(_tp, "get_tool_policy", lambda: None)  # no CLI --disable-tools
     backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", "Q8_0", "org/B-GGUF"))
@@ -4594,8 +4598,6 @@ def test_chat_count_tokens_prices_the_route_the_completion_takes(
     Applying the process tool policy without first asking which route the request takes prices a
     built-in catalog plus the action nudge, while the completion forwards verbatim and sends neither.
     """
-    import state.tool_policy as _tp
-
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
 
     async def _select(payload, *, tools_on, mcp_allowed):
@@ -4811,8 +4813,6 @@ MCP_TOOL_PAYLOAD = [{"name": "lookup", "description": "d", "inputSchema": {"type
 
 
 def test_cached_mcp_tools_reads_the_cache_without_probing(tmp_path, monkeypatch):
-    from core.inference.tools import cached_mcp_tools
-
     _enabled_mcp_server(tmp_path, monkeypatch, cached = MCP_TOOL_PAYLOAD)
     specs, complete = cached_mcp_tools()
     assert complete is True
@@ -4820,8 +4820,6 @@ def test_cached_mcp_tools_reads_the_cache_without_probing(tmp_path, monkeypatch)
 
 
 def test_cached_mcp_tools_reports_an_undiscovered_server_as_incomplete(tmp_path, monkeypatch):
-    from core.inference.tools import cached_mcp_tools
-
     _enabled_mcp_server(tmp_path, monkeypatch)
     specs, complete = cached_mcp_tools()
     assert specs == []
@@ -4834,7 +4832,6 @@ def test_cached_mcp_tools_reports_an_undiscovered_server_as_incomplete(tmp_path,
 def test_cached_mcp_tools_counts_a_cooloff_server_as_complete(tmp_path, monkeypatch):
     # The completion renders nothing for a cool-off server either, so skipping it is exact rather
     # than short. Declining here would blank the bar over an agreement.
-    from core.inference.tools import cached_mcp_tools
 
     _enabled_mcp_server(tmp_path, monkeypatch, cooloff = True)
     specs, complete = cached_mcp_tools()
@@ -5089,8 +5086,6 @@ def test_chat_count_tokens_counts_an_empty_chat_the_cli_policy_fills(monkeypatch
     action nudge it injects are real occupancy, and refusing them would blank a bar that has a
     number to show.
     """
-    import state.tool_policy as _tp
-
     _switched, counted = _count_tokens_backend(monkeypatch, count = 850, supports_tools = True)
 
     async def _select(payload, *, tools_on, mcp_allowed):
@@ -5572,7 +5567,6 @@ def test_chat_valid_tool_choice_reaches_hook(monkeypatch):
 def test_lifecycle_gate_serializes_across_loops():
     # Codex P2: the lifecycle gate must be process-wide so a swap on one loop blocks
     # inference starting on another. Two loops must never hold the gate at once.
-    import threading
 
     state = {"cur": 0, "max": 0}
     slock = threading.Lock()
@@ -5604,7 +5598,6 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
     # Codex P2: the per-loop asyncio lock can't serialize two swaps on different
     # event loops in one process. The process-wide gate must, so the two slow loads
     # never overlap on the single model slot.
-    import threading
 
     backend = _FakeBackend("org/A-GGUF")
     state = {"cur": 0, "max": 0}
@@ -7594,9 +7587,6 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
     # Only the API auto-download watcher invalidated, so a GGUF fetched in the Hub UI
     # stayed absent to the cache-only request path and the resident model answered.
     # Every worker exits through here.
-    import logging
-
-    from hub.services import download_lifecycle
 
     class _Proc:
         stderr = None
@@ -7674,8 +7664,6 @@ def test_trusted_cache_rechecks_snapshot_after_freshness(monkeypatch):
 
 
 def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
-    import routes.models as model_routes
-
     event_loop_thread = threading.get_ident()
     calls = []
 
@@ -7711,7 +7699,6 @@ def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
 
 
 def test_scan_folder_removal_revokes_additions_only_cache_trust(monkeypatch):
-    import routes.models as model_routes
     from hub.services.models import local_inventory
 
     entry = resolver._LocalGgufEntry("org/old", "/custom/org--old", ("Q4_K_M",))
@@ -7772,7 +7759,6 @@ def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
 
 
 def test_noop_scan_folder_removals_do_not_invalidate_the_index(monkeypatch):
-    import routes.models as model_routes
     from hub.services.models import local_inventory
 
     invalidated = []
@@ -7816,9 +7802,6 @@ def test_local_and_remote_agree_on_the_preferred_quant():
 def test_a_just_downloaded_model_is_evidence_before_the_scan_indexes_it(monkeypatch):
     # The retained index covers what was known, but nothing covers the model that just
     # landed until the next scan: a bare request for it was answered by the resident one.
-    import logging
-
-    from hub.services import download_lifecycle
 
     class _Proc:
         stderr = None
@@ -7865,9 +7848,6 @@ def test_a_finished_dataset_is_not_recorded_as_a_local_model(monkeypatch):
     # finalize_worker_exit is shared with dataset downloads. Noting one as a local model
     # would refuse a bare /v1 request naming that id instead of letting a foreign id
     # fall through, and would kick off a multi-directory scan for nothing.
-    import logging
-
-    from hub.services import download_lifecycle
 
     class _Proc:
         stderr = None
@@ -8356,8 +8336,6 @@ def test_two_spellings_of_one_cached_quant_do_not_delete_each_others_save(monkey
     by the snapshot path an upgraded install still holds, can both write before either
     cleanup runs and then retire each other's row. Both calls return 200 and nothing is
     stored. Whichever runs second must retire the first instead."""
-    import threading
-
     _mock_override_store(monkeypatch)
     repo = "unsloth/Qwen3-8B-GGUF:Q4_K_M"
     snapshot = "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF/snapshots/abc123:Q4_K_M"
@@ -10049,7 +10027,6 @@ def test_gguf_image_preflight_allows_multiple_valid_images():
 
 
 def test_the_image_preflight_collects_every_local_request_image():
-    from models.inference import ChatMessage, ImageContentPart, ImageUrl
     payload = _chat_request(
         image_base64 = "legacy",
         messages = [
@@ -10112,8 +10089,6 @@ def _wire_image_switch_target(monkeypatch, *, target_is_gguf):
     ids = ["empty data url", "remote url"],
 )
 def test_chat_rejects_unsupported_openai_images_before_non_gguf_switch(monkeypatch, url, detail):
-    from models.inference import ChatMessage, ImageContentPart, ImageUrl
-
     backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
     payload = _chat_request(
         model = "org/B-GGUF",

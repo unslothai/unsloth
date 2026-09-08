@@ -10,6 +10,11 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from core.inference import llama_keepwarm as kw
+from core.rag import config as rag_config
+from core.rag import embed_llama_server
+from fastapi import HTTPException
+import httpx
 
 _backend = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend not in sys.path:
@@ -81,7 +86,6 @@ def _call(body):
 
 
 def _http_error(body):
-    from fastapi import HTTPException
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_embeddings(_Request(body), "tester"))
     return exc.value
@@ -115,8 +119,6 @@ def test_chat_model_loaded_serves_from_the_studio_embedder(studio_embedder):
 
 
 def test_resident_embedding_gguf_still_uses_the_proxy(studio_embedder):
-    import httpx
-
     class _Client:
         async def post(self, *_args, **_kwargs):
             return httpx.Response(200, json = {"data": [{"embedding": [0.5]}]})
@@ -203,8 +205,6 @@ def test_identity_redaction_leaves_the_backend_tag_alone(tmp_path, monkeypatch):
     `sentence-transformers` tag too, and the identity we advertise is one no backend claims
     and _names_studio_embedder cannot match on the next request.
     """
-    from core.rag import config as rag_config
-
     (tmp_path / "transformers").mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
@@ -223,8 +223,6 @@ def test_identity_redaction_leaves_the_backend_tag_alone(tmp_path, monkeypatch):
 
 
 def test_identity_redaction_covers_the_gguf_repo_segment(monkeypatch):
-    from core.rag import config as rag_config
-
     monkeypatch.setattr(
         rag_config, "effective_gguf_repo_for_embedding_model", lambda model: "/models/bge-GGUF"
     )
@@ -249,8 +247,6 @@ def test_identity_redaction_covers_a_local_repo_under_a_hub_model(monkeypatch):
     RAG_EMBED_GGUF_REPO takes any path, so the model segment can need no redaction while the
     repo segment beside it is an absolute path on the server.
     """
-    from core.rag import config as rag_config
-
     monkeypatch.setattr(
         rag_config,
         "effective_gguf_repo_for_embedding_model",
@@ -327,8 +323,6 @@ def test_pending_gguf_download_is_classified_like_the_st_one(tmp_path, monkeypat
     have to reach the 409; untyped, this one fell into the catch-all and came back as a 502
     saying only that an internal error occurred.
     """
-    from core.rag import embed_llama_server
-
     backend = embed_llama_server.LlamaServerBackend()
     monkeypatch.setattr(
         embed_llama_server.config,
@@ -437,7 +431,6 @@ def test_studio_embedder_requests_are_admission_limited(studio_embedder):
 def test_studio_fallback_untracks_the_request_from_the_llama_slot(studio_embedder):
     # An _INFERENCE_SUFFIXES path not in _NON_LLM_SLOT_SUFFIXES: a 2xx reaching _finish claims the
     # llama slot the studio embedder never touched, so it untracks first, as the chat branch does.
-    from core.inference import llama_keepwarm as kw
 
     studio_embedder.setattr(
         inference_route,
@@ -459,7 +452,6 @@ def test_studio_fallback_untracks_the_request_from_the_llama_slot(studio_embedde
 
 def test_resident_embedding_gguf_still_claims_the_slot(studio_embedder):
     # The proxy path DOES run against the resident GGUF, so it must stay tracked.
-    import httpx
 
     class _Client:
         async def post(self, *_args, **_kwargs):
@@ -467,8 +459,6 @@ def test_resident_embedding_gguf_still_claims_the_slot(studio_embedder):
 
         async def aclose(self):
             return None
-
-    from core.inference import llama_keepwarm as kw
 
     studio_embedder.setattr(inference_route, "_cancelable_nonstreaming_client", _Client)
     studio_embedder.setattr(
@@ -621,7 +611,6 @@ def test_embedding_helpers_are_pinned_to_the_captured_model(studio_embedder):
 def test_studio_fallback_releases_the_preview_busy_guard(studio_embedder):
     # Admission happens before the route decides how to serve, and load_model_for_preview reads
     # the admitted tally, not _inflight, so a slow encode keeps 503ing preview swaps.
-    from core.inference import llama_keepwarm as kw
 
     studio_embedder.setattr(
         inference_route,
@@ -686,8 +675,6 @@ def _identity_names(monkeypatch):
 
 @pytest.mark.parametrize("requested", [MODEL, f"{MODEL}-GGUF", IDENTITY, MODEL.upper()])
 def test_naming_the_configured_embedder_skips_the_chat_slot_check(studio_embedder, requested):
-    from fastapi import HTTPException
-
     async def reject(request, current_subject, **_kwargs):
         raise HTTPException(status_code = 404, detail = "model_not_found")
 
@@ -756,8 +743,6 @@ def _gguf(tmp_path, entries):
 
 
 def test_gguf_context_length_is_read_from_the_header(tmp_path):
-    from core.rag import embed_llama_server
-
     path = _gguf(
         tmp_path,
         [
@@ -772,8 +757,6 @@ def test_gguf_context_length_is_read_from_the_header(tmp_path):
 
 
 def test_llama_max_tokens_comes_from_the_gguf_minus_its_special_tokens(tmp_path, monkeypatch):
-    from core.rag import embed_llama_server
-
     backend = embed_llama_server.LlamaServerBackend()
     backend._model_path = _gguf(
         tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 512)]
@@ -808,8 +791,6 @@ def test_llama_max_tokens_is_dropped_when_the_binary_is_swapped(tmp_path, monkey
     The limit is not a pure model fact -- it clamps the GGUF context by the server's n_ctx
     and n_ubatch, whose defaults differ between builds -- so it has to go with the binary.
     """
-    from core.rag import embed_llama_server
-
     backend = embed_llama_server.LlamaServerBackend()
     backend._model_path = _gguf(
         tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 512)]
@@ -857,8 +838,6 @@ def test_st_max_tokens_reserves_the_default_prompt(monkeypatch):
 
 
 def test_llama_max_tokens_is_capped_by_the_running_context(tmp_path, monkeypatch):
-    from core.rag import embed_llama_server
-
     backend = embed_llama_server.LlamaServerBackend()
     backend._model_path = _gguf(
         tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 512)]
@@ -875,8 +854,6 @@ def test_llama_max_tokens_is_capped_by_the_ubatch_we_launched_with(tmp_path, mon
     A prompt past one physical batch is refused by llama-server with a 500, which this route
     turns into a 502; the limit exists to answer 400 before that.
     """
-    from core.rag import embed_llama_server
-
     backend = embed_llama_server.LlamaServerBackend()
     backend._model_path = _gguf(
         tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 8192)]
@@ -894,8 +871,6 @@ def test_llama_max_tokens_is_capped_by_the_ubatch_we_launched_with(tmp_path, mon
 def test_only_a_smaller_reported_ubatch_lowers_the_launch_value(monkeypatch):
     """n_batch is the logical batch; llama.cpp takes min(n_batch, n_ubatch or n_batch), so
     against the -ub this backend launches with it is never the physical limit."""
-    from core.rag import embed_llama_server
-
     backend = embed_llama_server.LlamaServerBackend()
     ub = embed_llama_server._UBATCH_SIZE
     monkeypatch.setattr(backend, "_server_props", lambda: {"n_ubatch": ub // 2})
@@ -908,8 +883,6 @@ def test_only_a_smaller_reported_ubatch_lowers_the_launch_value(monkeypatch):
 
 def test_a_stale_tagged_identity_is_refused_not_answered(studio_embedder):
     """The current space is llama-server; the client resubmits the sentence-transformers tag."""
-    from fastapi import HTTPException
-
     studio_embedder.setattr(
         rag_config, "effective_gguf_repo_for_embedding_model", lambda model: f"{model}-GGUF"
     )
@@ -990,8 +963,6 @@ def test_local_path_models_are_not_exposed(studio_embedder, tmp_path):
 
 @pytest.mark.parametrize("answers", [True, False])
 def test_resident_embedding_gguf_answering_the_name_keeps_the_proxy(studio_embedder, answers):
-    import httpx
-
     class _Client:
         async def post(self, *_args, **_kwargs):
             return httpx.Response(200, json = {"data": [{"embedding": [0.5]}], "model": "proxy"})
@@ -1116,8 +1087,6 @@ def test_disconnected_client_leaves_the_queue_without_embedding(studio_embedder)
 
 
 def test_batch_cap_applies_only_to_the_studio_fallback():
-    from fastapi import HTTPException
-
     body = {"input": ["x"] * (inference_route._STUDIO_EMBED_MAX_INPUTS + 1)}
     assert len(inference_route._embeddings_items(body, tokens_ok = True)) == len(body["input"])
     with pytest.raises(HTTPException) as exc:
@@ -1226,7 +1195,6 @@ def test_alias_match_pins_the_model_for_the_request(studio_embedder):
 def test_llama_max_tokens_never_exceeds_one_physical_batch(tmp_path, monkeypatch):
     # Embedding is non-causal, so llama.cpp refuses rather than splits: an 8k-context limit on a
     # 512 batch turned a legitimate 600-token input into a 502 instead of a 400.
-    from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
     backend._model_path = _gguf(
@@ -1242,7 +1210,6 @@ def test_llama_max_tokens_never_exceeds_one_physical_batch(tmp_path, monkeypatch
 def test_the_embed_server_does_not_enlarge_its_batch(tmp_path):
     # n_vocab * n_ubatch * 4 is allocated at startup, hundreds of MiB, against the 1024 MiB free
     # this backend calls enough to offload everything: max_tokens bounds the advert instead.
-    from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
     model = _gguf(tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 8192)])
@@ -1256,7 +1223,6 @@ def test_the_embed_server_does_not_enlarge_its_batch(tmp_path):
 def test_an_unconfirmed_context_limit_is_not_cached(tmp_path, monkeypatch):
     # A header context can exceed what the server runs at, so freezing it while /props is silent
     # outlives the readback that would have corrected it.
-    from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
     backend._model_path = _gguf(
@@ -1276,8 +1242,6 @@ def test_an_unconfirmed_context_limit_is_not_cached(tmp_path, monkeypatch):
 
 
 def test_props_probe_never_raises_before_the_server_is_up():
-    from core.rag import embed_llama_server
-
     # An un-started server has no port, so the URL itself is invalid: the probe must swallow
     # that and fall back to the batch we launch with rather than propagate.
     assert (
@@ -1333,7 +1297,6 @@ def test_cancel_during_the_final_disconnect_probe_releases_the_permit(studio_emb
 
 def test_a_boolean_is_not_a_token_id():
     # bool subclasses int, so `[true]` read as a token array could swap the resident GGUF.
-    from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc:
         inference_route._embeddings_items({"input": [True]}, tokens_ok = True)
