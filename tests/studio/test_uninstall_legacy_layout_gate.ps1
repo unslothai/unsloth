@@ -1,13 +1,10 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# The ownership gate on ~/.unsloth/studio must still recognise the layouts older installers left.
-# On Windows share\studio.conf is never written, so the sentinels that decide a Windows root all
-# postdate the bin\ shim dir, while install.ps1 still migrates <root>\.venv. What is INSIDE a venv
-# only proves ownership at the managed root, so every case names the mode it asserts about.
-# The uninstaller body writes to the registry, so the helpers are lifted out by AST and exercised
-# on their own.
-#
+# The ownership gate must still recognise the layouts older installers left: on Windows every
+# sentinel a root can show postdates the bin\ shim dir, while install.ps1 still migrates .venv.
+# What is INSIDE a venv proves ownership only at the managed root, so every case names its mode.
+# The uninstaller body writes to the registry, so the helpers are lifted out by AST.
 # Run: pwsh -NoProfile -File tests/studio/test_uninstall_legacy_layout_gate.ps1
 
 $ErrorActionPreference = "Stop"
@@ -24,8 +21,7 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ps1Path, [ref]$tokens, [ref]$errors)
 Check "uninstall.ps1 parses" ($null -eq $errors -or $errors.Count -eq 0)
 
-# _IsStudioRoot calls _IsUnslothCmdShim, so both have to come across: an empty extraction
-# would make this suite vacuous.
+# _IsStudioRoot calls _IsUnslothCmdShim, so both must come across or the suite is vacuous.
 $allFns = $ast.FindAll({
         param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]
     }, $true)
@@ -61,8 +57,7 @@ try {
         return $root
     }
 
-    # -ManagedDefaultRoot is what the uninstaller passes for %USERPROFILE%\.unsloth\studio and
-    # for nothing else, so every case names the mode it is asserting about.
+    # -ManagedDefaultRoot is passed for %USERPROFILE%\.unsloth\studio and for nothing else.
     Check "current layout (venv owner marker)" `
         (_IsStudioRoot (Make "cur-marker" @("unsloth_studio\.unsloth-studio-owned")) -ManagedDefaultRoot)
     Check "shim .exe" `
@@ -76,8 +71,7 @@ try {
         (_IsStudioRoot (Make "old-cli" @(".venv\Scripts\python.exe", ".venv\Scripts\unsloth.exe")) -ManagedDefaultRoot)
     Check "pre-marker unsloth_studio venv carrying the unsloth console script" `
         (_IsStudioRoot (Make "pre-marker" @("unsloth_studio\Scripts\python.exe", "unsloth_studio\Scripts\unsloth.exe")) -ManagedDefaultRoot)
-    # install.ps1 installs and repairs through this: antivirus deletes the generated .exe out of
-    # a venv that still runs. A pre-marker root has nothing else left, so the package answers.
+    # Antivirus takes the .exe out of a venv that still runs, leaving nothing but the package.
     Check "pre-marker venv whose unsloth.exe antivirus quarantined" `
         (_IsStudioRoot (Make "quarantined" @(".venv\Scripts\python.exe", ".venv\Lib\site-packages\unsloth_cli\__init__.py")) -ManagedDefaultRoot)
 
@@ -95,10 +89,7 @@ try {
         (-not (_IsStudioRoot (Make "named-venv" @("unsloth_studio\Scripts\python.exe")) -ManagedDefaultRoot))
     Check "somebody else's bin\unsloth.cmd is refused" `
         (-not (_IsStudioRoot (Make "foreign-cmd" @("bin\python.exe")) -ManagedDefaultRoot))
-    # The reason the flag exists. pip writes Scripts\unsloth.exe into ANY venv the unsloth wheel
-    # is installed into, so a UNSLOTH_STUDIO_HOME left pointing at a project must not make the
-    # custom-root loop delete the project. install.ps1:4453 skips the legacy migration for those
-    # roots, so a custom root never had one of our .venv layouts to strand.
+    # Why the flag exists: pip writes Scripts\unsloth.exe into ANY venv with the wheel.
     Check "a project venv with unsloth pip-installed is refused as a custom root" `
         (-not (_IsStudioRoot (Make "custom-project" @(".venv\Scripts\python.exe", ".venv\Scripts\unsloth.exe", "pyproject.toml"))))
     Check "that project's site-packages is refused as a custom root too" `

@@ -360,19 +360,16 @@ _is_studio_root() {
     [ -n "$_r" ] || return 1
     [ -f "$_r/share/studio.conf" ] && return 0
     [ -f "$_r/unsloth_studio/.unsloth-studio-owned" ] && return 0
-    # Before the unsloth_studio rename the venv was $_r/.venv; its own marker still proves
-    # ownership wherever the root sits, because only install.sh writes that file.
+    # Legacy venv name. Only install.sh writes this marker, so it is proof at any root.
     [ -f "$_r/.venv/.unsloth-studio-owned" ] && return 0
     if [ -L "$_r/bin/unsloth" ]; then
         _t=$(readlink "$_r/bin/unsloth" 2>/dev/null || true)
         case "$_t" in *unsloth_studio/bin/unsloth) return 0 ;; esac
     fi
-    # Pre-marker installs have no marker at all, so the only thing left is bin/unsloth inside
-    # the venv -- pip's console script for the unsloth distribution, which ANY venv with the
-    # wheel installed has. It proves ownership only at the managed root, and that is also the
-    # only root that can hold this layout: install.sh:2987 skips the legacy migration in env
-    # mode, so a custom root never had a $_r/.venv of ours. Trusting it everywhere would let a
-    # UNSLOTH_STUDIO_HOME left pointing at a project delete the project.
+    # All a pre-marker install has left is bin/unsloth inside the venv, pip's console script,
+    # which ANY venv with the wheel has: proof only at the managed root, which install.sh:2987
+    # also makes the only root that can hold the layout, or a stale UNSLOTH_STUDIO_HOME
+    # deletes the project it points at.
     [ "$_managed" = managed ] || return 1
     for _v in unsloth_studio .venv; do
         [ -f "$_r/$_v/bin/unsloth" ] && return 0
@@ -600,9 +597,8 @@ _unsloth_uninstall_main() {
             _remove_path "$_lex_sd_cpp"
         fi
     done
-    # Gated on the same ownership sentinels as a custom root: "studio" under ~/.unsloth is an
-    # ordinary thing to create by hand, and an ungated bare run takes that directory and then
-    # ~/.unsloth with it via the empty-dir prune below, having removed nothing of ours.
+    # Same gate as a custom root: an ungated run takes a hand-made ~/.unsloth/studio, and then
+    # ~/.unsloth via the empty-dir prune below.
     if [ -e "$HOME/.unsloth/studio" ] && ! _is_studio_root "$HOME/.unsloth/studio" managed; then
         echo "  refusing to remove non-Unsloth path: $HOME/.unsloth/studio" >&2
     else

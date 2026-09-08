@@ -1,12 +1,9 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# _is_studio_root decides whether ~/.unsloth/studio, or a UNSLOTH_STUDIO_HOME root, is
-# recursively deleted. Both directions are checked in both modes: an old install must stay
-# removable, and a directory that is not ours must be refused. The first version of the gate
-# knew only the CURRENT layout and refused installs install.sh still migrates; the second
-# trusted a venv-internal sentinel at any root, which reaches a user's project.
-# The uninstaller body deletes trees, so the gate is extracted with sed.
+# _is_studio_root decides whether ~/.unsloth/studio, or a UNSLOTH_STUDIO_HOME root, is recursively
+# deleted, so both directions are asserted in both modes: a gate that accepts everything, anywhere,
+# passes a one-sided test. The uninstaller body deletes trees, so the gate is sed'd out of it.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -27,9 +24,8 @@ if [ -z "$_fn" ]; then
 fi
 eval "$_fn"
 
-# name, expected (own|foreign), mode (managed|custom), then paths. A trailing / makes a
-# directory. The mode is the second argument the uninstaller passes: "managed" only for
-# $HOME/.unsloth/studio, so a venv-internal signal is not read as ownership of a custom root.
+# name, expected (own|foreign), mode (managed|custom), then paths; a trailing / makes a dir.
+# "managed" is the uninstaller's second argument, for $HOME/.unsloth/studio and nothing else.
 check() {
     _name="$1"; _want="$2"; _mode="$3"; shift 3
     _root="$_TMP_ROOT/$(printf '%s' "$_name" | tr -c 'a-zA-Z0-9' '_')"
@@ -66,17 +62,13 @@ check "custom: legacy .venv owner marker" own custom ".venv/.unsloth-studio-owne
 
 echo
 echo "Directories that are not ours, which must stay refused:"
-# The case the gate exists for: indistinguishable from a user's own project venv.
 check "a bare project venv" foreign managed ".venv/bin/python"
 check "a venv merely NAMED unsloth_studio" foreign managed "unsloth_studio/bin/python"
 # bin/unsloth is pip's console script for the unsloth distribution, not just any console script.
 check "a venv with an unrelated console script" foreign managed ".venv/bin/black" ".venv/bin/python"
 check "a hand-made scratch directory" foreign managed "notes.txt"
 check "an empty directory" foreign managed
-# The reason the managed/custom split exists. pip writes bin/unsloth into ANY venv the unsloth
-# wheel is installed into, so a UNSLOTH_STUDIO_HOME left pointing at a project must not make
-# the custom-root loop delete the project. install.sh:2987 skips the legacy migration in env
-# mode, so a custom root never had one of our .venv layouts to strand in the first place.
+# Why the split exists: pip writes bin/unsloth into ANY venv with the wheel.
 check "a project venv with unsloth pip-installed, as a custom root" foreign custom \
     ".venv/bin/unsloth" ".venv/bin/python" "pyproject.toml" "src/main.py"
 check "a project whose venv is NAMED unsloth_studio, as a custom root" foreign custom \

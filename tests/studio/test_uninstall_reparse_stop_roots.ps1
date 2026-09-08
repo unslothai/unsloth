@@ -45,13 +45,12 @@ $ps1Text = Get-Content -LiteralPath $ps1Path -Raw
 Check "the stop scan is given the managed paths under the target" `
     ($ps1Text -match '_StopProcessesLockingRoots -Roots \(\$stopRoots \+ @\(_ManagedPathsUnderReparseTargets \$knownRoots\)\)')
 
-# Both reparse kinds, because the helper reads nothing but .Target. A directory SYMLINK needs
-# elevation and a JUNCTION never does, so the junction row is the one that always executes.
-# $IsWindows only exists on PowerShell 6+; on 5.1 it is $null, and 5.1 runs nowhere else.
+# Both kinds: the helper reads only .Target; a symlink needs elevation, a junction never does.
+# $IsWindows exists only on PowerShell 6+.
 $onWindows = if ($null -ne $IsWindows) { $IsWindows } else { $true }
 
-# New-Item -ItemType Junction does NOT throw on Linux pwsh: it quietly produces a plain directory
-# with no .Target, so the kinds are chosen by platform rather than by catching a failure.
+# New-Item -ItemType Junction does NOT throw on Linux pwsh; it makes a plain dir with no .Target,
+# so the kinds are chosen by platform, not by catching a failure.
 $kinds = if ($onWindows) { @("Junction", "SymbolicLink") } else { @("SymbolicLink") }
 
 $ran = 0
@@ -64,8 +63,8 @@ foreach ($kind in $kinds) {
         $link = Join-Path $tmp "studio-home"
         try { New-Item -ItemType $kind -Path $link -Target $target -ErrorAction Stop | Out-Null }
         catch {
-            # Not a failure: the other kind carries the assertions. Reported so one kind covered
-            # cannot be mistaken for both.
+            # Not a failure: the other kind carries the assertions. Said out loud, or one kind
+            # covered reads as both.
             Write-Host "  SKIP  $kind is not creatable here: $($_.Exception.Message)"
             continue
         }
@@ -104,8 +103,7 @@ foreach ($kind in $kinds) {
     }
 }
 
-# An environment that can make neither kind would otherwise report a clean pass having
-# asserted nothing.
+# An environment that can make neither kind would otherwise pass having asserted nothing.
 Check "at least one reparse kind was exercised" ($ran -gt 0)
 
 Write-Host ""

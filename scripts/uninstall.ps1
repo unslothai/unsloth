@@ -61,9 +61,8 @@ Environment:
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         if (-not (Test-Path -LiteralPath $Path)) { return }
-        # Escalating backoff rather than a flat 700ms x4: torch inductor's compile workers keep
-        # plain data handles on files under TORCHINDUCTOR_CACHE_DIR for seconds after the server
-        # stops, and neither pass in _StopProcessesLockingRoots can attribute those to a process.
+        # Escalating: torch inductor holds DATA handles under TORCHINDUCTOR_CACHE_DIR for
+        # seconds, and _StopProcessesLockingRoots cannot attribute those to a process.
         $delays = @(250, 500, 1000, 2000, 4000, 4000, 4000, 4000)
         for ($attempt = 0; $attempt -le $delays.Count; $attempt++) {
             $lastTry = ($attempt -eq $delays.Count)
@@ -113,8 +112,7 @@ Environment:
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         # Anchor a relative reparse-point target to the link's own parent, or Join-Path
         # resolves it from the uninstaller's working directory and the db test reads false.
-        # Split-Path -LiteralPath takes no -Parent: 5.1 puts them in different parameter sets and
-        # the call throws. -LiteralPath alone already splits off the parent, and -Path globs.
+        # -LiteralPath takes no -Parent (other parameter set; it throws) and already returns it.
         $resolveTarget = {
             param($Item, $Fallback)
             if (-not $Item -or -not $Item.Target) { return $Fallback }
@@ -394,10 +392,8 @@ Environment:
     # The .cmd is the interpreter-based launcher install.ps1 writes beside the .exe for
     # machines whose Application Control policy denies the generated console script. An
     # install whose .exe was removed by that policy's quarantine still owns its root.
-    # Plus the venv shapes older installers left, or the gate strands them. On Windows
-    # share\studio.conf is never written, so the three sentinels that decide a Windows root all
-    # postdate the bin\ shim dir, while install.ps1 still migrates <root>\.venv. So also accept
-    # the marker inside the legacy venv dir, and -ManagedDefaultRoot only, what is inside a venv.
+    # Plus the legacy venv shapes install.ps1 still migrates: share\studio.conf is never written
+    # on Windows, so every sentinel above postdates the bin\ shim dir.
     function _IsStudioRoot {
         param([string]$Path, [switch]$ManagedDefaultRoot)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -406,18 +402,15 @@ Environment:
         if (Test-Path -LiteralPath (Join-Path $Path ".venv\.unsloth-studio-owned") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "bin\unsloth.exe") -PathType Leaf) { return $true }
         if (_IsUnslothCmdShim (Join-Path $Path "bin\unsloth.cmd")) { return $true }
-        # Everything below is INSIDE a venv, and pip puts it in any venv the unsloth wheel is
-        # installed into, so it identifies the wheel and not the owner of the root. It is proof
-        # only at the managed root, which is also the only root that can hold a pre-marker
-        # layout: install.ps1:4453 gates the legacy migration on $studioUsesLegacyLayout, so a
-        # custom root never had a <root>\.venv of ours. Trusting it everywhere would let a
-        # UNSLOTH_STUDIO_HOME left pointing at a project delete the project.
+        # Below here is INSIDE a venv, where pip puts it for any install of the wheel: it names
+        # the wheel, not the owner. Proof only at the managed root, which install.ps1:4453 also
+        # makes the only root that can hold the layout, or a stale UNSLOTH_STUDIO_HOME deletes
+        # the project it points at.
         if (-not $ManagedDefaultRoot) { return $false }
         foreach ($venv in @("unsloth_studio", ".venv")) {
             if (Test-Path -LiteralPath (Join-Path $Path "$venv\Scripts\unsloth.exe") -PathType Leaf) { return $true }
-            # Antivirus quarantines that generated .exe out of a venv that still runs perfectly
-            # (install.ps1:6412 installs and repairs through exactly that condition), and a
-            # pre-marker root has no other sentinel left, so fall back to the package it came from.
+            # Antivirus takes that .exe out of a venv that still runs; install.ps1:6412 repairs
+            # through it, and a pre-marker root has nothing else left.
             foreach ($pkg in @("unsloth_cli", "unsloth")) {
                 if (Test-Path -LiteralPath (Join-Path $Path "$venv\Lib\site-packages\$pkg") -PathType Container) { return $true }
             }
@@ -885,9 +878,8 @@ Environment:
             _RemovePath $customSdCpp
         }
     }
-    # Default install dir (always at %USERPROFILE%\.unsloth\studio when present). Gated on the
-    # same ownership sentinels as a custom root: "studio" under ~/.unsloth is an ordinary thing to
-    # create by hand, and an ungated bare run takes it and then ~/.unsloth with the prune below.
+    # Default install dir (always at %USERPROFILE%\.unsloth\studio when present). Same sentinels
+    # as a custom root: an ungated run takes a hand-made one, then ~/.unsloth with the prune below.
     if ($defaultStudioHome -and (Test-Path -LiteralPath $defaultStudioHome) -and
         -not (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot)) {
         _Substep "refusing to remove non-Unsloth path: $defaultStudioHome" "Yellow"
