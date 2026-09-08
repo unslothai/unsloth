@@ -298,9 +298,20 @@ jobs:
           # skipped this and then found no 3076 events would report an allow
           # verdict for a policy that never loaded.
           $policies = (& CiTool.exe -lp -json 2>$null | ConvertFrom-Json).Policies
-          $sac = @($policies | Where-Object { $_.FriendlyName -like '*Smart App Control*' -or $_.FriendlyName -like '*SmartAppControl*' })
+          # Matched on AuditNoISG, not on "Smart App Control". The file is named
+          # SmartAppControlAuditNoISG.bin but Windows registers it under the
+          # friendly name VerifiedAndReputableDesktopEvaluationAuditNoISG, so a
+          # name match on the product string finds nothing and the job fails
+          # even though CiTool reported Operation Successful and the policy is
+          # live. AuditNoISG appears in both, and the Audit half is asserted
+          # below rather than assumed.
+          $sac = @($policies | Where-Object { $_.FriendlyName -like '*AuditNoISG*' })
           foreach ($p in $policies) { Write-Host ("  policy {0} enforced={1}" -f $p.FriendlyName, $p.IsEnforced) }
           if ($sac.Count -eq 0) { throw 'the Smart App Control audit policy is not in the active policy set after refresh' }
+          # Audit, never enforcement. Applying an enforcing code integrity policy
+          # to a runner could stop the job's own tooling from loading, so refuse
+          # rather than find out.
+          if ($sac[0].FriendlyName -notlike '*Audit*') { throw "refusing to continue: $($sac[0].FriendlyName) is not an audit policy" }
           Add-Content -Path $env:GITHUB_ENV -Value "SAC_POLICY_ID=$($sac[0].PolicyID)"
           Add-Content -Path $env:GITHUB_ENV -Value "AUDIT_START=$((Get-Date).ToUniversalTime().ToString('o'))"
 
@@ -417,9 +428,20 @@ jobs:
           $ErrorActionPreference = 'Continue'
           # Hosted runners are disposable, but a self-hosted runner picking this
           # workflow up would otherwise keep the policy for every later job.
-          if ($env:SAC_POLICY_ID) {
-            & CiTool.exe --remove-policy $env:SAC_POLICY_ID 2>&1 | Out-String | Write-Host
+          # Resolved here rather than trusting SAC_POLICY_ID, because the step
+          # that sets it throws before writing when the verification fails, so a
+          # failed run used to leave the policy installed: exactly the case this
+          # step exists for.
+          $id = $env:SAC_POLICY_ID
+          if (-not $id) {
+            $id = (@((& CiTool.exe -lp -json 2>$null | ConvertFrom-Json).Policies |
+              Where-Object { $_.FriendlyName -like '*AuditNoISG*' }) | Select-Object -First 1).PolicyID
+          }
+          if ($id) {
+            & CiTool.exe --remove-policy $id 2>&1 | Out-String | Write-Host
             & CiTool.exe --refresh 2>&1 | Out-String | Write-Host
+          } else {
+            Write-Host 'no audit policy to remove'
           }
           & CiTool.exe -lp 2>&1 | Select-String -Pattern 'Friendly Name' | Write-Host
 
