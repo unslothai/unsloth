@@ -165,14 +165,17 @@ def _strip_bos_from_chat_template_text(chat_template):
 
 
 def _dedupe_bos_chat_template(tokenizer):
-    """Drop template-emitted BOS when the tokenizer already prepends one."""
+    """Drop template-emitted BOS when the tokenizer already prepends one.
+
+    A processor keeps its own chat_template copy and save_pretrained writes that one, so both
+    copies must lose the BOS or a VLM export emits it twice. Only the inner tokenizer can be
+    asked whether BOS is added already; calling a processor needs an image.
+    """
+    if not _tokenizer_auto_adds_bos(getattr(tokenizer, "tokenizer", tokenizer)):
+        return
     for obj in _tokenizer_objects(tokenizer):
         template = getattr(obj, "chat_template", None)
-        if (
-            template is None
-            or not _tokenizer_auto_adds_bos(obj)
-            or not _chat_template_emits_bos(obj)
-        ):
+        if template is None:
             continue
         if isinstance(template, dict):
             obj.chat_template = {

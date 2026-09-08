@@ -2886,8 +2886,9 @@ def fix_tokenizer_bos_token(tokenizer):
     fix_bos_token = False
     chat_template = getattr(tokenizer, "chat_template", None)
 
-    if _tokenizer_auto_adds_bos(tokenizer):
-        if chat_template is not None and _chat_template_emits_bos(tokenizer):
+    # A processor cannot be called without an image, so ask its inner tokenizer instead.
+    if _tokenizer_auto_adds_bos(getattr(tokenizer, "tokenizer", tokenizer)):
+        if _chat_template_emits_bos(tokenizer):
             fix_bos_token = True
             logger.warning(
                 "Unsloth: ##### The current model auto adds a BOS token.\n"
@@ -4627,10 +4628,15 @@ def unsloth_save_pretrained_gguf(
     # preflight sized, so it measured the disk these files land on.
     gguf_directory = _gguf_output_directory(save_directory)
 
-    if is_processor:
-        fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer.tokenizer)
-    else:
-        fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
+    # Pass the processor, not its inner tokenizer: save_pretrained writes the processor's own
+    # chat_template.jinja, so leaving that copy alone exports a second BOS. Both copies are
+    # deduped, so both are restored afterwards.
+    from .tokenizer_utils import _tokenizer_objects
+
+    old_chat_templates = [
+        (obj, getattr(obj, "chat_template", None)) for obj in _tokenizer_objects(tokenizer)
+    ]
+    fix_bos_token, _ = fix_tokenizer_bos_token(tokenizer)
 
     # Resolve the imatrix (download, validate, rename *.gguf_file) up front, so a bad path or an unavailable
     # upstream fails before the expensive merge and never reaches the IQ-quant gate.
@@ -4696,11 +4702,12 @@ def unsloth_save_pretrained_gguf(
                     f"{_offloaded_parameter_hint(self)}"
                 ) from e
 
+    if fix_bos_token:
+        for _template_owner, _old_template in old_chat_templates:
+            _template_owner.chat_template = _old_template
+
     if is_processor:
         tokenizer = tokenizer.tokenizer
-
-    if fix_bos_token:
-        tokenizer.chat_template = old_chat_template
 
     for _ in range(3):
         import gc

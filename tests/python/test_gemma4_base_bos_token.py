@@ -442,3 +442,29 @@ def test_bos_token_emitted_by_the_template_still_suppresses_the_fix():
     tok.chat_template = "{{- bos_token -}}{{ messages }}"
     tu._fix_gemma4_base_bos_token(tok)
     assert _ids(tok)[0] != tok.bos_token_id
+
+
+def test_processor_chat_template_is_deduped_too():
+    # ProcessorMixin.save_pretrained writes the processor's own chat_template.jinja, so leaving
+    # that copy alone exports a second BOS on a VLM (processing_utils.py writes self.chat_template).
+    emits_bos = "{{ bos_token }}{% for m in messages %}{{ m.content }}{% endfor %}"
+    inner = _Tok(add_bos_token = True, chat_template = emits_bos)
+    inner.bos_token_id = None  # force the attribute fallback in _tokenizer_auto_adds_bos
+    processor = types.SimpleNamespace(tokenizer = inner, chat_template = emits_bos)
+
+    tu._dedupe_bos_chat_template(processor)
+
+    assert "bos_token" not in processor.chat_template
+    assert "bos_token" not in processor.tokenizer.chat_template
+
+
+def test_dedupe_is_a_noop_when_the_tokenizer_does_not_add_bos():
+    emits_bos = "{{ bos_token }}hello"
+    inner = _Tok(add_bos_token = False, chat_template = emits_bos)
+    inner.bos_token_id = None
+    processor = types.SimpleNamespace(tokenizer = inner, chat_template = emits_bos)
+
+    tu._dedupe_bos_chat_template(processor)
+
+    assert processor.chat_template == emits_bos
+    assert processor.tokenizer.chat_template == emits_bos
