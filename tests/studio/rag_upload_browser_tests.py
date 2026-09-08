@@ -27,7 +27,8 @@ def request(path, body = None):
 
 
 def wait_state(predicate):
-    deadline = time.monotonic() + 8
+    # Same contention as the browser waits below: three engines on a two-core runner.
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         state = request("/__state")
         if predicate(state):
@@ -156,7 +157,7 @@ def large_batch(page):
     page.evaluate(
         "window.pending=window.sim.uploadNames(Array.from({length:12},(_,i)=>'report-'+i+'.txt'));void 0"
     )
-    deadline = time.monotonic() + 4
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline and len(request("/__state")["uploads"]) < 12:
         time.sleep(0.05)
     data = request("/__state")
@@ -173,9 +174,9 @@ def overlapping_uploads(page):
     wait_state(lambda s: s["waiting"] == 2)
     request("/__release-one", {})
     page.evaluate("window.first")
-    assert page.evaluate("window.sim.uploading"), (
-        "The first upload released the second upload's guard"
-    )
+    assert page.evaluate(
+        "window.sim.uploading"
+    ), "The first upload released the second upload's guard"
     request("/__release", {})
     page.evaluate("window.second")
     complete(page)
@@ -189,9 +190,9 @@ def concurrent_same_content(page):
     request("/__release", {})
     page.evaluate("Promise.all([window.first,window.second])")
     complete(page)
-    assert page.evaluate("window.sim.documents.length") == 1, (
-        "Concurrent deduplication left duplicate chips"
-    )
+    assert (
+        page.evaluate("window.sim.documents.length") == 1
+    ), "Concurrent deduplication left duplicate chips"
 
 
 def materialize(page):
@@ -274,7 +275,7 @@ def main():
                 records.append(record)
             browser.close()
     (ROOT / ("browser-results-" + "-".join(engines) + ".json")).write_text(
-        json.dumps(records, indent = 2)
+        json.dumps(records, indent = 2), encoding = "utf-8"
     )
     raise SystemExit(any(r["status"] == "failed" for r in records))
 

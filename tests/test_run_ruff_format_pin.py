@@ -118,8 +118,17 @@ class TestRefusing:
         assert main([str(target)]) == 1
         assert target.read_text(encoding = "utf-8") == original
 
+    @pytest.mark.skipif(
+        installed_ruff_version() is None,
+        reason = "this one really runs the formatter, and ruff is not installed here",
+    )
     def test_the_override_lets_it_through(self, tmp_path, monkeypatch):
         # An escape hatch, because a pin bump has to be runnable before it is merged.
+        #
+        # Skipped rather than asserted where ruff is absent: main() forwards the
+        # formatter's own exit code, so on an interpreter with no ruff this returns
+        # 1 for a reason that has nothing to do with the version gate. That is how
+        # it failed on the repo-tests CI runner, which installs no ruff.
         target = tmp_path / "sample.py"
         target.write_text("x = f(a=1)\n", encoding = "utf-8")
         monkeypatch.setattr("run_ruff_format.installed_ruff_version", lambda *a, **k: "9.9.9")
@@ -133,3 +142,15 @@ class TestRefusing:
         # and must not be failed for a version it never used.
         monkeypatch.setattr("run_ruff_format.installed_ruff_version", lambda *a, **k: "9.9.9")
         assert main([]) == 0
+
+
+class TestTheScriptStaysRunnable:
+    """It is invoked as a program, so the mode bit matters, and a wholesale rewrite drops it invisibly."""
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason = "no POSIX mode bits")
+    def test_the_formatter_is_executable(self):
+        script = _ROOT / "scripts" / "run_ruff_format.py"
+        assert script.read_text(encoding = "utf-8").startswith("#!")
+        assert (
+            script.stat().st_mode & 0o111
+        ), "scripts/run_ruff_format.py lost its executable bit; git tracks it as 100755"
