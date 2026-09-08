@@ -1358,6 +1358,7 @@ def _start_studio_server(
     downloaded_bytes = 0
     early_key_seen = False
     first_healthy_at: Optional[float] = None
+    healthy = False
     next_mint = 0.0
     try:
         while time.monotonic() < deadline:
@@ -1367,7 +1368,8 @@ def _start_studio_server(
                 _shutdown_auto_served()
                 _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
             tail = _log_tail(log_path, lines = 400)
-            healthy = _studio_healthy(base)
+            # Last pass's probe: the readiness check below wants a health answer taken
+            # after the progress request, so this loop only ever makes one per pass.
             if healthy and first_healthy_at is None:
                 first_healthy_at = time.monotonic()
             key = None
@@ -1412,6 +1414,7 @@ def _start_studio_server(
             if bytes_now > downloaded_bytes:
                 deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
             downloaded_bytes = bytes_now
+            healthy = _studio_healthy(base)
             if healthy and ready_signal:
                 if progress is not None:
                     progress.complete()

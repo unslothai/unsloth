@@ -122,6 +122,7 @@ class Harness:
         self.healthy_until = healthy_until
         self.ready_tail = ready_tail or f"{KEY_LINE}Model loaded: {MODEL}\n"
         self.mints = 0
+        self.calls = []
         self.server = FakePopen()
         self.iterations = 0
         self.polls = 0
@@ -152,6 +153,7 @@ class Harness:
             }
         if "download-progress" in url:
             self.polls += 1
+            self.calls.append("progress")
             if self.polls <= self.fail_first or (
                 self.fail_every and self.polls % self.fail_every == 0
             ):
@@ -220,6 +222,7 @@ class Harness:
         base,
         timeout = 3.0,
     ):
+        self.calls.append("health")
         self.iterations += 1
         assert self.iterations <= MAX_ITERATIONS, (
             f"readiness loop still running after {self.iterations} passes "
@@ -604,3 +607,23 @@ def test_one_healthy_answer_is_enough_to_start_minting(monkeypatch):
     assert harness.mints == 1
     assert harness.polls > 0
     assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
+
+
+def test_readiness_is_declared_on_a_health_answer_taken_after_the_progress_request(monkeypatch):
+    # A progress request can take seconds, so a health answer read before it is already
+    # stale when the loop decides the server is ready -- the child can have exited in
+    # between, and the agent would then be handed a dead server. Probe health last.
+    harness = Harness(
+        monkeypatch,
+        tail = "starting\n",
+        healthy = True,
+        startup_key = "sk-unsloth-minted",
+        chunk_bytes = 1024**3,
+        ready_at = 10,
+    )
+
+    server = harness.start()
+
+    assert server is harness.server
+    assert harness.polls > 0
+    assert harness.calls[-1] == "health", f"readiness read a stale probe: {harness.calls[-3:]}"
