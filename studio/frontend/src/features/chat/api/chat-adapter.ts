@@ -110,6 +110,7 @@ import {
 } from "../external-providers";
 
 import {
+  localToolExchangeIndexes,
   addCodexReasoning,
   codexLocalToolRoundId,
   codexReasoningForToolCalls,
@@ -1748,25 +1749,42 @@ function boundMcpImageResults(
   { readsImages, localMarkers }: { readsImages: boolean; localMarkers: boolean },
 ): RunMessages {
   type Carrier = { message: number; part: number; images: McpImage[] };
-  // One entry per message: the results one model turn produced, which the marker
-  // paths render as one batch.
-  const perMessage: Carrier[][] = [];
+  // One entry per replay EXCHANGE, not per message: a local run accumulates every
+  // round's tool calls in one assistant message and the serializer splits them by
+  // round id into the exchanges the backend sees, and a batch is one exchange's
+  // results. Partitioned by the serializer's own rule so the two cannot drift.
+  const perExchange: Carrier[][] = [];
   messages.forEach((message, m) => {
     const parts = message.content;
     if (!Array.isArray(parts)) return;
-    const batch: Carrier[] = [];
+    const toolParts: { index: number; part: ToolCallMessagePart }[] = [];
     parts.forEach((part, p) => {
-      if (part.type !== "tool-call") return;
+      if (part.type === "tool-call") {
+        toolParts.push({ index: p, part: part as ToolCallMessagePart });
+      }
+    });
+    const exchanges = localToolExchangeIndexes(
+      toolParts,
+      ({ part }) => codexLocalToolRoundId(getToolReplayProvenance(part)),
+      ({ part }) => shouldFlushCompletedLocalToolPair(part),
+    );
+    const byExchange = new Map<number, Carrier[]>();
+    toolParts.forEach(({ index, part }, k) => {
       const tc = part as { toolName?: string; result?: unknown };
       if (!isMcpImageToolResult(tc.result) || !isMcpToolName(tc.toolName)) return;
-      batch.push({ message: m, part: p, images: tc.result.images });
+      const carrier = { message: m, part: index, images: tc.result.images };
+      const batch = byExchange.get(exchanges[k]) ?? [];
+      batch.push(carrier);
+      byExchange.set(exchanges[k], batch);
     });
-    if (batch.length > 0) perMessage.push(batch);
+    for (const key of [...byExchange.keys()].sort((a, b) => a - b)) {
+      perExchange.push(byExchange.get(key)!);
+    }
   });
-  if (perMessage.length === 0) return messages;
+  if (perExchange.length === 0) return messages;
   const batches = localMarkers
-    ? perMessage
-    : perMessage.flatMap((batch) => batch.map((carrier) => [carrier]));
+    ? perExchange
+    : perExchange.flatMap((batch) => batch.map((carrier) => [carrier]));
   const plan = readsImages
     ? planMcpImageBound(
         batches.map((batch) => batch.map((carrier) => carrier.images)),

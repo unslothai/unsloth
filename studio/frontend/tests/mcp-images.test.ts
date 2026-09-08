@@ -19,6 +19,7 @@ import {
   stripMcpImageEnvelopes,
 } from "../src/features/chat/api/mcp-images.ts";
 import { providerModelTakesMcpImages } from "../src/features/chat/external-providers.ts";
+import { localToolExchangeIndexes } from "../src/features/chat/codex-reasoning.ts";
 import { isMcpToolName } from "../src/features/chat/utils/mcp-tool-name.ts";
 
 const IMAGES = [{ data: "QUJD", mimeType: "image/png" }];
@@ -543,4 +544,32 @@ test("the planner is the bound the envelope form applies", () => {
   // A result that keeps nothing is an empty plan, which the raw bound turns into text.
   const dropped = planMcpImageBound([[[{ data: "x", mimeType: "image/png" }]], [[Array.from({ length: 12 }, (_, i) => ({ data: `${i}`, mimeType: "image/png" }))].flat()]]);
   assert.equal(dropped[0][0].length, 1);
+});
+
+test("a message's results are batched by replay exchange, not as one block", () => {
+  // Three local rounds accumulate in one assistant message, told apart by round_id;
+  // the serializer emits them as three exchanges, so the bound treats them as three
+  // batches (one picture each), not one batch sharing a single picture's allowance.
+  type P = { round: number | null; flush: boolean };
+  const parts: P[] = [
+    { round: 0, flush: false },
+    { round: 0, flush: false },
+    { round: 1, flush: false },
+    { round: 2, flush: false },
+    { round: null, flush: true },
+    { round: null, flush: true },
+  ];
+  const indexes = localToolExchangeIndexes(
+    parts,
+    (p) => p.round,
+    (p) => p.flush,
+  );
+  assert.deepEqual(indexes, [0, 0, 1, 2, 3, 4]);
+  // The bound's partition uses the serializer's own conditions.
+  assert.match(adapter, /startsNewCodexToolRound\(pendingLocalToolRoundId, localRoundId\)/);
+  assert.match(adapter, /localRoundId === null && shouldFlushCompletedLocalToolPair\(toolPart\)/);
+  assert.match(
+    adapter,
+    /localToolExchangeIndexes\(\n\s*toolParts,\n\s*\(\{ part \}\) => codexLocalToolRoundId\(getToolReplayProvenance\(part\)\),\n\s*\(\{ part \}\) => shouldFlushCompletedLocalToolPair\(part\),/,
+  );
 });
