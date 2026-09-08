@@ -51,6 +51,7 @@ def _launch_with(
     n_ctx = 0,
     n_parallel = 4,
     caps = None,
+    avail_mib = 64 * 1024,
 ):
     """Launch a load the planner is consulted on, returning (cmd, backend, seen inputs)."""
     if owns:
@@ -74,7 +75,7 @@ def _launch_with(
         "supports_cache_ram": True,
         **(caps or {}),
     }
-    backend._available_system_memory_mib = lambda: 64 * 1024
+    backend._available_system_memory_mib = lambda: avail_mib
     seen = {}
 
     def fake_plan(
@@ -206,8 +207,10 @@ def test_the_cache_ram_clamp_is_emitted_on_the_fallback_and_rewritten_by_the_pla
 ):
     declined_cmd, _b, seen = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"))
     assert _flag(declined_cmd, "--fit") == "on"
-    # 64 GiB of host RAM leaves the default whole.
-    assert _flag(declined_cmd, "--cache-ram") == "8192"
+    # 64 GiB of host RAM leaves the default whole, and a default that does not
+    # bind is NOT written out: it is llama-server's own value, and emitting it
+    # made every flag-on argv differ from flag-off, planned or declined alike.
+    assert "--cache-ram" not in declined_cmd
     assert seen["inputs"]["cache_ram_default_mib"] == 8192
     assert seen["inputs"]["cache_ram_user_set"] is False
 
@@ -217,7 +220,18 @@ def test_the_cache_ram_clamp_is_emitted_on_the_fallback_and_rewritten_by_the_pla
     cmd, backend, _ = _launch_with(tmp_path, monkeypatch, plan)
     assert _flag(cmd, "--cache-ram") == "1024"
     assert cmd.count("--cache-ram") == 1
-    assert backend._spill_plan_restore.get("--cache-ram") == "8192"
+    assert backend._spill_plan_restore.get("--cache-ram") is None
+
+
+def test_the_cache_ram_clamp_is_emitted_on_the_fallback_only_when_it_binds(tmp_path, monkeypatch):
+    """A host with too little RAM for the model's spill plus the 8 GiB default
+    gets the bound; the flag then carries the value the load-mode rule priced."""
+    declined_cmd, _b, seen = _launch_with(
+        tmp_path, monkeypatch, Plan(reason = "declined"), avail_mib = 12 * 1024
+    )
+    got = _flag(declined_cmd, "--cache-ram")
+    assert got is not None and 0 <= int(got) < 8192, declined_cmd
+    assert seen["inputs"]["cache_ram_default_mib"] == int(got)
 
 
 def test_a_load_mode_the_plan_chose_rides_the_fit_record(tmp_path, monkeypatch):
@@ -264,13 +278,18 @@ def test_a_planner_owned_launch_on_windows_carries_the_clamp_and_not_the_tuning_
     on a shared pool. Neither reaches a launch the planner owns: the tuning keys
     on fully_gpu_offloaded, which only the "model fits, force every layer on"
     branch sets, and a planner launch (spill or --fit on fallback) never takes
-    that branch. So the argv carries exactly one --cache-ram, the planner's host
-    RAM clamp, and no trailing zero for last-wins to prefer."""
+    that branch. So the argv carries the planner's host RAM clamp when it binds
+    and nothing otherwise, and never a trailing zero for last-wins to prefer."""
     import sys
 
     monkeypatch.setattr(sys, "platform", "win32")
     plan = Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,))
     cmd, _backend, _ = _launch_with(tmp_path, monkeypatch, plan)
+    assert "--cache-ram" not in cmd, cmd
+    bound = Plan(
+        changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), cache_ram_mib = 2048
+    )
+    cmd, _backend, _ = _launch_with(tmp_path, monkeypatch, bound)
     assert cmd.count("--cache-ram") == 1, cmd
-    assert _flag(cmd, "--cache-ram") == "8192"
+    assert _flag(cmd, "--cache-ram") == "2048"
     assert "--ctx-checkpoints" not in cmd

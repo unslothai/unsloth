@@ -22271,11 +22271,18 @@ class LlamaCppBackend:
                             "llama-server has no --cache-ram; skipping the requested %s MiB.",
                             cache_ram,
                         )
-                elif _auto_cache_ram_mib is not None and server_caps.get("supports_cache_ram"):
+                elif (
+                    _auto_cache_ram_mib is not None
+                    and int(_auto_cache_ram_mib) < self._DEFAULT_CACHE_RAM_MIB
+                    and server_caps.get("supports_cache_ram")
+                ):
                     # The user set none and the planner owns the fit: bound the
                     # prompt cache to the host RAM this launch leaves free instead of
                     # letting llama.cpp's 8 GiB default sit uncounted in the load-mode
-                    # arithmetic. Same value the rule above was priced at.
+                    # arithmetic. Same value the rule above was priced at. Emitted
+                    # only when the bound BINDS: at the default it is llama-server's
+                    # own value, and writing it out made the flag-on argv differ from
+                    # flag-off on every launch, including ones the planner declined.
                     cmd.extend(["--cache-ram", str(int(_auto_cache_ram_mib))])
 
                 # Report a clean public model id (matching GET /v1/models) rather
@@ -27283,8 +27290,19 @@ class LlamaCppBackend:
         if not self._can_estimate_kv():
             return None
 
-        layout = self._tensor_spill_layout(inputs.get("model_path"))
+        # Every shard: llama.cpp reads split.count off shard 1 and loads every
+        # sibling, and a layout read from shard 1 alone is a fraction of the model
+        # that reports itself incomplete. The models large enough to need a spill
+        # are exactly the sharded ones, so declining here silently hid the planner
+        # from all of them.
+        layout = self._tensor_spill_layout(inputs.get("model_path"), all_shards = True)
         if layout is None or not layout.complete:
+            logger.info(
+                "Tensor spill: declined, %s",
+                "the GGUF layout could not be read"
+                if layout is None
+                else "the GGUF layout is incomplete",
+            )
             return None
 
         # Per-device VRAM the planner may credit. SHARED rows are dropped, not

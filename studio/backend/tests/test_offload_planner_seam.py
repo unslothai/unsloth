@@ -118,12 +118,21 @@ class _Stub:
     _planned_tensor_spill = LlamaCppBackend._planned_tensor_spill
     _drop_tensor_spill = LlamaCppBackend._drop_tensor_spill
 
-    def _tensor_spill_layout(self, model_path):
+    def _tensor_spill_layout(
+        self,
+        model_path,
+        *,
+        all_shards = False,
+    ):
         """Stand in for the GGUF read: the seam's job is to decline or to hand
         the planner well-formed inputs, not to parse a file. ``ffn = None``
-        stands for an unreadable model, which must abstain."""
+        stands for an unreadable model, which must abstain. ``sharded`` stands
+        for a multi-part GGUF, whose first shard alone reads as incomplete."""
+        self._layout_all_shards = all_shards
         if self._ffn_weight_bytes is None or not model_path:
             return None
+        if getattr(self, "sharded", False) and not all_shards:
+            return ModelLayout(arch = "qwen35", n_layers = 0, complete = False)
         n = 64
         return ModelLayout(
             arch = "qwen35moe" if self.n_moe_layers else "qwen35",
@@ -773,9 +782,9 @@ def test_split_mode_none_with_an_explicit_main_gpu_still_declines():
     )
     # Not vacuous, and not a blanket refusal of the env var's absence.
     assert _plan(_Stub(), gpus = two_cards, extra_args = ["-sm", "none"]) is not None
-    assert (
-        _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_MAIN_GPU": "0"}) is None
-    ), "0 is still a pin the guard cannot verify against its own device order"
+    assert _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_MAIN_GPU": "0"}) is None, (
+        "0 is still a pin the guard cannot verify against its own device order"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1029,9 +1038,9 @@ def test_the_compute_buffer_reaches_the_planner():
     flat = _plan(stub, free_mib = 14 * 1024, compute_flat = 3 * GIB)
     for tighter in (per_device, flat):
         assert tighter is not None
-        assert len(tighter.spilled_blocks) > len(
-            base.spilled_blocks
-        ), "charging the compute buffer has to spill MORE, not the same"
+        assert len(tighter.spilled_blocks) > len(base.spilled_blocks), (
+            "charging the compute buffer has to spill MORE, not the same"
+        )
 
 
 def test_the_seam_hands_the_planner_raw_free_vram_for_the_split():
@@ -1235,7 +1244,12 @@ class _FlatAttentionStub(_Stub):
     cache, no sliding window, no trailing blocks. The default stub abstains on the
     per-device test, which hides what a multi-GPU plan does with a flat term."""
 
-    def _tensor_spill_layout(self, model_path):
+    def _tensor_spill_layout(
+        self,
+        model_path,
+        *,
+        all_shards = False,
+    ):
         n = 8
         return ModelLayout(
             arch = "qwen35",
@@ -2717,3 +2731,18 @@ def test_the_planner_reserve_is_never_below_the_validated_curve(monkeypatch):
     assert '"reserve_floor_bytes": _reserve_floor_bytes(' in src
     seam = inspect.getsource(llama_cpp.LlamaCppBackend._planned_tensor_spill)
     assert 'inputs.get("reserve_floor_bytes")' in seam
+
+
+def test_a_sharded_gguf_is_read_whole_before_the_planner_sees_it():
+    """A multi-part GGUF read from shard 1 alone is a fraction of the model and
+    reports itself incomplete; the seam then declined with no log line, so the
+    planner never saw a complete layout for exactly the models large enough to
+    need it (measured on Qwen3.6-235B: shard 1 alone gives complete=False,
+    spillable 0; all shards give 120 GiB spillable)."""
+    stub = _Stub()
+    stub.sharded = True
+    # Shard 1 alone is what the seam used to read, and it is incomplete.
+    assert stub._tensor_spill_layout("/models/stub-00001-of-00004.gguf").complete is False
+    plan = _plan(stub, free_mib = 14 * 1024)
+    assert stub._layout_all_shards is True
+    assert plan is not None and plan.spills_anything, plan
