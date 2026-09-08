@@ -151,7 +151,11 @@ def test_the_launcher_refresh_spawns_the_resolved_interpreter(monkeypatch, tmp_p
 def test_windows_launch_uses_process_flags_without_windowstyle(
     monkeypatch, tmp_path, interactive, flow
 ):
-    """Inspect the actual handoffs, including refresh's separate -Command/-File paths."""
+    """Cover Python argv for test_installer_av_shapes.py's Hidden/Bypass rule.
+
+    Inspect the actual handoffs, including refresh's separate -Command/-File paths;
+    the shell-script scan cannot see arguments assembled across Python functions.
+    """
     studio = _windows_studio(monkeypatch)
     monkeypatch.setattr(studio.sys.stdout, "isatty", lambda: interactive)
     monkeypatch.setattr(studio.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising = False)
