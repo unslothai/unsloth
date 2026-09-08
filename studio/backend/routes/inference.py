@@ -27754,19 +27754,12 @@ def _responses_reasoning_output_item(
 def _reject_unserviceable_responses_attachment(part) -> None:
     """Refuse an attachment the local adapter cannot serve, instead of dropping it.
 
-    ``_responses_tool_output_content`` already answers these exact shapes with a typed 400
-    when they arrive as a tool result; the same four rules and the same wording apply to a
-    message content part, so one server does not explain the gap in one place and hide it in
-    another.
-
-    A part reaches here only after failing its typed variant, so an ``input_image`` that got
-    this far is missing its ``image_url``, or carries a ``detail`` outside the documented set,
-    or both. An image carrying ``image_url`` *and* ``file_id`` validates normally and is
-    served from the URL -- ``file_id`` means "instead of a URL" here, exactly as it does on
-    the tool-result path.
-
-    Called for every role, before the system/developer hoist and the assistant flatten, since
-    an attachment vanishes just as quietly from those turns as it does from a user turn.
+    Same four rules and same wording as ``_responses_tool_output_content``, which already
+    answers these shapes as a tool result; two vocabularies for one question is the bug.
+    A part reaches here only after failing its typed variant, so an ``input_image`` here has
+    no ``image_url``, or a ``detail`` outside the documented set, or both. One with both
+    ``image_url`` and ``file_id`` never arrives: ``file_id`` means instead of a URL, not
+    as well as, so it validates and is served from the URL on this path and on that one.
     """
     part_type = getattr(part, "type", None)
     if part_type == "input_file":
@@ -27798,10 +27791,7 @@ def _reject_unserviceable_responses_attachment(part) -> None:
 
 
 def _reject_unserviceable_responses_attachments(item) -> None:
-    """Run the attachment refusal over one input message's content parts.
-
-    Only list content carries parts; a plain string cannot hide an attachment.
-    """
+    """Run the attachment refusal over one input message's content parts."""
     if isinstance(item.content, str):
         return
     for part in item.content or []:
@@ -27811,11 +27801,9 @@ def _reject_unserviceable_responses_attachments(item) -> None:
 def _reject_unknown_responses_message_part(part) -> None:
     """Refuse a content part no local route can serve, naming the type.
 
-    Mirrors ``_reject_unsupported_content_parts`` on the Chat Completions side: a part left
-    standing is dropped in silence and the model answers a prompt the caller did not send.
-    Applied to user turns only, so an assistant replay turn keeps the lenient text flatten
-    it has always had -- clients round-trip prior assistant output verbatim and must not be
-    made to fail on a part that carries no attachment.
+    Mirrors ``_reject_unsupported_content_parts`` on the Chat Completions side. User turns
+    only: clients round-trip prior assistant output verbatim, so hoisting this one too would
+    fail a replay turn over a part that carries no attachment.
     """
     _raise_unsupported_openai_parameter(
         "input",
@@ -27946,9 +27934,8 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             # don't 422.
             continue
 
-        # ResponsesInputMessage. Refuse an attachment this adapter cannot serve before the
-        # role branches below, each of which returns via `continue` and would otherwise carry
-        # a system, developer or assistant turn's attachment away in silence.
+        # ResponsesInputMessage. Before the role branches: each returns via `continue`, so a
+        # refusal placed after them loses a system, developer or assistant attachment.
         _reject_unserviceable_responses_attachments(item)
 
         # Hoist system/developer to the top, merge.
@@ -27972,9 +27959,8 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                 messages.append(ChatMessage(role = "assistant", content = text))
             continue
 
-        # User (and any other remaining roles). Attachments are already refused above; a part
-        # still standing here is one no local route can serve, so name it rather than answer
-        # a prompt the caller did not send.
+        # User (and any other remaining roles). Attachments were refused above, so a part
+        # still standing is one no local route can serve.
         parts: list = []
         for part in item.content:
             if isinstance(part, (ResponsesInputTextPart, ResponsesOutputTextPart)):

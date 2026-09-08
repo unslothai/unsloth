@@ -858,9 +858,8 @@ class TestNormaliseResponsesInputWithTools:
         assert "file_id" in str(exc.value.detail)
 
     def test_unmodelled_message_part_is_named_not_dropped(self):
-        # /chat/completions refuses an unmodelled part by name in
-        # _reject_unsupported_content_parts. A part this endpoint drops instead is a part
-        # the caller sent and the model never saw, so the two routes answer alike.
+        # Matches _reject_unsupported_content_parts on /chat/completions; a part dropped
+        # here is one the caller sent and the model never saw.
         payload = ResponsesRequest(
             input = [
                 {
@@ -878,8 +877,7 @@ class TestNormaliseResponsesInputWithTools:
         assert "input_something_new" in str(exc.value.detail)
 
     def test_image_message_part_without_any_source_rejected_clearly(self):
-        # No image_url and no file_id: nothing to serve, and the tool-result path already
-        # says so in these words.
+        # Nothing to serve, and the tool-result path already says so in these words.
         payload = ResponsesRequest(
             input = [
                 {
@@ -897,9 +895,8 @@ class TestNormaliseResponsesInputWithTools:
         assert "require an image_url string" in str(exc.value.detail)
 
     def test_image_message_part_with_unknown_detail_rejected_clearly(self):
-        # detail is a Literal, so an out-of-set value fails ResponsesInputImagePart and the
-        # whole image degrades to the catch-all. Dropping it loses an image the adapter
-        # could have served from the url that is sitting right there.
+        # An out-of-set detail fails the Literal, so the whole part degrades to the
+        # catch-all and dropping it loses a url the adapter could have served.
         payload = ResponsesRequest(
             input = [
                 {
@@ -921,8 +918,7 @@ class TestNormaliseResponsesInputWithTools:
         assert "auto, low, high, or original" in str(exc.value.detail)
 
     def test_image_message_part_with_url_and_file_id_is_served_from_the_url(self):
-        # file_id means "instead of a url" on both paths. With a url present there is
-        # something to serve, so serve it rather than refuse the turn.
+        # file_id means instead of a url, not as well as: with a url, serve it.
         payload = ResponsesRequest(
             input = [
                 {
@@ -944,8 +940,8 @@ class TestNormaliseResponsesInputWithTools:
 
     @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
     def test_attachment_refused_on_the_roles_that_exit_early(self, role):
-        # system/developer hoist and assistant flatten each return via `continue`, so a
-        # refusal placed in the user parts loop never sees their attachments.
+        # Both branches return via `continue`, so a refusal in the user parts loop
+        # never sees their attachments.
         text_part = (
             {"type": "output_text", "text": "hi"}
             if role == "assistant"
@@ -966,9 +962,8 @@ class TestNormaliseResponsesInputWithTools:
         assert "input_file" in str(exc.value.detail)
 
     def test_assistant_replay_keeps_its_lenient_text_flatten(self):
-        # Clients round-trip prior assistant output verbatim. A part that carries no
-        # attachment must not fail a turn that used to work -- only attachments are refused
-        # on a replay turn.
+        # Clients round-trip prior assistant output verbatim, so only attachments are
+        # refused on a replay turn.
         payload = ResponsesRequest(
             input = [
                 {
@@ -988,7 +983,6 @@ class TestNormaliseResponsesInputWithTools:
         ]
 
     def test_string_content_never_hides_an_attachment(self):
-        # A plain string cannot carry a part, so the refusal must not touch it.
         payload = ResponsesRequest(
             input = [
                 {"role": "system", "content": "be brief"},
@@ -1004,8 +998,7 @@ class TestNormaliseResponsesInputWithTools:
         ]
 
     def test_refusal_body_is_the_openai_unsupported_parameter_shape(self):
-        # Clients branch on error.code / error.param, so the refusal has to be typed the
-        # way every other refusal on this route is typed.
+        # Clients branch on error.code / error.param.
         payload = ResponsesRequest(
             input = [
                 {"role": "user", "content": [{"type": "input_file", "filename": "r.pdf"}]}
@@ -1019,10 +1012,8 @@ class TestNormaliseResponsesInputWithTools:
         assert error["type"] == "invalid_request_error"
 
 
-# Every message-part shape this route can be handed, and the one answer it owes each of
-# them. Kept as a table because the interesting failures are the combinations: a shape that
-# is refused on a user turn but dropped on a system turn, or an image refused for its
-# file_id when the url beside it was servable all along.
+# Every part shape and the one answer it is owed. A table because the failures are the
+# combinations: refused on a user turn but dropped on a system turn, and the like.
 _IMG = "https://example.com/a.png"
 _RESPONSES_PART_MATRIX = [
     # (part, refused, needle in the message)
@@ -1080,9 +1071,8 @@ class TestResponsesMessagePartMatrix:
     @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids=_matrix_id)
     @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
     def test_attachments_refused_on_every_role(self, case, role):
-        # Only attachments are hoisted above the early exits. An unmodelled *text* part on
-        # a replay turn keeps the lenient flatten, so it is expected to pass here even
-        # though the same part is refused on a user turn.
+        # Only attachments are hoisted, so an unmodelled text part passes here while the
+        # same part is refused on a user turn.
         part, refused, needle = case
         attachment = part["type"] in ("input_file", "input_image")
         payload = ResponsesRequest(
@@ -1114,8 +1104,7 @@ class TestResponsesMessagePartMatrix:
         ]
 
     def test_top_level_item_types_are_untouched_by_the_refusal(self):
-        # The refusal walks message items only. Reasoning items and tool items still take
-        # the paths they always took.
+        # The refusal walks message items only.
         payload = ResponsesRequest(
             input = [
                 {"type": "reasoning", "summary": [], "id": "rs_1"},

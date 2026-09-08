@@ -107,8 +107,7 @@ def test_the_route_refuses_an_attachment_on_a_non_user_turn(role):
 
 @pytest.mark.parametrize("case", _REFUSED_PARTS, ids = _part_id)
 def test_the_refusal_lands_before_the_model_switch(case, monkeypatch):
-    """The route documents this invariant for its other refusals: an invalid request must
-    never evict the resident model on its way to a 400."""
+    """The route holds this for its other refusals: a 400 must not evict the model."""
     import routes.inference as inference_route
 
     switched = []
@@ -140,9 +139,8 @@ def test_the_refusal_lands_before_the_model_switch(case, monkeypatch):
 def test_a_servable_turn_is_not_refused(part):
     """The refusal must not reach past the shapes it owns.
 
-    There is no model here, so a servable turn stops at the load check further down the
-    handler. Reaching that check is the assertion: it can only be reached by a request
-    normalisation accepted.
+    No model here, so a servable turn stops at the load check below; reaching it is the
+    assertion, since only an accepted normalisation gets that far.
     """
     with _route_client() as client:
         response = client.post("/v1/responses", json = _body(part))
