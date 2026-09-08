@@ -65,6 +65,31 @@ printf '%s\n' "$H2/.unsloth" > "$H2/.unsloth/.unsloth-portable-root"
 env -i HOME="$H2" PATH="$PATH" UNSLOTH_HOME="$H2/.unsloth" sh "$UNINSTALL" >/dev/null 2>&1 || true
 check "an Unsloth-only default root still goes entirely" gone "$(state "$H2/.unsloth")"
 
+# A FLAT install at the default root puts the venv and the database AT the root, and the
+# default block only knows the nested shape. The first version of this exception removed the
+# markers and left both behind: gigabytes retained with their metadata stripped, and the run
+# still reporting success.
+H4="$T/home4"
+mkdir -p "$H4/.unsloth/unsloth_studio/bin" "$H4/.unsloth/share" "$H4/.unsloth/cache" \
+         "$H4/.unsloth/bin" "$H4/.local/bin" "$H4/.local/share"
+: > "$H4/.unsloth/unsloth_studio/.unsloth-studio-owned"
+: > "$H4/.unsloth/studio.db"
+printf '%s\n' "$H4/.unsloth" > "$H4/.unsloth/.unsloth-portable-root"
+printf "UNSLOTH_EXE='%s'\n" "$H4/.unsloth/unsloth_studio/bin/unsloth" > "$H4/.unsloth/share/studio.conf"
+printf 'notes\n' > "$H4/.unsloth/my-notes.txt"
+env -i HOME="$H4" PATH="$PATH" UNSLOTH_HOME="$H4/.unsloth" sh "$UNINSTALL" >/dev/null 2>&1 || true
+check "a flat install's owned venv is removed"  gone    "$(state "$H4/.unsloth/unsloth_studio")"
+check "and its database goes with it"           gone    "$(state "$H4/.unsloth/studio.db")"
+check "while the user's own file still stays"   present "$(state "$H4/.unsloth/my-notes.txt")"
+
+# The owner marker is what licences that removal. Without it the directory is the user's.
+H5="$T/home5"
+mkdir -p "$H5/.unsloth/unsloth_studio" "$H5/.local/bin" "$H5/.local/share"
+printf 'mine\n' > "$H5/.unsloth/unsloth_studio/mine.txt"
+printf '%s\n' "$H5/.unsloth" > "$H5/.unsloth/.unsloth-portable-root"
+env -i HOME="$H5" PATH="$PATH" UNSLOTH_HOME="$H5/.unsloth" sh "$UNINSTALL" >/dev/null 2>&1 || true
+check "an unowned unsloth_studio dir is left alone" present "$(state "$H5/.unsloth/unsloth_studio/mine.txt")"
+
 # A root the user named keeps the old, promised behaviour: it goes in one piece.
 H3="$T/home3"; R3="$T/dedicated"
 mkdir -p "$H3/.local/bin" "$H3/.local/share" "$R3/studio/unsloth_studio/bin" "$R3/share" \

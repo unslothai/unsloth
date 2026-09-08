@@ -79,6 +79,30 @@ o5="$(parse "$H5" UNSLOTH_STUDIO_HOME="$H5/named")"
 check "but its own marker is honoured"       "true"       "$(mode "$o5")"
 check "and it becomes the root"              "$H5/named"  "$(root "$o5")"
 
+# 5b. A NESTED portable install names its master root in a record at the Studio root, not in a
+# flat marker. Checking only the flat one left `--root R` plus a rerun carrying
+# UNSLOTH_STUDIO_HOME=R/studio -- which is exactly what share/studio.conf exports -- reading as
+# normal with both markers on disk, and _clear_stale_portable_marker then removed them.
+H5b="$T/h5b"; R5b="$T/nestedroot"
+mkdir -p "$H5b" "$R5b/studio/unsloth_studio" "$R5b/bin"
+printf '%s\n' "$R5b" > "$R5b/.unsloth-portable-root"
+printf '%s\n' "$R5b" > "$R5b/studio/.unsloth-master-root"
+o5b="$(parse "$H5b" UNSLOTH_STUDIO_HOME="$R5b/studio")"
+check "a nested named root is adopted from its master record" "true"  "$(mode "$o5b")"
+check "and the record names the root"                         "$R5b"  "$(root "$o5b")"
+check "it still converts back on request"                     "false" \
+    "$(mode "$(parse "$H5b" UNSLOTH_PORTABLE=0 UNSLOTH_STUDIO_HOME="$R5b/studio")")"
+
+# The record is trusted only as far as it is usable. A relative or empty one must not become a
+# root resolved against the caller's cwd.
+H5c="$T/h5c"; mkdir -p "$H5c" "$T/rel/studio" "$T/empty/studio"
+printf 'relative/path\n' > "$T/rel/studio/.unsloth-master-root"
+: > "$T/empty/studio/.unsloth-master-root"
+check "a relative master record is ignored" "false" \
+    "$(mode "$(parse "$H5c" UNSLOTH_STUDIO_HOME="$T/rel/studio")")"
+check "an empty master record is ignored"   "false" \
+    "$(mode "$(parse "$H5c" UNSLOTH_STUDIO_HOME="$T/empty/studio")")"
+
 # 6. An explicit --root still wins over whatever is on disk.
 H6="$T/h6"; mkdir -p "$H6/.unsloth/studio" "$T/elsewhere"
 printf '%s\n' "$H6/.unsloth" > "$H6/.unsloth/studio/.unsloth-master-root"

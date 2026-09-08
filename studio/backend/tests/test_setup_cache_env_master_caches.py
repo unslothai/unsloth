@@ -29,6 +29,7 @@ not the MPLCONFIGDIR one.
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib.util
 import os
 import re
@@ -90,6 +91,32 @@ def _clean_env(monkeypatch, tmp_path):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+
+
+@pytest.fixture(autouse = True)
+def _restore_hf_cache_settings_module():
+    # _load_storage_roots below pops utils.hf_cache_settings so the resolver re-snapshots the
+    # environment. Left popped, the next import builds a SECOND module object, and a later test
+    # writes one while reading the other -- observed as
+    # test_hf_cache_settings.py::test_diffusion_cache_root_follows_a_live_switch failing only
+    # when this file ran first. Same guard as test_setup_cache_env_containment.py.
+    import utils
+
+    name = "utils.hf_cache_settings"
+    saved = sys.modules.get(name)
+    saved_attr = getattr(utils, "hf_cache_settings", None)
+    try:
+        yield
+    finally:
+        if saved is not None:
+            sys.modules[name] = saved
+        else:
+            sys.modules.pop(name, None)
+        if saved_attr is not None:
+            utils.hf_cache_settings = saved_attr
+        else:
+            with contextlib.suppress(AttributeError):
+                del utils.hf_cache_settings
 
 
 def _load_storage_roots():
@@ -270,15 +297,22 @@ def test_all_four_launcher_sites_really_do_use_the_master_root(monkeypatch, tmp_
     install_text = _INSTALL_SH.read_text(encoding = "utf-8", errors = "replace")
     for leaf, var in (("uv", "UV_CACHE_DIR"), ("cuda", "CUDA_CACHE_PATH")):
         assert re.search(
-            rf'^\s*export {var}="\$UNSLOTH_ROOT/cache/{leaf}"$', install_text, re.MULTILINE
-        ), f"_export_portable_roots no longer exports {var} as $UNSLOTH_ROOT/cache/{leaf}"
-        # share/studio.conf, written by the printf block in _create_studio_shortcuts.
+            # _epr_default, not a bare export: portable mode DEFAULTS the caches so a caller
+            # who named their own keeps it. The default path is what this test pins.
+            rf'^\s*_epr_default {var} "\$UNSLOTH_ROOT/cache/{leaf}"$', install_text, re.MULTILINE
+        ), f"_export_portable_roots no longer defaults {var} to $UNSLOTH_ROOT/cache/{leaf}"
+        # share/studio.conf, written by the printf block in _create_studio_shortcuts. Both it
+        # and the shim below emit a guarded line rather than a bare export, so that a caller
+        # who named their own cache keeps it; the default path is still what is pinned here.
         assert (
-            f"""printf '%s\\n' "export {var}='$_css_quoted_root/cache/{leaf}'\"""" in install_text
+            f"|| export {var}='$_css_quoted_root/cache/{leaf}'" in install_text
         ), f"share/studio.conf no longer records {var} as <root>/cache/{leaf}"
+        assert (
+            f'[ -n \\"\\${{{var}:-}}\\" ] || export {var}=' in install_text
+        ), f"share/studio.conf stopped guarding {var} against an explicit value"
         # The generated bin/unsloth wrapper.
         assert (
-            f"""\"export {var}='$_shim_root/cache/{leaf}'\"""" in install_text
+            f"""export {var}='$_shim_root/cache/{leaf}'\"""" in install_text
         ), f"the generated bin/unsloth wrapper no longer sets {var} to <root>/cache/{leaf}"
 
     assert _cli_master_cache_vars().get("UV_CACHE_DIR") == "uv"

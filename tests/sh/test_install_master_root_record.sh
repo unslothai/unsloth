@@ -170,17 +170,31 @@ check "3b the stale nested record is removed" gone "$(record_state "$R3b/studio"
 check "3b and the flat marker is published in its place" present \
     "$([ -f "$R3b/studio/.unsloth-portable-root" ] && printf present || printf gone)"
 
-echo "[4] a NORMAL reinstall of the same Studio root drops the record"
+echo "[4] an ASKED-FOR normal reinstall of the same Studio root drops the record"
 # Without this the tree still reads as portable, ahead of both markers, and UNSLOTH_PORTABLE=0
-# cannot turn it off.
+# cannot turn it off. UNSLOTH_PORTABLE=0 is now how you ask: a bare re-run adopts the record
+# instead of dropping it, so that routine updating stops moving a portable install's caches
+# back under $HOME. Case 4b below pins that half.
 H4="$(new_home)"; R4="$H4/vol"
 mkdir -p "$R4/studio/unsloth_studio"
 printf '%s\n' "$R4" > "$R4/studio/$RECORD"
 printf '%s\n' "$R4" > "$R4/.unsloth-portable-root"
-expect_ok "$H4" "UNSLOTH_STUDIO_HOME=$R4/studio" --
+expect_ok "$H4" UNSLOTH_PORTABLE=0 "UNSLOTH_STUDIO_HOME=$R4/studio" --
 check "4 the record is removed" gone "$(record_state "$R4/studio")"
 check "4 the parent marker goes with it" gone \
     "$([ -f "$R4/.unsloth-portable-root" ] && printf present || printf gone)"
+
+# 4b. The other half: a bare re-run of the same tree keeps it. This is the documented update
+# path (`curl ... | sh`, no arguments, no exports), and converting there silently moved every
+# cache back under $HOME.
+H4b="$(new_home)"; R4b="$H4b/vol"
+mkdir -p "$R4b/studio/unsloth_studio"
+printf '%s\n' "$R4b" > "$R4b/studio/$RECORD"
+printf '%s\n' "$R4b" > "$R4b/.unsloth-portable-root"
+expect_ok "$H4b" "UNSLOTH_STUDIO_HOME=$R4b/studio" --
+check "4b a bare re-run keeps the record" present "$(record_state "$R4b/studio")"
+check "4b and keeps the parent marker" present \
+    "$([ -f "$R4b/.unsloth-portable-root" ] && printf present || printf gone)"
 
 echo "[5] ...and only the one inside the tree being reinstalled"
 # A record belongs to whichever Studio root holds it. Reinstalling a SIBLING must not touch it.

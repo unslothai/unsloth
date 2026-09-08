@@ -24,6 +24,7 @@ directory being empty.
 """
 
 import ast
+import contextlib
 import importlib.util
 import os
 import re
@@ -73,6 +74,32 @@ def _clean_env(monkeypatch, tmp_path):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+
+
+@pytest.fixture(autouse = True)
+def _restore_hf_cache_settings_module():
+    # _load_storage_roots below pops utils.hf_cache_settings so the resolver re-snapshots the
+    # environment. Left popped, the next import builds a SECOND module object, and a later test
+    # writes one while reading the other -- observed as
+    # test_hf_cache_settings.py::test_diffusion_cache_root_follows_a_live_switch failing only
+    # when this file ran first. Same guard as test_setup_cache_env_containment.py.
+    import utils
+
+    name = "utils.hf_cache_settings"
+    saved = sys.modules.get(name)
+    saved_attr = getattr(utils, "hf_cache_settings", None)
+    try:
+        yield
+    finally:
+        if saved is not None:
+            sys.modules[name] = saved
+        else:
+            sys.modules.pop(name, None)
+        if saved_attr is not None:
+            utils.hf_cache_settings = saved_attr
+        else:
+            with contextlib.suppress(AttributeError):
+                del utils.hf_cache_settings
 
 
 def _load_storage_roots():
@@ -158,8 +185,10 @@ def test_the_pinned_path_matches_install_sh_and_the_cli(monkeypatch, tmp_path):
     launch fill two different caches."""
     install_text = _INSTALL_SH.read_text(encoding = "utf-8", errors = "replace")
     assert re.search(
-        r'^\s*export PIP_CACHE_DIR="\$UNSLOTH_ROOT/cache/pip"$', install_text, re.MULTILINE
-    ), "install.sh no longer exports PIP_CACHE_DIR as $UNSLOTH_ROOT/cache/pip"
+        # _epr_default, not a bare export: portable mode DEFAULTS the caches so a caller who
+        # named their own keeps it. The path it defaults to is what this test is about.
+        r'^\s*_epr_default PIP_CACHE_DIR "\$UNSLOTH_ROOT/cache/pip"$', install_text, re.MULTILINE
+    ), "install.sh no longer defaults PIP_CACHE_DIR to $UNSLOTH_ROOT/cache/pip"
 
     cli_text = _CLI_STUDIO.read_text(encoding = "utf-8", errors = "replace")
     assert (

@@ -166,10 +166,28 @@ if [ "$_PORTABLE_MODE" != true ] && [ -z "$(_trim_ws "${UNSLOTH_PORTABLE:-}")" ]
     _adopt_root=$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
     [ -n "$_adopt_root" ] || _adopt_root=$(_trim_ws "${STUDIO_HOME:-}")
     if [ -n "$_adopt_root" ]; then
-        # A named Studio root: only its own flat marker speaks for it.
+        # A named Studio root wears its evidence differently in the two layouts, and checking
+        # only the flat one left a NESTED portable install (--root R, then a rerun carrying
+        # UNSLOTH_STUDIO_HOME=R/studio, which is what studio.conf exports) reading as normal
+        # while both its markers sat on disk. _clear_stale_portable_marker then removed them.
+        # These are the same two signals it uses to decide what to remove, in the same order:
+        # the two must agree about what counts as portable, or one undoes what the other
+        # honoured.
         if [ -f "$_adopt_root/.unsloth-portable-root" ]; then
+            # Flat: the named root IS the master root.
             _PORTABLE_MODE=true
             _UNSLOTH_ROOT="$_adopt_root"
+        elif [ -f "$_adopt_root/.unsloth-master-root" ]; then
+            # Nested: the record names the master root outright, so there is nothing to infer.
+            # First line only, trimmed and required absolute: a truncated or hand-edited record
+            # must not become a relative root resolved against the caller's cwd.
+            _adopt_master=$(_trim_ws "$(head -n 1 "$_adopt_root/.unsloth-master-root" 2>/dev/null)")
+            case "$_adopt_master" in
+                /*)
+                    _PORTABLE_MODE=true
+                    _UNSLOTH_ROOT="$_adopt_master"
+                    ;;
+            esac
         fi
     else
         # Held in a variable rather than spelled out: `        _UNSLOTH_ROOT="$HOME/.unsloth"`
@@ -822,7 +840,21 @@ _resolve_studio_destinations() {
             # helper defined elsewhere would go silently inert.
             _rsd_flat_venv="$_resolved_root/unsloth_studio"
             _rsd_flat_owned=false
-            if [ -d "$_rsd_flat_venv" ] && [ ! -d "$_resolved_root/studio/unsloth_studio" ]; then
+            # No `-d "$_rsd_flat_venv"` in the gate. The venv directory is the ONE piece of
+            # evidence a reinstall takes away: _start_studio_venv_replacement renames it to
+            # unsloth_studio.rollback.<ts>.<pid> before building the new one, so a run killed
+            # in that window (SIGKILL or power loss; HUP/INT/TERM are trapped and roll back)
+            # left a flat root looking un-flat. The retry then resolved <root>/studio, a
+            # DIFFERENT data root, stranding the real studio.db and every cache at <root> and
+            # pruning rollbacks only under the new path -- so the interrupted install read as
+            # total loss of chat history.
+            #
+            # The other three sentinels sit outside the venv and survive that rename, and all
+            # three name the venv path exactly, which is what makes this safe in the other
+            # direction: a NESTED root mid-reinstall has its own venv renamed too, but its
+            # studio.conf records <root>/studio/unsloth_studio/bin/unsloth, so none of them
+            # match here and nested is still chosen.
+            if [ ! -d "$_resolved_root/studio/unsloth_studio" ]; then
                 _rsd_flat_exe=$(printf '%s' "$_rsd_flat_venv/bin/unsloth" | sed "s/'/'\\\\''/g")
                 if [ -f "$_rsd_flat_venv/.unsloth-studio-owned" ]; then
                     _rsd_flat_owned=true

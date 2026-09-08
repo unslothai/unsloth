@@ -687,6 +687,18 @@ _unsloth_uninstall_main() {
                 || _custom_default_root="$HOME/.unsloth"
         fi
         if [ "$_custom_root" = "$_custom_default_root" ]; then
+            # A FLAT install puts the venv and the database at the root itself, and the default
+            # block below only knows the NESTED shape (~/.unsloth/studio). Taking just the
+            # portable children here removed the markers that identify the install and left the
+            # venv and studio.db behind: gigabytes retained, their metadata stripped, and the
+            # run still reporting success. Remove those by name first, gated on our own owner
+            # marker so a directory the user happens to keep here is never touched.
+            # _remove_root_recording_db, not _remove_path, so the studio.db it holds is counted
+            # in the closing chat-history notice the same way every other root is.
+            if [ -f "$_custom_root/unsloth_studio/.unsloth-studio-owned" ]; then
+                _remove_root_recording_db "$_custom_root/unsloth_studio"
+                _remove_path "$_custom_root/studio.db"
+            fi
             # Portable-only children; the shared ones belong to the default block.
             _remove_path "$_custom_root/bin"
             _remove_path "$_custom_root/share"
