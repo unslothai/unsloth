@@ -1681,9 +1681,10 @@ class TestATeardownDoesNotBlockASpawnItWillRefuse:
             release.set()
             t.join(10)
 
-        assert order == ["kill_done", "reset"], (
-            f"the lifecycle reopened before the kill finished: {order}"
-        )
+        assert order == [
+            "kill_done",
+            "reset",
+        ], f"the lifecycle reopened before the kill finished: {order}"
 
 
 def test_the_lock_order_is_teardown_then_spawn():
