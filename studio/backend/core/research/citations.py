@@ -15,9 +15,8 @@ import re
 from core.research.redaction import _escape_link_destination
 
 
-# Unrolled rather than the equivalent (?:[^\[\]]+|\[[^\[\]]*\])* : that alternation backtracks
-# catastrophically on an unterminated "[Document:" (ordinary malformed model output), and this
-# runs on the event loop, so one bad report would stall all of Unsloth.
+# Unrolled rather than (?:[^\[\]]+|\[[^\[\]]*\])* : that alternation backtracks catastrophically on
+# an unterminated "[Document:", and this runs on the event loop.
 _DOCUMENT_CITATION = re.compile(r"\[Document:[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")
 _MARKDOWN_LINK_START = re.compile(r"\[([^\]\n]+)\]\((https?://)")
 _SOURCES_HEADING = re.compile(
@@ -195,9 +194,8 @@ def _allowed_document_citations(sources: list[dict]) -> set[str]:
 
 def _validate_report_document_sources(report: str, sources: list[dict]) -> str:
     allowed = _allowed_document_citations(sources)
-    # Tokenize valid citations first so a ``]`` inside a filename (e.g.
-    # ``budget [final].pdf``) does not truncate them, then strip any remaining
-    # (invalid) document citations and restore the valid ones.
+    # Tokenize valid citations first so a "]" inside a filename ("budget [final].pdf") does not
+    # truncate them, then strip the invalid ones and restore the valid.
     placeholders: dict[str, str] = {}
     for index, citation in enumerate(sorted(allowed, key = len, reverse = True)):
         if citation in report:

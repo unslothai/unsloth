@@ -209,7 +209,7 @@ def test_collator_validates_every_batch(make_auto_validating_collator):
         tmp = f.name
     try:
         collator = make_auto_validating_collator()
-        collator(_batch(tmp))  # batch 0: valid
+        collator(_batch(tmp))
         with pytest.raises(FileNotFoundError):
             collator(_batch("/nonexistent/late.mp4"))
     finally:
@@ -370,7 +370,6 @@ def test_windows_style_absolute_path_not_mistaken_for_scheme(
     target.write_bytes(b"x")
     path = str(target)
     if os.name != "nt":
-        # '://'-free values must round-trip unchanged; keep the real path
         path = str(target)
     ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": path}]}]}]
     assert check_dataset_for_missing_videos(ds) == []
@@ -478,8 +477,6 @@ def test_duplicate_missing_deduped_in_warn_mode(check_dataset_for_missing_videos
 # ── Tests: real unsloth_zoo collator integration ─────────────────────────────
 # Exercise the real trainer.py subclass against the real zoo base (the fakes
 # above don't cover super()/formatting_func); skip when unsloth can't import.
-
-
 @pytest.fixture(scope = "session")
 def real_collator_classes():
     try:
@@ -489,8 +486,8 @@ def real_collator_classes():
         )
     except Exception as exc:  # noqa: BLE001 - skip on any import failure
         pytest.skip(f"full unsloth import unavailable: {exc!r}")
-    # On Apple Silicon MLX, unsloth.trainer is a shim and this name is a
-    # placeholder whose __call__ raises, not the zoo subclass under test.
+    # On Apple Silicon MLX, unsloth.trainer is a shim and this name is a placeholder whose __call__ raises, not the zoo
+    # subclass under test.
     if not issubclass(UnslothVisionDataCollator, ZooBase):
         pytest.skip("MLX placeholder collator, not the torch subclass")
     return UnslothVisionDataCollator, ZooBase
@@ -600,8 +597,8 @@ def test_vision_collator_thread_safety(real_collator_classes, monkeypatch):
                 entered.append(True)
                 park = True
         if park:
-            # Hold the window open: unsynchronised code lets every follower
-            # read the temporary None and skip formatting entirely.
+            # Hold the window open: unsynchronised code lets every follower read the temporary None and skip formatting
+            # entirely.
             leader_parked.set()
             release_leader.wait(10)
         return examples
@@ -609,8 +606,7 @@ def test_vision_collator_thread_safety(real_collator_classes, monkeypatch):
     monkeypatch.setattr(zoo_base, "__call__", fake_base)
     collator = _make_real_collator(real_collator_classes, formatting_func = formatter)
 
-    # Fresh examples per thread, so an in-place formatter races on collator
-    # state rather than on shared user data.
+    # Fresh examples per thread, so an in-place formatter races on collator state rather than on shared user data.
     def work(thread_id):
         return collator([{"tag": (thread_id, i)} for i in range(num_examples)])
 

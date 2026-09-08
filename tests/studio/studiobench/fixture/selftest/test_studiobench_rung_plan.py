@@ -82,10 +82,9 @@ def test_the_stream_drains_before_the_first_after_generation_slot():
 def test_during_generation_slots_actually_fall_during_generation():
     from studiobench.scene.schedule import SCENES
 
-    # The SHORTEST stream on the ladder above 1K, since a slot has to be inside every rung's
-    # stream to deserve the name.
-    # The OPENING turn only: the follow-ups are sent later by `send_turn`, so a slot that has to
-    # fall during generation has to fall inside the first stream, not inside their sum.
+    # The SHORTEST stream on the ladder above 1K, since a slot has to be inside every rung's stream to
+    # deserve the name. The OPENING turn only: the follow-ups are sent later by `send_turn`, so a slot
+    # that must fall during generation has to fall inside the first stream, not their sum.
     shortest = min(p.streamed_chars for r, p in _plans().items() if r != "1K") / FIELD_CHARS_PER_SEC
     for name, scene in SCENES.items():
         during = [s for s in scene.slots if s.action == "scroll_during_generation"]
@@ -134,11 +133,10 @@ def test_the_ladder_is_strictly_increasing_in_seeded_mass():
 
 # Actions that need a SETTLED reply. The action bar's More and Copy buttons are not rendered while
 # a turn is streaming, select-all copies a moving target, and delete is hidden on a running
-# message. Each one reports an honest `NOT RUN` rather than a wrong number, which is why this was
-# invisible until somebody counted: on a 36 job sweep the fast film recorded
-# `message_menu: NOT RUN -- no More button` on 312 of 312 attempts, and the four actions it
-# silently stopped exercising include the one carrying the largest measured effect in this
-# codebase (the message menu, 1,164.9 ms to 60.7 ms across the merged campaign).
+# message. Each reports an honest `NOT RUN`, which is why this was invisible until somebody
+# counted: on a 36 job sweep the fast film recorded `message_menu: NOT RUN -- no More button` on
+# 312 of 312 attempts, and the four actions it silently stopped exercising include the one
+# carrying the largest measured effect in this codebase (1,164.9 ms to 60.7 ms).
 SETTLED_ACTIONS = ("message_menu", "copy_markdown", "select_all_copy", "delete_message")
 
 
@@ -165,31 +163,24 @@ def test_settled_actions_open_after_the_follow_up_drains():
         last_send = None
         for slot in sorted(scene.slots, key = lambda s: s.t_start_ms):
             if slot.action == "send_turn":
-                # THE LATEST THE SEND CAN FIRE, not the earliest. The drain starts when the send
-                # actually happens, and a send slot is a WINDOW: the action may legitimately begin
-                # anywhere inside its own budget, which is precisely what it does when the slot
-                # before it overran and pushed it.
-                #
-                # Measured from the start instead, this check reported 1,538 ms of margin on the
-                # fast film where 38 ms existed, and CI then failed the way the arithmetic says it
-                # must: `reasoning_toggle` overran its 3,500 ms budget by 934 ms, `send_turn` was
-                # pushed 1,373 ms late but stayed inside its 1,500 ms budget so nothing recorded a
-                # miss, the send-to-menu gap collapsed from a nominal 5,300 ms to an actual
-                # 3,691 ms, and `message_menu` found a reply still streaming and recorded NOT RUN.
-                # Every slot was individually within budget and the film was still unrunnable.
-                #
-                # This is the same defect the rest of this branch is about, in the check rather
-                # than in the instrument: a quantity computed at a moment whose meaning is not the
-                # one the reader assumes. A margin measured from the earliest possible send is not
-                # a margin.
+                # THE LATEST THE SEND CAN FIRE, not the earliest. The drain starts when the send actually happens,
+                # and a send slot is a WINDOW: the action may legitimately begin anywhere inside its own budget,
+                # which is what it does when the slot before it overran.
+                # Measured from the start instead, this check reported 1,538 ms of margin on the fast film where
+                # 38 ms existed, and CI then failed the way the arithmetic says it must: `reasoning_toggle`
+                # overran its 3,500 ms budget by 934 ms, `send_turn` was pushed 1,373 ms late but stayed inside
+                # its own budget so nothing recorded a miss, the send-to-menu gap collapsed from a nominal 5,300
+                # ms to 3,691 ms, and `message_menu` found a reply still streaming and recorded NOT RUN. Every
+                # slot was individually within budget and the film was still unrunnable.
+                # Its own budget is 1,500 ms.
+                # The same defect the rest of this branch is about, in the check rather than the instrument: a
+                # quantity computed at a moment whose meaning is not the one the reader assumes.
                 last_send = slot.t_start_ms + slot.budget_ms
             elif slot.action in SETTLED_ACTIONS and last_send is not None:
-                # The slot's WINDOW, not its start. A slot may legitimately open a little before
-                # the follow-up finishes and wait inside its own budget -- the quick film opens
-                # `message_menu` at 4.5 s against a 4.56 s drain and it runs, because it has 3 s
-                # of budget to wait in. What is fatal is a window that CLOSES before the reply
-                # settles, which is what the first fast film did: 1.7 s gap plus 0.8 s budget
-                # against a 4.56 s drain, so the button had not been rendered yet and never
-                # would be inside that window.
+                # The slot's WINDOW, not its start. A slot may open a little before the follow-up finishes and
+                # wait inside its own budget: the quick film opens `message_menu` at 4.5 s against a 4.56 s drain
+                # and it runs, because it has 3 s to wait in. What is fatal is a window that CLOSES before the
+                # reply settles, which is what the first fast film did.
+                # A 1.7 s gap plus a 0.8 s budget against a 4.6 s drain.
                 window_end = (slot.t_start_ms + slot.budget_ms - last_send) / 1000.0
                 assert window_end >= drain_s, (name, slot.action, window_end, drain_s)

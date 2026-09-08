@@ -15,13 +15,13 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
-# model_config imports this module, so the split and quant naming helpers below
-# are pulled in per call rather than at module import time. They are constants
-# and pure functions shared with non-drafter code (gguf_variants, the auto
-# download paths), which is why they stay where they are rather than moving
-# here: this package must not become a second home for the GGUF naming rules.
+# model_config imports this module.
 
 
+# model_config imports this module, so the naming helpers are pulled in per call rather than at import; they stay where
+# they are so this package does not become a second home for them.
+# They are constants and pure functions shared with non-drafter code (gguf_variants, the auto download paths), so the
+# GGUF naming rules keep one home.
 def _drafter_pairing_stem(name: str, *, kind: str) -> str:
     """The model family a drafter filename names, stripped of its own markers.
 
@@ -174,10 +174,8 @@ def split_listing_is_complete(names: Iterable[str], name: str) -> bool:
         r"^" + re.escape(stem) + r"-(\d{5})-of-" + re.escape(match.group(3)) + r"\.gguf$",
         re.IGNORECASE,
     )
-    # Distinct indices inside 1..total, not a count: a mid-publication listing can
-    # hold 00001-of-00002 beside a stray 00003-of-00002, and counting would call
-    # that pair whole while shard 2 is still missing and llama-server cannot open
-    # the set. _drafter_split_is_complete answers the on-disk version the same way.
+    # Distinct indices inside 1..total, not a count: a mid-publication listing can hold 00001-of-00002 beside a stray
+    # 00003-of-00002, and counting would call that pair whole.
     seen = set()
     for other in names:
         if Path(other).parent != parent:

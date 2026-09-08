@@ -2568,6 +2568,34 @@ def _normalize_mlx_studio_optimizer(value):
         return opt
 
 
+def _mlx_dora_peft_kwargs(config, get_peft_model):
+    """LoRA kwargs a DoRA request adds for MLX, or raise why it cannot run."""
+    import inspect
+
+    if not config.get("use_dora"):
+        return {}
+    try:
+        parameter = inspect.signature(get_peft_model).parameters.get("use_dora")
+    except (TypeError, ValueError):
+        parameter = None
+    # A **kwargs catch-all absorbs use_dora and trains plain LoRA, so the
+    # parameter must be named and bindable by keyword.
+    named = parameter is not None and parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    )
+    if not named:
+        raise NotImplementedError(
+            "DoRA on Apple Silicon needs an unsloth-zoo whose MLX "
+            "get_peft_model takes use_dora, and this install cannot be "
+            "confirmed to. The version that predates MLX DoRA accepts the "
+            "request and trains plain LoRA instead, so the run stops here "
+            "rather than guessing. Update unsloth-zoo, or pick a different "
+            "LoRA variant."
+        )
+    return {"use_dora": True}
+
+
 def _normalize_mlx_studio_scheduler(value):
     raw = str(value or "linear").strip().lower()
     if raw not in _MLX_STUDIO_LR_SCHEDULERS:
@@ -2780,10 +2808,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "LoftQ is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
-    if config.get("use_dora"):
-        message = "DoRA is not supported for MLX training yet."
-        _send("error", error = message)
-        raise NotImplementedError(message)
     if config.get("is_embedding"):
         message = "Embedding model training is not supported for MLX training yet."
         _send("error", error = message)
@@ -2792,6 +2816,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "Continued Pretraining is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
+    # Decided before the model loads, so version skew does not cost a download.
+    try:
+        mlx_dora_kwargs = _mlx_dora_peft_kwargs(config, FastMLXModel.get_peft_model)
+    except NotImplementedError as exc:
+        _send("error", error = str(exc))
+        raise
 
     optim_name = _normalize_mlx_studio_optimizer(config.get("optim", "adamw_8bit"))
     lr_scheduler_type = _normalize_mlx_studio_scheduler(config.get("lr_scheduler_type", "linear"))
@@ -2935,6 +2965,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             ],
             use_gradient_checkpointing = use_grad_checkpoint,
         )
+        peft_kwargs.update(mlx_dora_kwargs)
         finetune_language = config.get("finetune_language_layers", True)
         finetune_attention = config.get("finetune_attention_modules", True)
         finetune_mlp = config.get("finetune_mlp_modules", True)
@@ -4337,6 +4368,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     config.get("require_exact_resume_resources")
                     or config.get("require_exact_dataset_resource")
                 ),
+                hf_token = hf_token,
                 max_train_rows = max_train_rows,
                 max_train_rows_seed = max_train_rows_seed,
             )
@@ -4757,7 +4789,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             tensorboard_dir = str(resolve_tensorboard_dir(tensorboard_dir))
             ensure_dir(Path(tensorboard_dir))
 
-        # Start training directly — no inner thread, we ARE the subprocess.
+        # Start training directly - no inner thread, we ARE the subprocess.
         dataset_display = config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
         _send_status(
             event_queue,

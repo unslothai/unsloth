@@ -49,15 +49,12 @@ class RepoScraper:
         self.base_dir = base_dir
         self.client = client
         self.trial_limits = trial_limits or {}
-        # light=True uses trimmed GraphQL queries (no reviewThreads/reviews/
-        # commits/timelineItems/files) so PR pages can be larger without
-        # hitting GitHub's node-count ceiling.
+        # light=True uses trimmed GraphQL queries so PR pages can be larger without hitting GitHub's node-count ceiling.
         self.light = light
         self.repo_dir = base_dir / f"{owner}__{name}"
         self.repo_dir.mkdir(parents = True, exist_ok = True)
         self.state = StateStore(base_dir / "state" / f"{owner}__{name}.json")
 
-        # Writers
         self.writers: Dict[str, JsonlWriter] = {}
         for key in (
             "issues",
@@ -115,8 +112,8 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        # Light query skips heavy nested fields; safe at 50/page. Clamp by
-        # trial_limit so limit=1 asks for first:1, not a full 50-item page.
+        # The light query skips heavy nested fields, so 50/page is safe; clamp by trial_limit so limit=1
+        # does not fetch a full page.
         page_cap = 50 if self.light else 15
         trial_cap = self.trial_limits.get(key)
         per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap
@@ -222,9 +219,8 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        # Heavy nested PR query caps at 3/page (GitHub node-count ceiling);
-        # light query skips nested fields and goes to 25/page. Clamp by
-        # trial_limit so limit=1 does not fetch a whole 25-item page.
+        # The heavy nested PR query caps at 3/page against GitHub's node-count ceiling and the light one at
+        # 25; clamp by trial_limit so limit=1 does not fetch a whole page.
         page_cap = 25 if self.light else 3
         trial_cap = self.trial_limits.get(key)
         per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap

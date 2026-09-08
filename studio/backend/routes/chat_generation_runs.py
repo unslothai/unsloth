@@ -148,6 +148,12 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 422,
             detail = safe_validation_errors(exc.errors()),
         ) from exc
+    # The refusal the completion route runs on entry. Without it a part no path can serve is
+    # queued at 202 and fails asynchronously in the supervisor, where the caller cannot see it.
+    from routes.inference import _messages_have_input_audio, _reject_unsupported_content_parts
+
+    _reject_unsupported_content_parts(request)
+
     # Message content/reasoning are user-authored data, not routing configuration. Scan every
     # other persisted field, including extra message-envelope fields, with the credential policy.
     durable_config = {
@@ -171,12 +177,11 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Durable chat runs are available only for local inference",
         )
-    # Recovery rebuilds text and reasoning deltas. A media turn has neither the same
-    # chunk shape nor a replayable transcript, and its payload is persisted verbatim,
-    # so a base64 blob would live in request_json for the life of the thread. Studio's
-    # own composer already keeps these on the legacy stream; keep the server in step so
-    # a stale tab or a direct caller cannot open a path nothing replays.
-    if any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS):
+    # A media turn has no replayable transcript and its payload persists verbatim, so a base64 blob would live in
+    # request_json for the life of the thread. A recording rides in a content part too, not just the field.
+    if any(
+        raw.get(field) not in (None, "") for field in _MEDIA_FIELDS
+    ) or _messages_have_input_audio(request.messages):
         raise HTTPException(
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",
@@ -242,10 +247,8 @@ async def create_chat_generation_run(
     current_subject: str = Depends(get_current_subject),
 ):
     sanitized = _sanitize_request(payload)
-    # Serialize the off-loop commit with model lifecycle work. If create wins,
-    # the run is registered before the gate opens; if unload/swap wins, the run
-    # is admitted afterward. SSE and unrelated requests stay responsive while
-    # SQLite waits on a lock.
+    # Serialize the off-loop commit with model lifecycle work, so a run is registered either before the gate opens or
+    # after an unload/swap, never mid-swap.
     async with inference_lifecycle_gate():
         try:
             run, created = await asyncio.to_thread(
@@ -317,11 +320,8 @@ async def chat_generation_events(
     async def stream():
         nonlocal cursor
         loop = asyncio.get_running_loop()
-        # A client that reconnects already caught up on a settled run has nothing to replay,
-        # and wait_for_events would hold it for the full timeout: the finished answer reads
-        # as still generating and an event-wait worker is tied up meanwhile. Only the first
-        # wait needs this guard, since every later pass already returns on the same test
-        # against the snapshot it read after waiting.
+        # A reconnect to an already-settled run has nothing to replay, and wait_for_events would hold it for the full
+        # timeout and tie up an event-wait worker.
         opening = await asyncio.to_thread(db.get_run, run_id)
         if opening is None:
             return
@@ -357,12 +357,11 @@ async def chat_generation_events(
             if await request.is_disconnected():
                 return
             if not events:
-                # Carries the run's progress stamp, which the lease renewals move. A bare
-                # keep-alive is proof the CONNECTION is healthy and nothing more, so a
-                # follower that rearmed its no-progress deadline on one could never settle
-                # a wedged run while the socket stayed up, which is the one case that
-                # fallback exists for. Comment framing, so _SSEDecoder still drops it and
-                # no client parsing it as an event is affected.
+                # Carries the run's progress stamp, which the lease renewals move.
+                # A bare keep-alive proves only that the CONNECTION is healthy, so a follower rearming its no-progress
+                # deadline on one could never settle a wedged run while the socket stayed up, the one case that fallback
+                # exists for.
+                # Comment framing, so _SSEDecoder still drops it and no client parsing it as an event is affected.
                 yield f": keep-alive {int(snapshot['updatedAt'])}\n\n"
 
     return StreamingResponse(

@@ -100,10 +100,10 @@ def log(message: str) -> None:
 # ── Host detection ──
 @dataclass(frozen = True)
 class HostInfo:
-    system: str  # platform.system()
-    machine: str  # lowered platform.machine()
-    node_os: str  # nodejs.org token: linux | darwin | win
-    node_arch: str  # nodejs.org token: x64 | arm64 | armv7l
+    system: str
+    machine: str
+    node_os: str
+    node_arch: str
     archive_ext: str  # .tar.gz | .zip
     is_windows: bool
 
@@ -474,7 +474,7 @@ def _extract_tar_safely(source: Path, base: Path) -> None:
             target.unlink()
         if member.issym():
             target.symlink_to(link_name)
-        else:  # hard link
+        else:
             shutil.copy2(resolved, target)
 
 
@@ -503,6 +503,8 @@ def _pid_is_alive(pid: int) -> bool:
                 ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
                 **_windows_hidden_kwargs(),
             )
@@ -609,8 +611,8 @@ def _run_node(
 ) -> str:
     node_bin = node_binary_path(install_dir, host)
     env = os.environ.copy()
-    # Keep any `npm -g` writes inside the isolated prefix; Windows npm otherwise
-    # defaults its global prefix to %APPDATA%\npm and touches the system install.
+    # Keep any `npm -g` writes inside the isolated prefix: Windows npm otherwise defaults its global
+    # prefix to %APPDATA%\npm and touches the system install.
     env["NPM_CONFIG_PREFIX"] = str(install_dir)
     env["npm_config_prefix"] = str(install_dir)
     env.pop("NODE_PATH", None)
@@ -618,6 +620,8 @@ def _run_node(
         [str(node_bin), *args],
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = timeout,
         env = env,
         **_windows_hidden_kwargs(),
@@ -749,8 +753,8 @@ def _swap_into_place(extracted_root: Path, install_dir: Path) -> None:
         _replace_with_retry(extracted_root, install_dir)
     except OSError:
         # The forward rename retries ~16s, ample time for a scanner to grab the backup too.
-        # A plain os.replace would then raise over the original error and leave no
-        # install_dir at all, so the rollback gets the same backoff and never masks it.
+        # A plain os.replace would raise over the original error and leave no install_dir at all, so the rollback gets
+        # the same backoff and never masks it.
         if backup is not None and not install_dir.exists():
             try:
                 _replace_with_retry(backup, install_dir)
@@ -867,10 +871,9 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
             # A policy refusal, not a transient failure: fail closed, never keep-existing.
             raise
         except Exception as exc:  # noqa: BLE001
-            # Transient download/verify failure: keep an existing usable Node, but
-            # never keep a same-version install whose recorded digest is not the pin
-            # (the artifact the short-circuit above just rejected). A different usable
-            # version is still kept for offline resilience.
+            # Transient download/verify failure: keep an existing usable Node, but never keep a same-version
+            # install whose recorded digest is not the pin (the artifact the short-circuit above just
+            # rejected). A different usable version is still kept for offline resilience.
             meta = load_metadata(install_dir)
             pin_mismatch = (
                 pin is not None
