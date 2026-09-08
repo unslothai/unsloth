@@ -390,8 +390,7 @@ export function useLlamaUpdateCheck({
       job?: unknown;
     } | null = null;
     try {
-      // Updating llama.cpp unloads/restarts the backend. Persist the active preset
-      // before that window so a debounced selection cannot be lost by the update.
+      // The update restarts the backend, so a debounced preset selection would be lost.
       await flushPendingChatSettings();
       const res = await authFetch("/api/llama/update", { method: "POST" });
       if (!res.ok) {

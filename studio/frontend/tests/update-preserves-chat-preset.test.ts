@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Selecting a preset is persisted through a short debounce. A llama.cpp update
-// restarts the backend before page-exit events flush it, leaving the other presets
-// intact while the active selection falls back to Default.
-// The desktop path is covered in tauri-update-schedule.test.ts, which already
-// drives that hook.
+// A llama.cpp update restarts the backend before page-exit events flush the preset
+// debounce. The desktop path is covered in tauri-update-schedule.test.ts.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -29,8 +26,7 @@ function hookHarness(trace: string[]) {
     "@/features/auth": {
       authFetch: async (path: string) => {
         trace.push(`fetch:${path}`);
-        // Short-circuits apply() right after the flush, so the test never enters
-        // the job poll.
+        // Short-circuits apply() after the flush, before the job poll.
         return { ok: false, status: 503 };
       },
       getAuthToken: () => "token",
