@@ -147,7 +147,6 @@ def test_a_torch_device_cpu_entry_is_never_hooked_either():
 def _guards_of(tree, callee):
     """The `if` conditions that decide whether `callee` runs, as expressions."""
     import ast
-
     return [
         node.test
         for node in ast.walk(tree)
@@ -256,6 +255,200 @@ def test_a_num_labels_load_is_hooked_even_when_fast_inference_was_asked_for():
         "the end-of-load repair is skipped for a classification load, so the modules "
         "post_patch rebuilt keep no hook and the split model still crosses devices"
     )
+
+
+def _normalisation_block():
+    """The top-of-`from_pretrained` `if fast_inference:` block, as something runnable.
+
+    That block, not the caller, decides what `fast_inference` holds by the time the end-of-load
+    guard reads it: it clears the flag when vLLM is missing or the card is too old, and turns it back
+    on for hip. Lifting it keeps the tests below honest about which states are reachable instead of
+    asserting over states `from_pretrained` never produces.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from unsloth.models.llama import FastLlamaModel
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(FastLlamaModel.from_pretrained)))
+    blocks = [
+        node
+        for node in tree.body[0].body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "fast_inference"
+    ]
+    assert len(blocks) == 1, (
+        "from_pretrained no longer normalises fast_inference in one top-level block, so what "
+        "reaches the end-of-load guard is not what this test models"
+    )
+    return ast.fix_missing_locations(ast.Module(body = blocks, type_ignores = []))
+
+
+def _normalise(fast_inference, num_labels = None):
+    """What `from_pretrained` leaves in `fast_inference` on the host the caller monkeypatched."""
+    import unsloth.models.llama as llama
+
+    scope = {
+        "os": __import__("os"),
+        "torch": torch,
+        "print": lambda *a, **k: None,
+        "logger": types.SimpleNamespace(warning_once = lambda *a, **k: None),
+        "DEVICE_TYPE": llama.DEVICE_TYPE,
+        "is_vLLM_available": llama.is_vLLM_available,
+        "_vllm_will_load_weights": llama._vllm_will_load_weights,
+        "fast_inference": fast_inference,
+        "num_labels": num_labels,
+        "revision": None,
+        "tokenizer_revision": None,
+        "unsloth_vllm_standby": False,
+    }
+    exec(compile(_normalisation_block(), "<normalise>", "exec"), scope)
+    return scope["fast_inference"]
+
+
+def _host(monkeypatch, device_type, vllm_installed, capability):
+    """Install one (accelerator, vLLM present?, compute capability) machine on the loader."""
+    import unsloth.models.llama as llama
+
+    monkeypatch.setattr(llama, "DEVICE_TYPE", device_type)
+    monkeypatch.setattr(llama, "is_vLLM_available", lambda: vllm_installed)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (capability, 0))
+
+
+@pytest.mark.parametrize("device_type", ["cuda", "hip", "xpu", "mlx"])
+@pytest.mark.parametrize("vllm_installed", [True, False])
+@pytest.mark.parametrize("capability", [6, 9])
+@pytest.mark.parametrize("fast_inference", [True, False])
+def test_asking_the_predicate_is_the_raw_flag_on_anything_but_a_classification_load(
+    monkeypatch, device_type, vllm_installed, capability, fast_inference
+):
+    """The end-of-load guard reads a predicate now, and that must change nothing else.
+
+    `from_pretrained` already cleared `fast_inference` for every reason the predicate would clear
+    it, so on a `num_labels = None` load the two spellings have to agree on every machine. If they
+    ever stop agreeing, a load whose weights came in through transformers gets no hook repair (or a
+    vLLM load gets hooks on a tree vLLM does not execute), and neither shows up as a failure until
+    someone splits a model across two cards.
+    """
+    import unsloth.models.llama as llama
+
+    _host(monkeypatch, device_type, vllm_installed, capability)
+    reached = _normalise(fast_inference, num_labels = None)
+    assert bool(llama._vllm_will_load_weights(reached, None)) == bool(reached), (
+        f"on {device_type} (vLLM installed = {vllm_installed}, capability = {capability}) a "
+        f"fast_inference = {fast_inference} load reaches the end of the load with "
+        f"fast_inference = {reached}, but the predicate answers "
+        f"{llama._vllm_will_load_weights(reached, None)}"
+    )
+
+
+@pytest.mark.parametrize("device_type", ["cuda", "hip", "xpu", "mlx"])
+@pytest.mark.parametrize("vllm_installed", [True, False])
+@pytest.mark.parametrize("capability", [6, 9])
+def test_a_classification_load_is_never_vllms_on_any_machine(
+    monkeypatch, device_type, vllm_installed, capability
+):
+    """The whole fix rests on this: there is no host where vLLM owns a `num_labels` load."""
+    import unsloth.models.llama as llama
+
+    _host(monkeypatch, device_type, vllm_installed, capability)
+    reached = _normalise(True, num_labels = 2)
+    assert llama._vllm_will_load_weights(reached, 2) is False
+    # num_labels = 0 is a real (if odd) classification request; `is not None` is the rule, not truth.
+    assert llama._vllm_will_load_weights(reached, 0) is False
+
+
+def test_the_predicate_probes_nothing_when_it_short_circuits(monkeypatch):
+    """The new call sites must not add a probe to loads that previously did none.
+
+    Both edited sites can be reached with `fast_inference` false or `num_labels` set, and neither
+    asked the vLLM install or the driver anything before. `import vllm`'s spec lookup and
+    `get_device_capability` are cheap but neither is free, and the second raises outright on a host
+    that reports DEVICE_TYPE "cuda" with no driver (UNSLOTH_ALLOW_CPU=1).
+    """
+    import unsloth.models.llama as llama
+
+    def _no(*args, **kwargs):
+        raise AssertionError("the predicate probed the machine after short-circuiting")
+
+    monkeypatch.setattr(llama, "DEVICE_TYPE", "cuda")
+    monkeypatch.setattr(llama, "is_vLLM_available", _no)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", _no)
+
+    assert llama._vllm_will_load_weights(False, None) is False
+    assert llama._vllm_will_load_weights(False, 2) is False
+    assert llama._vllm_will_load_weights(True, 2) is False
+
+
+class _Classifier(torch.nn.Module):
+    """A `...ForSequenceClassification` shape: a trunk, a `score` head, no output embedding."""
+
+    def __init__(self, device_map):
+        super().__init__()
+        self.model = torch.nn.Module()
+        self.model.embed_tokens = torch.nn.Embedding(8, 4)
+        self.model.layer = torch.nn.Linear(4, 4)
+        self.score = torch.nn.Linear(4, 2, bias = False)
+        self.hf_device_map = dict(device_map)
+
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+
+    def get_output_embeddings(self):
+        return None  # a classification head is not an output embedding
+
+    def dispatch(self):
+        """What `dispatch_model` leaves behind: every far map entry carries a hook."""
+        for name, device in self.hf_device_map.items():
+            if str(device) in ("cpu", "disk"):
+                continue
+            add_hook_to_module(self.get_submodule(name), AlignDevicesHook(execution_device = device))
+        return self
+
+    def post_patch(self):
+        """What `patch_model_and_tokenizer` does: a NEW Embedding over the same weight."""
+        old = self.model.embed_tokens
+        self.model.embed_tokens = torch.nn.Embedding(8, 4, _weight = old.weight, _freeze = False)
+        return self
+
+
+def test_a_split_classification_model_gets_its_rebuilt_embedding_hooked():
+    """The end of the load is the only place that can fix this, which is why the guard matters.
+
+    A classification model answers None for its output embedding, so the input embedding is the
+    whole repair, and `score` sits on the near card with nothing to give back.
+    """
+    model = _Classifier(
+        {"model.embed_tokens": FAR, "model.layer": NEAR, "score": NEAR}
+    ).dispatch()
+    assert hasattr(model.model.embed_tokens, "_hf_hook"), "fixture never dispatched"
+
+    model.post_patch()
+    assert not hasattr(model.model.embed_tokens, "_hf_hook"), "fixture is not the broken state"
+
+    assert _repair()(model) == 1
+    hook = model.model.embed_tokens._hf_hook
+    assert str(hook.execution_device) == FAR, hook.execution_device
+    assert not hasattr(model.score, "_hf_hook"), "the near-card head has no hook to give back"
+
+
+@pytest.mark.parametrize(
+    "device_map",
+    [
+        {"": NEAR},
+        {"model": NEAR, "score": NEAR},
+        {"model.embed_tokens": "disk", "model.layer": NEAR},
+    ],
+    ids = ["single_device", "two_entries_one_device", "far_entry_is_offload"],
+)
+def test_running_the_repair_on_an_unsplit_classification_load_costs_it_nothing(device_map):
+    """Turning the repair on for `num_labels` loads must be free for everyone not split."""
+    model = _Classifier(device_map).post_patch()
+    before = _hooked(model)
+    assert _repair()(model) == 0
+    assert _hooked(model) == before
 
 
 def test_a_name_the_model_does_not_have_is_skipped_not_invented():
