@@ -606,6 +606,18 @@ case "$_out" in
     *)  echo "  PASS: refused default root: no advice to delete it"; PASS=$((PASS+1)) ;;
 esac
 
+# ── 3j8. A dangling symlink at ~/.unsloth/studio is still an entry at that path: -e follows the
+# link and misses it, while _remove_path unlinks it as present. ──
+H=$(new_home)
+mkdir -p "$H/.unsloth"
+ln -s "$H/.unsloth/nowhere" "$H/.unsloth/studio"
+run_uninstall "$H" Linux
+if [ -L "$H/.unsloth/studio" ]; then
+    echo "  PASS: a dangling symlink at the default root is refused, not unlinked"; PASS=$((PASS+1))
+else
+    echo "  FAIL: a dangling symlink at the default root was removed"; FAIL=$((FAIL+1))
+fi
+
 # ── 3k. _set_marker must survive a write it cannot perform. 3i only proves the mktemp guard,
 # since an empty marker path never runs the redirection. This drives it directly: the marker
 # dir exists at startup and is gone by the write, as an operator clearing /tmp mid-run would

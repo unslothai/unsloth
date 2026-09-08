@@ -1314,8 +1314,10 @@ public static class UnslothStudioFinalPathV2
             # Delete first, then confirm it: WriteAllText follows a file link and truncates its
             # TARGET, and the delete can fail on a root we cannot write while that target stays
             # writable. No marker is fine; the venv writes its own later.
+            # Get-Item -Force, not Test-Path: the latter follows a dangling link and answers
+            # false, after which WriteAllText follows the link and writes outside the root.
             Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
-            if (Test-Path -LiteralPath $marker) { return }
+            if (Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue) { return }
             [System.IO.File]::WriteAllText($marker, "")
         } catch { }
     }

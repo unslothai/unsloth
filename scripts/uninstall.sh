@@ -678,7 +678,10 @@ _unsloth_uninstall_main() {
     done
     # Same gate as a custom root: an ungated run takes a hand-made ~/.unsloth/studio, and then
     # ~/.unsloth via the empty-dir prune below.
-    if [ -e "$HOME/.unsloth/studio" ] && ! _is_studio_root "$HOME/.unsloth/studio" managed; then
+    # -e OR -L: -e follows a link and misses a dangling one, which _remove_path would still
+    # unlink, so the gate has to see every entry that exists at that path.
+    if { [ -e "$HOME/.unsloth/studio" ] || [ -L "$HOME/.unsloth/studio" ]; } \
+       && ! _is_studio_root "$HOME/.unsloth/studio" managed; then
         echo "  refusing to remove non-Unsloth path: $HOME/.unsloth/studio" >&2
         # A refused CUSTOM root is somebody else's by definition. This is our own default path,
         # where a damaged install can sit, so a studio.db here is chat history.

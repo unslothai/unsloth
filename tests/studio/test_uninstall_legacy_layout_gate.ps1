@@ -175,6 +175,10 @@ try {
         (-not (_IsStudioRoot (Make "leftover-suffixed-invalid" @(".venv.invalid.20260908120000.4242.2\pyvenv.cfg")) -ManagedDefaultRoot))
     Check "a rollback name with a non-numeric pid is refused" `
         (-not (_IsStudioRoot (Make "leftover-badpid" @("unsloth_studio.rollback.20260908120000.mine\pyvenv.cfg")) -ManagedDefaultRoot))
+    # \d matches every Unicode decimal digit; install.ps1 only ever writes ASCII.
+    $arabicDigits = -join (0..13 | ForEach-Object { [char](0x0660 + ($_ % 10)) })
+    Check "a leftover stamp in non-ASCII digits is refused" `
+        (-not (_IsStudioRoot (Make "leftover-unicode" @(".venv.invalid.$arabicDigits.4242\pyvenv.cfg")) -ManagedDefaultRoot))
     # "time" is install.sh's date(1) fallback; install.ps1 always formats yyyyMMddHHmmss.
     Check "install.sh's time fallback is not a Windows name" `
         (-not (_IsStudioRoot (Make "leftover-time" @(".venv.invalid.time.4242\pyvenv.cfg")) -ManagedDefaultRoot))

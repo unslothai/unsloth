@@ -145,8 +145,10 @@ Environment:
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+        # Get-Item -Force, not Test-Path: the latter follows a dangling link and answers false,
+        # after which WriteAllText follows the link and writes outside the root.
         $marker = Join-Path $Path ".unsloth-studio-owned"
-        if (Test-Path -LiteralPath $marker) { return }
+        if (Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue) { return }
         try { [System.IO.File]::WriteAllText($marker, "") } catch { }
     }
 
@@ -474,8 +476,9 @@ Environment:
         param([string]$Name)
         # Two patterns: only the rollback name carries a collision counter (install.ps1:4171).
         # No "time" alternative; that is install.sh's date(1) fallback and has no Windows twin.
-        if ($Name -match '^unsloth_studio\.rollback\.\d{14}\.\d+(\.\d+)?$') { return $true }
-        return ($Name -match '^\.venv\.invalid\.\d{14}\.\d+$')
+        # [0-9], not \d, which matches every Unicode decimal digit; install.ps1 writes ASCII.
+        if ($Name -match '^unsloth_studio\.rollback\.[0-9]{14}\.[0-9]+(\.[0-9]+)?$') { return $true }
+        return ($Name -match '^\.venv\.invalid\.[0-9]{14}\.[0-9]+$')
     }
 
     function _IsStudioRoot {
