@@ -33,6 +33,8 @@ import { safeMarkdownUrl } from "../src/lib/safe-markdown-url.ts";
 
 import { readSrc } from "./helpers/kit.ts";
 
+const SEARCH_IMAGE = readSrc("components/assistant-ui/search-image.tsx");
+
 const ENTRY = {
   id: "0123456789ab",
   title: "Golden Retriever",
@@ -447,9 +449,8 @@ test("extractListSubjects reads the lead of each listed item", () => {
 test("the inline card is block-level, so a list item cannot flow text around it", () => {
   // A list item styles its paragraphs `[&>p]:inline`. An inline card lands in the
   // middle of the sentence and the text wraps around it, which is what shipped once.
-  const source = readSrc("components/assistant-ui/search-image.tsx");
-  const wrapper = /data-search-image=\{entry\.id\}/.test(source)
-    ? source.slice(source.indexOf("if (!entry) return null;"))
+  const wrapper = /data-search-image=\{entry\.id\}/.test(SEARCH_IMAGE)
+    ? SEARCH_IMAGE.slice(SEARCH_IMAGE.indexOf("if (!entry) return null;"))
     : "";
   assert.match(wrapper, /className="[^"]*\bflex\b/, "wrapper must not be inline");
   assert.match(wrapper, /empty:hidden/, "an unloaded card must not leave a gap");
@@ -986,10 +987,9 @@ test("the web search card survives a query that is not a string", () => {
 test("a thumbnail response that lands after the id changed is ignored", () => {
   // Render falls through to idle for a state written under the previous id, and
   // the effect has no reason to run again: a skeleton that never resolves.
-  const source = readSrc("components/assistant-ui/search-image.tsx");
-  const effect = source.slice(
-    source.indexOf("authFetch(searchImagePath(id)"),
-    source.indexOf("function useNearViewport"),
+  const effect = SEARCH_IMAGE.slice(
+    SEARCH_IMAGE.indexOf("authFetch(searchImagePath(id)"),
+    SEARCH_IMAGE.indexOf("function useNearViewport"),
   );
   assert.ok(effect.length > 0, "the thumbnail effect moved");
   const notOk = effect.slice(effect.indexOf("if (!response.ok)"));

@@ -13,6 +13,8 @@ import { chatModelLoaded } from "../src/features/chat/lib/chat-model-loaded.ts";
 
 import { readSrc } from "./helpers/kit.ts";
 
+const USE_CHAT_MODEL_RUNTIME = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+
 const PICKED = "unsloth/Qwen3.5-9B-GGUF";
 
 test("a resident model reads as loaded", () => {
@@ -138,37 +140,35 @@ test("the picker's Loaded badge asks residency, not the selection", () => {
 // and sending to the model the picker still named answered 400 "No model
 // loaded". Waiting for the settle left that gap open for the whole load.
 test("another runtime loading re-reads the chat status", () => {
-  const hook = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
-  assert.match(hook, /subscribeModelLifecycle\(\(\{ runtime \}\) => \{/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /subscribeModelLifecycle\(\(\{ runtime \}\) => \{/);
   // Dictation holds no GPU ownership, so it is the one that stays excluded.
-  assert.match(hook, /if \(runtime === "chat" \|\| runtime === "stt"\) return;/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(runtime === "chat" \|\| runtime === "stt"\) return;/);
   assert.doesNotMatch(
-    hook,
+    USE_CHAT_MODEL_RUNTIME,
     /if \(loading \|\| runtime === "chat"\) return;/,
     "the settle-only guard is what left the picker naming an evicted model",
   );
   assert.match(
-    hook,
+    USE_CHAT_MODEL_RUNTIME,
     /void refresh\(\{\s*includeLoras: false,\s*externalChatSlotLoad: runtime === "tts",\s*\}\)/,
   );
   // And the branch it feeds still clears residency.
-  assert.match(hook, /residentCheckpoint: null,/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /residentCheckpoint: null,/);
 });
 
 // Dimming the tick and the badges was not enough: the model's name on its own
 // reads as "this is my model", and sending to it returns a bare 400. An
 // eviction now drops the pick, exactly as a server-side unload already did.
 test("an eviction drops the pick, not just the loaded marks", () => {
-  const hook = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   // Anchored on the branch, not on the file: other catches sit above it now.
   // chatActiveModel, not status.active_model: this branch owns the resident-TTS case too.
   // Matched loosely: the guard has been reflowed across lines, and a literal that
   // stopped matching would slice nothing and fail on an empty string instead.
-  const branchStart = hook.search(/\} else if \(\s*!chatActiveModel/);
+  const branchStart = USE_CHAT_MODEL_RUNTIME.search(/\} else if \(\s*!chatActiveModel/);
   assert.notEqual(branchStart, -1, "the eviction branch anchor no longer matches");
-  const branch = hook.slice(
+  const branch = USE_CHAT_MODEL_RUNTIME.slice(
     branchStart,
-    hook.indexOf("} catch (error) {", branchStart),
+    USE_CHAT_MODEL_RUNTIME.indexOf("} catch (error) {", branchStart),
   );
   assert.match(branch, /clearCheckpoint\(\)/);
   // A first speech-only status is definitive too: it must clear a persisted

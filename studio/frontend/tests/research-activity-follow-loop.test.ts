@@ -11,6 +11,8 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
+const RESEARCH_ACTIVITY_PANEL = readSrc("features/chat/components/research-activity-panel.tsx");
+
 function followLoopSource(): string {
   const text = readSrc("features/chat/components/research-activity-panel.tsx");
   const start = text.indexOf("function useResearchActivityScroll");
@@ -55,8 +57,7 @@ test("detach cancels every pending follow step", () => {
 });
 
 test("the pinned threshold stays at 2px, not 1", () => {
-  const text = readSrc("features/chat/components/research-activity-panel.tsx");
   // HiDPI subpixel rounding leaves a fractional gap; at 1px the loop never reads as pinned and
   // never exits, the configuration the freeze was reported on.
-  assert.match(text, /const ACTIVITY_PINNED_THRESHOLD_PX = 2;/);
+  assert.match(RESEARCH_ACTIVITY_PANEL, /const ACTIVITY_PINNED_THRESHOLD_PX = 2;/);
 });

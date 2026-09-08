@@ -12,6 +12,9 @@ import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "../src/features/chat/utils/p
 
 import { readSrc } from "./helpers/kit.ts";
 
+const CHAT_RUNTIME_STORE = readSrc("features/chat/stores/chat-runtime-store.ts");
+const THREAD_DOCUMENTS_BAR = readSrc("features/rag/components/thread-documents-bar.tsx");
+
 const PENDING = "__pending__";
 type Target = "project" | "chat";
 
@@ -76,40 +79,37 @@ test("clearing with nothing pending changes nothing", () => {
 
 // Adoption has to run on both paths that turn a fresh composer into a chat.
 test("both chat-creating paths adopt the pending choice", () => {
-  const source = readSrc("features/rag/components/thread-documents-bar.tsx");
   // Attaching a file first: ensureThreadId materializes the thread.
   assert.match(
-    source,
+    THREAD_DOCUMENTS_BAR,
     /initialize\(\)[\s\S]{0,300}?adoptPendingProjectAttachmentTarget\(remoteId, claim\)/,
   );
   // Sending a message first: the id arrives as a prop.
   assert.match(
-    source,
+    THREAD_DOCUMENTS_BAR,
     /if \(!hadThreadId\) \{[\s\S]{0,200}?adoptPendingProjectAttachmentTarget\(threadId\)/,
   );
 });
 
 test("the composer clears its pending choice when it goes away", () => {
-  const source = readSrc("features/rag/components/thread-documents-bar.tsx");
-  assert.match(source, /clearPendingProjectAttachmentTarget\(\)/);
+  assert.match(THREAD_DOCUMENTS_BAR, /clearPendingProjectAttachmentTarget\(\)/);
 });
 
 // Membership is read from the chat's own row, so there is a window where it is
 // unknown. Attaching in it would file the file by guess.
 test("attaching is held until the chat's project is known", () => {
-  const source = readSrc("features/rag/components/thread-documents-bar.tsx");
   assert.match(
-    source,
+    THREAD_DOCUMENTS_BAR,
     /const projectUnresolved = threadProjectId === undefined;/,
     "unresolved has to be distinguishable from no project",
   );
   assert.match(
-    source,
+    THREAD_DOCUMENTS_BAR,
     /uploading \|\| projectUploading \|\| projectUnresolved/,
     "the attach controls hold",
   );
   assert.match(
-    source,
+    THREAD_DOCUMENTS_BAR,
     /if \(projectUnresolved\) \{\s*return;\s*\}/,
     "and a desktop drop stays in the store rather than draining",
   );
@@ -185,24 +185,22 @@ test("an abandoned composer cannot consume the next composer's choice", () => {
 // The counter has to move on both ways the entry changes hands, or a claim
 // taken before one of them still looks current afterwards.
 test("both writers of the pending entry move the claim", () => {
-  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
   assert.equal(
-    store.match(/pendingAttachmentTargetClaim \+= 1;/g)?.length,
+    CHAT_RUNTIME_STORE.match(/pendingAttachmentTargetClaim \+= 1;/g)?.length,
     2,
     "set-pending and clear-pending both bump it",
   );
   assert.match(
-    store,
+    CHAT_RUNTIME_STORE,
     /if \(claim !== undefined && claim !== pendingAttachmentTargetClaim\) \{\s*return state;/,
   );
 
-  const bar = readSrc("features/rag/components/thread-documents-bar.tsx");
   // Read before initialize(), not after it resolves.
   assert.match(
-    bar,
+    THREAD_DOCUMENTS_BAR,
     /const claim = readPendingAttachmentTargetClaim\(\);[\s\S]{0,200}?\.initialize\(\)/,
   );
-  assert.match(bar, /adoptPendingProjectAttachmentTarget\(remoteId, claim\)/);
+  assert.match(THREAD_DOCUMENTS_BAR, /adoptPendingProjectAttachmentTarget\(remoteId, claim\)/);
 });
 
 // Sending a normal message in a project composer creates the chat, and the page
@@ -228,17 +226,15 @@ test("the project composer's choice survives the swap to a thread", () => {
     /if \(captured\?\.nonce === newThreadNonce && captured\.claim === claim\) \{\s*return;/,
   );
 
-  // The claim the store hands out changes on every pending write, value or not.
-  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
+  // The claim the CHAT_RUNTIME_STORE hands out changes on every pending write, value or not.
   assert.match(
-    store,
+    CHAT_RUNTIME_STORE,
     /if \(threadId === null\) \{\s*pendingAttachmentTargetClaim \+= 1;/,
   );
 
-  // Why the bar cannot cover it: the Thread's bar starts with an id, so the
+  // Why the THREAD_DOCUMENTS_BAR cannot cover it: the Thread's THREAD_DOCUMENTS_BAR starts with an id, so the
   // first-id branch never fires for it.
-  const bar = readSrc("features/rag/components/thread-documents-bar.tsx");
-  assert.match(bar, /const hadThreadIdRef = useRef\(threadId !== null\);/);
+  assert.match(THREAD_DOCUMENTS_BAR, /const hadThreadIdRef = useRef\(threadId !== null\);/);
 });
 
 // A browser-local preference that a reset leaves behind outlives the reset: new

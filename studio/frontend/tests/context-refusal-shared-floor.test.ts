@@ -13,6 +13,8 @@ import {
 
 import { readSrc } from "./helpers/kit.ts";
 
+const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+
 function refusal(extra: Partial<ContextTruncation>): ContextTruncation {
   return {
     dropped_messages: 0,
@@ -252,29 +254,27 @@ test("a prompt whose floor is already over the window is never sent to a new cha
 });
 
 test("the third toast branch names the levers that can actually work", () => {
-  const source = readSrc("features/chat/api/chat-adapter.ts");
   // The band moved out of "this message is too long" must not fall through to "start a
   // new chat", the one action that provably cannot work here.
-  assert.match(source, /historyCannotHelp\(irreducible\)/);
+  assert.match(CHAT_ADAPTER, /historyCannotHelp\(irreducible\)/);
   assert.match(
-    source,
+    CHAT_ADAPTER,
     /Even with every earlier turn dropped, this prompt would still be/,
   );
   assert.match(
-    source,
+    CHAT_ADAPTER,
     /the system prompt and any \" \+\n\s*\"tools that are enabled\./,
   );
 });
 
 test("the toast quotes the turn's own size, never the count that carries the floor", () => {
-  const source = readSrc("features/chat/api/chat-adapter.ts");
   // Printing `latest_turn_tokens` directly is the defect this guards against coming back.
   assert.match(
-    source,
+    CHAT_ADAPTER,
     /\$\{latestTurnOwnTokens\(irreducible\)\.toLocaleString\(\)\} tokens on its own/,
   );
   assert.doesNotMatch(
-    source,
+    CHAT_ADAPTER,
     /latest_turn_tokens\?\.toLocaleString\(\)\} tokens on its own/,
   );
 });

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   installLocalStorageFake,
+  readSrc,
   readSrcAsync,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
@@ -19,6 +20,8 @@ const { store: storageStore, fireWindowEvent } = installLocalStorageFake();
 const { pinKey, usePinnedModelsStore } = await import(
   "../src/features/model-picker/components/model-selector/pinned-models.ts"
 );
+
+const MODELS_CATALOG_ROWS = readSrc("features/hub/catalog/models-catalog-rows.tsx");
 
 const STORAGE_KEY = "unsloth_pinned_models";
 
@@ -486,9 +489,8 @@ test("the hub's pinned grid never makes a dataset row draggable", async () => {
     /const itemPinKey =\s*!isDataset &&\s*item\.row\.repoId &&\s*pinnedSet\.has\(pinKey\(item\.row\.repoId\)\)/,
   );
   // The invariant the gate keeps: the row menu withholds pin/unpin for datasets.
-  const rows = await readSrcAsync("features/hub/catalog/models-catalog-rows.tsx");
   assert.match(
-    rows,
+    MODELS_CATALOG_ROWS,
     /pin=\{\s*isDataset \|\| !deletableRepoId\s*\?\s*undefined/,
   );
 });
@@ -553,9 +555,8 @@ test("both repo-level deletes clear pins through that one action", async () => {
     !pickers.includes("if (pinnedSet.has(pinKey(c.repo_id))) {"),
     "and neither clears by toggling the bare repo key",
   );
-  const rows = await readSrcAsync("features/hub/catalog/models-catalog-rows.tsx");
   assert.ok(
-    rows.includes(
+    MODELS_CATALOG_ROWS.includes(
       "usePinnedModelsStore.getState().unpinRepo(deletableRepoId);",
     ),
   );

@@ -29,6 +29,9 @@ const { resolveProviderCredentialEdit } = await import(
   "../src/features/chat/provider-credential-edit.ts"
 );
 
+const BOOTSTRAP = readSrc("features/credentials/bootstrap.ts");
+const HF_TOKEN_STORE = readSrc("features/hub/stores/hf-token-store.ts");
+
 
 type UiProviderConfig = ReturnType<
   Parameters<typeof runCredentialBootstrap>[0]["getProviders"]
@@ -199,9 +202,8 @@ test("authoritative provider cleanup removes only orphaned legacy keys", async (
 
 
 test("browser credential migration uses insert-if-absent endpoints", () => {
-  const hfSource = readSrc("features/hub/stores/hf-token-store.ts");
   const providerSource = readSrc("features/chat/sync-external-providers.ts");
-  assert.match(hfSource, /migrateHfToken\(token\)/);
+  assert.match(HF_TOKEN_STORE, /migrateHfToken\(token\)/);
   assert.match(providerSource, /saveLegacyKey: migrateProviderApiKey/);
 });
 
@@ -356,9 +358,8 @@ test("provider migration does not consume local input after a session change", a
 });
 
 test("legacy migration remains installation-wide and retry-safe", () => {
-  const bootstrapSource = readSrc("features/credentials/bootstrap.ts");
-  assert.doesNotMatch(bootstrapSource, /migration-owner|legacy_credential_owner/);
-  assert.doesNotMatch(bootstrapSource, /authSubjectFromJwt|currentOwner/);
+  assert.doesNotMatch(BOOTSTRAP, /migration-owner|legacy_credential_owner/);
+  assert.doesNotMatch(BOOTSTRAP, /authSubjectFromJwt|currentOwner/);
 });
 
 
@@ -662,11 +663,10 @@ test("a superseded successful HF write advances the rollback baseline", async ()
 
 
 test("new HF edits never write the token back to localStorage", () => {
-  const source = readSrc("features/hub/stores/hf-token-store.ts");
-  assert.doesNotMatch(source, /localStorage\.setItem\(HF_TOKEN_KEY/);
+  assert.doesNotMatch(HF_TOKEN_STORE, /localStorage\.setItem\(HF_TOKEN_KEY/);
 
-  assert.match(source, /persistenceError:/);
-  assert.match(source, /HF_TOKEN_SYNC_KEY/);
+  assert.match(HF_TOKEN_STORE, /persistenceError:/);
+  assert.match(HF_TOKEN_STORE, /HF_TOKEN_SYNC_KEY/);
 });
 
 
@@ -718,11 +718,10 @@ test("credential gate follows authentication session transitions", () => {
   );
   assert.match(sessionSource, /const sessionStarted = !localStorage\.getItem\(AUTH_TOKEN_KEY\)/);
   assert.match(sessionSource, /dispatchEvent\(new Event\(AUTH_SESSION_STORED_EVENT\)\)/);
-  const bootstrapSource = readSrc("features/credentials/bootstrap.ts");
   assert.match(sessionSource, /authSessionEpoch \+= 1/);
-  assert.match(bootstrapSource, /const sessionEpoch = getAuthSessionEpoch\(\)/);
+  assert.match(BOOTSTRAP, /const sessionEpoch = getAuthSessionEpoch\(\)/);
   assert.match(
-    bootstrapSource,
+    BOOTSTRAP,
     /hasAuthToken\(\) && getAuthSessionEpoch\(\) === sessionEpoch/,
   );
 

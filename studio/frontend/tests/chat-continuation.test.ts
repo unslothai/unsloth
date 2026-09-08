@@ -1395,24 +1395,23 @@ test("a hold whose run never starts holds its lease for the life of the tab", as
 
 test("a claim whose run was never issued is left to lapse, not held", async () => {
   // The bar claims under a Web Lock, so the answer lands a tick or more after the render
-  // that asked for it, and `aui.thread()` follows the SELECTION rather than the thread the
+  // that asked for it, and `aui.thread()` follows the SELECTION rather than the THREAD the
   // bar belongs to (`runningByThreadId` exists precisely because "detection survives
   // navigation" and `aui.thread()` does not). Switch chats or branches inside that window
-  // and `startContinuation` searches a different thread's messages, finds nothing, and
+  // and `startContinuation` searches a different THREAD's messages, finds nothing, and
   // returns without calling `startRun`.
   //
   // Taking the hold anyway is the case above: renewed forever, and every other tab refused
   // the message until this one closes. So the message has to still be there before anything
   // is held. Pinned at the source, since there is no renderer here -- the same way
   // composer-keystroke-subscription-budget.test.ts pins its seams.
-  const thread = readSrc("components/assistant-ui/thread.tsx");
-  const claimed = thread.indexOf(
+  const claimed = THREAD.indexOf(
     'claimAutoContinue(messageId, runThreadId ?? "")',
   );
   assert.notEqual(claimed, -1, "the claim moved; this test needs rewriting");
-  const branch = thread.slice(
+  const branch = THREAD.slice(
     claimed,
-    thread.indexOf("held-elsewhere", claimed),
+    THREAD.indexOf("held-elsewhere", claimed),
   );
 
   const guard = branch.search(/messages\.some\(/);
@@ -1458,12 +1457,11 @@ test("a losing claim does not follow the row onto the next branch", () => {
     "rows are no longer keyed by index; this test needs rewriting",
   );
 
-  const thread = readSrc("components/assistant-ui/thread.tsx");
-  const start = thread.indexOf("const ContinueMessageBarForLastMessage");
+  const start = THREAD.indexOf("const ContinueMessageBarForLastMessage");
   assert.notEqual(start, -1, "the bar moved; this test needs rewriting");
-  const component = thread.slice(
+  const component = THREAD.slice(
     start,
-    thread.indexOf("const WebSearchToolUIConfirmable", start),
+    THREAD.indexOf("const WebSearchToolUIConfirmable", start),
   );
   const state =
     /const \[(\w+), (set\w+)\] = useState<string \| null>\(null\)/.exec(
@@ -1523,14 +1521,13 @@ test("a claim taken for a run that was never issued is given back", async () => 
 test("the bar rolls its claim back when it issues no run", () => {
   // The behaviour above, pinned where it has to be called from: the early return that
   // decided no run would be issued.
-  const thread = readSrc("components/assistant-ui/thread.tsx");
-  const claimed = thread.indexOf(
+  const claimed = THREAD.indexOf(
     'claimAutoContinue(messageId, runThreadId ?? "")',
   );
   assert.notEqual(claimed, -1, "the claim moved; this test needs rewriting");
-  const branch = thread.slice(
+  const branch = THREAD.slice(
     claimed,
-    thread.indexOf("held-elsewhere", claimed),
+    THREAD.indexOf("held-elsewhere", claimed),
   );
   const guard = branch.search(/messages\.some\(/);
   const hold = branch.indexOf("holdAutoContinueRun(");
@@ -1649,29 +1646,27 @@ test("a failure on a thread leaves a hold whose run is already streaming alone",
 
 test("the keeper is wired to the failure the adapter already reports", () => {
   // There is exactly one signal for a run that failed on its way out, and it is not a
-  // deadline: the adapter wrapper catches everything `adapter.run` throws and announces it
+  // deadline: the CHAT_ADAPTER wrapper catches everything `adapter.run` throws and announces it
   // per thread. Pinned at both ends, since neither side is exercised by a unit test.
-  const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  const wrapper = adapter.slice(adapter.indexOf("yield* adapter.run(args)"));
+  const wrapper = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("yield* adapter.run(args)"));
   assert.match(
     wrapper,
     /catch \(error\) \{[\s\S]*notifyPromptQueueRunFailed\(/,
     "the adapter no longer reports a failed run per thread; this test needs rewriting",
   );
 
-  const wiring = readSrc("features/chat/utils/auto-continue-run-keeper.ts");
   assert.match(
-    wiring,
+    AUTO_CONTINUE_RUN_KEEPER,
     /PROMPT_QUEUE_RUN_FAILED_EVENT/,
     "nothing settles a hold whose run failed before it started",
   );
   assert.match(
-    wiring,
+    AUTO_CONTINUE_RUN_KEEPER,
     /keeper\.failed\(/,
     "the failure has to reach the keeper",
   );
   assert.doesNotMatch(
-    wiring,
+    AUTO_CONTINUE_RUN_KEEPER,
     /setTimeout\(/,
     "a deadline here is the arming timeout coming back, which lapses live continuations",
   );
@@ -1863,10 +1858,9 @@ test("only the gate's own tokens are read as a refusal", () => {
 });
 
 test("the gate's pulse is tagged where it is fired and read where it matters", () => {
-  // Neither end is exercised by a unit test: the adapter's gate is deep inside a run, and
+  // Neither end is exercised by a unit test: the CHAT_ADAPTER's gate is deep inside a run, and
   // the keeper's real signal reads a zustand store. Pinned at both ends instead.
-  const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  const gate = adapter.slice(adapter.indexOf("const imageGateReason ="));
+  const gate = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const imageGateReason ="));
   assert.match(
     gate,
     /const gateOwner = createImageGateRunOwner\(\)/,
@@ -1878,14 +1872,13 @@ test("the gate's pulse is tagged where it is fired and read where it matters", (
     "the pulse compare mode waits on is still fired under that token",
   );
 
-  const wiring = readSrc("features/chat/utils/auto-continue-run-keeper.ts");
   assert.match(
-    wiring,
+    AUTO_CONTINUE_RUN_KEEPER,
     /isImageGateRunOnly\(state\.runOwnerByThreadId\[threadId\]\)/,
     "the keeper is arming holds on a request the gate refused to send",
   );
   assert.doesNotMatch(
-    wiring,
+    AUTO_CONTINUE_RUN_KEEPER,
     /setTimeout\(/,
     "a deadline here is the arming timeout coming back, which lapses live continuations",
   );
@@ -1910,6 +1903,10 @@ test("the gate's pulse is tagged where it is fired and read where it matters", (
 const { createContinuationMerger } = await import(
   "../src/features/chat/utils/continuation.ts"
 );
+
+const THREAD = readSrc("components/assistant-ui/thread.tsx");
+const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+const AUTO_CONTINUE_RUN_KEEPER = readSrc("features/chat/utils/auto-continue-run-keeper.ts");
 
 const REASONING =
   "Okay, so the user is asking about how to structure the migration. " +

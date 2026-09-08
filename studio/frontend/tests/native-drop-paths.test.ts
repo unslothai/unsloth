@@ -63,6 +63,13 @@ const { useNativeIntentStore } = await import(
   "../src/features/native-intents/store.ts"
 );
 
+const THREAD = readSrc("components/assistant-ui/thread.tsx");
+const ATTACHMENT_CONTENT = readSrc("features/chat/attachment-content.ts");
+const RUNTIME_PROVIDER = readSrc("features/chat/runtime-provider.tsx");
+const SHARED_COMPOSER = readSrc("features/chat/shared-composer.tsx");
+const TEXT_ATTACHMENT_ACCEPT_2 = readSrc("features/chat/text-attachment-accept.ts");
+const REFERENCE_PICKER = readSrc("features/video/reference-picker.tsx");
+
 const BACKEND_UPLOAD_EXTS_RE = /UPLOAD_EXTS\s*=\s*\{([^}]+)\}/s;
 const RUST_ATTACHMENT_EXTS_RE = /ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_OPEN_DOCUMENT_ATTACHMENT_EXTS_RE =
@@ -149,8 +156,7 @@ test("OpenDocument picker types are accepted by native drops", () => {
     assert.ok(SUPPORTED_DROP_HINT.includes(extension));
   }
 
-  const providerSource = readSrc("features/chat/runtime-provider.tsx");
-  assert.match(providerSource, OPEN_DOCUMENT_ADAPTER_ACCEPT_RE);
+  assert.match(RUNTIME_PROVIDER, OPEN_DOCUMENT_ADAPTER_ACCEPT_RE);
 
   const nativeDropSource = readSrc("features/native-intents/use-native-drop.ts");
   assert.match(nativeDropSource, OPEN_DOCUMENT_DROP_TO_COMPOSER_RE);
@@ -161,8 +167,7 @@ test("OpenDocument picker types are accepted by native drops", () => {
   const chatPageSource = readSrc("features/chat/chat-page.tsx");
   assert.match(chatPageSource, OPEN_DOCUMENT_CHAT_QUEUE_RE);
 
-  const threadSource = readSrc("components/assistant-ui/thread.tsx");
-  assert.match(threadSource, OPEN_DOCUMENT_DRAIN_RE);
+  assert.match(THREAD, OPEN_DOCUMENT_DRAIN_RE);
 
   const rustSource = readText("../../src-tauri/src/native_path_policy.rs");
   const rust = [
@@ -316,8 +321,7 @@ test("every MIME type Rust stamps is one the vision adapter claims", () => {
     ),
   ].sort();
 
-  const providerSource = readSrc("features/chat/runtime-provider.tsx");
-  const accepted = providerSource
+  const accepted = RUNTIME_PROVIDER
     .match(VISION_ADAPTER_ACCEPT_RE)?.[1]
     .split(",")
     .map((type) => type.trim())
@@ -357,8 +361,7 @@ test("every accepted image extension has a Rust MIME arm", () => {
 
 // The one constant drop-paths.ts names in its own "keep in sync" comment.
 test("the drop image list matches the composer's file picker", () => {
-  const composerSource = readSrc("features/chat/shared-composer.tsx");
-  const picker = composerSource
+  const picker = SHARED_COMPOSER
     .match(COMPOSER_IMAGE_ACCEPT_RE)?.[1]
     .split(",")
     .map((type) => type.trim().replace("image/", ""))
@@ -663,8 +666,7 @@ test("the picker remains able to show extensionless text basenames", () => {
     ".txt,text/plain",
   );
 
-  const threadSource = readSrc("components/assistant-ui/thread.tsx");
-  assert.match(threadSource, PICKER_BASENAME_CALL_RE);
+  assert.match(THREAD, PICKER_BASENAME_CALL_RE);
 });
 
 test("frontend and Rust accept the same extensionless text names", () => {
@@ -932,10 +934,9 @@ test("a text attachment is read once, not once per stage", async () => {
 });
 
 test("both attachment stages go through the decode-once path", () => {
-  const provider = readSrc("features/chat/runtime-provider.tsx");
-  const adapter = provider.slice(
-    provider.indexOf("class TextAttachmentAdapter"),
-    provider.indexOf("class HtmlAttachmentAdapter"),
+  const adapter = RUNTIME_PROVIDER.slice(
+    RUNTIME_PROVIDER.indexOf("class TextAttachmentAdapter"),
+    RUNTIME_PROVIDER.indexOf("class HtmlAttachmentAdapter"),
   );
   assert.ok(adapter.length > 0, "text adapter not found");
   assert.equal(adapter.includes("readTextAttachmentOnce"), true);
@@ -1033,11 +1034,10 @@ test("compare mode takes the same audio files the chat composer does", () => {
     true,
   );
   assert.equal(isAudioAttachmentFile(new File([], "notes.txt", { type: "" })), false);
-  // The compare composer classifies through the shared helper, not file.type.
-  const composer = readSrc("features/chat/shared-composer.tsx");
-  assert.equal(/file\.type\.match\(\/\^audio/.test(composer), false);
-  assert.match(composer, /isAudioAttachmentFile\(file\)/);
-  assert.match(composer, /accept=\{AUDIO_PICKER_ACCEPT\}/);
+  // The compare SHARED_COMPOSER classifies through the shared helper, not file.type.
+  assert.equal(/file\.type\.match\(\/\^audio/.test(SHARED_COMPOSER), false);
+  assert.match(SHARED_COMPOSER, /isAudioAttachmentFile\(file\)/);
+  assert.match(SHARED_COMPOSER, /accept=\{AUDIO_PICKER_ACCEPT\}/);
 });
 
 test("a declaration past the first pages is not missed", async () => {
@@ -1069,9 +1069,8 @@ test("a declaration past the first pages is not missed", async () => {
       return true;
     },
   );
-  // The source carries no byte ceiling on the scan for a cutoff to creep back in.
-  const source = readSrc("features/chat/text-attachment-accept.ts");
-  assert.equal(source.includes("DECLARATION_SCAN_BYTES"), false);
+  // The TEXT_ATTACHMENT_ACCEPT_2 carries no byte ceiling on the scan for a cutoff to creep back in.
+  assert.equal(TEXT_ATTACHMENT_ACCEPT_2.includes("DECLARATION_SCAN_BYTES"), false);
 });
 
 test("a header-shaped line in the body is not a declaration", async () => {
@@ -1286,8 +1285,7 @@ test("the tracker magic tables agree, and cover ProTracker's second marker", asy
   assert.ok(rustMagics.includes("!PM!"), "Rust table is missing !PM!");
 
   const module = await import("../src/features/chat/text-attachment-accept.ts");
-  const source = readSrc("features/chat/text-attachment-accept.ts");
-  const tsTable = source.match(/const TRACKER_MOD_MAGICS = new Set\(\[([\s\S]*?)\]\)/);
+  const tsTable = TEXT_ATTACHMENT_ACCEPT_2.match(/const TRACKER_MOD_MAGICS = new Set\(\[([\s\S]*?)\]\)/);
   assert.ok(tsTable, "TRACKER_MOD_MAGICS not found in text-attachment-accept.ts");
   const tsMagics = [...tsTable[1]!.matchAll(/"((?:[^"\\]|\\.){1,8})"/g)].map((m) =>
     m[1]!.replace(/\\0/g, "\0"),
@@ -1511,19 +1509,17 @@ test("frontend and Rust accept the same dropped text extensions", () => {
 });
 
 test("the composer adapter reads the shared text accept list", () => {
-  const src = readSrc("features/chat/runtime-provider.tsx");
   assert.match(
-    src,
+    RUNTIME_PROVIDER,
     /class TextAttachmentAdapter implements AttachmentAdapter \{[\s\S]*?accept = TEXT_ATTACHMENT_ACCEPT;/,
   );
-  assert.match(src, /if \(await isBinaryTrackerModule\(file\)\)/);
+  assert.match(RUNTIME_PROVIDER, /if \(await isBinaryTrackerModule\(file\)\)/);
   for (const ext of [".cs", ".php", ".js"]) {
     assert.ok(TEXT_ATTACHMENT_ACCEPT.includes(ext), ext);
   }
 
-  const attachmentContentSource = readSrc("features/chat/attachment-content.ts");
   assert.match(
-    attachmentContentSource,
+    ATTACHMENT_CONTENT,
     /import \{[\s\S]*?TEXT_ATTACHMENT_ACCEPT[\s\S]*?decodeTextAttachmentBytes[\s\S]*?\} from "\.\/text-attachment-accept";/,
   );
 });
@@ -1647,13 +1643,11 @@ test("a 3GP clip picked through the audio dialog is still refused as video", asy
 test("the composer classifies before an adapter is picked", () => {
   // A composite matches on name and MIME synchronously, so the restamping has
   // to happen in the wrapper above it rather than inside an adapter.
-  const src = readSrc("features/chat/runtime-provider.tsx");
   assert.match(
-    src,
+    RUNTIME_PROVIDER,
     /class PreStreamAwareAttachmentAdapter[\s\S]*?if \(!needsAttachmentTrackInspection\(state\.file\)\)[\s\S]*?await classifiedAttachmentFile\(state\.file\)/,
   );
-  const composer = readSrc("features/chat/shared-composer.tsx");
-  assert.match(composer, /await classifiedAttachmentFiles\(input\)/);
+  assert.match(SHARED_COMPOSER, /await classifiedAttachmentFiles\(input\)/);
 });
 
 test("a From line separates messages in an archive, not in one message", async () => {
@@ -1872,8 +1866,7 @@ test("the reference picker takes the formats its drop path does", async () => {
     assert.ok(REFERENCE_PICKER_ACCEPT.video.split(",").includes(ext), ext);
   }
 
-  const picker = readSrc("features/video/reference-picker.tsx");
-  assert.match(picker, /accept=\{REFERENCE_PICKER_ACCEPT\[kind\]\}/);
+  assert.match(REFERENCE_PICKER, /accept=\{REFERENCE_PICKER_ACCEPT\[kind\]\}/);
 });
 
 test("one vCard declaration speaks for its property, not for the file", async () => {
@@ -2033,15 +2026,14 @@ test("the audio reference picker reads a 3GP recording's tracks", async () => {
     referenceFileRejection("audio", await classifiedAttachmentFile(clip)),
     "Please choose an audio file",
   );
-  // The video picker does not take the recording either, extension or not.
+  // The video REFERENCE_PICKER does not take the recording either, extension or not.
   assert.equal(isVideoFile(classifiedRecording), false);
   assert.equal(
     referenceFileRejection("video", classifiedRecording),
     "Please choose a video file",
   );
 
-  const picker = readSrc("features/video/reference-picker.tsx");
-  assert.match(picker, /await classifiedAttachmentFile\(picked\)/);
+  assert.match(REFERENCE_PICKER, /await classifiedAttachmentFile\(picked\)/);
 });
 
 test("only a real charset parameter is a charset declaration", async () => {
@@ -2205,9 +2197,8 @@ test("a preview finds a declaration that sits past its own slice", async () => {
     "string",
   );
 
-  const source = readSrc("features/chat/attachment-content.ts");
-  assert.match(source, /decodeTextAttachmentBytes\(bytes, file\.name, truncated, whole\)/);
-  assert.match(source, /DECLARES_ITS_CHARSET_RE/);
+  assert.match(ATTACHMENT_CONTENT, /decodeTextAttachmentBytes\(bytes, file\.name, truncated, whole\)/);
+  assert.match(ATTACHMENT_CONTENT, /DECLARES_ITS_CHARSET_RE/);
 });
 
 test("a 3GP typed as audio by the platform is still inspected", async () => {
@@ -2258,8 +2249,7 @@ test("the reference drop zone takes what its dialog offers", async () => {
     assert.ok(REFERENCE_DROP_ACCEPT.video.split(",").includes(ext), ext);
   }
 
-  const picked = readSrc("features/video/reference-picker.tsx");
-  assert.match(picked, /accept: REFERENCE_DROP_ACCEPT\[kind\]/);
+  assert.match(REFERENCE_PICKER, /accept: REFERENCE_DROP_ACCEPT\[kind\]/);
 });
 
 test("a quoted parameter value resolves its escapes", async () => {

@@ -15,6 +15,8 @@ const { carriesOverSeed, idleProbeVerdict, seededMeasuredTransfer } = await impo
   "../src/features/hub/download-manager/adopt-rules.ts"
 );
 
+const POLL_LOOP = readSrc("features/hub/download-manager/poll-loop.ts");
+
 test("adopting a new generation drops the previous run's byte seed", () => {
   // The persisted job describes generation 4; the backend reports 5 in flight. Seeding 4's bytes
   // while serverGeneration jumps to 5 leaves the first poll seeing no change, so the new run's
@@ -98,10 +100,9 @@ test("a scan that never happened does not retire a job", () => {
 });
 
 test("live idle polls retire an explicitly missing target before the grace period", () => {
-  const src = readSrc("features/hub/download-manager/poll-loop.ts");
-  const start = src.indexOf("function handleIdleAfterProgress");
-  const end = src.indexOf("\nfunction handleTickError", start);
-  const handler = src.slice(start, end);
+  const start = POLL_LOOP.indexOf("function handleIdleAfterProgress");
+  const end = POLL_LOOP.indexOf("\nfunction handleTickError", start);
+  const handler = POLL_LOOP.slice(start, end);
 
   assert.match(
     handler,
@@ -109,7 +110,7 @@ test("live idle polls retire an explicitly missing target before the grace perio
     "an authoritative missing-target response must bypass the idle grace period",
   );
   assert.match(
-    src,
+    POLL_LOOP,
     /handleIdleAfterProgress\(rt, key, madeProgress, progressResp\)/,
     "the live poll must pass its progress response to the idle verdict",
   );
@@ -129,9 +130,8 @@ test("the held-transfer marker travels with the counters it describes", () => {
 test("the adoption path actually seeds the marker onto the job", () => {
   // The helper above is pure, so it cannot catch the seed being computed and
   // then left off the rebuilt job, which is how the marker was lost once.
-  const src = readSrc("features/hub/download-manager/poll-loop.ts");
   assert.match(
-    src,
+    POLL_LOOP,
     /measuredTransfer:\s*seedMeasuredTransfer/,
     "startJob computes the seeded held-transfer marker but no longer puts it on "
       + "the job, so an adopted run restores it as undefined (measured) and "

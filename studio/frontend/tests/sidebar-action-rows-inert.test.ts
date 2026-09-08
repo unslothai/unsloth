@@ -5,7 +5,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { readSrcAsync } from "./helpers/kit.ts";
+import { readSrc } from "./helpers/kit.ts";
+
+const INDEX = readSrc("index.css");
 
 // The pinned top rows run an action rather than open a page, so neither may
 // mark itself active: nav rows paint one pill for both states, and an active
@@ -42,9 +44,8 @@ test("Search never marks itself active either", async () => {
 test("a nav row paints the same pill when active and when hovered", async () => {
   // The reason the rows above pass false. If active ever gets its own
   // background, that reason is gone and this can be revisited.
-  const css = await readSrcAsync("index.css");
   const rule = /([^}]*)\{\s*background-color: var\(--nav-surface-hover\)/.exec(
-    css,
+    INDEX,
   );
   assert.ok(rule, "no rule paints a nav row with --nav-surface-hover");
   assert.match(rule[1], /\.sidebar-nav-btn:hover/);
@@ -147,27 +148,26 @@ test("the sidebar list measures its scroll rail", async () => {
     source,
     /absolute start-0 end-\[var\(--sidebar-rail,0px\)\] bottom-full/,
   );
-  const css = await readSrcAsync("index.css");
   // Only the Windows auto reset may set a width; hiding the rail is what a
   // width override caused before.
   const railWidthDecls = (
-    css.match(/\.sidebar-scroll-fade[^{]*\{[^}]*scrollbar-width:\s*[^;}]+/g) ?? []
+    INDEX.match(/\.sidebar-scroll-fade[^{]*\{[^}]*scrollbar-width:\s*[^;}]+/g) ?? []
   ).map((rule) => /scrollbar-width:\s*([^;}]+)/.exec(rule)?.[1].trim());
   assert.deepEqual(railWidthDecls, ["auto"]);
-  assert.match(css, /:root\.client-windows \.sidebar-scroll-fade,/);
+  assert.match(INDEX, /:root\.client-windows \.sidebar-scroll-fade,/);
   assert.equal(
-    /\.sidebar-scroll-fade::-webkit-scrollbar \{/.test(css),
+    /\.sidebar-scroll-fade::-webkit-scrollbar \{/.test(INDEX),
     false,
   );
   // Thumb stays hidden until the list is hovered, as the other lists do.
-  assert.match(css, /\.sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,/);
+  assert.match(INDEX, /\.sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,/);
   // A mask covers the scrollbar, so the top fade keeps the rail column opaque.
   assert.match(
-    css,
+    INDEX,
     /mask-image: linear-gradient\(to bottom, transparent 0, #000 14px\),\s*linear-gradient\(to left, #000 var\(--sidebar-rail, 0px\), transparent 0\);/,
   );
   assert.match(
-    css,
+    INDEX,
     /\[dir="rtl"\] \.sidebar-scroll-fade\.is-scrolled \{[\s\S]*linear-gradient\(to right, #000 var\(--sidebar-rail, 0px\), transparent 0\);/,
   );
 });

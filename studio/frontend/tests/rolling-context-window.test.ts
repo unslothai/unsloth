@@ -12,6 +12,10 @@ import {
 
 import { readSrc } from "./helpers/kit.ts";
 
+const COMPACTION_NOTICE = readSrc("components/assistant-ui/compaction-notice.tsx");
+const THREAD = readSrc("components/assistant-ui/thread.tsx");
+const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+
 const adapter = readSrc("features/chat/api/chat-adapter.ts");
 const transport = readSrc("features/chat/api/chat-api.ts");
 
@@ -140,9 +144,8 @@ test("a rescued turn cannot silence the compactions that follow it", () => {
 });
 
 test("the notice and the toast read the same predicate as the boundary", () => {
-  const notice = readSrc("components/assistant-ui/compaction-notice.tsx");
-  assert.match(notice, /promptWasShortened\(truncation\)/);
-  assert.doesNotMatch(notice, /truncation\?\.fits/);
+  assert.match(COMPACTION_NOTICE, /promptWasShortened\(truncation\)/);
+  assert.doesNotMatch(COMPACTION_NOTICE, /truncation\?\.fits/);
   assert.match(adapter, /promptWasShortened\(chunk\.context_truncated\)/);
 });
 
@@ -208,25 +211,22 @@ test("compaction counts accumulate and stay absent on a plain rolling window", (
 });
 
 test("the compaction notice renders from persisted metadata, not from a message", () => {
-  const notice = readSrc("components/assistant-ui/compaction-notice.tsx");
-  const thread = readSrc("components/assistant-ui/thread.tsx");
   // Read off metadata.custom so it can never become part of the conversation.
-  assert.match(thread, /custom\?\.contextTruncation/);
-  assert.match(thread, /<CompactionNotice truncation=\{contextTruncation\}/);
-  assert.match(notice, /This conversation got long, so it was compacted/);
+  assert.match(THREAD, /custom\?\.contextTruncation/);
+  assert.match(THREAD, /<CompactionNotice truncation=\{contextTruncation\}/);
+  assert.match(COMPACTION_NOTICE, /This conversation got long, so it was compacted/);
 });
 
 test("the compaction notice is gated on the eviction boundary MOVING", () => {
-  const thread = readSrc("components/assistant-ui/thread.tsx");
   // Every request after the window fills runs the fit, so "this turn compacted" puts a
   // notice on every reply. The trigger is dropped_messages rising above the last turn
   // that reported it: more of the conversation actually leaving the context.
-  assert.match(thread, /const showsNotice = useAuiState/);
-  assert.match(thread, /contextTruncation && showsNotice && !isEditing/);
-  assert.match(thread, /dropped > previousDropped/);
+  assert.match(THREAD, /const showsNotice = useAuiState/);
+  assert.match(THREAD, /contextTruncation && showsNotice && !isEditing/);
+  assert.match(THREAD, /dropped > previousDropped/);
   // Walked in order, not against the preceding message: turns between two moves report
   // the same count and must not reset the baseline.
-  assert.match(thread, /for \(const message of thread\.messages\)/);
+  assert.match(THREAD, /for \(const message of thread\.messages\)/);
 });
 
 // The gate is a pure function of the thread's persisted truncation counts, so it can be
@@ -279,17 +279,15 @@ const functionBody = (source: string, name: string): string => {
 };
 
 test("the notice is a NOTICE, never part of the conversation", () => {
-  const thread = readSrc("components/assistant-ui/thread.tsx");
-  const adapter = readSrc("features/chat/api/chat-adapter.ts");
   const exporter = readSrc("features/chat/utils/conversation-markdown-export.ts");
 
   // 1. A sibling of the rendered content parts, not one of them: inside
   //    MessagePrimitive.Parts everything that walks parts would pick it up.
-  const noticeAt = thread.indexOf("<CompactionNotice");
-  const partsAt = thread.indexOf("<MessagePrimitive.Parts", noticeAt);
+  const noticeAt = THREAD.indexOf("<CompactionNotice");
+  const partsAt = THREAD.indexOf("<MessagePrimitive.Parts", noticeAt);
   assert.ok(noticeAt > 0 && partsAt > noticeAt);
   assert.ok(
-    !/<MessagePrimitive\.Parts[^>]*>[\s\S]*<CompactionNotice/.test(thread),
+    !/<MessagePrimitive\.Parts[^>]*>[\s\S]*<CompactionNotice/.test(THREAD),
     "the notice must not be rendered inside the message's content parts",
   );
 
@@ -297,7 +295,7 @@ test("the notice is a NOTICE, never part of the conversation", () => {
   //    function bodies: slicing to end-of-file also catches the streaming handler,
   //    which reads contextTruncation legitimately on the way IN.
   for (const name of ["toOpenAIMessages", "serializeAssistantReplayMessages"]) {
-    const body = functionBody(adapter, name);
+    const body = functionBody(CHAT_ADAPTER, name);
     assert.ok(body.length > 0, `${name} not found`);
     assert.ok(
       !body.includes("contextTruncation"),
@@ -305,12 +303,12 @@ test("the notice is a NOTICE, never part of the conversation", () => {
     );
   }
 
-  // 3. Nor may the user-facing export, which is the other way text leaves a thread.
+  // 3. Nor may the user-facing export, which is the other way text leaves a THREAD.
   assert.ok(!exporter.includes("contextTruncation"));
   assert.ok(!exporter.includes("compacted"));
 
   // 4. Suppressed while editing, so it cannot be saved back as message text.
-  assert.match(thread, /contextTruncation && showsNotice && !isEditing/);
+  assert.match(THREAD, /contextTruncation && showsNotice && !isEditing/);
 });
 
 test("an irreducible fit reports a diagnosis, and it is dropped once something fits", () => {
@@ -349,45 +347,41 @@ test("an irreducible fit reports a diagnosis, and it is dropped once something f
 });
 
 test("the too-long advice depends on WHICH part does not fit", () => {
-  const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
   // Telling someone to shorten the conversation is a dead end when the history has
   // already been evicted and the single message is what overflows.
-  assert.match(adapterSource, /contextTruncation\?\.fits === false/);
-  assert.match(adapterSource, /shortening the conversation will not help/);
+  assert.match(CHAT_ADAPTER, /contextTruncation\?\.fits === false/);
+  assert.match(CHAT_ADAPTER, /shortening the conversation will not help/);
   // Matching the wire field name would pin nothing: after the floor fix its only
   // occurrence in that file is prose in a comment.
-  assert.match(adapterSource, /latestTurnOwnTokens\(irreducible\)/);
+  assert.match(CHAT_ADAPTER, /latestTurnOwnTokens\(irreducible\)/);
 });
 
 test("a fits:false diagnosis is not a compaction", () => {
-  const source = readSrc("features/chat/api/chat-adapter.ts");
   // The fitter returned the ORIGINAL messages with dropped_messages 0, so "older turns
   // were removed" is untrue, and toasting it burns the once-per-thread flag. Asserted on
   // the predicate rather than the literal expression, so it survives a rewording.
-  assert.match(source, /const reallyCompacted = promptWasShortened\(/);
+  assert.match(CHAT_ADAPTER, /const reallyCompacted = promptWasShortened\(/);
   assert.equal(promptWasShortened({ dropped_messages: 0, fits: false }), false);
 });
 
 test("the advice depends on WHOSE turn does not fit", () => {
-  const source = readSrc("features/chat/api/chat-adapter.ts");
   // A tool loop refits with the tool result appended, so the offending turn is often
   // output the user never wrote and cannot edit, leaving no remedy.
-  assert.match(source, /latest_turn_role/);
-  assert.match(source, /const userCanShortenIt =/);
-  assert.match(source, /The last tool result is/);
+  assert.match(CHAT_ADAPTER, /latest_turn_role/);
+  assert.match(CHAT_ADAPTER, /const userCanShortenIt =/);
+  assert.match(CHAT_ADAPTER, /The last tool result is/);
   // The user-authored case keeps its advice, and an older server that sends no role
   // still gets it (the default is "user").
-  assert.match(source, /latest_turn_role \?\? "user"/);
-  assert.match(source, /Shorten this message/);
+  assert.match(CHAT_ADAPTER, /latest_turn_role \?\? "user"/);
+  assert.match(CHAT_ADAPTER, /Shorten this message/);
 });
 
 test("the too-long check uses the prompt budget, not the raw window", () => {
-  const source = readSrc("features/chat/api/chat-adapter.ts");
   // The fit reserves up to a quarter of the window for the reply, so a 3,500-token
   // message cannot fit a 4,096-token context. The raw window would blame the
   // conversation and send the user to a new chat that fails identically.
-  assert.match(source, /irreducible\?\.prompt_target \?\? irreducible\?\.context_length/);
+  assert.match(CHAT_ADAPTER, /irreducible\?\.prompt_target \?\? irreducible\?\.context_length/);
   // Still measured against the budget, but through the helper that takes the prompt's
   // shared floor off the turn first.
-  assert.match(source, /latestTurnIsTheProblem\(\s*irreducible,\s*budget,?\s*\)/);
+  assert.match(CHAT_ADAPTER, /latestTurnIsTheProblem\(\s*irreducible,\s*budget,?\s*\)/);
 });

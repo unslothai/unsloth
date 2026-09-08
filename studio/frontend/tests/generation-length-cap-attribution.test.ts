@@ -9,6 +9,8 @@ import { maxTokensIsTheLimit } from "../src/features/chat/api/generation-length.
 
 import { readSrc } from "./helpers/kit.ts";
 
+const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+
 // Hoisted: biome's useTopLevelRegex flags a literal recompiled per call.
 const LOCAL_WINDOW_ARGUMENT =
   /isExternalRequest\s*\n\s*\? null\s*\n\s*: \(runtime\.loadedCustomContextLength \?\?\s*\n\s*runtime\.loadedContextLength \?\?\s*\n\s*\(params\.maxSeqLength \|\| null\)\)/;
@@ -97,16 +99,14 @@ test("a local model with no GGUF window still reports one", () => {
     false,
   );
 
-  const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  assert.match(adapter, LOCAL_WINDOW_ARGUMENT);
+  assert.match(CHAT_ADAPTER, LOCAL_WINDOW_ARGUMENT);
 });
 
 test("a pending Context Length edit does not decide what stopped the generation", () => {
   // Typing 8192 into the field while the model still serves at 4096 would make the
   // 4096 stop look user-imposed, and the advice would be to raise Max Tokens rather
   // than to reload at the larger context.
-  const adapter = readSrc("features/chat/api/chat-adapter.ts");
 
-  assert.match(adapter, LOCAL_WINDOW_ARGUMENT);
-  assert.doesNotMatch(adapter, PENDING_FIELD);
+  assert.match(CHAT_ADAPTER, LOCAL_WINDOW_ARGUMENT);
+  assert.doesNotMatch(CHAT_ADAPTER, PENDING_FIELD);
 });
