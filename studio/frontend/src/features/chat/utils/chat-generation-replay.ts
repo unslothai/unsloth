@@ -140,7 +140,7 @@ export function createRecoveryReplay(
   // What the deltas themselves mint. `mintStreamedToolCallId` is deterministic, so a reload
   // replaying the same frames draws the same card and the prefix compare still matches.
   const reserved = new Set<string>(parts.map((part) => part.toolCallId ?? ""));
-// The slot lookups read only `toolCallId` and `_delta_index`, neither of which a seeded image or
+  // The slot lookups read only `toolCallId` and `_delta_index`, neither of which a seeded image or
   // source part carries: an absent id is exactly how such a part says "no slot claimed" to them, so
   // the array is handed over under the narrower type they ask for rather than every part pretending
   // to be a call.
@@ -340,7 +340,6 @@ export function createRecoveryReplay(
     const part = parts[existingIndex];
     const streamed = liveOutput.get(String(part.toolCallId ?? id));
     const result = event.result;
-    // A longer captured stream beats the model-visible result, which is the live path's rule too.
     const fuller =
       streamed !== undefined && typeof result === "string"
         ? preferFullToolOutput(streamed, result)
@@ -446,8 +445,7 @@ export function createRecoveryReplay(
     for (let index = 0; index < boundaries.length; index += 1) {
       assembled.push(...runs[index]);
       while (
-        next < 
-positioned.length &&
+        next < positioned.length &&
         positioned[next].cursor === boundaries[index]
       ) {
         assembled.push(positioned[next].part);
