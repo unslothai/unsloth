@@ -135,7 +135,9 @@ ALLOWED_PINVOKES = {
 # stop covering install.ps1 the moment it stopped compiling.
 def _native_imports(text: str) -> set:
     imported = set()
-    for match in re.finditer(r"DllImport\(\"[^\"]+\"[^)]*\)\][^;{]*?extern\s+[\w.\[\]]+\s+(\w+)", text):
+    for match in re.finditer(
+        r"DllImport\(\"[^\"]+\"[^)]*\)\][^;{]*?extern\s+[\w.\[\]]+\s+(\w+)", text
+    ):
         imported.add(match.group(1))
     # install.ps1's multi-line declarations put the parameter list on later lines.
     for match in re.finditer(r"extern\s+[\w.<>\[\]]+\s+(\w+)\s*\(", text):
@@ -234,16 +236,18 @@ def test_the_installer_never_runs_the_c_sharp_compiler() -> None:
         "install.ps1 compiles C# again. The desktop path must stay csc.exe-free; define native "
         "methods with DefinePInvokeMethod instead."
     )
-    assert "DefinePInvokeMethod" in text, "install.ps1 no longer emits its native imports; update this guard"
+    assert (
+        "DefinePInvokeMethod" in text
+    ), "install.ps1 no longer emits its native imports; update this guard"
     # The private-%TEMP% retry is gone with it. Redirecting TEMP to compile again after a block
     # cannot beat a filter driver, and "blocked writing an executable to TEMP, change TEMP, write
     # it again" is itself an evasion heuristic. Scoped to the resolver: Initialize-StudioTempEnvironment
     # legitimately redirects an unusable inherited TEMP, and that is a different thing.
     start = text.index("function Initialize-StudioFinalPathNativeType")
     body = text[start : text.index("\n    function ", start + 1)]
-    assert "$env:TMP" not in body and "$env:TEMP" not in body, (
-        "the native resolver touches the temporary directory again; it should need nothing there"
-    )
+    assert (
+        "$env:TMP" not in body and "$env:TEMP" not in body
+    ), "the native resolver touches the temporary directory again; it should need nothing there"
 
 
 def test_the_native_resolver_still_has_a_lexical_fallback() -> None:
@@ -255,4 +259,4 @@ def test_the_native_resolver_still_has_a_lexical_fallback() -> None:
     assert "Write-StudioFinalPathDegraded" in text
     assert "Get-StudioLexicalPath" in text
     # Constrained Language Mode forbids defining types at all, by emit as by Add-Type.
-    assert "$languageMode -ne \"FullLanguage\"" in text
+    assert '$languageMode -ne "FullLanguage"' in text

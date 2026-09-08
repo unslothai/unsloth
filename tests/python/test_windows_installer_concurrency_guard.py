@@ -84,7 +84,7 @@ _FINAL_PATH_CHAIN = (
     "Initialize-StudioTempEnvironment",
     "Write-StudioFinalPathDegraded",
     "Initialize-StudioFinalPathNativeType",
-            "Get-StudioNativeFinalPath",
+    "Get-StudioNativeFinalPath",
     "Resolve-StudioLinkTarget",
     "Get-StudioSubstTarget",
     "Get-StudioLexicalPath",
