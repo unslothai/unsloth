@@ -11222,7 +11222,14 @@ class LlamaCppBackend:
         any other notice first-notice-wins kept, is left exactly as it is. The note
         follows the message: an override on a silenced load stays in the log alone,
         exactly as it does on the main launch path.
+
+        The carve-out advice is dropped rather than re-priced: this replay launches
+        with ``--gpu-layers 0 --device none``, so no allocation holds any of the
+        weights and enlarging one would change nothing about what the user is
+        running. Here rather than at either call site, because both of them reach
+        this same state.
         """
+        self._last_carveout_advice = None
         repriced = self._launch_host_shortfall_message(
             cpu_cmd,
             (),
@@ -24379,12 +24386,6 @@ class LlamaCppBackend:
                         "The auto-selected Vulkan backend hard-crashed during "
                         "startup; retrying once with llama.cpp devices disabled."
                     )
-                    # This replay runs on the CPU, so the carve-out the advice was
-                    # priced against holds none of the weights. Advising a firmware
-                    # change for a device the model no longer touches is worse than
-                    # saying nothing. (The arch-crash retry below clears the same field
-                    # through _begin_load_warnings; this path has no such reset.)
-                    self._last_carveout_advice = None
                     if not _spawn_and_wait(replay, label = "-cpu"):
                         if _finish_cancelled_health_wait(
                             "Load cancelled during the staged CPU replay health wait"

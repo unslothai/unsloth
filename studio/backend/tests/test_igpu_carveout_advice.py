@@ -455,3 +455,22 @@ class TestThePlacementItAdvisesAbout:
         backend = self._backend(monkeypatch, probes = [], rocm_gate = False)
         backend._record_carveout_advice([0], gb(42.90))
         assert backend.last_carveout_advice is None
+
+
+class TestTheCpuOnlyReplay:
+    """A Vulkan crash replays with --gpu-layers 0 --device none."""
+
+    def test_the_advice_does_not_survive_it(self, monkeypatch):
+        # No allocation holds any of the weights after this replay, so advising a
+        # firmware change describes a device the running child never touches. Both
+        # CPU-fallback call sites reach this one function, which is why the clear
+        # lives here rather than beside either of them.
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._last_carveout_advice = {"current_gb": 32.0, "suggested_gb": 48}
+        backend._last_load_warning = None
+        monkeypatch.setattr(LlamaCppBackend, "_launch_host_shortfall_message", lambda *a, **k: None)
+        monkeypatch.setattr(LlamaCppBackend, "_record_load_warning", lambda self, msg: None)
+        backend._reprice_after_cpu_only_fallback(
+            host_msg = None, cpu_cmd = ["llama-server"], env = {}, avail_mib = 1024
+        )
+        assert backend.last_carveout_advice is None
