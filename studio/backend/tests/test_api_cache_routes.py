@@ -56,9 +56,7 @@ def test_a_purge_names_caches_by_key(monkeypatch, client):
     def fake_purge(keys):
         asked.append(list(keys))
         return {
-            "results": [
-                {"key": "uv", "freed_bytes": 10, "removed_entries": 1, "errors": []}
-            ],
+            "results": [{"key": "uv", "freed_bytes": 10, "removed_entries": 1, "errors": []}],
             "freed_bytes": 10,
             "inventory": {
                 "caches": [],

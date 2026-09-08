@@ -257,9 +257,7 @@ def test_a_purge_leaves_the_database_models_projects_and_token_alone(
     database = _write(home / "studio.db", "sqlite")
     chat_history = _write(home / "chat" / "thread.json", "hello")
     token = _write(isolated_caches / "token", "hf_secret")
-    model = _write(
-        isolated_caches / "hub" / "models--unsloth--x" / "blobs" / "abc", "weights" * 10
-    )
+    model = _write(isolated_caches / "hub" / "models--unsloth--x" / "blobs" / "abc", "weights" * 10)
     projects = tmp_path / "Projects"
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(projects))
     project_file = _write(projects / "run" / "adapter.safetensors", "lora")
@@ -409,9 +407,7 @@ def test_the_compiled_cache_is_never_swept_up_by_a_bulk_purge():
     assert "unsloth_compiled" not in bulk
 
     # ...and it is still individually purgeable, or the row would be dead.
-    entry = next(
-        e for e in inventory["caches"] if e["key"] == "unsloth_compiled"
-    )
+    entry = next(e for e in inventory["caches"] if e["key"] == "unsloth_compiled")
     assert entry["opt_in"] is True
 
 
@@ -431,9 +427,7 @@ def test_a_junctioned_cache_root_is_refused_like_a_symlink(tmp_path, monkeypatch
 
     # os.path.isjunction is the 3.12+ answer and is always False on POSIX, so
     # the platform test is what a Windows host would report here.
-    monkeypatch.setattr(
-        os.path, "isjunction", lambda path: Path(path) == junction, raising = False
-    )
+    monkeypatch.setattr(os.path, "isjunction", lambda path: Path(path) == junction, raising = False)
     assert not junction.is_symlink()
 
     with pytest.raises(CachePurgeRefused) as excinfo:

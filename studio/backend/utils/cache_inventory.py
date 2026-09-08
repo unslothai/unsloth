@@ -157,19 +157,16 @@ def _bun_dirs() -> list[Path]:
 
 def _hf_paths():
     from utils.hf_cache_settings import get_hf_cache_paths
-
     return get_hf_cache_paths()
 
 
 def _hf_homes() -> list[Path]:
     from utils.hf_cache_settings import known_hf_cache_homes
-
     return list(known_hf_cache_homes())
 
 
 def _hf_hub_dirs() -> list[Path]:
     from utils.hf_cache_settings import known_hf_hub_caches
-
     return list(known_hf_hub_caches())
 
 
@@ -249,7 +246,6 @@ def _vllm_dirs() -> list[Path]:
 
 def _unsloth_compiled_dirs() -> list[Path]:
     from utils.cache_cleanup import _cleanable_cache_dirs
-
     return [directory for directory, _dedicated in _cleanable_cache_dirs()]
 
 
@@ -307,9 +303,7 @@ def _purge_unsloth_compiled() -> PurgeOutcome:
                 # directory's other contents.
                 continue
             try:
-                assert_purgeable_root(
-                    directory, protected = protected, trees = trees, keep = keep
-                )
+                assert_purgeable_root(directory, protected = protected, trees = trees, keep = keep)
             except CachePurgeRefused as exc:
                 outcome.errors.append(str(exc))
                 return outcome
@@ -808,7 +802,6 @@ def cache_inventory(*, refresh: bool = False) -> dict:
 
 def _usage():
     from utils.paths.storage_roots import studio_root
-
     for candidate in (studio_root(), Path.home(), Path(os.path.abspath(os.sep))):
         try:
             return shutil.disk_usage(candidate)

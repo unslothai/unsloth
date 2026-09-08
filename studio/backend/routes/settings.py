@@ -1113,8 +1113,7 @@ def update_hugging_face_cache(
 
 @router.get("/caches", response_model = CacheInventoryResponse)
 async def get_caches(
-    refresh: bool = False,
-    current_subject: str = Depends(get_current_subject),
+    refresh: bool = False, current_subject: str = Depends(get_current_subject)
 ) -> CacheInventoryResponse:
     """Size every cache this install writes to, plus the free space around them.
 
