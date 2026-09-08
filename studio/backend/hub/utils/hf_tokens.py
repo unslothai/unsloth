@@ -131,10 +131,19 @@ class _ProbeTimedOut(Exception):
 # the asymmetry was visible: a proxy that hung denied a valid token briefly, while a proxy
 # that refused denied it for a full minute. Both mean the Hub never judged the credential.
 # Name-based rather than by class, so neither client has to be imported to classify one.
-_UNREACHABLE_EXC_NAMES = frozenset({
-    "Timeout", "ReadTimeout", "ConnectTimeout", "ConnectError", "ConnectionError",
-    "ProxyError", "NetworkError", "TransportError", "NameResolutionError",
-})
+_UNREACHABLE_EXC_NAMES = frozenset(
+    {
+        "Timeout",
+        "ReadTimeout",
+        "ConnectTimeout",
+        "ConnectError",
+        "ConnectionError",
+        "ProxyError",
+        "NetworkError",
+        "TransportError",
+        "NameResolutionError",
+    }
+)
 _UNREACHABLE_PACKAGES = frozenset({"requests", "httpx", "urllib3"})
 
 

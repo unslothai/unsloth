@@ -415,9 +415,7 @@ def test_a_scheme_less_mirror_endpoint_is_normalized(monkeypatch):
     session = _patch_auth_check_get(monkeypatch, lambda *_a, **_k: _ok_auth_check_response())
 
     assert cache_reads_authorized("hf_dummy", repo_id = "org/repo") is True
-    assert session.calls[0]["url"] == (
-        "https://hf-mirror.example/api/models/org/repo/auth-check"
-    )
+    assert session.calls[0]["url"] == ("https://hf-mirror.example/api/models/org/repo/auth-check")
 
 
 def test_a_mirror_endpoint_keeps_its_own_scheme_and_loses_a_trailing_slash(monkeypatch):
