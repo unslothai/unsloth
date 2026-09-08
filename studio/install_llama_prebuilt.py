@@ -4234,14 +4234,10 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
 def blocked_replace_hint(winerror: object, path: Path) -> str:
     """Why a replace was blocked, chosen by the error Windows actually returned.
 
-    32 (ERROR_SHARING_VIOLATION) is always a held handle, and 145 is
-    ERROR_DIR_NOT_EMPTY. 5 (ERROR_ACCESS_DENIED) is either: Defender or the
-    indexer holding a handle reports 5 too (``activate_staged_dir`` below,
-    install_node_prebuilt ``_replace_with_retry``, and ``is_busy_lock_error``
-    all treat it as busy), while broken ACLs raise it as well -- the case in
-    #9928, where ``icacls`` and ``Get-Acl`` were themselves denied on the
-    directory. So 5 names both causes and carries the repair for the second.
-    Printed, never run -- repairing permissions is the user's call.
+    32 is a held handle and 145 is ERROR_DIR_NOT_EMPTY. 5 is both: Defender and
+    the indexer report it (``activate_staged_dir``, ``is_busy_lock_error``) and so
+    do broken ACLs (#9928), so it names both causes and carries the repair for the
+    second. Printed, never run.
     """
     if winerror == 5:
         lead = (
@@ -4250,11 +4246,8 @@ def blocked_replace_hint(winerror: object, path: Path) -> str:
         )
         antivirus = "Antivirus or Controlled folder access can deny it too"
         if _is_link_or_junction(path):
-            # Same rule the copy paths follow: never dereference a linked install
-            # root. takeown /R walks through one, and icacls resolves it without /L
-            # (Microsoft: "/L performs the operation on a symbolic link instead of
-            # its destination"), so the recursive repair would rewrite permissions
-            # across a --with-llama-cpp-dir checkout this installer does not own.
+            # takeown /R walks through a linked root and icacls resolves one without
+            # /L, so the repair would rewrite a --with-llama-cpp-dir tree we do not own.
             return (
                 f"{lead}the permissions are broken on {path} or on what it links to. That "
                 f"tree is not managed here, so repair it at the source. {antivirus}"
@@ -4299,10 +4292,7 @@ def replace_with_busy_retry(
             transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
             if not transient or attempt == attempts - 1:
                 raise
-            # The hint names the tree being renamed: it exists and is where the
-            # denied ACLs live. The aside-move's dst is a freshly generated
-            # rollback path that does not exist yet, so pointing the repair at
-            # it could never unblock the rename.
+            # src, not dst: the aside-move's dst is a rollback path that does not exist yet.
             log(
                 f"rename {src.name} -> {dst.name} blocked ({exc.winerror}), retrying in "
                 f"{delay:.2f}s -- {blocked_replace_hint(exc.winerror, src)}"

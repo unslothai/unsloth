@@ -1054,11 +1054,8 @@ def test_replace_with_busy_retry_waits_out_a_transient_windows_lock(
 def test_blocked_replace_hint_offers_the_acl_repair_only_for_access_denied(tmp_path: Path):
     """Only WinError 5 carries the ACL repair, and it keeps the lock cause too.
 
-    A reporter chased a scanner that did not exist while the real cause was ACLs
-    on the install tree that denied icacls and Get-Acl themselves. The reverse is
-    just as wrong: is_busy_lock_error, activate_staged_dir and the Node installer
-    all record 5 as a held handle, so the hint must not diagnose broken ACLs and
-    send a user into takeown /R + icacls /reset /T over a transient Defender lock.
+    #9928 chased a scanner that did not exist; diagnosing broken ACLs instead is
+    the same mistake reversed, since is_busy_lock_error records 5 as a held handle.
     """
     target = tmp_path / "llama.cpp"
     target.mkdir()
@@ -1072,8 +1069,7 @@ def test_blocked_replace_hint_offers_the_acl_repair_only_for_access_denied(tmp_p
     assert "scanner" in denied
     assert f'takeown /F "{target}" /R /D Y' in denied
     assert f'icacls "{target}" /reset /T' in denied
-    # Each repair command sits on its own line so it can be pasted as-is,
-    # matching the PowerShell access-denied flow's convention.
+    # One command per line, as install.ps1 prints them: pasteable as-is.
     command_lines = [line.strip() for line in denied.splitlines()]
     assert f'takeown /F "{target}" /R /D Y' in command_lines
     assert f'icacls "{target}" /reset /T' in command_lines
@@ -1085,12 +1081,7 @@ def test_blocked_replace_hint_offers_the_acl_repair_only_for_access_denied(tmp_p
 
 
 def test_blocked_replace_hint_does_not_send_acl_repair_through_a_linked_root(tmp_path: Path):
-    """A --with-llama-cpp-dir link must not be handed a recursive ACL reset.
-
-    takeown /R walks through a linked root and icacls resolves one without /L, so
-    the printed repair would rewrite permissions across a checkout this installer
-    does not own. The copy paths already refuse to dereference a linked root.
-    """
+    """takeown /R and icacls without /L would reset the checkout behind the link."""
     external = tmp_path / "external-llama.cpp"
     external.mkdir()
     linked_root = tmp_path / "llama.cpp"
@@ -1139,9 +1130,7 @@ def test_replace_with_busy_retry_reports_denied_access_as_permissions(
     retry_lines = [line for line in logged if "blocked (5)" in line]
     assert retry_lines, logged
     assert "takeown" in retry_lines[0]
-    # The ACL hint names the tree being renamed (src). The aside-move's dst is
-    # a freshly generated path that does not exist yet, so repairing it could
-    # never unblock the rename.
+    # src, not dst: the aside-move's dst does not exist yet.
     assert f'"{source}"' in retry_lines[0]
     assert f'"{destination}"' not in retry_lines[0]
 
