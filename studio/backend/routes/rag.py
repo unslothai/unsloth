@@ -533,6 +533,7 @@ def link_kb_folder(
     return _create_linked_folder("knowledge_base", kb_id, payload)
 
 
+# Stays sync for the reason above upload_kb_document.
 @router.post("/threads/{thread_id}/documents")
 def upload_thread_document(
     thread_id: str,
@@ -582,6 +583,7 @@ def _discard_document(document_id: str) -> None:
     _remove_stored_upload(document.get("stored_path"))
 
 
+# Stays sync for the reason above upload_kb_document.
 @router.post("/projects/{project_id}/documents")
 def upload_project_document(
     project_id: str,
