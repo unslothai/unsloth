@@ -1087,7 +1087,11 @@ class _ModelDownloadProgress:
             return [base_model]
         return []
 
-    def _read(self, repo: str, gguf: bool = False) -> dict:
+    def _read(
+        self,
+        repo: str,
+        gguf: bool = False,
+    ) -> dict:
         if gguf:
             params = urlencode(
                 {"repo_id": repo, "variant": self._variant, "expected_bytes": self._expected_bytes}
