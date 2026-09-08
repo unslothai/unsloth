@@ -1,0 +1,528 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The two tool launches, now routed through the OS-isolation planner.
+
+``_python_exec`` and ``_bash_exec`` used to build their own ``popen_kwargs`` and
+call ``subprocess.Popen``. They now build a ``ToolLaunchPlan`` and spawn what the
+planner hands back, which on a host that can isolate is a bubblewrap or Seatbelt
+command and on every other host is the same argv main always ran.
+
+That "every other host" clause is the whole claim, and this machine is the right
+place to test it: bubblewrap 0.9.0 is installed and
+``kernel.apparmor_restrict_unprivileged_userns=1`` denies it the user namespace,
+so ``auto`` falls back here on every run. What the tests below pin is that the
+fallback is not merely close to main's behaviour but the same three things that
+would break silently if it were not:
+
+1. the child still lands in its own session, because every kill path in tools.py
+   is ``killpg`` based and a child sharing Unsloth's group would take the server
+   down with it on a timeout;
+2. ``_sandbox_preexec`` still runs no imports after the fork;
+3. ``PYTHONPATH``/``HOME``/``TMPDIR`` still point where ``sitecustomize.py`` and
+   the download-card flow expect them.
+
+Plus the compatibility surface: every parameter added is keyword-only and
+defaulted, and ``disable_sandbox`` keeps exactly the meaning it had.
+"""
+
+from __future__ import annotations
+
+import ast
+import inspect
+import os
+import subprocess
+import sys
+import textwrap
+
+import pytest
+
+from core.inference import os_sandbox, tools
+from core.inference.os_sandbox import (
+    PreparedSandboxLaunch,
+    SandboxUnavailableError,
+    ToolLaunchPlan,
+)
+
+_SESSION = "__LOCALID_sandbox_wiring"
+
+
+# ── backwards compatibility ───────────────────────────────────────────
+
+
+def test_execute_tool_keeps_every_parameter_it_had_in_the_same_order():
+    """A caller passing these positionally must not be silently rebound. The new
+    mode is keyword-only, which is what makes that guarantee mechanical."""
+    parameters = inspect.signature(tools.execute_tool).parameters
+    positional = [
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    ]
+    assert positional == [
+        "name",
+        "arguments",
+        "cancel_event",
+        "timeout",
+        "session_id",
+        "thread_id",
+        "rag_scope",
+        "disable_sandbox",
+        "output_callback",
+        "website_policy",
+        "conversation_branch",
+        "conversation_budget_tokens",
+        "conversation_token_counter",
+        "context_tokens",
+        "search_images",
+        "result_budget_tokens",
+    ]
+    assert parameters["tool_execution_mode"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["tool_execution_mode"].default == "auto"
+
+
+@pytest.mark.parametrize("function", [tools._python_exec, tools._bash_exec])
+def test_the_executors_take_the_mode_keyword_only_and_default_it(function):
+    parameters = inspect.signature(function).parameters
+    assert parameters["tool_execution_mode"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["tool_execution_mode"].default == "auto"
+    # Everything that existed before stays positional-or-keyword, so the four
+    # positional call sites in the tests and the loops keep working.
+    positional = [
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    ]
+    assert positional[:5] == [
+        positional[0],
+        "cancel_event",
+        "timeout",
+        "session_id",
+        "disable_sandbox",
+    ]
+
+
+def test_a_caller_that_passes_nothing_new_behaves_as_auto():
+    tools._last_tool_execution_record = None
+    assert "2" in tools._python_exec("print(1 + 1)", None, 60, _SESSION)
+    assert tools._last_tool_execution_record.requested_mode == "auto"
+
+
+def test_disable_sandbox_still_means_full_access():
+    """Its meaning is unchanged, and it wins over the requested mode: Full access
+    is the operator having already decided."""
+    tools._last_tool_execution_record = None
+    assert "7" in tools._python_exec("print(7)", None, 60, _SESSION, disable_sandbox = True)
+    record = tools._last_tool_execution_record
+    assert record.requested_mode == "full"
+    assert record.effective_mode == "full"
+    assert record.limitations == ("security_restrictions_disabled",)
+
+
+def test_full_access_is_not_turned_into_a_refusal_by_a_stale_required():
+    tools._last_tool_execution_record = None
+    out = tools._python_exec(
+        "print(11)", None, 60, _SESSION, disable_sandbox = True, tool_execution_mode = "required"
+    )
+    assert "11" in out
+    assert tools._last_tool_execution_record.effective_mode == "full"
+
+
+# ── auto falls back, and says so ──────────────────────────────────────
+
+
+def _fallback_host() -> bool:
+    return not os_sandbox.capability_snapshot().available
+
+
+@pytest.mark.skipif(
+    not _fallback_host(), reason = "this host can isolate, so there is no fallback to observe"
+)
+class TestAutoFallsBackOnAHostThatCannotIsolate:
+    def test_the_capability_is_unavailable_with_an_actionable_remediation(self):
+        capability = os_sandbox.capability_snapshot()
+        assert capability.available is False
+        assert capability.remediation
+        if sys.platform == "linux" and os.path.exists(
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+        ):
+            blocked = subprocess.run(
+                ["unshare", "--user", "--map-root-user", "true"],
+                stdin = subprocess.DEVNULL,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+            ).returncode != 0
+            if blocked:
+                # The condition itself, not just "it did not work": an operator
+                # can act on the profile name and cannot act on a refusal.
+                assert "apparmor_restrict_unprivileged_userns" in capability.remediation
+                assert "bwrap-userns-restrict" in capability.remediation
+
+    @pytest.mark.parametrize(
+        "run,expected",
+        [
+            (lambda: tools._python_exec("print(6 * 7)", None, 60, _SESSION), "42"),
+            (lambda: tools._bash_exec("echo 42", None, 60, _SESSION), "42"),
+        ],
+        ids = ["python", "terminal"],
+    )
+    def test_auto_refuses_nothing(self, run, expected):
+        tools._last_tool_execution_record = None
+        assert expected in run()
+        record = tools._last_tool_execution_record
+        assert record.requested_mode == "auto"
+        assert record.effective_mode == "software_safeguards"
+        assert record.os_isolation is False
+        # The software safeguards are still all there; only the OS boundary is not.
+        assert "process_guard" in record.retained_safeguards
+        assert "no_os_isolation" in record.limitations
+        # Never quietly implied: the network is not confined in either mode.
+        assert record.network_policy == "unrestricted"
+
+    def test_required_refuses_and_runs_nothing(self):
+        out = tools._python_exec(
+            "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode = "required"
+        )
+        assert "SHOULD_NOT_RUN" not in out
+        assert "OS_ISOLATION_UNAVAILABLE" in out
+        # The remediation is part of the answer: the person reading it is the one
+        # who can fix the host.
+        assert os_sandbox.capability_snapshot().remediation.split(".")[0] in out
+
+    def test_required_raises_out_of_the_planner_itself(self):
+        plan = ToolLaunchPlan(
+            argv = (sys.executable, "-c", "pass"),
+            workdir = os.getcwd(),
+            env = {},
+            requested_mode = "required",
+        )
+        with pytest.raises(SandboxUnavailableError) as excinfo:
+            os_sandbox.prepare_tool_launch(plan)
+        assert excinfo.value.remediation
+
+    def test_terminal_required_refuses_too(self):
+        out = tools._bash_exec(
+            "echo SHOULD_NOT_RUN", None, 60, _SESSION, tool_execution_mode = "required"
+        )
+        assert "SHOULD_NOT_RUN" not in out
+        assert "OS_ISOLATION_UNAVAILABLE" in out
+
+
+def test_an_unknown_mode_is_reported_rather_than_silently_downgraded():
+    out = tools._python_exec(
+        "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode = "nonsense"
+    )
+    assert "SHOULD_NOT_RUN" not in out
+    assert "nonsense" in out
+
+
+# ── the three invariants ──────────────────────────────────────────────
+
+
+def test_the_child_still_lands_in_its_own_session():
+    """Invariant 1. _capture_process_group / _kill_process_tree / _killpg_captured
+    are all killpg based, so a child sharing Unsloth's group would mean a timeout
+    signalling the server."""
+    out = tools._python_exec(
+        "import os; print('SID_MATCHES', os.getsid(0) == os.getpid())", None, 60, _SESSION
+    )
+    assert "SID_MATCHES True" in out
+    out = tools._bash_exec("ps -o sid=,pid= -p $$", None, 60, _SESSION)
+    sid, pid = out.split()[:2]
+    assert sid == pid, out
+
+
+def test_the_plan_carries_the_pre_exec_the_kill_paths_depend_on():
+    seen = []
+    real = os_sandbox.prepare_tool_launch
+
+    def capture(plan):
+        seen.append(plan)
+        return real(plan)
+
+    os_sandbox.prepare_tool_launch = capture
+    try:
+        tools._python_exec("print(1)", None, 60, _SESSION)
+        tools._bash_exec("echo 1", None, 60, _SESSION)
+        tools._python_exec("print(1)", None, 60, _SESSION, disable_sandbox = True)
+    finally:
+        os_sandbox.prepare_tool_launch = real
+    assert [plan.preexec_fn for plan in seen] == [
+        tools._sandbox_preexec,
+        tools._sandbox_preexec,
+        tools._bypass_preexec,
+    ]
+    assert [plan.execution_kind for plan in seen] == ["python", "terminal", "python"]
+
+
+def test_sandbox_preexec_runs_no_imports_after_the_fork():
+    """Invariant 2. _libc and _resource are resolved at module import precisely so
+    the forked child imports nothing; an import here can deadlock on the import
+    lock a thread held at fork time."""
+    for function in (tools._sandbox_preexec, tools._bypass_preexec):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+        offenders = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        ]
+        assert not offenders, f"{function.__name__} imports after the fork"
+
+
+@pytest.mark.parametrize("disable_sandbox", [False, True], ids = ["sandboxed", "full"])
+def test_the_environment_the_shim_depends_on_survives(disable_sandbox):
+    """Invariant 3. sandbox_site/sitecustomize.py is a PYTHONPATH startup hook, and
+    the download-card flow reads files out of the workdir HOME points at."""
+    workdir = tools._get_workdir(_SESSION)
+    out = tools._python_exec(
+        "import os\n"
+        "print('PYTHONPATH', os.environ.get('PYTHONPATH'))\n"
+        "print('HOME', os.environ.get('HOME'))\n"
+        "print('TMPDIR', os.environ.get('TMPDIR'))\n",
+        None,
+        60,
+        _SESSION,
+        disable_sandbox = disable_sandbox,
+    )
+    lines = dict(line.split(" ", 1) for line in out.splitlines() if " " in line)
+    assert tools._SANDBOX_SITE_DIR in lines["PYTHONPATH"]
+    assert lines["HOME"] == workdir
+    assert lines["TMPDIR"].startswith(workdir)
+
+
+def test_the_path_remap_shim_still_heals_an_invented_absolute_path():
+    """The visible consequence of invariant 3: a model writing to /mnt/data still
+    gets its file in the workdir and a download card for it."""
+    result = tools._python_exec(
+        "open('/mnt/data/wiring_probe.csv', 'w').write('a,b\\n')", None, 60, _SESSION
+    )
+    assert "Error" not in result
+    assert os.path.exists(os.path.join(tools._get_workdir(_SESSION), "wiring_probe.csv"))
+
+
+# ── resources the planner owns ────────────────────────────────────────
+
+
+class _Recorder:
+    """A prepared launch that reports when it was cleaned up."""
+
+    def __init__(self):
+        self.cleaned = 0
+        self.spawn_kwargs = None
+
+
+def _echoing_prepare(recorder, **overrides):
+    def prepare(plan):
+        prepared = PreparedSandboxLaunch(
+            argv = plan.argv,
+            workdir = plan.workdir,
+            env = plan.env,
+            preexec_fn = plan.preexec_fn,
+            backend = "test-double",
+            **overrides,
+        )
+        prepared.cleanup_callbacks.append(lambda: setattr(recorder, "cleaned", recorder.cleaned + 1))
+        return prepared
+
+    return prepare
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        lambda: tools._python_exec("print(1)", None, 60, _SESSION),
+        lambda: tools._bash_exec("echo 1", None, 60, _SESSION),
+    ],
+    ids = ["python", "terminal"],
+)
+def test_the_launch_is_released_when_the_process_finishes(monkeypatch, run):
+    recorder = _Recorder()
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", _echoing_prepare(recorder))
+    run()
+    assert recorder.cleaned == 1
+
+
+def test_the_launch_is_released_when_the_spawn_raises(monkeypatch):
+    recorder = _Recorder()
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", _echoing_prepare(recorder))
+
+    def explode(prepared, **kwargs):
+        raise OSError("no fork for you")
+
+    monkeypatch.setattr(os_sandbox, "spawn_prepared_launch", explode)
+    assert "no fork for you" in tools._python_exec("print(1)", None, 60, _SESSION)
+    assert recorder.cleaned == 1
+
+
+def test_the_launch_is_released_when_required_refuses(monkeypatch):
+    """Nothing is prepared in that case, so the point is that the finally block
+    does not itself raise on a launch that never existed."""
+    def refuse(plan):
+        raise SandboxUnavailableError("OS_ISOLATION_UNAVAILABLE: nope", remediation = "install it")
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", refuse)
+    out = tools._python_exec("print(1)", None, 60, _SESSION, tool_execution_mode = "required")
+    assert "install it" in out
+
+
+def test_pass_fds_and_owned_files_reach_the_spawn(monkeypatch):
+    """A backend that keeps a control descriptor open across the exec (the macOS
+    helper channel) needs both: the fd inherited, and the file object held open
+    until the process is done with it."""
+    read_fd, write_fd = os.pipe()
+    holder = os.fdopen(write_fd, "wb")
+    recorder = _Recorder()
+    monkeypatch.setattr(
+        os_sandbox,
+        "prepare_tool_launch",
+        _echoing_prepare(recorder, pass_fds = (read_fd,)),
+    )
+
+    real_spawn = os_sandbox.spawn_prepared_launch
+
+    def capture(prepared, **kwargs):
+        prepared.owned_files.append(holder)
+        recorder.spawn_kwargs = dict(kwargs)
+        return real_spawn(prepared, **kwargs)
+
+    monkeypatch.setattr(os_sandbox, "spawn_prepared_launch", capture)
+    try:
+        out = tools._python_exec(
+            f"import os; os.fstat({read_fd}); print('INHERITED')", None, 60, _SESSION
+        )
+    finally:
+        os.close(read_fd)
+    assert "INHERITED" in out, out
+    assert recorder.spawn_kwargs["pass_fds"] == (read_fd,)
+    assert recorder.spawn_kwargs["cwd"] == tools._get_workdir(_SESSION)
+    assert recorder.spawn_kwargs["close_fds"] is True
+    # Held open for the whole run, then closed by the cleanup sweep.
+    assert recorder.cleaned == 1
+    assert holder.closed
+
+
+# ── auto never fails closed, whatever the planner does ────────────────
+
+
+def test_auto_still_runs_when_the_planner_itself_breaks(monkeypatch):
+    """A backend module that is not importable on this build, a probe raising
+    something nobody anticipated: auto's promise is that the tool still runs."""
+    def explode(plan):
+        raise ImportError("no module named sandbox_linux")
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", explode)
+    tools._last_tool_execution_record = None
+    assert "5" in tools._python_exec("print(5)", None, 60, _SESSION)
+    record = tools._last_tool_execution_record
+    assert record.effective_mode == "software_safeguards"
+    assert "sandbox_planner_error" in record.limitations
+
+
+def test_full_access_keeps_its_own_label_even_when_the_planner_breaks(monkeypatch):
+    """A record saying "software safeguards" about a launch that skipped the
+    analysis and the rlimits would be a badge claiming more than the run got."""
+    def explode(plan):
+        raise RuntimeError("planner down")
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", explode)
+    tools._last_tool_execution_record = None
+    assert "9" in tools._python_exec("print(9)", None, 60, _SESSION, disable_sandbox = True)
+    record = tools._last_tool_execution_record
+    assert record.effective_mode == "full"
+    assert "security_restrictions_disabled" in record.limitations
+    assert "command_and_code_analysis" not in record.retained_safeguards
+
+
+def test_a_backend_that_drops_the_pre_exec_has_it_put_back(monkeypatch):
+    """Silent until the first timeout, and then fatal: without setsid the child
+    shares Unsloth's process group and killpg takes the server with it."""
+    def forgetful(plan):
+        return PreparedSandboxLaunch(
+            argv = plan.argv,
+            workdir = plan.workdir,
+            env = plan.env,
+            preexec_fn = None,  # the bug
+            backend = "forgetful",
+        )
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", forgetful)
+    out = tools._python_exec(
+        "import os; print('SID_MATCHES', os.getsid(0) == os.getpid())", None, 60, _SESSION
+    )
+    assert "SID_MATCHES True" in out, out
+
+
+def test_required_still_refuses_when_the_planner_itself_breaks(monkeypatch):
+    def explode(plan):
+        raise ImportError("no module named sandbox_linux")
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", explode)
+    out = tools._python_exec(
+        "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode = "required"
+    )
+    assert "SHOULD_NOT_RUN" not in out
+    assert "OS_ISOLATION_UNAVAILABLE" in out
+
+
+# ── platforms with no backend at all ──────────────────────────────────
+
+
+@pytest.mark.parametrize("platform", ["win32", "cygwin", "aix"])
+def test_a_platform_with_no_backend_gets_exactly_the_plan_it_handed_in(monkeypatch, platform):
+    """Windows and anything else keep main's behaviour byte for byte: the planner
+    returns the same argv, the same env object and the same pre-exec, so the
+    popen kwargs built from them are the ones main built."""
+    monkeypatch.setattr(sys, "platform", platform)
+
+    def marker():
+        return None
+
+    env = {"PATH": "/usr/bin"}
+    plan = ToolLaunchPlan(
+        argv = ("prog", "arg"),
+        workdir = "/work",
+        env = env,
+        preexec_fn = marker,
+        requested_mode = "auto",
+        timeout_seconds = 300,
+    )
+    prepared = os_sandbox.prepare_tool_launch(plan)
+    assert prepared.argv == plan.argv
+    assert prepared.env is env
+    assert prepared.preexec_fn is marker
+    assert prepared.workdir == "/work"
+    assert prepared.pass_fds == ()
+    assert prepared.close_fds is True
+    assert prepared.execution_record.effective_mode == "software_safeguards"
+    assert prepared.execution_record.os_isolation is False
+
+
+def test_a_platform_with_no_backend_still_refuses_in_required(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    with pytest.raises(SandboxUnavailableError):
+        os_sandbox.prepare_tool_launch(
+            ToolLaunchPlan(
+                argv = ("prog",), workdir = "/work", env = {}, requested_mode = "required"
+            )
+        )
+
+
+# ── the tool descriptions were deliberately left alone ────────────────
+
+
+def test_the_tool_descriptions_are_untouched_by_this_change():
+    """_build_sandbox_paths_note() feeds a module-level constant, so a sentence
+    about OS isolation there would have to be decided at import time -- before any
+    probe has run, and by running one it would put a bwrap launch in the import
+    path of tools.py. It would also need a matching _FULL_ACCESS_SUBSTITUTIONS
+    entry or Full access would keep advertising a sandbox it disabled. Left for a
+    change that can carry the capability into the schema per request."""
+    note = tools._build_sandbox_paths_note()
+    assert "isolation" not in note.lower()
+    # The claim that matters, and the one a new sentence would have broken: Full
+    # access still strips every sandbox claim out of the description it ships.
+    full = tools._to_full_access(
+        "Execute Python code in a sandbox and return stdout/stderr." + note, "python"
+    )
+    assert "in a sandbox" not in full
+    assert "sandbox is disabled" in full
