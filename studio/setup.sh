@@ -1158,6 +1158,28 @@ fi
 # $HOME/.unsloth/whisper.cpp -- precisely the unmarked directories every pre-marker default
 # install already carries -- so demanding a marker there would refuse to replace trees
 # Unsloth genuinely owns and break every update.
+# Nothing in the environment names the master root, but the install on disk may. A NESTED
+# portable install (`install.sh --root /data/unsloth`) keeps node/, llama.cpp/ and
+# whisper.cpp/ beside studio/, under the master root -- and every derivation of those below
+# reads UNSLOTH_HOME. A bare `bash studio/setup.sh` carries none, so the fallback chain fell
+# through to its custom-Studio-root arm and rebuilt all three natives under <root>/studio: a
+# second multi-GB copy of llama.cpp, Node and whisper.cpp, with the ones already at <root>
+# orphaned and still on the disk. Both copies stay inside the root, so this costs space and
+# correctness rather than containment. `unsloth studio update` is unaffected -- the CLI fills
+# UNSLOTH_HOME in first -- which is exactly why running the script directly was the way to
+# hit it.
+#
+# The record install.sh writes at the Studio root is the same evidence install.sh itself
+# re-adopts from, read under the same rule: absolute paths only, since a relative one would
+# resolve against whatever directory the script was invoked from, and it has to still be a
+# directory. Anything else is ignored and the old fallback chain stands.
+if [ -z "$UNSLOTH_HOME" ] && [ -f "$STUDIO_HOME/.unsloth-master-root" ]; then
+    _srr_record=$(_setup_trim_ws "$(head -n 1 "$STUDIO_HOME/.unsloth-master-root" 2>/dev/null)")
+    case "$_srr_record" in
+        /*) [ -d "$_srr_record" ] && UNSLOTH_HOME=$(_setup_abs_path "$_srr_record") ;;
+    esac
+    unset _srr_record
+fi
 _STUDIO_ROOT_IS_MASTER_ROOT=false
 if [ -n "$UNSLOTH_HOME" ]; then
     # Both sides are canonical already: _setup_abs_path resolved UNSLOTH_HOME above, and
