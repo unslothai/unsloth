@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -64,9 +65,11 @@ def python_in(directory):
 assert run("bootstrap", [sys.executable, "-m", "venv", root / "bootstrap"])
 bootstrap = python_in(root / "bootstrap")
 assert run("install-uv", [bootstrap, "-m", "pip", "install", "uv==0.11.0"])
-assert run(
-    "venv", [bootstrap, "-m", "uv", "venv", "--clear", "--python", sys.executable, root / "venv"]
-)
+# actions/setup-python ships macOS builds without --enable-loadable-sqlite-extensions, so
+# sqlite-vec cannot load and every RAG test errors. uv's managed interpreters are built with it.
+loadable = hasattr(sqlite3.connect(":memory:"), "enable_load_extension")
+interpreter = ["--python", sys.executable] if loadable else ["--managed-python", "--python", "3.12"]
+assert run("venv", [bootstrap, "-m", "uv", "venv", "--clear", *interpreter, root / "venv"])
 python = python_in(root / "venv")
 assert run(
     "dependencies",
@@ -95,8 +98,8 @@ run(
         "--basetemp",
         root / "pytest",
         "-o",
-        f"cache_dir={root/'pytest-cache'}",
-        f"--junitxml={root/'backend.xml'}",
+        f"cache_dir={root / 'pytest-cache'}",
+        f"--junitxml={root / 'backend.xml'}",
     ],
 )
 frontend = repo / "studio/frontend"

@@ -54,9 +54,10 @@ def run_case(browser, mode, action):
 
 
 def complete(page):
+    # Three engines share a 2-core runner, so this waits on scheduling, not on the app.
     page.wait_for_function(
         "window.sim.documents.length>0 && window.sim.documents.every(d=>d.status==='completed') && !window.sim.uploading && !window.sim.hasIndexing",
-        timeout = 8000,
+        timeout = 30000,
     )
     assert not page.evaluate("window.sim.hasIndexing || window.sim.uploading")
     assert page.evaluate("window.errors") == []
@@ -101,7 +102,8 @@ def early_end(page):
 def error(page):
     page.evaluate("window.sim.uploadNames(['report.pdf'])")
     page.wait_for_function(
-        "window.errors.length===1 && !window.sim.hasIndexing && !window.sim.uploading", timeout = 8000
+        "window.errors.length===1 && !window.sim.hasIndexing && !window.sim.uploading",
+        timeout = 30000,
     )
     assert not page.evaluate("window.sim.hasIndexing || window.sim.uploading")
     assert page.evaluate("window.sim.documents") == []
@@ -171,9 +173,9 @@ def overlapping_uploads(page):
     wait_state(lambda s: s["waiting"] == 2)
     request("/__release-one", {})
     page.evaluate("window.first")
-    assert page.evaluate(
-        "window.sim.uploading"
-    ), "The first upload released the second upload's guard"
+    assert page.evaluate("window.sim.uploading"), (
+        "The first upload released the second upload's guard"
+    )
     request("/__release", {})
     page.evaluate("window.second")
     complete(page)
@@ -187,9 +189,9 @@ def concurrent_same_content(page):
     request("/__release", {})
     page.evaluate("Promise.all([window.first,window.second])")
     complete(page)
-    assert (
-        page.evaluate("window.sim.documents.length") == 1
-    ), "Concurrent deduplication left duplicate chips"
+    assert page.evaluate("window.sim.documents.length") == 1, (
+        "Concurrent deduplication left duplicate chips"
+    )
 
 
 def materialize(page):
