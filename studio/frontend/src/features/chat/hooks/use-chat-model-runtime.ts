@@ -675,6 +675,9 @@ function pickOf(info: {
   };
 }
 
+// Shared across the three live useChatModelRuntime instances (chat, hub, hub gear).
+let chatEjectInFlight = false;
+
 export function useChatModelRuntime() {
   const params = useChatRuntimeStore((state) => state.params);
   const models = useChatRuntimeStore((state) => state.models);
@@ -2567,6 +2570,10 @@ export function useChatModelRuntime() {
     if (!params.checkpoint) {
       return false;
     }
+    if (chatEjectInFlight) {
+      toast.info("Wait for the model to finish unloading.");
+      return false;
+    }
     const bailIfLoading = (): boolean => {
       const runtime = useChatRuntimeStore.getState();
       if (!runtime.modelLoading && !runtime.loadingModelPick) return false;
@@ -2583,11 +2590,13 @@ export function useChatModelRuntime() {
       return true;
     }
     let lifecycleLease: ModelLifecycleLease | null = null;
+    chatEjectInFlight = true;
     try {
       // Block queue materialization before taking the confirmation snapshot, or a queue can appear
       // while the dialog is open and be stopped without the user confirming it.
       lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
       if (lifecycleLease === null) {
+        toast.info("Wait for the current model to finish loading.");
         return false;
       }
       // Ejecting tears down llama-server, so every chat stops. Same prompt, but it leaves no model
@@ -2626,6 +2635,7 @@ export function useChatModelRuntime() {
       setModelsError(message);
       return false;
     } finally {
+      chatEjectInFlight = false;
       if (lifecycleLease !== null) {
         useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
       }
