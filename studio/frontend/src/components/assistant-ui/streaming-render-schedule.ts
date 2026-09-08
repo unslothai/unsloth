@@ -107,8 +107,12 @@ const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\\]){1,999}\]:/;
 // LINK_DEFINITION_RE, not written out again, so the key can never see fewer
 // definitions than the parity does: matching per line missed a label that spans
 // lines, and the key collapsed to a constant that no resolved definition moved.
+// The destination is what has to be in the key -- it is what turns a definition
+// valid -- and Marked reads it after an optional line break, `\]: *(?:\n[ \t]*)?`,
+// so the key follows it there. Text that is not a destination gets read in too
+// and costs a remount; missing one leaves a rendered reference literal.
 const LINK_DEFINITION_KEY_RE = new RegExp(
-  `${LINK_DEFINITION_RE.source}[^\\n]*`,
+  `${LINK_DEFINITION_RE.source}[ \\t]*(?:\\n[ \\t]*)?[^\\n]*`,
   "g",
 );
 const LINK_REFERENCE_RE =

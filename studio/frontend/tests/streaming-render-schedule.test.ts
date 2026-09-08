@@ -195,19 +195,26 @@ test("link references and definitions stay in one rendered document", () => {
   );
 });
 
+// Every definition Marked registers has to move the render key when its
+// destination arrives, or the reference that was rendered before it stays
+// literal. The labels sweep the two shapes this probe used to miss, and the
+// separators sweep both places Marked accepts the destination.
 test("a definition that spans lines still moves the render key", () => {
   const usage = `Before [reference][foo bar].\n\n${paragraphs(20)}`;
 
   for (const label of ["foo", "x".repeat(250), "foo\nbar"]) {
-    const partial = `${usage}[${label}]: `;
-    const complete = `${partial}https://example.com/reference`;
+    for (const separator of [" ", "\n  "]) {
+      const partial = `${usage}[${label}]:${separator}`;
+      const complete = `${partial}https://example.com/reference`;
+      const shape = JSON.stringify(`[${label}]:${separator}`);
 
-    assert.equal(markdownRenderScope(complete), "document", label);
-    assert.notEqual(
-      markdownRenderKey(partial),
-      markdownRenderKey(complete),
-      `render key did not move for ${JSON.stringify(label)}`,
-    );
+      assert.equal(markdownRenderScope(complete), "document", shape);
+      assert.notEqual(
+        markdownRenderKey(partial),
+        markdownRenderKey(complete),
+        `render key did not move for ${shape}`,
+      );
+    }
   }
 });
 
