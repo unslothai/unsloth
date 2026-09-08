@@ -3071,13 +3071,7 @@ class TestOpenAICompatibilityHelpers:
     def test_completion_stream_monitor_reads_usage_before_client_strip(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/completions",
-            method = "POST",
-            model = "m",
-            prompt = "hi",
-            context_length = 100,
-        )
+        monitor_id = _monitor_entry(monitor, endpoint = "/v1/completions", model = "m", context_length = 100)
         event = (
             b'data: {"id":"chatcmpl-test","choices":[{"text":"done","finish_reason":"stop"}],'
             b'"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10}}\n'
@@ -3444,6 +3438,19 @@ from routes.inference import (  # noqa: E402
     _drop_empty_assistant_sentinels,
     _openai_messages_for_gguf_chat,
 )
+
+
+def _monitor_entry(monitor, **overrides):
+    """monitor.start with the chat-completions defaults the tests below repeat verbatim."""
+    kwargs = {
+        "endpoint": "/v1/chat/completions",
+        "method": "POST",
+        "model": "gguf",
+        "prompt": "hi",
+    }
+    kwargs.update(overrides)
+    return monitor.start(**kwargs)
+
 
 
 class TestDropEmptyAssistantSentinels:
@@ -5784,12 +5791,7 @@ class TestApiMonitorProviderAndCompletionStreams:
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
         monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         payload = ChatCompletionRequest(
             model = "default",
             messages = [ChatMessage(role = "user", content = "hi")],
@@ -5905,12 +5907,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
@@ -5960,12 +5957,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
@@ -6021,12 +6013,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(
@@ -6081,12 +6068,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
@@ -6123,12 +6105,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
@@ -6168,12 +6145,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
@@ -6230,12 +6202,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
@@ -6309,12 +6276,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
@@ -6402,12 +6364,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
@@ -6473,12 +6430,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
@@ -6541,12 +6493,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
@@ -6606,12 +6553,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
@@ -7145,12 +7087,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_monitor_openai_chunk_records_all_choice_replies(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor, endpoint = "/v1/completions")
 
         _monitor_openai_chunk(
             monitor_id,
@@ -7177,12 +7114,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_monitor_openai_chunk_records_tool_call_reply(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
 
         _monitor_openai_chunk(
             monitor_id,
@@ -7228,12 +7160,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_joins_fragmented_name_and_arguments(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         for tool_call in [
             {
                 "index": 0,
@@ -7259,12 +7186,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_replaces_cumulative_names(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         for name, arguments in [("web", None), ("web_search", "{}")]:
             _monitor_openai_chunk(
                 monitor_id,
@@ -7296,12 +7218,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_serializes_structured_arguments(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         _monitor_openai_chunk(
             monitor_id,
             {
@@ -7337,12 +7254,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_legacy_function_monitor_joins_name_and_arguments(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         for function_call in [
             {"name": "look", "arguments": '{"query":'},
             {"name": "up", "arguments": '"weather"}'},
@@ -7363,12 +7275,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_keeps_interleaved_indexes_separate(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         deltas = [
             {"index": 0, "id": "call-a", "function": {"name": "alpha", "arguments": '{"a":'}},
             {"index": 1, "id": "call-b", "function": {"name": "beta", "arguments": '{"b":'}},
@@ -7394,12 +7301,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_routes_bare_fragments_to_latest_call(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         deltas = [
             {"index": 0, "function": {"name": "alpha", "arguments": '{"a":'}},
             {"index": 1, "function": {"name": "beta", "arguments": '{"b":'}},
@@ -7426,12 +7328,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_keeps_choice_indexes_separate(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         chunks = [
             (0, {"index": 0, "id": "shared-id", "function": {"name": "alpha", "arguments": "{"}}),
             (1, {"index": 0, "id": "shared-id", "function": {"name": "beta", "arguments": "{"}}),
@@ -7473,12 +7370,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_uses_ids_when_indexes_are_reused_or_omitted(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         deltas = [
             {"index": 0, "id": "call-a", "function": {"name": "alpha", "arguments": '{"a":'}},
             {"index": 0, "id": "call-b", "function": {"name": "beta", "arguments": '{"b":'}},
@@ -7504,12 +7396,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_separates_duplicate_ids_by_explicit_index(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         for tool_call in [
             {
                 "index": 0,
@@ -7541,12 +7428,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_terminal_cleanup_is_request_local(self, monkeypatch, terminal):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        first_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "first",
-        )
+        first_id = _monitor_entry(monitor, prompt = "first")
         _monitor_openai_chunk(
             first_id,
             {
@@ -7572,12 +7454,7 @@ class TestApiMonitorProviderAndCompletionStreams:
         else:
             monitor.finish(first_id, "cancelled" if terminal == "cancelled" else "completed")
 
-        second_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "second",
-        )
+        second_id = _monitor_entry(monitor, prompt = "second")
         _monitor_openai_chunk(
             second_id,
             {
@@ -7604,12 +7481,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_non_tool_monitor_content_is_unchanged(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         for content in ["hel", "lo"]:
             _monitor_openai_chunk(
                 monitor_id,
@@ -7636,12 +7508,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     ):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         text = "Done." if tool_first else "Checking:"
         text_chunk = {"choices": [{"index": 0, "delta": {"content": text}}]}
         tool_chunk = {
@@ -7673,12 +7540,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_keeps_final_text_after_pending_tool(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         _monitor_openai_chunk(
             monitor_id,
             {
@@ -7722,12 +7584,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_flushes_scalar_call_before_terminal_content(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         _monitor_openai_chunk(
             monitor_id,
             {
@@ -7766,12 +7623,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_keeps_incomplete_call_across_content(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         chunks = [
             {
                 "choices": [
@@ -7818,12 +7670,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_flushes_on_tool_event_boundary(self, monkeypatch, arguments):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         chunks = [
             {
                 "choices": [
@@ -7856,12 +7703,7 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_streamed_tool_monitor_bounds_pending_preview_state(self, monkeypatch):
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "gguf",
-            prompt = "hi",
-        )
+        monitor_id = _monitor_entry(monitor)
         for index in range(70):
             _monitor_openai_chunk(
                 monitor_id,
@@ -7987,12 +7829,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             payload = ChatCompletionRequest(
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
@@ -8070,12 +7907,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 effective_parallel_slots = 1,
                 _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
             )
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
 
             with pytest.raises(asyncio.CancelledError):
                 await _openai_passthrough_stream(
@@ -8246,12 +8078,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 "_openai_passthrough_stream_admitted",
                 fake_admitted,
             )
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
 
             queue = get_llama_admission_queue("http://llama.test")
             blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
@@ -8450,12 +8277,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.01")
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_openai_passthrough_stream_admitted", fail_admitted)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
 
             queue = get_llama_admission_queue("http://llama.test")
             blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
@@ -8625,12 +8447,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             cancel_event.set()
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             payload = ChatCompletionRequest(
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
@@ -8678,12 +8495,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 "_openai_passthrough_non_streaming_upstream",
                 fail_upstream,
             )
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             payload = ChatCompletionRequest(
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
@@ -8729,12 +8541,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 "nonstreaming_client",
                 lambda: CancellingAsyncClient(),
             )
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             payload = ChatCompletionRequest(
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
@@ -8794,12 +8601,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 "_cancelable_nonstreaming_client",
                 lambda: client,
             )
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             cancel_event = threading.Event()
             payload = ChatCompletionRequest(
                 model = "default",
@@ -8958,12 +8760,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 "_cancelable_nonstreaming_client",
                 lambda: client,
             )
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             cancel_event = threading.Event()
             payload = ChatCompletionRequest(
                 model = "default",
@@ -9032,12 +8829,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     )
 
             monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
@@ -9118,12 +8910,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 "nonstreaming_client",
                 lambda: FakeNonStreamingClient(),
             )
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             payload = ChatCompletionRequest(
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
@@ -9204,12 +8991,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             payload = ChatCompletionRequest(
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
@@ -9274,12 +9056,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             payload = ChatCompletionRequest(
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
@@ -9337,12 +9114,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor)
             payload = ChatCompletionRequest(
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
@@ -10106,12 +9878,7 @@ class TestResponsesChatTemplateKwargs:
             queue = get_llama_admission_queue("http://llama.responses.test")
             blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
             assert blocker is not None
-            monitor_id = monitor.start(
-                endpoint = "/v1/responses",
-                method = "POST",
-                model = "qwen-local",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor, endpoint = "/v1/responses", model = "qwen-local")
             payload = ResponsesRequest(model = "qwen-local", input = "hi", stream = True)
 
             response = await _responses_stream(
@@ -10159,12 +9926,7 @@ class TestResponsesChatTemplateKwargs:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fail_send)
-            monitor_id = monitor.start(
-                endpoint = "/v1/responses",
-                method = "POST",
-                model = "qwen-local",
-                prompt = "hi",
-            )
+            monitor_id = _monitor_entry(monitor, endpoint = "/v1/responses", model = "qwen-local")
             payload = ResponsesRequest(model = "qwen-local", input = "hi", stream = True)
 
             response = await _responses_stream(
