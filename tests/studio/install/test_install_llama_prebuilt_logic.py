@@ -92,11 +92,9 @@ def release_plan(
 
 
 def asset_choice(**overrides) -> AssetChoice:
-    """The b9001 linux-cpu upstream asset; `overrides` swaps any field.
-
-    A `name` override re-derives `url` as https://example.com/<name>, so only assets
-    whose URL must differ from their name pass one explicitly.
-    """
+    """The b9001 linux-cpu upstream asset; `overrides` swaps any field. A `name`
+    override re-derives `url` as https://example.com/<name>, so pass `url` explicitly
+    only when it must differ."""
     name = overrides.pop("name", "llama-b9001-bin-ubuntu-x64.tar.gz")
     defaults = dict(
         repo = "unslothai/llama.cpp",
@@ -128,11 +126,9 @@ def release_checksums(
     source_commit: str | None = "deadbeef",
     source_sha256: str = "b" * 64,
 ) -> ApprovedReleaseChecksums:
-    """Approved checksums for one unslothai/llama.cpp release.
-
-    Holds the upstream source archive plus one entry per (asset_name, sha256, origin);
-    source_commit = None means "no source archive approved" and drops that entry.
-    """
+    """Approved checksums for one unslothai/llama.cpp release: the upstream source
+    archive plus one entry per (asset_name, sha256, origin). source_commit = None
+    means "no source archive approved" and drops that entry."""
     artifacts = {}
     if source_commit is not None:
         logical = source_archive_logical_name(upstream_tag)
@@ -240,10 +236,9 @@ def approved_checksums_for(
     )
 
 
-# The extract_archive guard tests (safe symlink chain / hardlink, absolute or
-# escaping or unresolved symlink targets, zip symlink entries) moved verbatim
-# to tests/studio/install/test_prebuilt_core.py: extract_archive is the shared
-# prebuilt_core implementation, re-exported by this installer.
+# The extract_archive guard tests (safe symlink chain / hardlink, absolute, escaping
+# or unresolved symlink targets, zip symlink entries) moved verbatim to
+# test_prebuilt_core.py: extract_archive is the shared implementation re-exported here.
 
 
 def test_remove_agent_instruction_files_does_not_follow_links(tmp_path: Path):
@@ -975,10 +970,9 @@ def _fail_activation_then_restore_rename(
 def test_activate_install_tree_reports_a_recovery_disk_full_as_out_of_space(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_copy_error
 ):
-    """The copy back is the first step of this path that needs free space -- every
-    step before it renames or deletes -- so a full disk can show up there and
-    nowhere else. Dropping it would leave the caller starting a source build that
-    needs far more room than the copy that just failed."""
+    """The copy back is the first step here that needs free space -- everything before
+    it renames or deletes -- so a full disk shows up there and nowhere else. Dropping
+    it would start a source build needing far more room than the copy that failed."""
     install_dir, staging_dir = _fail_activation_then_restore_rename(
         tmp_path, monkeypatch, make_copy_error()
     )
@@ -1326,10 +1320,9 @@ def test_retention_keeps_a_known_good_install_over_an_unvalidated_one(
 ):
     """Two failed updates in a row must not trade the last good install for a stub.
 
-    Attempt 1 leaves a tree at install_dir that is not a usable install and that
-    cleanup cannot remove, so attempt 2 moves exactly that tree into the new
-    rollback path. Capping retention on the newer path alone would then delete
-    the only llama.cpp the user still has.
+    Attempt 1 leaves an unusable tree at install_dir that cleanup cannot remove, so
+    attempt 2 moves exactly that tree into the new rollback path. Capping retention on
+    the newer path alone would delete the only llama.cpp the user still has.
     """
     good = b"GOOD-LLAMA-CPP\n"
     install_dir = tmp_path / "llama.cpp"
@@ -1475,12 +1468,11 @@ def test_prune_stale_install_side_paths_ignores_another_installs_side_paths(tmp_
 
 
 def test_prune_stale_install_side_paths_ignores_a_sibling_named_like_a_side_path(tmp_path: Path):
-    # Two installs in one parent share a .staging root but hold *different*
-    # locks, since install_lock_path keys on the directory name. glob.escape
-    # only neutralises * ? and [, so "<name>.rollback-*" can still run past the
-    # end of <name> into a sibling called "<name>.rollback-special": updating
-    # the first install would delete that sibling's retained rollback tree,
-    # possibly its last copy, along with its live staging dir.
+    # Two installs in one parent share a .staging root but hold *different* locks,
+    # since install_lock_path keys on the directory name. glob.escape neutralises
+    # only * ? and [, so "<name>.rollback-*" can run past <name> into a sibling
+    # "<name>.rollback-special", deleting its retained rollback tree (possibly its
+    # last copy) and its live staging dir.
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     sibling = tmp_path / "llama.cpp.rollback-special"
@@ -1573,10 +1565,9 @@ def test_remove_tree_logged_leaves_posix_directory_modes_alone(tmp_path: Path):
     try:
         with pytest.raises(OSError):
             remove_tree_logged(tree, "unreadable tree")
-        # S_IWRITE is an assignment, not a bit clear, so a handler here would
-        # leave the directory at 0o200 and harder to delete by hand. On POSIX
-        # the unlink permission lives on the parent anyway, so a chmod of this
-        # entry could not have fixed anything.
+        # S_IWRITE assigns rather than clears a bit, so a handler here would leave the
+        # directory at 0o200 and harder to delete by hand. On POSIX the unlink permission
+        # lives on the parent anyway, so a chmod of this entry could not have helped.
         assert stat.S_IMODE(os.stat(unreadable).st_mode) == 0o500
     finally:
         if unreadable.exists():
@@ -2669,8 +2660,7 @@ def test_non_rocm_bundles_record_no_mapped_targets(tmp_path: Path):
 
 
 def _rocm_choice(**overrides):
-    """A published ROCm bundle choice, the shape published_rocm_choice_for_host
-    returns."""
+    """A published ROCm bundle choice, as published_rocm_choice_for_host returns."""
     fields = dict(
         repo = "unslothai/llama.cpp",
         tag = "b10360",
@@ -2878,9 +2868,8 @@ def test_a_pair_less_reuse_does_not_invent_a_runtime_asset(tmp_path: Path):
 
 def test_marker_rewrite_preserves_arch_fields(tmp_path: Path):
     """A sync that touches other fields must not drop the arch ones (#7624).
-    sync_marker_selection reads the marker, applies a patch and writes the whole dict
-    back; a rebuild-from-known-keys implementation would strip mapped_targets on any
-    reused install, turning the gate off unnoticed."""
+    sync_marker_selection reads the marker, patches it and writes the whole dict back; a
+    rebuild-from-known-keys version would strip mapped_targets and silently kill the gate."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
@@ -3585,14 +3574,12 @@ def test_existing_install_matches_choice_fails_when_install_tree_incomplete_maco
 
 
 def test_existing_macos_install_that_cannot_load_is_not_reused(tmp_path: Path, monkeypatch):
-    """A bundle that dyld refuses must not be accepted just because its
-    fingerprint matches.
+    """A bundle that dyld refuses must not be accepted just because its fingerprint matches.
 
-    This is the path that reaches the users who matter: a bundle that cannot
-    load is usually ALREADY installed by the time the installer learns to reject
-    it, and the reuse check ran the Linux preflight only. Re-running the
-    installer then saw a matching fingerprint, kept the broken tree and failed at
-    first launch again.
+    A bundle that cannot load is usually ALREADY installed by the time the installer
+    learns to reject it, and the reuse check ran the Linux preflight only, so re-running
+    the installer saw a matching fingerprint, kept the broken tree and failed at first
+    launch again.
     """
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
@@ -4044,10 +4031,9 @@ def test_probe_rate_limit_no_longer_forces_a_source_build(tmp_path, monkeypatch)
 
 def test_probe_failure_does_not_demote_to_a_lower_priority_candidate(tmp_path, monkeypatch):
     # validate_prebuilt_attempts catches Exception per candidate, so a probe download
-    # failing inside that try would read as a bad bundle and quietly install the CPU
-    # asset over the healthy GPU one -- re-downloading each time, since the thunk
-    # memoises success but not failure. Hashless attempts always validate, so the
-    # probe has to be resolved before the loop.
+    # failing inside that try would read as a bad bundle and install the CPU asset over
+    # the healthy GPU one, re-downloading each time (the thunk memoises success, not
+    # failure). Hashless attempts always validate, so resolve the probe before the loop.
     fetches = []
 
     def refuse() -> Path:
@@ -4449,13 +4435,11 @@ def test_setup_sh_starts_source_build_only_for_expected_prebuilt_exit(
 ):
     """Behavioural cover for the exit-code routing: runs the real block under bash.
 
-    The previous version of this test compared ``str.index`` offsets, which is a
-    tautology -- ``index(needle, start)`` never returns less than ``start`` -- so
-    it asserted only that three literals existed in textual order.
-
-    The PowerShell side of the same routing is covered textually by
-    test_setup_scripts_unexpected_exit_branch_never_sets_source_build, which is
-    platform independent.
+    The previous version compared ``str.index`` offsets, a tautology --
+    ``index(needle, start)`` never returns less than ``start`` -- so it asserted only
+    that three literals appeared in order. The PowerShell side is covered textually by
+    test_setup_scripts_unexpected_exit_branch_never_sets_source_build, which is platform
+    independent.
     """
     if shutil.which("bash") is None:  # pragma: no cover - CI always has bash
         pytest.skip("bash is required to exercise the setup.sh routing block")
@@ -4530,10 +4514,9 @@ def _run_setup_ps1_routing(
     )
     script_path = tmp_path / "routing.ps1"
     script_path.write_text(script, encoding = "utf-8")
-    # run_pwsh, not subprocess.run: this helper feeds every routing case below, and a pwsh
-    # killed at startup returns rc -6 with empty stdout, which the callers would compare
-    # against the bash mirror and report as setup.ps1 routing the exit code wrongly.
-    # See tests/_shared/unsloth_pwsh_runner.py.
+    # run_pwsh (see tests/_shared/unsloth_pwsh_runner.py), not subprocess.run: a pwsh killed
+    # at startup returns rc -6 with empty stdout, which callers would compare against the
+    # bash mirror and report as setup.ps1 routing the exit code wrongly.
     completed = run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
@@ -4560,15 +4543,14 @@ def _run_setup_ps1_routing(
 def test_setup_ps1_routing_matches_setup_sh(status, explicit_backend, install_exists, tmp_path):
     """Windows must route an installer exit exactly as Linux does.
 
-    The two scripts are maintained side by side and the assertions above compare their
-    SOURCE TEXT, which cannot catch a branch that reads the same and behaves differently
-    (a PowerShell `$false` string, an `exit` that does not propagate, a guard whose
-    variable was never set). Running both and comparing the decision is what makes
-    "the mirrored setup.ps1 does the same" a measurement rather than a claim.
+    The assertions above compare SOURCE TEXT, which cannot catch a branch that reads the
+    same and behaves differently (a PowerShell `$false` string, an `exit` that does not
+    propagate, a guard whose variable was never set). Running both and comparing the
+    decision makes "the mirrored setup.ps1 does the same" a measurement, not a claim.
 
-    The decision is two values: the process exit code, and whether a source build was
-    queued. Exit 5 must fail closed everywhere -- that is the point of the exit code --
-    while exit 2 stays the one automatic path allowed to fall back to a compile.
+    The decision is two values: the exit code, and whether a source build was queued.
+    Exit 5 must fail closed everywhere, while exit 2 stays the one automatic path
+    allowed to fall back to a compile.
     """
     if shutil.which("bash") is None:  # pragma: no cover - CI always has bash
         pytest.skip("bash is required to compare against the setup.sh routing block")
@@ -4657,10 +4639,9 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
 def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch, error):
     """A network problem while listing releases must ask for a source build.
 
-    The setup scripts only source build on EXIT_FALLBACK, so anything that
-    escapes as EXIT_ERROR here hard-fails the whole install for what is a
-    transient condition -- a source build clones over git, not api.github.com,
-    and succeeds while the API is rate limited.
+    The setup scripts only source build on EXIT_FALLBACK, so anything escaping as
+    EXIT_ERROR hard-fails the whole install for a transient condition. A source build
+    clones over git, not api.github.com, and succeeds while the API is rate limited.
     """
 
     def boom(*args, **kwargs):
@@ -5352,9 +5333,8 @@ def test_recorded_ggml_tree_only_for_binaries_from_that_release():
 def test_reused_install_backfills_the_ggml_tree(tmp_path):
     """An install made before ggml_tree existed must gain it on reuse.
 
-    write_prebuilt_metadata only runs on a real install, so without this the
-    marker stays tree-less forever and slim whisper pairing silently falls back
-    to the "-mix-" suffix.
+    write_prebuilt_metadata only runs on a real install, so without this the marker stays
+    tree-less forever and slim whisper pairing falls back to the "-mix-" suffix.
     """
     install_dir = tmp_path / "llama.cpp"
     (install_dir / "build" / "bin").mkdir(parents = True)
@@ -5390,10 +5370,9 @@ def test_reused_install_keeps_the_ggml_tree_when_the_release_declares_none(tmp_p
 def test_marker_sync_preserves_the_marker_mode(tmp_path, mode):
     """A shared install's marker must stay readable by everyone who could read it.
 
-    os.replace keeps the SOURCE file's mode and NamedTemporaryFile is 0600, so a
-    naive atomic refresh would leave UNSLOTH_PREBUILT_INFO.json readable only by
-    whoever ran setup -- and other users could no longer recognise or update the
-    shared installation.
+    os.replace keeps the SOURCE file's mode and NamedTemporaryFile is 0600, so a naive
+    atomic refresh would leave UNSLOTH_PREBUILT_INFO.json readable only by whoever ran
+    setup, and other users could no longer recognise or update the shared install.
     """
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
@@ -5436,9 +5415,8 @@ def test_marker_sync_leaves_a_valid_marker_intact_when_the_write_fails(tmp_path,
 def test_python_runtime_dirs_skips_an_inaccessible_glob_result(monkeypatch, tmp_path):
     """A readable site-packages root with a denied child must not abort discovery.
 
-    That is the shape of the bug this PR is about: the parent lists fine and the
-    entry underneath is denied. Guarding only the root would leave the strict
-    dedupe on the return to raise anyway.
+    The parent lists fine and the entry underneath is denied; guarding only the root
+    would leave the strict dedupe on the return to raise anyway.
     """
     root = tmp_path / "site-packages"
     good = root / "torch" / "lib"
@@ -5594,11 +5572,10 @@ def _sync_ggml_tree(install_dir, tree):
 def test_marker_sync_survives_a_read_only_marker(tmp_path, kwargs, install_kind, field, expected):
     """A shared or admin-owned install must not fail setup on a marker rewrite.
 
-    Re-recording the run's selection (force_cpu, the legacy backend field, the
-    recorded choice) happens on the existing-install reuse path. The read is
-    guarded but the write was not, so a read-only marker raised PermissionError
-    out of the helper as EXIT_ERROR -- which no longer falls back to a source
-    build, so it would abort the whole install.
+    Re-recording the run's selection (force_cpu, the legacy backend field, the recorded
+    choice) happens on the existing-install reuse path. The read was guarded, the write
+    was not, so a read-only marker raised PermissionError as EXIT_ERROR, which no longer
+    falls back to a source build and would abort the whole install.
     """
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
@@ -5651,10 +5628,9 @@ def test_marker_sync_never_fails_setup_when_the_write_cannot_land(tmp_path, monk
     assert any("WARNING" in line and "force_cpu" in line for line in logged), logged
 
 
-# The stubs above stand in for these two, so a keyword added to either reaches
-# them as a TypeError raised inside whatever assertion happened to be running.
-# `rocm_gfx` did exactly that to four tests at once. Named here so the next one
-# fails once, in this test, saying which parameter moved.
+# The stubs above stand in for these two, so a keyword added to either arrives as a
+# TypeError inside whatever assertion was running; `rocm_gfx` did that to four tests
+# at once. Named here so the next one fails once, here, saying which parameter moved.
 _VALIDATOR_KEYWORD_ONLY = {
     "validate_prebuilt_attempts": (
         "requested_tag",
@@ -5872,11 +5848,9 @@ _POST_SPLIT_WINDOWS_PAYLOAD = _PRE_SPLIT_WINDOWS_PAYLOAD + ("llama-server-impl.d
 def test_pre_split_upstream_windows_pin_is_not_forced_to_a_source_build(
     tmp_path: Path, tag: str, payload: tuple[str, ...], healthy: bool
 ):
-    """A pinned upstream tag older than b9283 ships no llama-server-impl.dll.
-
-    Requiring it unconditionally made validate_prebuilt_choice reject a valid
-    downloaded prebuilt and fall back to a costly Windows source build.
-    """
+    """A pinned upstream tag older than b9283 ships no llama-server-impl.dll; requiring
+    it made validate_prebuilt_choice reject a valid downloaded prebuilt and fall back to
+    a costly Windows source build."""
     install_dir = tmp_path / "llama.cpp"
     runtime_dir = install_dir / "build" / "bin" / "Release"
     runtime_dir.mkdir(parents = True)
