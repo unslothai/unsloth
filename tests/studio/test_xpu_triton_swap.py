@@ -85,7 +85,7 @@ def _load(
     src = STACK.read_text(encoding = "utf-8")
     # Only these helpers are needed; importing the whole module would run the installer.
     start = src.index("def _installed_torch_version_label() -> str:")
-    end = src.index("def _ensure_cpu_torch() -> None:")
+    end = src.index("def _ensure_cpu_torch() -> bool:")
     body = src[start:end]
     assert "_ensure_xpu_triton" in body, "extraction lost the swap"
     assert "_ensure_venv_pip" in body, "extraction lost the pip bootstrap"
@@ -186,6 +186,7 @@ def _load(
         "IS_MACOS": False,
         "IS_WINDOWS": False,
         "_PYTORCH_WHL_BASE": "https://download.pytorch.org/whl",
+        "_pytorch_whl_leaf_url": lambda leaf: f"https://download.pytorch.org/whl/{leaf}",
         "_install_env_for_cmd": _real_install_env_for_cmd,
         "_explicit_xpu_torch_index_url": (
             (lambda: "https://download.pytorch.org/whl/xpu") if pinned else (lambda: None)
@@ -450,7 +451,7 @@ class TestADeadDriverIsNotAFlavourMismatch:
         # Asserted on the source because _ensure_xpu_torch sits above the extracted slice: the early return must come
         # BEFORE the repair reason is set, or the repair runs anyway.
         src = STACK.read_text(encoding = "utf-8")
-        start = src.index("def _ensure_xpu_torch() -> None:")
+        start = src.index("def _ensure_xpu_torch() -> bool:")
         body = src[start : src.index("def _installed_torch_version_label", start)]
         guard = body.index("_xpu_wheel_supported_on_disk()")
         armed = body.index('_why = "torch could not be probed"')
@@ -503,18 +504,23 @@ def test_the_swap_runs_after_every_torch_migration():
     """
     import ast as _ast
 
+    def _migration_call(statement):
+        expression = statement.value if isinstance(statement, _ast.Expr) else None
+        if isinstance(statement, _ast.If) and isinstance(statement.test, _ast.UnaryOp):
+            expression = statement.test.operand
+        if isinstance(expression, _ast.Call) and isinstance(expression.func, _ast.Name):
+            return expression.func.id
+        return ""
+
     blocks = []
     for node in _ast.walk(_ast.parse(STACK.read_text(encoding = "utf-8"))):
         body = getattr(node, "body", None)
         if not isinstance(body, list):
             continue  # Lambda / IfExp carry a single expression here, not a statement list
         calls = [
-            s.value.func.id
-            for s in body
-            if isinstance(s, _ast.Expr)
-            and isinstance(s.value, _ast.Call)
-            and isinstance(s.value.func, _ast.Name)
-            and s.value.func.id.startswith("_ensure_")
+            name
+            for statement in body
+            if (name := _migration_call(statement)).startswith("_ensure_")
         ]
         if "_ensure_xpu_triton" in calls:
             blocks.append(calls)
@@ -565,7 +571,7 @@ class TestCpuRepairSeesAnXpuWheel:
         runtime_xpu = "",
     ):
         src = STACK.read_text(encoding = "utf-8")
-        start = src.index("def _ensure_cpu_torch() -> None:")
+        start = src.index("def _ensure_cpu_torch() -> bool:")
         seg = src[start : src.index("\n\ndef ", start)]
         # Read the predicate from the module source, so an edit to it is what this test sees rather than a copy that can
         # drift.
@@ -665,7 +671,7 @@ class TestCpuPinSurvivesAWedgedImport:
 
     def test_timeout_falls_through_to_the_repair(self):
         src = STACK.read_text(encoding = "utf-8")
-        start = src.index("def _ensure_cpu_torch() -> None:")
+        start = src.index("def _ensure_cpu_torch() -> bool:")
         body = src[start : src.index("\n\ndef ", start)]
         stalled = body.index("if not _ran:")
         guard = body.index("_is_gpu_torch_label(_installed_torch_label_on_disk())", stalled)
