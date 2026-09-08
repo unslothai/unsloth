@@ -131,6 +131,26 @@ class TestWriteSide:
 
 
 PWSH = shutil.which("pwsh")
+
+
+def _ps(script, timeout = 120, **kwargs):
+    """Run a PowerShell snippet and hand back the completed process."""
+    return subprocess.run(
+        [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output = True,
+        text = True,
+        timeout = timeout,
+        **kwargs,
+    )
+
+
+def _ps_ok(script, timeout = 120, **kwargs):
+    """Same, but fail the test with PowerShell's own stderr when it does not exit 0."""
+    done = _ps(script, timeout = timeout, **kwargs)
+    assert done.returncode == 0, done.stderr
+    return done
+
+
 requires_pwsh = pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
 
 
@@ -206,13 +226,7 @@ class TestReadSide:
     def _invoke(venv: pathlib.Path) -> str:
         body = _function_source(SETUP_PS1.read_text(encoding = "utf-8"), "Get-PersistedWoaTorchIndex")
         script = f"{body}\nWrite-Output (Get-PersistedWoaTorchIndex -VenvPath '{venv}')"
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         return done.stdout.strip()
 
 
@@ -252,15 +266,8 @@ class TestResolverEnvironmentRestore:
                 "} | ConvertTo-Json -Compress",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-            # The function assigns real environment variables; keep them out of the parent.
-            env = {**os.environ, "UV_OVERRIDE": "", "UV_FIND_LINKS": "", "PIP_FIND_LINKS": ""},
-        )
-        assert done.returncode == 0, done.stderr
+        # The function assigns real environment variables; keep them out of the parent.
+        done = _ps_ok(script, env = {**os.environ, "UV_OVERRIDE": "", "UV_FIND_LINKS": "", "PIP_FIND_LINKS": ""})
         return json.loads(done.stdout.strip().splitlines()[-1])
 
     @staticmethod
@@ -481,13 +488,7 @@ class TestThePublishedIndexIsTheOneTorchCameFrom:
                 'Write-Output "$leaf|$(Test-CudaFamilyLeaf $leaf)"',
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         leaf, is_cuda = done.stdout.strip().splitlines()[-1].split("|")
         assert leaf == "nvtorch_oot"
         assert is_cuda == "False", "a CUDA family leaf here would publish a wrong flavor"
@@ -701,14 +702,7 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
                 "Write-Output ($_nvidiaKinds -join ',')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-            env = {**os.environ, "UNSLOTH_LLAMA_ARM64_CUDA": value},
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script, env = {**os.environ, "UNSLOTH_LLAMA_ARM64_CUDA": value})
         assert done.stdout.strip().splitlines()[-1] == expected
 
     @requires_pwsh
@@ -727,14 +721,7 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
                     "Write-Output ($_nvidiaKinds -join ',')",
                 ]
             )
-            done = subprocess.run(
-                [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-                capture_output = True,
-                text = True,
-                timeout = 120,
-                env = {**os.environ, "UNSLOTH_LLAMA_ARM64_CUDA": value},
-            )
-            assert done.returncode == 0, done.stderr
+            done = _ps_ok(script, env = {**os.environ, "UNSLOTH_LLAMA_ARM64_CUDA": value})
             assert done.stdout.strip().splitlines()[-1] == "windows-cuda"
 
     @requires_pwsh
@@ -759,14 +746,7 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
                 "Write-Output ($_nvidiaKinds -join ' ')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-            env = {**os.environ, "UNSLOTH_LLAMA_ARM64_CUDA": value},
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script, env = {**os.environ, "UNSLOTH_LLAMA_ARM64_CUDA": value})
         return done.stdout.strip().splitlines()[-1]
 
     def test_the_cpu_fallback_is_a_real_selector_outcome(self):
@@ -839,13 +819,7 @@ class TestTheCudaWheelProbeIsNotFooled:
                 'Write-Output "[$v]"',
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         return done.stdout.strip().splitlines()[-1][1:-1]
 
     @requires_pwsh
@@ -923,13 +897,7 @@ class TestTorchaudioIsOnlyTakenAsAMatchedPair:
                 f"Write-Output (Test-WoaAudioMatchesTorch -TorchVersion '{torch_v}' -AudioVersion '{audio_v}')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         return done.stdout.strip().splitlines()[-1] == "True"
 
     @requires_pwsh
@@ -995,13 +963,7 @@ class TestPrereleasesAreOnlyForTheNightlyChannel:
                 "Write-Output ($WinArm64IndexArgs -join ' ')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         out = done.stdout.strip().splitlines()[-1]
         assert ("--prerelease=allow" in out) is expect_pre, out
         assert "unsafe-best-match" in out, "the other flags are unconditional"
@@ -1022,13 +984,7 @@ class TestPrereleasesAreOnlyForTheNightlyChannel:
                 "Write-Output \"[$($WinArm64IndexArgs -join ' ')]\"",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == "[]"
 
     def test_both_scripts_gate_on_the_same_thing(self):
@@ -1147,13 +1103,7 @@ class TestTheSuppliedPyarrowWheelIsValidated:
                 "Write-Output \"[$(Get-WoaPyarrowSource -PythonMinor '3.13')]\"",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         return done.stdout.strip().splitlines()[-1][1:-1]
 
 
@@ -1244,13 +1194,7 @@ class TestTheProbeAsksForTheInterpretersAbi:
                 f"-FreeThreaded ${str(free_threaded).lower()})",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == expected
 
     @requires_pwsh
@@ -1276,13 +1220,7 @@ class TestTheProbeAsksForTheInterpretersAbi:
                 'Write-Output "[$v]"',
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         got = done.stdout.strip().splitlines()[-1][1:-1]
         assert bool(got) is found, got
 
@@ -1322,13 +1260,7 @@ class TestTheProbeAsksForTheInterpretersAbi:
                 "Write-Output (Test-PythonFreeThreaded -PythonExe '')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.split() == ["False", "False"]
 
     @requires_pwsh
@@ -1343,13 +1275,7 @@ class TestTheProbeAsksForTheInterpretersAbi:
                 f"Write-Output (Test-PythonFreeThreaded -PythonExe '{sys.executable}')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == expected
 
 
@@ -1399,13 +1325,7 @@ class TestTheAbiReprobeFiresOnAMatchingMinor:
                 "  Write-Output 'REPROBE' } else { Write-Output 'SKIP' }",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         got = done.stdout.strip().splitlines()[-1]
         assert (got == "REPROBE") is should_reprobe, why
 
@@ -1455,13 +1375,7 @@ class TestAnExplicitPinOutranksThePersistedIndex:
                 "Write-Output $_cudaIndexUrl",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == expected, why
 
 
@@ -1489,13 +1403,7 @@ class TestTheRestoreMergesRatherThanStandsDown:
                 f"Write-Output \"[$(Get-RequirementName -Line '{line}')]\"",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == f"[{expected_name}]"
 
     def test_disjoint_files_are_both_passed_and_conflicts_are_merged(self):
@@ -1592,13 +1500,7 @@ class TestThePurgeKeepsWhatIsNotOurs:
                 f"Write-Output ('[' + $env:{var} + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         want = f"[{_native_path_value(expected)}]"
         assert done.stdout.strip().splitlines()[-1] == want, why
 
@@ -1730,13 +1632,7 @@ class TestTheWheelTagsAreMatchedAsFields:
                 f"Write-Output (Test-WoaWheelTags -Name '{name}' -PyTag '{py}' -AbiTag '{abi}')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == str(expected), why
 
 
@@ -1771,13 +1667,7 @@ class TestThePurgeNeedsAPathBoundary:
                 "Write-Output ('[' + $env:UV_FIND_LINKS + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         want = f"[{_native_path_value(expected)}]"
         assert done.stdout.strip().splitlines()[-1] == want, why
 
@@ -1831,13 +1721,7 @@ class TestAHostedDropCandidateMustMeetItsFloor:
                 f"Write-Output (Test-WoaVersionAtLeast -Version '{have}' -Floor '{floor}')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == expected, why
 
     @requires_pwsh
@@ -1871,13 +1755,7 @@ class TestAHostedDropCandidateMustMeetItsFloor:
                 "Write-Output ('[' + ($WoaOverrideLines -join '|') + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         line = done.stdout.strip().splitlines()[-1]
         assert ("xformers" in line) is dropped, f"{why}: {line}"
 
@@ -1940,13 +1818,7 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
                 f"Write-Output (Test-WoaWheelAvailable -Project 'av' -PythonMinor '{minor}' -AbiTag '{abi}')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == expected, why
 
     @requires_pwsh
@@ -1967,13 +1839,7 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
                 "Write-Output (Test-WoaWheelAvailable -Project 'av' -PythonMinor '3.13' -AbiTag 'cp313t')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == "False"
 
 
@@ -2053,13 +1919,7 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
                 ),
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         return done.stdout.strip().splitlines()[-1][1:-1]
 
     @requires_pwsh
@@ -2104,13 +1964,7 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
                 'Write-Output ("OVERRIDE=" + $env:UV_OVERRIDE)',
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         value = [line for line in done.stdout.splitlines() if line.startswith("OVERRIDE=")][-1][
             len("OVERRIDE=") :
         ].split()
@@ -2194,13 +2048,7 @@ class TestTheRecoveryPrependsRatherThanStandsDown:
                 f"Write-Output ('[' + $env:{var} + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == f"[{expected}]", why
 
 
@@ -2293,13 +2141,7 @@ class TestAWheelhouseThatIsTheStagingDirectory:
                 f"Write-Output (Test-WoaSamePath '{a}' '{b}')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == expected, why
 
     @requires_pwsh
@@ -2371,13 +2213,7 @@ class TestTheSuppliedWheelIsOpenedNotSniffed:
                 f"Write-Output (Test-ZipArchiveReadable -Path '{wheel}')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == expected, why
 
 
@@ -2442,13 +2278,7 @@ class TestAConfiguredWoaMirrorSurvivesAFreshShell:
                 "Write-Output ('[' + $WinArm64TorchIndexUrl + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == f"[{expected}]", why
 
     @requires_pwsh
@@ -2468,13 +2298,7 @@ class TestAConfiguredWoaMirrorSurvivesAFreshShell:
                 "Write-Output ('[' + $WinArm64TorchIndexUrl + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == "[]"
 
     def test_install_ps1_still_does_not_write_that_variable(self):
@@ -2569,13 +2393,7 @@ class TestAWheelhousePyarrowMustClearTheFloor:
                 "-PyTag 'cp313' -AbiTag 'cp313'))",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == expected, why
 
 
@@ -2618,13 +2436,7 @@ class TestThePrereleaseAnswerComesFromTheWheel:
         script = (
             f"$v = '{version}'\nWrite-Output ([bool]($v -match '(?i)\\d(a|b|rc)\\d|\\.dev\\d'))"
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == expected, version
 
 
@@ -2713,13 +2525,7 @@ class TestAChangedPinInvalidatesTheHandover:
                 "Write-Output ([bool]$WinArm64NoAudio)",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == expect_no_audio, why
 
 
@@ -2743,13 +2549,7 @@ class TestAnOverrideConflictCanHideInAnInclude:
                 "foreach ($x in $e) { Write-Output ($x.Line.Trim() + '|' + [System.IO.Path]::GetFileName($x.BaseDir)) }",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         return [line for line in done.stdout.strip().splitlines() if line]
 
     @requires_pwsh
@@ -2833,13 +2633,7 @@ class TestAFloorIsPep440AboutPrereleases:
                 f"Write-Output ([bool](Test-WoaVersionAtLeast -Version '{version}' -Floor '{floor}'))",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert (done.stdout.strip().splitlines()[-1] == "True") is expected, why
 
     def test_the_table_agrees_with_packaging(self):
@@ -2876,13 +2670,7 @@ class TestAFloorIsPep440AboutPrereleases:
                 "-PyTag 'cp313' -AbiTag 'cp313t'))",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert (
             done.stdout.strip() == "False"
         ), "an abi3 wheel was accepted on a free-threaded venv, where it cannot import"
@@ -2902,13 +2690,7 @@ class TestAFloorIsPep440AboutPrereleases:
                 "-PyTag 'cp313' -AbiTag 'cp313'))",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == "True"
 
 
@@ -2964,13 +2746,7 @@ class TestAFindLinksPathWithASpaceSurvivesThePurge:
                 f"Write-Output ('[' + [Environment]::GetEnvironmentVariable('{var}') + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         got = done.stdout.strip().splitlines()[-1][1:-1]
         assert got == expected.format(owned = owned), why
 
@@ -3014,13 +2790,7 @@ class TestThePipFallbackKeepsTheIndexArguments:
                 "Write-Output ('[' + ($pipArgs -join ' ') + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         got = done.stdout.strip().splitlines()[-1][1:-1]
         assert (
             "--extra-index-url https://pypi.org/simple" in got
@@ -3083,13 +2853,7 @@ class TestTheWoaIndexOutlivesTheManifest:
                 "Write-Output ('[' + (Get-WoaTorchIndexMarker) + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         got = done.stdout.strip().splitlines()[-1][1:-1]
         assert (got == url.rstrip("/")) is persisted, f"{why}: got {got!r}"
 
@@ -3109,13 +2873,7 @@ class TestTheWoaIndexOutlivesTheManifest:
                 "Write-Output ('[' + (Get-WoaTorchIndexMarker) + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == "[]"
 
     @requires_pwsh
@@ -3129,13 +2887,7 @@ class TestTheWoaIndexOutlivesTheManifest:
                 "Write-Output ('[' + (Get-WoaTorchIndexMarkerPath) + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         got = done.stdout.strip().splitlines()[-1][1:-1]
         assert got.endswith("torch-index.txt")
         assert (tmp_path / "woa").name in got, "the woa directory, not the venv"
@@ -3164,13 +2916,7 @@ class TestTheWoaIndexOutlivesTheManifest:
                 f"Save-WoaTorchIndexMarker -IndexUrl '{url}'",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         marker = tmp_path / "woa" / "torch-index.txt"
         written = marker.read_text(encoding = "utf-8") if marker.exists() else ""
         assert "s3cret" not in written, f"the marker file holds a credential: {written!r}"
@@ -3215,13 +2961,7 @@ class TestTheTorchMergeRebasesWhatItFolds:
                 "Write-Output ('<<<' + [System.IO.File]::ReadAllText($m) + '>>>')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 180,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script, timeout = 180)
         out = done.stdout
         return out[out.index("<<<") + 3 : out.rindex(">>>")]
 
@@ -3344,13 +3084,7 @@ class TestAnAnnotatedIncludeStillOpens:
                 "foreach ($x in $e) { Write-Output $x.Line.Trim() }",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         lines = [line for line in done.stdout.strip().splitlines() if line]
         assert "idna==3.10" in lines, f"{why}: the include did not open ({lines})"
 
@@ -3392,13 +3126,7 @@ class TestAnUnrecordableIndexInheritsNothing:
                 "Write-Output ('[' + (Get-WoaTorchIndexMarker) + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1][1:-1] == expect_left, why
 
     @requires_pwsh
@@ -3417,13 +3145,7 @@ class TestAnUnrecordableIndexInheritsNothing:
                 "Save-WoaTorchIndexMarker -IndexUrl 'https://mirror.corp.test/simple'",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert not (tmp_path / "woa" / "torch-index.txt").exists()
 
 
@@ -3520,13 +3242,7 @@ class TestTheMandatoryPyarrowWheelIsOpened:
                 "Write-Output ('[' + (Get-WoaPyarrowSource -PythonMinor '3.13') + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 180,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script, timeout = 180)
         assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why
 
 
@@ -3550,13 +3266,7 @@ class TestARebasedOptionPathKeepsItsQuoting:
                 "Write-Output ('[' + (Resolve-WoaOverrideLine -Line $l -BaseDir $b) + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         return done.stdout.strip().splitlines()[-1][1:-1]
 
     @requires_pwsh
@@ -3783,13 +3493,7 @@ class TestTheMarkerRecordsTheIndexActuallyUsed:
                 "Write-Output ('[' + (Get-WoaTorchIndexMarker) + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why
 
 
@@ -3898,13 +3602,7 @@ class TestThePypiPyarrowWheelIsPinnedToo:
                 "Write-Output ('[' + $pin + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 180,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script, timeout = 180)
         assert done.stdout.strip().splitlines()[-1][1:-1] == expected_pin, why
 
     def test_the_override_is_emitted_for_every_source(self):
@@ -4014,13 +3712,7 @@ class TestEveryPyarrowRouteOpensWhatItKeeps:
                 "Write-Output ('[' + [bool]$script:WoaNativeCudaTorch + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 180,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script, timeout = 180)
         assert done.stdout.strip().splitlines()[-1][1:-1] == expect_native, why
         staged = list(wheel_dir.glob("*.whl"))
         assert (
@@ -4097,13 +3789,7 @@ class TestAnExplicitPinIsPersistedWithoutAnOldRecord:
                 "Write-Output ('[' + $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why
 
 
@@ -4217,13 +3903,7 @@ class TestTheProbedCudaWheelIsWhatGetsInstalled:
                 "Write-Output ($_torchSpecs -join ' ')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1] == expected, why
 
 
@@ -4263,13 +3943,7 @@ class TestTheCompanionWheelsArePairedWithTorch:
                 f" -OtherVersion '{other_v}')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert (done.stdout.strip().splitlines()[-1] == "True") is pairs, why
 
     def test_both_companions_are_probed_as_a_pair(self):
@@ -4375,13 +4049,7 @@ class TestTheRepairPathPinsTheSameWayTheInstallDoes:
                 "Write-Output ('[' + $v + ']')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why
 
 
@@ -4453,13 +4121,7 @@ class TestTheOverrideFileDoesNotOutrankTheTorchPin:
                 "Get-Content -LiteralPath $v | ForEach-Object { Write-Output $_ }",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         out = done.stdout
         for name in expect_kept:
             assert name in out, f"{name} was dropped: {why}"
@@ -4540,13 +4202,7 @@ class TestStableCompanionsPairByReleaseLine:
                 f" -OtherVersion '{other_v}' -Project '{project}')",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         assert (done.stdout.strip().splitlines()[-1] == "True") is pairs, why
 
     def test_the_probe_passes_the_project_through(self):
@@ -4584,13 +4240,7 @@ class TestTheFilteredOverrideIsUvSafeAndShortLived:
                 "Write-Output ('TEMPS=' + ($r.Temps -join ';'))",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         out = dict(l.split("=", 1) for l in done.stdout.strip().splitlines() if "=" in l)
         assert out["TEMPS"], "the created copy is not reported, so nothing can delete it"
         assert out["TEMPS"].startswith(str(woa)), "the copy must live under the uv-safe directory"
@@ -4655,13 +4305,7 @@ class TestSetupSwapsTheOverrideAroundItsOwnTorchInstall:
                 "Get-Content -LiteralPath $r.Value | ForEach-Object { Write-Output $_ }",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         lines = [l for l in done.stdout.splitlines() if l.strip()]
         assert lines == ["pyarrow==21.0.0"], lines
 
@@ -4736,13 +4380,7 @@ class TestThePyPIProbeHonoursUvConfiguration:
             ]
         )
         (tmp_path / "proj").mkdir(exist_ok = True)
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script)
         return done.stdout.strip().splitlines()[-1]
 
     @requires_pwsh
@@ -4991,11 +4629,5 @@ class TestARedundantWheelLeavesTheManagedDirectoryToo:
                 f"Write-Output ('MANAGED=' + (Test-Path -LiteralPath '{managed / 'tiktoken-0.9.0-cp313-cp313-win_arm64.whl'}'))",
             ]
         )
-        done = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 60,
-        )
-        assert done.returncode == 0, done.stderr
+        done = _ps_ok(script, timeout = 60)
         assert "SRC=True" in done.stdout and "MANAGED=False" in done.stdout, done.stdout
