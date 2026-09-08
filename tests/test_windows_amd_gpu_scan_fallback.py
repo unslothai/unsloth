@@ -251,9 +251,19 @@ def test_installer_restores_the_private_handoff_after_setup():
     assert f"$previousRocmGfxHandoff = $env:{HANDOFF}" in src
     assert f"$env:{HANDOFF} = $previousRocmGfxHandoff" in src
     assert f"Remove-Item Env:{HANDOFF} -ErrorAction SilentlyContinue" in src
-    # Saved after the last early return, so no path skips the restore.
-    assert src.index("$previousRocmGfxHandoff") > src.index(
-        "--with-llama-cpp-dir path does not exist"
+    # No path may skip the restore. This used to be spelled "the save sits after the last
+    # early return", which was a proxy for that and only for the shape the script had then:
+    # #8066 moved the --with-llama-cpp-dir bail INSIDE the try, which satisfies the same
+    # guarantee by a stronger route and inverted the index comparison. Assert the structure
+    # the guarantee actually needs -- save, then try, with every early return between the
+    # try and the finally that restores.
+    save = src.index("$previousRocmGfxHandoff = $env:")
+    opened = src.index("\n    try {", save)
+    restore = src.index(f"$env:{HANDOFF} = $previousRocmGfxHandoff", opened)
+    bail = src.index("--with-llama-cpp-dir path does not exist", save)
+    assert save < opened < bail < restore, (
+        "an early return that can set the handoff must sit inside the try whose finally "
+        f"restores it (save={save}, try={opened}, bail={bail}, restore={restore})"
     )
 
 
@@ -543,6 +553,17 @@ def _run_handoff_lifecycle(
         "\n".join(
             [
                 "$ErrorActionPreference = 'Stop'",
+                # The block calls helpers defined elsewhere in install.ps1. Stubbed rather than
+                # sourced, because sourcing runs the whole installer; none of them decides
+                # anything this test asserts, they just have to exist. A helper added later
+                # surfaces as block_error below rather than as a silent '<never ran>'.
+                "function Get-ExpectedTorchFlavorTag { param($TorchIndexUrl, $ROCmIndexUrl) 'cpu' }",
+                "function Get-InstalledTorchVersionRaw { param($Python) '' }",
+                # ValueFromRemainingArguments so a stub does not have to track the real
+                # signature: these are called with -ForegroundColor and friends.
+                "function Write-StudioLine { param([Parameter(ValueFromRemainingArguments=$true)]$Rest) }",
+                "function Write-ApplicationControlBlocked { param([Parameter(ValueFromRemainingArguments=$true)]$Rest) }",
+                "function Exit-InstallFailure { param([Parameter(ValueFromRemainingArguments=$true)]$Rest) throw 'install failed' }",
                 # Not under test, but the shipped finally restores these too and needs them bound.
                 "$previousUnslothStudioHome = $null; $hadPreviousUnslothStudioHome = $false",
                 "$previousTauriMode = $null; $hadPreviousTauriMode = $false",
@@ -550,12 +571,27 @@ def _run_handoff_lifecycle(
                 "$previousProxyHandoff = $null; $hadPreviousProxyHandoff = $false",
                 "$UnslothProxyHandoffJson = $null",
                 "$UnslothExe = 'stub'; $studioArgs = @(); $setupExit = 0",
+                # The substituted call stands in for Invoke-ManagedUnslothCli, so the exit code
+                # it publishes has to stand in too: the block reads it straight after, and $null
+                # there means "Application Control refused the process" and aborts.
+                "$script:ManagedUnslothCliExit = 0",
+                # Inputs the shipped block reads on its way to the setup call.
+                "$PackageName = 'unsloth'; $SkipTorch = $false; $InstallerTorchTag = $null",
+                "$VenvPython = 'python'; $TorchIndexUrl = $null; $ROCmIndexUrl = $null",
+                "$VenvDir = $PSScriptRoot; $WithLlamaCppDir = $null; $StudioLocalRepo = $null",
                 "$script:SeenByChild = '<never ran>'",
+                "$script:BlockError = $null",
                 "$ROCmGfxArch = " + ("$null" if arch is None else f"'{arch}'"),
                 "try {",
                 body,
-                "} catch { }",
+                # Recorded, not swallowed. A swallowed error left every assertion reading
+                # '<never ran>', which says nothing about WHY: when #8066 grew this block from
+                # 61 lines to 197 and added a Get-ExpectedTorchFlavorTag call, four tests
+                # failed with `assert '<never ran>' == 'gfx1151'` and no hint that a helper
+                # was missing rather than the handoff being broken.
+                "} catch { $script:BlockError = $_.Exception.Message }",
                 "@{",
+                "  block_error = $script:BlockError",
                 "  seen_by_child = $script:SeenByChild",
                 "  after = $(if (Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF) { $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF } else { $null })",
                 "  after_set = [bool](Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF)",
@@ -576,7 +612,16 @@ def _run_handoff_lifecycle(
         env = env,
     )
     assert proc.returncode == 0, f"handoff block failed:\n{proc.stdout}\n{proc.stderr}"
-    return json.loads(proc.stdout)
+    out = json.loads(proc.stdout)
+    # The fails=True variant throws on purpose, to drive the finally path. Anything else
+    # means the block died before reaching the setup call, and every assertion below would
+    # then be about an environment it never touched.
+    expected = "setup exploded" if fails else None
+    assert out["block_error"] == expected, (
+        "the shipped block threw before reaching the setup call, so nothing below is about "
+        f"the handoff at all: {out['block_error']}"
+    )
+    return out
 
 
 @requires_pwsh
