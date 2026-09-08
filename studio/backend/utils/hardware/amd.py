@@ -652,6 +652,40 @@ def _kfd_topology_has_an_amd_gpu() -> bool:
     return False
 
 
+def amd_kfd_gpu_node_count() -> Optional[int]:
+    """How many AMD GPU agents KFD enumerates, or ``None`` when that cannot be read.
+
+    The ordinal space a visibility mask indexes: HIP numbers GPU agents, so the CPU node
+    every KFD topology carries is excluded twice over -- it reports ``vendor_id 0``, the
+    guard install.sh already relies on, and a ``simd_count`` of zero. A node that reports
+    no ``simd_count`` at all is counted, since dropping it would understate the bound and
+    an understated bound is what calls a valid selector a blocker. Read from
+    world-readable sysfs, so it answers on the closed-node host this module exists for.
+
+    ``None`` and 0 are both "unknown" to callers by design -- a topology that is missing,
+    unreadable, or reports no GPU bounds nothing, and treating it as a bound would make
+    every selector on the host look like it names a device that is not there.
+    """
+    nodes = "/sys/class/kfd/kfd/topology/nodes"
+    try:
+        entries = os.listdir(nodes)
+    except OSError:
+        return None
+    count = 0
+    for entry in entries:
+        try:
+            with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
+                properties = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not re.search(r"\bvendor_id\s+4098\b", properties):
+            continue
+        _simd = re.search(r"\bsimd_count\s+(\d+)\b", properties)
+        if _simd is None or int(_simd.group(1)) > 0:
+            count += 1
+    return count
+
+
 def _amd_render_node_exists() -> bool:
     """Whether any AMD render node is present at all.
 
@@ -698,8 +732,21 @@ def amd_nodes_closed_to_this_user() -> list[str]:
     return closed
 
 
+def _has_an_access_acl(path: str) -> bool:
+    """Whether ``path`` carries a POSIX access ACL, so its mode bits are the ACL mask.
+
+    Read through the xattr rather than by shelling out to ``getfacl``, which is not
+    installed everywhere this runs. False on any platform or filesystem that cannot
+    answer, which is the direction that keeps the ordinary node prescribed for.
+    """
+    try:
+        return b"system.posix_acl_access" in os.listxattr(path)
+    except (OSError, AttributeError, UnicodeDecodeError):
+        return False
+
+
 def _groups_that_own(paths: list) -> tuple:
-    """How to open ``paths``, read from the nodes: ``(joinable, unnamed_gids, no_group)``.
+    """How to open ``paths``, read from the nodes: ``(joinable, unnamed, no_group, acl)``.
 
     "render,video" is not always the right pair, and sometimes no group is the answer at
     all. Three outcomes, because they need three different repairs:
@@ -713,15 +760,25 @@ def _groups_that_own(paths: list) -> tuple:
                    6 -- so these are reported rather than prescribed.
     ``no_group``   nodes whose mode denies the group too, e.g. a udev rule leaving one
                    ``root:render 0600``. Joining render there changes nothing.
+    ``acl``        nodes carrying a POSIX access ACL, where the mode's group bits are the
+                   ACL mask and the real grant is undecidable from a stat.
 
     Best effort by construction: a node that cannot be stat'd contributes to none of the
     three rather than raising, since this runs where things are already wrong.
     """
-    joinable, unnamed, no_group = [], [], []
+    joinable, unnamed, no_group, acl = [], [], [], []
     for path in paths:
         try:
             _st = os.stat(path)
         except OSError:
+            continue
+        # acl(5): once a node carries an access ACL, the group-class bits in st_mode are
+        # the ACL MASK rather than the owning group's grant, so every reading below is of
+        # an upper bound. The mask can allow rw while the group entry denies it, and a
+        # named-group entry can grant what the mode hides. Neither is decidable without
+        # parsing the ACL, so such a node is reported rather than prescribed for.
+        if _has_an_access_acl(path):
+            acl.append(path)
             continue
         # Group read AND write: HIP and the Vulkan loader both open the node read-write,
         # which is the same bar amd_nodes_closed_to_this_user() applied to this account.
@@ -737,7 +794,7 @@ def _groups_that_own(paths: list) -> tuple:
             continue
         if name and name not in joinable:
             joinable.append(name)
-    return joinable, unnamed, no_group
+    return joinable, unnamed, no_group, acl
 
 
 def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
@@ -756,12 +813,27 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     closed = amd_nodes_closed_to_this_user()
     if not needs_kfd:
         closed = [path for path in closed if path != _KFD_NODE]
+    # A missing render node is not a permission problem and does not need a closed node to
+    # be worth saying: a container given --device /dev/kfd and not --device /dev/dri opens
+    # the one node it has, so the closed set is empty and this returned None with nothing
+    # working. Gated on the KFD topology, which is world-readable sysfs and names the
+    # vendor, so this cannot fire on a host with no AMD card -- the trap a bare
+    # "no render node" test would fall into, since every vendor's nodes live under the
+    # same glob.
+    _render_missing = not _amd_render_node_exists()
     if not closed:
+        if _render_missing and _kfd_topology_has_an_amd_gpu():
+            return (
+                "This host has an AMD GPU in the KFD topology but no AMD render node "
+                "(/dev/dri/renderD*), and ROCm and Vulkan both open one, so the device "
+                "mapping needs fixing; under Docker that is --device /dev/kfd "
+                "--device /dev/dri."
+            )
         return None
     # Claim only what the closed set actually blocks.
     blocked = "no GPU backend can use" if any(p != _KFD_NODE for p in closed) else "ROCm cannot use"
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
-    joinable, unnamed, no_group = _groups_that_own(closed)
+    joinable, unnamed, no_group, acl = _groups_that_own(closed)
     hint = (
         f"This account cannot open {', '.join(closed)}, so {blocked} the "
         f"AMD card even though the driver is loaded."
@@ -770,7 +842,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     # stat'd at all still gets the documented pair, since some advice beats none; a host
     # whose nodes were read and offer no joinable group gets the sentences below instead of
     # a command that would fail.
-    if joinable or not (unnamed or no_group):
+    if joinable or not (unnamed or no_group or acl):
         groups = joinable or ["render", "video"]
         joined = ",".join(groups)
         plural = "group" if len(groups) == 1 else "groups"
@@ -790,6 +862,12 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             f" {', '.join(no_group)} does not grant its own group read and write, so no "
             f"membership opens it: fix the udev rule or the node's permissions."
         )
+    if acl:
+        hint += (
+            f" {', '.join(acl)} carries a POSIX ACL, so the group permissions cannot be "
+            f"read from its mode: check the real grant with getfacl {acl[0]} before "
+            f"changing group membership."
+        )
     # Group membership cannot create a device node. A caller that needs /dev/kfd on a
     # host without one has a second, unrelated problem, and the sentence above is then
     # only true of the render node that was found: the DRM driver is loaded, the ROCm
@@ -803,7 +881,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     # without /dev/dri leaves the closed KFD node looking like the whole story while
     # ROCr has no render node to open. Asked whatever needs_kfd said, since a Vulkan
     # caller needs one too.
-    if not _amd_render_node_exists():
+    if _render_missing:
         hint += (
             " No AMD render node (/dev/dri/renderD*) is present either, and ROCm and "
             "Vulkan both open one, so the device mapping needs fixing too; under Docker "

@@ -3406,6 +3406,15 @@ _amd_nodes_closed_to_this_user() {
 # container given --device /dev/kfd and not --device /dev/dri passes the probe above
 # and still cannot initialise ROCm, since ROCr opens a render node to reach amdgpu;
 # docker/run.sh passes both devices for that reason, and no group creates one.
+# Whether KFD enumerates an AMD GPU node, the vendor-owned AMD-presence signal that
+# survives a host with no render node at all. vendor_id 4098 = 0x1002; the KFD CPU node
+# reports 0 and NVIDIA's open kernel module registers 4318, so this names AMD. Mirrors
+# utils/hardware/amd.py::_kfd_topology_has_an_amd_gpu.
+_kfd_topology_has_an_amd_gpu() {
+    awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
+        /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null
+}
+
 _amd_render_node_present() {
     for _arnp_node in /dev/dri/renderD*; do
         [ -e "$_arnp_node" ] || continue
@@ -3428,8 +3437,17 @@ _amd_render_node_present() {
 # "render,video" is not universally right and sometimes no group is the answer at all.
 _amd_node_repairs() {
     for _anr_node in $1; do
+        # acl(5): with an access ACL present the mode's group bits are the ACL MASK
+        # rather than the owning group's grant, so the group digit below is an upper
+        # bound and prescribing membership from it is a promise this cannot keep. ls
+        # marks such a node with a trailing "+"; getfacl is not installed everywhere
+        # this runs.
+        case "$(ls -ld "$_anr_node" 2>/dev/null | cut -c11)" in
+            +) printf 'acl:%s\n' "$_anr_node"; continue ;;
+        esac
         stat -c '%a|%G|%g|%n' "$_anr_node" 2>/dev/null || true
     done | awk -F'|' '
+        /^acl:/ { print; next }
         {
             # Group digit of the octal mode; read AND write, since HIP and the Vulkan
             # loader both open the node read-write.
@@ -5496,7 +5514,19 @@ esac
 # Suppressed by a closed /dev/kfd, not by any closed node: that node existing is the
 # evidence the kernel stack IS loaded, and is what makes this the wrong repair. A host
 # whose /dev/kfd is ABSENT while a render node is closed needs both, and gets both.
-if [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ] && \
+# Both are also gated on the route, which is the other half of moving them out of the
+# arm: the case above has arms for */cpu and */rocm*|*/gfx* and nothing else, so a CUDA
+# index used to reach neither diagnosis and must not start reaching them now.
+# _has_amd_rocm_gpu returns false on ANY host with a usable NVIDIA GPU, so on a CUDA
+# route the condition below is true for every hybrid box that also has an AMD card on
+# the bus -- and someone correctly installing CUDA wheels is not helped by being told to
+# install the ROCm kernel stack for a card this install does not use.
+case "$TORCH_INDEX_URL" in
+    */cpu|*/rocm*|*/gfx*) _amd_node_diag_route=true ;;
+    *)                    _amd_node_diag_route=false ;;
+esac
+if [ "$_amd_node_diag_route" = true ] && \
+   [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ] && \
    ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
    ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
     substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
@@ -5507,7 +5537,7 @@ fi
 # repairs this; only group membership does. Nothing else in this installer asks
 # whether the account can OPEN a node it just found (#10466). /dev/kfd alone stops
 # ROCm; a render node stops Vulkan as well, so the two are not claimed together.
-if [ -n "$_closed_amd_nodes" ]; then
+if [ "$_amd_node_diag_route" = true ] && [ -n "$_closed_amd_nodes" ]; then
     substep "An AMD GPU is present but this account cannot open its device nodes:" "$C_WARN"
     printf '%s\n' "$_closed_amd_nodes" | while IFS= read -r _n; do
         substep "  $_n"
@@ -5525,10 +5555,13 @@ if [ -n "$_closed_amd_nodes" ]; then
         | tr '\n' ',' | sed 's/,*$//')
     _closed_amd_modes=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^mode://p' \
         | tr '\n' ',' | sed 's/,*$//')
+    _closed_amd_acls=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^acl://p' \
+        | tr '\n' ',' | sed 's/,*$//')
     # The documented pair is the fallback for nodes that could not be stat'd at all, where
     # some advice beats none. A node that WAS read and offers no joinable group gets the
     # sentences below instead of a command that would fail.
-    if [ -z "$_closed_amd_groups" ] && [ -z "$_closed_amd_gids" ] && [ -z "$_closed_amd_modes" ]; then
+    if [ -z "$_closed_amd_groups" ] && [ -z "$_closed_amd_gids" ] && \
+       [ -z "$_closed_amd_modes" ] && [ -z "$_closed_amd_acls" ]; then
         _closed_amd_groups="render,video"
     fi
     if [ -n "$_closed_amd_groups" ]; then
@@ -5547,6 +5580,11 @@ if [ -n "$_closed_amd_nodes" ]; then
         substep "  $_closed_amd_modes does not grant its own group read and write, so no" "$C_WARN"
         substep "  membership opens it: fix the udev rule or the node's permissions."
     fi
+    if [ -n "$_closed_amd_acls" ]; then
+        substep "  $_closed_amd_acls carries a POSIX ACL, so the group permissions cannot" "$C_WARN"
+        substep "  be read from its mode: check the real grant with getfacl before"
+        substep "  changing group membership."
+    fi
     # The container shape of the missing-node problem: /dev/kfd mapped without
     # /dev/dri leaves the closed KFD node looking like the whole story while ROCr
     # has no render node to open, and no group creates one.
@@ -5555,6 +5593,16 @@ if [ -n "$_closed_amd_nodes" ]; then
         substep "  Vulkan both open one, so the device mapping needs fixing too; under"
         substep "  Docker that is --device /dev/kfd --device /dev/dri."
     fi
+# The same missing render node with nothing closed, which is the ordinary container shape
+# of it: --device /dev/kfd and no --device /dev/dri leaves one openable node, so the list
+# above is empty and this went unsaid. Gated on the KFD topology naming AMD rather than on
+# the glob being empty, since every vendor's render nodes live under it.
+elif [ "$_amd_node_diag_route" = true ] && [ "$OS" != "macos" ] && \
+     ! _amd_render_node_present && _kfd_topology_has_an_amd_gpu; then
+    substep "An AMD GPU is in the KFD topology but no AMD render node" "$C_WARN"
+    substep "  (/dev/dri/renderD*) is present, and ROCm and Vulkan both open one, so the"
+    substep "  device mapping needs fixing; under Docker that is --device /dev/kfd"
+    substep "  --device /dev/dri."
 fi
 
 # ── Install unsloth directly into the venv (no activation needed) ──

@@ -2058,6 +2058,11 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
     return (reason, detail) if frozen_but_measurable else ("no_gpu", None)
 
 
+# A wheel label naming another vendor's accelerator: +cu128, +xpu. Matched on the local
+# part so a version like 2.9.0 can never look like one.
+_WHEEL_LABEL_OTHER_VENDOR_RE = re.compile(r"\+[a-z]*(?:cu\d|xpu)")
+
+
 def _gpu_present_but_unusable_message(
     feature: str, verdict: Optional[tuple[Optional[str], Optional[str]]] = None
 ) -> Optional[str]:
@@ -2102,11 +2107,22 @@ def _gpu_present_but_unusable_message(
     # The label the message itself is about to print is the most direct evidence of what
     # the installed wheel is, and it is the one piece the caller has already resolved; the
     # two probes answer for the venv, which a passed-in verdict may predate.
+    _label = (detail or "").lower()
+    # Intent is the LAST resort, because it can outlive the wheel. A venv that recorded a
+    # ROCm flavor and then had a CUDA build installed over it still answers yes to
+    # _expected_rocm_flavor_was_chosen, and reading that as "the wheel targets AMD" hands a
+    # host whose real repair is reinstalling ROCm torch a message about group membership
+    # instead. The label and the live runtime describe what is installed NOW, so a label
+    # naming another vendor's accelerator settles it and intent is never consulted; a bare
+    # +cpu names no vendor, so it settles nothing and intent still gets its say.
     wheel_targets_amd = (
-        "rocm" in (detail or "").lower()
-        or "hip" in (detail or "").lower()
-        or _expected_rocm_flavor_was_chosen()
+        "rocm" in _label
+        or "hip" in _label
         or _torch_reports_a_hip_runtime()
+        or (
+            not _WHEEL_LABEL_OTHER_VENDOR_RE.search(_label)
+            and _expected_rocm_flavor_was_chosen()
+        )
     )
     amd_is_the_target = vendors == {"amd"} or wheel_targets_amd
     node_hint = None

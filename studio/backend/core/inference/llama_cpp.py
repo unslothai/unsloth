@@ -9864,13 +9864,32 @@ class LlamaCppBackend:
                 _is_vulkan or "hip" in _backends or not _backends
             )
 
+            # The ordinal space the three device lists index, so an entry can be checked
+            # against something rather than only read. None on any host whose KFD topology
+            # cannot be read, which is the direction that leaves a selector alone.
+            try:
+                from utils.hardware.amd import amd_kfd_gpu_node_count
+                _amd_gpu_count = amd_kfd_gpu_node_count()
+            except Exception:  # noqa: BLE001
+                _amd_gpu_count = None
+
             def _hides_every_device(value: str) -> bool:
                 # CUDA and HIP read the list left to right and stop at the first entry
                 # that names no device, so a value that is empty, or whose FIRST entry
                 # is empty or negative, exposes nothing; HIP_VISIBLE_DEVICES=0 still
                 # exposes GPU 0.
                 first = value.split(",")[0].strip()
-                return first == "" or first.startswith("-")
+                if first == "" or first.startswith("-"):
+                    return True
+                # An entry that looks valid can still name nothing: the list stops at the
+                # first index no device answers to, so HIP_VISIBLE_DEVICES=3 on a one-GPU
+                # host exposes zero devices and is exactly the empty probe being explained.
+                # Only ordinals are judged -- a UUID selector is not an index into this
+                # count -- and only against a count that was actually read, since reading
+                # an unknown count as a bound would call every selector here a blocker.
+                if not _amd_gpu_count or not first.isdigit():
+                    return False
+                return int(first) >= _amd_gpu_count
 
             # Which of the four this host actually reads, per variable rather than one
             # rule applied to all of them alike. Reaching a node hint at all means an
