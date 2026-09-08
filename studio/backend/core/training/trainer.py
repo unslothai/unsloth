@@ -2398,12 +2398,18 @@ class UnslothTrainer:
         dataset,
         eval_split = None,
         custom_format_mapping = None,
+        eval_dataset = None,
     ):
         """Preprocess dataset for Whisper speech-to-text training.
 
         Mirrors Whisper.ipynb: extract audio features with Whisper's feature
         extractor, tokenize text labels. Returns (train_data, eval_data),
         each a list of dicts with 'input_features' and 'labels'.
+
+        ``eval_dataset`` is the separate split the caller already loaded, from an
+        uploaded eval file or a named HF split. When it is present it is used as
+        is; the 6% carve-out off the train set is only the fallback for when no
+        separate eval source exists.
         """
         from datasets import Audio
 
@@ -2420,7 +2426,23 @@ class UnslothTrainer:
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate = WHISPER_SAMPLE_RATE))
 
         eval_dataset_raw = None
-        if eval_split:
+        if eval_dataset is not None:
+            # A separate split can carry a different schema to the train one. Warn and drop it
+            # rather than failing a run whose training data is perfectly good.
+            try:
+                eval_dataset_raw = eval_dataset.cast_column(
+                    audio_col, Audio(sampling_rate = WHISPER_SAMPLE_RATE)
+                )
+                logger.info(
+                    f"Whisper eval: using the separate eval split ({len(eval_dataset_raw)} rows)\n"
+                )
+            except Exception as e:
+                self._record_warning(
+                    "The eval dataset could not be prepared for this audio model, so this run "
+                    f"has no evaluation: {e}"
+                )
+                eval_dataset_raw = None
+        elif eval_split:
             splits = dataset.train_test_split(test_size = 0.06, seed = 42)
             dataset = splits["train"]
             eval_dataset_raw = splits["test"]
@@ -3057,6 +3079,7 @@ class UnslothTrainer:
                     dataset,
                     eval_split = eval_split,
                     custom_format_mapping = custom_format_mapping,
+                    eval_dataset = eval_dataset,
                 )
                 return (train_data, eval_data)
 
@@ -3142,7 +3165,12 @@ class UnslothTrainer:
 
             elif self.is_audio_vlm:
                 formatted = self._format_audio_vlm_dataset(dataset, custom_format_mapping)
-                return (formatted, None)
+                return (
+                    formatted,
+                    self._preprocess_audio_eval_split(
+                        eval_dataset, self._format_audio_vlm_dataset, custom_format_mapping
+                    ),
+                )
 
             # ========== FORMAT FIRST ==========
             logger.info(f"Formatting dataset with format_type='{format_type}'...\n")
