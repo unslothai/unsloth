@@ -3,6 +3,8 @@
 
 """Core inference backend."""
 
+from __future__ import annotations
+
 from unsloth import FastLanguageModel, FastVisionModel
 from unsloth.chat_templates import get_chat_template
 from transformers import TextIteratorStreamer, TextStreamer
@@ -34,6 +36,7 @@ from core.inference.chat_eos import (
     resolve_chat_turn_end_eos_ids_using,
 )
 from core.inference.chat_template_helpers import (
+    build_dac_tts_prompt,
     make_reasoning_normalizer,
     detect_reasoning_channel_markers,
     detect_think_prefill,
@@ -54,6 +57,12 @@ from loggers import get_logger
 
 
 logger = get_logger(__name__)
+
+
+def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool:
+    if hf_token is False:
+        return False
+    return hf_token.strip() if isinstance(hf_token, str) and hf_token.strip() else None
 
 
 class HarmonyTextStreamer:
@@ -250,6 +259,25 @@ class _GenerationThreadError(RuntimeError):
     """Generation worker failures that should propagate through stream routes."""
 
 
+def _prompt_already_has_bos(tokenizer, prompt):
+    """Did the rendered chat template emit BOS itself?
+
+    Most do, so the tokenizer must not add a second. Some do not (zephyr, tinyllama-chat), and
+    suppressing special tokens there drops BOS entirely.
+    """
+    tok = getattr(tokenizer, "tokenizer", tokenizer)
+    bos_token_id = getattr(tok, "bos_token_id", None)
+    if bos_token_id is None:
+        return False
+    try:
+        ids = tok(prompt, add_special_tokens = False)["input_ids"]
+    except Exception:
+        return False
+    while isinstance(ids, (list, tuple)) and ids and isinstance(ids[0], (list, tuple)):
+        ids = ids[0]
+    return bool(len(ids)) and ids[0] == bos_token_id
+
+
 class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""
 
@@ -334,9 +362,10 @@ class InferenceBackend:
         max_seq_length: int = 2048,
         dtype = None,
         load_in_4bit: bool = True,
-        hf_token: Optional[str] = None,
+        hf_token: Optional[str] | bool = None,
         trust_remote_code: bool = False,
         gpu_ids: Optional[list[int]] = None,
+        audio_codec_path: Optional[str] = None,
     ) -> bool:
         """Load any model: base, LoRA adapter, text, or vision."""
         # Keep the token so the native-template fallback can fetch a
@@ -404,7 +433,7 @@ class InferenceBackend:
                         auto_model = CsmForConditionalGeneration,
                         load_in_4bit = False,
                         device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     FastModel.for_inference(model)
@@ -413,19 +442,16 @@ class InferenceBackend:
                     self.models[model_name]["processor"] = processor
                 elif audio_type == "bicodec":
                     import os
+                    from core.inference.audio_codecs import resolve_bicodec_repo_path
                     from unsloth import FastModel
 
                     if config.is_lora and config.base_model:
                         # LoRA adapter: base_model is .../Spark-TTS-0.5B/LLM;
                         # BiCodec weights live in the parent dir.
                         base_path = config.base_model
-                        if os.path.isdir(base_path):
-                            abs_repo_path = os.path.abspath(os.path.dirname(base_path))
-                        else:
-                            # base_model is an HF ID — download it.
-                            from huggingface_hub import snapshot_download
-                            repo_path = snapshot_download(base_path)
-                            abs_repo_path = os.path.abspath(repo_path)
+                        abs_repo_path = audio_codec_path or resolve_bicodec_repo_path(
+                            base_path, hf_token = hf_token
+                        )
 
                         logger.info(
                             f"Spark-TTS LoRA: loading adapter from {config.path}, BiCodec from {abs_repo_path}"
@@ -437,7 +463,7 @@ class InferenceBackend:
                             attn_implementation = "sdpa",
                             load_in_4bit = False,
                             device_map = device_map,
-                            token = hf_token if hf_token and hf_token.strip() else None,
+                            token = _hf_token_for_loader(hf_token),
                             trust_remote_code = trust_remote_code,
                         )
                     elif config.is_local and os.path.isdir(config.path):
@@ -449,57 +475,21 @@ class InferenceBackend:
                         llm_path = os.path.join(config.path, "LLM")
                         if not os.path.isdir(llm_path):
                             llm_path = config.path
-                        base_repo = None
-                        try:
-                            meta_path = Path(config.path) / "export_metadata.json"
-                            if meta_path.exists():
-                                base_repo = json.loads(
-                                    meta_path.read_text(encoding = "utf-8-sig")
-                                ).get("base_model")
-                        except Exception:
-                            base_repo = None
-                        if base_repo and os.path.isdir(base_repo):
-                            # A base recorded as .../Spark-TTS-0.5B/LLM keeps BiCodec in its parent.
-                            abs_repo_path = os.path.abspath(
-                                os.path.dirname(base_repo)
-                                if os.path.basename(base_repo.rstrip("/\\")) == "LLM"
-                                else base_repo
-                            )
-                        elif base_repo:
-                            from huggingface_hub import snapshot_download
-
-                            # Registry alias ("Spark-TTS-0.5B/LLM") names a load
-                            # subdirectory, not a repo, so snapshot_download rejects it.
-                            # Same resolver the capability probe and the trainer preflight
-                            # use, rather than a second copy of the mapping.
-                            from utils.security import load_scan_target
-                            from utils.utils import canonical_model_repo_id
-
-                            hf_repo, _load_subdirs = load_scan_target(
-                                canonical_model_repo_id(base_repo), ()
-                            )
-                            hf_repo = hf_repo or base_repo
-                            # Same token as the load below: a private or gated base would
-                            # otherwise 401 here while resolving the BiCodec assets.
-                            abs_repo_path = os.path.abspath(
-                                snapshot_download(
-                                    hf_repo,
-                                    token = hf_token if hf_token and hf_token.strip() else None,
-                                )
-                            )
-                        else:
-                            abs_repo_path = os.path.abspath(config.path)
+                        abs_repo_path = audio_codec_path or resolve_bicodec_repo_path(
+                            config.path, hf_token = hf_token
+                        )
                         logger.info(
                             f"Spark-TTS merged export: LLM from {llm_path}, BiCodec from {abs_repo_path}"
                         )
                     else:
                         # Base model: download full HF repo, load from /LLM subfolder
-                        from huggingface_hub import snapshot_download
-
-                        repo_path = snapshot_download(config.path)
-                        abs_repo_path = os.path.abspath(repo_path)
+                        abs_repo_path = audio_codec_path or resolve_bicodec_repo_path(
+                            config.path, hf_token = hf_token
+                        )
                         llm_path = os.path.join(abs_repo_path, "LLM")
-                        logger.info(f"Spark-TTS: repo at {repo_path}, loading LLM from {llm_path}")
+                        logger.info(
+                            f"Spark-TTS: repo at {abs_repo_path}, loading LLM from {llm_path}"
+                        )
 
                     if not (config.is_lora and config.base_model):
                         # Shared by the merged-export and repo-root branches above: both resolve
@@ -511,7 +501,7 @@ class InferenceBackend:
                             attn_implementation = "sdpa",
                             load_in_4bit = False,
                             device_map = device_map,
-                            token = hf_token if hf_token and hf_token.strip() else None,
+                            token = _hf_token_for_loader(hf_token),
                             trust_remote_code = trust_remote_code,
                         )
 
@@ -528,7 +518,7 @@ class InferenceBackend:
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
                         device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     FastModel.for_inference(model)
@@ -546,7 +536,7 @@ class InferenceBackend:
                         whisper_task = "transcribe",
                         load_in_4bit = False,
                         device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     FastModel.for_inference(model)
@@ -574,7 +564,7 @@ class InferenceBackend:
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
                         device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     FastLanguageModel.for_inference(model)
@@ -584,7 +574,9 @@ class InferenceBackend:
                 # Load external codec for TTS audio types
                 # (Whisper is ASR, audio_vlm is audio input — neither needs one)
                 if audio_type not in ("whisper", "audio_vlm"):
-                    model_repo_path = self.models[model_name].get("model_repo_path")
+                    model_repo_path = audio_codec_path or self.models[model_name].get(
+                        "model_repo_path"
+                    )
                     self._audio_codec_manager.load_codec(
                         audio_type, self.device, model_repo_path = model_repo_path
                     )
@@ -616,7 +608,7 @@ class InferenceBackend:
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
-                    token = hf_token if hf_token and hf_token.strip() else None,
+                    token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
                 )
 
@@ -648,7 +640,7 @@ class InferenceBackend:
 
                     processor = AutoProcessor.from_pretrained(
                         processor_source,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     logger.info(f"Loaded {type(processor).__name__} from {processor_source}")
@@ -665,7 +657,7 @@ class InferenceBackend:
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
-                    token = hf_token if hf_token and hf_token.strip() else None,
+                    token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
                 )
 
@@ -1217,6 +1209,7 @@ class InferenceBackend:
         else:
             template_messages = messages
         reasoning_channel_markers_resolved = False
+        add_special_tokens = True
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -1261,6 +1254,8 @@ class InferenceBackend:
             formatted_prompt = render_result.prompt
             reasoning_channel_markers = render_result.reasoning_channel_markers
             reasoning_channel_markers_resolved = True
+            # Suppress the tokenizer's BOS only when the template already emitted one.
+            add_special_tokens = not _prompt_already_has_bos(tokenizer, formatted_prompt)
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
@@ -1287,6 +1282,7 @@ class InferenceBackend:
             reasoning_channel_markers = reasoning_channel_markers,
             reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
             continued = bool(continue_final_message and trailing_assistant_text(template_messages)),
+            add_special_tokens = add_special_tokens,
         )
 
     def _generate_vision_response(
@@ -1486,7 +1482,11 @@ class InferenceBackend:
             formatted_prompt = self.format_chat_prompt(
                 messages, system_prompt, continue_final_message = continue_final_message
             )
-            inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(model.device)
+            inputs = raw_tokenizer(
+                formatted_prompt,
+                return_tensors = "pt",
+                add_special_tokens = not _prompt_already_has_bos(raw_tokenizer, formatted_prompt),
+            ).to(model.device)
             prompt_text = formatted_prompt
 
         # Stream with TextIteratorStreamer + background thread
@@ -1963,8 +1963,12 @@ class InferenceBackend:
         reasoning_channel_markers = None,
         reasoning_channel_markers_resolved: bool = False,
         continued: bool = False,
+        add_special_tokens: bool = True,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
+
+        Rendered chat prompts pass add_special_tokens=False; raw prompts keep
+        the tokenizer defaults, including BOS insertion for base models.
 
         _adapter_state: if not None, the background thread toggles adapters
         before model.generate(), under _generation_lock.
@@ -1985,7 +1989,9 @@ class InferenceBackend:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 
         try:
-            inputs = tokenizer(prompt, return_tensors = "pt").to(model.device)
+            inputs = tokenizer(
+                prompt, return_tensors = "pt", add_special_tokens = add_special_tokens
+            ).to(model.device)
 
             import threading
 
@@ -2364,11 +2370,7 @@ class InferenceBackend:
         # (same as the OuteTTS notebook) to avoid degenerate repetition.
         self._patch_repetition_penalty_processor()
 
-        prompt = (
-            "<|im_start|>\n<|text_start|>"
-            + text
-            + "<|text_end|>\n<|audio_start|><|global_features_start|>\n"
-        )
+        prompt = build_dac_tts_prompt(text)
 
         with torch.inference_mode():
             # Derive the autocast device from the loaded model, not from the

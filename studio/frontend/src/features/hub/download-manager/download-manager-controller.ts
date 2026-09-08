@@ -8,17 +8,14 @@ import {
   AUTH_TOKEN_KEY,
 } from "@/features/auth";
 import { isTauri } from "@/lib/api-base";
+import { resetDownloadApiAdapterState } from "./download-api-adapter";
 import {
   createDownloadManagerInitialState,
   removeJob,
   setState,
   useDownloadManagerStore,
 } from "./download-manager-state";
-import { resetDownloadApiAdapterState } from "./download-api-adapter";
-import {
-  hydrateDownloadManager,
-  resetHydrationState,
-} from "./hydration";
+import { hydrateDownloadManager, resetHydrationState } from "./hydration";
 import { cancelJob, probeAndAdopt, setExpected } from "./poll-loop";
 import { runtimeRegistry } from "./runtime-registry";
 import {
@@ -38,12 +35,10 @@ export {
   useDownloadManagerStore,
 } from "./download-manager-state";
 export type {
-  ConflictOwner,
   DownloadRequest,
   JobListeners,
   ManagedDownload,
 } from "./download-manager-types";
-export { conflictInfoForOwner } from "./download-manager-types";
 export { hydrateDownloadManager };
 
 function resetDownloadManagerState(): void {
@@ -58,7 +53,9 @@ export function __resetDownloadManagerForTests(): void {
 }
 
 function clearWebSessionDownloads(): void {
-  if (isTauri) return;
+  if (isTauri) {
+    return;
+  }
   resetDownloadManagerState();
   // Clearing after the state reset also cancels the throttled empty-state write.
   void useDownloadManagerStore.persist.clearStorage();
@@ -100,7 +97,6 @@ export const downloadManager: DownloadManagerController = {
   cancelConflict,
   dismiss: removeJob,
 };
-
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {

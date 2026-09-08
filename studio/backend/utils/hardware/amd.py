@@ -42,7 +42,8 @@ def _path_inside_venv(path: str) -> bool:
     try:
         # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
         root = os.path.normcase(os.path.realpath(sys.prefix))
-        # Guard a root-dir prefix (C:\ or /): commonpath would match every path
+        # Guard a root-dir prefix (C:\ or /): commonpath would match every path on it. A venv is never at root, so treat
+        # that as outside.
         if os.path.dirname(root) == root:
             return False
         return os.path.normcase(os.path.commonpath([os.path.realpath(path), root])) == root

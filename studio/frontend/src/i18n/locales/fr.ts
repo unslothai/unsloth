@@ -497,6 +497,13 @@ export const fr = {
         sttModelLabel: "Modèle de reconnaissance vocale",
         sttModelDescription:
           "Choisissez ou recherchez un modèle STT à exécuter en local.",
+        sttDeviceLabel: "Charger dans",
+        sttDeviceAuto: "GPU si disponible",
+        sttDeviceCpu: "RAM du CPU",
+        sttDeviceAutoDescription:
+          "Utiliser le GPU quand il y en a un, sinon le CPU.",
+        sttDeviceCpuDescription:
+          "Garder le modèle dans la RAM système. La transcription est plus lente, mais n'utilise pas de mémoire GPU.",
         sttModelSearchPlaceholder: "Rechercher un modèle",
         sttModelSearching: "Recherche sur Hugging Face…",
         sttModelValidating: "Vérification de la compatibilité Whisper…",
@@ -937,7 +944,11 @@ export const fr = {
         currentStreak: "Série en cours",
         longestStreak: "Plus longue série",
         activityTitle: "Activité en tokens",
-        activityDescription: "{total} au cours des {weeks} dernières",
+        activityDescription: {
+          daily: "{total} au cours des {weeks} dernières",
+          weekly: "Semaine record {total} · {weeks} dernières",
+          cumulative: "{total} cumulés sur les {weeks} dernières",
+        },
         mode: {
           daily: "Quotidienne",
           weekly: "Hebdomadaire",
@@ -1270,7 +1281,7 @@ export const fr = {
       description:
         "Connectez des agents de codage comme Claude Code et Codex à un modèle local avec unsloth start.",
       intro:
-        "connecte Claude Code, Codex, Hermes, OpenClaw, OpenCode et d'autres agents à un modèle servi localement par Unsloth, entièrement hors ligne. Il lance un serveur compatible OpenAI et ne touche jamais aux fichiers de configuration de votre agent.",
+        "connecte Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode et d'autres agents à un modèle servi localement par Unsloth, entièrement hors ligne. Il lance un serveur compatible OpenAI et ne touche jamais aux fichiers de configuration de votre agent.",
       readDocs: "Lire la documentation",
       copy: "Copier",
       copied: "Copié",
@@ -2199,6 +2210,7 @@ export const fr = {
       memoryEfficient: "Économe en mémoire",
       weightDecomposed: "Poids décomposés",
       notSupportedAppleSilicon: "Non pris en charge sur Apple Silicon",
+      doraNeedsVisionLayersOff: "Désactivez l'entraînement des couches de vision pour utiliser DoRA",
       optimization: "Optimisation",
       schedule: "Planification",
       memory: "Mémoire",

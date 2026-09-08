@@ -170,7 +170,8 @@ def _write_install_record(
         rec["ships_server"] = ships_server
         _INSTALLED_SHIPS_SERVER_MEMO[str(root)] = ships_server
     else:
-        # An install that did not report the capability must not leave an older memo standing
+        # An install that did not report the capability must not leave an older memo standing in for this one -- the
+        # tree is now whatever this bundle put there.
         _INSTALLED_SHIPS_SERVER_MEMO.pop(str(root), None)
     try:
         with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
@@ -530,7 +531,9 @@ _MAX_LINK_TARGET_BYTES = 4096
 _MAX_LINK_DEPTH = 40
 
 
-# Creators whose ``external_attr`` high bits are a Unix ``st_mode``: 3 (Info-ZIP, CPython)
+# Creators whose ``external_attr`` high bits are a Unix ``st_mode``: 3 (Info-ZIP, CPython) and 19 (Apple's ditto, same
+# layout). FAT and NTFS keep DOS attribute flags there, so reading a mode out of one would invent symlinks the archive
+# never described.
 _UNIX_CREATORS = (3, 19)
 
 
@@ -622,7 +625,8 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     plain: list[zipfile.ZipInfo] = []
     written: list[tuple[Path, str]] = []
     for member in zf.infolist():
-        # extractall DROPS ".." instead of cancelling the component before it, so "a/.." is "a"
+        # extractall DROPS ".." instead of cancelling the component before it, so "a/.." is "a" to it and normalising
+        # here would check a path it never writes. No release ships one.
         if ".." in PurePosixPath(member.filename).parts:
             raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
         # Lexical, never resolve()d: extraction MERGES.
@@ -668,7 +672,9 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             raise RuntimeError(f"symlink onto a reserved installer path: {member.filename!r}")
         if key.is_dir() and not key.is_symlink():
             raise RuntimeError(f"symlink member collides with a directory: {member.filename!r}")
-    # Chains are normal (libwebp.so -> .so.7 -> .so.7.2.0) but must terminate: a cycle installs
+    # Chains are normal (libwebp.so -> .so.7 -> .so.7.2.0) but must terminate: a cycle installs a library nothing can
+    # read, so every load reinstalls it. Walk the graph the tree WILL have, keyed by landing point so alias/a and real/b
+    # count as one cycle.
     by_dest = {str(keys[str(d)]): t for d, t, _ in links}
     for dest, _, member in links:
         seen, cur, hops = set(), str(keys[str(dest)]), 0
@@ -687,7 +693,8 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             if hops > _MAX_LINK_DEPTH:
                 raise RuntimeError(f"symlink chain too deep in archive: {member.filename!r}")
             nxt = Path(os.path.normpath(os.path.join(os.path.dirname(cur), nxt)))
-            # a -> a/x never reaches a second node, so repetition never fires, yet resolving
+            # a -> a/x never reaches a second node, so repetition never fires, yet resolving a walks a again. Anything
+            # under the link is a loop.
             if Path(cur) in nxt.parents:
                 raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
             cur = str(_plan_key(nxt, base, replaced, archive))

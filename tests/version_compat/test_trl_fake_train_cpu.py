@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import os
 
-# CPU-only: no torch.compile / dynamo (it reaches into the CUDA accelerator), no
-# Unsloth kernel compile, no mixed precision. Must be set before torch/unsloth.
+# CPU-only: no torch.compile / dynamo (it reaches into the CUDA accelerator), no Unsloth kernel compile, no mixed
+# precision. Must be set before torch/unsloth.
 os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
@@ -36,8 +36,8 @@ from pathlib import Path
 import pytest
 
 
-# torch is needed for everything below (daily-fresh-fetch collects this dir with
-# only pytest installed); skip the whole module cleanly when it is absent.
+# torch is needed for everything below (daily-fresh-fetch collects this dir with only pytest installed); skip the whole
+# module cleanly when it is absent.
 if importlib.util.find_spec("torch") is None:
     pytest.skip(
         "torch not installed; fake CPU train needs the real runtime", allow_module_level = True
@@ -53,11 +53,10 @@ _spoof.apply()
 import torch  # noqa: E402
 
 
-# The generated GRPO trainer hard-decorates hot functions with @torch.compile,
-# which dynamo processes even under the disable env vars, reaching into
-# torch.accelerator (real CUDA) on a GPU-less box. Make torch.compile an eager
-# passthrough before unsloth generates/imports the trainer -- same logic, no
-# dynamo. (An eager CPU run is exactly what we want here.)
+# The generated GRPO trainer hard-decorates hot functions with @torch.compile, which dynamo processes even under the
+# disable env vars, reaching into torch.accelerator (real CUDA) on a GPU-less box. Make torch.compile an eager
+# passthrough before unsloth generates/imports the trainer -- same logic, no dynamo. (An eager CPU run is exactly what
+# we want here.)
 def _eager_compile(
     model = None,
     *args,
@@ -86,9 +85,8 @@ def _fake_cpu_gpu(mp):
     """
     mp.setattr(torch, "compile", _eager_compile)
 
-    # Belt-and-suspenders: if any @torch.compile still routes through dynamo,
-    # let it fall back to eager instead of crashing, and stop its stream-capture
-    # probe from reaching torch.accelerator -> real CUDA on a GPU-less box.
+    # Belt-and-suspenders: if any @torch.compile still routes through dynamo, let it fall back to eager instead of
+    # crashing, and stop its stream-capture probe from reaching torch.accelerator -> real CUDA on a GPU-less box.
     try:
         # Aliased: a bare `import torch._dynamo` would rebind `torch` as a local.
         import torch._dynamo as _dynamo
@@ -99,10 +97,9 @@ def _fake_cpu_gpu(mp):
     if hasattr(torch, "accelerator"):
         mp.setattr(torch.accelerator, "is_available", lambda *a, **k: False)
 
-    # Redirect any `device="cuda"` tensor allocation / `.to("cuda")` / `.cuda()`
-    # to CPU. The aggressive spoof deliberately keeps real allocators, but a fake
-    # CPU train needs cuda-targeted ops (e.g. inductor's init_gpu_context does
-    # `torch.empty(1, device="cuda")`) to land on CPU instead of erroring.
+    # Redirect any `device="cuda"` tensor allocation / `.to("cuda")` / `.cuda()` to CPU.
+    # The aggressive spoof deliberately keeps real allocators, but a fake CPU train needs cuda-targeted ops (e.g.
+    # inductor's init_gpu_context does `torch.empty(1, device="cuda")`) to land on CPU instead of erroring.
     for _name in (
         "empty",
         "zeros",
@@ -152,8 +149,8 @@ def _fake_cpu_gpu(mp):
     except Exception:
         pass
 
-    # A broken libmlx.so in the shared site-packages crashes transformers' Mac-only
-    # is_mlx_array probe on Linux; disable it.
+    # A broken libmlx.so in the shared site-packages crashes transformers' Mac-only is_mlx_array probe on Linux; disable
+    # it.
     try:
         import transformers.utils.generic as _g
         mp.setattr(_g, "_is_mlx_available", False, raising = False)
@@ -201,8 +198,7 @@ def _guard_finite_logits(model):
         logits = getattr(output, "logits", None)
         if logits is None:
             return output
-        # nan_to_num maps nan -> 0 and the infinities to large finite values;
-        # clamp then bounds everything to [-30, 30].
+        # nan_to_num maps nan -> 0 and the infinities to large finite values; clamp then bounds everything to [-30, 30].
         output.logits = torch.nan_to_num(logits).clamp(-30.0, 30.0)
         return output
 
@@ -222,9 +218,8 @@ def _load_plain():
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    # Unsloth's GRPO path calls model.for_training()/for_inference() (added by
-    # FastLanguageModel). A plain HF model lacks them; supply minimal train/eval
-    # equivalents so the loop proceeds without the optimized wrapper.
+    # Unsloth's GRPO path calls model.for_training()/for_inference() (added by FastLanguageModel). A plain HF model
+    # lacks them; supply minimal train/eval equivalents so the loop proceeds without the optimized wrapper.
     if not hasattr(model, "for_training"):
         model.for_training = lambda *a, **k: model.train()
     if not hasattr(model, "for_inference"):
@@ -240,13 +235,11 @@ def _require_stack(_cpu_only_torch):
     # A real import failure is a regression we want to surface, so do not guard it.
     import unsloth  # noqa: F401  -- patches TRL trainers to the Unsloth variants
 
-    # `import unsloth` reinstalls the real torch.compile (overwriting the eager
-    # passthrough set at module load), so the GRPO hot path (chunked_selective_
-    # log_softmax) would really compile -- and inductor picks the spoofed CUDA
-    # device, crashing on device props (`gcnArchName`). Re-apply the eager
-    # passthrough and flip dynamo's call-time kill switch so every @torch.compile
-    # runs eager regardless of when it was decorated. CPU eager is what we want.
-    # Through the module's MonkeyPatch, so both are undone with the rest of it.
+    # `import unsloth` reinstalls the real torch.compile (overwriting the eager passthrough set at module load), so the
+    # GRPO hot path (chunked_selective_log_softmax) would really compile -- and inductor picks the spoofed CUDA device,
+    # crashing on device props (`gcnArchName`). Re-apply the eager passthrough and flip dynamo's call-time kill switch
+    # so every @torch.compile runs eager regardless of when it was decorated. CPU eager is what we want. Through the
+    # module's MonkeyPatch, so both are undone with the rest of it.
     _cpu_only_torch.setattr(torch, "compile", _eager_compile)
     try:
         import torch._dynamo  # noqa: E402
@@ -286,10 +279,9 @@ def test_grpo_trains_on_cpu(tmp_path):
 
     assert GRPOTrainer.__name__ == "UnslothGRPOTrainer", "GRPO patch did not apply"
     model, tok = _load_plain()
-    # GRPO is the only canary that autoregressively samples completions, so it is
-    # the only one that can hit the non-finite-logits multinomial crash. Install
-    # the guard here (not in _load_plain) so the SFT/DPO canaries keep asserting
-    # against the model's true, unclamped outputs.
+    # GRPO is the only canary that autoregressively samples completions, so it is the only one that can hit the
+    # non-finite-logits multinomial crash. Install the guard here (not in _load_plain) so the SFT/DPO canaries keep
+    # asserting against the model's true, unclamped outputs.
     _guard_finite_logits(model)
     ds = Dataset.from_list([{"prompt": "hi there"}] * 4)
     cfg = GRPOConfig(

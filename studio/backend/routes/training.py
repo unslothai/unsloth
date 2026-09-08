@@ -38,6 +38,7 @@ if str(backend_path) not in sys.path:
 try:
     from core.training import get_training_backend
     from core.training.diffusion_clip_formats import CLIP_EXTS as _CLIP_EXTS
+    from core.training.eval_dataset import evaluation_enabled
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
@@ -59,6 +60,7 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.training import get_training_backend
     from core.training.diffusion_clip_formats import CLIP_EXTS as _CLIP_EXTS
+    from core.training.eval_dataset import evaluation_enabled
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
@@ -267,6 +269,11 @@ def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset"
     validated = []
     missing = []
     for dataset_path in paths:
+        if not dataset_path.strip():
+            raise HTTPException(
+                status_code = 400,
+                detail = f"{label} path must not be blank",
+            )
         dataset_file = resolve_dataset_path(dataset_path)
         if not dataset_file.exists():
             missing.append(f"{dataset_path} (resolved: {dataset_file})")
@@ -882,11 +889,6 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
             status_code = 400,
             detail = "LoftQ is not supported for MLX training yet.",
         )
-    if request.use_dora:
-        raise HTTPException(
-            status_code = 400,
-            detail = "DoRA is not supported for MLX training yet.",
-        )
 
 
 _RESUME_DATASET_DEFAULTS = {
@@ -1172,7 +1174,8 @@ async def start_training(
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
         if request.start_request_id:
             # A retry of an already-resolved id replays its stored outcome even when a NEW start would be refused;
-            # peeking also refreshes a cancellation tombstone so a retry cannot outlive it.
+            # peeking also refreshes a cancellation tombstone so a retry cannot outlive it and go on to
+            # spawn the run the user cancelled.
             existing_record = backend.peek_start_request(request.start_request_id)
             if existing_record is not None:
                 return _start_request_response(existing_record)
@@ -1326,7 +1329,8 @@ async def start_training(
             request.local_datasets = _validate_local_dataset_paths(
                 request.local_datasets, "Local dataset"
             )
-        if request.local_eval_datasets and request.eval_steps > 0:
+        # Not `eval_steps > 0`: inf passes that but reads as disabled everywhere in the trainer.
+        if request.local_eval_datasets and evaluation_enabled(request.eval_steps):
             request.local_eval_datasets = _validate_local_dataset_paths(
                 request.local_eval_datasets, "Local eval dataset"
             )
@@ -1368,7 +1372,7 @@ async def start_training(
                     status_code = 422,
                     detail = "dataset_streaming is not supported with train_on_completions yet.",
                 )
-            if request.eval_steps > 0:
+            if evaluation_enabled(request.eval_steps):
                 train_split = request.train_split or "train"
                 if not request.eval_split or request.eval_split == train_split:
                     raise HTTPException(
@@ -1499,7 +1503,8 @@ async def start_training(
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
 
-        # Latest-sidecar models size and train 16-bit (same flip as chat load): 4-bit is disabled
+        # Latest-sidecar models size and train 16-bit (same flip as chat load): 4-bit is disabled for brand-new
+        # architectures, so VRAM checks must not underestimate a load the worker refuses.
         from core.training.provenance import (
             ExactResumeResourcesUnavailable,
             effective_training_load_in_4bit,
@@ -2847,7 +2852,9 @@ async def start_diffusion_training(
             config["resume_from_checkpoint"] = str(
                 resolve_resume_dir(normalized_cfg.resume_from_checkpoint)
             )
-            # In epochs mode the real target is only known once the dataset size is; skip
+            # In epochs mode the real target is only known once the dataset size is; skip the "already finished" check
+            # here and make it below, with the resolved step count. Offloaded like the other preflights: validating a
+            # bundle parses a safetensors header and walks two torch-zip pickles, which must not block the event loop.
             await asyncio.to_thread(
                 _preflight_diffusion_resume,
                 config,
@@ -3001,7 +3008,8 @@ async def list_diffusion_training_runs(
     per-run records. Summaries only; fetch one run for its config + metric logs."""
     from core.training.diffusion_training_service import list_diffusion_runs
 
-    # Offloaded: each record's can_resume is re-derived by validating the checkpoint bundles
+    # Offloaded: each record's can_resume is re-derived by validating the checkpoint bundles on disk (safetensors header
+    # + torch-zip pickle walk per file), which must not block the loop.
     records = await asyncio.to_thread(list_diffusion_runs, limit = limit)
     summaries: list[DiffusionTrainingRunSummary] = []
     for r in records:

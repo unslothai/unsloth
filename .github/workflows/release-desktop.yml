@@ -1194,8 +1194,39 @@ jobs:
             -DisableRealtimeMonitoring $false -DisableIOAVProtection $false `
             -DisableScriptScanning $false -DisableBehaviorMonitoring $false `
             -DisableArchiveScanning $false -MAPSReporting Advanced `
-            -SubmitSamplesConsent SendAllSamples -CloudBlockLevel High `
-            -CloudExtendedTimeout 50 -DisableBlockAtFirstSeen $false -ErrorAction Continue
+            -SubmitSamplesConsent SendAllSamples -CloudBlockLevel HighPlus `
+            -CloudExtendedTimeout 50 -DisableBlockAtFirstSeen $false `
+            -PUAProtection Enabled -ErrorAction Continue
+
+          # Audit (2), never Block: 01443614 approximates the cloud-reputation half
+          # of a Smart App Control verdict, and fires on low prevalence, i.e. ours.
+          $asrRules = @(
+            '01443614-cd74-433a-b99e-2ecdc07bfc25',  # low prevalence / new file
+            'be9ba2d9-53ea-4cdc-84e5-9b1eeee46550',  # executable content from mail
+            'b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4',  # untrusted unsigned from USB
+            'c1db55ab-c21a-4637-bb3f-a12568109d35'   # advanced ransomware protection
+          )
+          $asrActions = @('AuditMode') * $asrRules.Count
+          Add-MpPreference -AttackSurfaceReductionRules_Ids $asrRules `
+            -AttackSurfaceReductionRules_Actions $asrActions -ErrorAction Continue
+          # A rule that did not apply reports no events, like one that found none.
+          # Add-MpPreference is additive: check the action, not just the id.
+          $asrPref = Get-MpPreference
+          $asrIds = @($asrPref.AttackSurfaceReductionRules_Ids)
+          $asrStates = @($asrPref.AttackSurfaceReductionRules_Actions)
+          $asrApplied = @{}
+          for ($i = 0; $i -lt [Math]::Min($asrIds.Count, $asrStates.Count); $i++) {
+            $asrApplied[[string]$asrIds[$i]] = [int]$asrStates[$i]
+          }
+          $asrBad = @($asrRules | Where-Object { $asrApplied[$_] -ne 2 } | ForEach-Object {
+            if ($asrApplied.ContainsKey($_)) { "$_ is action $($asrApplied[$_]), expected 2 (AuditMode)" }
+            else { "$_ not applied" }
+          })
+          if ($asrBad) { Write-Host "::warning::ASR audit rules not in audit mode: $($asrBad -join '; ')" }
+          else { Write-Host "ASR audit rules applied: $($asrRules.Count)" }
+
+          # Bounds the ASR event query below; that log is shared with the runner.
+          $scanStart = Get-Date
 
           $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
           $plat = Get-ChildItem 'C:\ProgramData\Microsoft\Windows Defender\Platform' -Directory -ErrorAction SilentlyContinue |
@@ -1250,7 +1281,10 @@ jobs:
             if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
             if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
             if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
-            if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
+            # 4 is HighPlus; a refused change leaves the old level, not zero.
+            if ([int]$pref.CloudBlockLevel -ne 4)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected 4 (HighPlus)" }
+            # PUA is a separate class, off by default: unwanted-not-malicious passes.
+            if ([int]$pref.PUAProtection -ne 1)         { $degraded += "PUAProtection=$($pref.PUAProtection), expected 1 (Enabled)" }
             if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
           }
 
@@ -1411,6 +1445,20 @@ jobs:
             Write-Host "::error::Refusing to publish a Windows bundle Defender flags: $($detected -join '; ')"
             Write-Host 'If this is a false positive, submit it at https://www.microsoft.com/en-us/wdsi/filesubmission (Software developer -> incorrectly detected) and re-run once cleared.'
           }
+          # ASR fires on process launch and this job never runs the bundle, so these
+          # are runner activity, not a verdict on it. Fatal would block every release.
+          $asrEvents = @(Get-WinEvent -FilterHashtable @{
+            LogName = 'Microsoft-Windows-Windows Defender/Operational'; Id = 1121, 1122
+          } -ErrorAction SilentlyContinue | Where-Object { $_.TimeCreated -ge $scanStart })
+          if ($asrEvents) {
+            Write-Host "::warning::$($asrEvents.Count) attack surface reduction audit event(s) on this runner during the scan window; the bundle is never executed, so these are runner activity, not a finding against it"
+            foreach ($e in $asrEvents | Select-Object -First 20) {
+              Write-Host "  [$($e.Id)] $($e.TimeCreated): $(($e.Message -split "`n")[0])"
+            }
+          } else {
+            Write-Host 'No attack surface reduction audit events on this runner during the scan window.'
+          }
+
           if ($detected -or $unscanned) { exit 1 }
           Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
           Write-Host "All $($paths.Count) Windows bundle(s) scanned clean."
