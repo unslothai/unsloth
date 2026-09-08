@@ -3440,6 +3440,42 @@ from routes.inference import (  # noqa: E402
 )
 
 
+class _ConnectedRequest:
+    """A request that never reports a disconnect, redefined inline by many tests below."""
+
+    async def is_disconnected(self):
+        return False
+
+
+_LOOKUP_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "lookup",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+
+def _install_monitor(monkeypatch, max_entries = 3):
+    """Fresh ApiMonitor pinned onto the route module, plus one started entry."""
+    monitor = ApiMonitor(max_entries = max_entries)
+    monitor_id = _monitor_entry(monitor)
+    monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+    return monitor, monitor_id
+
+
+def _passthrough_backend(**overrides):
+    """The llama backend stand-in _openai_passthrough_stream is driven with."""
+    fields = {
+        "base_url": "http://llama.test",
+        "context_length": 4096,
+        "_request_reasoning_kwargs": lambda *_args, **_kwargs: None,
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+
 def _monitor_entry(monitor, **overrides):
     """monitor.start with the chat-completions defaults the tests below repeat verbatim."""
     kwargs = {
@@ -5773,10 +5809,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         lines,
         stream_options = None,
     ):
-        class Request:
-            async def is_disconnected(self):
-                return False
-
         upstream_bodies = []
 
         async def fake_send(_client, built_request, *_args, **_kwargs):
@@ -5797,25 +5829,13 @@ class TestApiMonitorProviderAndCompletionStreams:
             messages = [ChatMessage(role = "user", content = "hi")],
             stream = True,
             stream_options = stream_options,
-            tools = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "lookup",
-                        "parameters": {"type": "object", "properties": {}},
-                    },
-                }
-            ],
+            tools = [_LOOKUP_TOOL],
         )
 
         response = await _openai_passthrough_stream(
-            Request(),
+            _ConnectedRequest(),
             threading.Event(),
-            SimpleNamespace(
-                base_url = "http://llama.test",
-                context_length = 4096,
-                _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-            ),
+            _passthrough_backend(),
             payload,
             "gguf",
             "chatcmpl-test",
@@ -5902,13 +5922,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 await gate.wait()
                 return httpx.Response(200, content = b"")
 
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = _monitor_entry(monitor)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
             payload = ChatCompletionRequest(
@@ -5919,13 +5933,9 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             response = await asyncio.wait_for(
                 _openai_passthrough_stream(
-                    Request(),
+                    _ConnectedRequest(),
                     threading.Event(),
-                    SimpleNamespace(
-                        base_url = "http://llama.test",
-                        context_length = 4096,
-                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                    ),
+                    _passthrough_backend(),
                     payload,
                     "chatcmpl-test",
                     "chatcmpl-test",
@@ -5952,38 +5962,19 @@ class TestApiMonitorProviderAndCompletionStreams:
                 captured_headers.update(dict(req.headers))
                 return httpx.Response(200, content = b"")
 
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = _monitor_entry(monitor)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
             payload = ChatCompletionRequest(
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
                 stream = True,
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
+                tools = [_LOOKUP_TOOL],
             )
             response = await _openai_passthrough_stream(
-                Request(),
+                _ConnectedRequest(),
                 threading.Event(),
-                SimpleNamespace(
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    _auth_headers = {"Authorization": "Bearer secret"},
-                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                ),
+                _passthrough_backend(_auth_headers = {"Authorization": "Bearer secret"}),
                 payload,
                 "chatcmpl-test",
                 "chatcmpl-test",
@@ -6008,13 +5999,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 await gate.wait()
                 return httpx.Response(200, content = b"")
 
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = _monitor_entry(monitor)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(
                 inf_mod,
@@ -6030,13 +6015,9 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             response = await asyncio.wait_for(
                 _openai_passthrough_stream(
-                    Request(),
+                    _ConnectedRequest(),
                     threading.Event(),
-                    SimpleNamespace(
-                        base_url = "http://llama.test",
-                        context_length = 4096,
-                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                    ),
+                    _passthrough_backend(),
                     payload,
                     "chatcmpl-test",
                     "chatcmpl-test",
@@ -6063,13 +6044,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             async def fake_send(*_args, **_kwargs):
                 return httpx.Response(400, content = b'{"error":"bad"}')
 
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = _monitor_entry(monitor)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
             payload = ChatCompletionRequest(
@@ -6079,13 +6054,9 @@ class TestApiMonitorProviderAndCompletionStreams:
             )
             with pytest.raises(HTTPException) as exc:
                 await _openai_passthrough_stream(
-                    Request(),
+                    _ConnectedRequest(),
                     threading.Event(),
-                    SimpleNamespace(
-                        base_url = "http://llama.test",
-                        context_length = 4096,
-                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                    ),
+                    _passthrough_backend(),
                     payload,
                     "chatcmpl-test",
                     "chatcmpl-test",
@@ -6100,13 +6071,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             async def fake_send(*_args, **_kwargs):
                 raise httpx.ConnectError("connectivity issue")
 
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = _monitor_entry(monitor)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
             payload = ChatCompletionRequest(
@@ -6116,13 +6081,9 @@ class TestApiMonitorProviderAndCompletionStreams:
             )
             with pytest.raises(HTTPException) as exc:
                 await _openai_passthrough_stream(
-                    Request(),
+                    _ConnectedRequest(),
                     threading.Event(),
-                    SimpleNamespace(
-                        base_url = "http://llama.test",
-                        context_length = 4096,
-                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                    ),
+                    _passthrough_backend(),
                     payload,
                     "chatcmpl-test",
                     "chatcmpl-test",
@@ -6140,13 +6101,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 await gate.wait()
                 return httpx.Response(400, content = b'{"error":"bad"}')
 
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = _monitor_entry(monitor)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
             payload = ChatCompletionRequest(
@@ -6156,13 +6111,9 @@ class TestApiMonitorProviderAndCompletionStreams:
             )
             response = await asyncio.wait_for(
                 _openai_passthrough_stream(
-                    Request(),
+                    _ConnectedRequest(),
                     threading.Event(),
-                    SimpleNamespace(
-                        base_url = "http://llama.test",
-                        context_length = 4096,
-                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                    ),
+                    _passthrough_backend(),
                     payload,
                     "chatcmpl-test",
                     "chatcmpl-test",
@@ -6197,13 +6148,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 await gate.wait()
                 return httpx.Response(400, content = ctx_msg.encode("utf-8"))
 
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = _monitor_entry(monitor)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
             payload = ChatCompletionRequest(
@@ -6213,7 +6158,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             )
             response = await asyncio.wait_for(
                 _openai_passthrough_stream(
-                    Request(),
+                    _ConnectedRequest(),
                     threading.Event(),
                     SimpleNamespace(
                         base_url = "http://llama.test",
@@ -6271,13 +6216,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return httpx.Response(400, content = err_body)
                 return httpx.Response(200, content = b"")
 
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = _monitor_entry(monitor)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
             messages = [
@@ -6295,7 +6234,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             )
             response = await asyncio.wait_for(
                 _openai_passthrough_stream(
-                    Request(),
+                    _ConnectedRequest(),
                     threading.Event(),
                     SimpleNamespace(
                         base_url = "http://llama.test",
@@ -6359,13 +6298,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 for line in ok_lines:
                     yield line
 
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = _monitor_entry(monitor)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
 
@@ -6384,7 +6317,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             )
             response = await asyncio.wait_for(
                 _openai_passthrough_stream(
-                    Request(),
+                    _ConnectedRequest(),
                     threading.Event(),
                     SimpleNamespace(
                         base_url = "http://llama.test",
@@ -6425,13 +6358,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 await gate.wait()
                 raise httpx.ConnectError("delayed connectivity issue")
 
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = _monitor_entry(monitor)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
             payload = ChatCompletionRequest(
@@ -6442,13 +6369,9 @@ class TestApiMonitorProviderAndCompletionStreams:
             )
             response = await asyncio.wait_for(
                 _openai_passthrough_stream(
-                    Request(),
+                    _ConnectedRequest(),
                     threading.Event(),
-                    SimpleNamespace(
-                        base_url = "http://llama.test",
-                        context_length = 4096,
-                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                    ),
+                    _passthrough_backend(),
                     payload,
                     "chatcmpl-test",
                     "chatcmpl-test",
@@ -6488,13 +6411,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     cancelled.set()
                     raise
 
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = _monitor_entry(monitor)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
             payload = ChatCompletionRequest(
@@ -6505,13 +6422,9 @@ class TestApiMonitorProviderAndCompletionStreams:
             )
             task = asyncio.create_task(
                 _openai_passthrough_stream(
-                    Request(),
+                    _ConnectedRequest(),
                     threading.Event(),
-                    SimpleNamespace(
-                        base_url = "http://llama.test",
-                        context_length = 4096,
-                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                    ),
+                    _passthrough_backend(),
                     payload,
                     "chatcmpl-test",
                     "chatcmpl-test",
@@ -6548,13 +6461,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 returned.set()
                 return upstream_response
 
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = _monitor_entry(monitor)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
             payload = ChatCompletionRequest(
@@ -6565,13 +6472,9 @@ class TestApiMonitorProviderAndCompletionStreams:
             )
             response = await asyncio.wait_for(
                 _openai_passthrough_stream(
-                    Request(),
+                    _ConnectedRequest(),
                     threading.Event(),
-                    SimpleNamespace(
-                        base_url = "http://llama.test",
-                        context_length = 4096,
-                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                    ),
+                    _passthrough_backend(),
                     payload,
                     "chatcmpl-test",
                     "chatcmpl-test",
@@ -7812,10 +7715,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_task_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
             async def fake_send(*_args, **_kwargs):
                 return httpx.Response(200, content = b"")
 
@@ -7835,26 +7734,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                 messages = [ChatMessage(role = "user", content = "hi")],
                 stream = True,
                 cancel_id = cancel_id,
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
+                tools = [_LOOKUP_TOOL],
             )
 
             response = await _openai_passthrough_stream(
-                Request(),
+                _ConnectedRequest(),
                 threading.Event(),
-                SimpleNamespace(
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    _auth_headers = {"Authorization": "Bearer secret"},
-                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                ),
+                _passthrough_backend(_auth_headers = {"Authorization": "Bearer secret"}),
                 payload,
                 "gguf",
                 "chatcmpl-test",
@@ -7990,12 +7876,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             response = await _openai_passthrough_stream(
                 Request(),
                 threading.Event(),
-                SimpleNamespace(
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    effective_parallel_slots = 1,
-                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                ),
+                _passthrough_backend(effective_parallel_slots = 1),
                 payload,
                 "gguf",
                 "chatcmpl-test",
@@ -8094,12 +7975,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             response = await _openai_passthrough_stream(
                 Request(),
                 threading.Event(),
-                SimpleNamespace(
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    effective_parallel_slots = 1,
-                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                ),
+                _passthrough_backend(effective_parallel_slots = 1),
                 payload,
                 "gguf",
                 "chatcmpl-test",
@@ -8545,24 +8421,12 @@ class TestApiMonitorProviderAndCompletionStreams:
             payload = ChatCompletionRequest(
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
+                tools = [_LOOKUP_TOOL],
             )
 
             with pytest.raises(asyncio.CancelledError):
                 await _openai_passthrough_non_streaming(
-                    SimpleNamespace(
-                        base_url = "http://llama.test",
-                        context_length = 4096,
-                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                    ),
+                    _passthrough_backend(),
                     payload,
                     "gguf",
                     monitor_id = monitor_id,
@@ -8589,10 +8453,6 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def aclose(self):
                     self.closed.set()
 
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
             client = HangingCancelableClient()
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
@@ -8606,28 +8466,16 @@ class TestApiMonitorProviderAndCompletionStreams:
             payload = ChatCompletionRequest(
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
+                tools = [_LOOKUP_TOOL],
             )
 
             task = asyncio.create_task(
                 _openai_passthrough_non_streaming(
-                    SimpleNamespace(
-                        base_url = "http://llama.test",
-                        context_length = 4096,
-                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                    ),
+                    _passthrough_backend(),
                     payload,
                     "gguf",
                     monitor_id = monitor_id,
-                    request = Request(),
+                    request = _ConnectedRequest(),
                     cancel_event = cancel_event,
                 )
             )
@@ -8696,15 +8544,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
                 cancel_id = cancel_id,
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
+                tools = [_LOOKUP_TOOL],
             )
 
             task = asyncio.create_task(
@@ -8765,24 +8605,12 @@ class TestApiMonitorProviderAndCompletionStreams:
             payload = ChatCompletionRequest(
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
+                tools = [_LOOKUP_TOOL],
             )
 
             task = asyncio.create_task(
                 _openai_passthrough_non_streaming(
-                    SimpleNamespace(
-                        base_url = "http://llama.test",
-                        context_length = 4096,
-                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                    ),
+                    _passthrough_backend(),
                     payload,
                     "gguf",
                     monitor_id = monitor_id,
@@ -8828,9 +8656,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                         },
                     )
 
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = _monitor_entry(monitor)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(
                 inf_mod,
                 "nonstreaming_client",
@@ -8839,24 +8665,11 @@ class TestApiMonitorProviderAndCompletionStreams:
             payload = ChatCompletionRequest(
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
+                tools = [_LOOKUP_TOOL],
             )
 
             response = await _openai_passthrough_non_streaming(
-                SimpleNamespace(
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    _auth_headers = {"Authorization": "Bearer secret"},
-                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                ),
+                _passthrough_backend(_auth_headers = {"Authorization": "Bearer secret"}),
                 payload,
                 "gguf",
                 monitor_id = monitor_id,
@@ -8916,23 +8729,11 @@ class TestApiMonitorProviderAndCompletionStreams:
                 messages = [ChatMessage(role = "user", content = "hi")],
                 stream = True,
                 stream_options = {"include_usage": True},
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
+                tools = [_LOOKUP_TOOL],
             )
 
             await _openai_passthrough_non_streaming(
-                SimpleNamespace(
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                ),
+                _passthrough_backend(),
                 payload,
                 "gguf",
                 monitor_id = monitor_id,
@@ -8969,10 +8770,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         # stream open without sending [DONE]; the terminal classifier must end
         # the client stream promptly instead of hanging on the open socket.
         async def _run():
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
             async def fake_send(*_args, **_kwargs):
                 return httpx.Response(200, content = b"")
 
@@ -8996,25 +8793,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
                 stream = True,
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
+                tools = [_LOOKUP_TOOL],
             )
 
             response = await _openai_passthrough_stream(
-                Request(),
+                _ConnectedRequest(),
                 threading.Event(),
-                SimpleNamespace(
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                ),
+                _passthrough_backend(),
                 payload,
                 "gguf",
                 "chatcmpl-test",
@@ -9040,10 +8825,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         # the usage chunk; if that never arrives, the post-terminal grace path
         # must close with a clean [DONE], not an in-band error.
         async def _run():
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
             async def fake_send(*_args, **_kwargs):
                 return httpx.Response(200, content = b"")
 
@@ -9062,25 +8843,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                 messages = [ChatMessage(role = "user", content = "hi")],
                 stream = True,
                 stream_options = {"include_usage": True},
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
+                tools = [_LOOKUP_TOOL],
             )
 
             response = await _openai_passthrough_stream(
-                Request(),
+                _ConnectedRequest(),
                 threading.Event(),
-                SimpleNamespace(
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                ),
+                _passthrough_backend(),
                 payload,
                 "gguf",
                 "chatcmpl-test",
@@ -9099,10 +8868,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_stall_after_data_emits_error(self, monkeypatch):
         async def _run():
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
             async def fake_send(*_args, **_kwargs):
                 return httpx.Response(200, content = b"")
 
@@ -9119,25 +8884,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
                 stream = True,
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
+                tools = [_LOOKUP_TOOL],
             )
 
             response = await _openai_passthrough_stream(
-                Request(),
+                _ConnectedRequest(),
                 threading.Event(),
-                SimpleNamespace(
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                ),
+                _passthrough_backend(),
                 payload,
                 "gguf",
                 "chatcmpl-test",
