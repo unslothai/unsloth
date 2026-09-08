@@ -5065,13 +5065,9 @@ def _apply_current_date_prompt(
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
 
 
-# Servers that carry a prompt of their own and yield it to a *leading* request system turn.
-# Ollama's ChatHandler prepends the Modelfile SYSTEM only when `req.Messages[0].Role != "system"`
-# (server/routes.go), and /v1/chat/completions is routed through ChatMiddleware into that same
-# handler, so the OpenAI-compatible endpoint Studio talks to obeys the rule too. The test is on
-# the first message alone: a system turn further down the list does not displace the Modelfile
-# prompt, which is why only the synthesized turn below -- always prepended at index 0 -- has to
-# be withheld.
+# Ollama applies the Modelfile SYSTEM only when `req.Messages[0].Role != "system"` (its
+# server/routes.go ChatHandler, which /v1/chat/completions also routes into), so only a turn at
+# index 0 displaces it.
 _MODELFILE_SYSTEM_PROVIDERS = frozenset({"ollama"})
 
 
@@ -5086,9 +5082,8 @@ def _prepend_current_date_to_messages(
 
     The local path prefixes ``system_prompt`` before the messages exist; an external payload is
     assembled first, so the date goes onto its leading system turn instead. When there is no
-    such turn one is synthesized, except for ``provider_type`` servers that keep a prompt of
-    their own (``_MODELFILE_SYSTEM_PROVIDERS``): there the caller's silence is what lets the
-    server's prompt apply, so the date is dropped rather than sent in its place.
+    such turn one is synthesized, except for ``_MODELFILE_SYSTEM_PROVIDERS``, where it is
+    dropped: the caller's silence is what lets the server's own prompt apply.
     """
     if request is not None and not _wants_current_date(request):
         if not include_api_key or _request_is_internal_workflow(request):
@@ -5129,13 +5124,8 @@ def _prepend_current_date_to_messages(
             msg["content"] = [{"type": "text", "text": date_line}, *copied_parts]
             return copied
     if provider_type in _MODELFILE_SYSTEM_PROVIDERS:
-        # Nothing above matched, so the only place left for the date is a turn synthesized at
-        # index 0 -- the one shape that costs an Ollama caller their Modelfile SYSTEM (#10436).
-        # Dropping the date is the smaller loss. A Studio-composed system turn is still dated,
-        # above: choosing to write one is already choosing to override the Modelfile prompt.
-        # Narrow on purpose, and not a guarantee that the Modelfile prompt always survives --
-        # the Full access nudge can still synthesize a system turn after this point, via
-        # _append_to_system_message, exactly as it did before this guard existed.
+        # Synthesizing here is what costs an Ollama caller the Modelfile SYSTEM (#10436). Not a
+        # guarantee: the Full access nudge can still add one via _append_to_system_message.
         return messages
     return [{"role": "system", "content": date_line}, *copied]
 

@@ -198,8 +198,7 @@ class TestExternalProviderMessages:
         assert out[1] == {"role": "user", "content": "hi"}
 
     def test_ollama_keeps_its_modelfile_system_prompt_when_studio_sends_none(self):
-        # Ollama's /v1 endpoint swaps the Modelfile SYSTEM for any request-level system
-        # turn, so a synthesized date-only turn silently drops the user's prompt (#10436).
+        # Ollama applies the Modelfile SYSTEM only while messages[0] is not a system turn (#10436).
         import routes.inference as inference
 
         messages = [{"role": "user", "content": "hi"}]

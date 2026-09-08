@@ -221,9 +221,7 @@ def test_an_api_request_without_resolved_server_tools_stays_undated(monkeypatch)
 def test_an_ollama_connection_keeps_its_modelfile_prompt_when_studio_sends_no_system_turn(
     monkeypatch,
 ):
-    # Ollama prepends the Modelfile SYSTEM only when the request's FIRST message is not a system
-    # turn, so a synthesized date-only turn at index 0 replaces the user's prompt with a date
-    # (#10436).
+    # A synthesized date-only turn at index 0 is what displaces the Modelfile SYSTEM (#10436).
     inf = _install(monkeypatch, "ollama")
     monkeypatch.setattr(
         inf,
@@ -239,13 +237,7 @@ def test_an_ollama_connection_keeps_its_modelfile_prompt_when_studio_sends_no_sy
 
 
 def test_an_ollama_connection_still_dates_a_studio_composed_system_prompt(monkeypatch):
-    """The other half of the guard, at the route rather than at the helper.
-
-    Writing a Studio system prompt is already choosing to override the Modelfile SYSTEM, so
-    that turn is dated exactly as every other provider's is. Pinned here because a guard that
-    over-fires would silently drop the date for every Ollama user, not just the empty-prompt
-    ones, and the helper-level test cannot see the provider_type the route resolves.
-    """
+    """Over-firing would drop the date for every Ollama user, not just empty-prompt ones."""
     inf = _install(monkeypatch, "ollama")
     monkeypatch.setattr(
         inf,
@@ -271,12 +263,7 @@ def test_an_ollama_connection_still_dates_a_studio_composed_system_prompt(monkey
 
 @pytest.mark.parametrize("provider_type", ("llama_cpp", "vllm", "custom"))
 def test_the_other_self_hosted_providers_still_get_the_synthesized_turn(monkeypatch, provider_type):
-    """The exemption is Ollama's alone.
-
-    llama.cpp, vLLM and a generic OpenAI-compatible server have no Modelfile SYSTEM to lose,
-    so withholding the date from them would be a regression rather than a fix. Pinned so that
-    widening _MODELFILE_SYSTEM_PROVIDERS is a deliberate act with a failing test behind it.
-    """
+    """These have no Modelfile SYSTEM to lose, so the exemption must not widen to them."""
     inf = _install(monkeypatch, provider_type)
     monkeypatch.setattr(
         inf,
