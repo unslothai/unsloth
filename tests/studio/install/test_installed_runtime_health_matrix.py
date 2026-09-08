@@ -307,9 +307,7 @@ def required_runtime_files(platform: str, backend: str, marker: dict) -> list[st
     # archive ship neither, and requiring one of those would reinstall forever.
     if platform == "linux":
         build = ILP._release_build_number(marker.get("tag"))
-        owed = source in {"published", "upstream"} and (
-            build is None or build >= _IMPL_SPLIT_BUILD
-        )
+        owed = source in {"published", "upstream"} and (build is None or build >= _IMPL_SPLIT_BUILD)
         if not owed:
             files.remove("libllama-server-impl.so")
             files.remove("libllama-quantize-impl.so")

@@ -542,9 +542,7 @@ def test_nothing_installed_leaves_the_runtime_unknown(tmp_path):
     assert ILP.installed_runtime_health(tmp_path / "nothing-here") is None
 
 
-@pytest.mark.parametrize(
-    "victim", ["libllama-server-impl.so", "libllama-quantize-impl.so"]
-)
+@pytest.mark.parametrize("victim", ["libllama-server-impl.so", "libllama-quantize-impl.so"])
 def test_quarantining_a_split_entrypoint_library_is_reported_broken(victim, tmp_path):
     """The other half of the upstream impl split, on the side that had no group for it.
 
@@ -570,9 +568,9 @@ def test_quarantining_a_split_entrypoint_library_is_reported_broken(victim, tmp_
     (tmp_path / "vault").mkdir(exist_ok = True)
     shutil.move(str(library), str(tmp_path / "vault" / victim))
     verdict = ILP.installed_runtime_health(root, host = host)
-    assert verdict is not None and verdict[0] is False, (
-        f"a runtime missing {victim} cannot load, but the probe said {verdict}"
-    )
+    assert (
+        verdict is not None and verdict[0] is False
+    ), f"a runtime missing {victim} cannot load, but the probe said {verdict}"
     # And the two answers still agree, which is the property that keeps repair from looping.
     assert ILP._existing_install_runs(root, host) is False
 
@@ -584,12 +582,8 @@ def test_an_older_monolithic_linux_release_is_not_asked_for_the_impl_libraries()
     would reinstall it on every check forever. Same build number as the Windows side, and
     for the same reason: it is one upstream commit, not one platform's packaging.
     """
-    before = ILP.runtime_payload_health_groups(
-        "linux-cuda", source_label = "published", tag = "b9279"
-    )
-    after = ILP.runtime_payload_health_groups(
-        "linux-cuda", source_label = "published", tag = "b9283"
-    )
+    before = ILP.runtime_payload_health_groups("linux-cuda", source_label = "published", tag = "b9279")
+    after = ILP.runtime_payload_health_groups("linux-cuda", source_label = "published", tag = "b9283")
     flat_before = {pattern for group in before for pattern in group}
     flat_after = {pattern for group in after for pattern in group}
     assert "libllama-server-impl.so*" not in flat_before
