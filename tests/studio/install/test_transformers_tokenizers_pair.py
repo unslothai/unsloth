@@ -234,26 +234,47 @@ def _uv() -> str:
     return uv
 
 
+# uv's wording when the failure is a resolution verdict rather than a trip to the index.
+# Everything else -- a 429, a proxy, a DNS failure, an index 500 -- is not evidence about
+# this repo's pins, so it skips. Fail closed on the resolver's own answer, open on the
+# network: this test runs in the ordinary CPU lane, and a red X there has to mean the pins
+# are wrong, never that PyPI was busy.
+_RESOLVER_VERDICT_MARKERS = (
+    "no solution found",
+    "unsatisfiable",
+    "because",
+    "conflict",
+)
+# Long enough for a cold cache on a loaded runner, short enough that a hung index cannot
+# hold a CI job for ten minutes.
+_COMPILE_TIMEOUT_S = 180
+
+
 def _compile(args: list[str], stdin: str | None = None) -> dict[str, str]:
-    """Resolved name -> version for one `uv pip compile`, or skip if the index is not
-    reachable. A network-flaky run must not read as a dependency regression."""
-    proc = subprocess.run(
-        [_uv(), "pip", "compile", *args],
-        input = stdin,
-        capture_output = True,
-        text = True,
-        timeout = 600,
-        cwd = REPO_ROOT,
-        # uv resolves aarch64-apple-darwin against macOS 12 by default, and mlx ships
-        # macosx_14_0 wheels only, so the resolve would fail for a reason that has nothing
-        # to do with the pair under test. Pin the deployment target instead of inheriting
-        # whatever the host happens to export.
-        env = {**os.environ, "MACOSX_DEPLOYMENT_TARGET": "15.0"},
-    )
+    """Resolved name -> version for one `uv pip compile`, or skip when the index rather
+    than the requirements is what failed."""
+    try:
+        proc = subprocess.run(
+            [_uv(), "pip", "compile", *args],
+            input = stdin,
+            capture_output = True,
+            text = True,
+            timeout = _COMPILE_TIMEOUT_S,
+            cwd = REPO_ROOT,
+            # uv resolves aarch64-apple-darwin against macOS 12 by default, and mlx ships
+            # macosx_14_0 wheels only, so the resolve would fail for a reason that has nothing
+            # to do with the pair under test. Pin the deployment target instead of inheriting
+            # whatever the host happens to export.
+            env = {**os.environ, "MACOSX_DEPLOYMENT_TARGET": "15.0"},
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip(f"uv pip compile exceeded {_COMPILE_TIMEOUT_S}s; treating as index trouble")
+    except OSError as exc:  # uv vanished mid-run, no fd, no memory
+        pytest.skip(f"uv pip compile could not run: {exc}")
     if proc.returncode != 0:
         stderr = proc.stderr or ""
-        if any(word in stderr.lower() for word in ("network", "dns", "timed out", "connect")):
-            pytest.skip(f"package index unreachable: {stderr.strip()[:200]}")
+        if not any(marker in stderr.lower() for marker in _RESOLVER_VERDICT_MARKERS):
+            pytest.skip(f"uv pip compile failed without a resolver verdict: {stderr.strip()[:300]}")
         pytest.fail(f"uv pip compile failed:\n{stderr[-3000:]}")
     resolved = {}
     for line in proc.stdout.splitlines():
@@ -269,10 +290,12 @@ def _declared_window(version: str) -> SpecifierSet:
     table, so the check keeps being true after a pin moves."""
     url = f"https://pypi.org/pypi/transformers/{version}/json"
     try:
-        with urllib.request.urlopen(url, timeout = 60) as response:
+        with urllib.request.urlopen(url, timeout = 30) as response:
             metadata = json.load(response)
-    except (urllib.error.URLError, TimeoutError) as exc:
-        pytest.skip(f"PyPI unreachable: {exc}")
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        # Same rule as _compile: an index that is slow, throttling or serving something
+        # that is not JSON says nothing about this repo's pins.
+        pytest.skip(f"PyPI unreachable or unreadable: {exc}")
     for raw in metadata["info"].get("requires_dist") or []:
         try:
             req = Requirement(raw)
