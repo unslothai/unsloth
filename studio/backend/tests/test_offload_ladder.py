@@ -1180,3 +1180,90 @@ def test_a_repeated_rung_class_is_walked_once():
     assert plan.spills_anything
     assert plan.ot_patterns == ref.ot_patterns
     assert moved_bytes(plan, layout) >= deficit_of(layout, 14)
+
+
+def test_an_interval_hybrid_sums_the_attention_rows_of_its_per_layer_vector():
+    """A hybrid that names both full_attention_interval and a per-layer
+    head_count_kv vector keeps zeros on its recurrent rows. Truncating the vector
+    to the first n_attention entries summed mostly zeros and priced the cache at
+    a fraction of its size; the positive rows are the attention layers."""
+    from core.inference import offload_layout as OL
+
+    fields = {
+        "general.architecture": "kda",
+        "kda.block_count": 6,
+        "kda.full_attention_interval": 2,
+        "kda.attention.head_count_kv": [4, 0, 4, 0, 4, 0],
+        "kda.attention.head_count": 8,
+        "kda.embedding_length": 256,
+        "kda.attention.key_length": 32,
+        "kda.attention.value_length": 32,
+    }
+
+    class _F:
+        def __init__(self, v):
+            self.v = v
+
+        def contents(self):
+            return self.v
+
+    class _T:
+        def __init__(self, i):
+            self.name = f"blk.{i}.attn_q.weight"
+            self.n_bytes = 1024
+
+    class _R:
+        tensors = tuple(_T(i) for i in range(6))
+
+        def __init__(self):
+            self.fields = {k: _F(v) for k, v in fields.items()}
+
+    layout = OL._layout_from_reader(_R())
+    assert layout.n_attention_layers == 3
+    assert layout.kv_bytes_per_token_f16 == 12 * (32 + 32) * 2
+
+
+def test_the_gate_scores_a_reduced_slot_plan_at_the_micro_batch_it_launches(monkeypatch):
+    """The emitted batch floor follows the slot count, so a plan rung 1 reduced
+    launches at a smaller micro-batch than the caller's; scored at the caller's,
+    its prefill stream was priced at twice its real size."""
+    from core.inference import offload_planner as planner
+
+    layout = graded_moe()
+    ctx = 4096
+    floor = GIB
+    table = {2: floor, 1: floor // 2}
+    from core.inference.offload_planner import all_resident_bytes
+
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 2)
+    short = (floor // 2 + layout.recurrent_bytes) + layout.blocks[0].ffn_down_bytes // 2
+    card = needed + GIB - short
+    seen = []
+    real = planner.rank
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("n_ubatch"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(planner, "rank", spy)
+    base = dict(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        n_parallel = 2,
+        kv_bytes_floor_by_parallel = table,
+        require_cost_win = True,
+        n_ubatch = 256,
+    )
+    plan = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        ctx,
+        kv_bytes_floor = floor,
+        opts = opts(**base, n_ubatch_by_parallel = {2: 256, 1: 64}),
+    )
+    assert plan.n_parallel == 1, plan.reason
+    assert seen and seen[-1] == 64, seen
+    seen.clear()
+    plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
+    assert seen and seen[-1] == 256, seen

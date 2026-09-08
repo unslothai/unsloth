@@ -21703,6 +21703,18 @@ class LlamaCppBackend:
                         if _planner_owns_fit
                         else {}
                     )
+                    # The micro-batch each of those slot counts launches at, so the
+                    # gate scores a reduced-slot candidate at its own prefill stream.
+                    _spill_ubatch_by_parallel = (
+                        {
+                            _p: _ub
+                            for _p in range(_spill_min_parallel, int(n_parallel or 1) + 1)
+                            for _ub in (_ubatch_for_slots(_p),)
+                            if _ub
+                        }
+                        if _planner_owns_fit
+                        else {}
+                    )
                     # --cache-ram bounded to the host RAM the fallback leaves free, so
                     # the prompt cache is a term the load-mode rule can see rather than
                     # an uncounted 8 GiB. Only when the user typed none and the planner
@@ -21838,6 +21850,7 @@ class LlamaCppBackend:
                         "kv_unified": bool(planned_kv_unified),
                         "min_parallel": _spill_min_parallel,
                         "kv_bytes_floor_by_parallel": _spill_floor_by_parallel,
+                        "n_ubatch_by_parallel": _spill_ubatch_by_parallel,
                         # The recurrent half of those figures, per slot.
                         # _estimate_kv_cache_bytes returns ONE number for the whole
                         # hybrid memory, and the planner prices the state itself from
@@ -27987,6 +28000,11 @@ class LlamaCppBackend:
                     if int(inputs.get("n_ubatch") or 0) > 0
                     else PlanOptions.n_ubatch
                 ),
+                n_ubatch_by_parallel = {
+                    int(_p): int(_v)
+                    for _p, _v in (inputs.get("n_ubatch_by_parallel") or {}).items()
+                    if int(_v or 0) > 0
+                },
                 # An --embedding server never decodes: llama-server returns the
                 # pooled embedding and stops, so there is no generation phase for
                 # a spill's generation advantage to be realised in. Scoring one

@@ -459,6 +459,13 @@ class PlanOptions:
     # the one shape (sliding window, no map) where there is none and rung 1 is
     # skipped.
     kv_bytes_floor_by_parallel: Mapping[int, int] = field(default_factory = dict)
+    # The micro-batch the launch normalises at each slot count, keyed like the
+    # floor map. The emitted batch floor is max(slots, 2), so a first-class
+    # batch of 1 launches at micro-batch 4 with four slots and 2 with one; the
+    # gate scores a candidate at the batch ITS slot count launches, or a plan
+    # rung 1 reduced is priced at a prefill stream twice its real size. Empty
+    # means n_ubatch at every count.
+    n_ubatch_by_parallel: Mapping[int, int] = field(default_factory = dict)
     # The MTP nextn block plus its cache, or a separate draft model plus its cache,
     # on the device. Charged unless rung 2 drops it. ``draft_drop_penalty_frac`` is
     # the generation cost of losing the draft, as a fraction of the plan's request
@@ -1622,12 +1629,27 @@ def plan_placement(
                 kv_on_host = opts.kv_on_host,
                 outside_layout_bytes = _outside_layout_bytes(opts, relieved),
             )
-            hi = min(hi, n_ctx) // 256 * 256
+            top = min(hi, n_ctx) // 256 * 256
+            hi = top
             if declined is not None and hi >= n_ctx:
                 # The requested context was feasible and refused; start below it.
                 hi = (n_ctx - step) // 256 * 256
+            rungs: list[int] = []
             ctx = hi
             while ctx >= opts.min_ctx:
+                rungs.append(ctx)
+                ctx -= step
+            # The lattice steps down from the top and lands on min_ctx only by
+            # coincidence: a refused 8960 minus a 1024 step is 7936, below an 8192
+            # minimum, and the ladder never asked about 8192 at all. The minimum
+            # is the last rung whenever it is feasible and not the refused request.
+            if (
+                opts.min_ctx <= top
+                and opts.min_ctx < n_ctx
+                and (not rungs or rungs[-1] > opts.min_ctx)
+            ):
+                rungs.append(opts.min_ctx)
+            for ctx in rungs:
                 plan = _plan_at(
                     layout,
                     opts,
@@ -1642,7 +1664,6 @@ def plan_placement(
                 )
                 if plan is not None and not plan.declined_by_gate:
                     return plan
-                ctx -= step
 
     if declined is not None:
         return declined
@@ -2518,7 +2539,7 @@ def _cost_gate(
         opts.host,
         n_generated = opts.workload_generated_tokens,
         n_prompt = n_prompt,
-        n_ubatch = opts.n_ubatch,
+        n_ubatch = opts.n_ubatch_by_parallel.get(n_slots) or opts.n_ubatch,
     )
     plan_ms = _score_of(plan, scored)
     fit_ms = _score_of(fallback, scored)

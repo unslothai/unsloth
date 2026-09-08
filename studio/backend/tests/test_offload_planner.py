@@ -2424,3 +2424,32 @@ def test_the_per_device_check_places_the_recurrent_state_on_the_rows_that_hold_i
         kv_layer_weights = [1] * n,
     )
     assert uniform is not None and "recurrent state" in uniform
+
+
+def test_the_context_ladder_tests_the_minimum_context_before_giving_up(monkeypatch):
+    """The lattice steps down from the refused context and lands on min_ctx only
+    by coincidence: 8960 refused, minus a 1024 step, is 7936, below an 8192
+    minimum, so the ladder returned the refusal without ever asking about 8192."""
+    from core.inference import offload_planner as planner
+    from core.inference.offload_planner import ContextPolicy, Plan
+
+    layout = _bound_layout(resident_per_block = 100 * MIB)
+    seen = []
+
+    def fake(_layout, _opts, ctx, *args, **kwargs):
+        seen.append(ctx)
+        if ctx == 8192:
+            return Plan(changed = True, n_ctx = ctx, ot_patterns = ("x",), spilled_blocks = (1,))
+        return Plan(n_ctx = ctx, declined_by_gate = True, reason = "gate")
+
+    monkeypatch.setattr(planner, "_plan_at", fake)
+    opts = PlanOptions(
+        overhead_bytes_per_device = GIB,
+        context_policy = ContextPolicy.FIT_ONLY,
+        min_ctx = 8192,
+        ctx_step = 1024,
+    )
+    plan = plan_placement(layout, [8 * GIB], 256 * GIB, 8960, opts = opts)
+    assert seen[0] == 8960
+    assert seen[-1] == 8192
+    assert plan.n_ctx == 8192 and not plan.declined_by_gate

@@ -704,3 +704,15 @@ def test_a_pass_through_zero_context_pins_the_native_window_the_plan_is_priced_a
     # Without the pin the same launch is Auto, and the planner may shrink it last.
     _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan)
     assert seen["inputs"]["context_policy_fit_only"] is True
+
+
+def test_the_micro_batch_map_follows_the_slots_rung_1_may_lower(tmp_path, monkeypatch):
+    """The batch floor is max(slots, 2), so a first-class batch of 1 launches at
+    micro-batch 4 with four slots and 2 with one. The gate is handed the value
+    for every count rung 1 may step to, keyed like the cache floor map."""
+    plan = Plan(reason = "declined")
+    _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan, n_batch = 1)
+    ub = seen["inputs"]["n_ubatch_by_parallel"]
+    assert sorted(ub) == [1, 2, 3, 4]
+    assert ub[4] == seen["inputs"]["n_ubatch"]
+    assert ub[1] < ub[4]
