@@ -7,9 +7,10 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 // cycle. Import it from there directly rather than through this module.
 import { resolveQwenThinkingParams } from "./qwen-sampling-table";
 
-/** Apply Qwen3-family recommended sampling parameters when the Think toggle changes. Qwen3.5,
- *  Qwen3.6 and Qwen3.8 also need a presence_penalty bump on top of the Qwen3 defaults. Used by
- *  both the thread assistant UI and the shared chat composer. */
+/**
+ * Apply Qwen3-family recommended sampling when the Think toggle changes.
+ * Shared by the thread assistant UI and the chat composer so both stay in sync.
+ */
 export function applyQwenThinkingParams(thinkingOn: boolean): void {
   const store = useChatRuntimeStore.getState();
   const checkpoint = store.params.checkpoint?.toLowerCase() ?? "";

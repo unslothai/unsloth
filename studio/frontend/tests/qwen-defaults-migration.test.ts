@@ -27,6 +27,11 @@ const LEGACY_SNAPSHOT = {
   systemVariables: "",
   fastMode: false,
 };
+const PREVIOUS_QWEN38_THINKING_SNAPSHOT = {
+  ...LEGACY_SNAPSHOT,
+  minP: 0,
+  presencePenalty: 1.5,
+};
 
 function settingsFor(
   modelId: string,
@@ -57,16 +62,66 @@ test("migrates the complete legacy Qwen3.8 default snapshot", () => {
   assert.deepEqual(migrated.migratedModelIds, [QWEN38]);
   assert.equal(
     migrated.settings.inferenceParamsByModel?.[QWEN38]?.presencePenalty,
-    1.5,
+    0,
+  );
+  assert.equal(
+    migrated.settings.inferenceParamsByModel?.[QWEN38]?.temperature,
+    1,
   );
   assert.equal(migrated.settings.inferenceParamsByModel?.[QWEN38]?.minP, 0);
   assert.equal(migrated.settings.inferenceParams?.presencePenalty, 0);
   assert.equal(migrated.settings.inferenceParams?.minP, 0.01);
   assert.deepEqual(migrated.patch, {
     inferenceParamsByModel: {
-      [QWEN38]: { minP: 0, presencePenalty: 1.5 },
+      [QWEN38]: { temperature: 1, minP: 0 },
     },
   });
+});
+
+test("migrates only the Qwen3.8 thinking snapshot produced by the previous migration", () => {
+  const settings = settingsFor(QWEN38, PREVIOUS_QWEN38_THINKING_SNAPSHOT);
+  settings.inferenceParams = {
+    temperature: 0.6,
+    topP: 0.95,
+    minP: 0,
+    presencePenalty: 1.5,
+    maxTokens: 8192,
+  };
+  const migrated = migrateLegacyQwenDefaults(
+    settings,
+    QWEN38,
+    true,
+    true,
+    true,
+  );
+
+  assert.deepEqual(migrated.patch, {
+    inferenceParamsByModel: {
+      [QWEN38]: { temperature: 1, presencePenalty: 0 },
+    },
+    inferenceParams: { temperature: 1, presencePenalty: 0 },
+  });
+
+  const customized = settingsFor(QWEN38, {
+    ...PREVIOUS_QWEN38_THINKING_SNAPSHOT,
+    temperature: 0.61,
+  });
+  assert.equal(migrateLegacyQwenDefaults(customized, QWEN38, true).patch, null);
+
+  for (const modelId of [
+    "unsloth/Qwen3.5-9B-GGUF",
+    "unsloth/Qwen3.6-27B-MTP-GGUF",
+    "unsloth/Qwen3-8B-GGUF",
+  ]) {
+    const otherFamily = settingsFor(
+      modelId,
+      PREVIOUS_QWEN38_THINKING_SNAPSHOT,
+    );
+    assert.equal(
+      migrateLegacyQwenDefaults(otherFamily, modelId, true).patch,
+      null,
+    );
+  }
 });
 
 test("preserves context-derived token budgets while migrating sampling", () => {
@@ -87,8 +142,8 @@ test("preserves context-derived token budgets while migrating sampling", () => {
       maxTokens,
     );
     assert.deepEqual(migrated.patch?.inferenceParamsByModel?.[QWEN38], {
+      temperature: 1,
       minP: 0,
-      presencePenalty: 1.5,
     });
   }
 });
@@ -148,7 +203,7 @@ test("migrates only the active model when several legacy Qwen rows are saved", (
   assert.deepEqual(migrated.migratedModelIds, [QWEN38]);
   assert.equal(
     migrated.settings.inferenceParamsByModel?.[QWEN38]?.presencePenalty,
-    1.5,
+    0,
   );
   assert.deepEqual(
     migrated.settings.inferenceParamsByModel?.[qwen36Small],
@@ -171,25 +226,25 @@ test("normalizes a case-insensitive saved key to the active checkpoint", () => {
   assert.deepEqual(migrated.migratedModelIds, [QWEN38]);
   assert.equal(
     migrated.settings.inferenceParamsByModel?.[QWEN38]?.presencePenalty,
-    1.5,
+    0,
   );
   // The alias is migrated rather than dropped. The server merge only sets keys,
   // so a spelling removed here would stay legacy there and a later status
   // naming it would replay the stale row.
   assert.equal(
     migrated.settings.inferenceParamsByModel?.[lowerCaseKey]?.presencePenalty,
-    1.5,
+    0,
   );
   assert.deepEqual(migrated.patch?.inferenceParamsByModel?.[lowerCaseKey], {
+    temperature: 1,
     minP: 0,
-    presencePenalty: 1.5,
   });
   assert.deepEqual(
     migrated.patch?.inferenceParamsByModel?.[QWEN38],
     {
       ...LEGACY_SNAPSHOT,
+      temperature: 1,
       minP: 0,
-      presencePenalty: 1.5,
     },
   );
 });
@@ -256,10 +311,10 @@ test("external checkpoints are decoded before the family is matched", () => {
 
   const settings = settingsFor(encoded);
   const migrated = migrateLegacyQwenDefaults(settings, encoded, true);
-  assert.equal(
-    migrated.patch?.inferenceParamsByModel?.[encoded]?.presencePenalty,
-    1.5,
-  );
+  assert.deepEqual(migrated.patch?.inferenceParamsByModel?.[encoded], {
+    temperature: 1,
+    minP: 0,
+  });
 });
 
 test("matches presence-bump versions only at model-id boundaries", () => {
@@ -311,7 +366,10 @@ test("preserves a global-only install's context-derived token budget", () => {
 
   assert.equal(migrated.settings.inferenceParams?.maxTokens, 32768);
   assert.equal(migrated.patch?.inferenceParams?.maxTokens, undefined);
-  assert.equal(migrated.patch?.inferenceParams?.presencePenalty, 1.5);
+  assert.deepEqual(migrated.patch?.inferenceParams, {
+    temperature: 1,
+    minP: 0,
+  });
 });
 
 test("preserves customized optional fields in a global-only snapshot", () => {
