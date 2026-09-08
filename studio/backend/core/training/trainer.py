@@ -2455,19 +2455,33 @@ class UnslothTrainer:
         if eval_dataset is not None:
             # A separate split can carry a different schema to the train one. Warn and drop it
             # rather than failing a run whose training data is perfectly good.
-            try:
-                eval_dataset_raw = eval_dataset.cast_column(
-                    audio_col, Audio(sampling_rate = WHISPER_SAMPLE_RATE)
-                )
-                logger.info(
-                    f"Whisper eval: using the separate eval split ({len(eval_dataset_raw)} rows)\n"
-                )
-            except Exception as e:
+            #
+            # The column check has to be explicit: cast_column does not validate the name for a
+            # feature that defines decode_example, and Audio does, so casting a column the split
+            # does not have silently adds an all-null one instead of raising. Every row would
+            # then be skipped for a missing array and the split would vanish without a word.
+            eval_columns = list(getattr(eval_dataset, "column_names", None) or [])
+            missing = [c for c in (audio_col, text_col) if c not in eval_columns]
+            if missing:
                 self._record_warning(
-                    "The eval dataset could not be prepared for this audio model, so this run "
-                    f"has no evaluation: {e}"
+                    f"The eval dataset has no {' or '.join(missing)} column, so this run has no "
+                    f"evaluation. Its columns are: {eval_columns}"
                 )
-                eval_dataset_raw = None
+            else:
+                try:
+                    eval_dataset_raw = eval_dataset.cast_column(
+                        audio_col, Audio(sampling_rate = WHISPER_SAMPLE_RATE)
+                    )
+                    logger.info(
+                        "Whisper eval: using the separate eval split "
+                        f"({len(eval_dataset_raw)} rows)\n"
+                    )
+                except Exception as e:
+                    self._record_warning(
+                        "The eval dataset could not be prepared for this audio model, so this "
+                        f"run has no evaluation: {e}"
+                    )
+                    eval_dataset_raw = None
         elif eval_split:
             splits = dataset.train_test_split(test_size = 0.06, seed = 42)
             dataset = splits["train"]
@@ -2526,6 +2540,14 @@ class UnslothTrainer:
 
         if not train_data:
             raise ValueError("No valid examples after Whisper preprocessing")
+
+        if eval_dataset_raw and not eval_data and not self.should_stop:
+            # Every eval row was skipped for a missing array or empty text. Say so: the trainer
+            # branch reads an empty list as "no evaluation", which on its own is silent.
+            self._record_warning(
+                "No usable rows were left in the eval dataset after preprocessing, so this run "
+                "has no evaluation."
+            )
 
         return (train_data, eval_data)
 

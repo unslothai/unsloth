@@ -168,13 +168,20 @@ class _FakeAudioDataset:
 
     @property
     def column_names(self):
-        return (["audio"] if self._with_audio else []) + ["text"]
+        base = (["audio"] if self._with_audio else []) + ["text"]
+        return base + list(getattr(self, "_phantom_columns", []))
 
     def cast_column(self, column, feature):
+        """Mirrors datasets.Dataset.cast_column, including the part that surprises people.
+
+        cast_column only validates the column name for a feature without decode_example.
+        Audio has one, so casting a column the split does not have silently ADDS an all-null
+        column instead of raising, and every row is then skipped for a missing array.
+        """
         if column not in self.column_names:
-            raise ValueError(
-                f"Column {column} not in the dataset. Current columns: {self.column_names}"
-            )
+            phantom = _FakeAudioDataset(self._texts, with_audio = False)
+            phantom._phantom_columns = list(getattr(self, "_phantom_columns", [])) + [column]
+            return phantom
         return self
 
     def train_test_split(
@@ -195,6 +202,8 @@ class _FakeAudioDataset:
         row = {"text": self._texts[idx]}
         if self._with_audio:
             row["audio"] = {"array": [0.0] * 160, "sampling_rate": 16000}
+        for column in getattr(self, "_phantom_columns", []):
+            row[column] = None
         return row
 
 
@@ -241,7 +250,7 @@ def test_whisper_preprocess_without_eval_returns_none(audio_trainer):
     assert eval_data is None
 
 
-def test_whisper_unusable_eval_split_warns_instead_of_failing_the_run(audio_trainer):
+def test_whisper_eval_split_without_an_audio_column_warns(audio_trainer):
     audio_trainer.tokenizer = _FakeWhisperTokenizer()
 
     train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
@@ -475,7 +484,7 @@ def _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, *, eval_rows):
     monkeypatch.setattr(
         tmod,
         "DataCollatorSpeechSeq2SeqWithPadding",
-        lambda processor: (lambda f: f),
+        lambda processor: lambda f: f,
         raising = False,
     )
 
@@ -527,3 +536,66 @@ def test_whisper_trainer_branch_omits_eval_for_an_empty_split(audio_trainer, tmp
     assert trainer is not None
     assert not trainer.eval_dataset
     assert trainer.args.eval_strategy == "no"
+
+
+def test_whisper_eval_split_whose_rows_are_all_skipped_warns(audio_trainer):
+    """The split has the right columns but no usable rows, so eval_data comes back empty.
+    The trainer branch reads that as no evaluation, which on its own is silent."""
+
+    class _EmptyRows(_FakeAudioDataset):
+        def __getitem__(self, idx):
+            return {"audio": None, "text": ""}
+
+    audio_trainer.tokenizer = _FakeWhisperTokenizer()
+
+    train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
+        _audio_rows(["tr-1", "tr-2"]),
+        eval_split = None,
+        eval_dataset = _EmptyRows(["ev-1", "ev-2"]),
+    )
+
+    assert len(train_data) == 2
+    assert not eval_data
+    assert any("No usable rows" in w for w in audio_trainer.training_progress.warnings)
+
+
+def test_whisper_cancel_does_not_warn_about_the_eval_file(audio_trainer):
+    """A stop empties the eval pass too; that is the cancel, not the user's data."""
+    tokenizer = _FakeWhisperTokenizer()
+    real_extractor = tokenizer.feature_extractor
+    calls = {"n": 0}
+
+    def counting_extractor(array, sampling_rate = None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            audio_trainer.should_stop = True
+        return real_extractor(array, sampling_rate = sampling_rate)
+
+    tokenizer.feature_extractor = counting_extractor
+    audio_trainer.tokenizer = tokenizer
+
+    _train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
+        _audio_rows(["tr-1", "tr-2"]),
+        eval_split = None,
+        eval_dataset = _audio_rows(["ev-1"]),
+    )
+
+    assert not eval_data
+    assert not any("No usable rows" in w for w in audio_trainer.training_progress.warnings)
+
+
+def test_cast_column_really_does_not_validate_the_column_name():
+    """Pins the datasets behaviour the explicit column check exists for, so the test double
+    above cannot drift away from the library: Audio defines decode_example, so cast_column
+    takes the branch that writes the feature without checking the name."""
+    datasets = pytest.importorskip("datasets")
+
+    ds = datasets.Dataset.from_dict({"path": ["/a.wav"], "text": ["x"]})
+    cast = ds.cast_column("audio", datasets.Audio(sampling_rate = 16000))
+
+    assert "audio" in cast.column_names, "cast_column started validating; simplify the guard"
+    assert cast[0]["audio"] is None
+
+    with pytest.raises(ValueError):
+        # A feature without decode_example goes through Dataset.cast, which does validate.
+        ds.cast_column("audio", datasets.Value("string"))
