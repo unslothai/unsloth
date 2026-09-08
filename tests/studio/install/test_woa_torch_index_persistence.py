@@ -678,22 +678,22 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         "value, expected",
         [
             # Not opted out: CUDA is preferred, and the CPU fallback bundle is valid too.
-            ("", "windows-arm64-cuda,windows-arm64"),
-            ("1", "windows-arm64-cuda,windows-arm64"),
-            ("true", "windows-arm64-cuda,windows-arm64"),
-            ("0", "windows-arm64"),
-            ("false", "windows-arm64"),
-            ("no", "windows-arm64"),
-            ("off", "windows-arm64"),
-            ("OFF", "windows-arm64"),
-            (" 0 ", "windows-arm64"),
+            ("", "windows-arm64-cuda,windows-arm64,windows-vulkan"),
+            ("1", "windows-arm64-cuda,windows-arm64,windows-vulkan"),
+            ("true", "windows-arm64-cuda,windows-arm64,windows-vulkan"),
+            ("0", "windows-arm64,windows-vulkan"),
+            ("false", "windows-arm64,windows-vulkan"),
+            ("no", "windows-arm64,windows-vulkan"),
+            ("off", "windows-arm64,windows-vulkan"),
+            ("OFF", "windows-arm64,windows-vulkan"),
+            (" 0 ", "windows-arm64,windows-vulkan"),
         ],
     )
     def test_the_expected_kind_follows_the_opt_out(self, value: str, expected: str):
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index("$_arm64CudaOptOut =")
-        end = text.index('} else { @("windows-cuda") }', start) + len(
-            '} else { @("windows-cuda") }'
+        end = text.index('} else { @("windows-cuda", "windows-vulkan") }', start) + len(
+            '} else { @("windows-cuda", "windows-vulkan") }'
         )
         script = "\n".join(
             [
@@ -710,8 +710,8 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         """The flag is ARM64-only; an emulated x64 venv installs windows-cuda regardless."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index("$_arm64CudaOptOut =")
-        end = text.index('} else { @("windows-cuda") }', start) + len(
-            '} else { @("windows-cuda") }'
+        end = text.index('} else { @("windows-cuda", "windows-vulkan") }', start) + len(
+            '} else { @("windows-cuda", "windows-vulkan") }'
         )
         for value in ("", "0"):
             script = "\n".join(
@@ -722,7 +722,7 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
                 ]
             )
             done = _ps_ok(script, env = {**os.environ, "UNSLOTH_LLAMA_ARM64_CUDA": value})
-            assert done.stdout.strip().splitlines()[-1] == "windows-cuda"
+            assert done.stdout.strip().splitlines()[-1] == "windows-cuda,windows-vulkan"
 
     @requires_pwsh
     def test_the_opt_out_arm_stays_exclusive(self):
@@ -730,14 +730,14 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         the flag asks for, so the opt-out arm expects the CPU kind INSTEAD of the CUDA
         kind.
         """
-        assert self._kinds("0") == "windows-arm64", "opted out: CUDA is no longer valid"
-        assert self._kinds("") == "windows-arm64-cuda windows-arm64"
+        assert self._kinds("0") == "windows-arm64 windows-vulkan", "opted out: CUDA is no longer valid"
+        assert self._kinds("") == "windows-arm64-cuda windows-arm64 windows-vulkan"
 
     @staticmethod
     def _kinds(value: str) -> str:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index("$_arm64CudaOptOut =")
-        tail = '} else { @("windows-cuda") }'
+        tail = '} else { @("windows-cuda", "windows-vulkan") }'
         end = text.index(tail, start) + len(tail)
         script = "\n".join(
             [

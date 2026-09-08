@@ -6301,8 +6301,8 @@ if ($LocalLlamaCppLinked) {
                 $_arm64CudaOptOut = ("$env:UNSLOTH_LLAMA_ARM64_CUDA").Trim().ToLowerInvariant() -in @("0", "false", "no", "off")
                 # Still valid unopted: the selector falls back to it when no ARM64 CUDA asset exists.
                 $_nvidiaKinds = if (Test-WinArm64Venv) {
-                    if ($_arm64CudaOptOut) { @("windows-arm64") } else { @("windows-arm64-cuda", "windows-arm64") }
-                } else { @("windows-cuda") }
+                    if ($_arm64CudaOptOut) { @("windows-arm64", "windows-vulkan") } else { @("windows-arm64-cuda", "windows-arm64", "windows-vulkan") }
+                } else { @("windows-cuda", "windows-vulkan") }
                 # A probe that did not answer is not evidence the GPU is gone.
                 # Read here, not from the dependency pass, which $SkipPythonDeps skips whole.
                 $_woaEvidenceIndex = if ($WinArm64EffectiveTorchIndexUrl) { $WinArm64EffectiveTorchIndexUrl }
@@ -6316,7 +6316,7 @@ if ($LocalLlamaCppLinked) {
                     }
                 $_nvidiaEvidence = $HasNvidiaSmi -or ((Test-WinArm64Venv) -and $_woaEvidenceIndex -and
                     (Test-WoaPersistableIndex $_woaEvidenceIndex))
-                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip", "windows-vulkan") } elseif ($_nvidiaEvidence) { $_nvidiaKinds + "windows-vulkan" } else { @("windows-cpu", "windows-arm64", "windows-vulkan") }
+                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip", "windows-vulkan") } elseif ($_nvidiaEvidence) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64", "windows-vulkan") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
