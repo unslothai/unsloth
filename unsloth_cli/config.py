@@ -178,7 +178,10 @@ def _config_error_message(path: Path, error: ValidationError) -> str:
             lines.append(f"  - {_describe_unknown_key(loc)}")
         elif not loc:
             got = type(err.get("input")).__name__
-            lines.append(f"  - the top level must be a mapping of keys and sections, not a {got}")
+            article = "an" if got[:1].lower() in "aeiou" else "a"
+            lines.append(
+                f"  - the top level must be a mapping of keys and sections, not {article} {got}"
+            )
         else:
             field = ".".join(str(part) for part in loc) or "config"
             lines.append(f"  - {field}: {err.get('msg', 'invalid value')}")
@@ -194,7 +197,19 @@ def load_config(path: Optional[Path]) -> Config:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    text = path.read_text(encoding = "utf-8")
+    # utf-8-sig so a config saved by Notepad (which prepends a BOM) still loads; it is
+    # identical to utf-8 when no BOM is present.
+    try:
+        text = path.read_text(encoding = "utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise ConfigError(
+            f"Could not read config file: {path}\n"
+            f"  - {error}\n"
+            f"  - config files must be UTF-8; re-save it as UTF-8 and try again"
+        ) from None
+    except OSError as error:
+        raise ConfigError(f"Could not read config file: {path}\n  - {error}") from None
+
     if path.suffix.lower() in {".yaml", ".yml"}:
         try:
             data = yaml.safe_load(text)
@@ -203,9 +218,17 @@ def load_config(path: Optional[Path]) -> Config:
     else:
         import json
         try:
-            data = json.loads(text or "{}")
+            data = json.loads(text.strip() or "{}")
         except json.JSONDecodeError as error:
-            raise ConfigError(f"Could not parse config file: {path}\n  - {error}") from None
+            hint = (
+                ""
+                if path.suffix.lower() == ".json"
+                else (
+                    f"\n  - parsed as JSON because of the '{path.suffix}' extension; "
+                    f"name it .yaml or .yml for YAML"
+                )
+            )
+            raise ConfigError(f"Could not parse config file: {path}\n  - {error}{hint}") from None
 
     if data is None:
         data = {}

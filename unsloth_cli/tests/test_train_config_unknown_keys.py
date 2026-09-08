@@ -154,6 +154,78 @@ def test_an_empty_config_still_loads_defaults(tmp_path):
     assert load_config(_write(tmp_path, "")).training.num_epochs == 3
 
 
+def test_a_directory_reports_cleanly_instead_of_tracebacking(tmp_path):
+    """`path.read_text` sits outside the parse handlers, so a directory, an
+    unreadable file and a non-UTF-8 file used to escape as raw tracebacks even
+    after the parse step was wrapped."""
+    directory = tmp_path / "config.yaml"
+    directory.mkdir()
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(directory)
+
+    assert "Could not read config file" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("name", "raw"),
+    [
+        ("latin1", "model: café\n".encode("latin-1")),
+        ("utf16", "model: unsloth/Qwen2.5-0.5B\n".encode("utf-16")),
+    ],
+)
+def test_a_non_utf8_config_reports_cleanly_instead_of_tracebacking(tmp_path, name, raw):
+    path = tmp_path / f"{name}.yaml"
+    path.write_bytes(raw)
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+
+    message = str(excinfo.value)
+    assert "Could not read config file" in message
+    assert "UTF-8" in message
+
+
+@pytest.mark.parametrize("suffix", [".yaml", ".json"])
+def test_a_byte_order_mark_written_by_notepad_still_loads(tmp_path, suffix):
+    """Windows editors prepend a UTF-8 BOM; utf-8-sig drops it, plain utf-8 does not."""
+    body = (
+        "model: unsloth/Qwen2.5-0.5B\n"
+        if suffix == ".yaml"
+        else '{"model": "unsloth/Qwen2.5-0.5B"}'
+    )
+    path = tmp_path / f"config{suffix}"
+    path.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+
+    assert load_config(path).model == "unsloth/Qwen2.5-0.5B"
+
+
+def test_a_whitespace_only_json_config_loads_defaults_like_yaml_does(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text("   \n\t\n", encoding = "utf-8")
+
+    assert load_config(path).training.num_epochs == 3
+
+
+def test_an_unrecognised_extension_says_it_was_parsed_as_json(tmp_path):
+    path = tmp_path / "config.txt"
+    path.write_text("model: unsloth/Qwen2.5-0.5B\n", encoding = "utf-8")
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+
+    message = str(excinfo.value)
+    assert "parsed as JSON" in message
+    assert ".yaml" in message
+
+
+def test_a_top_level_scalar_reads_grammatically(tmp_path):
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(_write(tmp_path, "42\n"))
+
+    assert "not an int" in str(excinfo.value)
+
+
 @pytest.mark.parametrize(
     "body",
     [
