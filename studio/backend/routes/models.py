@@ -4788,12 +4788,12 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
 
     *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because
     doing it once up front strips a qualified key's own path punctuation and folds ``exp-a/`` into
-    ``expa/``. Directory-qualified keys keep their legacy bare spelling, since stored pins predate
-    them. Root-level H3 stems do not: a bare quant names both FL2VA and Ref2VA, and picking the
+    ``expa/``. Qualified keys keep their legacy bare spelling, since stored pins predate them. H3's
+    denoiser stems do not: a bare quant names both FL2VA and Ref2VA, and picking the
     first file would load a different task. Exact keys are used alone whenever any exist, and the
     label is the fallback for rows with no root-stem identity.
     """
-    from hub.utils.gguf import is_qualified_gguf_variant_key
+    from hub.utils.gguf import is_h3_denoiser_variant_key
     from utils.models.model_config import _gguf_variant_key
 
     label = _main_variant_gguf_label(rel_path)
@@ -4802,7 +4802,7 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
     key = _gguf_variant_key(rel_path)
     if _variant_keys_match(key, want):
         return 0
-    if is_qualified_gguf_variant_key(key) and "/" not in key.replace("\\", "/"):
+    if is_h3_denoiser_variant_key(key):
         return None
     return 1 if _normalized_quant_label(label) == _normalized_quant_label(want) else None
 

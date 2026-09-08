@@ -17,6 +17,7 @@ from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import (
+    accepts_bare_quant_alias,
     bare_quant_alias,
     extract_quant_token,
     gguf_variant_key,
@@ -253,9 +254,13 @@ def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     }
     if wanted in keys:
         return {wanted}
-    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names
-    # both partitions, so it must not delete either.
-    aliased = {key for key in keys if "/" in key and bare_quant_alias(key).lower() == wanted}
+    # Every qualified key but an H3 root stem, whose bare quant names both partitions, so it must
+    # not delete either.
+    aliased = {
+        key
+        for key in keys
+        if accepts_bare_quant_alias(key) and bare_quant_alias(key).lower() == wanted
+    }
     return aliased if len(aliased) == 1 else {wanted}
 
 

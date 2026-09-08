@@ -852,6 +852,12 @@ def is_h3_denoiser_variant_key(key: str) -> bool:
     )
 
 
+def accepts_bare_quant_alias(key: str) -> bool:
+    """Whether *key* may also answer to the bare quant token it qualifies. Eligibility only --
+    callers still require the match to be unique among the keys they hold."""
+    return is_qualified_gguf_variant_key(key) and not is_h3_denoiser_variant_key(key)
+
+
 def _is_quant_directory(segment: str) -> bool:
     """Whether a path segment names a quant (``Q6_K/``, ``Llama-3.3-70B-Instruct-Q6_K/``).
 
@@ -863,16 +869,34 @@ def _is_quant_directory(segment: str) -> bool:
     return _select_quant_match(segment) is not None
 
 
+_GGUF_NAME_EXTENSIONS_RE = re.compile(r"(?:\.[A-Za-z0-9]+)+$")
+
+
+def _quant_token_closes_name(filename: str) -> bool:
+    """Whether the basename ends at its quant token. Anything trailing it is a second build of
+    that quant (``-mtp``, ``-fp16``), not the same one."""
+    match, text = _locate_quant_match(filename)
+    stem = _quant_search_stem(filename)
+    if match is None or text != stem:
+        return True
+    tail = stem[match.end() :]
+    bpw = _GGUF_BPW_SUFFIX_RE.match(tail)
+    if bpw:
+        tail = tail[bpw.end() :]
+    return not _GGUF_NAME_EXTENSIONS_RE.sub("", tail)
+
+
 def gguf_variant_key(filename: str) -> str:
     """The persisted identity of a selectable GGUF variant.
 
     The bare quant token when that token names the file within its path -- the shape
     almost every repo uses, so this is byte-identical to the historical key there and
     every stored pin, manifest and marker keeps resolving. When the token does NOT
-    single the file out, because a sibling directory holds another checkpoint at the
-    same quant (``distilled/`` and ``distilled-1.1/`` beside the repo root), the key
-    is the file's :func:`gguf_variant_family` instead, which is unique within the
-    repo and which the loader already accepts as a spelling
+    single the file out -- because a sibling directory holds another checkpoint at the
+    same quant (``distilled/`` and ``distilled-1.1/`` beside the repo root), or because
+    the name carries a build tag past the token (``model-Q4_K_M-mtp.gguf`` beside
+    ``model-Q4_K_M.gguf``) -- the key is the file's :func:`gguf_variant_family` instead,
+    which is unique within the repo and which the loader already accepts as a spelling
     (``model_config._find_local_gguf_by_variant`` matches its shard-stripped relative
     path, as does ``llama_cpp._gguf_files_for_variant``).
 
@@ -890,6 +914,8 @@ def gguf_variant_key(filename: str) -> str:
         return _unknown_gguf_variant_key(path)
     parents = path.rpartition("/")[0]
     if any(segment and not _is_quant_directory(segment) for segment in parents.split("/")):
+        return _unknown_gguf_variant_key(path)
+    if not _quant_token_closes_name(path):
         return _unknown_gguf_variant_key(path)
     return quant
 
@@ -930,6 +956,11 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
     for variant in qualified:
         scope = _variant_scope_label(variant.filename).lower()
         scopes[scope] = scopes.get(scope, 0) + 1
+    # The key cannot read the listing, so a build tag qualifies it even with no plain sibling.
+    tokens: dict[str, int] = {}
+    for variant in variants:
+        if (token := extract_quant_token(variant.filename)) is not None:
+            tokens[token.lower()] = tokens.get(token.lower(), 0) + 1
     for variant in variants:
         token = extract_quant_token(variant.filename)
         h3_name = Path(variant.filename).name.lower()
@@ -945,6 +976,10 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
         if token is None:
             variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
         elif variant.quant.lower() != (_plain_key(variant) or "").lower():
+            # A lone root stem has no namesake to be told apart from, so it shows the quant alone.
+            if "/" not in variant.quant.replace("\\", "/") and tokens[token.lower()] < 2:
+                variant.display_label = token
+                continue
             # A key qualified by path: show the quant, plus what distinguishes it.
             collides = scopes.get(_variant_scope_label(variant.filename).lower(), 0) > 1
             variant.display_label = (

@@ -2750,6 +2750,24 @@ def _quant_token_with_bpw(filename: str) -> Optional[str]:
     return token
 
 
+# MIRROR of ``hub.utils.gguf._GGUF_NAME_EXTENSIONS_RE``.
+_GGUF_NAME_EXTENSIONS_RE = re.compile(r"(?:\.[A-Za-z0-9]+)+$")
+
+
+def _quant_token_closes_name(filename: str) -> bool:
+    """MIRROR of ``hub.utils.gguf._quant_token_closes_name``: whether the basename ends at its
+    quant token, so anything trailing it is a second build of that quant (``-mtp``, ``-fp16``)."""
+    match, text = _locate_quant_match(filename)
+    stem = _quant_search_stem(filename)
+    if match is None or text != stem:
+        return True
+    tail = stem[match.end() :]
+    bpw = _GGUF_BPW_SUFFIX_RE.match(tail)
+    if bpw:
+        tail = tail[bpw.end() :]
+    return not _GGUF_NAME_EXTENSIONS_RE.sub("", tail)
+
+
 def _gguf_variant_key(filename: str) -> str:
     """MIRROR of ``hub.utils.gguf.gguf_variant_key``; utils cannot import hub.
 
@@ -2770,6 +2788,9 @@ def _gguf_variant_key(filename: str) -> str:
         # directory naming something else is a different checkpoint and qualifies.
         if segment and _select_known_quant_match(segment) is None:
             return _gguf_variant_family(path)
+    # A build tag past the token is a second build of that quant, not the same one.
+    if not _quant_token_closes_name(path):
+        return _gguf_variant_family(path)
     return quant
 
 

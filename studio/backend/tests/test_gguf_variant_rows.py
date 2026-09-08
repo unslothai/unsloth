@@ -91,10 +91,15 @@ class _Sibling:
             "distilled-1.1/ltx-2.3-22b-distilled-1.1-Q6_K.gguf",
             "distilled-1.1/ltx-2.3-22b-distilled-1.1-Q6_K",
         ),
-        # A quant-named directory never overrides the basename, and a suffix after the
-        # quant does not qualify it: both are established spellings.
+        # A quant-named directory never overrides the basename.
         ("Q8_0/model-Q4_K_M.gguf", "Q4_K_M"),
-        ("BF16/gemma-4-12b-it-Q8_0-MTP-001-of-002.gguf", "Q8_0"),
+        # A build tag past the quant is a SECOND build of it, so it qualifies the key. Repos
+        # publish the tagged file beside the plain one and the bare token names both, which
+        # hid one of them and pointed the surviving row at whichever sorted first.
+        (
+            "BF16/gemma-4-12b-it-Q8_0-MTP-001-of-002.gguf",
+            "BF16/gemma-4-12b-it-Q8_0-MTP",
+        ),
         # No quant anywhere: unchanged fallback.
         ("weights/model.gguf", "weights/model"),
     ],

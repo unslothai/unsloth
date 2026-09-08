@@ -29,6 +29,7 @@ from hub.utils.gguf import (
 )
 from hub.utils.gguf_plan import (
     build_gguf_variant_plans,
+    plan_for_variant,
     plan_from_expected_files,
     preferred_mtp_sibling,
 )
@@ -168,7 +169,11 @@ def test_variant_plan_keeps_root_mtp_sidecar_until_metadata_is_available():
         _sib("mmproj-F16.gguf", 500, "mmproj"),
     ]
 
-    plan = build_gguf_variant_plans(siblings)["q6_k"]
+    # The tag past the quant is this build's identity, and the bare spelling still finds it,
+    # because it is the only build the repo publishes at Q6_K.
+    plans = build_gguf_variant_plans(siblings)
+    plan = plans["rvn-q6_k-mtp"]
+    assert plan_for_variant(plans, "q6_k") is plan
 
     assert plan.target_filenames == ("RVN-Q6_K-mtp.gguf", "mmproj-F16.gguf", "mtp-RVN.gguf")
     assert plan.companion_hashes == frozenset({"drafter", "mmproj"})
@@ -628,14 +633,17 @@ def test_registered_mtp_root_keeps_descendant_models_and_excludes_companions(tmp
     assert detect_gguf_model(str(main)) == detect_gguf_model(str(root)) == str(main.resolve())
     assert all(detect_gguf_model(str(file)) is None for file in (terminal, prefixed))
     assert detect_gguf_model(str(nested_model)) == str(nested_model.resolve())
+    # The nested model's name tags past its quant, which is what identifies it: a repo shipping
+    # the plain Q8_0 beside it would otherwise hide one of the two.
+    nested_key = "BF16/gemma-4-12b-it-Q8_0-MTP"
     assert [(v.quant, v.filename) for v in list_local_gguf_variants(str(root))[0]] == [
         ("MTP", main.name),
-        ("Q8_0", f"BF16/{nested_model.name}"),
+        (nested_key, f"BF16/{nested_model.name}"),
     ]
     hub_variants = list_hub_local_gguf_variants(str(root))[0]
     assert (hub_variants[0].quant, hub_variants[0].filename) == ("Qwen3.6-27B-MTP", main.name)
     assert (hub_variants[-1].quant, hub_variants[-1].filename) == (
-        "Q8_0",
+        nested_key,
         f"BF16/{nested_model.name}",
     )
     config = ModelConfig.from_identifier(str(root), gguf_variant = hub_variants[0].quant)

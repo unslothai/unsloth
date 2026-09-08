@@ -88,8 +88,9 @@ def _materialize(root, files):
         # The modifier can live on the directory instead, when the basename has no quant.
         ("IQ4_XS-3.53bpw/model.gguf", "IQ4_XS-3.53bpw"),
         # A modifier that does not trail the token is not part of it: it belongs to
-        # something else in the name and cannot be relied on to identify the file.
-        ("flux1-dev-Q8_0-fp32-08.577bpw.gguf", "Q8_0"),
+        # something else in the name and cannot be relied on to identify the file. The bare
+        # token cannot either, with all of that still in the name, so the key is qualified.
+        ("flux1-dev-Q8_0-fp32-08.577bpw.gguf", "flux1-dev-Q8_0-fp32-08.577bpw"),
         # No modifier at all: the historical key, unchanged.
         ("Wan2.2-TI2V-5B-Q8_0.gguf", "Q8_0"),
         ("BF16/DeepSeek-R1-BF16-00001-of-00003.gguf", "BF16"),

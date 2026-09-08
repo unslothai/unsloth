@@ -8,6 +8,7 @@ from typing import Optional, Sequence
 
 from hub.utils.download_manifest import ExpectedFile
 from hub.utils.gguf import (
+    accepts_bare_quant_alias,
     bare_quant_alias,
     drop_shadowed_appledouble_siblings,
     extract_quant_label,
@@ -298,10 +299,11 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
 def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optional[GgufVariantPlan]:
     """The plan for *variant*, accepting a bare quant when exactly one plan carries it.
 
-    A repo that files every variant under one shared container (``weights/model-Q4_K_M.gguf``)
-    qualifies every key, because the key is a pure function of the path and cannot know that the
-    directory disambiguates nothing. Every stored pin and every explicit ``repo:Q4_K_M`` then
-    missed the plan map and the worker exited with "No GGUF shards matching variant".
+    A repo that files every variant under one shared container (``weights/model-Q4_K_M.gguf``),
+    or that tags every build past its quant (``gemma-4-31B_q4_0-it.gguf``), qualifies every key,
+    because the key is a pure function of the path and cannot know that the container or the tag
+    disambiguates nothing. Every stored pin and every explicit ``repo:Q4_K_M`` then missed the
+    plan map and the worker exited with "No GGUF shards matching variant".
 
     Resolved at LOOKUP rather than by aliasing the map, so the key stays a pure function of the
     path -- the remote listing and a partial cache scan have to agree on it -- and the advertised
@@ -315,9 +317,13 @@ def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optiona
     exact = plans.get(wanted)
     if exact is not None:
         return exact
-    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names
-    # both partitions, and picking either would load a different task.
-    matches = [key for key in plans if "/" in key and bare_quant_alias(key).lower() == wanted]
+    # Every qualified key but an H3 root stem, whose bare quant names both partitions and would
+    # load a different task.
+    matches = [
+        key
+        for key in plans
+        if accepts_bare_quant_alias(key) and bare_quant_alias(key).lower() == wanted
+    ]
     return plans[matches[0]] if len(matches) == 1 else None
 
 

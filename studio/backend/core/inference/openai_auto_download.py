@@ -167,18 +167,29 @@ def looks_like_quant(variant: Optional[str]) -> bool:
     """
     import re
 
-    from hub.utils.gguf import is_h3_denoiser_variant_key
+    from hub.utils.gguf import (
+        extract_quant_token,
+        gguf_variant_key,
+        is_h3_denoiser_variant_key,
+    )
     from utils.models.model_config import _GGUF_KNOWN_QUANT_RE
 
     if not variant:
         return False
     # _extract_quant_label can append a bpw modifier (IQ4_XS-3.53bpw); still a quant.
     label = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", variant.strip(), flags = re.IGNORECASE)
-    # A qualified key is one of OUR advertised rows: a path (``distilled/model-Q6_K``) or an H3 root stem
-    # (``minimax_h3_ref2va_pruned-Q6_K``). Explicit, so it must MISS when absent; falling through served the caller a
-    # different checkpoint under the requested id.
+    # A qualified key is one of OUR advertised rows: a path (``distilled/model-Q6_K``) or a root stem
+    # (``minimax_h3_ref2va_pruned-Q6_K``, ``model-Q4_K_M-mtp``). Explicit, so it must MISS when absent; falling
+    # through served the caller a different checkpoint under the requested id. A root stem has to be a key
+    # the lister would MINT, not merely a string holding a quant token: an Ollama tag (``8b-instruct-q4_0``)
+    # holds one too and belongs to another server.
     normalized = label.replace("\\", "/")
     if "/" in normalized or is_h3_denoiser_variant_key(normalized):
+        return True
+    if (
+        extract_quant_token(normalized) is not None
+        and gguf_variant_key(f"{normalized}.gguf") == normalized
+    ):
         return True
     return _GGUF_KNOWN_QUANT_RE.fullmatch(label) is not None
 
@@ -868,21 +879,20 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
     """The one qualified variant whose quant token is *wanted*, or None when it names 0 or 2+.
 
     A key is a pure function of the path, so a repo that files every quant under one shared
-    container qualifies all of them even though the directory disambiguates nothing, and the bare
-    spelling every stored id uses then matches no key at all.
+    container, or tags every build past its quant, qualifies all of them even though nothing there
+    disambiguates, and the bare spelling every stored id uses then matches no key at all.
     """
-    from hub.utils.gguf import bare_quant_alias
+    from hub.utils.gguf import accepts_bare_quant_alias, bare_quant_alias
 
     target = (wanted or "").strip().lower()
     if not target:
         return None
-    # PATH-qualified keys only: an H3 root stem's bare quant names both partitions
-    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names both partitions,
-    # so it must miss rather than serve one of them.
+    # Every qualified key but an H3 root stem, whose bare quant names both partitions, so it must
+    # miss rather than serve one of them.
     matches = [
         name
         for key, name in lowered.items()
-        if "/" in key and bare_quant_alias(key).lower() == target
+        if accepts_bare_quant_alias(key) and bare_quant_alias(key).lower() == target
     ]
     return matches[0] if len(matches) == 1 else None
 
