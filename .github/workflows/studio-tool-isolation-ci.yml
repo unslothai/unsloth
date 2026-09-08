@@ -71,7 +71,7 @@ jobs:
       - name: Actual Required tools, selected Pillow runtime and HTTPS allowlist
         env:
           UNSLOTH_SRT_NATIVE_TESTS: '1'
-        run: python -m pytest --noconftest studio/backend/tests/test_srt_native_tools.py -q --timeout=120
+        run: python -m pytest --noconftest studio/backend/tests/test_srt_native_tools.py studio/backend/tests/test_srt_read_root_count.py -q --timeout=120
 
   desktop-native:
     strategy:

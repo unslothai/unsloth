@@ -8,6 +8,8 @@ import net from 'node:net';
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const VERSION = '0.0.75';
 export const MAX_REQUEST = 262144;
+// Linux enumerates individual shared libraries to avoid granting their parent trees.
+const MAX_READ_ROOTS = 1024;
 const fail = (message) => { throw new Error(message); };
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const string = (value) => typeof value === 'string' && !value.includes('\0');
@@ -30,11 +32,13 @@ export function validateRequest(value) {
   if (!Array.isArray(value.argv) || value.argv.length > 1024 || !value.argv.every(string)) fail('argv must contain bounded strings');
   if (!plain(value.env) || Object.entries(value.env).some(([k, v]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || !string(v))) fail('Invalid environment');
   if (Object.keys(value.env).some((key) => /^(LD_|DYLD_|NODE_OPTIONS$|NODE_PATH$|BASH_ENV$|ENV$|SHELLOPTS$|BASHOPTS$|PYTHONSTARTUP$)/i.test(key))) fail('Unsafe loader environment');
-  for (const key of ['readRoots', 'writeRoots']) {
-    if (!Array.isArray(value[key]) || value[key].length > 128 || !value[key].every((p) => string(p) && path.isAbsolute(p) && p !== '/' && !/[*?\[\]{}]/.test(p))) fail(`${key} must contain explicit absolute paths`);
+  for (const key of ['readRoots', 'writeRoots', 'denyReadRoots', 'denyWriteRoots']) {
+    if (key.startsWith('deny') && value[key] === undefined) continue;
+    if (!Array.isArray(value[key])) fail(`${key} must contain explicit absolute paths`);
+    const limit = key === 'readRoots' ? MAX_READ_ROOTS : 128;
+    if (value[key].length > limit) fail(`${key} exceeds ${limit} entries`);
+    if (!value[key].every((p) => string(p) && path.isAbsolute(p) && p !== '/' && !/[*?\[\]{}]/.test(p))) fail(`${key} must contain explicit absolute paths`);
   }
-  if (value.denyReadRoots !== undefined && (!Array.isArray(value.denyReadRoots) || value.denyReadRoots.length > 128 || !value.denyReadRoots.every((p) => string(p) && path.isAbsolute(p) && p !== '/' && !/[*?\[\]{}]/.test(p)))) fail('denyReadRoots must contain explicit absolute paths');
-  if (value.denyWriteRoots !== undefined && (!Array.isArray(value.denyWriteRoots) || value.denyWriteRoots.length > 128 || !value.denyWriteRoots.every((p) => string(p) && path.isAbsolute(p) && p !== '/' && !/[*?\[\]{}]/.test(p)))) fail('denyWriteRoots must contain explicit absolute paths');
   if (value.nativeAllowedDomains !== undefined && (!Array.isArray(value.nativeAllowedDomains) || value.nativeAllowedDomains.length > 256 || !value.nativeAllowedDomains.every((p) => string(p) && p.length > 0 && p.length <= 253))) fail('Invalid native allowed domains');
   if (value.windowsProxyPortRange !== undefined) {
     const ports = value.windowsProxyPortRange;

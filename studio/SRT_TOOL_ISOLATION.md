@@ -28,6 +28,8 @@ This command fails if cached packages are missing. Normal tool calls perform no 
 
 The Linux live confinement probe uses owned local TCP, UDP and Unix socket positive controls and checks that the sandbox cannot reach them. It requires no public DNS or Internet connection. Failed controls, launch verification or a probe timeout still leave Required unavailable.
 
+The bridge accepts up to 1,024 explicit read roots, since Linux may enumerate hundreds of individual shared libraries instead of granting their parent directories. Write and deny lists remain limited to 128 entries, and the entire request remains capped at 256 KiB. Exceeding a limit fails with a count or size error; paths are never dropped or replaced with broader grants to fit.
+
 ## Windows machine setup
 
 After helper installation, explicitly run this command once per machine:
