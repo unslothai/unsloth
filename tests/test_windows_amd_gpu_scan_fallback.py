@@ -251,10 +251,14 @@ def test_installer_restores_the_private_handoff_after_setup():
     assert f"$previousRocmGfxHandoff = $env:{HANDOFF}" in src
     assert f"$env:{HANDOFF} = $previousRocmGfxHandoff" in src
     assert f"Remove-Item Env:{HANDOFF} -ErrorAction SilentlyContinue" in src
-    # Saved after the last early return, so no path skips the restore.
-    assert src.index("$previousRocmGfxHandoff") > src.index(
-        "--with-llama-cpp-dir path does not exist"
-    )
+    # The invariant is that no path out of the setup call can skip the restore, and
+    # the bail this used to sit after now lives INSIDE the try whose finally does the
+    # restoring, which is a stronger arrangement than the ordering this once asserted.
+    # So the check is the arrangement itself: save, then the bail, then the restore.
+    saved = src.index("$previousRocmGfxHandoff = $env:")
+    bail = src.index("--with-llama-cpp-dir path does not exist")
+    restored = src.index(f"$env:{HANDOFF} = $previousRocmGfxHandoff")
+    assert saved < bail < restored, (saved, bail, restored)
 
 
 def test_setup_consumes_the_handoff_only_after_its_own_inference():
@@ -532,8 +536,14 @@ def _handoff_lifecycle_block() -> str:
 def _run_handoff_lifecycle(
     tmp_path: Path, *, arch: str | None, inherited: str | None, fails: bool
 ) -> dict:
-    body = _handoff_lifecycle_block().replace(
-        "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs",
+    call = "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs"
+    block = _handoff_lifecycle_block()
+    # Loudly, because a silent miss here does not fail this harness: the probe below
+    # would simply never run and every assertion would read "<never ran>" with
+    # nothing saying why. The shipped call is what this block exists to wrap.
+    assert call in block, "install.ps1 no longer makes the setup call this harness replaces"
+    body = block.replace(
+        call,
         "throw 'setup exploded'"
         if fails
         else "$script:SeenByChild = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF",
@@ -550,13 +560,36 @@ def _run_handoff_lifecycle(
                 "$previousProxyHandoff = $null; $hadPreviousProxyHandoff = $false",
                 "$UnslothProxyHandoffJson = $null",
                 "$UnslothExe = 'stub'; $studioArgs = @(); $setupExit = 0",
+                # The block reads the installer's own inputs and calls its torch-tag
+                # helper. Undefined, they throw under ErrorActionPreference Stop, the
+                # catch below swallows it, and the probe never runs -- which is how
+                # this read as a handoff bug when the block simply grew a dependency.
+                "$PackageName = 'unsloth'; $SkipTorch = $false; $TauriMode = $false",
+                "$StudioLocalInstall = $false; $RepoRoot = $null",
+                "$StudioRedirectMode = 'none'; $StudioHome = $null",
+                "$WithLlamaCppDir = $null; $VenvPython = 'stub-python'; $VenvDir = 'stub-venv'",
+                "$TorchIndexUrl = $null; $ROCmIndexUrl = $null",
+                # Every installer function the block reaches, stubbed. Kept in step
+                # with it by the assertion below, which lists what the block calls.
+                "function Get-ExpectedTorchFlavorTag { param($TorchIndexUrl, $ROCmIndexUrl) 'cu128' }",
+                "function Get-InstalledTorchVersionRaw { param($Python) '' }",
+                "function ConvertTo-TorchNumericRelease { param($Raw) $null }",
+                "function Write-StudioLine { param($Message, $ForegroundColor) }",
+                "function Write-ApplicationControlBlocked { param($Message, $Detail) }",
+                "function Exit-InstallFailure { param($Message) 1 }",
                 "$script:SeenByChild = '<never ran>'",
+                "$script:BlockError = $null",
+                # The line after the setup call reads this, and the block now returns
+                # early when it is null, which took the report with it.
+                "$script:ManagedUnslothCliExit = 0",
+                "$script:PrevTorchPin = $null",
                 "$ROCmGfxArch = " + ("$null" if arch is None else f"'{arch}'"),
                 "try {",
                 body,
-                "} catch { }",
+                "} catch { $script:BlockError = $_.ToString() }",
                 "@{",
                 "  seen_by_child = $script:SeenByChild",
+                "  block_error = $script:BlockError",
                 "  after = $(if (Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF) { $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF } else { $null })",
                 "  after_set = [bool](Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF)",
                 "  public = $(if (Test-Path Env:UNSLOTH_ROCM_GFX_ARCH) { $env:UNSLOTH_ROCM_GFX_ARCH } else { $null })",
@@ -576,7 +609,16 @@ def _run_handoff_lifecycle(
         env = env,
     )
     assert proc.returncode == 0, f"handoff block failed:\n{proc.stdout}\n{proc.stderr}"
-    return json.loads(proc.stdout)
+    # The last JSON object on stdout, not the whole stream: a stub above may emit its
+    # own return value into the pipeline, and the report is always written last.
+    reports = [line for line in proc.stdout.splitlines() if line.startswith("{")]
+    assert reports, f"the handoff block printed no report:\n{proc.stdout}\n{proc.stderr}"
+    out = json.loads(reports[-1])
+    # The block is allowed to throw only where the test asked it to. Anything else is
+    # a missing stub or a real error, and reporting it beats "<never ran>".
+    if not fails:
+        assert not out.get("block_error"), f"the handoff block threw: {out['block_error']}"
+    return out
 
 
 @requires_pwsh
