@@ -747,9 +747,9 @@ def test_quarantining_a_soname_beside_a_versionless_copy_is_reported_broken(vict
     (tmp_path / "vault").mkdir(exist_ok = True)
     shutil.move(str(soname), str(tmp_path / "vault" / victim))
     verdict = ILP.installed_runtime_health(root, host = host)
-    assert verdict is not None and verdict[0] is False, (
-        f"a runtime missing {victim} cannot load, but the probe said {verdict}"
-    )
+    assert (
+        verdict is not None and verdict[0] is False
+    ), f"a runtime missing {victim} cannot load, but the probe said {verdict}"
     # The two answers still agree, which is what keeps repair from looping.
     assert ILP._existing_install_runs(root, host) is False
 
