@@ -3093,6 +3093,36 @@ def _force_cuda_target(backend, monkeypatch):
     monkeypatch.setattr(backend, "_pick_device_and_dtype", lambda: ("cuda", torch.bfloat16))
 
 
+def _mps_target(torch):
+    """An Apple/MPS device target: no model offload, no compile, no pinned transfer."""
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+
+    return DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+
+
+def _fake_zimage_hub(monkeypatch):
+    """The Z-Image GGUF / base / FP8 trio the prequant tests resolve against."""
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
+            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
+    )
+
+
 def _cuda_backend(tmp_path, monkeypatch):
     """A CUDA-target backend with an ``m.gguf`` stub checkpoint written into ``tmp_path``."""
     (tmp_path / "m.gguf").write_bytes(b"x")
@@ -3533,9 +3563,7 @@ def test_a_cached_prequant_survives_the_resolvers_free_disk_gate(
     _stub_hosted_prequant(monkeypatch, cached = True)
     monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", lambda **kw: None)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     _load_m(backend, tmp_path, _transformer_prefetched = False)
 
@@ -4666,9 +4694,7 @@ def test_auto_quant_declines_an_uncached_hosted_prequant(fake_runtime, tmp_path,
     # checkpoint that became the denoiser, so the GGUF was never used.
     _stub_hosted_prequant(monkeypatch, cached = False)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     status = _load_m(backend, tmp_path)
 
@@ -4685,9 +4711,7 @@ def test_auto_quant_takes_a_hosted_prequant_that_is_already_cached(
     # Free shortcuts are still taken: dense+torchao beats per-matmul dequant and costs no bytes.
     _stub_hosted_prequant(monkeypatch, cached = True)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     _load_m(backend, tmp_path)
 
@@ -4700,9 +4724,7 @@ def test_all_zero_weight_loras_do_not_look_like_a_bake(loras, fake_runtime, tmp_
     # skip the decline and fetch the dense companion for a request that applies no adapter.
     _stub_hosted_prequant(monkeypatch, cached = False)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     _load_m(backend, tmp_path, loras = loras)
 
@@ -4714,9 +4736,7 @@ def test_a_weighted_lora_is_still_treated_as_a_bake(fake_runtime, tmp_path, monk
     # adapter still takes the dense route, which this runtime reports rather than silently drops.
     _stub_hosted_prequant(monkeypatch, cached = False)
     _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     with pytest.raises(RuntimeError, match = "LoRA adapters could not be applied"):
         _load_m(backend, tmp_path, loras = [("adapter", 0.8)])
@@ -4728,9 +4748,7 @@ def test_an_explicit_quant_request_still_downloads_the_hosted_prequant(
     # Only the AUTO-derived case is restricted: asking for fp8 asks for the artifact serving it.
     _stub_hosted_prequant(monkeypatch, cached = False)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     _load_m(backend, tmp_path, transformer_quant = "fp8")
 
@@ -4741,9 +4759,7 @@ def test_a_baked_lora_load_is_unaffected_by_the_prequant_cache(fake_runtime, tmp
     # A LoRA bake needs the DENSE transformer and the GGUF fallback cannot carry the adapters.
     _stub_hosted_prequant(monkeypatch, cached = False)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     with pytest.raises(RuntimeError, match = "LoRA"):
         _load_m(backend, tmp_path, loras = [("adapter", 1.0)])
@@ -4960,9 +4976,7 @@ def test_the_load_declines_when_the_prefetch_skipped_the_dense_shards(
     # The candidate is the DENSE base, which is the only thing an unstaged transformer/ can cost.
     _stub_dense_candidate(monkeypatch, prequant = False)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     status = _load_m(backend, tmp_path, _transformer_prefetched = False)
 
@@ -4992,9 +5006,7 @@ def test_an_unstaged_transformer_still_takes_a_CACHED_prequant(fake_runtime, tmp
     _stub_hosted_prequant(monkeypatch, cached = True)
     _stub_dense_candidate(monkeypatch, prequant = True)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     _load_m(backend, tmp_path, _transformer_prefetched = False)
 
@@ -5016,9 +5028,7 @@ def test_an_unstaged_prequant_load_still_forbids_the_dense_fallback(
         return None, None
 
     monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", _record)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     _load_m(backend, tmp_path, _transformer_prefetched = False)
 
@@ -5034,9 +5044,7 @@ def test_an_uncached_prequant_still_declines_before_the_candidate_is_asked(
     _stub_hosted_prequant(monkeypatch, cached = False)
     _stub_dense_candidate(monkeypatch, prequant = True)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     status = _load_m(backend, tmp_path, _transformer_prefetched = False)
 
@@ -5056,9 +5064,7 @@ def test_a_resolver_with_no_answer_reads_as_the_dense_base(fake_runtime, tmp_pat
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
     monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", lambda **kw: None)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     _load_m(backend, tmp_path, _transformer_prefetched = False)
 
@@ -5076,9 +5082,7 @@ def test_a_raising_resolver_reads_as_the_dense_base(fake_runtime, tmp_path, monk
     _stub_hosted_prequant(monkeypatch, cached = True)
     monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", _boom)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     status = _load_m(backend, tmp_path, _transformer_prefetched = False)
 
@@ -6926,17 +6930,7 @@ def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monk
     # An explicit fp8 request loads the hosted prequant INSTEAD of the base transformer/ shards,
     # which the plan already excludes. required_bytes is the on-disk footprint the picker renders
     # as "Full required size", so leaving the prequant out under-reports it by the whole denoiser.
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
-            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
-            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
-    )
+    _fake_zimage_hub(monkeypatch)
     _stub_hosted_prequant(monkeypatch, cached = False)
 
     plan = DiffusionBackend().download_plan(
@@ -7012,17 +7006,7 @@ def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkey
     # none. Balanced and low_vram offload BY MODE, which no replan can clear, so the load keeps
     # the GGUF and never fetches the hosted checkpoint. Counting it overstates the footprint by
     # the whole denoiser even though an explicit quant was requested.
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
-            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
-            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
-    )
+    _fake_zimage_hub(monkeypatch)
     _stub_hosted_prequant(monkeypatch, cached = True)
 
     for kwargs in (
@@ -7051,17 +7035,7 @@ def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkey
 def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypatch):
     # load_pipeline forces an AUTO quant to "off" under Speed="off", which normalizes to None and
     # skips the fast path, so nothing is fetched and the footprint must not claim it.
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
-            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
-            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
-    )
+    _fake_zimage_hub(monkeypatch)
     _stub_hosted_prequant(monkeypatch, cached = True)
 
     auto = DiffusionBackend().download_plan(
@@ -7082,17 +7056,7 @@ def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypa
 def test_download_plan_omits_a_prequant_an_auto_pick_would_decline(monkeypatch):
     # Auto runs the GGUF as-is rather than download an uncached hosted checkpoint, so those bytes
     # never land and must not inflate the figure either. Only an explicit request pays for it.
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
-            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
-            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
-        },
-    )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
-    )
+    _fake_zimage_hub(monkeypatch)
     _stub_hosted_prequant(monkeypatch, cached = False)
     monkeypatch.setattr(
         "core.inference.diffusion._uncached_prequant_repo",
@@ -8933,18 +8897,9 @@ def test_the_resident_size_table_never_shrinks_a_local_checkpoint(fake_runtime, 
     the refusal into the OS killer. On disk is the measured truth for a local path."""
     import torch
 
-    from core.inference.diffusion_device import DiffusionDeviceTarget
     from core.inference.diffusion_families import detect_family
 
-    target = DiffusionDeviceTarget(
-        device = "mps",
-        dtype = torch.bfloat16,
-        backend = "mps",
-        vendor = "apple",
-        supports_model_cpu_offload = False,
-        supports_default_torch_compile = False,
-        supports_pinned_transfer = False,
-    )
+    target = _mps_target(torch)
     fam = detect_family("black-forest-labs/FLUX.2-klein-9B")
     backend = DiffusionBackend()
     measured = 34_000  # what a 9B pipeline's shards actually weigh
@@ -8969,9 +8924,7 @@ def test_speed_off_is_not_reported_as_a_staging_failure(fake_runtime, tmp_path, 
     GGUF they asked for."""
     _stub_hosted_prequant(monkeypatch, cached = True)
     calls = _spy_dense_quant(monkeypatch)
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = _cuda_backend(tmp_path, monkeypatch)
 
     status = _load_m(backend, tmp_path, speed_mode = "off", _transformer_prefetched = False)
 
@@ -9692,19 +9645,10 @@ def test_the_resident_size_table_prices_a_pre_cast_encoder_at_its_real_size(
     import torch
 
     from core.inference import diffusion as dmod
-    from core.inference.diffusion_device import DiffusionDeviceTarget
     from core.inference.diffusion_families import detect_family
     from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
 
-    target = DiffusionDeviceTarget(
-        device = "mps",
-        dtype = torch.bfloat16,
-        backend = "mps",
-        vendor = "apple",
-        supports_model_cpu_offload = False,
-        supports_default_torch_compile = False,
-        supports_pinned_transfer = False,
-    )
+    target = _mps_target(torch)
     fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
     base = "Tongyi-MAI/Z-Image-Turbo"
     backend = DiffusionBackend()
@@ -9735,18 +9679,9 @@ def test_the_resident_size_table_never_shrinks_an_unrecognised_remote_variant(fa
     one. A 9B derivative lowered to the 4B number walks straight past the refusal."""
     import torch
 
-    from core.inference.diffusion_device import DiffusionDeviceTarget
     from core.inference.diffusion_families import detect_family
 
-    target = DiffusionDeviceTarget(
-        device = "mps",
-        dtype = torch.bfloat16,
-        backend = "mps",
-        vendor = "apple",
-        supports_model_cpu_offload = False,
-        supports_default_torch_compile = False,
-        supports_pinned_transfer = False,
-    )
+    target = _mps_target(torch)
     fam = detect_family("black-forest-labs/FLUX.2-klein-9B")
     backend = DiffusionBackend()
     measured = 34_000
@@ -9772,19 +9707,10 @@ def test_a_whole_pipeline_single_file_is_not_charged_for_cached_companions(fake_
     only for users who happen to have loaded the full pipeline before."""
     import torch
 
-    from core.inference.diffusion_device import DiffusionDeviceTarget
     from core.inference.diffusion_families import detect_family
     from core.inference.diffusion_memory import DeviceMemory, MemoryPlan
 
-    target = DiffusionDeviceTarget(
-        device = "mps",
-        dtype = torch.bfloat16,
-        backend = "mps",
-        vendor = "apple",
-        supports_model_cpu_offload = False,
-        supports_default_torch_compile = False,
-        supports_pinned_transfer = False,
-    )
+    target = _mps_target(torch)
     fam = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
     assert fam.single_file_is_pipeline, "this test is about the SDXL-shaped families"
     plan = MemoryPlan(
