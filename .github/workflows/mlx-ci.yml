@@ -46,6 +46,11 @@
 #      losses + grad norms are finite and well-behaved. This is the
 #      only place in CI that exercises a real MLX backward pass +
 #      optimizer step + inference call.
+#   6. A durable Codex-style project task traverses the production
+#      background-agent adapter into an actual MLX worker. The gate
+#      records the exact project goal, plan, root and nested AGENTS.md
+#      layers, selected path metadata, tool catalog, session binding,
+#      durable result, and a clean Git worktree after the no-edit run.
 #
 # Dispatch test files documented in tests/studio/README.md:
 #   - test_mlx_training_worker_behaviors.py  AST contract checks on
@@ -79,6 +84,9 @@ on:
       - 'studio/backend/utils/hardware/**'
       - 'studio/backend/core/training/worker.py'
       - 'studio/backend/core/inference/mlx_inference.py'
+      - 'studio/backend/core/inference/orchestrator.py'
+      - 'studio/backend/core/inference/runtime_registry.py'
+      - 'studio/backend/core/agent_workspace/**'
       # The capability verdict is decided across these three: hardware/** measures it,
       # mlx_repair.py says whether a self-heal can still overturn it, and main.py holds
       # it back while one can. main.py is the studio's front door and is edited often,
@@ -95,6 +103,8 @@ on:
       - 'studio/backend/tests/test_mlx_inference_backend.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
+      - 'tests/studio/agent_workspace_mlx_runtime_harness.py'
+      - 'tests/studio/run_real_mlx_agent_workspace.py'
       - 'tests/studio/mac_capability_verdict_smoke.py'
       - 'tests/conftest.py'
       # Every capability-verdict boot below shells out to these two, so an edit to
@@ -110,11 +120,16 @@ on:
       - 'studio/backend/utils/hardware/**'
       - 'studio/backend/core/training/worker.py'
       - 'studio/backend/core/inference/mlx_inference.py'
+      - 'studio/backend/core/inference/orchestrator.py'
+      - 'studio/backend/core/inference/runtime_registry.py'
+      - 'studio/backend/core/agent_workspace/**'
       - 'studio/backend/main.py'
       - 'studio/backend/utils/mlx_repair.py'
       - 'studio/backend/tests/test_mlx_inference_backend.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
+      - 'tests/studio/agent_workspace_mlx_runtime_harness.py'
+      - 'tests/studio/run_real_mlx_agent_workspace.py'
       - 'tests/studio/mac_capability_verdict_smoke.py'
       - 'tests/conftest.py'
       - '.github/scripts/boot-studio-api-only.sh'
@@ -300,23 +315,35 @@ jobs:
               importlib.import_module(name)
               print('OK:', name)
           from unsloth_zoo.mlx_loader import FastMLXModel
-          from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig
-          assert hasattr(FastMLXModel, 'from_pretrained')
-          print('OK: FastMLXModel + MLXTrainer surface present')
+          from unsloth_zoo.mlx_trainer import UnslothMLXTrainer
+          print('OK: FastMLXModel =', FastMLXModel)
+          print('OK: UnslothMLXTrainer =', UnslothMLXTrainer)
           "
 
-      # AST contract checks on worker.py. Pure `ast.parse`, no runtime and no
-      # mlx import, so it would run anywhere -- but this is the only workflow
-      # that runs it at all, so it stays here until something on Linux claims it.
-      #
-      # test_hardware_dispatch_matrix.py and test_is_mlx_dispatch_gate.py used
-      # to run here too. They are 100% spoofed monkeypatches (the fixture
-      # installs a MetaPathFinder that blocks `import mlx.core` for "no-mlx"
-      # profiles), so they assert the same thing on any host -- and
-      # studio-backend-ci.yml already runs both on ubuntu-latest in its
-      # "Hardware-spoof tests" step. Running them again on a macOS runner spent
-      # minutes from a pool capped at 5 concurrent jobs account-wide to
-      # re-derive a result Linux had already produced.
+      # AST contract: test_hardware_dispatch_matrix.py and
+      # test_is_mlx_dispatch_gate.py must stay absent from this job.
+      # Both are fully spoofed and already run on ubuntu; adding either
+      # here wastes a scarce macOS slot. This fails if somebody copies
+      # the broad test list back in later.
+      - name: Enforce Mac-only test ownership
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/mlx-ci.yml').read_text(encoding='utf-8')
+          forbidden = [
+              'test_hardware_dispatch_matrix.py',
+              'test_is_mlx_dispatch_gate.py',
+          ]
+          # Comments legitimately name the files. Only executable pytest lines count.
+          executable = '\n'.join(
+              line for line in text.splitlines()
+              if not line.lstrip().startswith('#')
+          )
+          for name in forbidden:
+              assert name not in executable, f'{name} must run on ubuntu only, not in mlx-ci'
+          print('OK: macOS job contains only Mac-specific execution')
+          PY
+
       - name: MLX worker AST contract tests
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
@@ -405,6 +432,27 @@ jobs:
             echo "Continuing without failing the job; the LoRA + merged_16bit"
             echo "reload assertions are still gating this PR."
           fi
+
+      # The model is already present in the Hub cache from the export smoke above.
+      # This fresh process loads it through Studio's inference worker, then routes one
+      # durable project task through the production background-agent adapter.
+      - name: Real MLX agent workspace runtime certification
+        env:
+          # Withheld on PR: the public model remains available anonymously.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+          UNSLOTH_COMPILE_DISABLE: '1'
+          PYTHONUNBUFFERED: '1'
+        run: |
+          python tests/studio/run_real_mlx_agent_workspace.py \
+            --model 'unsloth/gemma-3-270m-it' \
+            --workdir "$PWD/mlx_agent_runtime" \
+            --evidence "$PWD/mlx_agent_runtime/evidence.json"
+
+      - name: Real MLX agent workspace evidence
+        if: always()
+        run: |
+          echo "=== mlx_agent_runtime/evidence.json ==="
+          cat mlx_agent_runtime/evidence.json 2>/dev/null || echo "(missing)"
 
       # Print all metrics JSON files so regressions are visible in the
       # job log. always() so we get telemetry even if a reload step
@@ -589,4 +637,3 @@ jobs:
           dir: ${{ steps.pip-cache.outputs.dir }}
           key: ${{ steps.pip-cache.outputs.key }}
           cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
-
