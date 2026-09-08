@@ -100,17 +100,54 @@ check "3 the rollback slot is released" "PUBLISHED " "$(grep '^PUBLISHED' "$T/ou
 check "3 the directory is left exactly as it was" yes \
     "$([ -d "$R3/.unsloth-portable-root/leftover" ] && echo yes || echo no)"
 
-echo "[4] any other unwritable marker path is fatal too, with the generic hint"
-# A dangling symlink at the name: the root itself is writable, so the earlier -w check passes
-# and this is the publish failing on its own. -f is false through a broken link, so the prior
-# state still reads as absent and nothing is snapshotted for rollback.
+echo "[4] a symlink at the marker path is REPLACED, not followed"
+# This used to be fatal, because `> "$marker"` follows a symlink and the dangling one below
+# made the open fail. Publication now stages a sibling file and renames it over the name, and
+# rename replaces the link itself.
+#
+# The new answer is the better one on both counts. A dangling link left in place reads as
+# not-portable through every reader (-f and is_file() are false through a broken link), so
+# refusing left the user with an install that could not be repaired by re-running. And a link
+# pointing at an EXISTING file elsewhere was worse than a refusal: the in-place write followed
+# it and truncated whatever it named, with the root's own -w check already passed. The rename
+# cannot do that.
 R4="$(new_root)"
 ln -s "$R4/nowhere/marker" "$R4/.unsloth-portable-root"
 rc4="$(publish "$R4")"
-check "4 the install fails" 1 "$rc4"
-check "4 with the writable/space hint" yes "$(said "is writable and has free space")"
-check "4 not the directory hint" no "$(said "A directory is in its place")"
-check "4 the rollback slot is released" "PUBLISHED " "$(grep '^PUBLISHED' "$T/out" || printf 'PUBLISHED \n')"
+check "4 the install succeeds" 0 "$rc4"
+check "4 the marker is now a regular file" yes \
+    "$([ -f "$R4/.unsloth-portable-root" ] && [ ! -L "$R4/.unsloth-portable-root" ] && echo yes || echo no)"
+check "4 naming the root" "$R4" "$(cat "$R4/.unsloth-portable-root")"
+
+# And the link's target is left alone rather than truncated, which the in-place write did.
+R4b="$(new_root)"
+mkdir -p "$R4b/elsewhere"
+printf 'do not touch\n' > "$R4b/elsewhere/victim"
+ln -s "$R4b/elsewhere/victim" "$R4b/.unsloth-portable-root"
+publish "$R4b" > /dev/null
+check "4 a symlink target is not overwritten" "do not touch" "$(cat "$R4b/elsewhere/victim")"
+
+echo "[4b] an unwritable root is still fatal, refused before the publish is attempted"
+# Measured rather than assumed: this does NOT produce the publish's own "writable and has free
+# space" hint, because the -w check on the root runs earlier and refuses with its own message.
+# That is the better place to catch it -- nothing has been created yet. The publish's generic
+# arm is for failures a fixture cannot stage from outside (ENOSPC, a quota), and is exercised
+# in tests/sh/test_install_parent_marker_atomic.sh by capping the file size.
+#
+# Skipped as root, which ignores the mode bits and would make this pass for the wrong reason.
+if [ "$(id -u 2>/dev/null || echo 0)" != 0 ]; then
+    R4c="$(new_root)"
+    chmod 500 "$R4c"
+    rc4c="$(publish "$R4c")"
+    chmod 700 "$R4c"
+    check "4b the install fails" 1 "$rc4c"
+    check "4b saying the root is not writable" yes "$(said "is not writable")"
+    check "4b not the directory hint" no "$(said "A directory is in its place")"
+    check "4b nothing was published" no \
+        "$([ -e "$R4c/.unsloth-portable-root" ] && echo yes || echo no)"
+else
+    echo "  SKIP  4b running as root, which ignores the mode bits"
+fi
 
 echo "[5] why fatal: through the real resolver, a directory marker is NOT portable"
 if command -v python3 > /dev/null 2>&1; then

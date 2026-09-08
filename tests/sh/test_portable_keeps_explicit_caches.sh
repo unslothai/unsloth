@@ -169,5 +169,37 @@ check "silent when HF_HOME was named"         "0" "$(notice "HF_HOME=$T/mine/hfh
 rm -rf "$T/hfhome/.cache"
 check "silent on a machine with no model cache" "0" "$(notice "")"
 
+# XDG_CACHE_HOME moves the shared cache, and huggingface_hub follows it: HF_HUB_CACHE
+# defaults to HF_HOME/hub and HF_HOME to $XDG_CACHE_HOME/huggingface. The probe used to look
+# under $HOME/.cache regardless, so the users whose cache is somewhere unusual were the ones
+# who never heard it was about to be stranded.
+mkdir -p "$T/xdg/huggingface/hub/models--x"
+: > "$T/xdg/huggingface/hub/models--x/blob"
+check "a cache under XDG_CACHE_HOME is reported too" "1" \
+    "$(notice "XDG_CACHE_HOME=$T/xdg")"
+# ...and it is that directory the notice names, not the $HOME one.
+xdg_says() {
+    env -i HOME="$T/hfhome" PATH="$PATH" USER="${USER:-tester}" FIXTURE_ROOT="$R" \
+        XDG_CACHE_HOME="$T/xdg" sh -c "$SNIP_LOUD" _ 2>&1 \
+        | grep -q "$T/xdg/huggingface/hub" && printf yes || printf no
+}
+# Named on more than one line (the stranding line and the HF_HUB_CACHE suggestion), so this
+# asks whether it appears at all rather than counting.
+check "and the notice names the XDG path" "yes" "$(xdg_says)"
+
+# With XDG_CACHE_HOME set, a cache sitting at $HOME/.cache is NOT what huggingface_hub reads,
+# so warning about it would send the user to delete the wrong directory.
+mkdir -p "$T/hfhome/.cache/huggingface/hub/models--y"
+: > "$T/hfhome/.cache/huggingface/hub/models--y/blob"
+rm -rf "$T/xdg"
+check "silent about \$HOME/.cache when XDG points elsewhere" "0" \
+    "$(notice "XDG_CACHE_HOME=$T/xdg")"
+
+# A relative XDG_CACHE_HOME is invalid per the spec, so the probe falls back to $HOME/.cache
+# rather than resolving against whatever directory the installer was launched from.
+check "a relative XDG_CACHE_HOME falls back to \$HOME" "1" \
+    "$(notice "XDG_CACHE_HOME=relative/path")"
+rm -rf "$T/hfhome/.cache"
+
 if [ "$fails" -eq 0 ]; then echo "All checks passed"; else echo "$fails check(s) failed"; fi
 [ "$fails" -eq 0 ]
