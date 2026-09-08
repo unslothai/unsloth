@@ -358,6 +358,13 @@ _is_studio_root() {
     [ -n "$_r" ] || return 1
     [ -f "$_r/share/studio.conf" ] && return 0
     [ -f "$_r/unsloth_studio/.unsloth-studio-owned" ] && return 0
+    # The venv shapes older installers left: before the unsloth_studio rename the venv was
+    # $_r/.venv, and before .unsloth-studio-owned neither name carried a marker. Accept the
+    # legacy venv's own marker, and either venv dir carrying bin/unsloth, pip's console script.
+    [ -f "$_r/.venv/.unsloth-studio-owned" ] && return 0
+    for _v in unsloth_studio .venv; do
+        [ -f "$_r/$_v/bin/unsloth" ] && return 0
+    done
     if [ -L "$_r/bin/unsloth" ]; then
         _t=$(readlink "$_r/bin/unsloth" 2>/dev/null || true)
         case "$_t" in *unsloth_studio/bin/unsloth) return 0 ;; esac
@@ -585,7 +592,14 @@ _unsloth_uninstall_main() {
             _remove_path "$_lex_sd_cpp"
         fi
     done
-    _remove_root_recording_db "$HOME/.unsloth/studio"
+    # Gated on the same ownership sentinels as a custom root: "studio" under ~/.unsloth is an
+    # ordinary thing to create by hand, and an ungated bare run takes that directory and then
+    # ~/.unsloth with it via the empty-dir prune below, having removed nothing of ours.
+    if [ -e "$HOME/.unsloth/studio" ] && ! _is_studio_root "$HOME/.unsloth/studio"; then
+        echo "  refusing to remove non-Unsloth path: $HOME/.unsloth/studio" >&2
+    else
+        _remove_root_recording_db "$HOME/.unsloth/studio"
+    fi
     # Default-mode shared llama.cpp build + cache are siblings of studio (not removed
     # by deleting it). No-op in env/custom mode (they nest under the custom root) and
     # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
