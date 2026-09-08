@@ -840,6 +840,51 @@ class TestPublishedReleaseResolution:
         assert [entry.bundle.release_tag for entry in resolved] == tags
         assert len(api_calls) == 1
 
+    def test_walk_back_skips_a_release_whose_listing_omits_the_checksum_asset(self, monkeypatch):
+        # Reading assets from the listing means a release still being published
+        # (sha256 asset not uploaded yet) is judged on that snapshot instead of a
+        # fresh per-tag lookup. The walk must degrade to the next good release
+        # rather than failing the whole resolution.
+        tags = ["b3", "b2", "b1"]
+        cdn = "https://github.com/unslothai/llama.cpp/releases/download"
+        manifest = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_MANIFEST_ASSET
+        sha = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_SHA256_ASSET
+        listing = []
+        for tag in tags:
+            assets = [{"name": manifest, "browser_download_url": f"{cdn}/{tag}/{manifest}"}]
+            if tag != "b3":
+                assets.append({"name": sha, "browser_download_url": f"{cdn}/{tag}/{sha}"})
+            listing.append({"tag_name": tag, "draft": False, "prerelease": False, "assets": assets})
+        api_calls = []
+
+        def fake_fetch_json(url):
+            if url.startswith("https://api.github.com/"):
+                api_calls.append(url)
+                assert "/releases/tags/" not in url, f"per-release API call: {url}"
+                return listing
+            return checksum_payload(url.rsplit("/", 2)[-2], "b8508")
+
+        def fake_download_bytes(url, **_):
+            return json.dumps(
+                {
+                    "schema_version": 1,
+                    "component": "llama.cpp",
+                    "upstream_tag": "b8508",
+                    "artifacts": [],
+                }
+            ).encode()
+
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "fetch_json", fake_fetch_json)
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_bytes", fake_download_bytes)
+        monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
+
+        resolved = list(
+            INSTALL_LLAMA_PREBUILT.iter_resolved_published_releases("latest", "unslothai/llama.cpp")
+        )
+
+        assert [entry.bundle.release_tag for entry in resolved] == ["b2", "b1"]
+        assert len(api_calls) == 1
+
 
 class TestSourceBuildPlanResolution:
     def test_matches_request_by_non_tag_provenance(self):

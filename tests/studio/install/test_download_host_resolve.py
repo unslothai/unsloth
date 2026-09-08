@@ -113,7 +113,11 @@ def test_fast_path_none_falls_back_to_api(monkeypatch):
 def test_fast_path_rejected_checksum_falls_back_to_api(monkeypatch):
     monkeypatch.delenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", raising = False)
 
-    def _reject(_repo):
+    # Two arguments: _download_host_resolved_release is called as (repo, tag). A
+    # one-argument stub raises TypeError, which the caller's broad except also
+    # turns into an API fallback, so the assertion below would pass without the
+    # PrebuiltFallback branch ever running.
+    def _reject(_repo, _tag = ""):
         raise PrebuiltFallback("checksum mismatch")
 
     monkeypatch.setattr(ILP, "_download_host_resolved_release", _reject)
