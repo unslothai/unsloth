@@ -203,6 +203,9 @@ _SHIPPED_CPU_MARKER = {
 }
 
 
+OTHER_MIX = "b10840-mix-0000000"
+
+
 def _marker(**overrides):
     payload = dict(_BASE_IMAGE_MARKER)
     payload.update(overrides)
@@ -216,7 +219,7 @@ _INSTALL_DIR="$2"
 _REQUESTED_TAG="$3"
 _REPO="$4"
 . "$_FN_FILE"
-if _keep_installed_gpu_prebuilt "$_INSTALL_DIR" "$_REQUESTED_TAG" "$_REPO"; then
+if _keep_installed_gpu_prebuilt "$_INSTALL_DIR" "$_REQUESTED_TAG" "$_REPO" "${UNSLOTH_LLAMA_RELEASE_TAG:-}"; then
     printf 'KEEP'
 else
     printf 'REPLACE'
@@ -286,6 +289,7 @@ def _run_keep_decision(
     stub_dir = _stub_bin(tmp_path)
     run_env = dict(os.environ)
     run_env.pop("UNSLOTH_LLAMA_KEEP_PREBUILT", None)
+    run_env.pop("UNSLOTH_LLAMA_RELEASE_TAG", None)
     run_env["PATH"] = f"{stub_dir}{os.pathsep}{run_env.get('PATH', '')}"
     run_env.update(env or {})
     proc = subprocess.run(
@@ -326,6 +330,51 @@ _KEEP_CASES = [
         "KEEP",
     ),
     ("rocm_bundle", _marker(platform = "linux-rocm"), True, RELEASE_TAG, ON, "KEEP"),
+    # a full mix pin names one bundle: only that exact mix may be kept
+    ("full_mix_pin_exact_match", _BASE_IMAGE_MARKER, True, RELEASE_TAG, ON, "KEEP"),
+    ("full_mix_pin_other_mix_same_base", _BASE_IMAGE_MARKER, True, OTHER_MIX, ON, "REPLACE"),
+    (
+        "full_mix_pin_marker_holds_other_mix",
+        _marker(release_tag = OTHER_MIX, upstream_tag = OTHER_MIX),
+        True,
+        RELEASE_TAG,
+        ON,
+        "REPLACE",
+    ),
+    # a bare base build pin still accepts any mix cut from that build
+    (
+        "bare_base_pin_accepts_any_mix",
+        _marker(release_tag = OTHER_MIX, upstream_tag = OTHER_MIX),
+        True,
+        LLAMA_TAG,
+        ON,
+        "KEEP",
+    ),
+    # UNSLOTH_LLAMA_RELEASE_TAG is checked against the marker's release_tag on its own
+    (
+        "release_tag_pin_match",
+        _BASE_IMAGE_MARKER,
+        True,
+        LLAMA_TAG,
+        {**ON, "UNSLOTH_LLAMA_RELEASE_TAG": RELEASE_TAG},
+        "KEEP",
+    ),
+    (
+        "release_tag_pin_mismatch",
+        _BASE_IMAGE_MARKER,
+        True,
+        LLAMA_TAG,
+        {**ON, "UNSLOTH_LLAMA_RELEASE_TAG": OTHER_MIX},
+        "REPLACE",
+    ),
+    (
+        "release_tag_pin_but_marker_records_none",
+        _marker(release_tag = None),
+        True,
+        LLAMA_TAG,
+        {**ON, "UNSLOTH_LLAMA_RELEASE_TAG": RELEASE_TAG},
+        "REPLACE",
+    ),
     # the shipped defect: a CPU bundle must still be replaced
     ("shipped_cpu_marker", _SHIPPED_CPU_MARKER, True, RELEASE_TAG, ON, "REPLACE"),
     (
@@ -409,6 +458,10 @@ def test_setup_sh_keeps_the_bundle_instead_of_installing_a_prebuilt():
         "and before the prebuilt install, or it would hijack an explicit request"
     )
     assert "_LLAMA_KEEP_PREBUILT_ACTIVE=true" in text
+    call = text[keep : text.index("\n", keep)]
+    assert "${UNSLOTH_LLAMA_RELEASE_TAG:-}" in call, (
+        "an explicit published release pin must reach the keep decision"
+    )
 
 
 def test_the_arm64_cpu_last_resort_cannot_undo_a_kept_bundle():

@@ -2664,7 +2664,7 @@ _has_local_llama_server() {
 # UNSLOTH_LLAMA_KEEP_PREBUILT=1: keep an installed GPU prebuilt already matching the requested tag/fork.
 # The Docker Studio build sets it -- no GPU is visible there, so detection installs a CPU bundle over the baked CUDA one.
 _keep_installed_gpu_prebuilt() {
-    local install_dir=$1 requested_tag=$2 repo=$3
+    local install_dir=$1 requested_tag=$2 repo=$3 release_pin=${4:-}
     case "$(printf '%s' "${UNSLOTH_LLAMA_KEEP_PREBUILT:-}" | awk '{$1=$1; print tolower($0)}')" in
         1|true|yes|on) ;;
         *) return 1 ;;
@@ -2673,7 +2673,7 @@ _keep_installed_gpu_prebuilt() {
     [ -z "${_explicit_llama_source_backend:-}" ] || return 1
     _has_local_llama_server "$install_dir" || return 1
     [ -f "$install_dir/UNSLOTH_PREBUILT_INFO.json" ] || return 1
-    python - "$install_dir/UNSLOTH_PREBUILT_INFO.json" "$requested_tag" "$repo" <<'PY' 2>/dev/null
+    python - "$install_dir/UNSLOTH_PREBUILT_INFO.json" "$requested_tag" "$repo" "$release_pin" <<'PY' 2>/dev/null
 import json
 import re
 import sys
@@ -2688,6 +2688,7 @@ if not isinstance(payload, dict):
 
 requested = sys.argv[2].strip()
 repo = sys.argv[3].strip()
+release_pin = sys.argv[4].strip() if len(sys.argv) > 4 else ""
 GPU_TOKENS = ("cuda", "rocm", "hip", "vulkan", "metal")
 # Fork bundles record only "platform"; install_llama_prebuilt.py also records "backend". Accept either.
 backend = str(payload.get("backend") or "").strip().lower()
@@ -2710,8 +2711,16 @@ recorded = {str(payload.get(key) or "").strip() for key in ("release_tag", "tag"
 recorded.discard("")
 if not recorded:
     raise SystemExit(1)
+# UNSLOTH_LLAMA_RELEASE_TAG names one published release, so only that exact release_tag can be kept.
+if release_pin and str(payload.get("release_tag") or "").strip() != release_pin:
+    raise SystemExit(1)
 if requested and requested.lower() != "latest":
-    if requested not in recorded and base_build(requested) not in {base_build(t) for t in recorded}:
+    if re.fullmatch(r"b\d+", requested):
+        # A bare base build pin is satisfied by any mix release cut from that build.
+        if requested not in {base_build(t) for t in recorded}:
+            raise SystemExit(1)
+    elif requested not in recorded:
+        # b10840-mix-new and b10840-mix-old share a base build but are different bundles.
         raise SystemExit(1)
 raise SystemExit(0)
 PY
@@ -2824,7 +2833,7 @@ elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     _NEED_LLAMA_SOURCE_BUILD=true
 elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
     substep "prebuilt install skipped -- falling back to source build"
-elif _keep_installed_gpu_prebuilt "$LLAMA_CPP_DIR" "$_REQUESTED_LLAMA_TAG" "$_HELPER_RELEASE_REPO"; then
+elif _keep_installed_gpu_prebuilt "$LLAMA_CPP_DIR" "$_REQUESTED_LLAMA_TAG" "$_HELPER_RELEASE_REPO" "${UNSLOTH_LLAMA_RELEASE_TAG:-}"; then
     step "llama.cpp" "keeping the installed GPU prebuilt (UNSLOTH_LLAMA_KEEP_PREBUILT=1)"
     print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
     _LLAMA_KEEP_PREBUILT_ACTIVE=true
