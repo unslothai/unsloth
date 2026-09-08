@@ -372,7 +372,6 @@ def test_the_main_candidate_predicate_stays_in_lockstep():
     """``is_main_gguf_variant_path`` is the candidate test plus the key comparison; if the two
     drift, the resolver sees a different file set than the filter that follows it."""
     from hub.utils.gguf_plan import is_main_gguf_candidate, is_main_gguf_variant_path
-
     for path in ("model-Q8_0-mtp.gguf", "mmproj-Q8_0.gguf", "imatrix-model.gguf", "notes.txt"):
         key = gguf_variant_key(path)
         assert is_main_gguf_variant_path(path, key) == (
