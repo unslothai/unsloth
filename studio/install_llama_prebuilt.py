@@ -4237,6 +4237,12 @@ def _confirmed_reparse_point(path: Path) -> bool:
     Not ``_is_link_or_junction``, which answers True when it cannot probe: ACLs bad
     enough to deny ``lstat`` are the case the WinError 5 hint exists for, so an
     unprobeable path must keep the repair rather than be read as a link.
+
+    Only fires for a caller that passes the path as given. ``main`` hands
+    ``install_prebuilt`` an ``install_arg.resolve()``, so a junction supplied as
+    ``--install-dir`` arrives here already dereferenced -- the same assumption the
+    link guards in ``move_install_dir_aside`` and the rollback restore are written
+    against. Unpicking that belongs with those, not with a log line.
     """
     try:
         if os.name == "nt":
