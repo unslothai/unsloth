@@ -49,7 +49,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, List, Tuple, Union
+from typing import Callable, List, Tuple
 import hashlib
 import json
 import threading
@@ -1119,7 +1119,7 @@ def _hub_model_info(
 
 
 # Revision-less entries keep the historical 3-part key; pinned entries append revision.
-_CapabilityCacheKey = Union[Tuple[str, Optional[str], bool], Tuple[str, Optional[str], bool, str]]
+_CapabilityCacheKey = Tuple[Any, ...]
 _vision_detection_cache: Dict[_CapabilityCacheKey, bool] = {}
 _vision_cache_lock = threading.Lock()
 
@@ -1131,6 +1131,7 @@ def is_vision_model(
     revision: Optional[str] = None,
     gguf_variant: Optional[str] = None,
     require_image: bool = True,
+    gguf_companion_roots: Optional[Tuple[str, ...]] = None,
 ) -> bool:
     """Detect VLMs via the config architecture (works for fine-tunes); transformers-5.x
     models are checked in a .venv_t5/ subprocess. Cached per (model_name, token,
@@ -1154,7 +1155,21 @@ def is_vision_model(
             gguf_file = detect_gguf_model(local_path)
         if gguf_file:
             companion_root = _local_gguf_companion_search_root(local_path, gguf_file)
-            mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
+            companion_roots = gguf_companion_roots or (companion_root,)
+            mmproj_file = next(
+                (
+                    found
+                    for root in companion_roots
+                    if (
+                        found := detect_mmproj_file(
+                            gguf_file,
+                            search_root = root,
+                            allow_disjoint_search_root = gguf_companion_roots is not None,
+                        )
+                    )
+                ),
+                None,
+            )
             # An audio-only projector serves this model's audio input, never an image.
             is_vision = mmproj_file is not None and (
                 not require_image or mmproj_accepts_image(mmproj_file)
@@ -1320,6 +1335,36 @@ _AUDIO_OFFLINE_MISS_TTL_S = 60.0
 _audio_offline_miss_cache: Dict[_CapabilityCacheKey, float] = {}
 
 
+def _local_audio_metadata_fingerprint(model_name: str) -> tuple:
+    try:
+        root = Path(normalize_path(model_name)).expanduser()
+        if root.is_file():
+            root = root.parent
+        identities = []
+        for relative in (
+            "config.json",
+            "modular_model_index.json",
+            *_AUDIO_TOKENIZER_CONFIG_PATHS,
+        ):
+            candidate = root / relative
+            try:
+                stat = candidate.stat()
+                identity = (
+                    stat.st_mtime_ns,
+                    stat.st_size,
+                    getattr(stat, "st_ctime_ns", None),
+                    getattr(stat, "st_dev", None),
+                    getattr(stat, "st_ino", None),
+                )
+            except OSError:
+                identity = None
+            identities.append((relative, identity))
+        return tuple(identities)
+    except Exception:
+        # Keep cache-key construction from turning an unreadable path into a request failure.
+        return (("unreadable", None),)
+
+
 def detect_audio_type(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -1379,6 +1424,9 @@ def detect_audio_type_checked(
     # does not put an anonymous caller back on the wire. Inconclusive for it instead.
     if effective_offline and is_anonymous(hf_token) and not is_local_path(model_name):
         return None, False
+    local_fingerprint = (
+        _local_audio_metadata_fingerprint(model_name) if is_local_path(model_name) else None
+    )
     # Checked on the RAW name, before the casing resolution below, because resolving a
     # repo id that is not in the cache walks every cache directory, and that walk is the
     # cost this cache exists to avoid. A casing variant just takes its own entry, which
@@ -1390,6 +1438,8 @@ def detect_audio_type_checked(
     )
     if revision is not None:
         miss_key += (revision,)
+    if local_fingerprint is not None:
+        miss_key += (local_fingerprint,)
     if effective_offline:
         seen_at = _audio_offline_miss_cache.get(miss_key)
         if seen_at is not None and time.monotonic() - seen_at < _AUDIO_OFFLINE_MISS_TTL_S:
@@ -1410,6 +1460,8 @@ def detect_audio_type_checked(
     )
     if revision is not None:
         cache_key += (revision,)
+    if local_fingerprint is not None:
+        cache_key += (local_fingerprint,)
     if cache_key in _audio_detection_cache:
         # Only definitive results are cached, so a hit is definitive by construction.
         return _audio_detection_cache[cache_key], True
@@ -1893,13 +1945,18 @@ def _local_gguf_load_path(path: Path) -> Path:
     return (first or path).absolute()
 
 
-def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
+def detect_mmproj_file(
+    path: str,
+    search_root: Optional[str] = None,
+    allow_disjoint_search_root: bool = False,
+) -> Optional[str]:
     """Find the mmproj GGUF for a model.
 
     ``path``: directory or a .gguf file. ``search_root``: optional ancestor
     to also walk (snapshot layouts where the weight is in ``snapshot/BF16/``
-    but the projector sits at ``snapshot/``). Returns the projector path or
-    ``None``."""
+    but the projector sits at ``snapshot/``). A trusted cache resolver may set
+    ``allow_disjoint_search_root`` for another revision of the same repository.
+    Returns the projector path or ``None``."""
     p = Path(path)
     start_dir = p.parent if p.is_file() else p
     if not start_dir.is_dir():
@@ -1908,6 +1965,7 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     # Walk incrementally so a sibling subdir's mmproj cannot leak in.
     seen: set[Path] = set()
     scan_order: list[Path] = []
+    recursive_root: Optional[Path] = None
 
     def _add(d: Path) -> None:
         try:
@@ -1933,24 +1991,33 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         try:
             root_resolved = Path(search_root).resolve()
             start_resolved = start_dir.resolve()
-            if root_resolved == start_resolved or (
+            root_contains_start = root_resolved == start_resolved or (
                 start_resolved.is_relative_to(root_resolved)
                 if hasattr(start_resolved, "is_relative_to")
                 else str(start_resolved).startswith(str(root_resolved) + "/")
-            ):
+            )
+            if root_contains_start:
                 cur = start_resolved
                 while cur != root_resolved and cur.parent != cur:
                     cur = cur.parent
                     _add(cur)
                     if cur == root_resolved:
                         break
+            elif allow_disjoint_search_root:
+                _add(root_resolved)
+            if allow_disjoint_search_root:
+                recursive_root = root_resolved
         except OSError:
             pass
 
     candidates: list[Path] = []
     seen_resolved: set[Path] = set()
     for d in scan_order:
-        for f in _iter_gguf_files(d):
+        try:
+            files = list(_iter_gguf_files(d, recursive = d == recursive_root))
+        except OSError:
+            continue
+        for f in files:
             try:
                 resolved = f.resolve()
                 # Interrupted download: llama-server can't open it and it must not shadow a real projector.
@@ -3909,6 +3976,7 @@ class ModelConfig:
         is_lora: bool = False,
         gguf_variant: Optional[str] = None,
         drafter_accept: Optional[Callable[[str, str, str, str], bool]] = None,
+        gguf_companion_roots: Optional[Tuple[str, ...]] = None,
     ) -> Optional["ModelConfig"]:
         """Create ModelConfig from a clean model identifier (HF repo or local
         path), for FastAPI routes that send sanitized paths.
@@ -3929,6 +3997,9 @@ class ModelConfig:
                 route rejects only after the read already happened. Left None by
                 every caller that has no boundary to impose, which sees the same
                 candidates in the same order as before.
+            gguf_companion_roots: Trusted snapshot directories belonging to the
+                resolver-selected local cache entry. Used only to locate a
+                compatible mmproj without changing the selected main weights.
 
         Returns:
             ModelConfig or None if it cannot be created.
@@ -4009,35 +4080,54 @@ class ModelConfig:
                         candidate, gguf_file, kind, companion_root
                     )
 
-                mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
+                mmproj_file = next(
+                    (
+                        found
+                        for root in (gguf_companion_roots or (companion_root,))
+                        if (
+                            found := detect_mmproj_file(
+                                gguf_file,
+                                search_root = root,
+                                allow_disjoint_search_root = gguf_companion_roots is not None,
+                            )
+                        )
+                    ),
+                    None,
+                )
                 if mmproj_file:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
                 elif base_is_vision:
                     logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
 
-                # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
-                mtp_file = detect_mtp_file(
-                    gguf_file,
-                    search_root = companion_root,
-                    accept = _drafter_accept_for("mtp"),
-                )
+                companion_roots = gguf_companion_roots or (companion_root,)
+
+                def _find_drafter(detector, kind: str) -> Optional[str]:
+                    return next(
+                        (
+                            found
+                            for root in companion_roots
+                            if (
+                                found := detector(
+                                    gguf_file,
+                                    search_root = root,
+                                    accept = _drafter_accept_for(kind),
+                                )
+                            )
+                        ),
+                        None,
+                    )
+
+                # Separate speculative-decoding companions, mirroring mmproj.
+                mtp_file = _find_drafter(detect_mtp_file, "mtp")
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")
                 # DSpark and DFlash take the boundary for the same reason, even
                 # though only the DFlash scan opens a candidate: all three are the
                 # same discovery, and a kind that skipped the check would hand the
                 # load route a sidecar it has to reject a second time.
-                dspark_file = detect_dspark_file(
-                    gguf_file,
-                    search_root = companion_root,
-                    accept = _drafter_accept_for("dspark"),
-                )
-                dflash_file = detect_dflash_file(
-                    gguf_file,
-                    search_root = companion_root,
-                    accept = _drafter_accept_for("dflash"),
-                )
+                dspark_file = _find_drafter(detect_dspark_file, "dspark")
+                dflash_file = _find_drafter(detect_dflash_file, "dflash")
 
                 return cls(
                     identifier = identifier,
