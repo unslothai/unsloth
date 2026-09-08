@@ -110,7 +110,7 @@ def test_mlx_install_respects_platform_mode_and_pins(
     enabled = platform == "macos_arm" and not no_torch
     assert len(calls) == int(enabled)
     if platform.startswith("macos"):
-        assert stack._TOTAL == (11 if skip_base and not shared_base else 12) + int(enabled)
+        assert stack._TOTAL == (12 if skip_base and not shared_base else 13) + int(enabled)
     if enabled:
         requirements = [Requirement(arg) for arg in calls[0].args[1:] if not arg.startswith("-")]
         actual = {req.name: str(req.specifier) for req in requirements}
