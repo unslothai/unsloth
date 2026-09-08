@@ -349,7 +349,6 @@ def apply_speed_optims(
         ok, reason = False, "cuda graph layer unavailable"
         try:
             from . import diffusion_cuda_graph as cuda_graph  # noqa: PLC0415 - import cycle
-
             ok, reason = cuda_graph.graph_eligible(
                 target,
                 family = family,

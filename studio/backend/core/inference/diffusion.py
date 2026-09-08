@@ -4615,7 +4615,10 @@ class DiffusionBackend:
                                 "on" if speed_applied.get("cuda_graph") else "off",
                                 "denoiser step captured per input shape, replayed bit-identically"
                                 if speed_applied.get("cuda_graph")
-                                else str(getattr(pipe, "_unsloth_cuda_graph_reason", None) or "speed tier does not capture"),
+                                else str(
+                                    getattr(pipe, "_unsloth_cuda_graph_reason", None)
+                                    or "speed tier does not capture"
+                                ),
                             ),
                             "cpu_offload": (
                                 True if cpu_offload else None,

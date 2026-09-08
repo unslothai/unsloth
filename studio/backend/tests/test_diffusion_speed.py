@@ -1012,7 +1012,12 @@ def test_video_snapshot_precedes_transformer_quant():
 # ── CUDA-graph arm ────────────────────────────────────────────────────────────
 
 
-def _stub_cuda_graph(monkeypatch, *, eligible = True, reason = "ok"):
+def _stub_cuda_graph(
+    monkeypatch,
+    *,
+    eligible = True,
+    reason = "ok",
+):
     """Replace ``core.inference.diffusion_cuda_graph`` with a recorder, so the tier gating and the
     plumbing in apply_speed_optims are tested without capturing anything.
 
@@ -1050,9 +1055,7 @@ def test_cuda_graph_engages_on_compile_tiers(monkeypatch, mode):
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
     pipe = _Pipe(with_compile = True)
-    applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = mode
-    )
+    applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = mode)
     assert applied["cuda_graph"] is True
     assert calls["installs"] == 1
     # The reason is stashed on the pipe so status / the resolved record can report it.
@@ -1066,9 +1069,7 @@ def test_cuda_graph_skipped_below_the_compile_tiers(monkeypatch, mode):
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
     pipe = _Pipe(with_compile = True)
-    applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = mode
-    )
+    applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = mode)
     assert applied["cuda_graph"] is False
     assert calls["installs"] == 0 and calls["eligible"] == []
 

@@ -1048,17 +1048,20 @@ def test_torchao_intmm_installer_patches_the_new_home_when_already_imported(monk
         monkeypatch.delitem(sys.modules, name, raising = False)
     monkeypatch.setitem(sys.modules, module.__name__, module)
     monkeypatch.setattr(
-        sys, "meta_path", [f for f in sys.meta_path if not getattr(f, _TORCHAO_INTMM_SENTINEL, False)]
+        sys,
+        "meta_path",
+        [f for f in sys.meta_path if not getattr(f, _TORCHAO_INTMM_SENTINEL, False)],
     )
     monkeypatch.delenv("UNSLOTH_TORCHAO_INT_MM_FIX", raising = False)
 
     assert fix_torchao_safe_int_mm_repr_probe() is True
-    assert getattr(module.safe_int_mm, "__unsloth_patched__", False), (
-        "the installer ignored a safe_int_mm registered under torchao's new module name"
-    )
+    assert getattr(
+        module.safe_int_mm, "__unsloth_patched__", False
+    ), "the installer ignored a safe_int_mm registered under torchao's new module name"
     a = torch.randint(-128, 127, (16, 32), dtype = torch.int8)
     b = torch.randint(-128, 127, (32, 24), dtype = torch.int8)
     assert torch.equal(module.safe_int_mm(a, b), module.safe_int_mm.__unsloth_original__(a, b))
+
 
 def test_torchao_intmm_patch_wired_into_gpu_init():
     """The patch must be installed at startup, not only importable."""

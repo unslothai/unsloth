@@ -4827,7 +4827,10 @@ class VideoBackend:
                     "on" if "cuda_graph" in speed_optims else "off",
                     "denoiser step captured per input shape, replayed bit-identically"
                     if "cuda_graph" in speed_optims
-                    else str(getattr(pipe, "_unsloth_cuda_graph_reason", None) or "speed tier does not capture"),
+                    else str(
+                        getattr(pipe, "_unsloth_cuda_graph_reason", None)
+                        or "speed tier does not capture"
+                    ),
                 ),
                 "transformer_quant": (
                     transformer_quant_requested,

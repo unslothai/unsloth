@@ -99,7 +99,6 @@ def _torch():
     imports on a machine with no torch at all, this module is imported beside it, and the test
     suite stubs ``sys.modules["torch"]`` to exercise the tree walk without a GPU."""
     import torch
-
     return torch
 
 
@@ -366,7 +365,9 @@ class GraphedForward:
             "max_graphs": int(self.max_graphs),
             "cap_hit": bool(self.cap_hit),
             "stats": dict(self.stats),
-            "capture_error": None if not error else {
+            "capture_error": None
+            if not error
+            else {
                 "type": str(error.get("type")),
                 "msg": str(error.get("msg")),
             },
@@ -600,9 +601,7 @@ def install_cuda_graphs(
     handles: list = []
     for module in _denoiser_dits(pipe):
         try:
-            handles.append(
-                GraphedForward(module, max_graphs = max_graphs, logger = logger).enable()
-            )
+            handles.append(GraphedForward(module, max_graphs = max_graphs, logger = logger).enable())
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, f"install on {type(module).__name__}", exc)
 
@@ -612,9 +611,7 @@ def install_cuda_graphs(
     except Exception as exc:  # noqa: BLE001 - a pipe that refuses attributes still runs
         _warn(logger, "handle stash", exc)
     if installed and logger is not None:
-        logger.info(
-            "diffusion.cuda_graph: armed on %d denoiser module(s)", len(installed)
-        )
+        logger.info("diffusion.cuda_graph: armed on %d denoiser module(s)", len(installed))
     return installed
 
 
