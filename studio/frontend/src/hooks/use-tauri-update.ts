@@ -694,15 +694,13 @@ export function useTauriUpdate(isExternalServer = false) {
         publishShellUpdateActive(false);
       }
 
-      // Deliberately NOT re-arming kill-on-close before the restart: relaunch()
-      // starts the replacement as a child, so it inherits this job, and re-arming
-      // would make this process kill it on the way out.
-      // The whole handoff is inside the recovery scope: anything that throws here
-      // leaves this process running with cleanup still stood down.
+      // Deliberately NOT re-arming kill-on-close before the restart: relaunch() starts the
+      // replacement as a child, so it inherits this job, and re-arming would make this process kill
+      // it on the way out. The whole handoff is inside the recovery scope: anything that throws
+      // here leaves this process running with cleanup still stood down.
       try {
-        // relaunch() re-execs with the original argv, so flag the inherited --hidden as not a
-        // login start. It only fails when there is a --hidden to suppress, so let it stop the
-        // restart.
+        // relaunch() re-execs with the original argv, so flag the inherited --hidden as not a login
+        // start. It only fails when there is a --hidden to suppress, so let it stop the restart.
         await invoke("mark_in_app_relaunch");
         const { relaunch } = await import("@tauri-apps/plugin-process");
         await relaunch();
@@ -719,9 +717,8 @@ export function useTauriUpdate(isExternalServer = false) {
 
       // Shell update failed, so restart the backend on the updated code.
       if (phaseRef.current === "shell_download" || phaseRef.current === "shell_install") {
-        // A backend started under a job that still has kill-on-close disabled is
-        // the orphan this PR exists to prevent, so retry the re-arm and stop here
-        // if it will not take.
+        // A backend started under a job that still has kill-on-close disabled is the orphan this PR
+        // exists to prevent, so retry the re-arm and stop here if it will not take.
         if (!(await crashCleanupReady())) {
           retainFailure(msg, phaseRef.current ?? "shell_install");
           return;

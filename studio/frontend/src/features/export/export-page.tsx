@@ -176,7 +176,6 @@ export function ExportPage() {
     })),
   );
 
-  // ---- API-driven checkpoint state ----
   const [models, setModels] = useState<ModelCheckpoints[]>(
     () => getCachedCheckpoints() ?? [],
   );
@@ -300,7 +299,6 @@ export function ExportPage() {
     steps: exportTourSteps,
   });
 
-  // ---- Fetch checkpoints on mount ----
   useEffect(() => {
     let cancelled = false;
     const hadCache = getCachedCheckpoints() !== null;
@@ -345,7 +343,6 @@ export function ExportPage() {
     setExportMethod("gguf");
   }, [preselectRun, models]);
 
-  // ---- Fetch local models for direct export ----
   useEffect(() => {
     let cancelled = false;
     const hadCache = getCachedLocalModels() !== null;
@@ -384,7 +381,6 @@ export function ExportPage() {
     window.dispatchEvent(new Event("unsloth:app-shell-ready"));
   }, [isLoadingLocalModels, loadingCheckpoints]);
 
-  // ---- Derived state ----
   const selectedModelData = useMemo(
     () =>
       selectedModelIdx != null
@@ -903,7 +899,6 @@ export function ExportPage() {
     return () => obs.disconnect();
   }, [showPanel]);
 
-  // ---- Render ----
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
       <main className="mx-auto max-w-7xl px-5 py-8 sm:px-9">

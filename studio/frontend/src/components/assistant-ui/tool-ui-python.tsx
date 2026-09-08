@@ -135,12 +135,11 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   ) : null;
 
   return (
-    // Status, output and images collapse from history; the executed script
-    // renders outside ToolFallbackContent so it stays visible on reopen
-    // (#7165) -- a script is an artifact, a one-line command is not.
-    // That holds only while collapseToolActivity is off; with it on the script
-    // moves inside the collapsible, behind one click. awaitingApproval is the
-    // exception: a decision about a script needs the script on screen.
+    // Status, output and images collapse from history; the executed script renders outside
+    // ToolFallbackContent so it stays visible on reopen (#7165) -- a script is an artifact, a
+    // one-line command is not. That holds only while collapseToolActivity is off; with it on the
+    // script moves inside the collapsible, behind one click. awaitingApproval is the exception: a
+    // decision about a script needs the script on screen.
     <ToolFallbackRoot
       defaultOpen={isRunning}
       awaitingApproval={awaitingApproval}

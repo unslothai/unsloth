@@ -25,9 +25,8 @@ import { listKnowledgeBases } from "../api/rag-api";
 import type { KnowledgeBase } from "../types/rag";
 import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 
-// Matches the Thinking/MCP pill chevron.
-// Picks the retrieval source. Shown whenever retrieval is on; dims but stays
-// interactive (so it can be turned off) while the loaded model can't run it.
+// Matches the Thinking/MCP pill chevron. Picks the retrieval source. Shown whenever retrieval is
+// on; dims but stays interactive (so it can be turned off) while the loaded model can't run it.
 export function KnowledgeBaseComposerButton({
   side = "bottom",
 }: {

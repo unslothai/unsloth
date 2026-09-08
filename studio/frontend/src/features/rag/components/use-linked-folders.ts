@@ -309,10 +309,9 @@ export function useLinkedFolders(
     async (folderId: string, mode: "sync" | "rebuild") => {
       const operationScopeKey = scopeKey;
       try {
-        // Inside the request's lease and before the scope guard: the job runs on
-        // the project it started for whatever this hook shows, and returning
-        // without a watcher drops that count to zero mid-sync. Deduped, so
-        // trackJob's own call is a no-op.
+        // Inside the request's lease and before the scope guard: the job runs on the project it
+        // started for whatever this hook shows, and returning without a watcher drops that count to
+        // zero mid-sync. Deduped, so trackJob's own call is a no-op.
         const { job } = await withProjectWork(async () => {
           const started =
             mode === "rebuild"

@@ -181,8 +181,7 @@ export function UnstructuredDropZone({
         // Skip if the drop zone unmounted or its block changed: the id no
         // longer belongs here and restoring would leak it into another block.
         if (!mountedRef.current || blockIdRef.current !== blockId) return;
-        // Still exists server-side (counts toward quota); restore it at its
-        // original position.
+        // Still exists server-side (counts toward quota); restore it at its original position.
         deletedIdsRef.current.delete(entry.id);
         onFilesChange((prev) => {
           const next = [...prev];

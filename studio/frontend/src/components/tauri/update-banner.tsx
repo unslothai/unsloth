@@ -369,11 +369,10 @@ export function UpdateBanner({
               )}
             </div>
             {(manualMessage || manualReport) && (
-              // The clipboard fallback, and the one region of the failure card
-              // that may give up height. The card is capped at the viewport and
-              // clips, and the rail cannot scroll to what that cap hides, so
-              // without a scroller here the report the reader is being asked to
-              // select and copy is the part that goes missing in a short window.
+              // The clipboard fallback, and the one region of the failure card that may give up
+              // height. The card is capped at the viewport and clips, and the rail cannot scroll to
+              // what that cap hides, so without a scroller here the report the reader is being
+              // asked to select and copy is the part that goes missing in a short window.
               <div
                 className="hover-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain"
                 data-testid="tauri-update-manual-report"

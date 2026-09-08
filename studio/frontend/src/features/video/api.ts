@@ -218,7 +218,6 @@ export interface GalleryVideo {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
-  // Creation time (ISO 8601 timestamp).
   created_at: string;
   // Library state, not recipe: stored beside the clip, absent on sidecars written before this existed.
   pinned?: boolean;

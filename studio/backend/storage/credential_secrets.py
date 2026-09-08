@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Encrypted installation-wide credential persistence in ``studio.db``.
-
-Unsloth is a single-user local application. Credentials belong to the installation,
-not to an authenticated subject. The AES key lives separately in auth.db and the
-credential kind/scope are authenticated so ciphertext rows cannot be swapped.
+"""Encrypted installation-wide credential persistence in ``studio.db``. Unsloth is a single-user local
+application, so credentials belong to the installation, not to an authenticated subject. The AES key lives
+separately in auth.db and the credential kind/scope are authenticated so ciphertext rows cannot be swapped.
 """
 
 from __future__ import annotations

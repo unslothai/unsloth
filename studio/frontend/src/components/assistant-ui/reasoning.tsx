@@ -202,16 +202,15 @@ function ReasoningContent({
         closeDurationMs={ANIMATION_DURATION}
         className={cn(
           shared,
-          // No `animate-collapsible-*`, so nothing consumes
-          // `--radix-collapsible-content-height` and nothing needs to know the content's height.
-          // `1fr` resolves against the content on every frame, which is also what makes this
-          // correct while reasoning is still streaming into an open pane: the row simply tracks
-          // the growing content instead of holding a height captured at toggle time.
-          //
-          // The duration is unconditional here. The height keyframes needed a per-state duration
-          // because they were two different animations; this is one transition run in both
-          // directions. `prefers-reduced-motion` still reaches it: index.css forces
-          // `transition-duration: 0.01ms !important` on every element, and this is a transition.
+          // No `animate-collapsible-*`, so nothing consumes `--radix-collapsible-content-height`
+          // and nothing needs to know the content's height. `1fr` resolves against the content on
+          // every frame, which is also what makes this correct while reasoning is still streaming
+          // into an open pane: the row simply tracks the growing content instead of holding a
+          // height captured at toggle time. The duration is unconditional here. The height
+          // keyframes needed a per-state duration because they were two different animations; this
+          // is one transition run in both directions. `prefers-reduced-motion` still reaches it:
+          // index.css forces `transition-duration: 0.01ms !important` on every element, and this is
+          // a transition.
           "duration-(--animation-duration)",
           className,
         )}
@@ -433,10 +432,9 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     }
   }, [isReasoningStreaming]);
 
-  // Reset per-round open state. manualOpen is sticky and regenerate reuses this
-  // instance, so a hand-opened block would stay pinned open and never collapse.
-  // Adjusted during render, not in an effect: React re-runs this component
-  // before committing, so a stale open never reaches the DOM.
+  // Reset per-round open state. manualOpen is sticky and regenerate reuses this instance, so a
+  // hand-opened block would stay pinned open and never collapse. Adjusted during render, not in an
+  // effect: React re-runs this component before committing, so a stale open never reaches the DOM.
   const [wasStreaming, setWasStreaming] = useState(isReasoningStreaming);
   if (wasStreaming !== isReasoningStreaming) {
     setWasStreaming(isReasoningStreaming);
@@ -446,17 +444,14 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     }
   }
 
-  // Keep the streaming height cap until the automatic close finishes. Removing
-  // it on the completion frame expands long reasoning to its full height before
-  // the collapsible can close, which makes the entire chat jump.
-  //
-  // The grid path needs the same margin the collapsible's own backstop uses. The
-  // height keyframes animate from a height captured at toggle time, so releasing
-  // the cap mid-animation cannot change what they animate; `1fr` instead resolves
-  // against the live content every frame, so an early release grows the row in the
-  // middle of the collapse and produces exactly the jump this timer prevents. The
-  // transition also starts a render after this timer is armed, so an exact
-  // ANIMATION_DURATION lands inside it.
+  // Keep the streaming height cap until the automatic close finishes. Removing it on the completion
+  // frame expands long reasoning to its full height before the collapsible can close, which makes
+  // the entire chat jump. The grid path needs the same margin the collapsible's own backstop uses.
+  // The height keyframes animate from a height captured at toggle time, so releasing the cap
+  // mid-animation cannot change what they animate; `1fr` instead resolves against the live content
+  // every frame, so an early release grows the row in the middle of the collapse and produces
+  // exactly the jump this timer prevents. The transition also starts a render after this timer is
+  // armed, so an exact ANIMATION_DURATION lands inside it.
   useEffect(() => {
     const closeDelay = GRID_COLLAPSE_REASONING_ENABLED
       ? ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS

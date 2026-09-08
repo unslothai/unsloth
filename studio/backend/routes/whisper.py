@@ -5,10 +5,9 @@
 
 GET  /api/whisper/update-status  -> is a newer prebuilt available + job state
 
-Detection reuses utils.whisper_cpp_freshness and fails open so the UI never
-blocks on a missing marker / offline GitHub. There is no whisper-only update
-trigger: whisper updates piggyback on the single main update item
-(POST /api/llama/update chains a whisper phase when whisper is behind).
+Detection reuses utils.whisper_cpp_freshness and fails open so the UI never blocks on a missing marker /
+offline GitHub. There is no whisper-only update trigger: whisper updates piggyback on the single main update
+item (POST /api/llama/update chains a whisper phase when whisper is behind).
 """
 
 from __future__ import annotations

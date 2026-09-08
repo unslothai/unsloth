@@ -113,9 +113,8 @@ export function EmbeddingModelPicker({
     if (selected && !rows.some((row) => row.id === selected)) {
       rows.push({ id: selected, sizeBytes: null });
     }
-    // The configured default the same way: the empty search is scoped to
-    // `unsloth`, so a private, other-owner or local default had no row, and the
-    // old "Reset to default" button is gone.
+    // The configured default the same way: the empty search is scoped to `unsloth`, so a private,
+    // other-owner or local default had no row, and the old "Reset to default" button is gone.
     const fallback = defaultModel?.trim();
     if (fallback && !rows.some((row) => row.id === fallback)) {
       rows.push({ id: fallback, sizeBytes: null });

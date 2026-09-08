@@ -441,7 +441,6 @@ function revealWithin(scroller: Element, rect: DOMRect): boolean {
   return true;
 }
 
-/** The element a range starts in, which is where both walks below begin. */
 function elementFor(range: Range): Element | null {
   const start = range.startContainer;
   return start.nodeType === 1
@@ -491,7 +490,6 @@ export function scrollViewportTop(range: Range): number {
 export function scrollRangeIntoView(range: Range): boolean {
   let element = elementFor(range);
   let moved = false;
-  // Bounded by DOM depth, and each step is one rect read plus at most one scroll write.
   while (element) {
     if (scrollsAxis(element, "y") || scrollsAxis(element, "x")) {
       // Re-read each time: scrolling the inner container decides what the outer one still owes.

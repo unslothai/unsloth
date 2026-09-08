@@ -12,10 +12,9 @@ import { useTheme } from "@/features/settings/stores/theme-store";
 import { createLoadingToastIcon } from "@/lib/toast";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
 
-// Make toast text selectable. Sonner's onPointerDown calls setPointerCapture(),
-// which steals the drag and blocks text selection. dismissible:false would stop
-// it but also kills the close button. So we swallow pointerdown on toast text
-// (never on its buttons) before sonner sees it.
+// Make toast text selectable. Sonner's onPointerDown calls setPointerCapture(), which steals the
+// drag and blocks text selection. dismissible:false would stop it but also kills the close button.
+// So we swallow pointerdown on toast text (never on its buttons) before sonner sees it.
 const handleToastPointerDownCapture = (
   event: React.PointerEvent<HTMLDivElement>,
 ) => {

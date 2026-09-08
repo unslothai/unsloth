@@ -560,11 +560,10 @@ export function VoiceTab() {
       try {
         const status = await fetchSttStatus(statusNonce, sttModel);
         if (cancelled) return;
-        // A curated model prefers the GGUF (whisper.cpp) engine, but without
-        // whisper-server the backend serves it through Transformers instead of
-        // failing. Fall back to the Transformers status here too, or the model
-        // shows as unavailable and download is blocked even though it works.
-        // mtmd models run nowhere else, so they never fall back.
+        // A curated model prefers the GGUF (whisper.cpp) engine, but without whisper-server the
+        // backend serves it through Transformers instead of failing. Fall back to the Transformers
+        // status here too, or the model shows as unavailable and download is blocked even though it
+        // works. mtmd models run nowhere else, so they never fall back.
         const engineStatus = isMtmdModel
           ? status.mtmd
           : isGgufModel && status.gguf?.available
@@ -715,10 +714,9 @@ export function VoiceTab() {
     try {
       await startSttDownload(sttModel, hfApiToken(hfToken));
       trackSttDownload(sttModel);
-      // The status effect only re-polls while it can see a download. Its last
-      // read was before this one existed, and the on-demand branch schedules
-      // nothing, so without a nudge the tab shows Download for the whole
-      // transfer.
+      // The status effect only re-polls while it can see a download. Its last read was before this
+      // one existed, and the on-demand branch schedules nothing, so without a nudge the tab shows
+      // Download for the whole transfer.
       setStatusNonce((nonce) => nonce + 1);
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {

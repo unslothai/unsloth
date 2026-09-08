@@ -127,10 +127,9 @@ export function preparationShortLabel(preparation: UpdatePreparation): string {
 }
 
 export const IDLE_POLL_MS = 20_000;
-// A backend that is stopped, crashed, or will not start never reports idle, and
-// the update offer is the user's way out of exactly that. Waiting forever leaves
-// the pill with no action and the settings button disabled, so the wait is bounded
-// and the offer falls back to the classic update.
+// A backend that is stopped, crashed, or will not start never reports idle, and the update offer is
+// the user's way out of exactly that. Waiting forever leaves the pill with no action and the
+// settings button disabled, so the wait is bounded and the offer falls back to the classic update.
 export const IDLE_WAIT_MS = 5 * 60_000;
 
 export type IdleWaitOutcome = "idle" | "timeout" | "cancelled";

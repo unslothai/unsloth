@@ -125,11 +125,10 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
   };
 }
 
-// The backend job persists as "success" until the next update starts (it's a
-// single in-memory record, not per-tab), so a fresh mount -- a new tab, or a
-// page reload of a tab that already resynced -- would otherwise replay the
-// same completed job forever. Persist the handled marker outside React state
-// so it survives both, and is shared across tabs in this browser.
+// The backend job persists as "success" until the next update starts (it's a single in-memory
+// record, not per-tab), so a fresh mount -- a new tab, or a page reload of a tab that already
+// resynced -- would otherwise replay the same completed job forever. Persist the handled marker
+// outside React state so it survives both, and is shared across tabs in this browser.
 const HANDLED_RELOAD_STORAGE_KEY = "unsloth_llama_update_reload_handled_at";
 
 function getHandledReloadAt(): string | null {
@@ -205,11 +204,10 @@ export function useLlamaUpdateCheck({
   useEffect(() => {
     onReloadRequiredRef.current = onReloadRequired;
   }, [onReloadRequired]);
-  // Fires the callback once per completed job, whether this tab watched it run
-  // or only saw the persisted "success" after the fact (e.g. another tab
-  // applied it). Keyed by finished_at and seeded from localStorage so a fresh
-  // mount (new tab, or a page reload of a tab that already resynced) doesn't
-  // replay a job some tab already handled.
+  // Fires the callback once per completed job, whether this tab watched it run or only saw the
+  // persisted "success" after the fact (e.g. another tab applied it). Keyed by finished_at and
+  // seeded from localStorage so a fresh mount (new tab, or a page reload of a tab that already
+  // resynced) doesn't replay a job some tab already handled.
   const reloadNotifiedForRef = useRef<string | null>(getHandledReloadAt());
 
   const clearPollTimer = useCallback(() => {
@@ -219,18 +217,16 @@ export function useLlamaUpdateCheck({
     }
   }, []);
 
-  // Shared by the poll path (this tab watched the job run), the surface path
-  // (this tab only saw the persisted success), and apply()'s stale-click path
-  // (the job came back embedded in a "not started" response) so none of them
-  // can drop or double-fire the notification.
+  // Shared by the poll path (this tab watched the job run), the surface path (this tab only saw the
+  // persisted success), and apply()'s stale-click path (the job came back embedded in a "not
+  // started" response) so none of them can drop or double-fire the notification.
   const notifyReloadIfNeeded = useCallback(
     (
       job: Pick<LlamaUpdateJob, "state" | "reload_required" | "finished_at">,
     ) => {
-      // "error" is included for partial chained updates: the llama phase can
-      // land (and unload the server) before a later phase fails, and the
-      // backend keeps reload_required set in exactly that case. Without the
-      // resync the chat UI would keep pointing at the unloaded model.
+      // "error" is included for partial chained updates: the llama phase can land (and unload the
+      // server) before a later phase fails, and the backend keeps reload_required set in exactly
+      // that case. Without the resync the chat UI would keep pointing at the unloaded model.
       if (
         (job.state === "success" || job.state === "error") &&
         job.reload_required &&
@@ -259,10 +255,9 @@ export function useLlamaUpdateCheck({
         clearPollTimer();
         if (s.job.state === "success") {
           void refreshHardwareInfo();
-          // The update unloads the running model server-side, so the chat
-          // runtime still points at a model that now 400s on send. Let the
-          // consumer drop the selector to "select model" instead of waiting for
-          // a page reload. Fires here (not just from apply's onDone) so a
+          // The update unloads the running model server-side, so the chat runtime still points at a
+          // model that now 400s on send. Let the consumer drop the selector to "select model"
+          // instead of waiting for a page reload. Fires here (not just from apply's onDone) so a
           // cross-tab update mirrored through this poll is covered too.
           notifyReloadIfNeeded(s.job);
           onDone?.({
@@ -298,10 +293,9 @@ export function useLlamaUpdateCheck({
         if (!pollTimer.current) startJobPoll();
         return;
       }
-      // A completed job persists as "success" until the next update starts, so
-      // a tab that missed the running window entirely (mounted, or only checks
-      // hourly and misses both the running and just-finished moments) still
-      // needs to resync here, not just from the poll path above.
+      // A completed job persists as "success" until the next update starts, so a tab that missed
+      // the running window entirely (mounted, or only checks hourly and misses both the running and
+      // just-finished moments) still needs to resync here, not just from the poll path above.
       notifyReloadIfNeeded(next.job);
     },
     [startJobPoll, notifyReloadIfNeeded],
@@ -338,11 +332,10 @@ export function useLlamaUpdateCheck({
     };
   }, [enabled, surfaceIfAvailable, clearPollTimer]);
 
-  // Cross-tab nudge: a tab that only checks hourly would otherwise stay
-  // pointed at a server-unloaded model for up to an hour after a DIFFERENT
-  // open tab applies an update. The storage event only fires in other tabs
-  // (never the one that wrote it), so this recheck fires promptly there
-  // without this tab redundantly re-triggering itself.
+  // Cross-tab nudge: a tab that only checks hourly would otherwise stay pointed at a
+  // server-unloaded model for up to an hour after a DIFFERENT open tab applies an update. The
+  // storage event only fires in other tabs (never the one that wrote it), so this recheck fires
+  // promptly there without this tab redundantly re-triggering itself.
   useEffect(() => {
     if (!enabled) return;
     const onStorage = (event: StorageEvent) => {
@@ -410,10 +403,9 @@ export function useLlamaUpdateCheck({
     // open Settings surface disables and follows the same install immediately.
     signalRunningLlamaJob(actionJob);
 
-    // Non-started jobs stay idle; an already-running update is tracked below.
-    // A backend switch is not: it shares this job but installs no new release,
-    // so following it here would toast an update that never happened. The
-    // shared background listener still follows the switch itself.
+    // Non-started jobs stay idle; an already-running update is tracked below. A backend switch is
+    // not: it shares this job but installs no new release, so following it here would toast an
+    // update that never happened. The shared background listener still follows the switch itself.
     if (
       action &&
       action.started === false &&

@@ -109,8 +109,7 @@ function createAudioContext(): AudioContext {
     return new Ctx({ sampleRate: TARGET_SAMPLE_RATE });
   } catch {
     // Some engines only open a context at the device rate. The backend resamples whatever it is
-    // given, so that is still correct, just larger on the wire, which secondsWithin() accounts
-    // for.
+    // given, so that is still correct, just larger on the wire, which secondsWithin() accounts for.
     return new Ctx();
   }
 }

@@ -144,9 +144,8 @@ export function isAudioOnly3gpBytes(raw: Uint8Array): boolean {
 // A track table runs to kilobytes; anything this large is not one, and reading
 // it would be the memory problem the box walk exists to avoid.
 const MAX_MOOV_BYTES = 8 * 1024 * 1024;
-// A container holds a handful of these: ftyp, moov, mdat, and maybe free or
-// mfra. A file that reports thousands is malformed, and walking it would be
-// one slice per box.
+// A container holds a handful of these: ftyp, moov, mdat, and maybe free or mfra. A file that
+// reports thousands is malformed, and walking it would be one slice per box.
 const MAX_TOP_LEVEL_BOXES = 64;
 
 /**
@@ -245,10 +244,9 @@ export async function classifiedAttachmentFile(file: File): Promise<File> {
     // An unreadable file is left as it came; the surface reports the read.
     return file;
   }
-  // Both directions, because the browser's answer comes from the same ambiguous
-  // extension: a platform that maps .3gp to audio/3gpp says so for a clip too,
-  // and the audio adapter is matched before the video one. Tracks it cannot
-  // read decide nothing, so the file is left as it came.
+  // Both directions, because the browser's answer comes from the same ambiguous extension: a
+  // platform that maps .3gp to audio/3gpp says so for a clip too, and the audio adapter is matched
+  // before the video one. Tracks it cannot read decide nothing, so the file is left as it came.
   const corrected = tracks.video
     ? "video/3gpp"
     : tracks.audio

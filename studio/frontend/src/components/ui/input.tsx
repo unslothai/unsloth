@@ -6,8 +6,7 @@ import type * as React from "react";
 import { cn } from "@/lib/utils";
 
 const BASE_CLASSES =
-  // White fill with a subtle border,
-  // fully-rounded pill for single-row controls.
+  // White fill with a subtle border, fully-rounded pill for single-row controls.
   "bg-background border-border dark:border-transparent dark:bg-white/[0.06] focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:aria-invalid:border-destructive/50 h-9 rounded-full border px-3.5 py-1 text-base transition-colors file:h-7 file:text-sm file:font-medium aria-invalid:ring-[3px] md:text-sm file:text-foreground placeholder:text-muted-foreground w-full min-w-0 outline-none file:inline-flex file:border-0 file:bg-transparent disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50";
 
 function stepNumberInput(input: HTMLInputElement, direction: 1 | -1): void {
@@ -36,8 +35,7 @@ function stepNumberInput(input: HTMLInputElement, direction: 1 | -1): void {
         : Math.floor(pos);
     next = base + nextPos * step;
   } else {
-    // Stepping an empty, non-numeric field starts from the minimum, matching
-    // the native spinner.
+    // Stepping an empty, non-numeric field starts from the minimum, matching the native spinner.
     next = min ?? direction * step;
   }
   if (min !== null) {

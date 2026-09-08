@@ -42,9 +42,8 @@ export function downloadStopMode(
   cancelTransport?: string | null,
   partialsResumable = false,
 ): DownloadStopMode {
-  // The cancel marker wins where there is one: a Xet run that fell back to
-  // HTTP still cancels into a restart-only partial, so Pause would promise a
-  // resume the marker does not allow.
+  // The cancel marker wins where there is one: a Xet run that fell back to HTTP still cancels into
+  // a restart-only partial, so Pause would promise a resume the marker does not allow.
   const transport = cancelTransport ?? activeTransport ?? partialTransport;
   // Capability, not a row verdict: the partial being written right now is this
   // machine's own, so the installed writer decides whether stopping keeps it.

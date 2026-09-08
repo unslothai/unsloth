@@ -62,9 +62,8 @@ function describeOverride(override: ApiModelOverride): string[] {
   if (override.spec_draft_cache_type) {
     parts.push(`draft KV ${override.spec_draft_cache_type}`);
   }
-  // Both compared against undefined rather than tested for truth: 0 is a value the
-  // user can pick for either (no checkpoints, no host cache) and would otherwise
-  // be listed as unset.
+  // Both compared against undefined rather than tested for truth: 0 is a value the user can pick
+  // for either (no checkpoints, no host cache) and would otherwise be listed as unset.
   if (override.ctx_checkpoints !== undefined) {
     parts.push(plural(override.ctx_checkpoints, "checkpoint"));
   }

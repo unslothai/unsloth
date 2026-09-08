@@ -117,10 +117,9 @@ export function isRemoteNetworkOffline(
 }
 
 export function isHuggingFaceOffline(): boolean {
-  // navigator.onLine is advisory only (false-reports offline on WSL2 / some
-  // WebKitGTK/Tauri webviews). The authoritative signal is the empirical
-  // remote-offline TTL, set when a real fetch fails and cleared on next success;
-  // navigator's online/offline events still drive re-evaluation.
+  // navigator.onLine is advisory only (false-reports offline on WSL2 / some WebKitGTK/Tauri
+  // webviews). The authoritative signal is the empirical remote-offline TTL, set when a real fetch
+  // fails and cleared on next success; navigator's online/offline events still drive re-evaluation.
   return isRemoteNetworkOffline(HUGGING_FACE_ORIGIN);
 }
 
@@ -175,10 +174,9 @@ export function markRemoteNetworkOffline(
   const ttl = typeof originOrTtl === "number" ? originOrTtl : ttlMs;
   const nextUntil = Date.now() + ttl;
   const previousUntil = remoteOfflineUntilByOrigin.get(origin) ?? 0;
-  // The cause has to describe the window in force: recording a newer cause while
-  // keeping a longer window left the panel naming a spent failure while a
-  // different, still-live one held it unavailable. A first cause is always
-  // taken, so nothing the user sees goes unexplained.
+  // The cause has to describe the window in force: recording a newer cause while keeping a longer
+  // window left the panel naming a spent failure while a different, still-live one held it
+  // unavailable. A first cause is always taken, so nothing the user sees goes unexplained.
   const takesWindow = nextUntil > previousUntil;
   const records =
     failure !== undefined && (takesWindow || !lastFailureByOrigin.has(origin));

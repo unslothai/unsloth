@@ -84,18 +84,16 @@ export function classifyGgufFit(
     budgetFraction <= 1
       ? budgetFraction
       : DEFAULT_VRAM_BUDGET_FRACTION;
-  // Not simply `gpuGb * fraction`. The loader's `_vram_usable_mib` charges
-  // `max((1 - frac) * total, floor)`, where the floor is `min(512 MiB, 3% of total)`, so the
-  // reserve never disappears at the top of the slider. Below the 0.97 default the percentage term
-  // always wins and this is identical; above it, `gpuGb * fraction` claimed capacity the backend
-  // does not offer, and a 20 GiB file on a full 24 GiB card at 1.0 read `fits` while `_select_gpus`
-  // fell back to --fit.
-  //
+  // Not simply `gpuGb * fraction`. The loader's `_vram_usable_mib` charges `max((1 - frac) * total,
+  // floor)`, where the floor is `min(512 MiB, 3% of total)`, so the reserve never disappears at the
+  // top of the slider. Below the 0.97 default the percentage term always wins and this is
+  // identical; above it, `gpuGb * fraction` claimed capacity the backend does not offer, and a 20
+  // GiB file on a full 24 GiB card at 1.0 read `fits` while `_select_gpus` fell back to --fit.
   // Charged per CARD, not per host: `_select_gpus` calls `_vram_usable_mib` for every device and
-  // sums the results, so a k-GPU box holds back k floors. One floor for the whole box read 47.5
-  // GiB usable on two 24 GiB cards at 1.0 where the loader offers 47.0, so a file needing 47.2
-  // read `fits` against a load that fell back to --fit. Exact on matched cards, an even split on
-  // a mixed one, which is still far nearer than charging the floor once.
+  // sums the results, so a k-GPU box holds back k floors. One floor for the whole box read 47.5 GiB
+  // usable on two 24 GiB cards at 1.0 where the loader offers 47.0, so a file needing 47.2 read
+  // `fits` against a load that fell back to --fit. Exact on matched cards, an even split on a mixed
+  // one, which is still far nearer than charging the floor once.
   const cards =
     typeof gpuCount === "number" && Number.isFinite(gpuCount) && gpuCount >= 1
       ? Math.floor(gpuCount)
@@ -108,19 +106,17 @@ export function classifyGgufFit(
     );
   const budget = gpuGb - Math.max((1 - fraction) * gpuGb, reserveFloorGb);
   if (required <= budget) return "fits";
-  // Raw card, deliberately. This band means "over your budget, still card-sized",
-  // which is the only thing that distinguishes it from `fits`: scoring it against
-  // `budget` too would make it unreachable, since `required <= budget` has already
-  // returned above. It is a warning tier, not a claim that the load will be
-  // admitted.
+  // Raw card, deliberately. This band means "over your budget, still card-sized", which is the only
+  // thing that distinguishes it from `fits`: scoring it against `budget` too would make it
+  // unreachable, since `required <= budget` has already returned above. It is a warning tier, not a
+  // claim that the load will be admitted.
   if (required <= gpuGb) return "marginal";
-  // The budget, though. Once layers spill, what the GPU can still contribute is
-  // what it is ALLOWED to hold, and the reserve is exactly what the model and KV
-  // cache may not use ("the fit reserves a slice of every card that the model and
-  // KV cache may not use", vram_budget_settings.py). Crediting the raw card here
-  // invented capacity the loader will not give: on a 24 GiB card with 16 GiB of
-  // RAM at the legal minimum 0.80, quants from 23 to 26 GiB were badged `partial`
-  // when the budget leaves them no way to load.
+  // The budget, though. Once layers spill, what the GPU can still contribute is what it is ALLOWED
+  // to hold, and the reserve is exactly what the model and KV cache may not use ("the fit reserves
+  // a slice of every card that the model and KV cache may not use", vram_budget_settings.py).
+  // Crediting the raw card here invented capacity the loader will not give: on a 24 GiB card with
+  // 16 GiB of RAM at the legal minimum 0.80, quants from 23 to 26 GiB were badged `partial` when
+  // the budget leaves them no way to load.
   const combined = budget + (systemRamGb ?? 0) * RAM_OFFLOAD_USABLE_RATIO;
   if (required <= combined) return "partial";
   return "oom";

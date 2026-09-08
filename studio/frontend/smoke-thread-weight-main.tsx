@@ -5,7 +5,6 @@
 // measured cost of a keystroke, a scroll, a menu and a delete is the app's own and grows with the
 // thread the way a user's does (#8977).
 // Same shape as smoke-autoscroll.html and smoke-research.html: a vite entry, no backend, no auth.
-//
 // Two things are real on purpose and cannot be mocked away without deleting the measurement:
 //   - Thread itself, from src/components/assistant-ui/thread.tsx, with its per-message action
 //     bars, tooltips and markdown blocks.
@@ -13,7 +12,6 @@
 //     Streamdown, Shiki and KaTeX all pay their per-message price.
 // The runtime is synthetic: a local runtime whose model adapter never runs, seeded through
 // `thread.import`.
-//
 // useLocalRuntime rather than useExternalStoreRuntime: the delete path under measurement is
 // `thread.export()` -> MessageRepository -> `thread.import()`, which only the local runtime backs.
 

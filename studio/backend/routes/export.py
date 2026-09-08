@@ -48,13 +48,11 @@ logger = get_logger(__name__)
 
 
 async def _ensure_export_supported() -> None:
-    """Reject a mutating export request up front (HTTP 400) when the host can't export.
-
-    Keeps the backend authoritative even if a client bypasses the UI gate. Read-only endpoints
+    """Reject a mutating export request up front (HTTP 400) when the host can't export. Keeps the
+    backend authoritative even if a client bypasses the UI gate. Read-only endpoints
     (scan/status/logs) are intentionally NOT gated so the Export page can still render the reason.
-    Also refuses (409) while a latest-transformers install is swapping .venv_t5_latest: an
-    export worker spawned mid-swap could activate a half-replaced sidecar.
-    """
+    Also refuses (409) while a latest-transformers install is swapping .venv_t5_latest: an export
+    worker spawned mid-swap could activate a half-replaced sidecar."""
     from utils.transformers_latest import is_install_in_progress
 
     if is_install_in_progress():
@@ -81,11 +79,9 @@ def _resolve_export_hf_token(
     push_to_hub: bool = False,
     allow_ambient: bool = True,
 ) -> HfTokenArg:
-    """The credential this export runs under, as the anonymous-aware sentinel.
-
-    ``None`` reads downstream as "go and find a credential" (``if token is None:
-    get_token()``), so a caller denied the ambient token is spelled ``False``.
-    """
+    """The credential this export runs under, as the anonymous-aware sentinel. ``None`` reads
+    downstream as "go and find a credential" (``if token is None: get_token()``), so a caller denied
+    the ambient token is spelled ``False``."""
     token = raw_token.strip() if isinstance(raw_token, str) and raw_token.strip() else None
     if push_to_hub and token is None and not allow_ambient:
         raise HTTPException(
@@ -248,9 +244,8 @@ async def get_export_logs(
     """
     try:
         backend = get_export_backend()
-        # No cursor on the first poll of a run: start from the run-start snapshot
-        # so the client gets every line since the run began (matches the SSE
-        # default), not the entire historical ring buffer.
+        # No cursor on the first poll of a run: start from the run-start snapshot so the client gets every line since
+        # the run began (matches the SSE default), not the entire historical ring buffer.
         if since is None:
             cursor = backend.get_run_start_seq()
         else:
@@ -306,8 +301,7 @@ def _export_details(
         from utils.paths.storage_roots import exports_root
 
         path = Path(output_path)
-        # If it's outside exports_root, return the full absolute path
-        # so users can find their files on a different drive.
+        # Outside exports_root, so return the full absolute path and users can find their files on another drive.
         if path.is_absolute():
             try:
                 path.resolve().relative_to(exports_root().resolve())
@@ -368,7 +362,6 @@ async def export_merged_model(
         from utils.transformers_version import SidecarSwapInProgress
 
         if isinstance(e, SidecarSwapInProgress):
-            # Expected loss of the race against a sidecar install: retryable 409.
             raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting merged model: {e}", exc_info = True)
         raise HTTPException(
@@ -418,7 +411,6 @@ async def export_base_model(
         from utils.transformers_version import SidecarSwapInProgress
 
         if isinstance(e, SidecarSwapInProgress):
-            # Expected loss of the race against a sidecar install: retryable 409.
             raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting base model: {e}", exc_info = True)
         raise HTTPException(
@@ -472,7 +464,6 @@ async def export_gguf(
         from utils.transformers_version import SidecarSwapInProgress
 
         if isinstance(e, SidecarSwapInProgress):
-            # Expected loss of the race against a sidecar install: retryable 409.
             raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting GGUF model: {e}", exc_info = True)
         raise HTTPException(
@@ -523,7 +514,6 @@ async def export_lora_adapter(
         from utils.transformers_version import SidecarSwapInProgress
 
         if isinstance(e, SidecarSwapInProgress):
-            # Expected loss of the race against a sidecar install: retryable 409.
             raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting LoRA adapter: {e}", exc_info = True)
         raise HTTPException(
@@ -532,10 +522,9 @@ async def export_lora_adapter(
         )
 
 
-# Live export log SSE. Same shape as stream_training_progress: id/event/data, a leading `retry:`, and Last-Event-ID
-# honoured on reconnect.
-# Worker stdout/stderr reaches the orchestrator as log entries (core/export/worker.py, orchestrator.py); shape follows
-# routes/training.py.
+# Live export log SSE. Same shape as stream_training_progress: id/event/data, a leading `retry:`, and
+# Last-Event-ID honoured on reconnect. Worker stdout/stderr reaches the orchestrator as log entries
+# (core/export/worker.py, orchestrator.py); shape follows routes/training.py.
 def _format_sse(
     data: str,
     event: str,
@@ -579,9 +568,8 @@ async def stream_export_logs(
     """
     backend = get_export_backend()
 
-    # Starting cursor: explicit `since` wins, then Last-Event-ID on reconnect,
-    # else the run-start snapshot so the client sees every line since the run
-    # began even if the SSE connection opened after the export-kickoff POST.
+    # Starting cursor: explicit `since` wins, then Last-Event-ID on reconnect, else the run-start snapshot so the
+    # client sees every line since the run began even if the SSE connection opened after the export-kickoff POST.
     last_event_id = request.headers.get("last-event-id")
     if since is None and last_event_id is not None:
         try:

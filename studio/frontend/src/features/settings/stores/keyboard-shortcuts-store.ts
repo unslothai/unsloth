@@ -37,10 +37,9 @@ export type ShortcutOverrides = Partial<
 /** Builds before alternates stored `id -> string | null`. Read that as the
  *  primary slot, or every existing customization reverts to defaults. */
 function normalizeEntry(value: unknown): ShortcutOverrideEntry | null {
-  // A null back then cleared the action, which had one chord, so it has to
-  // clear both now. Left to the primary alone it would pick up whatever
-  // alternate has shipped since and start answering again, which is the
-  // opposite of what the user asked for.
+  // A null back then cleared the action, which had one chord, so it has to clear both now. Left to
+  // the primary alone it would pick up whatever alternate has shipped since and start answering
+  // again, which is the opposite of what the user asked for.
   if (value === null) return { primary: null, alternate: null };
   // A rebind is different: the user chose a primary and never saw an
   // alternate, so that slot is untouched and takes the shipped default, the

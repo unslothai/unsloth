@@ -4,23 +4,15 @@
 /**
  * What one Markdown block should show when it cannot be RENDERED.
  *
- * Streamdown loads two parts of a reply through `React.lazy`: the syntax
- * highlighted code body and the Mermaid renderer. Both are fetched at the
- * moment a reply first contains that construct, and a lazy import that rejects
- * rethrows during render. Nothing between the thread and the router catches
- * that today, so one chunk that will not load replaces the whole application
- * with the router's error page and takes the reply that was already on screen
- * with it.
+ * Streamdown loads the syntax highlighted code body and the Mermaid renderer through `React.lazy`,
+ * and a lazy import that rejects rethrows during render. Nothing between the thread and the router
+ * catches that today, so one chunk that will not load replaces the whole application with the
+ * router's error page and takes the reply that was already on screen with it.
  *
- * The answer is to keep the CONTENT. A fence whose highlighter is missing is
- * still perfectly readable as text: it is the same characters in the same
- * order, which is what the model actually said. So the degraded form of a block
- * is its own source, with the Markdown fence scaffolding removed so a reader
- * sees code rather than backticks.
- *
- * Deliberately NOT an error card and deliberately not blank. A reader who asked
- * a model for a shell command needs the command, not an apology, and least of
- * all an empty box where their answer used to be.
+ * The answer is to keep the CONTENT: a fence whose highlighter is missing is still readable as
+ * text, so the degraded form of a block is its own source with the Markdown fence scaffolding
+ * removed. Deliberately NOT an error card and deliberately not blank. A reader who asked a model
+ * for a shell command needs the command, not an apology, and least of all an empty box.
  */
 
 export type MarkdownBlockFallback = {
@@ -44,12 +36,10 @@ type OpeningFence = {
 };
 
 /**
- * Scanned rather than matched.
- *
- * The regex this replaces put `[^\r\n]*` straight after `` `{3,} ``, and the two
- * compete for the same backticks, so an opening run with no line break after it
- * backtracks quadratically. Scanning takes the run greedily once and never
- * reconsiders, which is linear by construction on any input.
+ * Scanned rather than matched. The regex this replaces put a line-tail match straight after the
+ * backtick run, and the two compete for the same backticks, so an opening run with no line break
+ * after it backtracks quadratically. Scanning takes the run greedily once and never reconsiders,
+ * which is linear by construction on any input.
  */
 function openingFence(content: string): OpeningFence | null {
   let i = 0;
@@ -66,11 +56,10 @@ function openingFence(content: string): OpeningFence | null {
   // the delimiter and the language tag as prose instead.
   const rest = lineEnd === -1 ? content.length : lineEnd;
   const info = content.slice(i + run, rest).replace(/\r$/, "");
-  // "If the info string comes after a backtick fence, it may not contain any
-  // backtick characters" (CommonMark 0.31.2). Such a line is a PARAGRAPH, so
-  // the block is not a whole-block fence and belongs to the caller unchanged;
-  // treating it as one drops the opening line and the reader loses that text.
-  // Tilde fences carry no such restriction. `CODE_FENCE_RE` in
+  // "If the info string comes after a backtick fence, it may not contain any backtick characters"
+  // (CommonMark 0.31.2). Such a line is a PARAGRAPH, so the block is not a whole-block fence and
+  // belongs to the caller unchanged; treating it as one drops the opening line and the reader loses
+  // that text. Tilde fences carry no such restriction, and `CODE_FENCE_RE` in
   // `features/chat/artifacts/html-fences` already spells the same rule.
   if (char === "`" && info.includes("`")) return null;
   const body = lineEnd === -1 ? "" : content.slice(lineEnd + 1);
@@ -80,16 +69,12 @@ function openingFence(content: string): OpeningFence | null {
 /**
  * The body with the opener's indentation taken off each line.
  *
- * "If the leading code fence is indented N spaces, then up to N spaces of
- * indentation are removed from each line of the content" (CommonMark 0.31.2).
- * UP TO: a line indented less than the opener loses only what it has, and a line
- * indented more keeps the remainder, which is the code's own structure.
- *
- * Recognising the indent when opening the fence and then not removing it is the
- * half of the rule that shows. The rendered block reads `x = 1`, the degraded
- * one reads `   x = 1`, and a reader who copies that into a file gets an
- * IndentationError from text their model never wrote. `extractHtmlFences`
- * already applies the same rule to the same construct.
+ * "If the leading code fence is indented N spaces, then up to N spaces of indentation are removed
+ * from each line of the content" (CommonMark 0.31.2). UP TO: a line indented less than the opener
+ * loses only what it has, and one indented more keeps the remainder, which is the code's own
+ * structure. Recognising the indent when opening the fence and then not removing it is the half of
+ * the rule that shows: the reader copies the degraded block into a file and gets an
+ * IndentationError from text their model never wrote. `extractHtmlFences` applies the same rule.
  */
 function stripIndent(body: string, indent: number): string {
   if (indent === 0 || body === "") return body;
@@ -105,16 +90,14 @@ function stripIndent(body: string, indent: number): string {
 /**
  * Whether the line `[from, to)` of `text` closes a fence opened with `marker`.
  *
- * CommonMark 0.31.2 requires the closing fence to use the same character and
- * "at least as many" of it, so the opening length is a MINIMUM and not a match:
- * a four-backtick close is how a model closes a fence whose body contains a
- * three-backtick one. The previous back-reference demanded the exact same run
- * and left the close on screen as if it were code.
+ * CommonMark 0.31.2 requires the closing fence to use the same character and "at least as many" of
+ * it, so the opening length is a MINIMUM and not a match: a four-backtick close is how a model
+ * closes a fence whose body contains a three-backtick one. The previous back-reference demanded
+ * the exact same run and left the close on screen as if it were code.
  *
- * Bounds rather than a line STRING because the caller has thousands of lines and
- * the only thing most of them need is a look at their first character. Slicing
- * each one, and testing each one against a regex, cost more than everything else
- * in the scan put together.
+ * Bounds rather than a line STRING because the caller has thousands of lines and most need only a
+ * look at their first character. Slicing each one and testing it against a regex cost more than
+ * everything else in the scan put together.
  */
 function closesFenceAt(
   text: string,
@@ -140,16 +123,11 @@ function closesFenceAt(
 }
 
 /**
- * The readable form of a block that failed to render.
- *
- * Falls back to the block's own source unchanged for anything that is not a
- * whole-block fence: a paragraph, a list or a table is already readable as
- * Markdown, and inventing a renderer here would be a second thing to go wrong.
- *
- * This runs only once rendering has ALREADY failed, so it is the last thing
- * between the reader and a lost block. Getting the fence wrong here does not
- * cost a nicety, it puts stray backticks in the only view of the answer that
- * still exists.
+ * The readable form of a block that failed to render. Falls back to the block's own source for
+ * anything that is not a whole-block fence: a paragraph, a list or a table is already readable as
+ * Markdown, and inventing a renderer here would be a second thing to go wrong. This runs only once
+ * rendering has ALREADY failed, so getting the fence wrong does not cost a nicety, it puts stray
+ * backticks in the only view of the answer that still exists.
  */
 export function markdownBlockFallback(content: string): MarkdownBlockFallback {
   const open = openingFence(content);
@@ -169,27 +147,20 @@ export function markdownBlockFallback(content: string): MarkdownBlockFallback {
 /**
  * The fence's content, or null when the fence does not own the whole block.
  *
- * One block is usually one construct, but not always: Streamdown 2.5's
- * `parseMarkdownIntoBlocks` returns an ENTIRE reply as a single block once it
- * contains a footnote (measured: the same reply splits into 5 blocks without one
- * and 1 with). A fence at the top of such a block is followed by its own close
- * and then by prose, and reading the whole thing as the fence's body put the
- * closing delimiter, the prose and the footnote on screen as if the model had
- * written them as Python.
+ * One block is usually one construct, but not always: Streamdown 2.5's `parseMarkdownIntoBlocks`
+ * returns an ENTIRE reply as a single block once it contains a footnote (measured: the same reply
+ * splits into 5 blocks without one and 1 with). A fence at the top of such a block is followed by
+ * its own close and then by prose, and reading the whole thing as the fence's body put the closing
+ * delimiter, the prose and the footnote on screen as if the model had written them as Python.
  *
- * So the close is looked for from the TOP, and where it falls decides:
- *   last line   the fence is the block. Its content is everything above.
- *   earlier     the block continues past the fence, so it is not a whole-block
- *               fence and belongs to the caller unchanged.
- *   never       still streaming. All of it is content, which is the case the
- *               reader needs most: the failure happens mid-fence, long before it
- *               closes.
+ * So the close is looked for from the TOP, and where it falls decides. On the last line the fence
+ * is the block and its content is everything above; earlier, the block continues past the fence,
+ * so it belongs to the caller unchanged; never, it is still streaming and all of it is content,
+ * which is the case the reader needs most since the failure happens mid-fence.
  *
- * Driven by `indexOf` on the delimiter rather than walked line by line. A close
- * has to carry at least three of the opening character, so the only lines worth
- * looking at are the ones holding such a run, and an ordinary code block has
- * exactly one: its own. Walking every line instead cost ~50ns per LINE, which a
- * long block pays in full every time it re-renders.
+ * Driven by `indexOf` on the delimiter rather than walked line by line: a close carries at least
+ * three of the opening character, and an ordinary code block holds exactly one such run. Walking
+ * every line cost ~50ns per LINE, which a long block pays in full every time it re-renders.
  */
 function fenceBody(body: string, marker: string): string | null {
   // The line break before the closing fence belongs to the fence's line, and a

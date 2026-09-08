@@ -27,8 +27,7 @@ export function CopyableErrorChip({
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Clear any pending reset on unmount to avoid a setState on an
-  // unmounted component.
+  // Clear any pending reset on unmount to avoid a setState on an unmounted component.
   useEffect(() => () => {
     if (resetTimer.current) clearTimeout(resetTimer.current);
   }, []);

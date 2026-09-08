@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Usage numbers for the Profile settings tab.
-
-Read-only aggregation over the local studio.db (see
+"""Usage numbers for the Profile settings tab. Read-only aggregation over the local studio.db (see
 ``storage.profile_stats_db``). Nothing is uploaded.
 """
 
@@ -46,9 +43,8 @@ async def get_profile_stats(
     ``Date.getTimezoneOffset()`` fallback for hosts with no tzdata.
     """
     try:
-        # A cold pass parses every message's metadata JSON: ~90 ms at 10k
-        # messages, ~1.2 s at 260k. Off the event loop so it cannot stall token
-        # streaming when Settings is opened mid-generation.
+        # A cold pass parses every message's metadata JSON: ~90 ms at 10k messages, ~1.2 s at 260k. Off the event
+        # loop so it cannot stall token streaming when Settings is opened mid-generation.
         return await asyncio.to_thread(
             compute_profile_stats,
             days = days,

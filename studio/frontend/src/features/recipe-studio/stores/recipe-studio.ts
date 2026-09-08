@@ -77,10 +77,9 @@ type RecipeStudioState = {
   nextId: number;
   nextY: number;
   fitViewTick: number;
-  // Upload-uid directories whose owning block dropped them; server-side
-  // deletion is deferred until a save no longer references them, so a
-  // reload before autosave cannot leave a saved recipe pointing at
-  // deleted files.
+  // Upload-uid directories whose owning block dropped them; server-side deletion is deferred until
+  // a save no longer references them, so a reload before autosave cannot leave a saved recipe
+  // pointing at deleted files.
   pendingUploadCleanups: string[];
   queueUploadCleanup: (uid: string) => void;
   setSheetOpen: (open: boolean) => void;

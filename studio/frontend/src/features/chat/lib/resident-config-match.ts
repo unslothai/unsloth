@@ -307,11 +307,10 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
-    // Always pinned: the status echoes what the load requested, so a resident server
-    // that asked for nothing reports null and a blank control agrees with it. Reading
-    // blank as "no opinion" instead would mean clearing the dtype back to the f16
-    // default never relaunched, leaving the server on the quantized draft cache the
-    // panel no longer shows.
+    // Always pinned: the status echoes what the load requested, so a resident server that asked for
+    // nothing reports null and a blank control agrees with it. Reading blank as "no opinion"
+    // instead would mean clearing the dtype back to the f16 default never relaunched, leaving the
+    // server on the quantized draft cache the panel no longer shows.
     pinned: () => true,
     agrees: (c, s) =>
       (c.specDraftCacheDtype ?? null) ===

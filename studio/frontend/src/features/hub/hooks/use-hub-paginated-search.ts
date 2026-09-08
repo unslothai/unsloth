@@ -39,9 +39,8 @@ type BusyKind = "initial" | "more";
  */
 const MIN_FETCH_INTERVAL_MS = 350;
 
-// Preserved results older than this refetch on re-enable so the feed can't lag
-// the Hub. Reset by every successful pull (idle time only). Mirrors the
-// modelInfo TTL in hf-cache.ts.
+// Preserved results older than this refetch on re-enable so the feed can't lag the Hub. Reset by
+// every successful pull (idle time only). Mirrors the modelInfo TTL in hf-cache.ts.
 const STALE_AFTER_MS = 5 * 60 * 1000;
 
 export async function pullBatch<T>(
@@ -57,10 +56,9 @@ export async function pullBatch<T>(
       return { items, done: true, scanned };
     }
     scanned += 1;
-    // mapItem already returns null to mean "skip", so a throw is the same
-    // answer arriving the hard way. Letting it out marked the generator dead
-    // over an item next() had already handed us, and every restart then hit
-    // the same row at the same position.
+    // mapItem already returns null to mean "skip", so a throw is the same answer arriving the hard
+    // way. Letting it out marked the generator dead over an item next() had already handed us, and
+    // every restart then hit the same row at the same position.
     let mapped: T | null = null;
     try {
       mapped = mapItem(result.value);
@@ -119,9 +117,8 @@ export function useHubPaginatedSearch<T>(
 
   const iterRef = useRef<AsyncGenerator<unknown> | null>(null);
   const versionRef = useRef(0);
-  // Aborts the live iterator's in-flight fetches; the prior one is aborted and
-  // replaced when a new query supersedes the feed so the abandoned listing stops
-  // fetching and priming the cache.
+  // Aborts the live iterator's in-flight fetches; the prior one is aborted and replaced when a new
+  // query supersedes the feed so the abandoned listing stops fetching and priming the cache.
   const abortRef = useRef<AbortController | null>(null);
 
   // Identity of the last-fetched query. A fetch (re)starts only when one of these
@@ -131,9 +128,8 @@ export function useHubPaginatedSearch<T>(
   const loadedNonceRef = useRef(-1);
   const loadedAtRef = useRef(0);
 
-  // Synchronous in-flight guard. Set before any setState so back-to-back
-  // fetchMore() calls can't both pass the gate while React batches the commit.
-  // Cleared in finally() of the matching pull.
+  // Synchronous in-flight guard. Set before any setState so back-to-back fetchMore() calls can't
+  // both pass the gate while React batches the commit. Cleared in finally() of the matching pull.
   const busyRef = useRef(false);
   const busyKindRef = useRef<BusyKind | null>(null);
   const busyTokenRef = useRef(0);

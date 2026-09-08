@@ -62,9 +62,8 @@ export function DownloadCard({
       <div className="hub-download-card">
         <div className="group/dl flex items-center">{children}</div>
         {progress && (
-          // Match the row's inner text bounds: the trigger and the action
-          // button both inset 12px, so the bar lines up with the quant label
-          // on the left and the percentage on the right.
+          // Match the row's inner text bounds: the trigger and the action button both inset 12px,
+          // so the bar lines up with the quant label on the left and the percentage on the right.
           <div className="px-3">
             <DownloadProgressBar
               progress={progress}

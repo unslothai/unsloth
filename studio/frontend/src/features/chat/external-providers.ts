@@ -412,9 +412,8 @@ export function toExternalBackendProviderType(
   providerType: string | null | undefined,
 ): string | undefined {
   if (!providerType) return undefined;
-  // vLLM's /v1/responses applies the loaded model's chat template, which 400s on
-  // strict-alternation templates. Pass the type through so the backend routes vLLM to
-  // /v1/chat/completions instead.
+  // vLLM's /v1/responses applies the loaded model's chat template, which 400s on strict-alternation
+  // templates. Pass the type through so the backend routes vLLM to /v1/chat/completions instead.
   if (providerType === "vllm") return "vllm";
   if (providerType === "ollama") return "ollama";
   if (providerType === "llama_cpp") return "llama_cpp";

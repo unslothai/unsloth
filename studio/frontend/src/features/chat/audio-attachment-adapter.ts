@@ -27,12 +27,10 @@ function newAttachmentId(): string {
 // Audio shares the "Add photos & files" picker. Like VisionImageAdapter, unsupported models are
 // rejected at add() time with a toast.
 export class AudioAttachmentAdapter implements AttachmentAdapter {
-  // MIME is unreliable for some containers (m4a), so also match by
-  // extension. No .webm extension: it would claim video/webm files; real
-  // audio webm (MediaRecorder) always reports the audio/webm MIME. .mp4 and
-  // .m4v stay off for the same reason; only .m4a is audio-only. Not the picker
-  // list: this decides routing, and .3gp is in that list only so a dialog can
-  // offer a recording.
+  // MIME is unreliable for some containers (m4a), so also match by extension. No .webm extension:
+  // it would claim video/webm files; real audio webm (MediaRecorder) always reports the audio/webm
+  // MIME. .mp4 and .m4v stay off for the same reason; only .m4a is audio-only. Not the picker list:
+  // this decides routing, and .3gp is in that list only so a dialog can offer a recording.
   accept = AUDIO_ATTACHMENT_ACCEPT;
   private readonly attachmentIds = new Set<string>();
 

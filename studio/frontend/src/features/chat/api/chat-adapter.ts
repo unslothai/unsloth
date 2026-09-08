@@ -346,7 +346,6 @@ interface ServerUsage {
   cache_read_input_tokens?: number;
 }
 
-/** Server-side timing data from llama-server's timings object. */
 interface ServerTimings {
   prompt_n: number;
   cache_n: number;
@@ -676,7 +675,6 @@ function isSafeNavigableSourceUrl(raw: unknown): string {
   return "";
 }
 
-/** Convert an Anthropic document citation dict into a Sources-panel source. */
 function documentCitationToSource(
   cit: Record<string, unknown>,
   fallbackIdx: number,
@@ -1052,8 +1050,8 @@ function serializeAssistantToolCallPart(
       arguments: argumentsStr,
     },
   };
-  // Promote args.google to extra_content.google: the backend replay branch only inspects extra_content.
-  // The backend inspects extra_content, not function.arguments.
+  // Promote args.google to extra_content.google: the backend replay branch inspects extra_content, not
+  // function.arguments.
   if (tc.extra_content !== undefined) {
     entry.extra_content = tc.extra_content;
   } else if (argsGoogle) {
@@ -1607,9 +1605,9 @@ export function messagesContainImage(messages: RunMessages): boolean {
   return false;
 }
 
-// Matched on the part TYPE, not the base64 extractors: a clip whose payload does not parse is
-// still user content and must not reach the image engines.
-// Video arrives as a file part carrying a video mime type, the shape extractVideoPartBase64 reads.
+// Matched on the part TYPE, not the base64 extractors: a clip whose payload does not parse is still
+// user content and must not reach the image engines. Video arrives as a file part carrying a video
+// mime type, the shape extractVideoPartBase64 reads.
 function isPrivateMediaPart(part: { type: string }): boolean {
   if (part.type === "audio") return true;
   return (
@@ -1662,10 +1660,9 @@ export function findLatestUserAudioBase64(
       }
     }
 
-    // Only the newest user message counts: audio_base64 switches the backend onto the audio path,
-    // so a stale clip would hijack text follow-ups.
-    // Replaying audio from an older turn would hijack text follow-ups, since Whisper would
-    // retranscribe the stale clip. Matches the consumed-on-send semantics of the legacy pendingAudio.
+    // Only the newest user message counts: audio_base64 switches the backend onto the audio path, so
+    // replaying a stale clip would hijack text follow-ups with a retranscription. Matches the
+    // consumed-on-send semantics of the legacy pendingAudio.
     break;
   }
 
@@ -1844,10 +1841,9 @@ export async function buildLocalTokenCountExtras(
     ragAutoInjectMinScore,
     residentCheckpoint,
   } = useChatRuntimeStore.getState();
-  // Explicit false, as the completion sends: an omitted field lets the launcher's
-  // tools-on default answer and the server renders a catalog the completion does not.
-  // No budget, because the completion sends none either, so a policy that injects tools
-  // past this false gets the server default on both sides.
+  // Explicit false, as the completion sends: an omitted field lets the launcher's tools-on default
+  // answer and the server renders a catalog the completion does not. No budget, because the completion
+  // sends none either.
   if (!supportsTools) {
     return { enable_tools: false, bypass_permissions: bypassPermissions };
   }
@@ -2061,7 +2057,6 @@ async function resolveSandboxSessionId(
   return sandboxSessionIdFor(threadId, projectId);
 }
 
-/** Wait for an in-progress model load to finish (polls store every 500ms). */
 function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const check = () => {
@@ -2167,11 +2162,10 @@ type QueuedResolvedModelRuntime = {
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;
 
-// A background auto-load may enrich models[], but every field describing the visible chat's
-// model must return to its prior value.
-// Read them from the same per-model config that fed effectiveMaxSeqLength: on a background
-// auto-load the live store holds session defaults, not the saved Manual mode, layer pin or GPU
-// pick. The saved GPU pick is reconciled against the GPUs present now.
+// A background auto-load may enrich models[], but every field describing the visible chat's model
+// must return to its prior value. Read them from the same per-model config that fed
+// effectiveMaxSeqLength: on a background auto-load the live store holds session defaults, not the
+// saved Manual mode, layer pin or GPU pick.
 const VISIBLE_MODEL_RUNTIME_KEYS = [
   "activeLoadId",
   "activeGgufVariant",
@@ -2235,8 +2229,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "chatTemplateOverride",
   "loadedChatTemplateOverride",
   "chatTemplateOverrideReason",
-  // Or a background autoload leaves its width and verdict on the restored model.
-  // The rest of the group mlxRuntimeStateFrom writes.
+  // Or a background autoload leaves its width and verdict on the restored model; the rest of the group
+  // mlxRuntimeStateFrom writes.
   "mlxKvBits",
   "loadedMlxKvBitsRequested",
   "mlxKvQuantReason",
@@ -2446,7 +2440,6 @@ type AutoLoadSource = {
   kind: LastLocalModelKind;
   /** Catalog id: per-model settings, toasts, remembered-model matching. */
   id: string;
-  /** Sent to /api/inference/load as model_path. */
   loadId: string;
   sizeBytes: number;
   maxSeqLength: number;
@@ -2454,10 +2447,9 @@ type AutoLoadSource = {
   listVariants: (() => Promise<GgufVariantDetail[]>) | null;
 };
 
-// Case-sensitive targets keep their case; repo ids and Windows paths fold, separators
-// included. NFC first: macOS returns decomposed names.
-// Linux distinguishes /models/Foo from models/foo, and \\wsl$\ reaches the same ext4; separators
-// fold, so C:\a\m.gguf and C:/a/m.gguf are one key. NFC first: macOS returns decomposed names.
+// Case-sensitive targets keep their case; repo ids and Windows paths fold, separators included.
+// Linux distinguishes /models/Foo from models/foo, and \\wsl$\\ reaches the same ext4. NFC first:
+// macOS returns decomposed names.
 function normalizeTarget(value: string): string {
   const target = value.trim().normalize("NFC");
   if (/^[A-Za-z]:[\\/]/.test(target) || target.startsWith("\\\\")) {
@@ -2771,9 +2763,9 @@ type SettledServerStatus =
   | { outcome: ServerLoadBlocked; status?: undefined };
 
 /**
- * Poll until nothing is loading. A status carrying `loading` still names the model being
- * replaced, so no caller may read a residency off it. `stopEarly` abandons the wait; a
- * caller that passes none never sees that outcome.
+ * Poll until nothing is loading. A status carrying `loading` still names the model being replaced, so
+ * no caller may read a residency off it. `stopEarly` abandons the wait; a caller that passes none
+ * never sees that outcome.
  */
 async function waitForSettledServerStatus(options: {
   abortSignal?: AbortSignal;
@@ -2789,9 +2781,8 @@ async function waitForSettledServerStatus(options?: {
   const deadline = Date.now() + CLI_LOAD_ADOPT_MAX_MS;
   let failures = 0;
   let announced = false;
-  // This loop owns settlement while it runs, so an ordinary refresh must not publish a
-  // status taken mid-replacement as the pick: stopEarly would read the outgoing model as
-  // a user selection and hand it to the send.
+  // This loop owns settlement while it runs, so an ordinary refresh must not publish a status taken
+  // mid-replacement as the pick: stopEarly would read the outgoing model as a user selection.
   const release = beginServerModelWait(options?.abortSignal);
 
   try {
@@ -2927,8 +2918,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     cpuFallbackReason?: CpuFallbackReason | null,
     mmprojFallbackReason?: MmprojFallbackReason | null,
   ): void => {
-    // Both reasons composed: nesting them as `mmproj ? ... : cpu ? ...` dropped the CPU message.
-    // That combination is reachable and is the case this feature exists for; see loadFallbackNotice.
+    // Both reasons composed: nesting them as `mmproj ? ... : cpu ? ...` dropped the CPU message, and
+    // that combination is reachable and is the case this feature exists for.
     const notice = loadFallbackNotice(
       message,
       cpuFallbackReason,
@@ -2994,11 +2985,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     gpu_memory_mode?: "auto" | "manual";
     cache_type_kv?: string | null;
     tensor_parallel?: boolean | null;
-    // The projector is part of what the guard sizes: charging for a skipped one refuses loads that fit.
-    // A load that skips the projector needs ~1 GB less.
+    // The projector is part of what the guard sizes: charging for a skipped one refuses loads that fit,
+    // and a load that skips it needs ~1 GB less.
     disable_vision?: boolean | null;
-    // The estimate charges a drafter whose size differs by mode, so the preflight must be told what the load will send.
-    // A DSpark sidecar is ~11 GB, and Auto reaches it.
+    // The estimate charges a drafter whose size differs by mode, so the preflight must be told what the
+    // load will send: a DSpark sidecar is ~11 GB, and Auto reaches it.
     speculative_type?: string | null;
     spec_draft_n_max?: number | null;
   }): Promise<boolean> {
@@ -3125,8 +3116,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       ).isDiffusion;
     }
     // The stored override can live only on the server while this config is local, and nothing is
-    // resident at startup for /load's omission path to inherit from. Sanitized like every
-    // hydration, so it becomes an EXPLICIT list /load validates strictly.
+    // resident at startup for /load's omission path to inherit from. Sanitized like every hydration, so
+    // it becomes an EXPLICIT list /load validates strictly.
     let resolvedExtraArgs = config.llamaExtraArgs;
     if (candidate.kind === "gguf" && !isDiffusion) {
       try {
@@ -3334,9 +3325,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           persist: !options?.preserveVisibleSettings,
           trackQueuedSettings: !options?.preserveVisibleSettings,
           fromModelDefaults: true,
-          // A budget remembered from a larger context does not fit this load. The
-          // window, not the request: a backend that sizes its own was sent the
-          // auto-size sentinel, which as a budget is zero.
+          // A budget remembered from a larger context does not fit this load. The window, not the request: a
+          // backend that sizes its own was sent the auto-size sentinel, which as a budget is zero.
           maxTokensCap: replayMaxTokensCap(
             candidate.kind === "gguf"
               ? loadedContextFields(loadResp).loadedContextLength
@@ -3448,9 +3438,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
-          // The whole of the previous model's serving state, not just the window: a
-          // retained lease token still reads as a GGUF pick. This model's own pin is
-          // kept, though -- clearing it would reload it auto-sized next time.
+          // The whole of the previous model's serving state, not just the window: a retained lease token still
+          // reads as a GGUF pick. This model's own pin is kept, or it would reload auto-sized next time.
           customContextLength: autoLoadPin,
           loadedCustomContextLength: autoLoadPin,
           ...loadedContextFields(loadResp),
@@ -3479,10 +3468,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     return true;
   }
   try {
-    // Fail closed: `.catch(() => [])` turned one flaky request into "the user has nothing" and
-    // downloaded a model over a loadable local one.
-    // These three lists are the only evidence of what is on the device. Both cached calls take the run
-    // signal, being raw fetches with no timeout of their own; listLocalModels has its own 30s bound.
+    // Fail closed: `.catch(() => [])` turned one flaky request into "the user has nothing" and downloaded
+    // a model over a loadable local one. These three lists are the only evidence of what is on the device.
+    // Both cached calls take the run signal, being raw fetches with no timeout; listLocalModels has 30s.
     const inventory = await Promise.allSettled([
       listCachedGguf(options?.abortSignal),
       listCachedModels(hfToken, options?.abortSignal),
@@ -3582,10 +3570,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       }
     }
 
-    // The cap gates the default download too, so the whole /load budget is MAX_AUTO_LOAD_ATTEMPTS.
-    // A tried-and-failed cached model stops here; an empty cache falls through.
-    // Cap also gates the default download, so the total /load budget across cached plus fallback is
-    // MAX_AUTO_LOAD_ATTEMPTS, not +1. An empty cache never sets loadFailure.
+    // The cap gates the default download too, so the whole /load budget across cached plus fallback is
+    // MAX_AUTO_LOAD_ATTEMPTS, not +1. A tried-and-failed cached model stops here; an empty cache falls
+    // through and never sets loadFailure.
     if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS || loadFailure.current) {
       toast.dismiss(toastId);
       if (loadFailure.current) {
@@ -3683,10 +3670,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         trust_remote_code: trustRemoteCode,
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
-        // GPU Memory mode is a standing preference; the per-model layer/MoE/split knobs and context
-        // pin stay at their defaults, and the GPU pick is the on-screen one the preflight used.
-        // The GPU pick deliberately differs: it is the picker's on-screen selection, which the canAutoLoad
-        // preflight above already committed to.
+        // GPU Memory mode is a standing preference; the per-model layer/MoE/split knobs and context pin stay
+        // at their defaults. The GPU pick deliberately differs: it is the picker's on-screen selection, which
+        // the canAutoLoad preflight above already committed to.
         gpu_memory_mode: rt.gpuMemoryMode,
         gpu_layers: GPU_LAYERS_AUTO,
         n_cpu_moe: 0,
@@ -3825,12 +3811,9 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
     abortSignal.throwIfAborted();
     const visibleState = useChatRuntimeStore.getState();
     if (isExternalModelId(visibleState.params.checkpoint)) {
-      // Hold the lifecycle lease across the probe. Fail closed: a transient status error is not
-      // evidence that the local server is empty.
-      // Its response cannot become stale behind a foreground or sibling queued load, and only this owner
-      // may clear modelLoading afterward.
-      // A failed probe is not evidence the local server is empty, and neither is one read
-      // mid-replacement: fail closed, or the outgoing model stands in for the incoming one.
+      // Hold the lifecycle lease across the probe, so its response cannot become stale behind a foreground
+      // or sibling queued load and only this owner may clear modelLoading afterward. Fail closed: a failed
+      // probe is not evidence the local server is empty, and neither is one read mid-replacement.
       const settled = await waitForSettledServerStatus({ abortSignal });
       abortSignal.throwIfAborted();
       if (settled.outcome !== "settled") {
@@ -3843,9 +3826,8 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
         };
       }
       const status = settled.status;
-      // The other door into adoption, bypassing tryAdoptServerActiveModel: a speech
-      // model is not one chat can queue against, so read the slot as empty and let the
-      // sweep below load a real chat model.
+      // The other door into adoption, bypassing tryAdoptServerActiveModel: a speech model is not one chat
+      // can queue against, so read the slot as empty and let the sweep below load a real chat model.
       const checkpoint = isSpeechOnlyStatus(status)
         ? null
         : resolveInferenceCheckpointId(status);
@@ -3955,17 +3937,14 @@ export function createOpenAIStreamAdapter(
       // After the hydrate: the backend reads some settings out of SQLite at call time and the
       // mirror is a trailing debounce, so sending inside that window uses pre-toggle values.
       await flushPendingChatSettings();
-      // And the migration a model pick may have just scheduled: an external
-      // selection gets no load or status callback, so this is the only join
-      // between it and the run that would otherwise send the replayed row.
+      // And the migration a model pick may have just scheduled: an external selection gets no load or
+      // status callback, so this is the only join between it and the run.
       await awaitPendingQwenDefaultsMigration();
-      // Every run reaches here: the composer, Reload, Continue, and send from the edit
-      // composer. Waiting for the open chat's own settings in this one place is what
-      // keeps the message-level controls from starting a run on the installation
-      // defaults that stand in while the read is out, which for a chat stored as "ask"
-      // would mean running tools without asking.
-      // Bound to this run's own chat: a run for A released by B's pairing ending would
-      // resume and read B's settings for A.
+      // Every run reaches here: the composer, Reload, Continue, and send from the edit composer. Waiting
+      // for the open chat's own settings in this one place is what keeps the message-level controls from
+      // starting a run on the installation defaults that stand in while the read is out, which for a chat
+      // stored as "ask" would mean running tools without asking. Bound to this run's own chat: a run for A
+      // released by B's pairing ending would resume and read B's settings for A.
       const runThreadId =
         unstable_threadId ?? useChatRuntimeStore.getState().activeThreadId;
       // Refused rather than run on whatever the store holds now: the wait only runs out for a chat
@@ -4367,8 +4346,7 @@ export function createOpenAIStreamAdapter(
         !options.pairId &&
         (options.modelType === undefined || options.modelType === "base");
       const toolConfirmationIdsByBackendId = new Map<string, string>();
-      // Local tool ids ("call_0") repeat across turns and panes, so scope by pane AND thread; the
-      // reader has only threadListItem.remoteId.
+      // Local tool ids ("call_0") repeat across turns and panes, so scope by pane AND thread.
       // unstable_threadId alone, with no activeThreadId fallback: the reader has only
       // threadListItem.remoteId, which is exactly this value.
       const toolOutputPaneScope = toolThreadScope(
@@ -4541,9 +4519,8 @@ export function createOpenAIStreamAdapter(
         runtime = { ...runtime, deepResearchEnabled: false };
         toast.info("Deep Research needs a model that supports tools");
       }
-      // A chat inside a project retrieves from its indexed sources even with the Docs pill off;
-      // the probe is cached.
-      // The probe is cached, so this is one round trip per project every ~30s at most.
+      // A chat inside a project retrieves from its indexed sources even with the Docs pill off. The probe
+      // is cached, so this is one round trip per project every ~30s at most.
       const ragProjectId = await resolveProjectId(
         resolvedThreadId,
         readThreadRecord,
@@ -5101,9 +5078,8 @@ export function createOpenAIStreamAdapter(
       // finalizers repair a repeat or restart.
       let cumulativeText = continuation ? continuation.partial : "";
       // Reading `cumulativeText` costs O(reply): each `+=` builds a cons string that the first read
-      // flattens, so one charCodeAt per arrival is as expensive as a scan. Everything below is fed
-      // the delta through `appendCumulative` and the buffer is read only where the reply is
-      // published. This tracks "does the text end inside <think>".
+      // flattens, so one charCodeAt per arrival is as expensive as a scan. Everything below is fed the
+      // delta through `appendCumulative` and the buffer is read only where the reply is published.
       const thinkTags = createThinkTagTracker();
       // Same for "could the trailing ${...} strip cut anything", so the strip only runs on an
       // arrival that ends in a fragment.
@@ -5427,10 +5403,9 @@ export function createOpenAIStreamAdapter(
             ...(deltaIndex !== undefined ? { _delta_index: deltaIndex } : {}),
           };
         });
-      // Backend tool ids ("call_0", ...) restart every response, so a bare id as store key lets a
-      // later turn's stream overwrite a finished card's output. Mint one run-unique part id per
-      // backend id; every tool_start/output/args/end resolves the same id through this map, which
-      // is dropped at tool_end.
+      // Backend tool ids ("call_0", ...) restart every response, so a bare id as store key lets a later
+      // turn's stream overwrite a finished card's output. Mint one run-unique part id per backend id;
+      // every tool_start/output/args/end resolves through this map, dropped at tool_end.
       const toolPartIdByBackendId = new Map<string, string>();
       const resolveToolPartId = (backendToolCallId: string): string =>
         resolveToolCallPartId(
@@ -5583,10 +5558,8 @@ export function createOpenAIStreamAdapter(
         if (sandboxSessionId) body.session_id = sandboxSessionId;
         // Plain fetch, not authFetch: authFetch redirects to login on 401, kicking the user out mid-stop.
         const token = getAuthToken();
-        // apiUrl so the cancel POST reaches the right origin in Tauri builds (webview origin is not
-        // the backend); browser builds get the empty base.
-        // The webview origin is not the backend at 127.0.0.1:<port>. Browser and dev builds get the empty
-        // base, so the path is unchanged.
+        // apiUrl so the cancel POST reaches the backend origin in Tauri builds, where the webview origin is
+        // not 127.0.0.1:<port>. Browser and dev builds get the empty base, so the path is unchanged.
         void fetch(apiUrl("/api/inference/cancel"), {
           method: "POST",
           headers: {
@@ -5705,9 +5678,8 @@ export function createOpenAIStreamAdapter(
             reasoningEffort,
             externalReasoningCaps.reasoningEffortLevels,
           ) as RequestReasoningEffort;
-        // Clamp to the loaded model's advertised levels so a stale value becomes one the backend
-        // honors: gpt-oss takes low|medium|high, GLM enable_thinking_effort high|max.
-        // gpt-oss-style reasoning_effort gets low|medium|high, GLM-style enable_thinking_effort high|max.
+        // Clamp to the loaded model's advertised levels so a stale value becomes one the backend honors:
+        // gpt-oss reasoning_effort takes low|medium|high, GLM enable_thinking_effort high|max.
         const localReasoningEffort = clampReasoningEffortToLevels(
           reasoningEffort,
           reasoningEffortLevels,
@@ -5718,8 +5690,8 @@ export function createOpenAIStreamAdapter(
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
           if (externalSelection && externalProvider) {
-            // Per-thread container reuse; empty falls back to container_auto. Anthropic uses its own key.
-            // Anthropic uses anthropicCodeExecContainerId.
+            // Per-thread container reuse; empty falls back to container_auto. Anthropic uses its own key,
+            // anthropicCodeExecContainerId.
             let openaiCodeExecContainerId: string | null = null;
             let anthropicCodeExecContainerId: string | null = null;
             if (codeExecEnabledForThisTurn && resolvedThreadId) {
@@ -5791,7 +5763,6 @@ export function createOpenAIStreamAdapter(
                     break;
                   }
                 } catch {
-                  /* fall through to lazy-create below */
                 }
               }
               // Pre-create our own container rather than container_auto, so it shows in the picker with a
@@ -6073,9 +6044,8 @@ export function createOpenAIStreamAdapter(
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
               ? reasoningStyle === "enable_thinking_effort"
-                // GLM-5.2-style gate plus level: disabling sends enable_thinking=false, enabling sends
-                // the chosen level.
-                // Enabling sends the chosen level, e.g. high|max.
+                // GLM-5.2-style gate plus level: disabling sends enable_thinking=false, enabling sends the chosen
+                // level (high|max).
                 ?
                   reasoningEnabled
                   ? {
@@ -6314,22 +6284,13 @@ export function createOpenAIStreamAdapter(
                 : streamChatCompletions(
                     requestPayload,
                     runSignal,
-                    // Only when the request targets the LOCAL model. loadedContextLength
-                    // stays populated for a resident GGUF even while an external model is
-                    // selected, so an external request with a 16K cap was being measured
-                    // against an unrelated 4096-token local window and reported as having
-                    // unlimited Max Tokens and no context left.
-                    // `maxSeqLength` last, and coerced from 0: a local safetensors or
-                    // MLX request on this path has neither GGUF field set, and reading
-                    // that as "no window" makes every context-length stop look like a
-                    // user-set Max Tokens one -- advice to raise a value already at the
-                    // model's maximum. Same order the RAG `context_length` above uses.
-                    // `loadedCustomContextLength`, not `customContextLength`: the
-                    // latter is the EDITABLE field, and the store's own definition of a
-                    // pending edit is the two differing. A model still serving at 4096
-                    // while the field reads 8192 would make its 4096 stop look
-                    // user-imposed, and the toast would advise raising Max Tokens
-                    // instead of reloading at the larger context.
+                    // Only when the request targets the LOCAL model: loadedContextLength stays populated for a
+                    // resident GGUF even while an external model is selected, so an external 16K request was measured
+                    // against an unrelated 4096-token window. `maxSeqLength` last and coerced from 0, since a local
+                    // safetensors or MLX request has neither GGUF field and "no window" makes every context stop look
+                    // user-imposed. `loadedCustomContextLength`, not the EDITABLE `customContextLength`: a model still
+                    // serving at 4096 while the field reads 8192 would be advised to raise Max Tokens rather than
+                    // reload larger. Same order as the RAG `context_length` above.
                     isExternalRequest
                       ? null
                       : (runtime.loadedCustomContextLength ??
@@ -6444,7 +6405,6 @@ export function createOpenAIStreamAdapter(
                   if (deepResearchHandoff.question !== null) break;
                   continue;
                 }
-                // Persist container_id onto the thread (OpenAI / Anthropic).
                 if (toolEvent.type === "container_ready") {
                   const newContainerId = toolEvent.container_id as
                     | string
@@ -6718,7 +6678,6 @@ export function createOpenAIStreamAdapter(
                         if (isMcpImageToolResult(candidate))
                           mcpImages = candidate;
                       } catch {
-                        // Not a valid envelope; fall through below.
                       }
                     }
                     if (
@@ -6786,10 +6745,9 @@ export function createOpenAIStreamAdapter(
                     } as ToolCallMessagePart["args"];
                     const overwrittenArgumentKeys =
                       nextArgs !== undefined ? Object.keys(nextArgs) : [];
-                    // Merge tool_end native_part into args.google so the
-                    // outbound translator replays both start (executableCode)
-                    // and end (result / inlineData) on the same turn.
-                    // Concatenate so each part keeps its own thoughtSignature.
+                    // Merge tool_end native_part into args.google so the outbound translator replays both start
+                    // (executableCode) and end (result / inlineData) on the same turn. Concatenate, so each part keeps
+                    // its own thoughtSignature.
                     const endGoogle = (
                       toolEvent as { google?: { native_part?: unknown } }
                     ).google;
@@ -7406,7 +7364,6 @@ export function createOpenAIStreamAdapter(
               if (!delta && !reasoning) {
                 continue;
               }
-              // So a chunk that added nothing can be told from one that did.
               const textLenBeforeChunk = cumulativeText.length;
               if (waitingFirstChunk) {
                 waitingFirstChunk = false;
@@ -7534,11 +7491,10 @@ export function createOpenAIStreamAdapter(
           }
           return;
         }
-        // Strip a trailing ${...} template-literal fragment from external streams (mistral magistral
-        // emits one). Once, on the finished reply: running it per arrival tested every prefix, so
-        // "return `Hi, ${name}!`" arrived as "return `Hi,!`" (#9098). Completed streams only, since an
-        // abort leaves a prefix again and `producedReplyText` is that case one step in. Before the
-        // <think> close, so a fragment inside reasoning still counts as the end.
+        // Strip a trailing ${...} template-literal fragment from external streams (mistral magistral emits
+        // one). Once, on the finished reply: running it per arrival tested every prefix, so "return `Hi,
+        // ${name}!`" arrived as "return `Hi,!`" (#9098). Completed streams only, since an abort leaves a
+        // prefix again. Before the <think> close, so a fragment inside reasoning still counts as the end.
         if (
           isExternalRequest &&
           producedReplyText &&
@@ -7552,7 +7508,6 @@ export function createOpenAIStreamAdapter(
             placeholderWatch.retract(cumulativeText);
           }
         }
-        // If the stream ended inside a delta.reasoning_content block, close the open <think> tag.
         closeReasoningContent();
         settleFirstTokenOk();
 
@@ -7584,11 +7539,9 @@ export function createOpenAIStreamAdapter(
         // Anthropic-only (billed at the write premium).
         const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
 
-        // Gate on the captured checkpoint and thread so a late completion from provider A cannot
-        // repaint the bar after a switch to B. A first turn is adopted onto an id mid-run, so read
-        // the adopted key or the bar stays blank for life.
-        // A first turn is adopted onto an id mid-run and autosave moves activeThreadId with it, so read the
-        // adopted key, or the run stays "unresolved" for life and the bar stays blank.
+        // Gate on the captured checkpoint and thread so a late completion from provider A cannot repaint
+        // the bar after a switch to B. A first turn is adopted onto an id mid-run and autosave moves
+        // activeThreadId with it, so read the adopted key or the run stays "unresolved" and the bar blank.
         const usageKey = liveThreadKey(serverCancel);
         const usageThreadKey = usageKey === "__default" ? null : usageKey;
         const usageThreadIsVisible =
@@ -7637,11 +7590,11 @@ export function createOpenAIStreamAdapter(
         // Before the lookup below: its network time is not generation time.
         const finishedAt = Date.now();
 
-        // Small models list things and never ask for their pictures, so fetch the missing ones and
-        // record the web_search call they should have made. Local tool loop only, never over the
-        // user's documents, never behind an approval prompt. Gated on the THREAD, not the turn: a
-        // follow-up answers from a search_knowledge_base result replayed in context, so once a chat
-        // has retrieved private documents it stays ineligible even after RAG is switched off.
+        // Small models list things and never ask for their pictures, so fetch the missing ones and record
+        // the web_search call they should have made. Local tool loop only, never over the user's documents,
+        // never behind an approval prompt. Gated on the THREAD, not the turn: a follow-up answers from a
+        // search_knowledge_base result replayed in context, so a chat that retrieved private documents
+        // stays ineligible even after RAG is switched off.
         const answerUsedPrivateDocs =
           ragEnabled ||
           projectRagEnabled ||

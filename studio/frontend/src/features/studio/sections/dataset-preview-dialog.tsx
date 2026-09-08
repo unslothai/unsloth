@@ -223,7 +223,6 @@ export function DatasetPreviewDialog({
         ? `Detected ${data.detected_format} format. No manual column mapping needed.`
         : null;
 
-  // ── AI Assist ──────────────────────────────────────────────────────
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const aiAssistControllerRef = useRef<AbortController | null>(null);

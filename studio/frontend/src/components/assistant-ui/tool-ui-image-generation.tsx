@@ -101,8 +101,7 @@ const formatGeneratedImageLabel = (prompt: string): string => {
     : `Generated image: ${prompt}`;
 };
 
-// Takes text: `size?.match` guards nullish only, so `"size": 1024` reached
-// `.match` on a number.
+// Takes text: `size?.match` guards nullish only, so `"size": 1024` reached `.match` on a number.
 const parseImageSize = (
   size: string,
 ): { width: number; height: number } | null => {

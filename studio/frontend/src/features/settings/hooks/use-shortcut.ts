@@ -50,10 +50,9 @@ export function isImeComposing(event: KeyboardEvent): boolean {
  */
 export function isSurfaceInForeground(selector: string): boolean {
   if (typeof document === "undefined") return false;
-  // Every match, not the first: Compare keeps the base view mounted and inert
-  // behind the panes, so the first composer found is the hidden one. Radix
-  // marks the rest of the page aria-hidden (older React: inert) for a modal's
-  // life, which is the general signal, not a per-dialog store.
+  // Every match, not the first: Compare keeps the base view mounted and inert behind the panes, so
+  // the first composer found is the hidden one. Radix marks the rest of the page aria-hidden (older
+  // React: inert) for a modal's life, which is the general signal, not a per-dialog store.
   return [...document.querySelectorAll(selector)].some(
     (el) => !el.closest('[aria-hidden="true"], [inert]'),
   );
@@ -175,9 +174,8 @@ export function useShortcut(
       if (isImeComposing(event)) return;
       const hit = bindings.find((binding) => matchesBinding(binding, event));
       if (!hit) return;
-      // The exception is for a chord that types nothing there. Decline ships
-      // on Escape; rebound to Enter or a letter, the same pass would deny the
-      // request as the user edits the prompt.
+      // The exception is for a chord that types nothing there. Decline ships on Escape; rebound to
+      // Enter or a letter, the same pass would deny the request as the user edits the prompt.
       const exception = typesInTextField(hit) ? undefined : textFieldException;
       if (skipInTextFields && isTextEntryFocused(exception)) return;
       // The focused control keeps its own Enter or Space.
@@ -191,9 +189,8 @@ export function useShortcut(
       // to reach the browser untouched.
       if (latestRef.current.claims?.() === false) return;
       event.preventDefault();
-      // Held past the OS repeat delay the chord arrives again and again. It
-      // stays consumed either way, but only an action that asked for repeats
-      // runs on them.
+      // Held past the OS repeat delay the chord arrives again and again. It stays consumed either
+      // way, but only an action that asked for repeats runs on them.
       if (event.repeat && !repeats) return;
       latestRef.current.handler(event);
     };

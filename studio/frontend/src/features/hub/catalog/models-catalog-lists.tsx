@@ -482,17 +482,15 @@ export function DownloadedList({
           >
             {pinnedItems.map((item) => {
               const rowKey = `${item.variant}-${item.row.id}`;
-              // movePinned can only move a key that is in the pinned list, and
-              // pins also exist as `repoId::quant` (written by the GGUF quant
-              // menus). Deriving the key without checking membership would let
-              // a row advertise a drag that every movePinned call silently
-              // found nothing to do. pinnedCount selects this slice on the same
-              // predicate today, so the check holds the two in lockstep rather
-              // than trusting them to stay identical. Datasets are excluded
-              // outright: pin keys carry no repo type, so a dataset whose
-              // repoId also names a pinned model reaches this grid, and the row
-              // menu offers datasets no pin action, so a drag here must not
-              // reorder the user's model pins from the dataset list.
+              // movePinned can only move a key that is in the pinned list, and pins also exist as
+              // `repoId::quant` (written by the GGUF quant menus). Deriving the key without
+              // checking membership would let a row advertise a drag that every movePinned call
+              // silently found nothing to do. pinnedCount selects this slice on the same predicate
+              // today, so the check holds the two in lockstep rather than trusting them to stay
+              // identical. Datasets are excluded outright: pin keys carry no repo type, so a
+              // dataset whose repoId also names a pinned model reaches this grid, and the row menu
+              // offers datasets no pin action, so a drag here must not reorder the user's model
+              // pins from the dataset list.
               const itemPinKey =
                 !isDataset &&
                 item.row.repoId &&
@@ -522,9 +520,8 @@ export function DownloadedList({
                   onDragEnd={() => {
                     dragPinKeyRef.current = null;
                     setDragRowKey(null);
-                    // Escape, or a release outside any cell, reaches dragend
-                    // without a drop. A drop already committed and cleared the
-                    // session, so this call is then a no-op.
+                    // Escape, or a release outside any cell, reaches dragend without a drop. A drop
+                    // already committed and cleared the session, so this call is then a no-op.
                     endPinnedDrag(false);
                   }}
                   onDragOver={(event) => {
