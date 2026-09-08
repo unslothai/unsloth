@@ -4,17 +4,17 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { publicModelId } from "@/features/hub/lib/model-identity";
+import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   type ChatHistoryUpdatedDetail,
 } from "../api/chat-api";
-import { compareModelDisplayName } from "../lib/external-model-label";
+import { externalModelLabel } from "../lib/external-model-label";
 import { getStoredChatThread } from "../utils/chat-history-storage";
 import {
   type ChatModelSwitchTarget,
   chatModelIsResident,
-  chatModelIsSelectable,
+  chatModelSelectableId,
   createChatModelHistoryReader,
 } from "./chat-model-notice-switch";
 
@@ -79,11 +79,22 @@ export function ChatModelNotice({
     return null;
   }
   // A model that has since been deleted, or a connection that is gone: the switch could not be
-  // honoured, and saying so on every open is just noise.
-  if (!chatModelIsSelectable(createdModel.modelId, selectableModelIds)) {
+  // honoured, and saying so on every open is just noise. When the saved snapshot is gone but
+  // the same repo is still in the picker, load that live row instead of the stale path.
+  const selectableId = chatModelSelectableId(
+    createdModel.modelId,
+    selectableModelIds,
+  );
+  if (!selectableId) {
     return null;
   }
-  const label = compareModelDisplayName(publicModelId(createdModel.modelId));
+  const switchTarget =
+    selectableId === createdModel.modelId
+      ? createdModel
+      : { ...createdModel, modelId: selectableId };
+  const label =
+    externalModelLabel(createdModel.modelId) ??
+    modelDisplayName(createdModel.modelId);
   return (
     // Positioned, not in flow. The chat header is `absolute ... z-40` with an opaque `bg-background`,
     // so an in-flow sibling starts at y=0 UNDER it and the bar is invisible bar the 10px the
@@ -100,7 +111,7 @@ export function ChatModelNotice({
         variant="ghost"
         size="sm"
         className="ml-auto h-6 shrink-0 px-2 text-ui-12"
-        onClick={() => onSwitch(createdModel)}
+        onClick={() => onSwitch(switchTarget)}
       >
         Switch back
       </Button>
