@@ -174,22 +174,43 @@ def test_the_index_pin_starves_only_where_the_retry_covers_it(monkeypatch):
     }, sorted(starved)
 
 
+def _torchao_installer_source():
+    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
+    body = source.split("def _install_torchao_for_torch(", 1)[1]
+    return body.split("\ndef ", 1)[0]
+
+
 def test_the_torchao_step_pins_the_index_and_retries_without_it():
     """cu129 serves torch to 2.13 but stops at torchao 0.17.0, and a leaf added upstream
     after this ships can lag a release, so the pin must not be able to fail an install.
     Unlike torchcodec the retry stays FATAL if it also fails: torchao is not optional."""
-    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
-    step = source.split("# 4. Install the torch-matched torchao override", 1)[1]
-    step = step.split("# 5. Triton kernels", 1)[0]
-    assert "_torchao_index = _torch_accelerator_index_url(_torch_ver)" in step
-    assert '"--index-url",\n            _torchao_index,' in step
-    assert "retrying from the default index" in step
+    body = _torchao_installer_source()
+    assert "index = _torch_accelerator_index_url(torch_version)" in body
+    assert '"--index-url", index, spec' in body
+    assert "retrying from the default index" in body
     # The unpinned attempt is pip_install, not pip_install_try: still fatal on failure.
-    retry = step.split("retrying from the default index", 1)[1]
-    assert 'pip_install("Installing dependency overrides", *_torchao_args, _torchao_spec)' in retry
+    retry = body.split("retrying from the default index", 1)[1]
+    assert 'pip_install("Installing dependency overrides", *args, spec)' in retry
     assert "--index-url" not in retry
     # And the printed line redacts, since a mirror URL can carry credentials.
-    assert "_strip_index_url_credentials(_torchao_index)" in step
+    assert "_strip_index_url_credentials(index)" in body
+
+
+def test_the_fallback_is_blocked_where_a_cuda_12_build_cannot_load(monkeypatch):
+    """PyPI only builds torchao for CUDA 12. torchao's cpp loads whenever the torch RELEASE
+    matches, so on a CUDA-13, ROCm or XPU torch the fallback would trade "kernels skipped"
+    for libcudart.so.12 at import. A private mirror makes this reachable without any public
+    index lagging: it can serve torch and not the selected torchao."""
+    mod = _load_module(monkeypatch)
+    for version in ("2.13.0+cu130", "2.13.0+cu132", "2.11.0+rocm7.2", "2.10.0+xpu"):
+        assert not mod._default_index_torchao_can_load(version), version
+    for version in ("2.13.0+cu128", "2.9.0+cu118", "2.13.0+cpu", "2.13.0", None, ""):
+        assert mod._default_index_torchao_can_load(version), version
+    # And the installer takes that branch rather than falling back.
+    body = _torchao_installer_source()
+    assert "if not _default_index_torchao_can_load(torch_version):" in body
+    blocked = body.split("if not _default_index_torchao_can_load(torch_version):", 1)[1]
+    assert "Leaving torchao alone" in blocked.split("_note(", 1)[0]
 
 
 @pytest.mark.parametrize(
@@ -249,13 +270,30 @@ def test_the_wanted_tag_follows_the_index_that_will_be_pinned(monkeypatch):
     assert mod._torch_index_tag("2.13.0+cu128") == "cu128"
 
 
-def test_both_torchao_call_sites_ask_for_the_pinned_tag():
-    """Two places install torchao, step 4 and the post-repair resync. Passing the torch
-    version to either would reintroduce the drift the helper exists to remove."""
+def test_every_torchao_call_site_asks_for_the_pinned_tag():
+    """Passing the torch version rather than the pinned tag would reintroduce the drift the
+    helper exists to remove, so no call site may spell it any other way."""
     source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
     assert source.count("_pin_needs_reinstall(") == 3  # the def plus both call sites
-    assert "_torch_index_tag(_torch_ver) if _torchao_index else _NO_INDEX_PINNED" in source
+    assert "_torch_index_tag(torch_version) if index else _NO_INDEX_PINNED" in source
     assert "_torch_index_tag(_label_after) if _ao_index else _NO_INDEX_PINNED" in source
+
+
+def test_torchao_is_re_selected_after_the_linux_torch_repair():
+    """Step 4 chooses torchao from the torch present BEFORE step 13's repairs, which move
+    torch across families and releases. The explicit XPU pin is the sharp case: its spec is
+    torch>=2.6,<2.11.0, so it necessarily lands below the 2.11 floor torchao 0.18.0 needs,
+    leaving 0.18.0 beside torch 2.10. Only the Windows flavor repair reaches
+    _resync_torch_coupled_packages, so on Linux nothing re-selected it."""
+    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
+    step = source.split('_progress(_torch_step_label("final"))', 1)[1]
+    step = step.split("# 13w.", 1)[0]
+    assert "_torch_before_repair = str(_probe_installed_torch_version() or \"\")" in step
+    assert "_install_torchao_for_torch(_torch_after_repair)" in step
+    # Guarded on an actual move, so an install where nothing shifted pays no second resolve.
+    assert "if _torch_after_repair and _torch_after_repair != _torch_before_repair:" in step
+    # The XPU repair really does land below the 0.18.0 floor.
+    assert '"torch>=2.6,<2.11.0",' in source
 
 
 def test_windows_first_hop_uses_einx_wheel_without_shared_test_tree():

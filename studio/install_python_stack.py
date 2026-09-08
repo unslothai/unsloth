@@ -4311,6 +4311,67 @@ def _resident_xformers_build_torch() -> "str | None":
     return recorded.strip() if isinstance(recorded, str) and recorded.strip() else None
 
 
+# PyPI's torchao is the CUDA-12 build, so falling back to it is only safe where a CUDA-12
+# extension could load at all. On CUDA 13, ROCm or XPU it cannot, and torchao's cpp loads
+# whenever the torch release matches, so the fallback would trade "no kernels" for
+# "libcudart.so.12: cannot open shared object file" at import. Absence is the supported
+# state there -- _resync_torch_coupled_packages already removes torchao across a CUDA-major
+# move, and Windows ROCm skips this step entirely and stubs torchao at runtime.
+def _default_index_torchao_can_load(torch_version: "str | None") -> bool:
+    local = str(torch_version or "").partition("+")[2].strip().lower()
+    if not local or local == "cpu":
+        return True  # untagged is PyPI's own torch; cpu needs no CUDA runtime at all
+    major = _cuda_major_from_torch_version(str(torch_version or ""))
+    return major is not None and major <= 12
+
+
+def _install_torchao_for_torch(torch_version: "str | None") -> None:
+    """Select the torchao matching torch_version and install it from its own index.
+
+    Called twice: once as step 4, and again after the Linux torch repair, which can move
+    torch across families and releases underneath the first call (the explicit XPU pin
+    lands torch <2.11, where 0.18.0 is not supported at all).
+    """
+    spec = _select_torchao_spec(torch_version)
+    # Pin the index to the resident torch's build, for the reason spelled out beside
+    # _TORCHAO_DEFAULT_SPEC: PyPI's torchao is the CUDA-12 wheel, and the accelerator
+    # indexes carry a build per tag. rocm is included here, unlike torchcodec -- the rocm
+    # leaves really do publish torchao.
+    index = _torch_accelerator_index_url(torch_version)
+    args = ["--no-cache-dir"]
+    if _pin_needs_reinstall(spec, _torch_index_tag(torch_version) if index else _NO_INDEX_PINNED):
+        args.insert(0, "--force-reinstall")
+    _note(
+        f"torch {torch_version or 'unknown'} detected -- installing {spec}"
+        # Redacted for display only; the installer below still gets the exact URL.
+        + (f" from {_strip_index_url_credentials(index)}" if index else "")
+    )
+    if not index:
+        pip_install("Installing dependency overrides", *args, spec)
+        return
+    if pip_install_try("Installing dependency overrides", *args, "--index-url", index, spec):
+        return
+    # The pinned index may simply not carry this release: cu129 stops at 0.17.0 while
+    # serving torch up to 2.13, cu118 stops at 0.11.0, rocm7.0 publishes 0.16.0 alone, and
+    # a private mirror or a leaf added upstream after this shipped can lag by a release.
+    if not _default_index_torchao_can_load(torch_version):
+        _safe_print(
+            f"   [WARN] {_strip_index_url_credentials(index)} did not serve {spec}, and the "
+            f"default index only builds torchao for CUDA 12, which cannot load beside this "
+            f"torch. Leaving torchao alone; install {spec} from a matching index by hand to "
+            f"restore its kernels."
+        )
+        return
+    # Otherwise the default index is where this step went before it pinned anything, so
+    # falling back is a working install rather than a failed one. Still fatal if that fails
+    # too: torchao is not optional the way audio is, and this step was fatal before.
+    _note(
+        f"{_strip_index_url_credentials(index)} did not serve {spec} "
+        "-- retrying from the default index"
+    )
+    pip_install("Installing dependency overrides", *args, spec)
+
+
 def _resync_torch_coupled_packages(label_before: str) -> bool:
     """Re-settle the packages whose compiled extensions are tied to the torch build.
 
@@ -7762,45 +7823,7 @@ def install_python_stack() -> int:
         _note("Windows ROCm -- skipping torchao (no working build; stubbed at runtime)")
     else:
         _progress("dependency overrides")
-        _torch_ver = _probe_installed_torch_version()
-        _torchao_spec = _select_torchao_spec(_torch_ver)
-        # Pin the index to the resident torch's build, for the reason spelled out beside
-        # _TORCHAO_DEFAULT_SPEC: PyPI's torchao is the CUDA-12 wheel, and the accelerator
-        # indexes carry a build per tag. rocm is included here, unlike torchcodec -- the
-        # rocm leaves really do publish torchao.
-        _torchao_index = _torch_accelerator_index_url(_torch_ver)
-        _torchao_args = ["--no-cache-dir"]
-        if _pin_needs_reinstall(
-            _torchao_spec,
-            _torch_index_tag(_torch_ver) if _torchao_index else _NO_INDEX_PINNED,
-        ):
-            _torchao_args.insert(0, "--force-reinstall")
-        _note(
-            f"torch {_torch_ver or 'unknown'} detected -- installing {_torchao_spec}"
-            # Redacted for display only; the installer below still gets the exact URL.
-            + (f" from {_strip_index_url_credentials(_torchao_index)}" if _torchao_index else "")
-        )
-        if not _torchao_index:
-            pip_install("Installing dependency overrides", *_torchao_args, _torchao_spec)
-        elif not pip_install_try(
-            "Installing dependency overrides",
-            *_torchao_args,
-            "--index-url",
-            _torchao_index,
-            _torchao_spec,
-        ):
-            # The pinned index may simply not carry this release: cu129 stops at 0.17.0
-            # while serving torch up to 2.13, cu118 stops at 0.11.0, rocm7.0 publishes
-            # 0.16.0 alone, and a leaf added upstream after this shipped can lag. Falling
-            # back to the default index restores exactly what this step did before it
-            # pinned anything, which is a working install rather than a failed one. Still
-            # fatal if that fails too: torchao is not optional the way audio is, and this
-            # step was fatal before.
-            _note(
-                f"{_strip_index_url_credentials(_torchao_index)} did not serve "
-                f"{_torchao_spec} -- retrying from the default index"
-            )
-            pip_install("Installing dependency overrides", *_torchao_args, _torchao_spec)
+        _install_torchao_for_torch(_probe_installed_torch_version())
 
     # 5. Triton kernels (no-deps, from source). Skipped on Windows/macOS (no support)
     #    and without git (the requirement is a git+https URL); a training speedup
@@ -7915,6 +7938,7 @@ def install_python_stack() -> int:
     torch_flavor_tag = ""
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
         _progress(_torch_step_label("final"))
+        _torch_before_repair = str(_probe_installed_torch_version() or "")
         _ensure_cuda_torch()
         _ensure_rocm_torch()
         _ensure_xpu_torch()
@@ -7922,6 +7946,19 @@ def install_python_stack() -> int:
         # Last, after every torch migration: the swap keys off the installed +xpu label, so a
         # CPU pin over an XPU venv would leave XPU triton under a CPU torch.
         _ensure_xpu_triton()
+        # These repairs move torch across families AND releases, and step 4 chose torchao
+        # from the version torch had BEFORE them. An explicit XPU pin is the sharp case:
+        # _XPU_TORCH_PKG_SPEC is torch>=2.6,<2.11.0, so it necessarily lands below the 2.11
+        # floor that torchao 0.18.0 requires. Only the Windows flavor repair reaches
+        # _resync_torch_coupled_packages, so on Linux nothing re-selected it (#10493).
+        # Re-running the same decision is a no-op when torch did not move.
+        _torch_after_repair = str(_probe_installed_torch_version() or "")
+        if _torch_after_repair and _torch_after_repair != _torch_before_repair:
+            _note(
+                f"torch moved from {_torch_before_repair or 'unknown'} to "
+                f"{_torch_after_repair} during the repair -- re-selecting torchao"
+            )
+            _install_torchao_for_torch(_torch_after_repair)
 
     # 13w. Windows torch flavor invariant, separate from step 13's Linux-shaped repair set
     # but in the same position: last, after the with-deps steps re-resolved torch.
