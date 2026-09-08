@@ -154,6 +154,11 @@ def _fake_torch(
     return torch
 
 
+def _install_torch(monkeypatch, *args, **kwargs):
+    """Put a fake ``torch`` built from ``args`` / ``kwargs`` in ``sys.modules``."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(*args, **kwargs))
+
+
 def _binary_with_marker(tmp_path, payload):
     """Lay out ``<root>/UNSLOTH_PREBUILT_INFO.json`` with the binary path below
     it, matching the managed install layout the marker walk-up covers."""
@@ -386,14 +391,11 @@ class TestOsVendorMatrix:
         ``_torch_is_rocm`` is false and the marker stays unread."""
         _apply_os(monkeypatch, "macos", is_rocm = False)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [_device("", name = "AMD Radeon Pro 5500M", free_mib = 8000)],
-                vendor = "cpu",
-                cuda_available = False,
-            ),
+        _install_torch(
+            monkeypatch,
+            [_device("", name = "AMD Radeon Pro 5500M", free_mib = 8000)],
+            vendor = "cpu",
+            cuda_available = False,
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == []
         assert marker_spy == []
@@ -406,13 +408,10 @@ class TestAmdCoverageCases:
     def test_every_device_covered_drops_nothing(self, os_key, tmp_path, monkeypatch, probe_env):
         _apply_os(monkeypatch, os_key, is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [_device("gfx1030", free_mib = 12049), _device("gfx1032", free_mib = 7000)],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [_device("gfx1030", free_mib = 12049), _device("gfx1032", free_mib = 7000)],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
             (0, 12049),
@@ -427,16 +426,13 @@ class TestAmdCoverageCases:
         # bundle, which maps gfx1030/1031/1032/1034 only.
         _apply_os(monkeypatch, os_key, is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [
-                    _device("gfx1030", free_mib = 12049),
-                    _device("gfx1036", free_mib = 12176, is_integrated = 1),
-                ],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1036", free_mib = 12176, is_integrated = 1),
+            ],
+            vendor = "amd",
         )
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
@@ -447,13 +443,10 @@ class TestAmdCoverageCases:
     def test_missing_marker_fails_open(self, os_key, tmp_path, monkeypatch, probe_env):
         # Source build / custom link: coverage unknown, so keep every device.
         _apply_os(monkeypatch, os_key, is_rocm = True)
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
             (0, 12049),
@@ -465,13 +458,10 @@ class TestAmdCoverageCases:
         # Non-ROCm bundles record []: unknown coverage, not "covers nothing".
         _apply_os(monkeypatch, os_key, is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": []})
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
             (0, 12049),
@@ -487,13 +477,10 @@ class TestAmdCoverageCases:
         downstream behaviour asserted in TestEveryDeviceUncoveredDownstream."""
         _apply_os(monkeypatch, os_key, is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX120X})
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == []
         # ... while the unfiltered probe, and therefore every torch caller,
@@ -506,13 +493,10 @@ class TestAmdCoverageCases:
         gate on exactly the hosts #7624 was reported from."""
         _apply_os(monkeypatch, "windows", is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-                vendor = "amd_sdk",
-            ),
+        _install_torch(
+            monkeypatch,
+            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd_sdk",
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
 
@@ -586,13 +570,10 @@ class TestVisibilityMaskMapping:
         _apply_os(monkeypatch, "linux", is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX110X})
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [_device("gfx1100", free_mib = 9000), _device("gfx1036", free_mib = 12176)],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [_device("gfx1100", free_mib = 9000), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(2, 9000)]
 
@@ -603,13 +584,10 @@ class TestVisibilityMaskMapping:
         _apply_os(monkeypatch, "windows", is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX110X})
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [_device("gfx1100", free_mib = 9000), _device("gfx1036", free_mib = 12176)],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [_device("gfx1100", free_mib = 9000), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 9000)]
 
@@ -620,13 +598,10 @@ class TestVisibilityMaskMapping:
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "3,1")
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [_device("gfx1036", free_mib = 12176), _device("gfx1030", free_mib = 5000)],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [_device("gfx1036", free_mib = 12176), _device("gfx1030", free_mib = 5000)],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(1, 5000)]
 
@@ -669,13 +644,10 @@ class TestArchStringRobustness:
     ):
         _apply_os(monkeypatch, "linux", is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [_device(reported, free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [_device(reported, free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
 
@@ -687,13 +659,10 @@ class TestArchStringRobustness:
     ):
         _apply_os(monkeypatch, "linux", is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": [token]})
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
 
@@ -704,16 +673,13 @@ class TestArchStringRobustness:
         # this exists to prevent.
         _apply_os(monkeypatch, "linux", is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [
-                    _device("gfx1030", free_mib = 12049, arch_attr = attr),
-                    _device("gfx1036", free_mib = 12176, arch_attr = attr),
-                ],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [
+                _device("gfx1030", free_mib = 12049, arch_attr = attr),
+                _device("gfx1036", free_mib = 12176, arch_attr = attr),
+            ],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
 
@@ -721,13 +687,10 @@ class TestArchStringRobustness:
         # A device reporting no arch at all is unknown, not unsupported.
         _apply_os(monkeypatch, "linux", is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [_device("gfx1030", free_mib = 12049), _device("", free_mib = 12176)],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [_device("gfx1030", free_mib = 12049), _device("", free_mib = 12176)],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
             (0, 12049),
@@ -739,21 +702,18 @@ class TestArchStringRobustness:
         # neither drop the device nor abort the probe for the other cards.
         _apply_os(monkeypatch, "linux", is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [
-                    _device("gfx1030", free_mib = 12049),
-                    _device(
-                        "gfx1036",
-                        free_mib = 12176,
-                        describe_error = RuntimeError("hipGetDeviceProperties failed"),
-                    ),
-                    _device("gfx1036", free_mib = 3000),
-                ],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [
+                _device("gfx1030", free_mib = 12049),
+                _device(
+                    "gfx1036",
+                    free_mib = 12176,
+                    describe_error = RuntimeError("hipGetDeviceProperties failed"),
+                ),
+                _device("gfx1036", free_mib = 3000),
+            ],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
             (0, 12049),
@@ -2698,13 +2658,10 @@ class TestHsaOverrideGfxVersion:
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         # A gfx1035 laptop iGPU presenting itself as gfx1030 under the override,
         # beside a card the bundle does not cover at all.
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [_device("gfx1030", free_mib = 8000), _device("gfx1036", free_mib = 30000)],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [_device("gfx1030", free_mib = 8000), _device("gfx1036", free_mib = 30000)],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(
             binary = str(tmp_path / "build" / "bin" / "llama-server"), for_llama_server = True
@@ -2742,16 +2699,13 @@ class TestAnInstallFromBeforeThisPr:
         (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
             json.dumps(self.OLD_MARKER), encoding = "utf-8"
         )
-        monkeypatch.setitem(
-            sys.modules,
-            "torch",
-            _fake_torch(
-                [
-                    _device("gfx1101", free_mib = 12049),
-                    _device("gfx1036", free_mib = 12176, is_integrated = 1),
-                ],
-                vendor = "amd",
-            ),
+        _install_torch(
+            monkeypatch,
+            [
+                _device("gfx1101", free_mib = 12049),
+                _device("gfx1036", free_mib = 12176, is_integrated = 1),
+            ],
+            vendor = "amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(
             binary = str(tmp_path / "build" / "bin" / "llama-server"), for_llama_server = True
