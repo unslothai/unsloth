@@ -1861,18 +1861,8 @@ def _openai_llama_admission_output_allowance(
     A prompt already past its share keeps the flat allowance, since it does not fit either
     way and a zero allowance would only hide that it will still generate.
 
-    Under a known ``share`` the charge is the WHOLE share, not the smaller of the share and
-    the flat allowance. Charging less than is permitted is what made the reservation
-    unsafe: a small prompt was charged ``prompt + 1024`` and then allowed to generate up to
-    its share, so admitting it beside a large-prompt request let the permitted total pass
-    the cache even though the charged total fit. Measured on a 262144 cache over four
-    slots, prompts of 1 / 65537 / 189139 / 1 charged 258774 and permitted 385750.
-    Charging exactly what is permitted makes ``sum(charged) <= budget`` imply
-    ``sum(prompt + permitted) <= budget``.
-
-    This costs no concurrency. ``capacity * share <= budget`` by construction, so a full
-    ``capacity`` of unstated requests still fit; the flat allowance never admitted more
-    than that, it only undercharged the ones it did admit.
+    Under a known ``share`` the charge is the WHOLE share: charging less than is permitted
+    let a small prompt undercharge beside a large one and overrun the cache.
     """
     window = context_window or budget
     if cap is not None and cap < window:
@@ -2022,11 +2012,7 @@ def _openai_llama_admission_media_tokens(
 
 
 def _openai_llama_admission_transport_tokens(payload) -> int:
-    """Audio and video, charged by encoded length because nothing here can size their KV.
-
-    A deliberately high LEDGER figure, which keeps such a request from sharing the cache.
-    Not a prompt count, so it never reaches the wire bound.
-    """
+    """Audio and video, by encoded length: a high LEDGER figure, never a prompt count."""
     total = 0
     for attribute in ("audio_base64", "video_base64"):
         value = getattr(payload, attribute, None)
@@ -2065,11 +2051,7 @@ def _openai_llama_admission_prompt_tokens(
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     injected_tools = None,
 ) -> Optional[int]:
-    """Estimated prompt KV, or None when the shape carries no messages to measure.
-
-    Shared by the reservation and by the cap that enforces it, so the two cannot
-    drift into charging for one figure and permitting another.
-    """
+    """Estimated prompt KV, or None with no messages. Shared by the charge and the cap."""
     messages = getattr(payload, "messages", None)
     if not isinstance(messages, list) or not messages:
         return None
@@ -2114,11 +2096,8 @@ def _openai_llama_admission_tokens(
     if not budget:
         return None
     if conversation is not None:
-        # What the request will actually send, so the lease and the wire bound are taken on
-        # ONE figure: the GGUF builders splice a current-date prompt, a tool nudge and any
-        # media part into `payload.messages` afterwards, and a lease that has not heard of
-        # them admits a full set of requests each occupying more than its share. Transport
-        # bytes come back because they belong on the ledger, prompt count or not.
+        # What is actually sent: the GGUF builders splice a date prompt, a nudge and media
+        # in later. Transport still counts, since the ledger wants it.
         prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation, image_tokens = image_tokens, injected_tools = injected_tools
         ) + _openai_llama_admission_transport_tokens(payload)
@@ -2186,18 +2165,11 @@ def _openai_llama_admission_share(
     *,
     capacity: Optional[int] = None,
 ) -> Optional[int]:
-    """KV one request may occupy, or None where there is nothing to enforce.
-
-    None for a backend whose operator turned the reservation off, for one that cannot say
-    how big its cache is, and for a share as large as the window (a single slot, or
-    ``--no-kv-unified``, where a slot owns its own cache and cannot overrun anyone).
-    """
+    """KV one request may occupy. None when the reservation is off, the cache size is
+    unknown, or the share is the whole window (one slot, or ``--no-kv-unified``)."""
     config = llama_admission_config_from_env()
     if not config.enabled or not config.kv_budget:
-        # There is no reservation left to enforce: ``reserve`` hands out an unqueued lease
-        # with CONTROL off and drops token accounting with KV_BUDGET off. The latter is
-        # the documented escape hatch for a backend whose reported cache size is wrong,
-        # and clamping generation on that same figure is what it exists to prevent.
+        # KV_BUDGET off is the escape hatch for a wrong cache size, so it cannot clamp.
         return None
     budget = _openai_llama_admission_budget(llama_backend)
     if not budget:
@@ -2209,9 +2181,7 @@ def _openai_llama_admission_share(
     return None if share >= window else share
 
 
-# Media whose bytes ride in the message list. `image_url` is out because
-# `_openai_llama_admission_messages_for_estimate` compacts it into a per-image allowance;
-# nothing prices the rest.
+# Media whose bytes ride in the message list; `image_url` is priced per image instead.
 _TRANSPORT_MEDIA_TYPES = _UNPRICED_MEDIA_TYPES - {"image_url"}
 
 
@@ -2238,14 +2208,8 @@ def _openai_llama_admission_messages_without_transport(conversation):
 
 
 def _openai_llama_admission_unpriceable_media(payload, conversation = None) -> bool:
-    """Audio or video, whose prompt KV nobody can size yet.
-
-    Their charge is transport length, which as a prompt count is nonsense: subtracting a
-    megabyte of base64 from a share leaves the one-token floor for a voice message. The
-    embeddings follow the projector and the clip duration and there is no estimate for
-    either here, so such a request is left unenforced rather than bounded on a number that
-    does not describe it. Images keep their bound, which is a real per-image ceiling.
-    """
+    """Audio or video, whose prompt KV nobody can size yet. Transport length as a prompt
+    count would leave the one-token floor, so these are left unenforced."""
     for attribute in ("audio_base64", "video_base64"):
         value = getattr(payload, attribute, None)
         if isinstance(value, str) and value:
@@ -2268,14 +2232,10 @@ def _openai_llama_admission_wire_prompt_tokens(
 ) -> int:
     """What the NEXT request carries, which is not what the ledger charges.
 
-    A charge may safely count more than is sent; a bound may not, because every extra
-    token comes off the answer and the floor is one token. So this leaves out the three
-    the ledger keeps: ``system``/``tools`` from the payload, which a translating route has
-    already folded into these messages; the catalogue on the pass that sends none; and
-    audio and video transport, which is not a prompt count at all (a request carrying it
-    is left unenforced instead). Media is counted from the conversation rather than
-    through ``_openai_llama_admission_media_tokens``, which would charge the legacy
-    top-level image the GGUF builder has already spliced into these very messages.
+    A charge may count more than is sent; a bound may not. So it drops payload
+    ``system``/``tools`` a translating route already folded in, the catalogue on a pass that
+    sends none, and audio/video transport, and prices media from the conversation, where a
+    legacy image has already been spliced in.
     """
     conversation = _openai_llama_admission_messages_without_transport(conversation)
     estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
@@ -2300,30 +2260,11 @@ def _openai_llama_admission_enforced_max_tokens(
 ) -> Optional[int]:
     """The cap to SEND, so the reservation is enforced instead of merely recorded.
 
-    Admission charges an unstated "Max Tokens: Max" a bounded allowance, but the wire
-    request still said the whole window, so four chats admitted at a share each could
-    all generate into one ``--kv-unified`` pool until llama-server errored EVERY
-    processing slot at once (measured: four chats, ``-c 16384 --parallel 4``, all lost).
-    Sending the figure that was charged makes ``sum(prompt + allowance) <= budget`` an
-    invariant rather than a hope, and turns an overrun into a plain ``length`` finish.
-
-    Bounded by the SHARE, not by the smaller figure admission charges. The charge is a
-    deliberately optimistic estimate so more chats fit; the bound only has to be
-    physically safe. At most ``capacity`` requests hold a slot at once and each is held
-    to ``prompt + (share - prompt) == share``, so the total cannot pass
-    ``capacity * share <= budget``. Clamping to the charged estimate instead would cut a
-    lone chat to about a thousand tokens for no safety gain.
-
-    ``conversation`` prices the bound from the messages that will actually be sent, which
-    a translating route must pass: the Anthropic ones fold ``system`` into them and
-    normalise image blocks, so the raw payload charged the system prompt twice and every
-    image's base64 as prompt text. ``prompt_tokens`` and ``capacity`` let a caller that
-    has already priced the request hand the figures over; the re-cost path does, which is
-    what keeps a growing tool loop bounded by what it now is.
-
-    Returns None to leave the caller's value alone. A client that named its own cap is
-    already honest and is never clamped, and neither is a backend whose operator turned
-    the reservation off.
+    An unstated "Max Tokens: Max" was charged a share but sent the whole window, so four
+    chats on one ``--kv-unified`` pool errored every slot at once. Bounded by the SHARE,
+    since clamping to the smaller charged estimate buys no safety. ``conversation`` prices
+    it from the messages actually sent, which a translating route must pass, else
+    ``system`` is charged twice. None leaves a stated cap or a disabled reservation alone.
     """
     share = _openai_llama_admission_share(request, llama_backend, capacity = capacity)
     if share is None:
@@ -2350,9 +2291,7 @@ def _openai_llama_admission_enforced_max_tokens(
         )
     if prompt_tokens is None:
         return None
-    # A prompt past its share leaves nothing, but a request must be able to say
-    # something, and llama-server would refuse a zero. Such a request is already charged
-    # more than a share, so the queue admits fewer than ``capacity`` of them.
+    # Never zero, which llama-server refuses; such a request is charged over a share.
     return max(1, share - prompt_tokens)
 
 
@@ -2365,14 +2304,8 @@ def _openai_llama_admission_retry_max_tokens(
     injected_tools = None,
     payload = None,
 ) -> Optional[int]:
-    """The cap for a passthrough retry whose prompt grew, or None to leave it alone.
-
-    A nudge retry re-asks with the first response and a nudge appended, so it is a bigger
-    prompt against the same lease, and the cap the first attempt was admitted on would let
-    it occupy a share on top of that growth. Gated on the bound the first attempt carried,
-    because a client that named its own cap is not bounded at either end and must not
-    start being bounded here.
-    """
+    """The cap for a passthrough retry whose prompt grew. Gated on the first attempt's
+    bound, so a client with its own cap does not start being bounded here."""
     if admission_output_allowance is None:
         return None
     share = _openai_llama_admission_share(request, llama_backend)
@@ -2449,15 +2382,8 @@ def _openai_llama_admission_recost(
     Idle is not reclaimed, though, so the yield is gated on
     ``_openai_llama_admission_can_yield``; where it is False this declines instead.
 
-    Returns the wire cap this round has earned, or None to leave the cap already in force
-    alone. A cap frozen at the opening prompt is the same drift from the other side: once
-    growth carries the conversation past its share the ledger charges the flat allowance
-    while the wire still permits ``share - opening_prompt``. The cap is priced from what
-    the request SENDS rather than from the conservative figure charged just above; see
-    ``_openai_llama_admission_wire_prompt_tokens``. ``wire_tools`` is that request's own
-    catalogue, which is narrower than ``injected_tools`` once the loop drops an unsafe
-    declaration, retires a one-shot tool or narrows to a forced one, and None on the
-    synthesized final answer, which sends no ``tools`` array at all.
+    Returns the wire cap this round earned, or None to leave the one in force alone.
+    ``wire_tools`` is the catalogue this request sends, None on the final answer.
     """
     if reservation is None:
         return None
@@ -2495,8 +2421,7 @@ def _openai_llama_admission_recost(
             + _openai_llama_admission_extra_prompt_tokens(payload)
             + media_tokens
         )
-        # Not assembled from the parts above: the charge counts three things this request
-        # does not send. See `_openai_llama_admission_wire_prompt_tokens`.
+        # Not the parts above: the charge counts three things this request does not send.
         wire_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
@@ -2518,14 +2443,12 @@ def _openai_llama_admission_recost(
             cancel_event = cancel_event,
             allow_yield = _openai_llama_admission_can_yield(llama_backend),
         )
-        # After the wait, not before: a round that waited for room is bounded by the
-        # conversation it waited on.
+        # After the wait, so the bound matches the conversation the round waited on.
         return _openai_llama_admission_enforced_max_tokens(
             payload,
             request = request,
             llama_backend = llama_backend,
-            # Already priced, so this is only what the media gate reads: a run whose media
-            # cannot be priced is left unenforced, never uncharged.
+            # Already priced; this is only what the media gate reads.
             conversation = conversation,
             prompt_tokens = wire_prompt_tokens,
             capacity = capacity,
@@ -22461,9 +22384,7 @@ async def produce_openai_chat_completions(
                     # prices as the rest of the budget; zero would re-cost an uncapped
                     # loop down to its share on its very first round.
                     output_tokens = effective_max_tokens,
-                    # The catalogue the LEASE covers, whatever this request carries.
                     injected_tools = tools_to_use,
-                    # And the one this request actually sends, which the loop narrows.
                     wire_tools = round_tools,
                     # A round waiting for cache room must still answer Stop. Same event
                     # the loop polls each iteration, so a wait ends where a cancel would.
@@ -22493,9 +22414,7 @@ async def produce_openai_chat_completions(
                         _stripped if _msg is _gguf_continue_target else _stripped.strip()
                     )
 
-            # The finalized messages and the catalogue the reservation above charges, so
-            # the two agree. Measured against the client's messages alone this permitted
-            # `share + catalogue` per slot on a cache sized for `share`.
+            # The finalized messages and the charged catalogue, so the two agree.
             _tool_admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
                 payload,
                 request = request,
@@ -22556,9 +22475,6 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
-                    # The finalized messages, the same ones the wire bound is priced from,
-                    # so the opening lease and the opening cap agree. Round zero re-costs
-                    # from the live conversation either way.
                     conversation = gguf_messages,
                     # The catalogue Unsloth resolves server-side: payload.tools does not
                     # carry it and it is roughly 1250 prompt tokens.
@@ -23255,15 +23171,8 @@ async def produce_openai_chat_completions(
 
         # ── Standard GGUF path (no tools) ─────────────────────
 
-        # Carried BESIDE the caller's cap, never folded into it. `_loop_budget_left` reads
-        # `max_tokens` as "what the caller allowed" and stops continuing once it is spent,
-        # so assigning this into effective_max_tokens would turn the crash into a silent
-        # truncation at one share instead of an answer that resumes.
-        #
-        # Priced HERE, from the finalized `gguf_messages`, not from the raw payload: the
-        # current-date prompt and the audio or video parts are spliced in above, and this
-        # path has no re-cost afterwards to notice them. Every token the model actually
-        # holds has to be inside the share the request was admitted on.
+        # Beside the caller's cap, never folded in: `_loop_budget_left` would then truncate
+        # at one share.
         _admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
             payload,
             request = request,
@@ -23321,8 +23230,6 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
-                    # The finalized messages, so the lease is taken on the prompt the
-                    # request actually sends. This path has no re-cost to correct it.
                     conversation = gguf_messages,
                 )
             except LlamaAdmissionQueueFull as exc:
@@ -23665,8 +23572,6 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
-                    # The finalized messages, so the lease is taken on the prompt the
-                    # request actually sends. This path has no re-cost to correct it.
                     conversation = gguf_messages,
                 )
             except LlamaAdmissionQueueFull as exc:
@@ -30862,9 +30767,7 @@ async def anthropic_messages(
     # ── Client-side pass-through path ─────────────────────────
     if client_tools:
         openai_tools = openai_client_tools
-        # `_admitted_anthropic` takes a lease for this branch too, and both builders below
-        # send `max_tokens` straight through, so without this a Claude-style client-tool
-        # request is charged a share and permitted the whole cache.
+        # Takes a lease too, and both builders send `max_tokens` straight through.
         _anthropic_passthrough_allowance = _openai_llama_admission_enforced_max_tokens(
             payload,
             request = request,
@@ -30929,8 +30832,7 @@ async def anthropic_messages(
                 request = request,
                 cancel_event = cancel_event,
                 parse_think = _think_parsing_expected(llama_backend, payload),
-                # Not the same as `max_tokens` above: the nudge retry needs to know
-                # whether a bound applies at all before re-deriving one for its prompt.
+                # Not `max_tokens` above: the retry needs to know whether a bound applies.
                 admission_output_allowance = _anthropic_passthrough_allowance,
                 **_anthropic_reasoning_args(payload),
             )
@@ -31029,12 +30931,8 @@ async def anthropic_messages(
                     enabled_tool_names = _anthropic_history_gate,
                 ).strip()
 
-        # Same queue, same slots, so the same bound. `max_tokens` is optional on this
-        # route and a value at the window reads as unstated, so without this an Anthropic
-        # client is charged a share and permitted the whole cache. Priced from the
-        # TRANSLATED messages: they carry `system` already, and their image parts have
-        # been normalised to `image_url`, so the raw payload would charge the system
-        # prompt twice and every image's base64 transport as prompt text.
+        # Same queue, same bound: `max_tokens` is optional here and a window-sized value
+        # reads as unstated. TRANSLATED messages: the raw payload double-charges.
         _anthropic_output_allowance = _openai_llama_admission_enforced_max_tokens(
             payload,
             request = request,
@@ -32595,9 +32493,6 @@ async def _anthropic_passthrough_non_streaming(
                     body, data, _allowed_tools, getattr(llama_backend, "markup_profile", None)
                 ),
             }
-            # The retry's prompt is the first attempt's plus that response and the nudge,
-            # so reusing the cap this request was admitted on would permit a whole share
-            # on top of a bigger prompt while the lease still holds one share.
             _retry_bound = _openai_llama_admission_retry_max_tokens(
                 retry_body,
                 admission_output_allowance = admission_output_allowance,
@@ -33203,12 +33098,8 @@ def _build_openai_passthrough_body(
         payload.top_p,
         payload.top_k,
         # Honor max_completion_tokens on the tools/response_format passthrough too.
-        # Clamped here as well: this body is assembled independently of the caller's
-        # effective_max_tokens, so without it the client-tools surface would be admitted
-        # on one figure and permitted the whole window. The request goes with it because
-        # capacity falls back to `app.state.llama_parallel_slots` until the backend
-        # commits its runtime slots, and without that fallback this reads capacity 1 and
-        # declines to clamp on the very requests the reservation charges a share.
+        # Assembled independently of the caller's effective_max_tokens, so it needs its own
+        # clamp. `request` too: without it capacity reads 1 and this declines.
         (
             _openai_llama_admission_enforced_max_tokens(
                 payload, request = request, llama_backend = llama_backend
@@ -34595,9 +34486,6 @@ async def _openai_passthrough_non_streaming_upstream(
                 body, data, _allowed_tools, getattr(llama_backend, "markup_profile", None)
             ),
         }
-        # Same as the Anthropic twin: the retry carries the first response and the nudge
-        # on top of the original prompt, so it needs its own bound rather than the one the
-        # first attempt was admitted on.
         _retry_bound = _openai_llama_admission_retry_max_tokens(
             retry_body,
             admission_output_allowance = _openai_llama_admission_enforced_max_tokens(

@@ -3,17 +3,10 @@
 
 """The bound has to hold on every path that builds a wire ``max_tokens``.
 
-``test_llama_admission_enforced_max_tokens.py`` proves the arithmetic: a request charged
-its share is permitted its share. That is only worth anything if the figure actually
-reaches every request the run sends, and the first revision reached two of them. A tool
-loop sends one payload per round plus a synthesized final answer, either of them can be
-rebuilt by a respawn refit, a plain chat can be retried after a respawn, and /v1/messages
-draws on the same slots through a different pair of call sites. Each of those rebuilt the
-cap from the whole context window while the ledger still held a share, which is the exact
-overcommit the change exists to close.
-
-Driven through the real generators with fake llama-server streams, so what is asserted is
-the payload llama-server would have received.
+The arithmetic is proved next door; this proves the figure reaches every request, since a
+tool round, the final answer, both respawn refits, the post-respawn retry and /v1/messages
+each rebuilt the cap from the whole window. Driven through the real generators, so what is
+asserted is the payload llama-server would have received.
 """
 
 from __future__ import annotations
@@ -153,7 +146,6 @@ def _run_tool_loop(
     backend = None,
     **kwargs,
 ):
-    """One tool round then the synthesized final pass, which is two payloads."""
     if backend is None:
         backend = _make_backend(
             monkeypatch,
@@ -198,12 +190,7 @@ class TestTheGeneratorsSendIt:
         assert _caps(payloads) == [_SHARE]
 
     def test_a_respawn_retry_keeps_the_bound(self, monkeypatch):
-        """The lease outlives the respawn, so the retry is inside the same reservation.
-
-        The retry re-enters the generator, and the replacement window is what it rebuilds
-        an uncapped `max_tokens` from. Two post-respawn retries generating into one cache
-        is the collision this change exists to prevent, arrived at from the other side.
-        """
+        """The retry re-enters the generator, which rebuilds an uncapped cap."""
         payloads: list[dict] = []
         backend = _make_backend(
             monkeypatch,
@@ -231,13 +218,7 @@ class TestTheGeneratorsSendIt:
         assert _caps(payloads) == [_SHARE, _SHARE]
 
     def test_a_re_cost_moves_the_bound_with_the_conversation(self, monkeypatch):
-        """A cap frozen at the opening prompt drifts exactly as far as the loop grows.
-
-        The ledger re-prices each round from the conversation as it now stands; a wire cap
-        still measured against the opening prompt permits `grown_prompt + (share -
-        opening_prompt)` while the charge is only `grown_prompt + the flat allowance`.
-        The callback hands the fresh figure back, so the two move together.
-        """
+        """A cap frozen at the opening prompt drifts as far as the loop grows."""
         payloads: list[dict] = []
         recosted = iter([_SHARE - 100, _SHARE - 400])
         _run_tool_loop(
@@ -262,11 +243,7 @@ class TestTheGeneratorsSendIt:
         assert _caps(payloads) == [_SHARE, _SHARE]
 
     def test_the_hook_is_told_which_catalogue_each_request_sends(self, monkeypatch):
-        """The rounds subtract the catalogue because they carry it; the synthesized final
-        answer sends no `tools` array, and the loop narrows a round's own catalogue when
-        sanitisation drops one, a one-shot tool retires or a choice is forced. Priced
-        against the catalogue the route resolved instead, a request has tokens it does not
-        carry taken off its answer, down to the one-token floor."""
+        """Rounds carry the catalogue, the final answer sends none, and the loop narrows."""
         payloads: list[dict] = []
         seen: list = []
 
@@ -287,11 +264,7 @@ class TestTheGeneratorsSendIt:
         assert _caps(payloads) == [_SHARE - 500, _SHARE - 100]
 
     def test_a_respawn_refit_does_not_restore_the_window(self, monkeypatch):
-        """A replacement server reporting a bigger window is not a bigger reservation.
-
-        The refit rebuilds an uncapped `max_tokens` from the new context length, which is
-        the whole cache; the lease it is retrying under is still one share.
-        """
+        """A replacement server reporting a bigger window is not a bigger reservation."""
         payloads: list[dict] = []
         backend = _make_backend(
             monkeypatch,
@@ -308,8 +281,7 @@ class TestTheGeneratorsSendIt:
             return True
 
         monkeypatch.setattr(backend, "_respawn_if_dead", _respawn_bigger)
-        # The refit prices its fit against llama-server; the window is what this test is
-        # about, not the count.
+        # The window is what this test is about, not the fit's token count.
         monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 10)
         _run_tool_loop(
             monkeypatch,
@@ -323,12 +295,7 @@ class TestTheGeneratorsSendIt:
         assert all(cap <= _SHARE for cap in _caps(payloads)), _caps(payloads)
 
     def test_every_final_continuation_is_re_costed(self, monkeypatch):
-        """A continuation is a bigger prompt on the same lease.
-
-        The final answer stops at `length`, the partial is appended to the payload, and
-        the retry goes out. Re-costing once before the first attempt leaves the retry
-        permitted a whole share again on top of what it already wrote.
-        """
+        """A continuation is a bigger prompt on the same lease."""
         payloads: list[dict] = []
         backend = _make_backend(
             monkeypatch,
@@ -404,26 +371,16 @@ _CATALOGUE = [
 
 
 class TestEveryCallSiteCarriesIt:
-    """A generation call site added without the bound is the whole defect, again.
-
-    Read off the route source rather than exercised: `produce_openai_chat_completions` and
-    `anthropic_messages` each reach llama-server through several branches, and what has to
-    hold is that NONE of them is left out -- which is a property of the set of call sites,
-    not of any one run. The behaviour of each branch is asserted above and in
-    TestTheAnthropicSurface.
-    """
+    """A generation call site added without the bound is the whole defect, again. Read off
+    the route source: what has to hold is that NO branch is left out."""
 
     def _routes_tree(self):
         import ast
         return ast.parse(Path(inf_mod.__file__).read_text(encoding = "utf-8"))
 
     def _generator_calls(self, tree):
-        """Calls on `llama_backend`, which is the only receiver that holds a KV lease.
-
-        The safetensors twin (`backend.generate_chat_completion_with_tools`) decodes in
-        this process against no llama-server cache, so it takes no reservation and there
-        is nothing to enforce on it.
-        """
+        """Calls on `llama_backend`, the only receiver holding a KV lease. The safetensors
+        twin decodes in-process against no cache, so it takes no reservation."""
         import ast
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -447,13 +404,7 @@ class TestEveryCallSiteCarriesIt:
         assert not unbounded, f"these call sites send the whole window: {unbounded}"
 
     def test_a_tool_loop_bound_is_priced_with_the_catalogue_it_sends(self):
-        """Studio resolves its own catalogue server-side, and the reservation charges it.
-
-        `payload.tools` does not carry it, so an allowance priced from the client's
-        messages alone permits `share + catalogue` per slot on a cache sized for `share`.
-        The pairing, not the arithmetic: the helper has always accepted `injected_tools`,
-        and the defect was a tool-loop call site that did not pass any.
-        """
+        """`payload.tools` omits Studio's server-side catalogue, which the lease charges."""
         import ast
 
         tree = self._routes_tree()
@@ -484,9 +435,7 @@ class TestEveryCallSiteCarriesIt:
 
 class TestWhatThePromptIsMeasuredAgainst:
     def test_the_injected_catalogue_is_inside_the_bound(self):
-        """Studio resolves its own tool catalogue server-side, and the reservation charges
-        it. `payload.tools` does not carry it, so a cap measured against the client's
-        messages alone permits `share + catalogue` on a cache sized for `share`."""
+        """The catalogue is inside the bound, so no request is permitted `share + it`."""
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
         prompt = _openai_llama_admission_prompt_tokens(payload, injected_tools = _CATALOGUE)
@@ -509,8 +458,6 @@ class TestWhatThePromptIsMeasuredAgainst:
         assert (prompt + aware) * 4 <= 16384
 
     def test_a_grown_conversation_earns_a_smaller_cap(self):
-        """The re-cost hands back a cap for the prompt it just charged, so the two cannot
-        drift once tool results carry the conversation past its share."""
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
 
@@ -533,12 +480,8 @@ class TestWhatThePromptIsMeasuredAgainst:
         assert prompt + recosted <= 16384 // 4
 
     def test_a_client_that_named_a_cap_is_never_bounded_at_either_end(self):
-        """The re-cost is a second chance to truncate someone who asked for a real cap.
-
-        A caller under the window is already honest and is charged what it asked for; a
-        bound handed back mid-loop would cut its answer at a share with nothing in the
-        response to say why.
-        """
+        """A caller under the window is charged what it asked for, so a bound handed back
+        mid-loop would cut its answer at a share with nothing to say why."""
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
 
         reservation = _reservation()
@@ -567,18 +510,12 @@ class TestWhatThePromptIsMeasuredAgainst:
 
 
 class TestWhatTheWireActuallyCarries:
-    """The charge is deliberately conservative; the bound cannot be.
-
-    Both figures come from the same conversation, but the ledger re-adds terms the next
-    request does not carry, and every one of those comes off the answer if it is
-    subtracted from the share as well.
-    """
+    """The charge is deliberately conservative; the bound cannot be: the ledger re-adds
+    terms the next request does not carry, and each would come off the answer."""
 
     def test_a_translated_system_prompt_is_not_charged_to_the_answer_twice(self):
-        """`anthropic_messages_to_openai` folds `system` into the conversation the loop
-        then re-costs, so the ledger adding `_openai_llama_admission_extra_prompt_tokens`
-        on top counts it a second time. Conservative for a charge; on the wire it takes
-        the system prompt off the answer twice."""
+        """`anthropic_messages_to_openai` folds `system` into the re-costed conversation,
+        so the ledger's extra-prompt term counts it twice; on the wire that costs tokens."""
         backend = _backend_stub(window = 65536, total = 65536, slots = 4)
         system = "You are a careful assistant. " * 200
         payload = _Payload(
@@ -607,12 +544,8 @@ class TestWhatTheWireActuallyCarries:
         assert wire == share - conversation_tokens, (wire, share, conversation_tokens)
 
     def test_image_transport_bytes_do_not_come_off_the_answer(self):
-        """An Anthropic `type="image"` block keeps its base64 through
-        `_openai_llama_admission_messages_for_estimate`, which only compacts OpenAI
-        `image_url` parts. The translated messages carry the normalised part instead."""
-        # A cache whose share (8192) is bigger than one image's allowance but smaller
-        # than the base64 priced as prompt text, which is exactly where the difference
-        # shows as the one-token floor.
+        """Only OpenAI `image_url` parts are compacted, so an Anthropic image keeps base64."""
+        # A share (8192) above one image's allowance but below the base64 as prompt text.
         backend = _backend_stub(window = 32768, total = 32768, slots = 4)
         data = "A" * 40000
         payload = _Payload(
@@ -649,8 +582,6 @@ class TestWhatTheWireActuallyCarries:
         assert wire > 1000, "the normalised part is priced as an image, not as prompt text"
 
     def test_a_request_is_not_charged_a_catalogue_it_does_not_send(self):
-        """The difference between a real answer and the one-token floor once the history
-        is long, on the final pass and on any round the loop has narrowed."""
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
 
@@ -680,9 +611,7 @@ class TestWhatTheWireActuallyCarries:
         assert without - with_tools == catalogue
 
     def test_a_prompt_injected_after_the_payload_is_still_inside_the_bound(self):
-        """The plain GGUF path splices the current-date prompt into a system turn and has
-        no re-cost afterwards, so a bound priced from the raw payload leaves those tokens
-        outside the share the request was admitted on."""
+        """The plain GGUF path splices in a date prompt and has no re-cost to notice it."""
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
         injected = [
@@ -705,13 +634,8 @@ class TestWhatTheWireActuallyCarries:
         )
 
     def test_audio_and_video_are_left_unenforced(self):
-        """Nothing here can size their prompt KV.
-
-        The bytes ride in the message list and admission charges them by transport length,
-        which is a deliberately high LEDGER figure and nonsense as a prompt count: any
-        real recording exceeds a share on its own and would floor the answer at one token.
-        Images are different, since a per-image allowance is a real bound.
-        """
+        """Nothing here can size their prompt KV: transport length as a prompt count would
+        floor any real recording's answer at one token. Images keep a real bound."""
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
         clip = "A" * 200000
         text_only = _chat("listen", max_tokens = 16384)
@@ -753,9 +677,7 @@ class TestWhatTheWireActuallyCarries:
         )
 
     def test_a_legacy_image_already_spliced_in_is_charged_once(self):
-        """`_openai_messages_for_gguf_chat` splices the top-level `image_base64` into the
-        messages, so on finalized messages the per-part count already covers it and the
-        separate legacy charge would price one image as two."""
+        """The splice already counts `image_base64`; the separate charge doubles it."""
         backend = _backend_stub(window = 32768, total = 32768, slots = 4)
         image = "iVBORw0KGgo="
         payload = _Payload(
@@ -792,17 +714,10 @@ class TestWhatTheWireActuallyCarries:
         assert bound is not None and bound > 1
 
     def test_the_lease_is_taken_on_the_same_finalized_messages(self):
-        """Charged and permitted have to be the same prompt.
-
-        The bound is priced from `gguf_messages`, so the lease has to be too: a request
-        whose raw payload sits just under its share and whose finalized prompt sits just
-        over it was charged one share and permitted `finalized_prompt + 1`, so a full set
-        of them overruns the cache by the injected prefix.
-        """
+        """Charged and permitted must be the same prompt, so both use `gguf_messages`."""
         budget, slots = 16384, 4
         share = budget // slots
-        # Sized so the raw payload sits just under its share and the finalized prompt,
-        # with the date prefix in front of it, sits just over.
+        # Sized so the raw payload sits under its share and the finalized prompt over it.
         turn = "word " * 3200
         payload = _chat(turn, max_tokens = budget)
         injected = [
@@ -828,8 +743,7 @@ class TestWhatTheWireActuallyCarries:
         assert charged >= prompt + bound, (charged, prompt, bound)
 
     def test_transport_bytes_stay_on_the_ledger(self):
-        """Dropping them from the wire count must not drop them from the charge: they are
-        what keeps an audio request from sharing the cache with anything."""
+        """The charge must keep them: they stop an audio request sharing the cache."""
         budget, slots = 262144, 4
         clip = "A" * 400000
         conversation = [{"role": "user", "content": "listen"}]
@@ -880,8 +794,6 @@ class TestARetryThatGrewItsPrompt:
         )
 
     def test_a_client_that_named_a_cap_is_left_alone(self):
-        """No bound on the first attempt means none on the retry: the caller asked for a
-        real cap and the queue charged them for it."""
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
         grown = {"messages": [{"role": "user", "content": "word " * 500}], "max_tokens": 512}
         assert (
@@ -916,10 +828,7 @@ class TestTheOperatorSwitches:
 
 class TestThePassthroughSurface:
     def test_the_body_reads_capacity_from_the_request(self):
-        """`effective_parallel_slots` is unset until the backend commits its runtime slots.
-        Admission falls back to the launch intent on the request for exactly that window;
-        without the request the body reads capacity 1, declines to clamp, and is permitted
-        the whole window while the reservation charges a multi-slot share."""
+        """`effective_parallel_slots` is unset early, so without the request capacity is 1."""
         backend = SimpleNamespace(
             context_length = 16384,
             _kv_cache_context_total = 16384,
@@ -962,11 +871,7 @@ class _AnthropicRequest:
 
 
 class TestTheAnthropicSurface:
-    """/v1/messages draws on the same slots through its own call sites.
-
-    `max_tokens` is optional here and a value at the window reads as unstated, so an
-    Anthropic client was charged a share and permitted the whole cache.
-    """
+    """/v1/messages shares the slots, and its optional `max_tokens` reads as unstated."""
 
     @pytest.fixture(autouse = True)
     def _isolate(self, monkeypatch):
@@ -1022,9 +927,7 @@ class TestTheAnthropicSurface:
         assert allowance is not None and allowance <= 16384 // 4
 
     def test_the_client_tool_passthrough_is_bounded(self, monkeypatch):
-        """This branch returns through the passthrough builders before either generator is
-        reached, and `_admitted_anthropic` still takes a lease for it. A Claude-style
-        client-tool request was therefore charged a share and sent the whole window."""
+        """Returns through the passthrough builders, yet still takes a lease."""
         seen: dict = {}
         self._install(monkeypatch, seen, supports_tool_passthrough = True)
         captured: dict = {}
@@ -1068,15 +971,13 @@ class TestTheAnthropicSurface:
     def test_the_tool_generator_is_bounded(self, monkeypatch):
         seen: dict = {}
         self._install(monkeypatch, seen)
-        # Unsloth's own server-side loop, which is what takes the multi-round lease;
-        # a client catalogue would take the passthrough instead.
+        # Unsloth's own server-side loop; a client catalogue takes the passthrough instead.
         payload = AnthropicMessagesRequest.model_validate(
             {
                 "max_tokens": 16384,
                 "messages": [{"role": "user", "content": "hi"}],
                 "enable_tools": True,
-                # No confirmation channel on this surface, so the route requires an
-                # explicit permission mode before it will run server tools.
+                # The route requires an explicit permission mode to run server tools.
                 "permission_mode": "off",
             }
         )

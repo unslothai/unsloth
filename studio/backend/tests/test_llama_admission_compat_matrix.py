@@ -225,10 +225,8 @@ class TestOldCallers:
         assert parameter.default is None, "the hook must be optional for existing callers"
 
     def test_admission_parameters_were_appended_rather_than_inserted(self):
-        """No bare ``*`` in these signatures, so every parameter is positional-or-keyword
-        and inserting one silently rebinds the arguments after it for positional callers,
-        with no exception to report it. Both admission parameters therefore go at the end,
-        newest last, and the hook keeps the position it was appended at."""
+        """No bare ``*`` in these signatures, so inserting a parameter silently rebinds
+        the arguments after it for positional callers. New ones go at the end."""
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend

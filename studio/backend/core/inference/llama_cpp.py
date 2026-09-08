@@ -28649,11 +28649,8 @@ class LlamaCppBackend:
         thread_id: Optional[str] = None,
         tools_withheld: bool = False,
         _allow_respawn_retry: bool = True,
-        # Appended, never inserted: no bare `*` here either, so a parameter among the
-        # existing ones rebinds a positional caller's arguments silently.
-        #
-        # What KV admission reserved for this request's output, applied to the wire cap
-        # only; `max_tokens` keeps the caller's own figure.
+        # Appended, never inserted: no bare `*`, so a mid-signature parameter would
+        # silently rebind positional callers.
         admission_output_allowance: Optional[int] = None,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -28718,8 +28715,7 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
-        # What admission actually reserved. Applied to the wire only: `max_tokens` stays
-        # the caller's figure so `_loop_budget_left` keeps answering "they set no cap".
+        # Wire only: `max_tokens` stays the caller's figure for `_loop_budget_left`.
         if admission_output_allowance is not None:
             payload["max_tokens"] = min(payload["max_tokens"], admission_output_allowance)
         if context_overflow == "truncate_oldest" and self._effective_context_length:
@@ -28994,8 +28990,7 @@ class LlamaCppBackend:
                     top_k = top_k,
                     min_p = min_p,
                     max_tokens = retry_max_tokens,
-                    # Same lease across the respawn: without this the refit rebuilds the
-                    # cap from the replacement server's whole window.
+                    # Same lease across the respawn, else the refit uses the new window.
                     admission_output_allowance = admission_output_allowance,
                     repetition_penalty = repetition_penalty,
                     presence_penalty = presence_penalty,
@@ -29076,17 +29071,11 @@ class LlamaCppBackend:
         # Appended, never inserted: no bare `*` here, so every parameter is
         # positional-or-keyword and inserting one rebinds later positional arguments.
         #
-        # Called once per request with the conversation as it now stands and the tool
-        # catalogue that request will carry, so KV admission can charge what this run
-        # occupies rather than its opening estimate. None for the catalogue means the
-        # request sends no `tools` array, which the synthesized final answer does not.
-        # MAY BLOCK: recost_waiting waits for cache room. Safe here, between rounds, where
-        # the previous request has completed.
-        # An int back replaces `admission_output_allowance` for the requests after it, so
-        # the cap tracks the prompt just charged; None leaves it alone.
+        # Per request, with the conversation as it stands and the catalogue it sends
+        # (None = no `tools` array). MAY BLOCK waiting for cache room; safe between rounds.
+        # An int back replaces `admission_output_allowance`, None leaves it alone.
         on_conversation_grew: Optional[Callable[[list, Optional[list]], Optional[int]]] = None,
-        # What KV admission reserved for this run's output, applied to the wire cap of
-        # every request the loop sends. Appended for the same reason as the hook.
+        # Bounds the wire cap of every request the loop sends. Appended, like the hook.
         admission_output_allowance: Optional[int] = None,
     ) -> Generator[dict, None, None]:
         """
@@ -29606,13 +29595,7 @@ class LlamaCppBackend:
                 if matching_tools:
                     safe_tools = matching_tools
                     requested_choice = "required"
-            # Here rather than at each append: six sites grow the conversation and all of
-            # them pass through this one point before the cache must hold the result.
-            # Below the catalogue too, not at the top of the round, because the round is
-            # priced on what it SENDS: sanitisation drops an unsafe declaration, a
-            # completed one-shot tool retires, and a forced choice narrows to one, so a
-            # cap measured against the catalogue the route resolved subtracts tokens this
-            # request does not carry and shrinks with every retirement.
+            # All six growth sites pass here, below the narrowing that sets what is SENT.
             if on_conversation_grew is not None:
                 try:
                     _recosted_allowance = on_conversation_grew(conversation, safe_tools)
@@ -29820,8 +29803,7 @@ class LlamaCppBackend:
             if _continuation_max_tokens is not None:
                 payload["max_tokens"] = _continuation_max_tokens
                 _continuation_max_tokens = None
-            # After the continuation override: every attempt, first or resumed, has to
-            # fit the share this run was admitted on.
+            # After the continuation override: every attempt must fit the admitted share.
             if admission_output_allowance is not None:
                 payload["max_tokens"] = min(payload["max_tokens"], admission_output_allowance)
             if stop:
@@ -32163,10 +32145,7 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
-        # The caller's figure stays intact: the re-cost below can RAISE the bound (it
-        # prices the pass without the catalogue), and a value clamped here could never come
-        # back up. The fit gets the bounded one, so it evicts no history for room the
-        # request will not be given.
+        # Unclamped: the re-cost below can RAISE the bound. Only the fit gets the clamp.
         _final_fit_max_tokens = (
             min(_final_max_tokens, admission_output_allowance)
             if admission_output_allowance is not None
@@ -32283,8 +32262,7 @@ class LlamaCppBackend:
         # tool-iteration cap, a controller turning tools off) leave the assistant turn,
         # its tool results and any nudge appended after the last re-cost -- making this
         # final pass the largest request of the run and the one the pool never heard
-        # about. It sends no `tools` array, which is what the None below says, and it runs
-        # at the top of the retry loop, which every attempt passes through.
+        # about. It sends no `tools` array, hence the None below.
 
         stream_payload = {
             "messages": neutralize_control_markup_in_messages(
@@ -32351,7 +32329,6 @@ class LlamaCppBackend:
                 return
             if max_tokens is None:
                 stream_payload["max_tokens"] = self._effective_context_length
-                # Same as the per-round refit: a new window is not a new reservation.
                 if admission_output_allowance is not None:
                     stream_payload["max_tokens"] = min(
                         stream_payload["max_tokens"], admission_output_allowance
@@ -32553,10 +32530,8 @@ class LlamaCppBackend:
         # left on instead of taking the reasoning-only recovery.
         _attempt_started_at = ""
         while True:
-            # Per attempt: a continuation appends the partial answer to the payload, so a
-            # cap priced on the first attempt lets the retry occupy a whole share again on
-            # top of what it already wrote. `stream_payload["messages"]` rather than
-            # `conversation`, since the continuation tail lives only on the payload.
+            # Per attempt: a continuation appends the partial, so a cap priced on the
+            # first attempt over-permits. Read from the payload, where that tail lives.
             if on_conversation_grew is not None:
                 try:
                     _final_recosted_allowance = on_conversation_grew(
@@ -32566,8 +32541,7 @@ class LlamaCppBackend:
                         admission_output_allowance = _final_recosted_allowance
                 except Exception:  # accounting must never break a run in progress
                     logger.debug("tool loop final recost failed", exc_info = True)
-            # After it, so a continuation that rewrote the cap is bounded too. The respawn
-            # refit runs INSIDE the stream below and re-applies the bound itself.
+            # After it, so a continuation that rewrote the cap is bounded too.
             if admission_output_allowance is not None:
                 stream_payload["max_tokens"] = min(
                     stream_payload["max_tokens"], admission_output_allowance

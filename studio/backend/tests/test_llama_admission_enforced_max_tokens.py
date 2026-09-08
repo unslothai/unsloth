@@ -3,19 +3,9 @@
 
 """A reservation nobody enforces is not a reservation.
 
-Admission charged an unstated "Max Tokens: Max" a bounded allowance while the request
-sent to llama-server still said the whole window, so the two disagreed by the whole
-cache. Measured on 2026-09-01: four tool chats on `-c 16384 --parallel 4 --kv-unified`
-were each admitted at their share, all generated into the one shared pool, and
-llama-server errored EVERY processing slot at once. Four conversations, lost together.
-
-The bound is the fair share, and the charge is raised to match it exactly. An earlier
-revision let the two differ, on the reasoning that the charge should stay optimistic so
-more chats fit while the bound only had to be physically safe. That is unsound in
-company: a small prompt charged `prompt + 1024` was still permitted its whole share, so
-admitting it beside a large-prompt request let the permitted total pass the cache while
-the charged total fit. Charging the whole share costs no concurrency, because
-`capacity * share <= budget` by construction.
+An unstated "Max Tokens: Max" was charged a bounded allowance while the wire request still
+said the whole window, so four chats on `-c 16384 --parallel 4 --kv-unified` errored every
+slot at once. The charge now matches the bound exactly.
 """
 
 from types import SimpleNamespace
@@ -110,31 +100,20 @@ class TestWhatIsLeftAlone:
         assert _enforced(_Payload(max_tokens = 16384), backend) is None
 
     def test_a_private_cache_per_slot_is_unrestricted(self):
-        """Under --no-kv-unified the aggregate is N times the window, so a share IS the
-        window and no request can overrun anyone else."""
+        """Under --no-kv-unified a slot owns its own cache, so a share IS the window."""
         backend = _backend(window = 4096, total = 16384, slots = 4)
         assert _enforced(_chat(max_tokens = 4096), backend) is None
 
 
 class TestTheEdges:
     def test_a_prompt_past_its_share_still_gets_a_token(self):
-        """Zero would be refused upstream. Such a request is charged the flat allowance,
-        which is larger than the single token it is permitted, so the queue admits fewer
-        than `capacity` of them and the invariant survives."""
+        """Zero is refused upstream, and such a request is charged over what it gets."""
         backend = _backend(window = 16384, total = 16384, slots = 4)
         enforced = _enforced(_chat("word " * 4000, max_tokens = 16384), backend)
         assert enforced == 1
 
     def test_the_bound_is_exactly_the_charge(self):
-        """These two figures must not drift in EITHER direction.
-
-        An earlier revision asserted the opposite, that the bound should exceed the
-        charge, on the reasoning that the charge is deliberately optimistic so more chats
-        fit while the bound only has to be physically safe. That is unsound: a request
-        admitted on less than it may use lets the permitted total pass the cache while the
-        charged total still fits. See TestChargedAndPermittedCannotDrift. Charging the
-        whole share costs no concurrency, since `capacity * share <= budget` anyway.
-        """
+        """These two must not drift in EITHER direction; see the class below."""
         backend = _backend(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
         charged = _openai_llama_admission_tokens(
@@ -163,15 +142,8 @@ def _prompt_tokens(payload):
 
 
 class TestItReachesTheWireWithoutBecomingTheCallersCap:
-    """The bound has to land on the request and nowhere else.
-
-    Charging one figure and sending another is the whole defect, so the allowance must
-    reach `payload["max_tokens"]`. But folding it into the caller's `max_tokens` instead
-    is its own trap: `_loop_budget_left` reads that as "what the caller allowed" and
-    stops continuing once it is spent, which would replace a crash with a silent
-    truncation at one share. Both halves are asserted here because the first draft of
-    this change did exactly the wrong one.
-    """
+    """It must reach `payload["max_tokens"]`, but folding it into the caller's
+    `max_tokens` makes `_loop_budget_left` truncate at one share instead of continuing."""
 
     def _source(self):
         from pathlib import Path
@@ -179,15 +151,10 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
         import core.inference.llama_cpp as llama_cpp
         return Path(llama_cpp.__file__).read_text(encoding = "utf-8")
 
-    # That the bound reaches every payload the generators send is asserted in
-    # test_llama_admission_enforced_paths.py, against the payloads llama-server would
-    # have received. Counting the source for one spelling of the clamp read as complete
-    # while four other sites -- the synthesized final answer, both respawn refits and the
-    # post-respawn retry -- still rebuilt the cap from the whole window.
+    # Payload coverage is in test_llama_admission_enforced_paths.py.
 
     def test_the_loop_budget_never_sees_it(self):
-        """`_loop_budget_left` answers "did the CALLER cap this", and an admission bound
-        is not the caller speaking."""
+        """`_loop_budget_left` answers "did the CALLER cap this"; an admission bound did not."""
         lines = self._source().split("\n")
         start = next(i for i, l in enumerate(lines) if "def _loop_budget_left" in l)
         indent = len(lines[start]) - len(lines[start].lstrip())
@@ -212,15 +179,9 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
 
 
 class TestChargedAndPermittedCannotDrift:
-    """The bound is only safe if nothing is admitted on less than it may use.
-
-    Found by asking what happens when the allowance floors at 1. A prompt past its share
-    is permitted ``prompt + 1``, which is far more than a share, and the defence was that
-    such a request is charged more than a share so fewer are admitted. That holds on its
-    own, but not in company: a SMALL prompt was charged ``prompt + 1024`` while being
-    permitted its whole share, and mixing the two let the permitted total pass the cache
-    while the charged total still fit.
-    """
+    """The bound is only safe if nothing is admitted on less than it may use: a prompt past
+    its share is permitted ``prompt + 1``, safe alone but not mixed with a SMALL prompt
+    charged ``prompt + 1024`` while permitted its whole share."""
 
     def _charged(self, budget, share, prompt):
         from routes.inference import _openai_llama_admission_output_allowance
@@ -234,7 +195,6 @@ class TestChargedAndPermittedCannotDrift:
         return max(1, min(budget, prompt + allowance))
 
     def test_the_mixed_set_that_broke_the_invariant(self):
-        """Measured before the fix: charged 258774 of 262144, permitted 385750."""
         budget, slots = 262144, 4
         share = budget // slots
         prompts = [1, 65537, 189139, 1]
@@ -250,7 +210,6 @@ class TestChargedAndPermittedCannotDrift:
         ), f"admitted {admitted} charged {used} but may occupy {permitted} of {budget}"
 
     def test_nothing_is_admitted_on_less_than_it_may_use(self):
-        """The general property, which is what actually makes the bound sound."""
         for budget, slots in ((16384, 4), (4096, 4), (2048, 2), (32768, 8), (262144, 4)):
             share = budget // slots
             for prompt in (1, 8, share // 2, share - 2, share - 1, share, share + 1, budget - 1):
@@ -259,8 +218,7 @@ class TestChargedAndPermittedCannotDrift:
                 permitted = prompt + max(1, share - prompt)
                 charged = self._charged(budget, share, prompt)
                 if prompt >= share:
-                    # Past its share it is charged the flat allowance, which is larger
-                    # than the single token it is permitted.
+                    # Past its share it is charged more than the one token it is permitted.
                     continue
                 assert charged >= permitted, (
                     f"budget={budget} share={share} prompt={prompt}: "
