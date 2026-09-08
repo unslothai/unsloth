@@ -20,16 +20,24 @@ export async function reconcileGgufPinsAfterDelete(
   try {
     const inventory = await fetchCachedGgufInventory(hfToken);
     if (inventory.scan_confirmed === false) return;
-    const present = inventory.cached.some((copy) =>
+    const copies = inventory.cached.filter((copy) =>
       modelIdsMatchForPicker(copy.repo_id, repoId),
     );
-    const variants = present
-      ? (
-          await listGgufVariants(repoId, hfToken, {
-            preferLocalCache: true,
-          })
-        ).variants
-      : [];
+    const variants =
+      copies.length > 0
+        ? (
+            await listGgufVariants(repoId, hfToken, {
+              preferLocalCache: true,
+            })
+          ).variants
+        : [];
+    // An anonymous Hub listing cannot disprove the complete copy found on disk.
+    if (
+      !hfToken &&
+      copies.some((copy) => !copy.partial) &&
+      !variants.some((variant) => variant.downloaded || variant.partial)
+    )
+      return;
     const state = usePinnedModelsStore.getState();
     if (!variants.some((v) => v.downloaded && !v.partial)) {
       for (const pin of state.pinned) {

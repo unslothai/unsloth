@@ -39,6 +39,8 @@ const compile = new Function(
 
 for (const requested of ["Org/Model", "org/model"]) {
   for (const remaining of [
+    "anonymous",
+    "anonymous-partial-inventory",
     "duplicate",
     "absent",
     "partial",
@@ -56,7 +58,16 @@ for (const requested of ["Org/Model", "org/model"]) {
       const inventory = async () => {
         if (remaining === "unavailable") throw new Error("scan unavailable");
         return {
-          cached: remaining.endsWith("absent") ? [] : [{ repo_id: "org/model" }],
+          cached: remaining.endsWith("absent")
+            ? []
+            : [
+                {
+                  repo_id: "org/model",
+                  partial:
+                    remaining.endsWith("partial") ||
+                    remaining === "anonymous-partial-inventory",
+                },
+              ],
           scan_confirmed:
             remaining === "legacy-confirmation"
               ? undefined
@@ -74,8 +85,12 @@ for (const requested of ["Org/Model", "org/model"]) {
                 quant:
                   remaining === "lowercase-quant"
                     ? "q8_0"
-                    : remaining === "other-quant" ? "Q6_K" : "Q8_0",
-                downloaded: !remaining.endsWith("partial"),
+                    : remaining === "other-quant"
+                      ? "Q6_K"
+                      : "Q8_0",
+                downloaded:
+                  !remaining.startsWith("anonymous") &&
+                  !remaining.endsWith("partial"),
                 partial: remaining.endsWith("partial"),
               },
             ],
@@ -95,9 +110,13 @@ for (const requested of ["Org/Model", "org/model"]) {
       );
       await run(requested);
       const expected =
-        remaining === "absent" || remaining === "partial"
+        remaining === "absent" ||
+        remaining === "partial" ||
+        remaining === "anonymous-partial-inventory"
           ? []
-          : remaining === "other-quant" ? ["Org/Model"] : original;
+          : remaining === "other-quant"
+            ? ["Org/Model"]
+            : original;
       assert.deepEqual(pinned, expected);
       if (remaining.startsWith("unconfirmed")) assert.equal(variantCalls, 0);
     });
