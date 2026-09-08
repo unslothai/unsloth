@@ -33,6 +33,7 @@ from core.inference.offload_planner import (  # noqa: F401
     _device_slots,
     _kv_floor_at,
     _per_device_shortfall,
+    _per_device_usage,
     ContextPolicy,
     Plan,
     PlanOptions,
@@ -2355,3 +2356,71 @@ def graded_moe_with_shared(shexp_gib: float) -> ModelLayout:
         n_expert_used = 8,
         complete = True,
     )
+
+
+def test_the_per_device_check_places_the_recurrent_state_on_the_rows_that_hold_it():
+    """The pooled fit charges the recurrent state in full, one copy per slot; the
+    per-device check charged only block weights and the attention cache, so a
+    hybrid split across cards could pass device by device while the card holding
+    the recurrent rows was over, and llama.cpp threw on that card's allocation."""
+    import dataclasses
+
+    layout = dataclasses.replace(
+        _swa_layout(), arch = "qwen35", has_swa = False, recurrent_bytes = 2 * GIB, n_attention_layers = 4
+    )
+    n = layout.n_layers
+    # Attention on every sixteenth row, recurrent everywhere else.
+    weights = [1 if i % (n // 4) == 0 else 0 for i in range(n)]
+    spilled = {b.index: b.spillable_bytes for b in layout.blocks}
+
+    def usage(
+        lay,
+        n_seq = 1,
+        vector = weights,
+    ):
+        _err, used, _slots = _per_device_usage(
+            lay,
+            _NO_OVERHEAD,
+            4096,
+            spilled,
+            False,
+            [GIB, GIB],
+            quantised = False,
+            kv_bytes_floor = 0,
+            kv_layer_weights = vector,
+            n_seq = n_seq,
+        )
+        return used
+
+    one, four = usage(layout), usage(layout, n_seq = 4)
+    # Ceiling per row, so up to one byte per recurrent row of rounding.
+    assert abs(sum(four) - sum(one) - 3 * 2 * GIB) <= n
+    # Budgets sized to the weights and cache alone: the state is the difference
+    # between "fits" and "device over".
+    bare = usage(dataclasses.replace(layout, recurrent_bytes = 0))
+    budgets = [b + 64 * MIB for b in bare]
+    short = _per_device_shortfall(
+        layout,
+        _NO_OVERHEAD,
+        4096,
+        spilled,
+        False,
+        budgets,
+        quantised = False,
+        kv_bytes_floor = 0,
+        kv_layer_weights = weights,
+    )
+    assert short is not None and "device" in short
+    # A vector with no zero row cannot say where the state lives: abstain.
+    uniform = _per_device_shortfall(
+        layout,
+        _NO_OVERHEAD,
+        4096,
+        spilled,
+        False,
+        budgets,
+        quantised = False,
+        kv_bytes_floor = 0,
+        kv_layer_weights = [1] * n,
+    )
+    assert uniform is not None and "recurrent state" in uniform

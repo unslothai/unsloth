@@ -1729,6 +1729,7 @@ def _per_device_usage(
     split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
     extra_on_device0: Optional[int] = None,
+    n_seq: int = 1,
 ) -> tuple[Optional[str], list[int], list[list[int]]]:
     """Bytes each device would hold under this spill, and the rows it owns.
 
@@ -1786,6 +1787,19 @@ def _per_device_usage(
     else:
         per = (cache + layout.n_layers - 1) // layout.n_layers if layout.n_layers else 0
         kv_by_layer = [per] * layout.n_layers
+    # The recurrent state is one copy per slot on the rows that hold no cache,
+    # and the pooled fit charges it in full. A vector with zero-weight rows says
+    # which rows those are; spread the state over them, ceiling so no device is
+    # under-booked. Without any such row the state cannot be placed, and the
+    # abstain that applied before a vector was supplied applies still.
+    if layout.recurrent_bytes > 0 and not opts.kv_on_host:
+        recurrent_rows = [i for i, w in enumerate(weights) if w == 0]
+        if not recurrent_rows:
+            return "the recurrent state's per-layer split is not visible in the layout", [], []
+        state = layout.recurrent_bytes * max(1, n_seq)
+        per_row = (state + len(recurrent_rows) - 1) // len(recurrent_rows)
+        for row in recurrent_rows:
+            kv_by_layer[row] += per_row
     by_index = {b.index: b for b in layout.blocks}
     output_row_bytes = layout.other_resident_bytes + (0 if spill_lm_head else layout.lm_head_bytes)
 
@@ -1838,6 +1852,7 @@ def _per_device_shortfall(
     split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
     extra_on_device0: Optional[int] = None,
+    n_seq: int = 1,
 ) -> Optional[str]:
     """``None`` when every device provably fits, else why it cannot be shown to.
 
@@ -1868,6 +1883,7 @@ def _per_device_shortfall(
         split_weights_per_device = split_weights_per_device,
         kv_layer_weights = kv_layer_weights,
         extra_on_device0 = extra_on_device0,
+        n_seq = n_seq,
     )
     if error is not None:
         return error
@@ -1895,6 +1911,7 @@ def _select_units_per_device(
     split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
     extra_on_device0: Optional[int] = None,
+    n_seq: int = 1,
 ) -> Optional[list[SpillUnit]]:
     """A spill chosen device by device, or ``None`` when one cannot be shown to fit.
 
@@ -1919,6 +1936,7 @@ def _select_units_per_device(
         split_weights_per_device = split_weights_per_device,
         kv_layer_weights = kv_layer_weights,
         extra_on_device0 = extra_on_device0,
+        n_seq = n_seq,
     )
     if error is not None:
         return None
@@ -1963,6 +1981,7 @@ def _select_units_per_device(
             split_weights_per_device = split_weights_per_device,
             kv_layer_weights = kv_layer_weights,
             extra_on_device0 = extra_on_device0,
+            n_seq = n_seq,
         )
         is not None
     ):
@@ -2081,6 +2100,7 @@ def _plan_at(
                 split_weights_per_device = split_weights_per_device,
                 kv_layer_weights = kv_layer_weights,
                 extra_on_device0 = _outside_layout_bytes(opts, knobs),
+                n_seq = knobs.n_parallel,
             )
             if uneven is not None:
                 return Plan(
@@ -2120,6 +2140,7 @@ def _plan_at(
         split_weights_per_device = split_weights_per_device,
         kv_layer_weights = kv_layer_weights,
         extra_on_device0 = _outside_layout_bytes(opts, knobs),
+        n_seq = knobs.n_parallel,
     )
 
     def head_rescue() -> Optional[Plan]:
@@ -2219,6 +2240,7 @@ def _plan_at(
             split_weights_per_device = split_weights_per_device,
             kv_layer_weights = kv_layer_weights,
             extra_on_device0 = _outside_layout_bytes(opts, knobs),
+            n_seq = knobs.n_parallel,
         )
         if uneven is not None:
             rescued = head_rescue() if not spill_lm_head and not kv_host else None

@@ -607,3 +607,54 @@ def test_a_cache_ram_typed_into_the_extras_is_the_one_the_launch_prices(tmp_path
     assert [i for i, a in enumerate(cmd) if a == "--cache-ram"] == [len(cmd) - 2]
     assert _flag(cmd, "--cache-ram") == "-1"
     assert "--cache-ram" not in backend._spill_plan_restore
+
+
+def test_the_fit_footprint_prices_the_cache_ram_the_extras_carry(tmp_path, monkeypatch):
+    """The fit's own load-mode footprint charged the panel's --cache-ram or the
+    auto bound, never one typed into the extras, so a ceiling above the default
+    was under-counted and --load-mode none could be chosen for a footprint the
+    host does not have."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    seen_kw = {}
+    real = LlamaCppBackend._fit_derived_load_mode
+    orig = _backend
+
+    def hooked(*a, **k):
+        backend, gguf = orig(*a, **k)
+
+        def wrapped(**kw):
+            seen_kw.update(kw)
+            return real(backend, **kw)
+
+        backend._fit_derived_load_mode = wrapped
+        return backend, gguf
+
+    monkeypatch.setitem(globals(), "_backend", hooked)
+    plan = Plan(changed = False, n_ctx = 8192)
+    _launch_with(tmp_path, monkeypatch, plan, extra_args = ["--cache-ram", "16384"])
+    assert seen_kw.get("prompt_cache_bytes") == 16384 * MIB
+
+
+def test_a_projector_already_on_the_cpu_is_host_ram_the_planner_admits_against(
+    tmp_path, monkeypatch
+):
+    """--no-mmproj-offload takes the projector out of model_size and the plan's
+    host side never held it, yet clip.cpp keeps it resident in a CPU backend
+    buffer. Unpriced, a plan could take --load-mode none against RAM the
+    projector also needs."""
+    plan = Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,))
+    proj = tmp_path / "proj.gguf"
+    proj.write_bytes(b"GGUF")
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(proj))
+    monkeypatch.setenv("LLAMA_ARG_NO_MMPROJ_OFFLOAD", "1")
+    orig = _backend
+
+    def hooked(*a, **k):
+        backend, gguf = orig(*a, **k)
+        backend._mmproj_vram_bytes = lambda path: 3 * 1024 * MIB if path else 0
+        return backend, gguf
+
+    monkeypatch.setitem(globals(), "_backend", hooked)
+    _cmd, _b, seen = _launch_with(tmp_path, monkeypatch, plan)
+    assert seen["inputs"]["host_ram_unpriced_bytes"] >= 3 * 1024 * MIB

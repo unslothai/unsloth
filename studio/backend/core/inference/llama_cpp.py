@@ -21985,7 +21985,14 @@ class LlamaCppBackend:
                             self._effective_prompt_cache_bytes(_cache_ram_in_force, server_caps)
                             if _cache_ram_in_force is not None
                             else 0
-                        ),
+                        )
+                        # A projector already on the CPU (--no-mmproj-offload, or its
+                        # environment form) is out of model_size and out of the plan's
+                        # host side alike, and clip.cpp holds it resident in a CPU
+                        # backend buffer: the same bytes the fit's own footprint
+                        # charges as mmproj_pinned_bytes below.
+                        + int(_mmproj_pinned_bytes or 0)
+                        + (int(_fit_env_mmproj_bytes or 0) if _fit_env_mmproj_on_host else 0),
                     )
                     _fit_load_mode = self._fit_derived_load_mode(
                         model_size = _fit_model_size,
@@ -22014,7 +22021,9 @@ class LlamaCppBackend:
                         # A build too old for --cache-ram has no prompt cache to
                         # charge, and an explicit 0 disables it, so both come out 0.
                         prompt_cache_bytes = self._effective_prompt_cache_bytes(
-                            cache_ram if _auto_cache_ram_mib is None else _auto_cache_ram_mib,
+                            _cache_ram_in_force
+                            if _auto_cache_ram_mib is None
+                            else _auto_cache_ram_mib,
                             server_caps,
                         ),
                         # One lump on the layer path, where the graph buffer is
