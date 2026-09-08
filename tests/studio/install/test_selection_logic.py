@@ -113,6 +113,19 @@ def load_studio_run_module(monkeypatch):
     return module
 
 
+def mock_resolved_releases(monkeypatch, releases):
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "iter_resolved_published_releases",
+        lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(releases),
+    )
+
+
+def mock_published_releases(monkeypatch, release, checksums):
+    resolved = INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(bundle = release, checksums = checksums)
+    mock_resolved_releases(monkeypatch, [resolved])
+
+
 def make_host(**overrides):
     system = overrides.pop("system", "Linux")
     machine = overrides.pop("machine", "x86_64")
@@ -149,6 +162,19 @@ def make_artifact(asset_name, **overrides):
     )
     defaults.update(overrides)
     return PublishedLlamaArtifact(**defaults)
+
+
+def make_cpu_artifact(asset_name, **overrides):
+    """An artifact with no CUDA runtime: no runtime line, no SM coverage, no profile."""
+    nulls = dict(
+        runtime_line = None,
+        coverage_class = None,
+        supported_sms = [],
+        min_sm = None,
+        max_sm = None,
+        bundle_profile = None,
+    )
+    return make_artifact(asset_name, **{**nulls, **overrides})
 
 
 def make_release(artifacts, **overrides):
@@ -1567,18 +1593,7 @@ class TestResolveInstallAttempts:
             upstream_tag = "b9000",
         )
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
-                [
-                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle = release,
-                        checksums = checksums,
-                    )
-                ]
-            ),
-        )
+        mock_published_releases(monkeypatch, release, checksums)
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "github_release_assets",
@@ -1612,18 +1627,7 @@ class TestResolveInstallAttempts:
             upstream_tag = "b9000",
         )
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
-                [
-                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle = release,
-                        checksums = checksums,
-                    )
-                ]
-            ),
-        )
+        mock_published_releases(monkeypatch, release, checksums)
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "github_release_assets",
@@ -1676,18 +1680,7 @@ class TestResolveInstallAttempts:
             upstream_tag = "b9000",
         )
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
-                [
-                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle = release,
-                        checksums = checksums,
-                    )
-                ]
-            ),
-        )
+        mock_published_releases(monkeypatch, release, checksums)
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "github_release_assets",
@@ -1708,18 +1701,7 @@ class TestResolveInstallAttempts:
             upstream_tag = "b9000",
         )
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
-                [
-                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle = release,
-                        checksums = checksums,
-                    )
-                ]
-            ),
-        )
+        mock_published_releases(monkeypatch, release, checksums)
         mock_linux_runtime(monkeypatch, ["cuda12"])
 
         with pytest.raises(PrebuiltFallback, match = "no compatible Linux prebuilt asset was found"):
@@ -1736,16 +1718,7 @@ class TestResolveInstallAttempts:
         asset_name = "llama-b9000-bin-win-cpu-x64.zip"
         release = make_release(
             [
-                make_artifact(
-                    asset_name,
-                    install_kind = "windows-cpu",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
-                    bundle_profile = None,
-                )
+                make_cpu_artifact(asset_name, install_kind = "windows-cpu", bundle_profile = None)
             ],
             release_tag = "llama-prebuilt-latest",
             upstream_tag = "b9000",
@@ -1757,18 +1730,7 @@ class TestResolveInstallAttempts:
             upstream_tag = "b9000",
         )
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
-                [
-                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle = release,
-                        checksums = checksums,
-                    )
-                ]
-            ),
-        )
+        mock_published_releases(monkeypatch, release, checksums)
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "github_release_assets",
@@ -1825,14 +1787,9 @@ class TestResolveInstallAttempts:
         )
         release = make_release(
             [
-                make_artifact(
+                make_cpu_artifact(
                     asset_name,
                     install_kind = install_kind,
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
                     bundle_profile = bundle_profile,
                     rank = 1000,
                 )
@@ -1847,18 +1804,7 @@ class TestResolveInstallAttempts:
             upstream_tag = "b9625",
         )
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
-                [
-                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle = release,
-                        checksums = checksums,
-                    )
-                ]
-            ),
-        )
+        mock_published_releases(monkeypatch, release, checksums)
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "github_release_assets",
@@ -1894,14 +1840,9 @@ class TestResolveInstallAttempts:
         x64_asset = "app-b9625-linux-x64-cpu.tar.gz"
         release = make_release(
             [
-                make_artifact(
+                make_cpu_artifact(
                     x64_asset,
                     install_kind = "linux-cpu",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
                     bundle_profile = "linux-cpu-x64",
                     rank = 1000,
                 )
@@ -1916,18 +1857,7 @@ class TestResolveInstallAttempts:
             upstream_tag = "b9625",
         )
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
-                [
-                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle = release,
-                        checksums = checksums,
-                    )
-                ]
-            ),
-        )
+        mock_published_releases(monkeypatch, release, checksums)
 
         with pytest.raises(PrebuiltFallback, match = "no compatible Linux prebuilt asset was found"):
             resolve_install_attempts("latest", host, "unslothai/llama.cpp", "")
@@ -1945,16 +1875,7 @@ class TestResolveInstallAttempts:
         asset_name = "llama-b9000-bin-macos-arm64.tar.gz"
         release = make_release(
             [
-                make_artifact(
-                    asset_name,
-                    install_kind = "macos-arm64",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
-                    bundle_profile = None,
-                )
+                make_cpu_artifact(asset_name, install_kind = "macos-arm64", bundle_profile = None)
             ],
             release_tag = "llama-prebuilt-latest",
             upstream_tag = "b9000",
@@ -1966,18 +1887,7 @@ class TestResolveInstallAttempts:
             upstream_tag = "b9000",
         )
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
-                [
-                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle = release,
-                        checksums = checksums,
-                    )
-                ]
-            ),
-        )
+        mock_published_releases(monkeypatch, release, checksums)
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "github_release_assets",
@@ -2008,14 +1918,9 @@ class TestResolveInstallAttempts:
         published_name = "llama-b9000-bin-win-cpu-x64.zip"
         release = make_release(
             [
-                make_artifact(
+                make_cpu_artifact(
                     published_name,
                     install_kind = "windows-cpu",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
                     bundle_profile = None,
                 )
             ],
@@ -2029,18 +1934,7 @@ class TestResolveInstallAttempts:
             upstream_tag = "b9000",
         )
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
-                [
-                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle = release,
-                        checksums = checksums,
-                    )
-                ]
-            ),
-        )
+        mock_published_releases(monkeypatch, release, checksums)
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "github_release_assets",
@@ -2092,13 +1986,7 @@ class TestResolveInstallReleasePlans:
             self._cuda_bundle("app-b9001-linux-x64-cuda12.tar.gz", "r1", "b9001"),
         ]
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
-                releases
-            ),
-        )
+        mock_resolved_releases(monkeypatch, releases)
 
         requested_tag, plans = _fork_manifest_release_plans(
             "latest",
@@ -2128,13 +2016,7 @@ class TestResolveInstallReleasePlans:
             self._cuda_bundle("app-b9001-linux-x64-cuda12.tar.gz", "r1", "b9001"),
         ]
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
-                releases
-            ),
-        )
+        mock_resolved_releases(monkeypatch, releases)
 
         _requested_tag, plans = _fork_manifest_release_plans(
             "latest",
@@ -2628,14 +2510,9 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
     def _cpu_only_bundle(self):
         return make_release(
             [
-                make_artifact(
+                make_cpu_artifact(
                     "app-b8508-linux-x64-cpu.tar.gz",
                     install_kind = "linux-cpu",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
                     bundle_profile = None,
                     rank = 1000,
                 ),
@@ -2673,25 +2550,15 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         an x64 CPU one (app-<tag>-linux-x64-vulkan.tar.gz / -cpu.tar.gz)."""
         return make_release(
             [
-                make_artifact(
+                make_cpu_artifact(
                     "app-b8508-linux-x64-vulkan.tar.gz",
                     install_kind = "linux-vulkan",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
                     bundle_profile = "linux-vulkan-x64",
                     rank = 500,
                 ),
-                make_artifact(
+                make_cpu_artifact(
                     "app-b8508-linux-x64-cpu.tar.gz",
                     install_kind = "linux-cpu",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
                     bundle_profile = None,
                     rank = 1000,
                 ),
@@ -3023,14 +2890,9 @@ class TestPublishedRocmGfxSelection:
 
     def _release(self, install_kind, prefix):
         artifacts = [
-            make_artifact(
+            make_cpu_artifact(
                 f"{prefix}-{gfx}.{'zip' if 'windows' in install_kind else 'tar.gz'}",
                 install_kind = install_kind,
-                runtime_line = None,
-                coverage_class = None,
-                supported_sms = [],
-                min_sm = None,
-                max_sm = None,
                 bundle_profile = None,
                 rank = 1000,
                 gfx_target = gfx,
@@ -3172,14 +3034,9 @@ class TestPublishedRocmBundleCoverage:
     def _release(self):
         return make_release(
             [
-                make_artifact(
+                make_cpu_artifact(
                     f"app-b9457-linux-x64-rocm-{fam}.tar.gz",
                     install_kind = "linux-rocm",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
                     bundle_profile = None,
                     rank = 1000,
                     gfx_target = fam,
@@ -3241,25 +3098,15 @@ class TestPublishedMacosForkSelection:
 
     def _release(self):
         arts = [
-            make_artifact(
+            make_cpu_artifact(
                 "llama-b9457-bin-macos-arm64.tar.gz",
                 install_kind = "macos-arm64",
-                runtime_line = None,
-                coverage_class = None,
-                supported_sms = [],
-                min_sm = None,
-                max_sm = None,
                 bundle_profile = "macos-metal-arm64",
                 rank = 50,
             ),
-            make_artifact(
+            make_cpu_artifact(
                 "llama-b9457-bin-macos-x64.tar.gz",
                 install_kind = "macos-x64",
-                runtime_line = None,
-                coverage_class = None,
-                supported_sms = [],
-                min_sm = None,
-                max_sm = None,
                 bundle_profile = "macos-cpu-x64",
                 rank = 50,
             ),
@@ -3822,6 +3669,27 @@ class TestCudaDriverToolkitMismatchMessage:
         )
         return proc.stdout + proc.stderr
 
+    def _run_cuda_script(self, body, path_dir = None, *, only_path_dir = False):
+        """Run `body` under setup.sh's CUDA driver/toolkit helpers, with the usual preamble.
+
+        `only_path_dir` drops the inherited PATH, which is the only way a case that means
+        "no nvidia-smi anywhere" stays honest on a machine that has one in /usr/bin.
+        """
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            C_WARN=
+            substep() {{ printf '%s\\n' "$1"; }}
+            {self._setup_sh_cuda_helper_fragment()}
+            {textwrap.dedent(body)}
+            """
+        )
+        env = None
+        if path_dir is not None:
+            inherited = "" if only_path_dir else f":{os.environ.get('PATH', '')}"
+            env = {"PATH": f"{path_dir}{inherited}"}
+        return self._run_bash(script, env = env)
+
     def _fake_nvidia_smi(self, tmp_path, output):
         mock_bin = tmp_path / "bin"
         mock_bin.mkdir()
@@ -3845,12 +3713,7 @@ class TestCudaDriverToolkitMismatchMessage:
             tmp_path,
             "| NVIDIA-SMI 580.95   Driver Version: 580.95   CUDA Version: 13.1 |",
         )
-        script = textwrap.dedent(
-            f"""\
-            set -euo pipefail
-            C_WARN=
-            substep() {{ printf '%s\\n' "$1"; }}
-            {self._setup_sh_cuda_helper_fragment()}
+        body = """\
             _driver="$(_cuda_driver_max_version)"
             if _cuda_toolkit_major_gt_driver "13.3" "$_driver"; then
                 _print_cuda_driver_toolkit_mismatch "13.3" "$_driver"
@@ -3858,11 +3721,7 @@ class TestCudaDriverToolkitMismatchMessage:
                 printf 'compatible:%s\\n' "$_driver"
             fi
             """
-        )
-        output = self._run_bash(
-            script,
-            env = {"PATH": f"{mock_bin}:{os.environ.get('PATH', '')}"},
-        )
+        output = self._run_cuda_script(body, mock_bin)
         assert "compatible:13.1" in output
         assert "major-version mismatch" not in output
 
@@ -3871,22 +3730,13 @@ class TestCudaDriverToolkitMismatchMessage:
             tmp_path,
             "| NVIDIA-SMI 570.95   Driver Version: 570.95   CUDA Version: 12.9 |",
         )
-        script = textwrap.dedent(
-            f"""\
-            set -euo pipefail
-            C_WARN=
-            substep() {{ printf '%s\\n' "$1"; }}
-            {self._setup_sh_cuda_helper_fragment()}
+        body = """\
             _driver="$(_cuda_driver_max_version)"
             if _cuda_toolkit_major_gt_driver "13.3" "$_driver"; then
                 _print_cuda_driver_toolkit_mismatch "13.3" "$_driver"
             fi
             """
-        )
-        output = self._run_bash(
-            script,
-            env = {"PATH": f"{mock_bin}:{os.environ.get('PATH', '')}"},
-        )
+        output = self._run_cuda_script(body, mock_bin)
         assert (
             "CUDA Toolkit 13.3 is a major-version mismatch: toolkit major 13 "
             "exceeds driver CUDA major 12 (12.9)."
@@ -3902,12 +3752,7 @@ class TestCudaDriverToolkitMismatchMessage:
             tmp_path,
             "| NVIDIA-SMI 580.95   Driver Version: 580.95   CUDA Version: 13.3 |",
         )
-        script = textwrap.dedent(
-            f"""\
-            set -euo pipefail
-            C_WARN=
-            substep() {{ printf '%s\\n' "$1"; }}
-            {self._setup_sh_cuda_helper_fragment()}
+        body = """\
             _driver="$(_cuda_driver_max_version)"
             if _cuda_toolkit_major_gt_driver "13.3" "$_driver"; then
                 _print_cuda_driver_toolkit_mismatch "13.3" "$_driver"
@@ -3915,23 +3760,14 @@ class TestCudaDriverToolkitMismatchMessage:
                 printf 'compatible:%s\\n' "$_driver"
             fi
             """
-        )
-        output = self._run_bash(
-            script,
-            env = {"PATH": f"{mock_bin}:{os.environ.get('PATH', '')}"},
-        )
+        output = self._run_cuda_script(body, mock_bin)
         assert "compatible:13.3" in output
         assert "Unsloth supports CUDA Toolkit" not in output
 
     def test_setup_sh_skips_check_without_nvidia_smi(self, tmp_path):
         empty_bin = tmp_path / "empty-bin"
         empty_bin.mkdir()
-        script = textwrap.dedent(
-            f"""\
-            set -euo pipefail
-            C_WARN=
-            substep() {{ printf '%s\\n' "$1"; }}
-            {self._setup_sh_cuda_helper_fragment()}
+        body = """\
             _driver="$(_cuda_driver_max_version)"
             if [ -n "$_driver" ] && _cuda_toolkit_major_gt_driver "13.3" "$_driver"; then
                 _print_cuda_driver_toolkit_mismatch "13.3" "$_driver"
@@ -3939,8 +3775,7 @@ class TestCudaDriverToolkitMismatchMessage:
                 printf 'skipped\\n'
             fi
             """
-        )
-        output = self._run_bash(script, env = {"PATH": str(empty_bin)})
+        output = self._run_cuda_script(body, empty_bin, only_path_dir = True)
         assert "skipped" in output
         assert "Unsloth supports CUDA Toolkit" not in output
 
@@ -4099,12 +3934,7 @@ class TestCudaDriverToolkitMismatchMessage:
             tmp_path,
             "| NVIDIA-SMI 580.95   Driver Version: 580.95   CUDA Version: 13.0 |",
         )
-        script = textwrap.dedent(
-            f"""\
-            set -euo pipefail
-            C_WARN=
-            substep() {{ printf '%s\\n' "$1"; }}
-            {self._setup_sh_cuda_helper_fragment()}
+        body = """\
             _nvcc=""
             _driver="$(_cuda_driver_max_version)"
             if [ -n "$_nvcc" ] && [ -n "$_driver" ] && _cuda_toolkit_major_gt_driver "$_nvcc" "$_driver"; then
@@ -4113,11 +3943,7 @@ class TestCudaDriverToolkitMismatchMessage:
                 printf 'skipped\\n'
             fi
             """
-        )
-        output = self._run_bash(
-            script,
-            env = {"PATH": f"{mock_bin}:{os.environ.get('PATH', '')}"},
-        )
+        output = self._run_cuda_script(body, mock_bin)
         assert "skipped" in output
         assert "Unsloth supports CUDA Toolkit" not in output
 

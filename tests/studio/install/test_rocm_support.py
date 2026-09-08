@@ -187,136 +187,83 @@ def _write_dpkg_query_stub(
 # ── Helper: build HostInfo for different scenarios ──────────────────────────
 
 
+_LINUX_X64 = dict(
+    system = "Linux",
+    machine = "x86_64",
+    is_windows = False,
+    is_linux = True,
+    is_macos = False,
+    is_x86_64 = True,
+    is_arm64 = False,
+)
+_WINDOWS_X64 = dict(
+    system = "Windows",
+    machine = "amd64",
+    is_windows = True,
+    is_linux = False,
+    is_macos = False,
+    is_x86_64 = True,
+    is_arm64 = False,
+)
+_MACOS_ARM64 = dict(
+    system = "Darwin",
+    machine = "arm64",
+    is_windows = False,
+    is_linux = False,
+    is_macos = True,
+    is_x86_64 = False,
+    is_arm64 = True,
+)
+_NO_GPU = dict(
+    nvidia_smi = None,
+    driver_cuda_version = None,
+    compute_caps = [],
+    visible_cuda_devices = None,
+    has_physical_nvidia = False,
+    has_usable_nvidia = False,
+    has_rocm = False,
+)
+
+
+def _host(platform: dict, gpu: dict, **overrides) -> HostInfo:
+    return HostInfo(**{**platform, **_NO_GPU, **gpu, **overrides})
+
+
 def nvidia_host(**overrides) -> HostInfo:
     """NVIDIA Linux x86_64 host."""
-    defaults = dict(
-        system = "Linux",
-        machine = "x86_64",
-        is_windows = False,
-        is_linux = True,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
+    gpu = dict(
         nvidia_smi = "/usr/bin/nvidia-smi",
         driver_cuda_version = (12, 6),
         compute_caps = ["89"],
-        visible_cuda_devices = None,
         has_physical_nvidia = True,
         has_usable_nvidia = True,
-        has_rocm = False,
     )
-    defaults.update(overrides)
-    return HostInfo(**defaults)
+    return _host(_LINUX_X64, gpu, **overrides)
 
 
 def rocm_host(**overrides) -> HostInfo:
     """AMD ROCm Linux x86_64 host (no NVIDIA)."""
-    defaults = dict(
-        system = "Linux",
-        machine = "x86_64",
-        is_windows = False,
-        is_linux = True,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
-        has_rocm = True,
-    )
-    defaults.update(overrides)
-    return HostInfo(**defaults)
+    return _host(_LINUX_X64, dict(has_rocm = True), **overrides)
 
 
 def cpu_host(**overrides) -> HostInfo:
     """CPU-only Linux x86_64 host."""
-    defaults = dict(
-        system = "Linux",
-        machine = "x86_64",
-        is_windows = False,
-        is_linux = True,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
-        has_rocm = False,
-    )
-    defaults.update(overrides)
-    return HostInfo(**defaults)
+    return _host(_LINUX_X64, {}, **overrides)
 
 
 def macos_host(**overrides) -> HostInfo:
     """macOS arm64 host."""
-    defaults = dict(
-        system = "Darwin",
-        machine = "arm64",
-        is_windows = False,
-        is_linux = False,
-        is_macos = True,
-        is_x86_64 = False,
-        is_arm64 = True,
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
-        has_rocm = False,
-    )
-    defaults.update(overrides)
-    return HostInfo(**defaults)
+    return _host(_MACOS_ARM64, {}, **overrides)
 
 
 def windows_host(**overrides) -> HostInfo:
     """Windows x86_64 host."""
-    defaults = dict(
-        system = "Windows",
-        machine = "amd64",
-        is_windows = True,
-        is_linux = False,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
-        has_rocm = False,
-    )
-    defaults.update(overrides)
-    return HostInfo(**defaults)
+    return _host(_WINDOWS_X64, {}, **overrides)
 
 
 def windows_rocm_host(**overrides) -> HostInfo:
     """Windows x86_64 host with ROCm."""
-    defaults = dict(
-        system = "Windows",
-        machine = "amd64",
-        is_windows = True,
-        is_linux = False,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
-        has_rocm = True,
-    )
-    defaults.update(overrides)
-    return HostInfo(**defaults)
+    return _host(_WINDOWS_X64, dict(has_rocm = True), **overrides)
 
 
 # ── Upstream asset fixture ───────────────────────────────────────────────────
@@ -837,6 +784,39 @@ def _named_arch_only():
     return (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower() or None
 
 
+def run_ensure_rocm_torch(probe: str = "", *, env = None, isdir = True, timeout = False,
+                         attrs = None, **stubs):
+    """Run _ensure_rocm_torch() against a fully mocked host.
+
+    `stubs` maps a stack_mod probe function to its return value, `attrs` replaces plain
+    module attributes (IS_WINDOWS and friends), and `probe` is the torch-probe stdout
+    that follows the marker -- "" means no marker at all, i.e. CPU torch. `timeout` makes
+    the probe subprocess time out instead of answering. Returns the (pip_install,
+    pip_install_try) mocks.
+    """
+    pip = MagicMock()
+    pip_try = MagicMock(return_value = True)
+    result = MagicMock(returncode = 0, stdout = (_MARK + probe + "\n") if probe else "\n")
+    with contextlib.ExitStack() as stack:
+        for name, value in {"IS_WINDOWS": False, **(attrs or {})}.items():
+            stack.enter_context(patch.object(stack_mod, name, value))
+        stack.enter_context(patch.object(stack_mod, "pip_install", pip))
+        stack.enter_context(patch.object(stack_mod, "pip_install_try", pip_try))
+        for name, value in {"_has_usable_nvidia_gpu": False, **stubs}.items():
+            stack.enter_context(patch.object(stack_mod, name, return_value = value))
+        if env is not None:
+            stack.enter_context(patch.dict(os.environ, env, clear = False))
+        stack.enter_context(patch("os.path.isdir", return_value = isdir))
+        if timeout:
+            stack.enter_context(
+                patch("subprocess.run", side_effect = subprocess.TimeoutExpired("python", 30))
+            )
+        else:
+            stack.enter_context(patch("subprocess.run", return_value = result))
+        _ensure_rocm_torch()
+    return pip, pip_try
+
+
 class TestEnsureRocmTorch:
     """Verify ROCm torch reinstall logic."""
 
@@ -876,124 +856,77 @@ class TestEnsureRocmTorch:
                     _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = False)
-    @patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = "gfx1151")
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = None)
-    def test_inferred_gfx_without_rocm_runtime_installs_amd_index(
-        self, mock_ver, mock_infer, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
-    ):
+    def test_inferred_gfx_without_rocm_runtime_installs_amd_index(self):
         """Strix Halo without /dev/kfd must still get AMD gfx1151 wheels (unslothai#7301)."""
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, _ = run_ensure_rocm_torch(
+            "2.10.0+cpu||",
+            _has_rocm_gpu = False,
+            _infer_linux_amd_gfx_arch = "gfx1151",
+            _detect_rocm_version = None,
+        )
         torch_call = str(mock_pip.call_args_list[0])
         assert "gfx1151" in torch_call
         assert "torch>=2.11.0,<2.12.0" in torch_call
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = False)
-    @patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = "gfx1151")
-    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = [])
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_inferred_gfx_not_overwritten_when_rocm_userland_readable(
-        self, mock_ver, mock_gfx, mock_infer, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
-    ):
+    def test_inferred_gfx_not_overwritten_when_rocm_userland_readable(self):
         """Codex P1 #7305: after an inferred per-arch install, do not fall through to the
         generic pytorch.org/rocmX.Y reinstall just because has_hip_torch is still False.
         Readable ROCm userland without /dev/kfd is exactly the case that used to overwrite
         the AMD gfx wheels."""
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, _ = run_ensure_rocm_torch(
+            "2.10.0+cpu||",
+            _has_rocm_gpu = False,
+            _infer_linux_amd_gfx_arch = "gfx1151",
+            _detect_amd_gfx_codes = [],
+            _detect_rocm_version = (7, 1),
+        )
         assert mock_pip.call_count == 1, mock_pip.call_args_list
         torch_call = str(mock_pip.call_args_list[0])
         assert "gfx1151" in torch_call
         assert "rocm7.1" not in torch_call
         assert "download.pytorch.org" not in torch_call
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = "gfx1151")
-    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1100"])
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_inference_yields_to_runtime_visible_gpu(
-        self, mock_ver, mock_gfx, mock_infer, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
-    ):
+    def test_inference_yields_to_runtime_visible_gpu(self):
         """When the runtime CAN enumerate a GPU, the cpuinfo inference must not
         install wheels: a mixed Strix APU + dGPU box with the dGPU selected would
         otherwise get gfx1151 wheels for a gfx1100 GPU. The runtime-visible arch
         (Strix override / generic branch) decides instead."""
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, mock_pip_try = run_ensure_rocm_torch(
+            "2.10.0+cpu||",
+            _has_rocm_gpu = True,
+            _infer_linux_amd_gfx_arch = "gfx1151",
+            _detect_amd_gfx_codes = ["gfx1100"],
+            _detect_rocm_version = (7, 1),
+        )
         all_calls = str(mock_pip.call_args_list) + str(mock_pip_try.call_args_list)
         assert "gfx1151" not in all_calls, all_calls
         assert "rocm7.1" in all_calls, all_calls
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = [])
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = None)
-    def test_gfx_override_installs_despite_visible_rocm(
-        self, mock_ver, mock_gfx, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
-    ):
+    def test_gfx_override_installs_despite_visible_rocm(self):
         """#7305 review: an explicit UNSLOTH_ROCM_GFX_ARCH is exempt from the
         not-_has_rocm_gpu() gate (mirrors install.sh). A visible GPU with an
         unreadable ROCm version must not silently discard the user's named arch
         and leave CPU torch in place -- the per-arch install runs."""
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
-        with patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151"}):
-            with patch("os.path.isdir", return_value = True):
-                with patch("subprocess.run", return_value = mock_probe):
-                    _ensure_rocm_torch()
+        mock_pip, _ = run_ensure_rocm_torch(
+            "2.10.0+cpu||",
+            env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151"},
+            _has_rocm_gpu = True,
+            _detect_amd_gfx_codes = [],
+            _detect_rocm_version = None,
+        )
         assert mock_pip.call_count == 1, mock_pip.call_args_list
         torch_call = str(mock_pip.call_args_list[0])
         assert "gfx1151" in torch_call
         assert "download.pytorch.org" not in torch_call
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_cuda_torch_on_amd_host_reinstalls(
-        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
-    ):
+    def test_cuda_torch_on_amd_host_reinstalls(self):
         """A CUDA-only torch build is unusable on an AMD-only host, so it must be
         reinstalled to ROCm (has_hip_torch is driven by the empty HIP marker, not
         by treating the CUDA version string as a HIP marker)."""
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
         # Single-line probe: empty HIP marker before "|" for a CUDA build.
-        mock_probe.stdout = _MARK + "2.10.0+cu126||\n"
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, _ = run_ensure_rocm_torch(
+            "2.10.0+cu126||", _has_rocm_gpu = True, _detect_rocm_version = (7, 1)
+        )
         assert mock_pip.call_count == 1
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
 
@@ -1099,89 +1032,45 @@ class TestEnsureRocmTorch:
                 family = stack_mod._installed_rocm_wheel_family()
         assert self._windows_repair(family).call_count == 0
 
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_torch_already_has_hip_skips(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+    def test_torch_already_has_hip_skips(self):
         """If torch already has HIP, should skip ROCm reinstall."""
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = _MARK + "2.10.0+rocm7.1|7.1.12345|\n"  # HIP marker + version
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, _ = run_ensure_rocm_torch(
+            "2.10.0+rocm7.1|7.1.12345|",  # HIP marker + version
+            _has_rocm_gpu = True,
+            _detect_rocm_version = (7, 1),
+        )
         mock_pip.assert_not_called()
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_cpu_torch_probe_line_not_read_as_hip(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+    def test_cpu_torch_probe_line_not_read_as_hip(self):
         """A CPU build's probe line ("|2.10.0+cpu") must not read as HIP: the version
         after the "|" separator is data, not a HIP marker, so has_hip_torch stays False
         and the reinstall fires."""
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                with patch.object(stack_mod, "pip_install_try", return_value = True):
-                    _ensure_rocm_torch()
+        mock_pip, _ = run_ensure_rocm_torch(
+            "2.10.0+cpu||", _has_rocm_gpu = True, _detect_rocm_version = (7, 1)
+        )
         assert mock_pip.call_count == 1
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_cpu_torch_gets_rocm_reinstall(
-        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
-    ):
+    def test_cpu_torch_gets_rocm_reinstall(self):
         """CPU-only torch on ROCm host should trigger reinstall."""
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = "\n"  # empty = no GPU backend
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, mock_pip_try = run_ensure_rocm_torch(
+            _has_rocm_gpu = True, _detect_rocm_version = (7, 1)
+        )
         assert mock_pip.call_count == 1
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
         assert mock_pip_try.call_count >= 1
         assert "bitsandbytes" in str(mock_pip_try.call_args_list[0])
         assert mock_pip_try.call_args.kwargs["force_pip"] is True
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 3))
-    def test_rocm_63_selects_correct_tag(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+    def test_rocm_63_selects_correct_tag(self):
         """ROCm 6.3 should select rocm6.3 tag."""
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = "\n"
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, _ = run_ensure_rocm_torch(_has_rocm_gpu = True, _detect_rocm_version = (6, 3))
         torch_call = mock_pip.call_args_list[0]
         assert "rocm6.3" in str(torch_call)
 
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (5, 0))
-    def test_old_rocm_skips(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+    def test_old_rocm_skips(self):
         """ROCm version too old (below 6.0) should skip."""
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = "\n"
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, _ = run_ensure_rocm_torch(_has_rocm_gpu = True, _detect_rocm_version = (5, 0))
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
@@ -1210,39 +1099,20 @@ class TestEnsureRocmTorch:
         captured = capsys.readouterr()
         assert "unreadable" in captured.out
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
-    def test_rocm_72_selects_72_tag(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+    def test_rocm_72_selects_72_tag(self):
         """ROCm 7.2 should select rocm7.2 tag (now in mapping with torch 2.11.0)."""
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = "\n"
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, _ = run_ensure_rocm_torch(_has_rocm_gpu = True, _detect_rocm_version = (7, 2))
         torch_call = mock_pip.call_args_list[0]
         assert "rocm7.2" in str(torch_call)
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 14))
-    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1150"])
-    def test_rocm_714_strix_routes_to_amd_arch_index(
-        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
-    ):
+    def test_rocm_714_strix_routes_to_amd_arch_index(self):
         """ROCm 7.14 caps to rocm7.2 on pytorch.org; Strix must use AMD gfx index."""
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.14.60850|\n"
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, _ = run_ensure_rocm_torch(
+            "2.11.0+rocm7.2|7.14.60850|",
+            _has_rocm_gpu = True,
+            _detect_rocm_version = (7, 14),
+            _detect_amd_gfx_codes = ["gfx1150"],
+        )
         torch_call = str(mock_pip.call_args_list[0])
         assert "gfx1150" in torch_call
         assert "torch>=2.11.0,<2.12.0" in torch_call
@@ -1677,19 +1547,11 @@ Agent 4
         assert mock_pip.call_count == 1
         assert "https://mirror.local/cpu" in str(mock_pip.call_args)
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_probe_timeout_triggers_reinstall(
-        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
-    ):
+    def test_probe_timeout_triggers_reinstall(self):
         """Probe subprocess timeout should not crash; should proceed to reinstall."""
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", side_effect = subprocess.TimeoutExpired("python", 30)):
-                _ensure_rocm_torch()
+        mock_pip, mock_pip_try = run_ensure_rocm_torch(
+            timeout = True, _has_rocm_gpu = True, _detect_rocm_version = (7, 1)
+        )
         # Probe timeout: treat torch as unusable and reinstall torch + bitsandbytes.
         assert mock_pip.call_count == 1
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
@@ -1766,6 +1628,16 @@ class TestGfx906LegacyReroute:
         assert end >= 0, "end of gfx906 case arm not found"
         return source[start:end]
 
+    @staticmethod
+    def _reroute(gfx_codes, *, probe = ""):
+        """A ROCm 7.2 AMD host whose runtime reports `gfx_codes`, with CPU torch by default."""
+        return run_ensure_rocm_torch(
+            probe,
+            _has_rocm_gpu = True,
+            _detect_rocm_version = (7, 2),
+            _detect_amd_gfx_codes = gfx_codes,
+        )
+
     def test_gfx906_needs_legacy_index_floor(self):
         f = stack_mod._gfx906_needs_legacy_index
         # rocm6.0-6.3 tags still ship gfx906 kernels: no reroute.
@@ -1803,26 +1675,10 @@ class TestGfx906LegacyReroute:
         with patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = []):
             assert stack_mod._runtime_target_is_gfx906() is True
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
-    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx906"])
-    def test_gfx906_on_rocm72_routes_to_rocm63(
-        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
-    ):
+    def test_gfx906_on_rocm72_routes_to_rocm63(self, monkeypatch):
         """CPU torch on a ROCm 7.2 MI50 host installs from rocm6.3, not rocm7.2."""
-        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = "\n"  # cpu torch -> reinstall
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, mock_pip_try = self._reroute(["gfx906"])
         torch_call = str(mock_pip.call_args_list[0])
         assert "rocm6.3" in torch_call
         assert "rocm7.2" not in torch_call
@@ -1832,186 +1688,74 @@ class TestGfx906LegacyReroute:
         # gfx906 has no prebuilt bnb -- the generic wheel must not be installed.
         assert not any("bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list)
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
-    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx906"])
-    def test_gfx906_repairs_existing_rocm72_torch(
-        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
-    ):
+    def test_gfx906_repairs_existing_rocm72_torch(self, monkeypatch):
         """An installed +rocm7.2 torch IS the broken combo: reinstall from rocm6.3
         even though has_hip_torch is True."""
-        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.2.12345|\n"
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, mock_pip_try = self._reroute(["gfx906"], probe = "2.11.0+rocm7.2|7.2.12345|")
         torch_call = str(mock_pip.call_args_list[0])
         assert "rocm6.3" in torch_call
         assert "torch>=2.4,<2.11.0" in torch_call
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
-    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx906"])
-    def test_gfx906_already_on_rocm63_left_alone(
-        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
-    ):
+    def test_gfx906_already_on_rocm63_left_alone(self, monkeypatch):
         """torch already on rocm6.3 wheels must not be reinstalled (no update loop),
         and the generic bnb wheel must not clobber a source build."""
-        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = _MARK + "2.7.0+rocm6.3|6.3.42131|\n"
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, mock_pip_try = self._reroute(["gfx906"], probe = "2.7.0+rocm6.3|6.3.42131|")
         mock_pip.assert_not_called()
         # gfx906: prebuilt bnb is skipped entirely (no torch reinstall, no bnb).
         mock_pip_try.assert_not_called()
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
-    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1100", "gfx906"])
-    def test_mixed_host_gfx906_not_sole_arch_skips_reroute(
-        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
-    ):
+    def test_mixed_host_gfx906_not_sole_arch_skips_reroute(self, monkeypatch):
         """Mixed host (gfx906 + dGPU) with no explicit override: gfx906 is not the
         sole arch, so the generic index is kept (Codex #3: never downgrade a
         de-dup-ambiguous mixed host)."""
-        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = "\n"  # cpu torch -> reinstall
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, _ = self._reroute(["gfx1100", "gfx906"])
         torch_call = str(mock_pip.call_args_list[0])
         assert "rocm7.2" in torch_call
         assert "rocm6.3" not in torch_call
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
-    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = [])
-    def test_gfx906_env_override_forces_reroute(
-        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
-    ):
+    def test_gfx906_env_override_forces_reroute(self, monkeypatch):
         """UNSLOTH_ROCM_GFX_ARCH=gfx906 reroutes even when probes emit no gfx token
         (Codex #2: runtime-only ROCm hosts where rocminfo/amd-smi are absent)."""
-        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx906")
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = "\n"  # cpu torch -> reinstall
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, _ = self._reroute([])
         torch_call = str(mock_pip.call_args_list[0])
         assert "rocm6.3" in torch_call
         assert "rocm7.2" not in torch_call
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
-    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx906"])
-    def test_gfx906_bnb_skipped_even_when_index_pinned(
-        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
-    ):
+    def test_gfx906_bnb_skipped_even_when_index_pinned(self, monkeypatch):
         """A gfx906 user who pins the ROCm index AND sets the arch override still
         skips the generic bnb wheel: the pin suppresses the torch reroute, not the
         gfx906 runtime flag used for the bnb skip."""
-        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx906")
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.3")
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = "\n"  # cpu torch -> reinstall from the pinned index
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, mock_pip_try = self._reroute(["gfx906"])
         # torch is (re)installed from the pinned rocm6.3 index...
         assert any("rocm6.3" in str(c) for c in mock_pip.call_args_list)
         # ...but the prebuilt bnb wheel is never installed.
         assert not any("bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list)
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
-    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1151", "gfx906"])
-    def test_gfx906_override_wins_over_strix_probe(
-        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
-    ):
+    def test_gfx906_override_wins_over_strix_probe(self, monkeypatch):
         """Mixed Strix + MI50 host: UNSLOTH_ROCM_GFX_ARCH=gfx906 suppresses the Strix
         override (which probe order would otherwise pick) and routes to rocm6.3."""
-        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx906")
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = "\n"  # cpu torch -> reinstall
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, mock_pip_try = self._reroute(["gfx1151", "gfx906"])
         torch_call = str(mock_pip.call_args_list[0])
         assert "rocm6.3" in torch_call
         assert "gfx1151" not in torch_call
         # gfx906 target -> generic bnb wheel skipped.
         assert not any("bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list)
 
-    @patch.object(stack_mod, "IS_WINDOWS", False)
-    @patch.object(stack_mod, "pip_install_try", return_value = True)
-    @patch.object(stack_mod, "pip_install")
-    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
-    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
-    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx906"])
-    def test_gfx906_bnb_skipped_on_pinned_index_without_env_override(
-        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
-    ):
+    def test_gfx906_bnb_skipped_on_pinned_index_without_env_override(self, monkeypatch):
         """Codex #2: a real gfx906 host that pins the ROCm index but does NOT set
         UNSLOTH_ROCM_GFX_ARCH must still skip the prebuilt bnb wheel -- the pin
         suppresses only the torch reroute, not the probe-driven gfx906 detection
         used for the bnb skip (otherwise `studio update` clobbers source-built bnb)."""
-        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.3")
-        mock_probe = MagicMock()
-        mock_probe.returncode = 0
-        mock_probe.stdout = "\n"  # cpu torch -> reinstall from the pinned index
-        with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", return_value = mock_probe):
-                _ensure_rocm_torch()
+        mock_pip, mock_pip_try = self._reroute(["gfx906"])
         # torch is (re)installed from the pinned rocm6.3 index...
         assert any("rocm6.3" in str(c) for c in mock_pip.call_args_list)
         # ...but the prebuilt bnb wheel is never installed (probe saw sole gfx906).
