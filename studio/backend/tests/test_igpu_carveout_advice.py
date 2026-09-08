@@ -629,3 +629,200 @@ class TestWhichAdapterTheAllocationBelongsTo:
             monkeypatch, {hw._INTEL_PCI_VENDOR_ID: {2: {"dedicated_memory_bytes": 8 * _GB}}}
         )
         assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) == 8 * _GB
+
+
+class TestTheRoutingIsDeterministic:
+    """Every gate this advisory routes through, enumerated rather than sampled.
+
+    The decision has seven inputs and they interact: a Vulkan launch is classified
+    by the planner's shared set and a non-Vulkan one by the ROCm unified-memory
+    ids, two gates decline before any reading is taken, and the dismissal is asked
+    last. Each was added for a defect found one at a time, so the value here is
+    the whole product rather than the cases anyone thought to write.
+
+    Nothing in it touches the host: the allocation reading, both classifiers and
+    the total memory are pinned, so the table is the same on a Strix Halo laptop,
+    a CI runner and a discrete-NVIDIA box.
+    """
+
+    _NEED = gb(42.90)
+    _HOST_MIB = 95 * 1024
+    # None is "no reading", 64 GB holds the weights, 32 GB is the measured shortfall.
+    _CARVE_OUTS = (None, 64 * _GB, 32 * _GB)
+
+    @staticmethod
+    def _expected(
+        *, carve, is_vulkan, shared_ids, unified_ids, forced_cpu, target_unknown, dismissed
+    ) -> bool:
+        """The routing, written out independently of the code under test."""
+        if forced_cpu or target_unknown:
+            return False
+        if is_vulkan:
+            if not shared_ids or 0 not in shared_ids:
+                return False
+        elif 0 not in unified_ids:
+            return False
+        if carve is None or TestTheRoutingIsDeterministic._NEED <= carve:
+            return False
+        return not dismissed
+
+    def _run(self, monkeypatch, **case):
+        probes = []
+
+        def _read(_i = None):
+            probes.append(_i)
+            return case["carve"]
+
+        monkeypatch.setattr(LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(_read))
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_rocm_unified_memory_gpu_ids",
+            staticmethod(lambda: set(case["unified_ids"])),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: self._HOST_MIB)
+        )
+        import utils.igpu_carveout_notice_settings as notice_settings
+
+        monkeypatch.setattr(
+            notice_settings, "notice_already_dismissed", lambda _gb: case["dismissed"]
+        )
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._record_carveout_advice(
+            [0],
+            self._NEED,
+            is_vulkan_backend = case["is_vulkan"],
+            shared_gpu_ids = case["shared_ids"],
+            detected_gpus = [(0, 0)],
+            target_unknown = case["target_unknown"],
+            forced_cpu = case["forced_cpu"],
+        )
+        return backend.last_carveout_advice, probes
+
+    @staticmethod
+    def _cases():
+        import itertools
+        for (
+            carve,
+            is_vulkan,
+            shared_ids,
+            unified_ids,
+            forced_cpu,
+            target_unknown,
+            dismissed,
+        ) in itertools.product(
+            TestTheRoutingIsDeterministic._CARVE_OUTS,
+            (False, True),
+            (None, frozenset(), frozenset({0}), frozenset({1})),
+            (frozenset(), frozenset({0})),
+            (False, True),
+            (False, True),
+            (False, True),
+        ):
+            yield {
+                "carve": carve,
+                "is_vulkan": is_vulkan,
+                "shared_ids": shared_ids,
+                "unified_ids": unified_ids,
+                "forced_cpu": forced_cpu,
+                "target_unknown": target_unknown,
+                "dismissed": dismissed,
+            }
+
+    def test_every_combination_routes_the_way_the_table_says(self, monkeypatch):
+        wrong = []
+        spoke = 0
+        for case in self._cases():
+            advice, _probes = self._run(monkeypatch, **case)
+            expected = self._expected(**case)
+            spoke += bool(advice)
+            if bool(advice) != expected:
+                wrong.append((case, bool(advice), expected))
+        assert not wrong, f"{len(wrong)} of the routing cases disagree: {wrong[:3]}"
+        # A table where nothing ever speaks would pass every assertion above.
+        assert spoke, "no combination produced advice, so this proves nothing"
+
+    def test_the_same_inputs_always_reach_the_same_answer(self, monkeypatch):
+        # Nothing here is time, order or host dependent: the second pass over the
+        # same table must be identical to the first, message included.
+        first = [self._run(monkeypatch, **case)[0] for case in self._cases()]
+        second = [self._run(monkeypatch, **case)[0] for case in self._cases()]
+        assert first == second
+
+    def test_a_declined_placement_is_never_priced(self, monkeypatch):
+        # The two cheap gates and the Vulkan classification all sit BEFORE the
+        # allocation reading, which on Linux imports torch and asks the device for
+        # its properties. A load that could never be advised must not pay for it.
+        for case in self._cases():
+            declined_early = (
+                case["forced_cpu"]
+                or case["target_unknown"]
+                or (case["is_vulkan"] and (not case["shared_ids"] or 0 not in case["shared_ids"]))
+            )
+            if not declined_early:
+                continue
+            _advice, probes = self._run(monkeypatch, **case)
+            assert probes == [], f"the allocation was read for a declined load: {case}"
+
+
+class TestTheAdvisoryCannotReachTheLaunch:
+    """Static, because "it only sets a field" is a claim about every path at once.
+
+    A test can only show that the paths it drives change nothing. These two read
+    the module instead: what the recorder is allowed to write, and what the launch
+    is allowed to do with what it returns.
+    """
+
+    @staticmethod
+    def _module_tree():
+        source = Path(sys.modules[LlamaCppBackend.__module__].__file__)
+        return ast.parse(source.read_text(encoding = "utf-8"))
+
+    @staticmethod
+    def _recorder(tree):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_record_carveout_advice":
+                return node
+        raise AssertionError("_record_carveout_advice is gone")
+
+    def test_it_writes_one_attribute_and_no_other(self):
+        # Any `self.<something else> = ...` appearing here would be launch state
+        # written by an advisory, which is the whole thing this must not do.
+        written = set()
+        for node in ast.walk(self._recorder(self._module_tree())):
+            targets = []
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+                targets = [node.target]
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                ):
+                    written.add(target.attr)
+        assert written == {"_last_carveout_advice"}, written
+
+    def test_no_caller_can_branch_on_what_it_returns(self):
+        # Every call is a bare expression statement, so its value is discarded
+        # where it is made. A launch cannot take a different path on advice it
+        # never looks at.
+        tree = self._module_tree()
+        statements = {
+            id(node.value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+        }
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_record_carveout_advice"
+        ]
+        assert calls, "the recorder is never called"
+        assert all(
+            id(call) in statements for call in calls
+        ), "a call site uses the return value of an advisory"
