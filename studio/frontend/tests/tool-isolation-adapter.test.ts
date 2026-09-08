@@ -37,9 +37,26 @@ const record = (
 });
 
 test("SRT execution labels require an isolated server record", () => {
-  assert.equal(toolExecutionRecordLabel(record({ backend: "srt", profile_id: "srt-0.0.75-strict-v1" })), "Preview OS isolation · Sandbox Runtime (SRT)");
-  assert.equal(toolExecutionRecordLabel(record({ backend: "srt", os_isolation: false })), null);
-  assert.equal(toolExecutionRecordLabel(record({ backend: "srt", effective_mode: "limited", os_isolation: false })), "Limited · no OS isolation");
+  assert.equal(
+    toolExecutionRecordLabel(
+      record({ backend: "srt", profile_id: "srt-0.0.75-strict-v1" }),
+    ),
+    "Preview OS isolation · Sandbox Runtime (SRT)",
+  );
+  assert.equal(
+    toolExecutionRecordLabel(record({ backend: "srt", os_isolation: false })),
+    null,
+  );
+  assert.equal(
+    toolExecutionRecordLabel(
+      record({
+        backend: "srt",
+        effective_mode: "limited",
+        os_isolation: false,
+      }),
+    ),
+    "Limited · no OS isolation",
+  );
 });
 
 test("only backend-event parsing can establish an authoritative card record", () => {
@@ -90,10 +107,9 @@ test("argument and restored-content sanitizers are non-mutating", () => {
       executionRecord: record(),
     },
   ];
-  const restored = stripUntrustedExecutionMetadataFromContent(content) as Record<
-    string,
-    unknown
-  >[];
+  const restored = stripUntrustedExecutionMetadataFromContent(
+    content,
+  ) as Record<string, unknown>[];
   assert.ok(!(TOOL_EXECUTION_RECORD_ARG_KEY in (restored[0].args as object)));
   assert.deepEqual(restored[0].result, { text: "done" });
   assert.deepEqual(restored[0].artifact, { kept: true });
@@ -169,7 +185,10 @@ test("records carry the network policy and the card label says when the allowlis
   );
   assert.ok(allowlisted);
   assert.equal(allowlisted.network_policy, "allowlist");
-  assert.deepEqual(allowlisted.network_allowlist, ["pypi.org", "huggingface.co"]);
+  assert.deepEqual(allowlisted.network_allowlist, [
+    "pypi.org",
+    "huggingface.co",
+  ]);
   assert.equal(
     toolExecutionRecordLabel(allowlisted),
     "Protected · Bubblewrap · network allowlist",
@@ -184,7 +203,11 @@ test("records carry the network policy and the card label says when the allowlis
   // even if a backend echoed the field.
   assert.equal(
     toolExecutionRecordLabel(
-      record({ effective_mode: "full", os_isolation: false, network_policy: "allowlist" }),
+      record({
+        effective_mode: "full",
+        os_isolation: false,
+        network_policy: "allowlist",
+      }),
     ),
     "Full access · security restrictions disabled",
   );
@@ -200,7 +223,10 @@ test("records carry the network policy and the card label says when the allowlis
   );
   assert.ok(fullRecord);
   assert.equal(fullRecord.network_policy, "unrestricted");
-  assert.equal(toolExecutionRecordLabel(fullRecord), "Full access · security restrictions disabled");
+  assert.equal(
+    toolExecutionRecordLabel(fullRecord),
+    "Full access · security restrictions disabled",
+  );
   const tokenRecord = parseBackendExecutionRecord(
     record({
       effective_mode: "limited",
@@ -211,7 +237,10 @@ test("records carry the network policy and the card label says when the allowlis
     }),
   );
   assert.ok(tokenRecord);
-  assert.equal(toolExecutionRecordLabel(tokenRecord), "Limited · restricted token (Windows)");
+  assert.equal(
+    toolExecutionRecordLabel(tokenRecord),
+    "Limited · restricted token (Windows)",
+  );
   // Unknown policies and malformed host lists invalidate the record rather than degrading.
   assert.equal(
     parseBackendExecutionRecord({ ...record(), network_policy: "open" }),
@@ -239,7 +268,11 @@ test("a Limited launch under the Windows restricted token is labelled as such", 
   );
   assert.equal(
     toolExecutionRecordLabel(
-      record({ effective_mode: "limited", os_isolation: false, backend: "none" }),
+      record({
+        effective_mode: "limited",
+        os_isolation: false,
+        backend: "none",
+      }),
     ),
     "Limited · no OS isolation",
   );
@@ -309,7 +342,6 @@ test("invalid backend events cannot create or erase an earlier valid record", ()
   );
 });
 
-
 test("returning to protected defaults drops Full and Limited for every persisted level", () => {
   for (const level of ["ask", "auto", "off"] as const) {
     const next = protectedIsolationDefaults(level);
@@ -367,15 +399,30 @@ test("execution records are filed per pane and thread scope, never by bare call 
       os_isolation: false,
     }),
   );
-  attachAuthoritativeExecutionRecord({ toolCallId: id }, protectedRecord, "pane-a\u0000thread-1");
-  attachAuthoritativeExecutionRecord({ toolCallId: id }, fullRecord, "pane-a\u0000thread-2");
+  attachAuthoritativeExecutionRecord(
+    { toolCallId: id },
+    protectedRecord,
+    "pane-a\u0000thread-1",
+  );
+  attachAuthoritativeExecutionRecord(
+    { toolCallId: id },
+    fullRecord,
+    "pane-a\u0000thread-2",
+  );
   assert.equal(
     toolExecutionRecordFromCard(id, "pane-a\u0000thread-1")?.effective_mode,
     "os_isolation_required",
   );
-  assert.equal(toolExecutionRecordFromCard(id, "pane-a\u0000thread-2")?.effective_mode, "full");
+  assert.equal(
+    toolExecutionRecordFromCard(id, "pane-a\u0000thread-2")?.effective_mode,
+    "full",
+  );
   assert.equal(toolExecutionRecordFromCard(id, "pane-a\u0000thread-3"), null);
-  assert.equal(toolExecutionRecordFromCard(id), null, "the legacy namespace stays separate");
+  assert.equal(
+    toolExecutionRecordFromCard(id),
+    null,
+    "the legacy namespace stays separate",
+  );
 
   discardAuthoritativeExecutionRecord(id, "pane-a\u0000thread-2");
   assert.equal(toolExecutionRecordFromCard(id, "pane-a\u0000thread-2"), null);
@@ -383,7 +430,11 @@ test("execution records are filed per pane and thread scope, never by bare call 
 
   // An unscoped discard is the legacy namespace only: hydrating one conversation must not
   // erase a record another pane or thread filed under the same repeating id.
-  attachAuthoritativeExecutionRecord({ toolCallId: id }, fullRecord, "pane-b\u0000thread-9");
+  attachAuthoritativeExecutionRecord(
+    { toolCallId: id },
+    fullRecord,
+    "pane-b\u0000thread-9",
+  );
   attachAuthoritativeExecutionRecord({ toolCallId: id }, fullRecord);
   discardAuthoritativeExecutionRecord(id);
   assert.equal(toolExecutionRecordFromCard(id), null);
@@ -412,9 +463,19 @@ test("execution records are filed per assistant message, so a repeated turn id c
   attachAuthoritativeExecutionRecord({ toolCallId: id }, fullRecord, turnOne);
   // The next turn mints tool_call_0 again and is Required this time.
   discardAuthoritativeExecutionRecord(id, turnTwo);
-  attachAuthoritativeExecutionRecord({ toolCallId: id }, parseBackendExecutionRecord(record()), turnTwo);
-  assert.equal(toolExecutionRecordFromCard(id, turnOne)?.effective_mode, "full");
-  assert.equal(toolExecutionRecordFromCard(id, turnTwo)?.effective_mode, "os_isolation_required");
+  attachAuthoritativeExecutionRecord(
+    { toolCallId: id },
+    parseBackendExecutionRecord(record()),
+    turnTwo,
+  );
+  assert.equal(
+    toolExecutionRecordFromCard(id, turnOne)?.effective_mode,
+    "full",
+  );
+  assert.equal(
+    toolExecutionRecordFromCard(id, turnTwo)?.effective_mode,
+    "os_isolation_required",
+  );
   // Hydrating message 1 of this thread drops exactly its record and nothing else.
   discardAuthoritativeExecutionRecord(id, turnOne);
   assert.equal(toolExecutionRecordFromCard(id, turnOne), null);
@@ -424,7 +485,11 @@ test("execution records are filed per assistant message, so a repeated turn id c
 
 test("a queued Full send is fenced to the UI session that authorized it", () => {
   // Session A chooses Full and queues a send while the model loads.
-  const sessionA = { toolExecutionMode: "full" as const, toolIsolationUiSessionId: "ui-a", toolIsolationDecisionEpoch: 0 };
+  const sessionA = {
+    toolExecutionMode: "full" as const,
+    toolIsolationUiSessionId: "ui-a",
+    toolIsolationDecisionEpoch: 0,
+  };
   const snapshot = { ...sessionA };
   assert.ok(queuedIsolationDecisionIsCurrent(snapshot, sessionA));
   // Authentication rotates: the store returns to protected defaults under a new session id.
@@ -436,7 +501,11 @@ test("a queued Full send is fenced to the UI session that authorized it", () => 
   assert.equal(rotated.toolExecutionMode, "os_isolation_required");
   assert.ok(!queuedIsolationDecisionIsCurrent(snapshot, rotated));
   // Session B independently selects Full: A's queued request still does not qualify.
-  const sessionB = { toolExecutionMode: "full" as const, toolIsolationUiSessionId: "ui-b", toolIsolationDecisionEpoch: 0 };
+  const sessionB = {
+    toolExecutionMode: "full" as const,
+    toolIsolationUiSessionId: "ui-b",
+    toolIsolationDecisionEpoch: 0,
+  };
   assert.ok(!queuedIsolationDecisionIsCurrent(snapshot, sessionB));
   // Turning Full off in the same session is rejected as before.
   assert.ok(
@@ -452,7 +521,11 @@ test("the record map is bounded and evicts the oldest entry first", () => {
   const parsed = parseBackendExecutionRecord(record());
   const scope = "cap-test";
   for (let index = 0; index < 2100; index += 1) {
-    attachAuthoritativeExecutionRecord({ toolCallId: `bulk-${index}` }, parsed, scope);
+    attachAuthoritativeExecutionRecord(
+      { toolCallId: `bulk-${index}` },
+      parsed,
+      scope,
+    );
   }
   assert.ok(authoritativeExecutionRecordCount() <= 2048);
   assert.equal(toolExecutionRecordFromCard("bulk-0", scope), null);
@@ -464,7 +537,10 @@ test("the record map is bounded and evicts the oldest entry first", () => {
 
 test("the store and adapter route every exit from Full through the shared transition", () => {
   const runtimeStore = readFileSync(
-    new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url),
+    new URL(
+      "../src/features/chat/stores/chat-runtime-store.ts",
+      import.meta.url,
+    ),
     "utf8",
   );
   const adapter = readFileSync(
@@ -497,51 +573,81 @@ test("the store and adapter route every exit from Full through the shared transi
   );
   // Every network field on the wire goes through the capability-gated helper, never raw.
   assert.doesNotMatch(adapter, /tool_network_policy: requestedNetworkPolicy/);
-  assert.doesNotMatch(adapter, /tool_network_policy: runtime\.toolNetworkPolicy/);
+  assert.doesNotMatch(
+    adapter,
+    /tool_network_policy: runtime\.toolNetworkPolicy/,
+  );
   assert.doesNotMatch(adapter, /tool_network_policy: toolNetworkPolicy\b/);
-  assert.match(adapter, /isolation\.toolIsolationUiSessionId !== requestedUiSessionId/);
+  assert.match(
+    adapter,
+    /isolation\.toolIsolationUiSessionId !== requestedUiSessionId/,
+  );
   // The Full branch applies the same session fence through the shared helper.
   const fullBranch = adapter.slice(
     adapter.indexOf('if (requestedMode === "full") {'),
-    adapter.indexOf('toolIsolationRequestFields = { tool_execution_mode: "full" };'),
+    adapter.indexOf(
+      'toolIsolationRequestFields = { tool_execution_mode: "full" };',
+    ),
   );
   assert.match(fullBranch, /queuedIsolationDecisionIsCurrent\(/);
   assert.match(fullBranch, /toolIsolationUiSessionId: requestedUiSessionId/);
   // Launch records are attached and discarded under the message-scoped key, and hydration
   // discards in that exact scope rather than sweeping every scope for the id.
-  assert.match(adapter, /toolExecutionRecordScope\(\s*toolOutputPaneScope,\s*unstable_assistantMessageId,?\s*\)/);
-  assert.doesNotMatch(adapter, /discardAuthoritativeExecutionRecord\([^)]*toolOutputPaneScope\)/);
+  assert.match(
+    adapter,
+    /toolExecutionRecordScope\(\s*toolOutputPaneScope,\s*unstable_assistantMessageId,?\s*\)/,
+  );
+  assert.doesNotMatch(
+    adapter,
+    /discardAuthoritativeExecutionRecord\([^)]*toolOutputPaneScope\)/,
+  );
   const provider = readFileSync(
     new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
     "utf8",
   );
-  assert.doesNotMatch(provider, /discardAuthoritativeExecutionRecord\(part\.toolCallId\)/);
-  assert.match(provider, /discardAuthoritativeExecutionRecord\(part\.toolCallId, recordScope\)/);
+  assert.doesNotMatch(
+    provider,
+    /discardAuthoritativeExecutionRecord\(part\.toolCallId\)/,
+  );
+  assert.match(
+    provider,
+    /discardAuthoritativeExecutionRecord\(part\.toolCallId, recordScope\)/,
+  );
 });
 
 test("every Full entry and exit and the Limited grant close the network allowlist", () => {
   // The allowlist is a per-decision grant. It must not survive a trip through Full (where it is
   // hidden and ignored) or a Limited grant (which cannot enforce it) and resurface later.
   const runtimeStore = readFileSync(
-    new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url),
+    new URL(
+      "../src/features/chat/stores/chat-runtime-store.ts",
+      import.meta.url,
+    ),
     "utf8",
   );
   const fullEntries = runtimeStore.match(
     /toolExecutionMode: "full" as ToolExecutionMode,\n\s*toolNetworkPolicy: "deny" as ToolNetworkPolicy,/g,
   );
-  assert.equal(fullEntries?.length ?? 0, 2, "setPermissionMode(full) and setBypassPermissions(true)");
-  assert.match(
-    runtimeStore,
-    /leavingFullAccess\n\s*\? \{\n\s*toolExecutionMode:\n\s*"os_isolation_required" as ToolExecutionMode,\n(\s*\/\/.*\n)*\s*toolNetworkPolicy: "deny" as ToolNetworkPolicy,/,
+  assert.equal(
+    fullEntries?.length ?? 0,
+    2,
+    "setPermissionMode(full) and setBypassPermissions(true)",
   );
   assert.match(
     runtimeStore,
-    /limitedToolGrant: grant,\n\s*toolExecutionMode: "limited",\n(\s*\/\/.*\n)*\s*toolNetworkPolicy: "deny" as ToolNetworkPolicy,/,
+    /leavingFullAccess\n\s*\? \{\n\s*toolExecutionMode:\s*"os_isolation_required" as ToolExecutionMode,\n(\s*\/\/.*\n)*\s*toolNetworkPolicy: "deny" as ToolNetworkPolicy,/,
+  );
+  assert.match(
+    runtimeStore,
+    /limitedToolGrant: grant,\n\s*nestedToolGrant: null,\n\s*toolExecutionMode: "limited",\n(\s*\/\/.*\n)*\s*toolNetworkPolicy: "deny" as ToolNetworkPolicy,/,
   );
   // setBypassPermissions(false) and setToolExecutionMode are the other two ways in and
   // out of Full; both close the network too.
   assert.equal(
-    (runtimeStore.match(/toolNetworkPolicy: "deny" as ToolNetworkPolicy,/g) ?? []).length,
-    7,
+    (
+      runtimeStore.match(/toolNetworkPolicy: "deny" as ToolNetworkPolicy,/g) ??
+      []
+    ).length,
+    9,
   );
 });

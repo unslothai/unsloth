@@ -361,6 +361,7 @@ class ToolLoopRun:
     continue_final_message: bool = False
     current_subject: str | None = None
     tool_ui_session_id: str | None = None
+    nested_grant: str | None = None
     limited_grant: str | None = None
 
 
@@ -1825,6 +1826,7 @@ async def stream_with_studio_tools(
                     ("current_subject", run.current_subject),
                     ("tool_ui_session_id", run.tool_ui_session_id),
                     ("limited_grant", run.limited_grant),
+                    ("nested_grant", run.nested_grant),
                 ):
                     if accepts_kwarg(execute_tool, key):
                         kwargs[key] = value

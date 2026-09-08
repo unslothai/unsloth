@@ -111,7 +111,18 @@ def validate_roots(roots: list[str], workdir: str) -> list[str]:
 
 
 class SrtError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message,
+        *,
+        code = "probe_failed",
+        stage = "launch",
+        dependency = None,
+        details = None,
+    ):
+        super().__init__(message)
+        from .srt_diagnostics import ProbeReason
+        self.diagnostic = ProbeReason(code, stage, dependency, details)
 
 
 def installation_identity() -> str:
@@ -128,7 +139,14 @@ def installation_identity() -> str:
             digest.update(path.read_bytes())
         except OSError:
             digest.update(b"missing")
-    for name in ("srt_adapter.py", "srt_probe.py", "srt_seccomp.py", "srt_network.py"):
+    for name in (
+        "srt_adapter.py",
+        "srt_probe.py",
+        "srt_seccomp.py",
+        "srt_network.py",
+        "srt_diagnostics.py",
+        "srt_nested.py",
+    ):
         try:
             digest.update(Path(__file__).with_name(name).read_bytes())
         except OSError:
@@ -140,14 +158,24 @@ def node_executable() -> str:
     # Resolve once to an absolute executable. The workload never supplies this path.
     selected = shutil.which("node")
     if not selected:
-        raise SrtError("Node.js >=20.11 is required for the installed Studio SRT helper")
+        raise SrtError(
+            "Node.js >=20.11 is required for the installed Studio SRT helper",
+            code = "dependency_missing",
+            stage = "dependency",
+            dependency = "node",
+        )
     return os.path.realpath(selected)
 
 
 def socat_executable() -> str:
     selected = shutil.which("socat")
     if not selected:
-        raise SrtError("HTTPS allowlists require socat installed before Studio starts")
+        raise SrtError(
+            "HTTPS allowlists require socat installed before Studio starts",
+            code = "dependency_missing",
+            stage = "dependency",
+            dependency = "socat",
+        )
     return os.path.abspath(selected)
 
 
@@ -221,6 +249,41 @@ def request_for(
     *,
     operation = "run",
     additional_read_roots = (),
+    isolation_variant = "standard",
+) -> dict:
+    try:
+        if isolation_variant not in ("standard", "nested") or (
+            isolation_variant == "nested" and sys.platform != "linux"
+        ):
+            raise SrtError(
+                "Unsupported SRT isolation variant", code = "policy_invalid", stage = "policy"
+            )
+        request = _request_for(
+            argv,
+            cwd,
+            env,
+            timeout,
+            operation = operation,
+            additional_read_roots = additional_read_roots,
+        )
+        if isolation_variant != "standard":
+            request["isolationVariant"] = isolation_variant
+        return request
+    except SrtError as exc:
+        if exc.diagnostic.code == "probe_failed":
+            from .srt_diagnostics import ProbeReason
+            exc.diagnostic = ProbeReason("policy_invalid", "policy")
+        raise
+
+
+def _request_for(
+    argv,
+    cwd,
+    env,
+    timeout,
+    *,
+    operation = "run",
+    additional_read_roots = (),
 ) -> dict:
     if timeout is not None and (
         isinstance(timeout, bool)
@@ -233,7 +296,12 @@ def request_for(
         argv[0] if os.path.isabs(argv[0]) else shutil.which(argv[0], path = env.get("PATH", ""))
     )
     if not executable:
-        raise SrtError("The selected tool executable is unavailable")
+        raise SrtError(
+            "The selected tool executable is unavailable",
+            code = "dependency_missing",
+            stage = "dependency",
+            dependency = "selected_interpreter",
+        )
     # Keep the venv's lexical executable: resolving its symlink to the base
     # Python changes pyvenv.cfg discovery and silently drops selected packages.
     executable = os.path.abspath(executable)
@@ -320,10 +388,16 @@ def spawn(
     **kwargs,
 ):
     """Start one helper and require its bounded private control acknowledgement."""
+    if not (RUNTIME / "bridge.mjs").is_file():
+        raise SrtError("SRT helper is missing", code = "runtime_missing", stage = "installation")
     if sys.platform == "win32":
         return _spawn_windows(request, cancel_event = cancel_event, **kwargs)
     if sys.platform not in ("linux", "darwin"):
-        raise SrtError("SRT launch is unavailable on this platform")
+        raise SrtError(
+            "SRT launch is unavailable on this platform",
+            code = "operation_unsupported",
+            stage = "launch",
+        )
     node = node_executable()
     read_fd, write_fd = os.pipe()
     proc = None
@@ -333,7 +407,11 @@ def spawn(
         message = dict(request, controlFd = write_fd)
         encoded = json.dumps(message, ensure_ascii = True, separators = (",", ":")).encode() + b"\n"
         if len(encoded) > MAX_REQUEST:
-            raise SrtError("SRT launch request exceeds the protocol bound")
+            raise SrtError(
+                "SRT launch request exceeds the protocol bound",
+                code = "policy_oversized",
+                stage = "policy",
+            )
         options = dict(kwargs)
         parent_preexec = options.get("preexec_fn")
         if parent_preexec is None:
@@ -362,7 +440,7 @@ def spawn(
                 raise SrtError("SRT launch cancelled before acknowledgement")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise SrtError("SRT helper request timed out")
+                raise SrtError("SRT helper request timed out", code = "probe_timeout", stage = "launch")
             _, writable, _ = select.select([], [input_fd], [], min(0.1, remaining))
             if writable:
                 try:
@@ -396,10 +474,20 @@ def spawn(
                 if not isinstance(event, dict) or event.get("v") != 1:
                     raise SrtError("Unknown SRT control protocol")
                 if event.get("event") == "error":
-                    raise SrtError(str(event.get("message", "SRT setup failed"))[:2000])
+                    raise SrtError(
+                        "SRT setup failed",
+                        code = event.get("code"),
+                        stage = event.get("stage"),
+                        dependency = event.get("dependency"),
+                        details = event,
+                    )
                 if event.get("event") == "ready":
                     if ready or event.get("version") != "0.0.75":
                         raise SrtError("SRT dependency identity mismatch")
+                    if event.get("isolationVariant", "standard") != request.get(
+                        "isolationVariant", "standard"
+                    ):
+                        raise SrtError("SRT isolation variant acknowledgement mismatch")
                     ready = True
                 elif event.get("event") == "spawned":
                     if not ready or type(event.get("pid")) is not int or event["pid"] <= 0:
@@ -415,7 +503,9 @@ def spawn(
                     raise SrtError("SRT exited before launching the workload")
                 else:
                     raise SrtError("Unexpected SRT launch control event")
-        raise SrtError("SRT helper launch acknowledgement timed out")
+        raise SrtError(
+            "SRT helper launch acknowledgement timed out", code = "probe_timeout", stage = "launch"
+        )
     except Exception:
         if proc is not None:
             _stop_failed_helper(proc)
@@ -445,7 +535,11 @@ def _spawn_windows(
         message = dict(request, controlSocket = {"port": listener.getsockname()[1], "token": token})
         encoded = json.dumps(message, ensure_ascii = True, separators = (",", ":")).encode() + b"\n"
         if len(encoded) > MAX_REQUEST:
-            raise SrtError("SRT launch request exceeds the protocol bound")
+            raise SrtError(
+                "SRT launch request exceeds the protocol bound",
+                code = "policy_oversized",
+                stage = "policy",
+            )
         # Upstream Windows session ACL setup can take tens of seconds on a cold
         # host. The payload timeout starts after spawn; cancellation stays live.
         deadline = time.monotonic() + 120
@@ -454,7 +548,11 @@ def _spawn_windows(
             if cancel_event is not None and cancel_event.is_set():
                 raise SrtError("SRT launch cancelled before acknowledgement")
             if time.monotonic() >= deadline:
-                raise SrtError("SRT helper launch acknowledgement timed out")
+                raise SrtError(
+                    "SRT helper launch acknowledgement timed out",
+                    code = "probe_timeout",
+                    stage = "launch",
+                )
 
         try:
             check_wait()
@@ -548,7 +646,13 @@ def _spawn_windows(
                             raise SrtError("SRT control authentication failed")
                         authenticated = True
                     elif kind == "error":
-                        raise SrtError(str(event.get("message", "SRT setup failed"))[:2000])
+                        raise SrtError(
+                            "SRT setup failed",
+                            code = event.get("code"),
+                            stage = event.get("stage"),
+                            dependency = event.get("dependency"),
+                            details = event,
+                        )
                     elif kind == "ready" and not ready and event.get("version") == "0.0.75":
                         ready = True
                     elif (
@@ -614,9 +718,22 @@ def release_control(proc) -> None:
 
 def verify_success(proc) -> None:
     """Require the trusted completion receipt as well as successful process exit."""
+    if proc.poll() != 0:
+        raise SrtError("SRT workload success has no completion receipt")
+    receipt = completion_receipt(proc)
+    if (
+        receipt.get("code") != 0
+        or receipt.get("signal") is not None
+        or receipt.get("reason") != "completed"
+    ):
+        raise SrtError("SRT did not attest successful completion")
+
+
+def completion_receipt(proc) -> dict:
+    """Read the bounded private receipt; a failure receipt is never success proof."""
     descriptor = getattr(proc, "_srt_control_fd", None)
     connection = getattr(proc, "_srt_control_socket", None)
-    if (descriptor is None and connection is None) or proc.poll() != 0:
+    if (descriptor is None and connection is None) or proc.poll() is None:
         raise SrtError("SRT workload success has no completion receipt")
     data = getattr(proc, "_srt_control_pending", b"")
     if connection is not None:
@@ -644,11 +761,6 @@ def verify_success(proc) -> None:
         receipt = json.loads(lines[0])
         if not isinstance(receipt, dict) or receipt.get("v") != 1 or receipt.get("event") != "exit":
             raise SrtError("SRT completion receipt is invalid")
-        if (
-            receipt.get("code") != 0
-            or receipt.get("signal") is not None
-            or receipt.get("reason") != "completed"
-        ):
-            raise SrtError("SRT did not attest successful completion")
+        return receipt
     except (ValueError, UnicodeError) as exc:
         raise SrtError("SRT completion receipt is malformed") from exc

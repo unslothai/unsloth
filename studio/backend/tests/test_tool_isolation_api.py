@@ -391,6 +391,36 @@ def test_store_uses_constant_time_comparison_and_bounded_cleanup(monkeypatch):
     assert len(comparisons) == 3
 
 
+@pytest.mark.parametrize("environment", ["linux", "colab"])
+def test_diagnostic_and_disclosure_survive_http_response(monkeypatch, environment):
+    from dataclasses import replace
+    from core.inference.srt_diagnostics import limited_disclosure
+
+    diagnostic = {"code": "dependency_missing", "stage": "dependency", "dependency": "bubblewrap"}
+    snapshot = replace(
+        _capability(),
+        environment = environment,
+        reason_code = "dependency_missing",
+        diagnostic = diagnostic,
+        limited_disclosure = limited_disclosure(environment),
+    )
+    calls = []
+
+    def read(*, force):
+        calls.append(force)
+        return snapshot
+
+    monkeypatch.setattr(inference_route, "tool_isolation_capability_snapshot", read)
+    with _client(via_api_key = False) as client:
+        response = client.get("/api/inference/tool-isolation/capability")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["diagnostic"] == diagnostic
+    assert body["limited_disclosure"] == limited_disclosure(environment)
+    assert body["available"] is False
+    assert calls == [True]
+
+
 def test_capability_endpoint_is_ui_only_and_advisory(monkeypatch):
     calls: list[bool] = []
 
@@ -488,3 +518,59 @@ def test_grant_endpoint_issues_opaque_session_grant_and_is_ui_only(monkeypatch):
         )
     assert forbidden.status_code == 403
     assert "MCP" not in forbidden.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "scenario,expected",
+    [
+        ("success", 200),
+        ("ineligible", 409),
+        ("probe_failed", 409),
+        ("changed", 409),
+        ("api_key", 403),
+    ],
+)
+def test_nested_consent_http_boundary(monkeypatch, scenario, expected):
+    from dataclasses import replace
+    from unittest.mock import Mock
+    from core.inference import srt_nested, srt_probe
+    from core.inference.srt_diagnostics import ProbeReason
+
+    snapshot = replace(
+        _capability(),
+        nested_eligible = scenario != "ineligible",
+        nested_profile_id = srt_nested.NESTED_PROFILE,
+    )
+    snapshots = [
+        snapshot,
+        replace(snapshot, probe_generation = "changed") if scenario == "changed" else snapshot,
+    ]
+    read = Mock(side_effect = snapshots)
+    monkeypatch.setattr(inference_route, "tool_isolation_capability_snapshot", read)
+    probe = Mock(return_value = (scenario != "probe_failed", ProbeReason("probe_timeout")))
+    monkeypatch.setattr(srt_probe, "probe", probe)
+    store = srt_nested.NestedGrantStore()
+    issue = Mock(wraps = store.issue)
+    monkeypatch.setattr(store, "issue", issue)
+    monkeypatch.setattr(srt_nested, "NESTED_GRANTS", store)
+    with _client(via_api_key = scenario == "api_key") as client:
+        response = client.post(
+            "/api/inference/tool-isolation/nested-grant",
+            json = {"ui_session_id": "page-a", "probe_generation": "probe-1"},
+        )
+    assert response.status_code == expected, response.text
+    if scenario == "success":
+        store.validate(
+            response.json()["grant"],
+            current_subject = "actor-a",
+            tool_ui_session_id = "page-a",
+            probe_generation = "probe-1",
+        )
+        assert read.call_count == 2
+        assert probe.call_args.kwargs == {"force": True, "isolation_variant": "nested"}
+    else:
+        issue.assert_not_called()
+    if scenario in ("ineligible", "api_key"):
+        probe.assert_not_called()
+    if scenario == "probe_failed":
+        assert response.json()["detail"]["diagnostic"]["code"] == "probe_timeout"

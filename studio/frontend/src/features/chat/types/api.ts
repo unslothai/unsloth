@@ -6,9 +6,7 @@ import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
 export type CpuFallbackReason = "vulkan_startup_crash";
 
 export type MmprojFallbackReason =
-  | "cpu_offload"
-  | "projector_incompatible"
-  | "projector_startup_failure";
+  "cpu_offload" | "projector_incompatible" | "projector_startup_failure";
 
 export interface BackendModelDetails {
   id: string;
@@ -231,9 +229,7 @@ export interface LoadModelResponse {
   context_length_enforced?: boolean | null;
   supports_reasoning?: boolean;
   reasoning_style?:
-    | "enable_thinking"
-    | "reasoning_effort"
-    | "enable_thinking_effort";
+    "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
@@ -331,9 +327,7 @@ export interface InferenceStatusResponse {
   requires_trust_remote_code?: boolean;
   supports_reasoning?: boolean;
   reasoning_style?:
-    | "enable_thinking"
-    | "reasoning_effort"
-    | "enable_thinking_effort";
+    "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
@@ -555,17 +549,20 @@ export interface OpenAIChatMessage {
   name?: string;
 }
 
-export type ToolExecutionMode = "os_isolation_required" | "limited" | "full";
+export type ToolExecutionMode =
+  "os_isolation_required" | "limited" | "container_isolation" | "full";
 
 /** Mirrors ToolNetworkPolicy in tool-isolation.ts (this module stays import-free). */
 export type ToolNetworkPolicy = "deny" | "allowlist";
 
 /** What a finished launch actually had: the two request policies, or "unrestricted" for
  *  Full access and for Limited launches, which keep the host network. */
-export type ToolExecutionRecordNetworkPolicy = ToolNetworkPolicy | "unrestricted";
+export type ToolExecutionRecordNetworkPolicy =
+  ToolNetworkPolicy | "unrestricted";
 
 /** Launch-time protection facts emitted by the backend that ran the tool. */
 export interface ToolExecutionRecord {
+  authority_disclosure?: string;
   requested_mode: ToolExecutionMode;
   effective_mode: ToolExecutionMode;
   environment: string;
@@ -617,6 +614,7 @@ function parseExecutionRecordShape(value: unknown): ToolExecutionRecord | null {
   const record = value as Record<string, unknown>;
   const modes = new Set<ToolExecutionMode>([
     "os_isolation_required",
+    "container_isolation",
     "limited",
     "full",
   ]);
@@ -651,12 +649,18 @@ function parseExecutionRecordShape(value: unknown): ToolExecutionRecord | null {
     profile_id: record.profile_id,
     probe_generation: record.probe_generation,
     os_isolation: record.os_isolation,
+    ...(typeof record.authority_disclosure === "string"
+      ? { authority_disclosure: record.authority_disclosure.slice(0, 1024) }
+      : {}),
     retained_safeguards: [...record.retained_safeguards] as string[],
     limitations: Array.isArray(record.limitations)
       ? ([...record.limitations] as string[])
       : [],
     ...(record.network_policy !== undefined
-      ? { network_policy: record.network_policy as ToolExecutionRecordNetworkPolicy }
+      ? {
+          network_policy:
+            record.network_policy as ToolExecutionRecordNetworkPolicy,
+        }
       : {}),
     ...(Array.isArray(record.network_allowlist)
       ? { network_allowlist: [...record.network_allowlist] as string[] }
@@ -811,6 +815,11 @@ function toolExecutionRecordBaseLabel(
       : "Limited · no OS isolation";
   }
   if (!record.os_isolation) return null;
+  if (record.effective_mode === "container_isolation") {
+    return record.backend === "srt"
+      ? "Container-compatible isolation · SRT"
+      : null;
+  }
   if (record.backend === "srt") {
     // "Preview", like every other unqualified backend below and like the capability pill in
     // tool-isolation.ts: os_sandbox.py reports SRT as protection_state="preview", qualified=False
@@ -868,14 +877,7 @@ export interface OpenAIChatCompletionsRequest {
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
   reasoning_effort?:
-    | "none"
-    | "minimal"
-    | "low"
-    | "medium"
-    | "high"
-    | "max"
-    | "xhigh"
-    | null;
+    "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh" | null;
   preserve_thinking?: boolean | null;
   /** Resume the trailing assistant turn rather than opening a new one: the rendered prompt ends inside
    *  the partial answer, so the model emits its next token. Local models only, since the
@@ -902,6 +904,7 @@ export interface OpenAIChatCompletionsRequest {
   tool_ui_session_id?: string;
   /** Opaque, session-only consent proof. Sent only for current Limited mode. */
   limited_grant?: string;
+  nested_grant?: string;
   /** Outbound network for an OS-isolated launch. Omitted means "deny"; "allowlist" is sent only
    *  when the capability advertised it. Ignored under Limited and Full. */
   tool_network_policy?: ToolNetworkPolicy;

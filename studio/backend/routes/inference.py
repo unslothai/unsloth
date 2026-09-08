@@ -5122,7 +5122,10 @@ async def _select_request_tools(
         tools = apply_limited_tool_descriptions(tools)
     else:
         tools = apply_os_isolated_tool_descriptions(
-            tools, network_allowlist = _requested_network_allowlist(payload)
+            tools,
+            network_allowlist = _requested_network_allowlist(payload),
+            container_compatible = getattr(payload, "tool_execution_mode", None)
+            == "container_isolation",
         )
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
@@ -16717,6 +16720,77 @@ def create_tool_isolation_limited_grant(
     )
 
 
+@studio_router.post(
+    "/tool-isolation/nested-grant", response_model = ToolIsolationLimitedGrantResponse
+)
+def create_tool_isolation_nested_grant(
+    request: ToolIsolationLimitedGrantRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: _ToolIsolationViaApiKey = False,
+):
+    """Consent to a separately probed variant; never start or replay a tool here."""
+    from core.inference.srt_nested import NESTED_GRANTS
+    from core.inference.srt_probe import probe
+    from core.inference.srt_diagnostics import ProbeReason
+
+    require_ui_session_for_local_commands(via_api_key, UI_ONLY_ACTION_DETAIL)
+    snapshot = _read_tool_isolation_capability(force = True)
+    if request.probe_generation != snapshot.probe_generation:
+        raise HTTPException(
+            status_code = 409,
+            detail = {
+                "code": "CAPABILITY_CHANGED",
+                "message": "Isolation changed; review container-compatible consent again.",
+                "retryable": True,
+            },
+        )
+    if snapshot.available or not snapshot.nested_eligible:
+        raise HTTPException(
+            status_code = 409,
+            detail = {
+                "code": "NESTED_NOT_ELIGIBLE",
+                "message": "This failure is not eligible for container-compatible isolation.",
+                "retryable": True,
+            },
+        )
+    available, reason = probe(force = True, isolation_variant = "nested")
+    if not available:
+        reason = reason if isinstance(reason, ProbeReason) else ProbeReason("probe_failed")
+        raise HTTPException(
+            status_code = 409,
+            detail = {
+                "code": "NESTED_PROBE_FAILED",
+                "message": str(reason),
+                "diagnostic": reason.fields()["diagnostic"],
+                "retryable": True,
+            },
+        )
+    current = _read_tool_isolation_capability(force = True)
+    if (
+        current.probe_generation != snapshot.probe_generation
+        or current.available
+        or not current.nested_eligible
+    ):
+        raise HTTPException(
+            status_code = 409,
+            detail = {
+                "code": "CAPABILITY_CHANGED",
+                "message": "Isolation changed during the probe; review consent again.",
+                "retryable": True,
+            },
+        )
+    grant = NESTED_GRANTS.issue(
+        current_subject = current_subject,
+        tool_ui_session_id = request.ui_session_id,
+        probe_generation = current.probe_generation,
+    )
+    return ToolIsolationLimitedGrantResponse(
+        grant = grant.token,
+        expires_at = datetime.fromtimestamp(grant.expires_at, tz = timezone.utc).isoformat(),
+        probe_generation = grant.probe_generation,
+    )
+
+
 @studio_router.get("/monitor")
 async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Return recent OpenAI-compatible API activity for Unsloth."""
@@ -20588,6 +20662,7 @@ async def _proxy_to_external_provider(
                 current_subject = current_subject,
                 tool_ui_session_id = payload.tool_ui_session_id,
                 limited_grant = payload.limited_grant,
+                nested_grant = payload.nested_grant,
             )
             policy = (
                 CodexToolPolicy(
@@ -20947,6 +21022,7 @@ async def _proxy_to_external_provider(
                     current_subject = current_subject,
                     tool_ui_session_id = payload.tool_ui_session_id,
                     limited_grant = payload.limited_grant,
+                    nested_grant = payload.nested_grant,
                 ),
                 policy = ToolLoopPolicy(
                     tools = external_studio_tools,
@@ -22685,6 +22761,7 @@ async def produce_openai_chat_completions(
                     current_subject = current_subject,
                     tool_ui_session_id = payload.tool_ui_session_id,
                     limited_grant = payload.limited_grant,
+                    nested_grant = payload.nested_grant,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
                     context_overflow = _rolling_context_policy(payload),
@@ -24436,6 +24513,7 @@ async def produce_openai_chat_completions(
                 current_subject = current_subject,
                 tool_ui_session_id = payload.tool_ui_session_id,
                 limited_grant = payload.limited_grant,
+                nested_grant = payload.nested_grant,
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
                 reasoning_prefilled = _sf_reasoning_prefilled,
@@ -28078,6 +28156,7 @@ def _build_chat_request(
         tool_execution_mode = payload.tool_execution_mode,
         tool_network_policy = payload.tool_network_policy,
         limited_grant = payload.limited_grant,
+        nested_grant = payload.nested_grant,
         tool_ui_session_id = payload.tool_ui_session_id,
         permission_mode = payload.permission_mode,
         bypass_permissions = payload.bypass_permissions,
@@ -31154,7 +31233,10 @@ async def anthropic_messages(
             openai_tools = apply_limited_tool_descriptions(openai_tools)
         else:
             openai_tools = apply_os_isolated_tool_descriptions(
-                openai_tools, network_allowlist = _requested_network_allowlist(payload)
+                openai_tools,
+                network_allowlist = _requested_network_allowlist(payload),
+                container_compatible = getattr(payload, "tool_execution_mode", None)
+                == "container_isolation",
             )
 
         server_tool_choice = openai_tool_choice
@@ -31242,6 +31324,7 @@ async def anthropic_messages(
                 current_subject = current_subject,
                 tool_ui_session_id = payload.tool_ui_session_id,
                 limited_grant = payload.limited_grant,
+                nested_grant = payload.nested_grant,
                 promote_reasoning_only = False,
                 perf_callback = _monitor_perf_callback(
                     monitor_id,

@@ -157,7 +157,7 @@ import {
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
 import { ragScopeContextLength } from "./rag-context-length";
-import { isLimitedGrantCurrent } from "../tool-isolation";
+import { isLimitedGrantCurrent, isNestedGrantCurrent } from "../tool-isolation";
 import {
   effectiveToolNetworkPolicy,
   queuedToolNetworkPolicy,
@@ -476,15 +476,13 @@ function parseLiveToolArgs(
     candidate = candidate.slice(brace);
   }
   const parsed = parsePartialJsonObject(candidate) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   if (!parsed || typeof parsed !== "object") return null;
   const inner = parsed.arguments ?? parsed.parameters;
   if (typeof parsed.name === "string" && inner !== undefined) {
     if (typeof inner === "string") {
       const innerParsed = parsePartialJsonObject(inner) as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       if (innerParsed && typeof innerParsed === "object") {
         return { args: innerParsed, argsText: inner };
       }
@@ -510,8 +508,7 @@ function parseSystemVariablesMap(raw: string): Record<string, unknown> {
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>;
     }
-  } catch {
-  }
+  } catch {}
   return {};
 }
 
@@ -688,8 +685,7 @@ function isSafeNavigableSourceUrl(raw: unknown): string {
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {
       return value;
     }
-  } catch {
-  }
+  } catch {}
   return "";
 }
 
@@ -941,8 +937,7 @@ function toOpenAIImageEditReferenceMessage(
 function isAnthropicRefusalMessage(message: RunMessage): boolean {
   if (message.role !== "assistant") return false;
   const metadata = (message as { metadata?: unknown }).metadata as
-    | { custom?: Record<string, unknown> }
-    | undefined;
+    { custom?: Record<string, unknown> } | undefined;
   return metadata?.custom?.anthropicRefusal === true;
 }
 
@@ -992,8 +987,8 @@ function getToolPartReplayMetadata(
       : null;
   const hasNativePart = Boolean(
     argsGoogle &&
-      typeof argsGoogle.native_part === "object" &&
-      argsGoogle.native_part !== null,
+    typeof argsGoogle.native_part === "object" &&
+    argsGoogle.native_part !== null,
   );
   const hasServerToolMarker = Boolean(
     argsObj && (argsObj as Record<string, unknown>)._server_tool === true,
@@ -1182,7 +1177,8 @@ function serializeToolResultPart(
     const replayText = isSearchImagesToolResult(result)
       ? stripSearchImageTokens(result.text)
       : result.text;
-    content = replayText.length > 0 ? replayText : JSON.stringify({ result: "" });
+    content =
+      replayText.length > 0 ? replayText : JSON.stringify({ result: "" });
   } else {
     try {
       content = JSON.stringify(result);
@@ -1665,7 +1661,8 @@ export function messagesUsePrivateContent(messages: RunMessages): boolean {
       (message.content ?? []).some(
         (part) =>
           (part.type === "tool-call" &&
-            (part as { toolName?: string }).toolName === "search_knowledge_base") ||
+            (part as { toolName?: string }).toolName ===
+              "search_knowledge_base") ||
           isPrivateMediaPart(part),
       )
     ) {
@@ -1980,7 +1977,10 @@ export async function buildLocalTokenCountExtras(
             mode: ragMode,
             // Retrieval turned off means the loop renders exactly these messages, so the
             // count can price the turn instead of declining a retrieval that never runs.
-            autoinject: resolveAutoInject(ragAutoInject, residentCheckpoint ?? ""),
+            autoinject: resolveAutoInject(
+              ragAutoInject,
+              residentCheckpoint ?? "",
+            ),
             autoinject_min_score: ragAutoInjectMinScore,
             ...(ragAutoInject === "off" ? { whole_doc: false } : {}),
           },
@@ -2904,7 +2904,9 @@ async function waitForSettledServerStatus(options?: {
 function reportBlockedServerLoad(outcome: ServerLoadBlocked): void {
   const stillLoading = outcome === "still-loading";
   toast.error(
-    stillLoading ? "A model is still loading" : "Could not reach the model server",
+    stillLoading
+      ? "A model is still loading"
+      : "Could not reach the model server",
     {
       description: stillLoading
         ? "Send again once it finishes, or pick a model in the top bar."
@@ -3199,10 +3201,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       try {
         const managed = await loadManagedLlamaFlags();
         const clean = (tokens: readonly string[]) =>
-          sanitizeStoredExtraArgs(tokens, managed?.managed ?? new Set<string>(), {
-            maxBytes: managed?.maxBytes,
-            windowsCommandBudget: managed?.windowsCommandBudget,
-          });
+          sanitizeStoredExtraArgs(
+            tokens,
+            managed?.managed ?? new Set<string>(),
+            {
+              maxBytes: managed?.maxBytes,
+              windowsCommandBudget: managed?.windowsCommandBudget,
+            },
+          );
         if (resolvedExtraArgs === undefined) {
           const stored = await fetchLoadExtraArgs(
             modelPath,
@@ -3508,8 +3514,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // Cleared, not carried: a safetensors load has no projector, and a stale true would stage it
           // for the next model that has one.
           disableVision: false,
-          loadedVisionDisabledByUser:
-            loadResp.vision_disabled_by_user ?? false,
+          loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU GGUF load left.
           ...loadedGpuMemoryFields(loadResp),
           defaultChatTemplate: loadResp.chat_template ?? null,
@@ -3777,7 +3782,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             ...store.params,
             maxTokens: localMaxTokensCeiling(
               loadedContextFields(loadResp).loadedContextLength,
-              unreportedWindowMaxTokens(loadResp.is_gguf ?? false, store.params.maxTokens),
+              unreportedWindowMaxTokens(
+                loadResp.is_gguf ?? false,
+                store.params.maxTokens,
+              ),
             ),
           },
           {
@@ -3830,8 +3838,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedDisableVision: loadResp.disable_vision ?? false,
           // The request above omits disable_vision, so the echo is what the load ran with.
           disableVision: loadResp.disable_vision ?? false,
-          loadedVisionDisabledByUser:
-            loadResp.vision_disabled_by_user ?? false,
+          loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
           ...loadedGpuMemoryFields(loadResp),
           // Drives the GPU Memory controls' diffusion gate; set on every load path so the gate cannot read stale.
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
@@ -3930,7 +3937,8 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
             supportsPreserveThinking:
               status.supports_preserve_thinking ?? false,
             preserveThinking: resolvePreserveThinkingOnLoad(status),
-            loadedContextLength: loadedContextFields(status).loadedContextLength,
+            loadedContextLength:
+              loadedContextFields(status).loadedContextLength,
             loadedIsMultimodal: isMultimodalResponse(status),
             modelCapabilities: {
               isVision: status.is_vision ?? false,
@@ -4047,7 +4055,10 @@ export function createOpenAIStreamAdapter(
       const resolvedThreadId =
         (runThreadId ?? runtime.activeThreadId) || undefined;
       if (resolvedThreadId) {
-        rememberComposerProjectForRun(resolvedThreadId, composerProjectIdAtSend);
+        rememberComposerProjectForRun(
+          resolvedThreadId,
+          composerProjectIdAtSend,
+        );
       }
       const sharedThreadRecordRead = resolvedThreadId
         ? createRetryableSharedRead(
@@ -4088,7 +4099,7 @@ export function createOpenAIStreamAdapter(
       }
       const threadAlreadyResearched = Boolean(
         resolvedThreadId &&
-          useResearchRunStore.getState().claimedThreadIds[resolvedThreadId],
+        useResearchRunStore.getState().claimedThreadIds[resolvedThreadId],
       );
       if (runtime.deepResearchEnabled && threadAlreadyResearched) {
         if (queuedRunSettings) {
@@ -4142,7 +4153,9 @@ export function createOpenAIStreamAdapter(
         // The turn's own settings, not the store's now: the model selector stays usable while a turn
         // streams, so a live read would research with whichever model was picked since.
         const sendTimeRuntime = runtime;
-        const withResolvedModel = <T extends typeof sendTimeRuntime>(base: T): T =>
+        const withResolvedModel = <T extends typeof sendTimeRuntime>(
+          base: T,
+        ): T =>
           queuedEmptyModelRuntime === null
             ? base
             : {
@@ -4156,12 +4169,15 @@ export function createOpenAIStreamAdapter(
                 supportsReasoning: queuedEmptyModelRuntime.supportsReasoning,
                 reasoningAlwaysOn: queuedEmptyModelRuntime.reasoningAlwaysOn,
                 reasoningStyle: queuedEmptyModelRuntime.reasoningStyle,
-                supportsReasoningOff: queuedEmptyModelRuntime.supportsReasoningOff,
-                reasoningEffortLevels: queuedEmptyModelRuntime.reasoningEffortLevels,
+                supportsReasoningOff:
+                  queuedEmptyModelRuntime.supportsReasoningOff,
+                reasoningEffortLevels:
+                  queuedEmptyModelRuntime.reasoningEffortLevels,
                 supportsPreserveThinking:
                   queuedEmptyModelRuntime.supportsPreserveThinking,
                 preserveThinking: queuedEmptyModelRuntime.preserveThinking,
-                loadedContextLength: queuedEmptyModelRuntime.loadedContextLength,
+                loadedContextLength:
+                  queuedEmptyModelRuntime.loadedContextLength,
                 models: mergeQueuedModelCapabilities(
                   base.models,
                   queuedEmptyModelRuntime.checkpoint,
@@ -4181,7 +4197,8 @@ export function createOpenAIStreamAdapter(
                 },
               })
           : withResolvedModel(sendTimeRuntime);
-        if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
+        if (!resolvedThreadId)
+          throw new Error("Research requires a saved chat.");
         if (!unstable_assistantMessageId) {
           throw new Error(
             "Deep research could not bind its assistant message. Please retry the send.",
@@ -4236,10 +4253,11 @@ export function createOpenAIStreamAdapter(
                     researchExternalSelection.modelId,
                     researchExternalProvider.maxOutputTokens,
                   ),
-                  maxOutputTokensFromSavedCap: externalMaxOutputTokensNeedsConnectionCap(
-                    researchExternalProvider.providerType,
-                    researchExternalSelection.modelId,
-                  ),
+                  maxOutputTokensFromSavedCap:
+                    externalMaxOutputTokensNeedsConnectionCap(
+                      researchExternalProvider.providerType,
+                      researchExternalSelection.modelId,
+                    ),
                   maxOutputTokensPublished: getPublishedExternalMaxOutputTokens(
                     researchExternalProvider.providerType,
                     researchExternalSelection.modelId,
@@ -4350,7 +4368,9 @@ export function createOpenAIStreamAdapter(
             // Omitted when empty: CreateResearchRun forbids unknown fields, so an unconditional send 422s
             // an older backend.
             ...(researchQuestion ? { question: researchQuestion } : {}),
-            ...(researchInstructions ? { instructions: researchInstructions } : {}),
+            ...(researchInstructions
+              ? { instructions: researchInstructions }
+              : {}),
             ...(ragScope ? { ragScope } : {}),
             budgets: {
               modelTimeoutSeconds: runtime.researchModelTimeoutSeconds,
@@ -4456,7 +4476,8 @@ export function createOpenAIStreamAdapter(
       const attachScopedExecutionRecord = <T extends ToolCardState>(
         card: T,
         record: ToolExecutionRecord | null,
-      ) => attachAuthoritativeExecutionRecord(card, record, executionRecordScope);
+      ) =>
+        attachAuthoritativeExecutionRecord(card, record, executionRecordScope);
       const scopedExecutionRecordFromCard = (id: string) =>
         toolExecutionRecordFromCard(id, executionRecordScope);
       const runToolLiveOutputKeys = new Set<string>();
@@ -4682,8 +4703,8 @@ export function createOpenAIStreamAdapter(
         : false;
       const externalProviderIsGeminiCustomBase = Boolean(
         externalProvider &&
-          externalProvider.providerType === "gemini" &&
-          isGeminiCustomOpenAICompatBase(externalProvider.baseUrl),
+        externalProvider.providerType === "gemini" &&
+        isGeminiCustomOpenAICompatBase(externalProvider.baseUrl),
       );
       const externalProviderUsesOAuth =
         externalProvider?.authKind === "chatgpt_oauth";
@@ -4706,13 +4727,13 @@ export function createOpenAIStreamAdapter(
       // Image-generation flag; computed first so Gemini image mode can suppress Search/Code.
       const imageGenerationEnabledForThisTurn = Boolean(
         externalProvider &&
-          externalSelection &&
-          imageToolsEnabled &&
-          providerSupportsBuiltinImageGeneration(
-            externalProvider.providerType,
-            externalSelection.modelId,
-            externalProvider.baseUrl,
-          ),
+        externalSelection &&
+        imageToolsEnabled &&
+        providerSupportsBuiltinImageGeneration(
+          externalProvider.providerType,
+          externalSelection.modelId,
+          externalProvider.baseUrl,
+        ),
       );
       // Per-model Search/Code allowances live in providerSupportsBuiltin*; this flag only signals image-mode.
       const geminiImageModeForThisTurn =
@@ -4720,35 +4741,35 @@ export function createOpenAIStreamAdapter(
         imageGenerationEnabledForThisTurn;
       const webSearchEnabledForThisTurn = Boolean(
         externalProvider &&
-          externalSelection &&
-          toolsEnabled &&
-          providerSupportsBuiltinWebSearch(
-            externalProvider.providerType,
-            externalSelection.modelId,
-            externalProvider.baseUrl,
-          ),
+        externalSelection &&
+        toolsEnabled &&
+        providerSupportsBuiltinWebSearch(
+          externalProvider.providerType,
+          externalSelection.modelId,
+          externalProvider.baseUrl,
+        ),
       );
       const codeExecEnabledForThisTurn = Boolean(
         externalProvider &&
-          externalSelection &&
-          codeToolsEnabled &&
-          !geminiImageModeForThisTurn &&
-          providerSupportsBuiltinCodeExecution(
-            externalProvider.providerType,
-            externalSelection.modelId,
-            externalProvider.baseUrl,
-          ),
+        externalSelection &&
+        codeToolsEnabled &&
+        !geminiImageModeForThisTurn &&
+        providerSupportsBuiltinCodeExecution(
+          externalProvider.providerType,
+          externalSelection.modelId,
+          externalProvider.baseUrl,
+        ),
       );
       // Fetch is independent of Search (Anthropic bills web_fetch separately); forced off in
       // chat-page setState where unsupported.
       const webFetchEnabledForThisTurn = Boolean(
         externalProvider &&
-          webFetchToolsEnabled &&
-          providerSupportsBuiltinWebFetch(externalProvider.providerType),
+        webFetchToolsEnabled &&
+        providerSupportsBuiltinWebFetch(externalProvider.providerType),
       );
       const providerShipsWebFetch = Boolean(
         externalProvider &&
-          providerSupportsBuiltinWebFetch(externalProvider.providerType),
+        providerSupportsBuiltinWebFetch(externalProvider.providerType),
       );
       // Hosted `code_execution` and local `python`/`terminal` are two trust boundaries, not two
       // spellings of one feature. See code-tool-placement.ts.
@@ -4772,6 +4793,7 @@ export function createOpenAIStreamAdapter(
         | "tool_execution_mode"
         | "tool_ui_session_id"
         | "limited_grant"
+        | "nested_grant"
         | "tool_network_policy"
       > = {};
       if (supportsStudioToolsForThisTurn) {
@@ -4782,6 +4804,7 @@ export function createOpenAIStreamAdapter(
         const requestedMode = runtime.toolExecutionMode;
         const requestedUiSessionId = runtime.toolIsolationUiSessionId;
         const requestedGrant = runtime.limitedToolGrant;
+        const requestedNestedGrant = runtime.nestedToolGrant;
         // The network decision travels with the send too; "allowlist" goes out only when the
         // capability seen at dispatch lists it (see effectiveToolNetworkPolicy).
         // The live store is read at dispatch: a Full or allowlist grant withdrawn while the
@@ -4835,12 +4858,16 @@ export function createOpenAIStreamAdapter(
             ),
           };
         } else {
-          await useChatRuntimeStore
-            .getState()
-            .refreshToolIsolationCapability();
+          await useChatRuntimeStore.getState().refreshToolIsolationCapability();
           const isolation = useChatRuntimeStore.getState();
           const mode = requestedMode;
           const capability = isolation.toolIsolationCapability;
+          const currentNestedGrant = isNestedGrantCurrent(
+            requestedNestedGrant,
+            capability,
+          )
+            ? requestedNestedGrant
+            : null;
           const currentLimitedGrant = isLimitedGrantCurrent(
             requestedGrant,
             capability,
@@ -4848,7 +4875,8 @@ export function createOpenAIStreamAdapter(
             ? requestedGrant
             : null;
           if (
-            isolation.toolIsolationDecisionEpoch !== runtime.toolIsolationDecisionEpoch ||
+            isolation.toolIsolationDecisionEpoch !==
+              runtime.toolIsolationDecisionEpoch ||
             isolation.toolExecutionMode !== mode ||
             isolation.toolIsolationUiSessionId !== requestedUiSessionId
           ) {
@@ -4866,7 +4894,8 @@ export function createOpenAIStreamAdapter(
             (mode === "os_isolation_required" &&
               capability?.protection_state !== "protected" &&
               capability?.protection_state !== "preview") ||
-            (mode === "limited" && !currentLimitedGrant)
+            (mode === "limited" && !currentLimitedGrant) ||
+            (mode === "container_isolation" && !currentNestedGrant)
           ) {
             isolation.setToolIsolationConsentOpen(true);
             clearSelectedImageEditReference();
@@ -4892,6 +4921,9 @@ export function createOpenAIStreamAdapter(
             ...(mode === "limited" && currentLimitedGrant
               ? { limited_grant: currentLimitedGrant.grant }
               : {}),
+            ...(mode === "container_isolation" && currentNestedGrant
+              ? { nested_grant: currentNestedGrant.grant }
+              : {}),
           };
         }
       }
@@ -4904,6 +4936,15 @@ export function createOpenAIStreamAdapter(
           (!queuedIsolationDecisionIsCurrent(runtime, live) ||
             runtime.toolNetworkPolicy !== live.toolNetworkPolicy ||
             (runsStudioPythonOrTerminal &&
+              toolIsolationRequestFields.tool_execution_mode ===
+                "container_isolation" &&
+              (!isNestedGrantCurrent(
+                live.nestedToolGrant,
+                live.toolIsolationCapability,
+              ) ||
+                live.nestedToolGrant?.grant !==
+                  toolIsolationRequestFields.nested_grant)) ||
+            (runsStudioPythonOrTerminal &&
               toolIsolationRequestFields.tool_execution_mode === "limited" &&
               (!isLimitedGrantCurrent(
                 live.limitedToolGrant,
@@ -4912,11 +4953,14 @@ export function createOpenAIStreamAdapter(
                 live.limitedToolGrant?.grant !==
                   toolIsolationRequestFields.limited_grant)) ||
             (runsStudioPythonOrTerminal &&
-              toolIsolationRequestFields.tool_execution_mode === "os_isolation_required" &&
+              toolIsolationRequestFields.tool_execution_mode ===
+                "os_isolation_required" &&
               live.toolIsolationCapability?.protection_state !== "protected" &&
               live.toolIsolationCapability?.protection_state !== "preview") ||
             (toolIsolationRequestFields.tool_network_policy === "allowlist" &&
-              !live.toolIsolationCapability?.network_policies.includes("allowlist")))
+              !live.toolIsolationCapability?.network_policies.includes(
+                "allowlist",
+              )))
         ) {
           throw new Error(
             "Tool permissions changed while preparing this request. Review the protection level and send again.",
@@ -5106,9 +5150,9 @@ export function createOpenAIStreamAdapter(
       // Canvas is independent of Search/Code: render_html stays local-only and mirrors the backend image-turn gate.
       const renderHtmlToolEnabledForThisTurn = Boolean(
         !isExternalRequest &&
-          supportsTools &&
-          artifactsEnabled &&
-          !hasOutboundImage,
+        supportsTools &&
+        artifactsEnabled &&
+        !hasOutboundImage,
       );
       const artifactInstruction = artifactsEnabled
         ? renderHtmlToolEnabledForThisTurn
@@ -5204,18 +5248,18 @@ export function createOpenAIStreamAdapter(
         .find((message) => message.role === "user");
       const generationCandidate = Boolean(
         !isExternalRequest &&
-          !activeModel?.isAudio &&
-          !runtime.loadedIsDiffusion &&
-          !imageBase64 &&
-          !audioBase64 &&
-          !videoBase64 &&
-          // Continue yields the seeded partial before the request starts so the autosave lands before
-          // admission, which 409s a substantive placeholder. Continuations keep the legacy stream.
-          !continuation &&
-          resolvedThreadId &&
-          !isThreadIncognito(resolvedThreadId) &&
-          unstable_assistantMessageId &&
-          generationUserMessage,
+        !activeModel?.isAudio &&
+        !runtime.loadedIsDiffusion &&
+        !imageBase64 &&
+        !audioBase64 &&
+        !videoBase64 &&
+        // Continue yields the seeded partial before the request starts so the autosave lands before
+        // admission, which 409s a substantive placeholder. Continuations keep the legacy stream.
+        !continuation &&
+        resolvedThreadId &&
+        !isThreadIncognito(resolvedThreadId) &&
+        unstable_assistantMessageId &&
+        generationUserMessage,
       );
       let generationDecision: "pending" | "durable" | "legacy" =
         generationCandidate ? "pending" : "legacy";
@@ -5483,8 +5527,7 @@ export function createOpenAIStreamAdapter(
           // Its metadata goes to the call it was mistaken for: Gemini stows a thought signature there
           // and rejects a replay without one.
           const previous = toolCallParts[at - 1] as
-            | PositionedToolCallPart
-            | undefined;
+            PositionedToolCallPart | undefined;
           if (part.extra_content !== undefined && previous) {
             previous.extra_content = {
               ...(previous.extra_content ?? {}),
@@ -5506,7 +5549,9 @@ export function createOpenAIStreamAdapter(
         }
         for (const [partId, waiting] of pendingExtraByPartId) {
           // No object ever came, so the repeated name was that call's after all, and so is its metadata.
-          const at = toolCallParts.findIndex((part) => part.toolCallId === partId);
+          const at = toolCallParts.findIndex(
+            (part) => part.toolCallId === partId,
+          );
           if (at === -1) continue;
           const part = toolCallParts[at] as PositionedToolCallPart;
           toolCallParts[at] = {
@@ -5633,7 +5678,9 @@ export function createOpenAIStreamAdapter(
           if (held.pending) pendingExtraByPartId.set(to, held.pending);
           const at = codexRoundToolCallIds.indexOf(held.from);
           if (at !== -1) codexRoundToolCallIds[at] = to;
-          const index = toolCallParts.findIndex((part) => part.toolCallId === "");
+          const index = toolCallParts.findIndex(
+            (part) => part.toolCallId === "",
+          );
           if (index !== -1) {
             toolCallParts[index] = { ...held.part, toolCallId: to };
           }
@@ -6217,9 +6264,8 @@ export function createOpenAIStreamAdapter(
                           : []),
                       ],
                     }
-                  // Explicit false: an omitted field falls back to the server's tools-on default, which
-                  // would bill provider server tools.
-                  :
+                  : // Explicit false: an omitted field falls back to the server's tools-on default, which
+                    // would bill provider server tools.
                     { enable_tools: false }),
               // Also on this body: a provider whose models run Studio tools can hand off too, and omitting
               // it makes arming research a no-op.
@@ -6324,10 +6370,9 @@ export function createOpenAIStreamAdapter(
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
               ? reasoningStyle === "enable_thinking_effort"
-                // GLM-5.2-style gate plus level: disabling sends enable_thinking=false, enabling sends
-                // the chosen level.
-                // Enabling sends the chosen level, e.g. high|max.
-                ?
+                ? // GLM-5.2-style gate plus level: disabling sends enable_thinking=false, enabling sends
+                  // the chosen level.
+                  // Enabling sends the chosen level, e.g. high|max.
                   reasoningEnabled
                   ? {
                       enable_thinking: true,
@@ -6427,7 +6472,7 @@ export function createOpenAIStreamAdapter(
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
                 }
-              :  // Explicit false, not omission: the server defaults tools on for a request that never mentions them.
+              : // Explicit false, not omission: the server defaults tools on for a request that never mentions them.
                 { enable_tools: false }),
           };
         };
@@ -6590,8 +6635,8 @@ export function createOpenAIStreamAdapter(
                     isExternalRequest
                       ? null
                       : (runtime.loadedCustomContextLength ??
-                        runtime.loadedContextLength ??
-                        (params.maxSeqLength || null)),
+                          runtime.loadedContextLength ??
+                          (params.maxSeqLength || null)),
                     currentToolIsolationRequestFields,
                   );
             // Per run, not per module: two turns must not share a cycle.
@@ -6625,11 +6670,14 @@ export function createOpenAIStreamAdapter(
                   contextTruncation,
                   chunk.context_truncated,
                 );
-                const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
+                const activeThreadId =
+                  useChatRuntimeStore.getState().activeThreadId;
                 // What must stay silent is a fit that returned the ORIGINAL messages: "older turns were
                 // removed" would be untrue and burns the once-per-thread flag. Not `fits`, which is also
                 // false for a shortened prompt that was sent.
-                const reallyCompacted = promptWasShortened(chunk.context_truncated);
+                const reallyCompacted = promptWasShortened(
+                  chunk.context_truncated,
+                );
                 if (
                   reallyCompacted &&
                   resolvedThreadId &&
@@ -6705,8 +6753,7 @@ export function createOpenAIStreamAdapter(
                 // Persist container_id onto the thread (OpenAI / Anthropic).
                 if (toolEvent.type === "container_ready") {
                   const newContainerId = toolEvent.container_id as
-                    | string
-                    | undefined;
+                    string | undefined;
                   if (newContainerId && resolvedThreadId) {
                     const field =
                       externalProvider?.providerType === "anthropic"
@@ -7198,8 +7245,7 @@ export function createOpenAIStreamAdapter(
                 serverMetadata = {
                   usage: chunk.usage,
                   timings: (chunk as Record<string, unknown>).timings as
-                    | ServerTimings
-                    | undefined,
+                    ServerTimings | undefined,
                 };
                 if (chunk.choices?.length === 0) continue;
               }
@@ -7235,8 +7281,7 @@ export function createOpenAIStreamAdapter(
                 extractDeltaText(rawDelta);
               const deltaExtraContent = (
                 chunk.choices?.[0]?.delta as
-                  | { extra_content?: unknown }
-                  | undefined
+                  { extra_content?: unknown } | undefined
               )?.extra_content;
               // Replay state reaches the message only through a yield, so a Stop while the gate holds one
               // persists a turn that cannot replay. Pace previews, never state.
@@ -7275,14 +7320,12 @@ export function createOpenAIStreamAdapter(
               // Kimi / DeepSeek stream thinking via delta.reasoning_content; wrap it inline as <think>.
               const rawReasoning = (
                 chunk.choices?.[0]?.delta as
-                  | { reasoning_content?: unknown }
-                  | undefined
+                  { reasoning_content?: unknown } | undefined
               )?.reasoning_content;
               // OpenRouter ships reasoning as delta.reasoning_details[] whatever the provider; same wrap.
               const rawReasoningDetails = (
                 chunk.choices?.[0]?.delta as
-                  | { reasoning_details?: unknown }
-                  | undefined
+                  { reasoning_details?: unknown } | undefined
               )?.reasoning_details;
               const reasoningFromDetails = Array.isArray(rawReasoningDetails)
                 ? rawReasoningDetails
@@ -7300,8 +7343,7 @@ export function createOpenAIStreamAdapter(
               // carries the Gemini 3 thoughtSignature.
               const rawDeltaToolCalls = (
                 chunk.choices?.[0]?.delta as
-                  | { tool_calls?: unknown }
-                  | undefined
+                  { tool_calls?: unknown } | undefined
               )?.tool_calls;
               if (
                 Array.isArray(rawDeltaToolCalls) &&
@@ -7488,18 +7530,21 @@ export function createOpenAIStreamAdapter(
                     // arguments are different fields of one call.
                     if (extraIsAmbiguous && isPlainRecord(call.extra_content)) {
                       pendingExtraByPartId.set(existing.toolCallId, {
-                        ...(pendingExtraByPartId.get(existing.toolCallId) ?? {}),
+                        ...(pendingExtraByPartId.get(existing.toolCallId) ??
+                          {}),
                         ...call.extra_content,
                       });
                     }
                     const incomingExtra = extraIsAmbiguous
                       ? prevExtra
-                      : isPlainRecord(prevExtra) && isPlainRecord(call.extra_content)
+                      : isPlainRecord(prevExtra) &&
+                          isPlainRecord(call.extra_content)
                         ? { ...prevExtra, ...call.extra_content }
                         : call.extra_content;
                     if (
                       incomingExtra !== undefined &&
-                      JSON.stringify(incomingExtra) !== JSON.stringify(prevExtra)
+                      JSON.stringify(incomingExtra) !==
+                        JSON.stringify(prevExtra)
                     ) {
                       // Gemini puts the thought signature on the call, and the next turn is rejected without it.
                       replayStateChanged = true;
@@ -7562,7 +7607,11 @@ export function createOpenAIStreamAdapter(
                       stablePartId ||
                       mintStreamedCardId(idx ?? toolCallParts.length);
                     if (!stablePartId) paintStreamedCard(callId);
-                    else discardAuthoritativeExecutionRecord(callId, executionRecordScope);
+                    else
+                      discardAuthoritativeExecutionRecord(
+                        callId,
+                        executionRecordScope,
+                      );
 
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);
@@ -7597,7 +7646,9 @@ export function createOpenAIStreamAdapter(
                               ? call.extra_content
                               : {}),
                           };
-                    const freshOwnExtra = freshIsSplit ? undefined : withWaiting;
+                    const freshOwnExtra = freshIsSplit
+                      ? undefined
+                      : withWaiting;
                     const bornExtra = freshIsSplit ? withWaiting : undefined;
                     const argsText = freshIsSplit
                       ? freshSegments[0]
@@ -7807,7 +7858,10 @@ export function createOpenAIStreamAdapter(
             // card replaces this reply anyway. Not after Stop.
             if (deepResearchHandoff.question !== null && !runSignal.aborted) {
               try {
-                yield* startDeepResearch(deepResearchHandoff.question, runSignal);
+                yield* startDeepResearch(
+                  deepResearchHandoff.question,
+                  runSignal,
+                );
                 return;
               } catch (researchError) {
                 toast.error("Deep research could not start", {
@@ -7947,11 +8001,14 @@ export function createOpenAIStreamAdapter(
           ragEnabled ||
           projectRagEnabled ||
           messagesUsePrivateContent(messages) ||
-          toolCallParts.some((part) => part.toolName === "search_knowledge_base");
+          toolCallParts.some(
+            (part) => part.toolName === "search_knowledge_base",
+          );
         // This run's own values, not the store as it stands now: both are per-chat, and a run
         // finishing after a move to a chat on "auto" would read that chat's permission level.
         // searchImages stays a live read, since it describes the installation.
-        const toolCallsNeedApproval = confirmToolCalls && permissionMode === "ask";
+        const toolCallsNeedApproval =
+          confirmToolCalls && permissionMode === "ask";
         if (
           incompleteReason === null &&
           !isExternalRequest &&
@@ -7963,7 +8020,9 @@ export function createOpenAIStreamAdapter(
         ) {
           // Rendered parts, not the raw stream: `cumulativeText` carries <think>.
           const answerText = answerTextFromParts(
-            buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
+            buildAssistantContent(
+              mergeContinuation(cumulativeText, { final: true }),
+            ),
           );
           const subjects = missingListSubjects(answerText, toolCallParts);
           if (subjects.length > 0) {
@@ -7971,7 +8030,9 @@ export function createOpenAIStreamAdapter(
             // AbortSignal.any is newer than the Safari floor.
             const lookupAbort = new AbortController();
             const onRunAbort = () => lookupAbort.abort();
-            runAbort.signal.addEventListener("abort", onRunAbort, { once: true });
+            runAbort.signal.addEventListener("abort", onRunAbort, {
+              once: true,
+            });
             const lookupTimer = setTimeout(() => lookupAbort.abort(), 15_000);
             try {
               // authFetch, not a raw fetch: a token that expired during a long generation is refreshed and
@@ -8037,7 +8098,9 @@ export function createOpenAIStreamAdapter(
         reasoningDurationTracker.finishGroup();
         yield {
           content: [
-            ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
+            ...buildAssistantContent(
+              mergeContinuation(cumulativeText, { final: true }),
+            ),
             ...sourceParts,
             ...documentCitationParts,
           ],
@@ -8140,17 +8203,15 @@ export function createOpenAIStreamAdapter(
                     'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
                     "or ask for less output from that tool."
                 : historyCannotHelp(irreducible)
-                  // No one turn to name, and the bulk is in the parts eviction never touches. Both levers
-                  // are named, neither claimed as the cause.
-                  ?
+                  ? // No one turn to name, and the bulk is in the parts eviction never touches. Both levers
+                    // are named, neither claimed as the cause.
                     "Even with every earlier turn dropped, this prompt would still be " +
                     "too long, so shortening the conversation will not help. " +
                     'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
                     "or reduce what every request carries: the system prompt and any " +
                     "tools that are enabled."
-                  // llama-server runs with --no-context-shift, a hard error instead of silently dropping
-                  // old KV turns, so point at the control that raises the ceiling.
-                  :
+                  : // llama-server runs with --no-context-shift, a hard error instead of silently dropping
+                    // old KV turns, so point at the control that raises the ceiling.
                     "The conversation has filled the model's context window. " +
                     'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
                     "or start a new chat.",
@@ -8164,7 +8225,9 @@ export function createOpenAIStreamAdapter(
         }
         if (!abortSignal.aborted) {
           closeReasoningContent();
-          const partialText = mergeContinuation(cumulativeText, { final: true });
+          const partialText = mergeContinuation(cumulativeText, {
+            final: true,
+          });
           const partialContent = buildAssistantContent(partialText);
           if (partialContent.length > 0) {
             const partialTiming = buildTiming(

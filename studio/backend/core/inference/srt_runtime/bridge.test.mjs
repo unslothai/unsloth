@@ -28,6 +28,15 @@ test('macOS native configuration permits host reads and needs a read-authority d
 const here = path.dirname(fileURLToPath(import.meta.url));
 const request = () => ({v:1,operation:'run',executable:path.resolve('/usr/bin/python3'),argv:['-c','print(1)'],cwd:path.resolve('/tmp/work'),env:{PATH:'/usr/bin:/bin'},readRoots:[path.resolve('/usr')],writeRoots:[path.resolve('/tmp/work')],timeoutMs:1000});
 
+test('explicit nested protocol requires Linux IPC guard and network deny', () => {
+  const nested = {...request(), isolationVariant:'nested', privateUnixSockets:true};
+  if (process.platform === 'linux') assert.equal(validateRequest(nested).isolationVariant, 'nested');
+  else assert.throws(()=>validateRequest(nested));
+  for (const update of [{privateUnixSockets:false},{network:{}},{nativeAllowedDomains:['example.com']},{enableWeakerNestedSandbox:true}]) {
+    assert.throws(()=>validateRequest({...nested,...update}));
+  }
+});
+
 test('accepts explicit argv and rejects authority fields, glob grants and root grants', () => {
   assert.equal(validateRequest(request()).v, 1);
   assert.equal(validateRequest({...request(),timeoutMs:null}).timeoutMs,null);
@@ -76,10 +85,13 @@ test('installation patch is idempotent and refuses an unknown upstream source',(
   const target=path.join(dir,relative);fs.mkdirSync(path.dirname(target),{recursive:true});
   try {
     const expected=fs.readFileSync(path.join(here,relative),'utf8');
-    const original=expected.replace("args.push(...(readConfig?.denyOnly?.includes('/') ? ['--tmpfs', '/'] : ['--ro-bind', '/', '/']));","args.push('--ro-bind', '/', '/');").replaceAll(',fork,reuseaddr,max-children=32',',fork,reuseaddr');
+    const previous=expected.replace("bwrapArgs.push('--unshare-user', '--cap-drop', 'ALL', '--bind', '/proc', '/proc');","bwrapArgs.push('--unshare-user', '--bind', '/proc', '/proc');");
+    const original=previous.replace("args.push(...(readConfig?.denyOnly?.includes('/') ? ['--tmpfs', '/'] : ['--ro-bind', '/', '/']));","args.push('--ro-bind', '/', '/');").replaceAll(',fork,reuseaddr,max-children=32',',fork,reuseaddr');
     fs.writeFileSync(target,original);applyPatch(dir);
     assert.equal(fs.readFileSync(target,'utf8'),expected);
     applyPatch(dir);assert.equal(fs.readFileSync(target,'utf8'),expected);
+    fs.writeFileSync(target,previous);applyPatch(dir);
+    assert.equal(fs.readFileSync(target,'utf8'),expected);
     fs.appendFileSync(target,'\nUNKNOWN_UPSTREAM_CHANGE');
     assert.throws(()=>applyPatch(dir),/unknown SRT source/);
   } finally {fs.rmSync(dir,{recursive:true,force:true});}
@@ -130,7 +142,8 @@ test('missing or corrupted installed files fail before the payload', {skip:proce
       assert.equal(fs.existsSync(path.join(work,'MUST_NOT_RUN')),false);
       const records=fs.readFileSync(control,'utf8').trim().split('\n').map(JSON.parse);
       assert.equal(records.length,1);assert.equal(records[0].event,'error');
-      if(corrupt)assert.match(records[0].message,/integrity mismatch/);
+      assert.equal(records[0].code,corrupt?'runtime_invalid':'runtime_missing');
+      assert.equal(records[0].stage,'installation');
     }
   } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });
@@ -153,7 +166,8 @@ test('host temp grants and symlink aliases fail before payload execution', {skip
         assert.equal(fs.existsSync(marker),false);
         const records=fs.readFileSync(control,'utf8').trim().split('\n').map(JSON.parse);
         assert.equal(records.length,1);assert.equal(records[0].event,'error');
-        assert.match(records[0].message,/Host \/tmp cannot replace/);
+        assert.equal(records[0].code,'policy_invalid');
+        assert.equal(records[0].stage,'policy');
       }
     }
   } finally {fs.rmSync(root,{recursive:true,force:true});}

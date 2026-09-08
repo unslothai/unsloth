@@ -110,6 +110,9 @@ import type { ResearchWebsitePolicy } from "../types/research";
 import {
   createToolIsolationUiSessionId,
   fetchLimitedToolGrant,
+  fetchNestedToolGrant,
+  isNestedGrantCurrent,
+  type NestedToolGrant,
   fetchToolIsolationCapability,
   isLimitedGrantCurrent,
   type LimitedToolGrant,
@@ -227,9 +230,12 @@ function isSupportedResearchModelTimeout(value: number): boolean {
 }
 
 function loadResearchModelTimeoutSeconds(): number {
-  if (typeof window === "undefined") return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+  if (typeof window === "undefined")
+    return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
   try {
-    const raw = window.localStorage.getItem(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY);
+    const raw = window.localStorage.getItem(
+      CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY,
+    );
     if (raw === null) return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
     const value = Number(raw);
     return isSupportedResearchModelTimeout(value)
@@ -244,7 +250,8 @@ function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
   if (typeof window === "undefined") return DEFAULT_RESEARCH_WEBSITE_POLICY;
   try {
     const parsed = JSON.parse(
-      window.localStorage.getItem(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY) || "{}",
+      window.localStorage.getItem(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY) ||
+        "{}",
     ) as Partial<ResearchWebsitePolicy>;
     return {
       allowedDomains: Array.isArray(parsed.allowedDomains)
@@ -289,7 +296,10 @@ function saveRagSource(value: RagSource): void {
 
 function loadProjectAttachmentTarget(): ProjectAttachmentTarget {
   return normalizeProjectAttachmentTarget(
-    loadString(CHAT_PROJECT_ATTACHMENT_TARGET_KEY, DEFAULT_PROJECT_ATTACHMENT_TARGET),
+    loadString(
+      CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
+      DEFAULT_PROJECT_ATTACHMENT_TARGET,
+    ),
   );
 }
 
@@ -402,9 +412,7 @@ function saveLastExternalCheckpoint(value: string | null): void {
 // "enable_thinking_effort" is a gate plus a level (GLM-5.2 high|max): it reuses the
 // reasoning_effort dropdown but, unlike gpt-oss, can be turned off entirely.
 export type ReasoningStyle =
-  | "enable_thinking"
-  | "reasoning_effort"
-  | "enable_thinking_effort";
+  "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
 /** One live DiffusionGemma denoising snapshot: canvas text at a step of a block (0-based; total = steps in block). */
 export type DiffusionCanvasFrame = {
   block: number;
@@ -424,13 +432,7 @@ export type LoadingModelPick = {
   nativePathToken: string | null;
 };
 export type ReasoningEffort =
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "max"
-  | "xhigh";
+  "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh";
 
 let hasShownSettingsPersistenceWarning = false;
 let customPresetsMutationVersion = 0;
@@ -619,7 +621,9 @@ function flushSettingsOnPageHidden(terminal: boolean): void {
 }
 
 if (typeof window !== "undefined") {
-  window.addEventListener("beforeunload", () => flushSettingsOnPageHidden(true));
+  window.addEventListener("beforeunload", () =>
+    flushSettingsOnPageHidden(true),
+  );
   // beforeunload never fires on discarded mobile tabs, so pagehide and visibilitychange-hidden
   // are added too. Safe: the pending patch is swapped out before the request.
   window.addEventListener("pagehide", () => flushSettingsOnPageHidden(true));
@@ -659,7 +663,8 @@ type MirroredSettingCodec = {
 
 const BOOLEAN_SETTING: MirroredSettingCodec = {
   encode: (value) => (value ? "true" : "false"),
-  decode: (raw) => (raw === "true" ? true : raw === "false" ? false : undefined),
+  decode: (raw) =>
+    raw === "true" ? true : raw === "false" ? false : undefined,
 };
 
 const STRING_SETTING: MirroredSettingCodec = {
@@ -921,7 +926,10 @@ const explicitlyEditedThreadFields = new Set<string>();
 const constraintSuppressedThreadFields = new Set<string>();
 
 /** Both pills of Kimi's search/thinking exclusion; the only non-persisting setters. */
-const CONSTRAINT_SUPPRESSIBLE_KEYS = ["reasoningEnabled", "toolsEnabled"] as const;
+const CONSTRAINT_SUPPRESSIBLE_KEYS = [
+  "reasoningEnabled",
+  "toolsEnabled",
+] as const;
 
 function noteConstraintSuppressedThreadField(
   field: (typeof CONSTRAINT_SUPPRESSIBLE_KEYS)[number],
@@ -997,7 +1005,10 @@ function withoutActiveThreadParams(
   state: ChatRuntimeStore,
   params: InferenceParams,
 ): InferenceParams {
-  if (threadScopedSettingsThreadId === null && pendingPairingThreadId === null) {
+  if (
+    threadScopedSettingsThreadId === null &&
+    pendingPairingThreadId === null
+  ) {
     return params;
   }
   const remembered = params.checkpoint
@@ -1192,13 +1203,19 @@ export function replayUnconfirmedThreadSettings(): void {
     // Bounded: every settings write waits on these, so a socket that never settles would block
     // persistence for the whole session.
     const timeout = new AbortController();
-    const timer = setTimeout(() => timeout.abort(), THREAD_SETTINGS_REPLAY_TIMEOUT_MS);
-    const request = authFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: timeout.signal,
-    })
+    const timer = setTimeout(
+      () => timeout.abort(),
+      THREAD_SETTINGS_REPLAY_TIMEOUT_MS,
+    );
+    const request = authFetch(
+      `/api/chat/threads/${encodeURIComponent(threadId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: timeout.signal,
+      },
+    )
       .finally(() => clearTimeout(timer))
       // Only an ok response means it landed: authFetch resolves for 404 and 5xx too, and the
       // missing-row case this exists for is exactly the one that 404s.
@@ -1331,9 +1348,8 @@ function writeThreadScopedSettings(
       const controller = new AbortController();
       threadSettingsWriteAborts.set(threadId, controller);
       try {
-        const { updateStoredChatThread } = await import(
-          "../utils/chat-history-storage"
-        );
+        const { updateStoredChatThread } =
+          await import("../utils/chat-history-storage");
         await updateStoredChatThread(
           threadId,
           { settings, settingsSeq, settingsWriter: threadSettingsWriter },
@@ -1377,7 +1393,9 @@ export async function settleThreadScopedSettingsForCopy(
   // A flushed replacement write that failed resolves false rather than throwing, so the chain
   // alone cannot tell a saved edit from a lost one.
   if (!(await awaitThreadScopedSettingsWrite(threadId))) {
-    throw new Error("This chat's settings could not be saved before copying it");
+    throw new Error(
+      "This chat's settings could not be saved before copying it",
+    );
   }
 }
 
@@ -1401,7 +1419,11 @@ export async function awaitThreadScopedSettingsWrite(
 export async function awaitStartedThreadScopedSettingsWrites(): Promise<void> {
   // A settled chain can leave a newer one behind for the same chat, so this repeats until the
   // map is empty. Bounded, so a self-rescheduling write fails an assertion, not hangs.
-  for (let pass = 0; pass < 20 && threadSettingsWriteChains.size > 0; pass += 1) {
+  for (
+    let pass = 0;
+    pass < 20 && threadSettingsWriteChains.size > 0;
+    pass += 1
+  ) {
     await Promise.allSettled([...threadSettingsWriteChains.values()]);
   }
 }
@@ -1548,7 +1570,9 @@ function closeThreadScopedPairingGate(threadId: string | null): void {
   const stillWaiting =
     pendingPairingThreadId !== null &&
     pairingSettledByThreadId.has(pendingPairingThreadId);
-  if (useChatRuntimeStore.getState().threadScopedSettingsPending !== stillWaiting) {
+  if (
+    useChatRuntimeStore.getState().threadScopedSettingsPending !== stillWaiting
+  ) {
     useChatRuntimeStore.setState({ threadScopedSettingsPending: stillWaiting });
   }
 }
@@ -1632,10 +1656,8 @@ function restoreDefaultsOverCommittedEdits(
   held: { field: string }[],
 ): void {
   if (useChatRuntimeStore.getState().activeThreadId === threadId) return;
-  const before = (pairingWindowDefaults ?? globalThreadScopedDefaults) as Record<
-    string,
-    unknown
-  > | null;
+  const before = (pairingWindowDefaults ??
+    globalThreadScopedDefaults) as Record<string, unknown> | null;
   const fields: Record<string, unknown> = {};
   const params: Record<string, unknown> = {};
   for (const edit of held) {
@@ -1658,7 +1680,10 @@ function restoreDefaultsOverCommittedEdits(
   // persist them back to it and to the loaded model's memory.
   useChatRuntimeStore.setState((state) =>
     hasKeys(params)
-      ? ({ ...fields, params: { ...state.params, ...params } } as Partial<ChatRuntimeStore>)
+      ? ({
+          ...fields,
+          params: { ...state.params, ...params },
+        } as Partial<ChatRuntimeStore>)
       : (fields as Partial<ChatRuntimeStore>),
   );
 }
@@ -1700,9 +1725,8 @@ async function mergeThreadScopedSettingsIntoRow(
         return;
       }
       try {
-        const { updateStoredChatThread } = await import(
-          "../utils/chat-history-storage"
-        );
+        const { updateStoredChatThread } =
+          await import("../utils/chat-history-storage");
         await updateStoredChatThread(threadId, {
           settingsPatch: changes,
           settingsSeq,
@@ -1951,7 +1975,9 @@ export function saveSpeculativeType(value: string | null): void {
 
 // A standing preference, not per-model: a "manual" choice survives model switches and reloads.
 export function readPersistedGpuMemoryMode(): "auto" | "manual" {
-  return loadString(CHAT_GPU_MEMORY_MODE_KEY, "auto") === "manual" ? "manual" : "auto";
+  return loadString(CHAT_GPU_MEMORY_MODE_KEY, "auto") === "manual"
+    ? "manual"
+    : "auto";
 }
 
 export function saveGpuMemoryMode(value: "auto" | "manual"): void {
@@ -1982,7 +2008,8 @@ function largestRemainder(shares: number[], total: number): number[] {
   const byFrac = shares
     .map((x, i) => ({ i, frac: x - Math.floor(x) }))
     .sort((a, b) => b.frac - a.frac);
-  for (let k = 0; rem > 0 && k < byFrac.length; k++, rem--) out[byFrac[k].i] += 1;
+  for (let k = 0; rem > 0 && k < byFrac.length; k++, rem--)
+    out[byFrac[k].i] += 1;
   return out;
 }
 
@@ -2033,11 +2060,7 @@ export function reconcilePersistedGpuIds(
   savedIndexKind?: GpuIndexKind | null,
   forDiffusion = false,
 ): number[] | null {
-  return reconcilePersistedGpuSelection(
-    ids,
-    savedIndexKind,
-    forDiffusion,
-  ).ids;
+  return reconcilePersistedGpuSelection(ids, savedIndexKind, forDiffusion).ids;
 }
 
 export function reconcilePersistedGpuSelection(
@@ -2333,9 +2356,11 @@ type ChatRuntimeStore = {
   toolIsolationCapability: ToolIsolationCapability | null;
   /** Opaque Limited consent proof; page-memory only. */
   limitedToolGrant: LimitedToolGrant | null;
+  nestedToolGrant: NestedToolGrant | null;
   toolIsolationCapabilityLoading: boolean;
   toolIsolationGrantLoading: boolean;
   toolIsolationError: string | null;
+  toolIsolationErrorDiagnostic: ToolIsolationCapability["diagnostic"];
   toolIsolationConsentOpen: boolean;
   /** Whether the "Enable Bypass Permissions?" warning dialog is open. Lifted out
    *  of the composer menu so confirming/cancelling it doesn't leave the menu frozen. */
@@ -2610,6 +2635,8 @@ type ChatRuntimeStore = {
   setToolExecutionMode: (mode: ToolExecutionMode) => void;
   setToolNetworkPolicy: (policy: ToolNetworkPolicy) => void;
   refreshToolIsolationCapability: () => Promise<void>;
+  requestNestedToolGrant: () => Promise<NestedToolGrant>;
+  clearNestedToolGrant: () => void;
   requestLimitedToolGrant: () => Promise<LimitedToolGrant>;
   clearLimitedToolGrant: () => void;
   setToolIsolationConsentOpen: (open: boolean) => void;
@@ -2633,8 +2660,10 @@ type ChatRuntimeStore = {
   ) => void;
   /** Carry a choice made before the chat existed onto its new id. `claim` is what
    *  readPendingAttachmentTargetClaim gave; a newer one means another composer owns it. */
-  adoptPendingProjectAttachmentTarget: (threadId: string, claim?: number) =>
-    void;
+  adoptPendingProjectAttachmentTarget: (
+    threadId: string,
+    claim?: number,
+  ) => void;
   /** Drop a choice made in a composer that never became a chat. */
   clearPendingProjectAttachmentTarget: () => void;
   setRagMode: (mode: RagMode) => void;
@@ -2839,8 +2868,7 @@ export function noteLoadedModelReasoningMode(
       threadScopedOverride("reasoningEnabled") !== undefined
         ? installationReasoningEnabled(state)
         : enabled,
-    reasoningMutationVersion:
-      scalarSettingMutationVersions.reasoningEnabled,
+    reasoningMutationVersion: scalarSettingMutationVersions.reasoningEnabled,
     // Sticky per checkpoint: performLoad marks the load, then awaits refresh(),
     // whose status merge calls this again with the default false. Downgrading
     // there would drop the load's claim before hydration could read it.
@@ -3523,8 +3551,7 @@ function qwenMigrationThinkingOn(
 function qwenMigrationRemembersPerModel(
   settings: PersistedChatSettings,
   state: ChatRuntimeStore,
-  rememberParamsPerModelMutationVersion =
-    scalarSettingMutationVersions.rememberParamsPerModel,
+  rememberParamsPerModelMutationVersion = scalarSettingMutationVersions.rememberParamsPerModel,
 ): boolean {
   return settings.rememberParamsPerModel !== undefined &&
     scalarSettingMutationVersions.rememberParamsPerModel ===
@@ -3581,11 +3608,12 @@ function qwenMigrationExpectedAbsentPaths(
 ): Array<[keyof PersistedChatSettings, string]> {
   // Raw for the same reason as qwenMigrationExpectedAbsent: the server tests the
   // stored row, so a key sanitizing away must not be fenced as absent.
-  const nested = (field: keyof PersistedChatSettings): Record<string, unknown> =>
+  const nested = (
+    field: keyof PersistedChatSettings,
+  ): Record<string, unknown> =>
     typeof rawSettings === "object" && rawSettings !== null
-      ? ((rawSettings as Record<string, unknown>)[field] as
-          | Record<string, unknown>
-          | undefined) ?? {}
+      ? (((rawSettings as Record<string, unknown>)[field] as
+          Record<string, unknown> | undefined) ?? {})
       : {};
   const paths: Array<[keyof PersistedChatSettings, string]> = [];
   if (patch.inferenceParams !== undefined) {
@@ -3634,8 +3662,8 @@ function applyLegacyQwenDefaultsAfterPresetChange(
     );
     if (!migration.patch) return state;
 
-    const activeModelId = migration.migratedModelIds.find(
-      (modelId) => sameCheckpointIdentity(modelId, checkpoint),
+    const activeModelId = migration.migratedModelIds.find((modelId) =>
+      sameCheckpointIdentity(modelId, checkpoint),
     );
     const activePatch = activeModelId
       ? migration.patch.inferenceParamsByModel?.[activeModelId]
@@ -3737,12 +3765,14 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       // drain, so a healthy install never spends it.
       if (qwenMigrationRearmsWhileBlocked < QWEN_MIGRATION_MAX_REARMS) {
         qwenMigrationRearmsWhileBlocked += 1;
-        void inflightFlush.catch(() => undefined).then(() => {
-          scheduleLegacyQwenDefaultsRetry(
-            ownedGlobalCheckpoint,
-            migrateOwnedGlobalAlongsideModelMemory,
-          );
-        });
+        void inflightFlush
+          .catch(() => undefined)
+          .then(() => {
+            scheduleLegacyQwenDefaultsRetry(
+              ownedGlobalCheckpoint,
+              migrateOwnedGlobalAlongsideModelMemory,
+            );
+          });
       }
       return;
     }
@@ -3959,6 +3989,7 @@ function scheduleLegacyQwenDefaultsRetry(
 
 // Pending consent belongs to one request as well as one authenticated UI session.
 let limitedGrantRequestId = 0;
+let nestedGrantRequestId = 0;
 
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   settingsHydrated: false,
@@ -4044,9 +4075,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolIsolationDecisionEpoch: 0,
   toolIsolationCapability: null,
   limitedToolGrant: null,
+  nestedToolGrant: null,
   toolIsolationCapabilityLoading: false,
   toolIsolationGrantLoading: false,
   toolIsolationError: null,
+  toolIsolationErrorDiagnostic: null,
   toolIsolationConsentOpen: false,
   bypassConfirmOpen: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
@@ -4250,8 +4283,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
                       !qwenMigrationRemembersPerModel(
                         confirmed,
                         confirmedState,
-                        hydrationVersions.scalarSettings
-                          .rememberParamsPerModel,
+                        hydrationVersions.scalarSettings.rememberParamsPerModel,
                       ),
                   )
                 : unmigrated(confirmed);
@@ -4269,10 +4301,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
                 confirmed,
                 migration.patch,
                 qwenMigrationExpectedAbsent(confirmedRaw),
-                qwenMigrationExpectedAbsentPaths(
-                  confirmedRaw,
-                  migration.patch,
-                ),
+                qwenMigrationExpectedAbsentPaths(confirmedRaw, migration.patch),
               );
               migration = {
                 ...migration,
@@ -4567,7 +4596,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if ((state.runOwnerByThreadId[key]?.length ?? 0) > 1) return state;
       // Only the transient run maps move; anything filed under the real id is better identified.
       const moved: Partial<ChatRuntimeStore> = {};
-      const move = <T,>(
+      const move = <T>(
         map: Record<string, T>,
         name: keyof ChatRuntimeStore,
       ) => {
@@ -4613,7 +4642,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   registerThreadServerCancel: (threadId, cancel) =>
     set((state) => {
       const next = { ...state.serverCancelByThreadId };
-      next[threadId] = [...(state.serverCancelByThreadId[threadId] ?? []), cancel];
+      next[threadId] = [
+        ...(state.serverCancelByThreadId[threadId] ?? []),
+        cancel,
+      ];
       return { serverCancelByThreadId: next };
     }),
   // `cancel` narrows removal to the run that registered it: unresolved ids share "__default",
@@ -4651,7 +4683,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Only disarm research for a connection that cannot drive it: the id prefix alone switched
       // it off for capable providers, and saveBool would write that off for every browser.
       const clampsDeepResearch =
-        isExternalModelId(modelId) && !externalModelSupportsStudioTools(modelId);
+        isExternalModelId(modelId) &&
+        !externalModelSupportsStudioTools(modelId);
       if (clampsDeepResearch) {
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
       }
@@ -4929,11 +4962,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => {
     if (incognito) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-    set(
-      incognito
-        ? { incognito, deepResearchEnabled: false }
-        : { incognito },
-    );
+    set(incognito ? { incognito, deepResearchEnabled: false } : { incognito });
   },
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   setEditingMessageId: (id) => set({ editingMessageId: id }),
@@ -5020,7 +5049,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedCacheRam: null,
       tensorParallel: false,
       loadedTensorParallel: null,
-  loadedDisableVision: null,
+      loadedDisableVision: null,
       disableVision: false,
       loadedVisionDisabledByUser: null,
       // Standing preference: survives unload, unlike the per-model knobs above.
@@ -5264,6 +5293,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           toolExecutionMode: "full" as ToolExecutionMode,
           toolNetworkPolicy: "deny" as ToolNetworkPolicy,
           limitedToolGrant: null,
+          nestedToolGrant: null,
           confirmToolCalls: false,
           deepResearchEnabled: false,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
@@ -5279,17 +5309,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         bypassPermissions: false,
         ...(leavingFullAccess
           ? {
-              toolExecutionMode:
-                "os_isolation_required" as ToolExecutionMode,
+              toolExecutionMode: "os_isolation_required" as ToolExecutionMode,
               // The allowlist is a per-decision grant; a Required session that
               // resumes after Full starts with the network closed again.
               toolNetworkPolicy: "deny" as ToolNetworkPolicy,
               limitedToolGrant: null,
+              nestedToolGrant: null,
             }
           : {}),
         confirmToolCalls,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-          toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
+        toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
       };
     }),
   setBypassPermissions: (bypassPermissions) =>
@@ -5305,6 +5335,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           toolExecutionMode: "full" as ToolExecutionMode,
           toolNetworkPolicy: "deny" as ToolNetworkPolicy,
           limitedToolGrant: null,
+          nestedToolGrant: null,
           confirmToolCalls: false,
           deepResearchEnabled: false,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
@@ -5322,13 +5353,37 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // and does not survive a trip through Full.
         toolNetworkPolicy: "deny" as ToolNetworkPolicy,
         limitedToolGrant: null,
+        nestedToolGrant: null,
         confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-          toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
+        toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
       };
     }),
   setToolExecutionMode: (toolExecutionMode) =>
     set((state) => {
+      if (toolExecutionMode === "container_isolation") {
+        if (
+          !isNestedGrantCurrent(
+            state.nestedToolGrant,
+            state.toolIsolationCapability,
+          )
+        ) {
+          return {
+            toolIsolationError:
+              "Container-compatible isolation requires current consent for this page session.",
+            toolIsolationErrorDiagnostic: null,
+          };
+        }
+        return {
+          toolExecutionMode,
+          limitedToolGrant: null,
+          toolNetworkPolicy: "deny" as ToolNetworkPolicy,
+          toolIsolationError: null,
+          toolIsolationErrorDiagnostic: null,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+          toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
+        };
+      }
       if (toolExecutionMode === "limited") {
         if (
           state.toolIsolationCapability?.protection_state !== "unavailable" ||
@@ -5340,11 +5395,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           return {
             toolIsolationError:
               "Limited mode requires a current grant for this page session.",
+            toolIsolationErrorDiagnostic: null,
           };
         }
         return {
           toolExecutionMode,
           toolIsolationError: null,
+          toolIsolationErrorDiagnostic: null,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
           toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
         };
@@ -5353,6 +5410,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         return {
           toolIsolationError:
             "Full access must be enabled through its confirmation dialog.",
+          toolIsolationErrorDiagnostic: null,
         };
       }
       return {
@@ -5361,9 +5419,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // setter got there.
         toolNetworkPolicy: "deny" as ToolNetworkPolicy,
         limitedToolGrant: null,
+        nestedToolGrant: null,
         toolIsolationError: null,
+        toolIsolationErrorDiagnostic: null,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-          toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
+        toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
       };
     }),
   setToolNetworkPolicy: (toolNetworkPolicy) =>
@@ -5375,6 +5435,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         return {
           toolIsolationError:
             "This host's OS isolation backend does not offer a network allowlist.",
+          toolIsolationErrorDiagnostic: null,
         };
       }
       if (toolNetworkPolicy === state.toolNetworkPolicy) {
@@ -5383,14 +5444,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         toolNetworkPolicy,
         toolIsolationError: null,
+        toolIsolationErrorDiagnostic: null,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-          toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
+        toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
       };
     }),
   refreshToolIsolationCapability: async () => {
     set(() => ({
       toolIsolationCapabilityLoading: true,
       toolIsolationError: null,
+      toolIsolationErrorDiagnostic: null,
     }));
     try {
       const capability = await fetchToolIsolationCapability();
@@ -5400,11 +5463,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           isLimitedGrantCurrent(state.limitedToolGrant, capability);
         return {
           toolIsolationCapability: capability,
-          limitedToolGrant: grantRemainsValid
-            ? state.limitedToolGrant
+          nestedToolGrant: isNestedGrantCurrent(
+            state.nestedToolGrant,
+            capability,
+          )
+            ? state.nestedToolGrant
             : null,
+          limitedToolGrant: grantRemainsValid ? state.limitedToolGrant : null,
           toolExecutionMode:
-            state.toolExecutionMode === "limited" && !grantRemainsValid
+            (state.toolExecutionMode === "limited" && !grantRemainsValid) ||
+            (state.toolExecutionMode === "container_isolation" &&
+              !isNestedGrantCurrent(state.nestedToolGrant, capability))
               ? ("os_isolation_required" as ToolExecutionMode)
               : state.toolExecutionMode,
           // A backend that stopped offering the allowlist (or never did) gets "deny".
@@ -5413,14 +5482,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             : ("deny" as ToolNetworkPolicy),
           toolIsolationCapabilityLoading: false,
           toolIsolationError: null,
+          toolIsolationErrorDiagnostic: null,
         };
       });
     } catch (error) {
       set((state) => ({
         toolIsolationCapability: null,
         limitedToolGrant: null,
+        nestedToolGrant: null,
         toolExecutionMode:
-          state.toolExecutionMode === "limited"
+          state.toolExecutionMode === "limited" ||
+          state.toolExecutionMode === "container_isolation"
             ? ("os_isolation_required" as ToolExecutionMode)
             : state.toolExecutionMode,
         toolNetworkPolicy: "deny" as ToolNetworkPolicy,
@@ -5429,21 +5501,135 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           error instanceof Error
             ? error.message
             : "Could not check OS isolation",
+        toolIsolationErrorDiagnostic: null,
       }));
+    }
+  },
+  requestNestedToolGrant: async () => {
+    const before = get();
+    limitedGrantRequestId++;
+    const requestId = ++nestedGrantRequestId;
+    const capability = before.toolIsolationCapability;
+    if (
+      !capability ||
+      capability.protection_state !== "unavailable" ||
+      !capability.nested_eligible ||
+      !capability.nested_profile_id
+    ) {
+      const message =
+        "Container-compatible isolation is not available for this failure.";
+      set(() => ({
+        toolIsolationError: message,
+        toolIsolationErrorDiagnostic: null,
+        toolIsolationGrantLoading: false,
+      }));
+      throw new Error(message);
+    }
+    const requestedGeneration = capability.probe_generation;
+    set(() => ({
+      toolIsolationGrantLoading: true,
+      toolIsolationError: null,
+      toolIsolationErrorDiagnostic: null,
+    }));
+    try {
+      const grant = await fetchNestedToolGrant(
+        before.toolIsolationUiSessionId,
+        requestedGeneration,
+      );
+      const current = get();
+      if (
+        requestId !== nestedGrantRequestId ||
+        current.toolIsolationUiSessionId !== before.toolIsolationUiSessionId ||
+        current.queuedSettingsEpoch !== before.queuedSettingsEpoch ||
+        current.toolExecutionMode !== before.toolExecutionMode ||
+        !current.toolIsolationGrantLoading
+      ) {
+        throw new Error(
+          "Tool permissions changed while consent was pending. Try again.",
+        );
+      }
+      const currentCapability = current.toolIsolationCapability;
+      if (
+        grant.probe_generation !== requestedGeneration ||
+        currentCapability?.probe_generation !== requestedGeneration ||
+        currentCapability.protection_state !== "unavailable" ||
+        !isNestedGrantCurrent(grant, currentCapability)
+      ) {
+        throw new Error(
+          "OS isolation capability changed. Review the current state and try again.",
+        );
+      }
+      set((state) => ({
+        toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
+        nestedToolGrant: grant,
+        limitedToolGrant: null,
+        toolExecutionMode: "container_isolation",
+        // Consent starts with outbound network denied.
+        toolNetworkPolicy: "deny" as ToolNetworkPolicy,
+        toolIsolationGrantLoading: false,
+        toolIsolationError: null,
+        toolIsolationErrorDiagnostic: null,
+      }));
+      return grant;
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not enable container-compatible isolation";
+      const current = get();
+      if (
+        requestId !== nestedGrantRequestId ||
+        current.toolIsolationUiSessionId !== before.toolIsolationUiSessionId
+      ) {
+        throw error;
+      }
+      if (
+        current.queuedSettingsEpoch !== before.queuedSettingsEpoch ||
+        current.toolExecutionMode !== before.toolExecutionMode ||
+        !current.toolIsolationGrantLoading
+      ) {
+        set(() => ({ toolIsolationGrantLoading: false }));
+        throw error;
+      }
+      set(() => ({
+        limitedToolGrant: null,
+        nestedToolGrant: null,
+        toolExecutionMode: "os_isolation_required",
+        toolIsolationGrantLoading: false,
+        toolIsolationError: message,
+        toolIsolationErrorDiagnostic:
+          error instanceof Error && "diagnostic" in error
+            ? (
+                error as Error & {
+                  diagnostic: ToolIsolationCapability["diagnostic"];
+                }
+              ).diagnostic
+            : null,
+      }));
+      throw error;
     }
   },
   requestLimitedToolGrant: async () => {
     const before = get();
+    nestedGrantRequestId++;
     const requestId = ++limitedGrantRequestId;
     const capability = before.toolIsolationCapability;
     if (!capability || capability.protection_state !== "unavailable") {
       const message =
         "Limited mode is only available when OS isolation is unavailable.";
-      set(() => ({ toolIsolationError: message, toolIsolationGrantLoading: false }));
+      set(() => ({
+        toolIsolationError: message,
+        toolIsolationErrorDiagnostic: null,
+        toolIsolationGrantLoading: false,
+      }));
       throw new Error(message);
     }
     const requestedGeneration = capability.probe_generation;
-    set(() => ({ toolIsolationGrantLoading: true, toolIsolationError: null }));
+    set(() => ({
+      toolIsolationGrantLoading: true,
+      toolIsolationError: null,
+      toolIsolationErrorDiagnostic: null,
+    }));
     try {
       const grant = await fetchLimitedToolGrant(
         before.toolIsolationUiSessionId,
@@ -5457,7 +5643,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         current.toolExecutionMode !== before.toolExecutionMode ||
         !current.toolIsolationGrantLoading
       ) {
-        throw new Error("Tool permissions changed while consent was pending. Try again.");
+        throw new Error(
+          "Tool permissions changed while consent was pending. Try again.",
+        );
       }
       const currentCapability = current.toolIsolationCapability;
       if (
@@ -5473,16 +5661,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       set((state) => ({
         toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
         limitedToolGrant: grant,
+        nestedToolGrant: null,
         toolExecutionMode: "limited",
         // Limited cannot enforce the allowlist; the decision does not carry over.
         toolNetworkPolicy: "deny" as ToolNetworkPolicy,
         toolIsolationGrantLoading: false,
         toolIsolationError: null,
+        toolIsolationErrorDiagnostic: null,
       }));
       return grant;
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Could not enable Limited mode";
+        error instanceof Error
+          ? error.message
+          : "Could not enable Limited mode";
       const current = get();
       if (
         requestId !== limitedGrantRequestId ||
@@ -5500,23 +5692,42 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       set(() => ({
         limitedToolGrant: null,
+        nestedToolGrant: null,
         toolExecutionMode: "os_isolation_required",
         toolIsolationGrantLoading: false,
         toolIsolationError: message,
+        toolIsolationErrorDiagnostic: null,
       }));
       throw error;
     }
+  },
+  clearNestedToolGrant: () => {
+    nestedGrantRequestId++;
+    set((state) => ({
+      toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
+      nestedToolGrant: null,
+      toolIsolationGrantLoading: false,
+      toolExecutionMode:
+        state.toolExecutionMode === "container_isolation"
+          ? "os_isolation_required"
+          : state.toolExecutionMode,
+      toolIsolationError: null,
+      toolIsolationErrorDiagnostic: null,
+    }));
   },
   clearLimitedToolGrant: () =>
     set((state) => ({
       toolIsolationDecisionEpoch: state.toolIsolationDecisionEpoch + 1,
       limitedToolGrant: null,
+      nestedToolGrant: null,
       toolIsolationGrantLoading: false,
       toolExecutionMode:
-        state.toolExecutionMode === "limited"
+        state.toolExecutionMode === "limited" ||
+        state.toolExecutionMode === "container_isolation"
           ? ("os_isolation_required" as ToolExecutionMode)
           : state.toolExecutionMode,
       toolIsolationError: null,
+      toolIsolationErrorDiagnostic: null,
     })),
   setToolIsolationConsentOpen: (toolIsolationConsentOpen) =>
     set(() => ({ toolIsolationConsentOpen })),
@@ -5562,7 +5773,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setRagEnabled: (ragEnabled) =>
     set((state) => {
       // The only thread-scoped setting with no global slot, so no persist helper reaches it.
-      if (ragEnabled !== state.ragEnabled) captureThreadScopedEdit("ragEnabled");
+      if (ragEnabled !== state.ragEnabled)
+        captureThreadScopedEdit("ragEnabled");
       return {
         ragEnabled,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
@@ -5785,7 +5997,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   clearActiveDiffusionCanvasForThread: (threadId) =>
     set((state) => {
       const key = threadId || "__default";
-      if (state.activeDiffusionCanvasByThreadId[key] === undefined) return state;
+      if (state.activeDiffusionCanvasByThreadId[key] === undefined)
+        return state;
       const next = { ...state.activeDiffusionCanvasByThreadId };
       delete next[key];
       return { activeDiffusionCanvasByThreadId: next };
@@ -5949,6 +6162,7 @@ function clearToolIsolationGrantForAuthSession(): void {
       threadScopedOverride("permissionMode") ?? loadPermissionMode(),
     ),
     toolIsolationError: null,
+    toolIsolationErrorDiagnostic: null,
     queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
   }));
 }

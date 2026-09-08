@@ -14,6 +14,7 @@ import threading
 import time
 
 from . import srt_adapter
+from .srt_diagnostics import ProbeReason, boundary_identity
 
 _lock = threading.Lock()
 _cache = {}
@@ -22,7 +23,14 @@ _network_cache = None
 _PROBE = r"""
 import json, os, pathlib, socket, subprocess, sys
 config = json.loads(sys.argv[1])
-for name in [config['sentinel'], config['escape']]:
+denied_files = [config['sentinel'], config['escape']]
+if config.get('nested'):
+    denied_files.append('/proc/' + str(config['host_pid']) + '/root' + config['sentinel'])
+    caps = dict(line.split(':', 1) for line in pathlib.Path('/proc/self/status').read_text().splitlines() if ':' in line)
+    for name in ('CapEff', 'CapPrm', 'CapBnd'):
+        if int(caps[name].strip(), 16):
+            raise RuntimeError('nested runtime retained capabilities')
+for name in denied_files:
     try:
         pathlib.Path(name).read_bytes()
     except (OSError, PermissionError):
@@ -83,7 +91,10 @@ def probe(
     force = False,
     execution_kind = None,
     selected_executable = None,
+    isolation_variant = "standard",
 ):
+    if isolation_variant not in ("standard", "nested"):
+        return False, ProbeReason("policy_invalid", "policy")
     if execution_kind == "python" and selected_executable == sys.executable:
         execution_kind, selected_executable = None, None
     identity = (
@@ -93,6 +104,8 @@ def probe(
         sys.prefix,
         execution_kind,
         selected_executable,
+        boundary_identity(),
+        isolation_variant,
     )
     with _lock:
         cached = _cache.get(identity)
@@ -100,23 +113,88 @@ def probe(
             return cached[1]
         try:
             result = _native_probe(
-                execution_kind = execution_kind, selected_executable = selected_executable
+                execution_kind = execution_kind,
+                selected_executable = selected_executable,
+                **(
+                    {"isolation_variant": isolation_variant}
+                    if isolation_variant != "standard"
+                    else {}
+                ),
             )
-        except Exception as exc:
-            result = (False, f"SRT native probe failed: {str(exc)[:1500]}")
+        except subprocess.TimeoutExpired:
+            result = (False, ProbeReason("probe_timeout", "probe"))
+        except srt_adapter.SrtError as exc:
+            result = (False, exc.diagnostic)
+        except Exception:
+            result = (False, ProbeReason("probe_failed", "probe"))
         if len(_cache) >= 8:
             _cache.clear()
         _cache[identity] = (time.monotonic(), result)
         return result
 
 
-def _native_probe(*, execution_kind = None, selected_executable = None):
+def _failed_linux_launch_reason(*, isolation_variant = "standard"):
+    """Distinguish namespace setup from a failed protection assertion.
+
+    Only a fixed benign executable is used, never the failed tool command or
+    stderr pattern matching. This check does not qualify any alternate variant.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/bwrap",
+                "--ro-bind",
+                "/",
+                "/",
+                "--dev",
+                "/dev",
+                "--unshare-user",
+                "--unshare-pid",
+                "--unshare-net",
+                "--cap-drop",
+                "ALL",
+                *(
+                    ["--bind", "/proc", "/proc"]
+                    if isolation_variant == "nested"
+                    else ["--proc", "/proc"]
+                ),
+                "--",
+                "/bin/true",
+            ],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            timeout = 3,
+            close_fds = True,
+            env = {"PATH": os.defpath},
+        )
+    except FileNotFoundError:
+        return ProbeReason("dependency_missing", "dependency", "bubblewrap")
+    except subprocess.TimeoutExpired:
+        return ProbeReason("probe_timeout", "launch")
+    except OSError:
+        return ProbeReason("probe_failed", "launch")
+    return (
+        ProbeReason("operation_unsupported", "launch")
+        if result.returncode
+        else ProbeReason("enforcement_failed", "enforcement")
+    )
+
+
+def _native_probe(
+    *,
+    execution_kind = None,
+    selected_executable = None,
+    isolation_variant = "standard",
+):
+    if isolation_variant == "nested" and sys.platform != "linux":
+        return False, ProbeReason("operation_unsupported", "probe")
     if sys.platform in ("win32", "darwin"):
         return _supported_platform_probe(
             execution_kind = execution_kind, selected_executable = selected_executable
         )
     if sys.platform != "linux":
-        return False, "SRT strict profile is unavailable on this platform"
+        return False, ProbeReason("operation_unsupported", "probe")
     # Positive controls use owned local endpoints, independent of public DNS.
     with (
         tempfile.TemporaryDirectory(prefix = "unsloth-srt-probe-") as directory,
@@ -177,7 +255,7 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
             "bash", path = env["PATH"]
         )
         if not shell:
-            return False, "Selected bash executable is unavailable"
+            return False, ProbeReason("dependency_missing", "dependency", "selected_shell")
         python = (selected_executable if execution_kind == "python" else None) or sys.executable
         args = {
             "sentinel": str(sentinel),
@@ -187,6 +265,8 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
             "shell": shell,
             "host_socket": unix_path,
             "abstract_socket": abstract_path,
+            "nested": isolation_variant == "nested",
+            "host_pid": os.getpid(),
         }
         request = srt_adapter.request_for(
             [python, "-I", "-S", "-c", _PROBE, json.dumps(args)],
@@ -194,6 +274,7 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
             env,
             30,
             operation = "probe",
+            **({"isolation_variant": isolation_variant} if isolation_variant != "standard" else {}),
         )
         udp_worker.start()
         try:
@@ -212,12 +293,16 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
             output, _ = proc.communicate(timeout = 35)
             if proc.returncode == 0:
                 srt_adapter.verify_success(proc)
+            elif srt_adapter.completion_receipt(proc).get("reason") == "timeout":
+                raise srt_adapter.SrtError(
+                    "SRT probe timed out", code = "probe_timeout", stage = "enforcement"
+                )
         except subprocess.TimeoutExpired as exc:
             proc.kill()
             proc.wait(timeout = 5)
             output = exc.output or b""
             raise srt_adapter.SrtError(
-                "SRT probe timed out after launch: " + output.decode(errors = "replace")[-1500:]
+                "SRT probe timed out after launch", code = "probe_timeout", stage = "enforcement"
             ) from exc
         except Exception:
             proc.kill()
@@ -228,12 +313,18 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
             udp_worker.join(timeout = 2)
             srt_adapter.release_control(proc)
         if proc.returncode != 0 or output.strip() != b"UNSLOTH_SRT_NATIVE_PROBE_OK":
-            return False, "SRT selected-runtime probe refused: " + output.decode(errors = "replace")[
-                -1500:
-            ]
+            return False, _failed_linux_launch_reason(
+                **(
+                    {"isolation_variant": isolation_variant}
+                    if isolation_variant != "standard"
+                    else {}
+                )
+            )
         return (
             True,
-            "Selected Python, shell children, private IPC/resource sharing, read confinement and controlled host TCP/UDP network checks passed.",
+            "Selected Python, shell children, private IPC/resource sharing, read confinement and controlled host TCP/UDP network checks passed."
+            if isolation_variant == "standard"
+            else "Selected runtime and local restriction diagnostics passed; outer /proc remains exposed. Platform qualification is separate.",
         )
 
 
@@ -251,7 +342,7 @@ def _supported_platform_probe(*, execution_kind = None, selected_executable = No
             "bash", path = env.get("PATH")
         )
         if not shell:
-            return False, "Selected bash executable is unavailable"
+            return False, ProbeReason("dependency_missing", "dependency", "selected_shell")
         python = (selected_executable if execution_kind == "python" else None) or sys.executable
         code = """
 import pathlib, subprocess, sys
@@ -281,12 +372,16 @@ print('UNSLOTH_SRT_SUPPORTED_PROBE_OK')
             output, _ = proc.communicate(timeout = 35)
             if proc.returncode == 0:
                 srt_adapter.verify_success(proc)
+            elif srt_adapter.completion_receipt(proc).get("reason") == "timeout":
+                raise srt_adapter.SrtError(
+                    "SRT probe timed out", code = "probe_timeout", stage = "enforcement"
+                )
         except subprocess.TimeoutExpired as exc:
             proc.kill()
             proc.wait(timeout = 5)
             output = exc.output or b""
             raise srt_adapter.SrtError(
-                "SRT probe timed out after launch: " + output.decode(errors = "replace")[-1500:]
+                "SRT probe timed out after launch", code = "probe_timeout", stage = "enforcement"
             ) from exc
         except Exception:
             proc.kill()
@@ -299,7 +394,7 @@ print('UNSLOTH_SRT_SUPPORTED_PROBE_OK')
             or b"UNSLOTH_SRT_SUPPORTED_PROBE_OK" not in output
             or sentinel.read_text(encoding = "utf-8") != "unchanged"
         ):
-            return False, "SRT platform probe refused: " + output.decode(errors = "replace")[-1500:]
+            return False, ProbeReason("enforcement_failed", "enforcement")
         return (
             True,
             "Selected Python, Terminal child, workdir write and filesystem deny checks passed.",
@@ -343,7 +438,13 @@ def probe_network(*, force = False):
         socat = srt_adapter.socat_executable()
     except srt_adapter.SrtError:
         return False
-    identity = (srt_adapter.installation_identity(), socat, sys.executable, sys.prefix)
+    identity = (
+        srt_adapter.installation_identity(),
+        socat,
+        sys.executable,
+        sys.prefix,
+        boundary_identity(),
+    )
     with _lock:
         if (
             not force

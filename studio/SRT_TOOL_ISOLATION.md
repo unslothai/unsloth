@@ -32,6 +32,26 @@ The Linux live confinement probe uses owned local TCP, UDP and Unix socket posit
 
 The bridge accepts up to 1,024 explicit read roots, since Linux may enumerate hundreds of individual shared libraries instead of granting their parent directories. Write and deny lists remain limited to 128 entries, and the entire request remains capped at 256 KiB. Exceeding a limit fails with a count or size error; paths are never dropped or replaced with broader grants to fit.
 
+## Diagnostics and recovery
+
+An unavailable capability includes a stable `reason_code` and a bounded `diagnostic`: the stage, a named dependency where known, and policy entry counts where applicable. Probe output, environment values and private paths are not copied into the capability response. Unknown failures stay unavailable with `probe_failed`; they do not imply that bubblewrap is missing or that a weaker configuration would work.
+
+| Reason | Recovery |
+|---|---|
+| `runtime_missing`, `runtime_invalid` | Install or repair the pinned helper using Studio's selected Python |
+| `dependency_missing` | Install or repair the named dependency in the execution environment |
+| `policy_invalid`, `policy_oversized` | Repair policy generation or runtime layout; never discard paths or broaden grants to fit |
+| `operation_unsupported` | Use an environment supporting the required isolation operations |
+| `probe_timeout`, `enforcement_failed`, `probe_failed` | Review Diagnostic details and recheck after resolving the failure |
+
+**Check again** runs a fresh capability check. It does not replay the original command. Limited remains a separate session consent followed by a manual retry; cancelling consent starts no tool command. Runtime/container identity changes invalidate cached probes and consent generations.
+
+Colab wording is selected from server-side runtime facts, never from the browser URL or request labels. This identifies the environment, not a qualified outer security boundary. Limited capability, consent and execution details disclose that tools run with Studio's permissions and can access its files, credentials and network without an additional Studio OS sandbox.
+
+Container-compatible SRT is a separate, explicitly consented Linux variant. It is offered only when a trusted normal probe fails and fixed differential controls show that reusing the container's `/proc` addresses the restriction. Missing bubblewrap, policy errors, unrelated failures and timeouts do not qualify for the offer. Consent forces the selected-runtime nested probe; execution rechecks eligibility, the session-bound grant and the selected runtime before launch. Standard Required remains unchanged, and there is no automatic retry or unsandboxed fallback.
+
+The pinned patch drops all capabilities in the nested path. Its live probe checks capability removal, unrelated-file and `/proc/<pid>/root` read denials, workdir writes, private IPC, and denial of controlled host network endpoints. The variant exposes outer process information through the shared `/proc`, relies partly on the outer container, and supports only the deny network policy. GPU device access is not provided. Studio keeps its selected Python and installed packages; it does not replace the Python/CUDA environment. These bounded checks do not establish broad native-package or full platform qualification. Backend execution records identify the effective variant and carry its authority disclosure.
+
 ## Windows machine setup
 
 After helper installation, explicitly run this command once per machine:

@@ -54,6 +54,7 @@ export {
   type Preset,
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export { toolExecutionRecordLabel } from "./types/api";
 export {
   hydrateModelDisclaimerPreference,
   refreshModelDisclaimerPreference,

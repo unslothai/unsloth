@@ -29,6 +29,7 @@ const QUEUED_SETTING_KEYS = [
   "toolIsolationDecisionEpoch",
   "toolNetworkPolicy",
   "limitedToolGrant",
+  "nestedToolGrant",
   "toolIsolationUiSessionId",
   "webFetchToolsEnabled",
   "deepResearchEnabled",

@@ -113,8 +113,12 @@ const TOOL_ISOLATION_RESTRICTED_TOKEN_NOTE =
 /** The Limited consent text for this host: the generic warning, plus what the Windows
  *  restricted token adds when the backend reports it. */
 function limitedModeWarning(
-  capability: Pick<ToolIsolationCapability, "limited_backend"> | null,
+  capability: Pick<
+    ToolIsolationCapability,
+    "limited_backend" | "limited_disclosure"
+  > | null,
 ): string {
+  if (capability?.limited_disclosure) return capability.limited_disclosure;
   if (capability?.limited_backend === "windows-restricted-token") {
     return `${TOOL_ISOLATION_UNAVAILABLE_WARNING} ${TOOL_ISOLATION_RESTRICTED_TOKEN_NOTE}`;
   }
@@ -247,6 +251,7 @@ function isolationSummary(
 ): string {
   if (state === "full") return "Sandbox off";
   if (state === "limited") return "Limited · no OS isolation";
+  if (state === "container") return "Container-compatible isolation";
   if (!capability) return "Checking sandbox…";
   if (state === "preview") return "Sandbox · Preview";
   if (state === "protected") return "Sandbox on";
@@ -265,8 +270,14 @@ function ToolIsolationDetailsDialog({
   const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
   const mode = useChatRuntimeStore((s) => s.toolExecutionMode);
   const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
+  const nestedGrant = useChatRuntimeStore((s) => s.nestedToolGrant);
   const networkPolicy = useChatRuntimeStore((s) => s.toolNetworkPolicy);
-  const presentation = toolIsolationPresentation(mode, capability, grant);
+  const presentation = toolIsolationPresentation(
+    mode,
+    capability,
+    grant,
+    nestedGrant,
+  );
   const isolated =
     presentation.state === "protected" || presentation.state === "preview";
   const limitedBackend = limitedBackendLabel(
@@ -293,6 +304,18 @@ function ToolIsolationDetailsDialog({
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
               <dt className="text-muted-foreground">Environment</dt>
               <dd className="break-words text-end">{capability.environment}</dd>
+              {presentation.state === "container" ? (
+                <>
+                  <dt className="text-muted-foreground">Runtime</dt>
+                  <dd className="text-end">Sandbox Runtime (SRT)</dd>
+                  <dt className="text-muted-foreground">Profile</dt>
+                  <dd className="break-all text-end">
+                    {capability.nested_profile_id}
+                  </dd>
+                  <dt className="text-muted-foreground">Network</dt>
+                  <dd className="text-end">Off</dd>
+                </>
+              ) : null}
               {isolated ? (
                 <>
                   <dt className="text-muted-foreground">Runtime</dt>
@@ -327,6 +350,22 @@ function ToolIsolationDetailsDialog({
                 {capability.reason}
               </p>
             ) : null}
+            {presentation.state === "unavailable" && capability.diagnostic ? (
+              <details className="text-sm">
+                <summary>Diagnostic details</summary>
+                <p>Code: {capability.diagnostic.code}</p>
+                <p>Stage: {capability.diagnostic.stage}</p>
+                {capability.diagnostic.field ? (
+                  <p>
+                    {capability.diagnostic.field}: {capability.diagnostic.count}{" "}
+                    entries; limit {capability.diagnostic.limit}.
+                  </p>
+                ) : null}
+                {capability.diagnostic.dependency ? (
+                  <p>Dependency: {capability.diagnostic.dependency}</p>
+                ) : null}
+              </details>
+            ) : null}
             {(isolated || presentation.state === "unavailable") &&
             capability.limitations.length > 0 ? (
               <section className="space-y-2">
@@ -351,11 +390,11 @@ function ToolIsolationDetailsDialog({
               presentation.state === "unavailable") ? (
               <section className="space-y-2 border-t border-border pt-4">
                 <h3 className="text-sm font-medium">
-                  {isolated ? "About Limited mode" : "Limited mode"}
+                  {isolated || presentation.state === "container"
+                    ? "About Limited mode"
+                    : "Limited mode"}
                 </h3>
-                <p className="text-sm">
-                  Software checks still apply. Limited is not an OS sandbox.
-                </p>
+                <p className="text-sm">{limitedModeWarning(capability)}</p>
                 {limitedBackend ? (
                   <p className="text-sm text-muted-foreground">
                     {limitedBackend}
@@ -383,22 +422,30 @@ function ToolIsolationDetailsDialog({
 
 function ToolIsolationMenuSection({
   onRequestLimited,
+  onRequestNested,
   onRequestDetails,
 }: {
   onRequestLimited: () => void;
+  onRequestNested: () => void;
   onRequestDetails: () => void;
 }) {
   useToolIsolationCapabilityRefresh();
   const mode = useChatRuntimeStore((s) => s.toolExecutionMode);
   const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
   const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
+  const nestedGrant = useChatRuntimeStore((s) => s.nestedToolGrant);
   const loading = useChatRuntimeStore((s) => s.toolIsolationCapabilityLoading);
   const error = useChatRuntimeStore((s) => s.toolIsolationError);
   const refresh = useChatRuntimeStore((s) => s.refreshToolIsolationCapability);
   const setMode = useChatRuntimeStore((s) => s.setToolExecutionMode);
   const networkPolicy = useChatRuntimeStore((s) => s.toolNetworkPolicy);
   const setNetworkPolicy = useChatRuntimeStore((s) => s.setToolNetworkPolicy);
-  const presentation = toolIsolationPresentation(mode, capability, grant);
+  const presentation = toolIsolationPresentation(
+    mode,
+    capability,
+    grant,
+    nestedGrant,
+  );
 
   const unavailable =
     presentation.state === "unavailable" &&
@@ -480,6 +527,15 @@ function ToolIsolationMenuSection({
           ) : null}
         </DropdownMenuItem>
       ) : null}
+      {unavailable && capability?.nested_eligible ? (
+        <DropdownMenuItem
+          onSelect={() => setTimeout(onRequestNested, 0)}
+          className="text-sm"
+        >
+          <ShieldCheck className="size-4" strokeWidth={2} />
+          Try container-compatible isolation…
+        </DropdownMenuItem>
+      ) : null}
       {unavailable ? (
         <DropdownMenuItem
           onSelect={() => setTimeout(onRequestLimited, 0)}
@@ -489,7 +545,8 @@ function ToolIsolationMenuSection({
           Use Limited mode…
         </DropdownMenuItem>
       ) : null}
-      {presentation.state === "limited" ? (
+      {presentation.state === "limited" ||
+      presentation.state === "container" ? (
         <DropdownMenuItem
           onSelect={() => setMode("os_isolation_required")}
           className="text-sm"
@@ -519,15 +576,24 @@ export function LimitedModeConfirmDialog({
   open,
   onOpenChange,
   restoreFocus,
+  variant = "limited",
+  onRequestNested,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   restoreFocus?: () => void;
+  variant?: "limited" | "nested";
+  onRequestNested?: () => void;
 }) {
-  const requestGrant = useChatRuntimeStore((s) => s.requestLimitedToolGrant);
-  const clearGrant = useChatRuntimeStore((s) => s.clearLimitedToolGrant);
+  const requestGrant = useChatRuntimeStore((s) =>
+    variant === "nested" ? s.requestNestedToolGrant : s.requestLimitedToolGrant,
+  );
+  const clearGrant = useChatRuntimeStore((s) =>
+    variant === "nested" ? s.clearNestedToolGrant : s.clearLimitedToolGrant,
+  );
   const loading = useChatRuntimeStore((s) => s.toolIsolationGrantLoading);
   const error = useChatRuntimeStore((s) => s.toolIsolationError);
+  const diagnostic = useChatRuntimeStore((s) => s.toolIsolationErrorDiagnostic);
   const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
 
   return (
@@ -547,19 +613,56 @@ export function LimitedModeConfirmDialog({
         }}
       >
         <AlertDialogHeader className="gap-2">
-          <AlertDialogTitle>Use Limited mode?</AlertDialogTitle>
+          <AlertDialogTitle>
+            {variant === "nested"
+              ? "Use container-compatible tool isolation?"
+              : "Use Limited mode?"}
+          </AlertDialogTitle>
           <AlertDialogDescription>
-            {limitedModeWarning(capability)}
+            {variant === "nested"
+              ? capability?.nested_disclosure ||
+                "Applies only to Python and Terminal tool calls. Keeps file and network restrictions, but shares the container's process information and relies partly on its isolation."
+              : limitedModeWarning(capability)}
           </AlertDialogDescription>
         </AlertDialogHeader>
         {error ? (
           <p className="text-center text-xs text-destructive">{error}</p>
         ) : null}
+        {error && diagnostic ? (
+          <details className="text-sm">
+            <summary>Diagnostic details</summary>
+            <p>Code: {diagnostic.code}</p>
+            <p>Stage: {diagnostic.stage}</p>
+            {diagnostic.dependency ? (
+              <p>Dependency: {diagnostic.dependency}</p>
+            ) : null}
+            {diagnostic.field ? (
+              <p>
+                {diagnostic.field}: {diagnostic.count} entries; limit{" "}
+                {diagnostic.limit}.
+              </p>
+            ) : null}
+          </details>
+        ) : null}
+        {variant === "limited" &&
+        capability?.nested_eligible &&
+        onRequestNested ? (
+          <button
+            type="button"
+            className="text-sm underline"
+            disabled={loading}
+            onClick={onRequestNested}
+          >
+            Try container-compatible isolation instead…
+          </button>
+        ) : null}
         <AlertDialogFooter className="sm:items-center">
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
             className="whitespace-normal"
-            disabled={loading}
+            disabled={
+              loading || (variant === "nested" && !capability?.nested_eligible)
+            }
             onClick={(event) => {
               event.preventDefault();
               requestGrant()
@@ -567,7 +670,11 @@ export function LimitedModeConfirmDialog({
                 .catch(() => undefined);
             }}
           >
-            {loading ? "Enabling…" : "Use Limited mode"}
+            {loading
+              ? "Checking…"
+              : variant === "nested"
+                ? "Check and enable"
+                : "Use Limited mode"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -579,8 +686,25 @@ export function LimitedModeConfirmDialog({
 export function ToolIsolationConsentDialog() {
   const open = useChatRuntimeStore((s) => s.toolIsolationConsentOpen);
   const setOpen = useChatRuntimeStore((s) => s.setToolIsolationConsentOpen);
+  return open ? <ActiveToolIsolationConsentDialog setOpen={setOpen} /> : null;
+}
 
-  return <LimitedModeConfirmDialog open={open} onOpenChange={setOpen} />;
+function ActiveToolIsolationConsentDialog({
+  setOpen,
+}: {
+  setOpen: (open: boolean) => void;
+}) {
+  const [variant, setVariant] = useState<"limited" | "nested">("limited");
+  return (
+    <LimitedModeConfirmDialog
+      open={true}
+      variant={variant}
+      onRequestNested={() => setVariant("nested")}
+      onOpenChange={(next) => {
+        setOpen(next);
+      }}
+    />
+  );
 }
 
 /**
@@ -601,8 +725,10 @@ export function PermissionModeDropdown({
   const toolExecutionMode = useChatRuntimeStore((s) => s.toolExecutionMode);
   const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
   const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
+  const nestedGrant = useChatRuntimeStore((s) => s.nestedToolGrant);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [limitedConfirmOpen, setLimitedConfirmOpen] = useState(false);
+  const [nestedConfirmOpen, setNestedConfirmOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const restoreFocus = () => triggerRef.current?.focus();
@@ -611,6 +737,7 @@ export function PermissionModeDropdown({
     toolExecutionMode,
     capability,
     grant,
+    nestedGrant,
   );
   const ActiveIcon = active.icon;
 
@@ -656,6 +783,7 @@ export function PermissionModeDropdown({
           />
           <ToolIsolationMenuSection
             onRequestLimited={() => setLimitedConfirmOpen(true)}
+            onRequestNested={() => setNestedConfirmOpen(true)}
             onRequestDetails={() => setDetailsOpen(true)}
           />
         </DropdownMenuContent>
@@ -669,6 +797,12 @@ export function PermissionModeDropdown({
         restoreFocus={restoreFocus}
         open={detailsOpen}
         onOpenChange={setDetailsOpen}
+      />
+      <LimitedModeConfirmDialog
+        variant="nested"
+        restoreFocus={restoreFocus}
+        open={nestedConfirmOpen}
+        onOpenChange={setNestedConfirmOpen}
       />
       <LimitedModeConfirmDialog
         restoreFocus={restoreFocus}
@@ -693,10 +827,12 @@ export function PermissionModeComposerPill({
   const toolExecutionMode = useChatRuntimeStore((s) => s.toolExecutionMode);
   const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
   const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
+  const nestedGrant = useChatRuntimeStore((s) => s.nestedToolGrant);
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
   const [limitedConfirmOpen, setLimitedConfirmOpen] = useState(false);
+  const [nestedConfirmOpen, setNestedConfirmOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const restoreFocus = () => triggerRef.current?.focus();
@@ -705,12 +841,16 @@ export function PermissionModeComposerPill({
     toolExecutionMode,
     capability,
     grant,
+    nestedGrant,
   );
   const ActiveIcon = active.icon;
   const fullAccess = permissionMode === "full";
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const showIsolation =
-    codeToolsEnabled || fullAccess || toolExecutionMode === "limited";
+    codeToolsEnabled ||
+    fullAccess ||
+    toolExecutionMode === "limited" ||
+    toolExecutionMode === "container_isolation";
 
   return (
     <>
@@ -761,6 +901,7 @@ export function PermissionModeComposerPill({
           />
           <ToolIsolationMenuSection
             onRequestLimited={() => setLimitedConfirmOpen(true)}
+            onRequestNested={() => setNestedConfirmOpen(true)}
             onRequestDetails={() => setDetailsOpen(true)}
           />
         </DropdownMenuContent>
@@ -769,6 +910,12 @@ export function PermissionModeComposerPill({
         restoreFocus={restoreFocus}
         open={detailsOpen}
         onOpenChange={setDetailsOpen}
+      />
+      <LimitedModeConfirmDialog
+        variant="nested"
+        restoreFocus={restoreFocus}
+        open={nestedConfirmOpen}
+        onOpenChange={setNestedConfirmOpen}
       />
       <LimitedModeConfirmDialog
         restoreFocus={restoreFocus}

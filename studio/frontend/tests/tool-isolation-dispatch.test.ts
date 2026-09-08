@@ -63,6 +63,15 @@ const isLimitedGrantCurrent = runInNewContext(
     ),
   ).replace("export ", "")}\nisLimitedGrantCurrent;`,
 );
+const isNestedGrantCurrent = runInNewContext(
+  stripTypeScriptTypes(
+    isolation.slice(
+      isolation.indexOf("export function isNestedGrantCurrent("),
+      isolation.indexOf("export type ToolIsolationPresentation"),
+    ),
+  ).replace(/^export /gm, "") + "\nisNestedGrantCurrent;",
+  { isLimitedGrantCurrent },
+);
 const authFunctions = [
   "fetchWithTauriNetworkRetry",
   "retryWithCurrentToken",
@@ -76,6 +85,12 @@ const authFunctions = [
   .join("\n");
 for (const scenario of [
   "unchanged",
+  "unchanged-nested",
+  "nested-during-first-save",
+  "nested-expired-during-first-save",
+  "nested-auth-refresh",
+  "nested-transport-retry",
+  "nested-encryption-wait",
   "revoke-before-build",
   "revoke-during-first-save",
   "revoke-network-during-first-save",
@@ -103,10 +118,23 @@ for (const scenario of [
       toolIsolationUiSessionId: "page-a",
       toolNetworkPolicy: network ? "allowlist" : "deny",
       toolIsolationCapability: {
+        nested_eligible: true,
+        nested_profile_id: "nested-v1",
         probe_generation: "generation",
         protection_state: "preview",
         network_policies: ["deny", "allowlist"],
       },
+      nestedToolGrant: {
+        mode: "container_isolation",
+        grant: "nested-grant",
+        expires_at: Date.now() + 60000,
+        probe_generation: "generation",
+      } as {
+        mode: string;
+        grant: string;
+        expires_at: number;
+        probe_generation: string;
+      } | null,
       limitedToolGrant: {
         grant: "grant",
         expires_at: Date.now() + 60_000,
@@ -118,10 +146,22 @@ for (const scenario of [
       } | null,
     };
     if (scenario.includes("grant")) live.toolExecutionMode = "limited";
+    if (scenario.includes("nested")) {
+      live.toolExecutionMode = "container_isolation";
+      live.toolIsolationCapability.protection_state = "unavailable";
+    }
     const runtime = { ...live, maxToolCallsPerMessage: 5, toolCallTimeout: 1 };
     const wire: { url: string; payload: Record<string, unknown> }[] = [];
     const revoke = () => {
-      if (scenario.includes("session"))
+      if (scenario.includes("nested")) {
+        live = {
+          ...live,
+          nestedToolGrant:
+            scenario.includes("expired") && live.nestedToolGrant
+              ? { ...live.nestedToolGrant, expires_at: 1 }
+              : null,
+        };
+      } else if (scenario.includes("session"))
         live = { ...live, toolIsolationUiSessionId: "page-b" };
       else if (scenario.includes("roundtrip"))
         live = { ...live, toolIsolationDecisionEpoch: 3 };
@@ -137,6 +177,8 @@ for (const scenario of [
         live = {
           ...live,
           toolIsolationCapability: {
+            nested_eligible: false,
+            nested_profile_id: "nested-v1",
             probe_generation: "generation",
             protection_state: "unavailable",
             network_policies: ["deny"],
@@ -156,11 +198,13 @@ for (const scenario of [
       runtime,
       runsStudioPythonOrTerminal: true,
       isLimitedGrantCurrent,
+      isNestedGrantCurrent,
       supportsStudioToolsForThisTurn: true,
       useChatRuntimeStore: { getState: () => live },
       toolIsolationRequestFields: {
         tool_execution_mode: runtime.toolExecutionMode,
         tool_network_policy: runtime.toolNetworkPolicy,
+        nested_grant: scenario.includes("nested") ? "nested-grant" : undefined,
         limited_grant: scenario.includes("grant") ? "grant" : undefined,
       },
       permissionMode: network ? "off" : "full",
@@ -250,10 +294,18 @@ for (const scenario of [
       );
     } else {
       await run;
+      if (scenario.includes("nested")) {
+        assert.equal(wire.at(-1)?.payload.nested_grant, "nested-grant");
+        assert.equal(wire.at(-1)?.payload.limited_grant, undefined);
+      }
       assert.equal(wire.length, scenario.includes("auth-refresh") ? 2 : 1);
       assert.equal(
         wire.at(-1)?.payload.tool_execution_mode,
-        scenario.includes("grant") ? "limited" : "full",
+        scenario.includes("nested")
+          ? "container_isolation"
+          : scenario.includes("grant")
+            ? "limited"
+            : "full",
       );
     }
   });

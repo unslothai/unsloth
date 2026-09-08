@@ -40,6 +40,12 @@ class ToolIsolationCapability:
     limited_backend: str | None = None
     limited_profile_id: str | None = None
     limited_limitations: tuple[str, ...] = ()
+    reason_code: str | None = None
+    diagnostic: dict[str, Any] | None = None
+    limited_disclosure: str = ""
+    nested_eligible: bool = False
+    nested_profile_id: str | None = None
+    nested_disclosure: str = ""
 
 
 @dataclass(frozen = True)
@@ -287,6 +293,12 @@ def _shape_capability(snapshot: object) -> ToolIsolationCapability:
         limited_limitations = _string_tuple(
             _optional_snapshot_value(snapshot, "limited_limitations", ())
         ),
+        reason_code = _optional_snapshot_value(snapshot, "reason_code", None),
+        diagnostic = _optional_snapshot_value(snapshot, "diagnostic", None),
+        limited_disclosure = _optional_snapshot_value(snapshot, "limited_disclosure", ""),
+        nested_eligible = bool(_optional_snapshot_value(snapshot, "nested_eligible", False)),
+        nested_profile_id = _optional_snapshot_value(snapshot, "nested_profile_id", None),
+        nested_disclosure = _optional_snapshot_value(snapshot, "nested_disclosure", ""),
     )
 
 

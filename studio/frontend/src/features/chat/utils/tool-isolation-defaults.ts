@@ -10,6 +10,7 @@ export type ProtectedIsolationDefaults = {
   /** The network allowlist is a session decision like Full and Limited; it ends with them. */
   toolNetworkPolicy: ToolNetworkPolicy;
   limitedToolGrant: null;
+  nestedToolGrant: null;
   bypassPermissions: false;
   permissionMode: PermissionMode;
   confirmToolCalls: boolean;
@@ -32,6 +33,7 @@ export function protectedIsolationDefaults(
     toolExecutionMode: "os_isolation_required",
     toolNetworkPolicy: "deny",
     limitedToolGrant: null,
+    nestedToolGrant: null,
     bypassPermissions: false,
     permissionMode: level,
     confirmToolCalls: level === "ask" || level === "auto",

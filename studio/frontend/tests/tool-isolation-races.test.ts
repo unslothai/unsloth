@@ -19,7 +19,9 @@ const read = (path: string) =>
 const adapter = read("../src/features/chat/api/chat-adapter.ts");
 const store = read("../src/features/chat/stores/chat-runtime-store.ts");
 const isolation = read("../src/features/chat/tool-isolation.ts");
-const permissionSelect = read("../src/features/chat/permission-mode-select.tsx");
+const permissionSelect = read(
+  "../src/features/chat/permission-mode-select.tsx",
+);
 for (const persisted of ["ask", "auto", "off", "full"] as const) {
   test(`Deep Research revokes elevated execution using current chat level ${persisted}`, () => {
     const start = store.indexOf(
@@ -154,6 +156,15 @@ const isLimitedGrantCurrent = runInNewContext(
   stripTypeScriptTypes(validator).replace(/^export /gm, "") +
     "\nisLimitedGrantCurrent;",
 );
+const isNestedGrantCurrent = runInNewContext(
+  stripTypeScriptTypes(
+    isolation.slice(
+      isolation.indexOf("export function isNestedGrantCurrent("),
+      isolation.indexOf("export type ToolIsolationPresentation"),
+    ),
+  ).replace(/^export /gm, "") + "\nisNestedGrantCurrent;",
+  { isLimitedGrantCurrent },
+);
 const gate = adapter.slice(
   adapter.indexOf("      let toolIsolationRequestFields: Pick<"),
   adapter.indexOf(
@@ -210,6 +221,7 @@ for (const scenario of [
         supportsStudioToolsForThisTurn: true,
         runsStudioPythonOrTerminal: true,
         isLimitedGrantCurrent,
+        isNestedGrantCurrent,
         effectiveToolNetworkPolicy,
         queuedToolNetworkPolicy,
         queuedIsolationDecisionIsCurrent,
@@ -234,19 +246,29 @@ for (const mode of ["full", "limited", "os_isolation_required"]) {
       toolIsolationDecisionEpoch: 3,
       toolNetworkPolicy: "deny",
       limitedToolGrant: grant("replacement"),
-      toolIsolationCapability: { protection_state: "unavailable", probe_generation: "g" },
+      toolIsolationCapability: {
+        protection_state: "unavailable",
+        probe_generation: "g",
+      },
       refreshToolIsolationCapability: async () => {},
       setToolIsolationConsentOpen: () => {},
     };
-    const runtime = { ...live, toolIsolationDecisionEpoch: 1, limitedToolGrant: grant("earlier") };
+    const runtime = {
+      ...live,
+      toolIsolationDecisionEpoch: 1,
+      limitedToolGrant: grant("earlier"),
+    };
     const result = runInNewContext(
-      stripTypeScriptTypes(`async function run() { ${gate}\nreturn toolIsolationRequestFields; } run();`),
+      stripTypeScriptTypes(
+        `async function run() { ${gate}\nreturn toolIsolationRequestFields; } run();`,
+      ),
       {
         runtime,
         useChatRuntimeStore: { getState: () => live },
         supportsStudioToolsForThisTurn: true,
         runsStudioPythonOrTerminal: true,
         isLimitedGrantCurrent,
+        isNestedGrantCurrent,
         effectiveToolNetworkPolicy,
         queuedToolNetworkPolicy,
         queuedIsolationDecisionIsCurrent,
@@ -271,16 +293,34 @@ type GrantState = {
 };
 
 test("permission revocation after preparation is checked again at serialization", async () => {
-  const live = { toolExecutionMode: "full", toolIsolationUiSessionId: "session", toolIsolationDecisionEpoch: 1, toolNetworkPolicy: "deny" };
+  const live = {
+    toolExecutionMode: "full",
+    toolIsolationUiSessionId: "session",
+    toolIsolationDecisionEpoch: 1,
+    toolNetworkPolicy: "deny",
+  };
   const runtime = { ...live, limitedToolGrant: null };
   const validate = await runInNewContext(
-    stripTypeScriptTypes(`async function run() { ${gate}\nreturn currentToolIsolationRequestFields; } run();`),
-    { runtime, useChatRuntimeStore: { getState: () => live }, supportsStudioToolsForThisTurn: true, runsStudioPythonOrTerminal: true, queuedIsolationDecisionIsCurrent, queuedToolNetworkPolicy },
+    stripTypeScriptTypes(
+      `async function run() { ${gate}\nreturn currentToolIsolationRequestFields; } run();`,
+    ),
+    {
+      runtime,
+      useChatRuntimeStore: { getState: () => live },
+      supportsStudioToolsForThisTurn: true,
+      runsStudioPythonOrTerminal: true,
+      queuedIsolationDecisionIsCurrent,
+      queuedToolNetworkPolicy,
+    },
   );
   assert.equal(validate().tool_execution_mode, "full");
   live.toolIsolationDecisionEpoch += 2;
   assert.throws(validate, /permissions changed/);
-  assert.equal((adapter.match(/\.\.\.currentToolIsolationRequestFields\(\)/g) ?? []).length, 2);
+  assert.equal(
+    (adapter.match(/\.\.\.currentToolIsolationRequestFields\(\)/g) ?? [])
+      .length,
+    2,
+  );
 });
 
 function grantHarness() {
@@ -299,7 +339,7 @@ function grantHarness() {
   const requests: ReturnType<typeof deferred>[] = [];
   const method = runInNewContext(
     stripTypeScriptTypes(
-      `let limitedGrantRequestId = 0; const methods = { ${grantMethod} }; methods.requestLimitedToolGrant;`,
+      `let limitedGrantRequestId = 0; let nestedGrantRequestId = 0; const methods = { ${grantMethod} }; methods.requestLimitedToolGrant;`,
     ),
     {
       get: () => state,
@@ -312,6 +352,7 @@ function grantHarness() {
         return d.promise;
       },
       isLimitedGrantCurrent,
+      isNestedGrantCurrent,
     },
   );
   return {
@@ -328,27 +369,80 @@ test("closing the actual Limited dialog rejects its pending grant response", asy
   const h = grantHarness();
   const pending = h.method();
   const rejected = assert.rejects(pending, /permissions changed/);
-  const clearStart = store.indexOf("  clearLimitedToolGrant: () =>", grantStart);
-  const clearMethod = store.slice(clearStart, store.indexOf("  setToolIsolationConsentOpen:", clearStart));
-  const clear = runInNewContext(
-    stripTypeScriptTypes(`const methods = { ${clearMethod} }; methods.clearLimitedToolGrant;`),
-    { set: (update: (state: GrantState) => Partial<GrantState>) => h.change(update(h.get())) },
+  const clearStart = store.indexOf(
+    "  clearLimitedToolGrant: () =>",
+    grantStart,
   );
-  const start = permissionSelect.indexOf("export function LimitedModeConfirmDialog(");
-  const component = permissionSelect.slice(start, permissionSelect.indexOf("/** Page-root dialog", start));
-  const compiled = ts.transpileModule(component.replace("export function", "function"), {
-    compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
-  }).outputText;
+  const clearMethod = store.slice(
+    clearStart,
+    store.indexOf("  setToolIsolationConsentOpen:", clearStart),
+  );
+  const clear = runInNewContext(
+    stripTypeScriptTypes(
+      `const methods = { ${clearMethod} }; methods.clearLimitedToolGrant;`,
+    ),
+    {
+      set: (update: (state: GrantState) => Partial<GrantState>) =>
+        h.change(update(h.get())),
+    },
+  );
+  const start = permissionSelect.indexOf(
+    "export function LimitedModeConfirmDialog(",
+  );
+  const component = permissionSelect.slice(
+    start,
+    permissionSelect.indexOf("/** Page-root dialog", start),
+  );
+  const compiled = ts.transpileModule(
+    component.replace("export function", "function"),
+    {
+      compilerOptions: {
+        jsx: ts.JsxEmit.React,
+        target: ts.ScriptTarget.ES2022,
+      },
+    },
+  ).outputText;
   let closed = false;
   const context: Record<string, unknown> = {
-    React: { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }) },
-    useChatRuntimeStore: (select: (state: unknown) => unknown) => select({ ...h.get(), requestLimitedToolGrant: h.method, clearLimitedToolGrant: clear }),
+    React: {
+      createElement: (
+        type: unknown,
+        props: unknown,
+        ...children: unknown[]
+      ) => ({ type, props, children }),
+    },
+    useChatRuntimeStore: (select: (state: unknown) => unknown) =>
+      select({
+        ...h.get(),
+        requestLimitedToolGrant: h.method,
+        clearLimitedToolGrant: clear,
+      }),
     limitedModeWarning: () => "warning",
   };
-  for (const name of ["AlertDialog", "AlertDialogContent", "AlertDialogHeader", "AlertDialogTitle", "AlertDialogDescription", "AlertDialogFooter", "AlertDialogCancel", "AlertDialogAction"]) context[name] = name;
-  const render = runInNewContext(`${compiled}\nLimitedModeConfirmDialog;`, context);
-  const dialog = render({ open: true, onOpenChange: (open: boolean) => { closed = !open; } });
-  const cancel = dialog.children[0].children[2].children[0];
+  for (const name of [
+    "AlertDialog",
+    "AlertDialogContent",
+    "AlertDialogHeader",
+    "AlertDialogTitle",
+    "AlertDialogDescription",
+    "AlertDialogFooter",
+    "AlertDialogCancel",
+    "AlertDialogAction",
+  ])
+    context[name] = name;
+  const render = runInNewContext(
+    `${compiled}\nLimitedModeConfirmDialog;`,
+    context,
+  );
+  const dialog = render({
+    open: true,
+    onOpenChange: (open: boolean) => {
+      closed = !open;
+    },
+  });
+  const cancel = dialog.children[0].children.find(
+    (node: any) => node?.type === "AlertDialogFooter",
+  ).children[0];
   assert.equal(cancel.type, "AlertDialogCancel");
   assert.notEqual(cancel.props?.disabled, true);
   dialog.props.onOpenChange(false);

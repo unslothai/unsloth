@@ -4,7 +4,8 @@
 import { authFetch } from "@/features/auth";
 import { backendLabel, limitedBackendLabel } from "./tool-isolation-labels";
 
-export type ToolExecutionMode = "os_isolation_required" | "limited" | "full";
+export type ToolExecutionMode =
+  "os_isolation_required" | "limited" | "container_isolation" | "full";
 
 /** Outbound network for an OS-isolated launch: nothing, or the backend's fixed host allowlist
  *  through its local proxy. Only Required mode can enforce either. */
@@ -16,12 +17,23 @@ export const TOOL_NETWORK_POLICIES: readonly ToolNetworkPolicy[] = [
 ];
 
 export type ToolIsolationProtectionState =
-  | "protected"
-  | "preview"
-  | "unavailable";
+  "protected" | "preview" | "unavailable";
 
 /** Advisory host capability. The launch route revalidates it before exec. */
 export type ToolIsolationCapability = {
+  nested_eligible?: boolean;
+  nested_profile_id?: string | null;
+  nested_disclosure?: string;
+  reason_code?: string | null;
+  diagnostic?: {
+    code: string;
+    stage: string;
+    dependency: string | null;
+    field?: string;
+    count?: number;
+    limit?: number;
+  } | null;
+  limited_disclosure?: string;
   environment: string;
   backend: string | null;
   protection_state: ToolIsolationProtectionState;
@@ -52,8 +64,27 @@ export type LimitedToolGrant = {
   probe_generation: string;
 };
 
+/** Kept separate from Limited consent even though the wire payload is shared. */
+export type NestedToolGrant = LimitedToolGrant & {
+  mode: "container_isolation";
+};
+
+export function isNestedGrantCurrent(
+  grant: NestedToolGrant | null,
+  capability: ToolIsolationCapability | null,
+): grant is NestedToolGrant {
+  return (
+    grant?.mode === "container_isolation" &&
+    capability?.protection_state === "unavailable" &&
+    capability.nested_eligible === true &&
+    Boolean(capability.nested_profile_id) &&
+    isLimitedGrantCurrent(grant, capability)
+  );
+}
+
 export type ToolIsolationPresentation = {
-  state: "protected" | "preview" | "unavailable" | "limited" | "full";
+  state:
+    "protected" | "preview" | "unavailable" | "limited" | "container" | "full";
   label: string;
   description: string;
 };
@@ -82,7 +113,24 @@ export function toolIsolationPresentation(
   mode: ToolExecutionMode,
   capability: ToolIsolationCapability | null,
   grant: LimitedToolGrant | null = null,
+  nestedGrant: NestedToolGrant | null = null,
 ): ToolIsolationPresentation {
+  if (mode === "container_isolation") {
+    return isNestedGrantCurrent(nestedGrant, capability)
+      ? {
+          state: "container",
+          label: "Container-compatible isolation",
+          description:
+            capability?.nested_disclosure ||
+            "Uses the container's existing /proc. The outer container provides part of the isolation boundary.",
+        }
+      : {
+          state: "unavailable",
+          label: "Container consent required",
+          description:
+            "Python and Terminal are blocked until container-compatible isolation is checked and explicitly permitted.",
+        };
+  }
   if (mode === "full") {
     return {
       state: "full",
@@ -185,12 +233,28 @@ function parseCapability(body: unknown): ToolIsolationCapability {
   }
   return {
     environment: value.environment,
+    nested_eligible: value.nested_eligible === true,
+    nested_profile_id:
+      typeof value.nested_profile_id === "string"
+        ? value.nested_profile_id
+        : null,
+    nested_disclosure:
+      typeof value.nested_disclosure === "string"
+        ? value.nested_disclosure
+        : "",
     backend: typeof value.backend === "string" ? value.backend : null,
     protection_state: value.protection_state as ToolIsolationProtectionState,
     profile_id: typeof value.profile_id === "string" ? value.profile_id : null,
     probe_generation: value.probe_generation,
     environment_fingerprint: value.environment_fingerprint,
     reason: typeof value.reason === "string" ? value.reason : null,
+    reason_code:
+      typeof value.reason_code === "string" ? value.reason_code : null,
+    diagnostic: parseDiagnostic(value.diagnostic),
+    limited_disclosure:
+      typeof value.limited_disclosure === "string"
+        ? value.limited_disclosure
+        : "",
     remediation:
       typeof value.remediation === "string" ? value.remediation : null,
     retryable: value.retryable === true,
@@ -210,6 +274,33 @@ function parseCapability(body: unknown): ToolIsolationCapability {
         ? value.limited_profile_id
         : null,
     limited_limitations: stringList(value.limited_limitations),
+  };
+}
+
+function parseDiagnostic(
+  value: unknown,
+): ToolIsolationCapability["diagnostic"] {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  if (typeof item.code !== "string" || typeof item.stage !== "string")
+    return null;
+  const counts =
+    typeof item.field === "string" &&
+    ["readRoots", "writeRoots", "denyReadRoots", "denyWriteRoots"].includes(
+      item.field,
+    ) &&
+    typeof item.count === "number" &&
+    Number.isSafeInteger(item.count) &&
+    typeof item.limit === "number" &&
+    Number.isSafeInteger(item.limit)
+      ? { field: item.field, count: item.count, limit: item.limit }
+      : {};
+  return {
+    code: item.code.slice(0, 64),
+    stage: item.stage.slice(0, 32),
+    dependency:
+      typeof item.dependency === "string" ? item.dependency.slice(0, 64) : null,
+    ...counts,
   };
 }
 
@@ -295,4 +386,45 @@ export async function fetchLimitedToolGrant(
     );
   }
   return parseGrant(body);
+}
+
+export class ToolIsolationRequestError extends Error {
+  readonly diagnostic: ToolIsolationCapability["diagnostic"];
+
+  constructor(message: string, diagnostic: unknown) {
+    super(message);
+    this.diagnostic = parseDiagnostic(diagnostic);
+  }
+}
+
+export async function fetchNestedToolGrant(
+  uiSessionId: string,
+  probeGeneration: string,
+): Promise<NestedToolGrant> {
+  const response = await authFetch(
+    "/api/inference/tool-isolation/nested-grant",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ui_session_id: uiSessionId,
+        probe_generation: probeGeneration,
+      }),
+    },
+  );
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ToolIsolationRequestError(
+      responseError(
+        body,
+        `Container-compatible grant failed (${response.status})`,
+      ),
+      body?.detail?.diagnostic,
+    );
+  }
+  try {
+    return { ...parseGrant(body), mode: "container_isolation" };
+  } catch {
+    throw new Error("Invalid container-compatible grant response");
+  }
 }

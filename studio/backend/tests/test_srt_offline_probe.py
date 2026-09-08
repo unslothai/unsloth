@@ -56,6 +56,9 @@ def test_local_probe_needs_no_public_dns(monkeypatch, dns_error, outcome):
     monkeypatch.setattr(srt_probe.srt_adapter, "request_for", request_for)
     monkeypatch.setattr(srt_probe.srt_adapter, "spawn", lambda *args, **kwargs: proc)
     monkeypatch.setattr(srt_probe.srt_adapter, "verify_success", lambda p: verified.append(p))
+    monkeypatch.setattr(
+        srt_probe.srt_adapter, "completion_receipt", lambda p: {"reason": "completed"}
+    )
     monkeypatch.setattr(srt_probe.srt_adapter, "release_control", lambda p: released.append(p))
     if outcome == "timeout":
         with pytest.raises(srt_probe.srt_adapter.SrtError, match = "timed out"):

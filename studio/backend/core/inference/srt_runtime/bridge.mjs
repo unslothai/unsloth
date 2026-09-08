@@ -11,6 +11,28 @@ export const MAX_REQUEST = 262144;
 // Linux enumerates individual shared libraries to avoid granting their parent trees.
 const MAX_READ_ROOTS = 1024;
 const fail = (message) => { throw new Error(message); };
+const diagnosticError = (code, stage, dependency) => Object.assign(new Error(code), {code, stage, dependency});
+
+export function linuxDependencies() {
+  const found = {};
+  for (const [dependency, filenames] of [
+    ['bubblewrap', ['/usr/bin/bwrap']],
+    ['ripgrep', ['/usr/bin/rg', '/bin/rg', '/usr/local/bin/rg']],
+  ]) {
+    found[dependency] = filenames.find(filename => {
+      try { fs.accessSync(filename, fs.constants.X_OK); return fs.statSync(filename).isFile(); }
+      catch { return false; }
+    });
+    if (!found[dependency]) throw diagnosticError('dependency_missing', 'dependency', dependency);
+  }
+  return found;
+}
+
+export function errorDiagnostic(error) {
+  const codes = ['runtime_missing', 'runtime_invalid', 'dependency_missing', 'policy_invalid', 'policy_oversized', 'operation_unsupported', 'probe_timeout', 'enforcement_failed'];
+  const counts = ['readRoots','writeRoots','denyReadRoots','denyWriteRoots'].includes(error?.field) && Number.isInteger(error?.count) && Number.isInteger(error?.limit) ? {field:error.field,count:error.count,limit:error.limit} : {};
+  return {code: codes.includes(error?.code) ? error.code : 'probe_failed', stage: error?.stage ?? 'probe', ...(error?.dependency ? {dependency:error.dependency} : {}), ...counts};
+}
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const string = (value) => typeof value === 'string' && !value.includes('\0');
 export const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
@@ -25,9 +47,17 @@ export function payloadCommand(request) {
 }
 
 export function validateRequest(value) {
+  try { return validatePolicy(value); }
+  catch (error) { error.code ??= 'policy_invalid'; error.stage = 'policy'; throw error; }
+}
+
+function validatePolicy(value) {
   if (!plain(value) || value.v !== 1 || !['probe', 'run'].includes(value.operation)) fail('Invalid SRT protocol version or operation');
-  const keys = new Set(['v', 'operation', 'executable', 'argv', 'cwd', 'env', 'readRoots', 'writeRoots', 'denyReadRoots', 'denyWriteRoots', 'network', 'nativeAllowedDomains', 'windowsProxyPortRange', 'timeoutMs', 'controlFd', 'controlSocket', 'privateUnixSockets']);
+  const keys = new Set(['v', 'operation', 'executable', 'argv', 'cwd', 'env', 'readRoots', 'writeRoots', 'denyReadRoots', 'denyWriteRoots', 'network', 'nativeAllowedDomains', 'windowsProxyPortRange', 'timeoutMs', 'controlFd', 'controlSocket', 'privateUnixSockets', 'isolationVariant']);
   if (Object.keys(value).some((key) => !keys.has(key))) fail('Unknown SRT request field');
+  if (value.isolationVariant !== undefined && !['standard','nested'].includes(value.isolationVariant)) fail('Unknown SRT isolation variant');
+  // Nested execution stays diagnostic-only until its owner supplies consent and qualification.
+  if (value.isolationVariant === 'nested' && (process.platform !== 'linux' || value.privateUnixSockets !== true || value.network != null || value.nativeAllowedDomains?.length)) fail('Nested SRT requires Linux, the inherited IPC guard and network deny');
   for (const key of ['executable', 'cwd']) if (!string(value[key]) || !path.isAbsolute(value[key])) fail(`${key} must be an absolute path`);
   if (!Array.isArray(value.argv) || value.argv.length > 1024 || !value.argv.every(string)) fail('argv must contain bounded strings');
   if (!plain(value.env) || Object.entries(value.env).some(([k, v]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || !string(v))) fail('Invalid environment');
@@ -36,7 +66,7 @@ export function validateRequest(value) {
     if (key.startsWith('deny') && value[key] === undefined) continue;
     if (!Array.isArray(value[key])) fail(`${key} must contain explicit absolute paths`);
     const limit = key === 'readRoots' ? MAX_READ_ROOTS : 128;
-    if (value[key].length > limit) fail(`${key} exceeds ${limit} entries`);
+    if (value[key].length > limit) throw Object.assign(new Error(`${key} exceeds ${limit} entries`), {code:'policy_oversized',field:key,count:value[key].length,limit});
     if (!value[key].every((p) => string(p) && path.isAbsolute(p) && p !== '/' && !/[*?\[\]{}]/.test(p))) fail(`${key} must contain explicit absolute paths`);
   }
   if (value.nativeAllowedDomains !== undefined && (!Array.isArray(value.nativeAllowedDomains) || value.nativeAllowedDomains.length > 256 || !value.nativeAllowedDomains.every((p) => string(p) && p.length > 0 && p.length <= 253))) fail('Invalid native allowed domains');
@@ -65,9 +95,14 @@ export function validateRequest(value) {
 }
 
 export function verifyInstallation(root = here) {
+  try { return verifyInstalledFiles(root); }
+  catch (error) { error.code = error.code === 'ENOENT' ? 'runtime_missing' : 'runtime_invalid'; error.stage = 'installation'; throw error; }
+}
+
+function verifyInstalledFiles(root) {
   const bytes = fs.readFileSync(path.join(root, 'integrity.json'));
   const manifest = JSON.parse(bytes.toString('utf8'));
-  if (createHash('sha256').update(JSON.stringify(manifest)).digest('hex') !== 'f73892a45faac28d621ca1d400e0ad5a2244269bb8a7dbd23e010e5cd39b89e6') fail('SRT integrity manifest has changed');
+  if (createHash('sha256').update(JSON.stringify(manifest)).digest('hex') !== '6b98645137b11cc1dc3e64faf79edb45b2bc6ff185a2787221b6811a5b1a3b83') fail('SRT integrity manifest has changed');
   if (manifest.version !== VERSION || !plain(manifest.files)) fail('Invalid SRT integrity manifest');
   for (const [relative, digest] of Object.entries(manifest.files)) {
     if (path.isAbsolute(relative) || relative.split('/').includes('..') || !/^[a-f0-9]{64}$/.test(digest)) fail('Invalid integrity entry');
@@ -117,17 +152,20 @@ function checkNetwork(request,cwd) {
 async function executeLinux(request, emit) {
   validateRequest(request);
   const [major, minor] = process.versions.node.split('.').map(Number);
-  if (major < 20 || (major === 20 && minor < 11)) fail('SRT requires Node.js >=20.11.0');
+  if (major < 20 || (major === 20 && minor < 11)) throw diagnosticError('dependency_missing', 'dependency', 'node');
   if (request.nativeAllowedDomains !== undefined || request.denyWriteRoots !== undefined || request.windowsProxyPortRange !== undefined) fail('Native policy fields cannot alter the Linux profile');
-  if (!['x64', 'arm64'].includes(process.arch)) fail('SRT Unix socket filtering is unavailable for this architecture');
+  if (!['x64', 'arm64'].includes(process.arch)) throw diagnosticError('operation_unsupported', 'dependency');
   // The trusted Python launcher installs the exact inherited host-IPC filter.
   // This check is an additional prerequisite, not proof of the filter policy.
   if (request.privateUnixSockets && !/^Seccomp:\s+2\s*$/m.test(fs.readFileSync('/proc/self/status', 'utf8'))) fail('Private Unix sockets require an inherited seccomp filter');
-  const cwd = checkPaths(request);
-  const network = checkNetwork(request,cwd);
+  let cwd, network;
+  try { cwd = checkPaths(request); network = checkNetwork(request,cwd); }
+  catch (error) { error.code = 'policy_invalid'; error.stage = 'policy'; throw error; }
   const packageRoot = verifyInstallation();
+  const dependencies = linuxDependencies();
   const helper = path.join(packageRoot, 'vendor', 'seccomp', process.arch, 'apply-seccomp');
-  fs.accessSync(helper, fs.constants.X_OK);
+  try { fs.accessSync(helper, fs.constants.X_OK); }
+  catch { throw diagnosticError('dependency_missing', 'dependency', 'seccomp_helper'); }
   const { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } = await import(path.join(packageRoot, 'dist/sandbox/linux-sandbox-utils.js'));
   // Empty-root SRT supplies a fresh /tmp tmpfs. A short private path also keeps
   // multiprocessing resource_sharer addresses below AF_UNIX's pathname limit.
@@ -139,17 +177,18 @@ async function executeLinux(request, emit) {
     readConfig: { denyOnly: ['/', '/sys', ...(request.denyReadRoots ?? [])], allowWithinDeny: [...request.readRoots, ...(request.privateUnixSockets ? [] : [helper]), ...network.readRoots] },
     writeConfig: { allowOnly: request.writeRoots, denyWithinAllow: [] },
     binShell: '/bin/bash',
-    bwrapPath: '/usr/bin/bwrap',
+    bwrapPath: dependencies.bubblewrap,
+    ripgrepConfig: {command: dependencies.ripgrep},
     seccompConfig: request.privateUnixSockets ? undefined : { applyPath: helper },
     allowAllUnixSockets: request.privateUnixSockets === true,
-    enableWeakerNestedSandbox: false,
+    enableWeakerNestedSandbox: request.isolationVariant === 'nested',
     httpSocketPath:network.httpSocketPath,
     socksSocketPath:network.socksSocketPath,
     httpProxyPort:network.httpSocketPath?3128:undefined,
     socksProxyPort:network.socksSocketPath?1080:undefined,
     socatPath:network.socatPath,
   });
-  emit({ event: 'ready', version: VERSION, backend: 'srt-linux', network: request.network?'https-allowlist':'none', unixSockets: request.privateUnixSockets === true, qualificationComplete: false });
+  emit({ event: 'ready', version: VERSION, backend: 'srt-linux', isolationVariant: request.isolationVariant ?? 'standard', network: request.network?'https-allowlist':'none', unixSockets: request.privateUnixSockets === true, qualificationComplete: false });
   let child;
   let timer;
   let hardTimer;
@@ -287,7 +326,7 @@ export async function executeSupported(request, emit, options = {}) {
 export async function execute(request, emit, options = {}) {
   validateRequest(request);
   const [major,minor] = process.versions.node.split('.').map(Number);
-  if (major < 20 || (major === 20 && minor < 11)) fail('SRT requires Node.js >=20.11.0');
+  if (major < 20 || (major === 20 && minor < 11)) throw diagnosticError('dependency_missing', 'dependency', 'node');
   return process.platform === 'linux' ? executeLinux(request,emit) : executeSupported(request,emit,options);
 }
 
@@ -317,10 +356,13 @@ async function main() {
     const parts = [];
     for await (const chunk of process.stdin) {
       size += chunk.length;
-      if (size > MAX_REQUEST) fail('SRT request exceeds size limit');
+      if (size > MAX_REQUEST) throw diagnosticError('policy_oversized', 'policy');
       parts.push(chunk);
     }
-    const request = validateRequest(JSON.parse(Buffer.concat(parts).toString('utf8')));
+    let value;
+    try {value=JSON.parse(Buffer.concat(parts).toString('utf8'));}
+    catch {throw diagnosticError('policy_invalid','policy');}
+    const request = validateRequest(value);
     if (socketMode) {
       if (!request.controlSocket) fail('Authenticated control socket is required');
       connection = await connectControl(request.controlSocket);
@@ -328,7 +370,7 @@ async function main() {
     } else if (request.controlSocket || (request.controlFd !== undefined && request.controlFd !== fd)) fail('Control descriptor mismatch');
     return await execute(request, emit, {signal:abort.signal});
   } catch (error) {
-    try { emit({ event: 'error', message: String(error.message).slice(0, 2048) }); } catch { /* The controller has exited. */ }
+    try { emit({ event: 'error', ...errorDiagnostic(error), message: 'SRT setup failed' }); } catch { /* The controller has exited. */ }
     return 125;
   } finally {
     if (connection && !connection.destroyed) await new Promise((resolve) => connection.end(() => { connection.destroy(); resolve(); }));

@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 from . import srt_adapter
+from .srt_diagnostics import ProbeReason, boundary_identity, environment_context, limited_disclosure
 from dataclasses import dataclass, field, replace
 from typing import Any, BinaryIO, Callable, Literal
 from loggers import get_logger
@@ -21,7 +22,7 @@ from .network_proxy import NetworkAudit
 from .network_proxy import AllowlistProxy, NetworkAllowlist
 
 logger = get_logger(__name__)
-ToolExecutionMode = Literal["os_isolation_required", "limited", "full"]
+ToolExecutionMode = Literal["os_isolation_required", "container_isolation", "limited", "full"]
 NETWORK_POLICIES = ("deny", "allowlist")
 _NR_PIDFD_SEND_SIGNAL = 424
 _NR_PIDFD_OPEN = 434
@@ -89,6 +90,12 @@ class SandboxCapability:
     network_allowlist: tuple[str, ...] = ()
     # Internal runtime proof, distinct from the UI consent generation.
     qualification_generation: str = ""
+    reason_code: str | None = None
+    diagnostic: dict[str, Any] | None = None
+    limited_disclosure: str = ""
+    nested_eligible: bool = False
+    nested_profile_id: str | None = None
+    nested_disclosure: str = ""
 
 
 @dataclass(frozen = True)
@@ -107,6 +114,7 @@ class ToolExecutionRecord:
     # "unrestricted": the launch has the host's network (Limited and Full).
     network_policy: str = "deny"
     network_allowlist: tuple[str, ...] = ()
+    authority_disclosure: str = ""
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -121,6 +129,7 @@ class ToolExecutionRecord:
             "limitations": list(self.limitations),
             "network_policy": self.network_policy,
             "network_allowlist": list(self.network_allowlist),
+            "authority_disclosure": self.authority_disclosure,
         }
 
 
@@ -137,6 +146,7 @@ class ToolLaunchPlan:
     current_subject: str | None = None
     tool_ui_session_id: str | None = None
     limited_grant: str | None = None
+    nested_grant: str | None = None
     timeout_seconds: int | None = None
     close_fds: bool = True
     terminate_descendants: bool = True
@@ -317,7 +327,17 @@ def _linux_unavailable_remediation() -> str:
 def _runtime_identity() -> str:
     """Consent changes when the selected interpreter or shipped adapter changes."""
     digest = hashlib.sha256()
-    for path in (sys.executable, __file__):
+    shell_candidates = ()
+    if sys.platform == "linux":
+        # Match the directories used by the safe Terminal PATH. Bind absent
+        # candidates too: installing a venv-local bash changes shell selection.
+        directories = [os.path.dirname(sys.executable)]
+        venv = os.environ.get("VIRTUAL_ENV")
+        if venv:
+            directories.append(os.path.join(venv, "bin"))
+        directories.extend(("/usr/local/bin", "/usr/bin", "/bin"))
+        shell_candidates = tuple(os.path.join(directory, "bash") for directory in directories)
+    for path in (sys.executable, __file__, *shell_candidates):
         resolved = os.path.realpath(path)
         digest.update(resolved.encode())
         try:
@@ -328,11 +348,46 @@ def _runtime_identity() -> str:
     digest.update((SRT_PROFILE + sys.platform + platform.release()).encode())
     digest.update((os.path.abspath(sys.executable) + sys.prefix).encode())
     digest.update(srt_adapter.installation_identity().encode())
+    digest.update(boundary_identity().encode())
     digest.update(os.environ.get("UNSLOTH_STUDIO_TOOL_NETWORK_ALLOWLIST", "").encode())
     return digest.hexdigest()
 
 
 def capability_snapshot(
+    *,
+    force: bool = False,
+    execution_kind = None,
+    selected_executable = None,
+) -> SandboxCapability:
+    snapshot = _capability_snapshot(
+        force = force, execution_kind = execution_kind, selected_executable = selected_executable
+    )
+    environment = environment_context()
+    changes = {"environment": environment, "limited_disclosure": limited_disclosure(environment)}
+    if not snapshot.available:
+        reason = (
+            snapshot.reason
+            if isinstance(snapshot.reason, ProbeReason)
+            else ProbeReason("probe_failed")
+        )
+        changes.update(reason.fields(), reason = str(reason))
+        from .srt_nested import eligibility, NESTED_PROFILE, NESTED_DISCLOSURE
+
+        eligible = eligibility((False, reason))
+        changes.update(
+            nested_eligible = eligible,
+            nested_profile_id = NESTED_PROFILE if eligible else None,
+            nested_disclosure = NESTED_DISCLOSURE if eligible else "",
+        )
+        changes["probe_generation"] = hashlib.sha256(
+            (
+                snapshot.probe_generation + reason.code + str(reason.dependency) + str(eligible)
+            ).encode()
+        ).hexdigest()
+    return replace(snapshot, **changes)
+
+
+def _capability_snapshot(
     *,
     force: bool = False,
     execution_kind = None,
@@ -429,13 +484,76 @@ def sandbox_capability() -> SandboxCapability:
     return capability_snapshot()
 
 
+def _nested_launch_capability(spec, selected):
+    from . import srt_probe
+    from .srt_nested import NESTED_GRANTS, NESTED_PROFILE
+    from .tool_isolation import LimitedGrantError
+
+    def snapshot():
+        return capability_snapshot(
+            force = True,
+            execution_kind = spec.execution_kind,
+            selected_executable = selected,
+        )
+
+    def authorize(capability):
+        if (
+            capability.available
+            or not capability.nested_eligible
+            or capability.nested_profile_id != NESTED_PROFILE
+        ):
+            raise SandboxUnavailableError("Container-compatible isolation is not eligible")
+        if not spec.current_subject or not spec.tool_ui_session_id:
+            raise SandboxUnavailableError(
+                "Container-compatible isolation requires a Studio UI session"
+            )
+        try:
+            NESTED_GRANTS.validate(
+                spec.nested_grant,
+                current_subject = spec.current_subject,
+                tool_ui_session_id = spec.tool_ui_session_id,
+                probe_generation = capability.probe_generation,
+            )
+        except LimitedGrantError as exc:
+            raise SandboxUnavailableError(
+                "Container-compatible isolation consent is invalid or expired"
+            ) from exc
+
+    if spec.network_policy != "deny":
+        raise SandboxUnavailableError(
+            "Container-compatible isolation currently requires network deny"
+        )
+    before = snapshot()
+    authorize(before)
+    available, reason = srt_probe.probe(
+        force = True,
+        execution_kind = spec.execution_kind,
+        selected_executable = selected,
+        isolation_variant = "nested",
+    )
+    if not available:
+        raise SandboxUnavailableError(f"Container-compatible isolation probe failed: {reason}")
+    after = snapshot()
+    if after.probe_generation != before.probe_generation:
+        raise SandboxUnavailableError("Container-compatible isolation changed during its probe")
+    authorize(after)
+    if spec.cancel_event is not None and spec.cancel_event.is_set():
+        raise SandboxUnavailableError("Execution cancelled before launch")
+    return after
+
+
 def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
     """Authorize one launch; a Required failure never becomes a host execution."""
     if spec.cancel_event is not None and spec.cancel_event.is_set():
         raise SandboxUnavailableError("Execution cancelled before launch")
     if not spec.argv or any(not isinstance(arg, str) or "\0" in arg for arg in spec.argv):
         raise SandboxUnavailableError("tool launch argv is invalid")
-    if spec.requested_mode not in ("os_isolation_required", "limited", "full"):
+    if spec.requested_mode not in (
+        "os_isolation_required",
+        "container_isolation",
+        "limited",
+        "full",
+    ):
         raise SandboxUnavailableError("unknown tool execution mode")
     if not spec.close_fds or not spec.terminate_descendants:
         raise SandboxUnavailableError("tool launches must close descriptors and own cleanup")
@@ -470,8 +588,11 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
         capability = capability_snapshot(
             execution_kind = canonical.execution_kind, selected_executable = selected
         )
-        if canonical.requested_mode == "os_isolation_required":
-            if not capability.available:
+        nested = canonical.requested_mode == "container_isolation"
+        if nested:
+            capability = _nested_launch_capability(canonical, selected)
+        if canonical.requested_mode in ("os_isolation_required", "container_isolation"):
+            if not nested and not capability.available:
                 raise SandboxUnavailableError(
                     f"OS_ISOLATION_UNAVAILABLE: {capability.reason} {capability.remediation}"
                 )
@@ -508,6 +629,7 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                     launch_env,
                     canonical.timeout_seconds,
                     additional_read_roots = extra_reads,
+                    **({"isolation_variant": "nested"} if nested else {}),
                 )
                 if transport is not None:
                     request["network"] = {
@@ -524,11 +646,11 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                         trust_store.close()
                 raise SandboxUnavailableError(str(exc)) from exc
             record = ToolExecutionRecord(
-                requested_mode = "os_isolation_required",
-                effective_mode = "os_isolation_required",
+                requested_mode = canonical.requested_mode,
+                effective_mode = canonical.requested_mode,
                 environment = capability.environment,
                 backend = "srt",
-                profile_id = capability.profile_id,
+                profile_id = capability.nested_profile_id if nested else capability.profile_id,
                 probe_generation = capability.probe_generation,
                 os_isolation = True,
                 retained_safeguards = tuple(
@@ -537,7 +659,8 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                     if item != "timeout" or canonical.timeout_seconds is not None
                     if item != "resource_limits" or sys.platform != "win32"
                 ),
-                limitations = capability.limitations,
+                limitations = ("shared_container_proc",) if nested else capability.limitations,
+                authority_disclosure = capability.nested_disclosure if nested else "",
                 network_policy = canonical.network_policy,
                 network_allowlist = allowlist_hosts,
             )
@@ -557,6 +680,12 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 prepared.cleanup_callbacks.append(trust_store.close)
 
             def launch(_prepared, kwargs):
+                if nested:
+                    current = _nested_launch_capability(canonical, selected)
+                    if current.probe_generation != capability.probe_generation:
+                        raise SandboxUnavailableError(
+                            "Container-compatible isolation changed before launch"
+                        )
                 try:
                     proc = srt_adapter.spawn(request, cancel_event = canonical.cancel_event, **kwargs)
                 except Exception as exc:
@@ -602,6 +731,7 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 if item != "timeout" or canonical.timeout_seconds is not None
             ),
             limitations = capability.limited_limitations,
+            authority_disclosure = capability.limited_disclosure,
             network_policy = "unrestricted",
         )
     return PreparedSandboxLaunch(

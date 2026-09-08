@@ -10318,13 +10318,16 @@ def _isolation_cleanup_trailer(prepared_launch, tool_name: str) -> str:
 
 
 def apply_os_isolated_tool_descriptions(
-    tools: list[dict], network_allowlist: tuple[str, ...] | list[str] | None = None
+    tools: list[dict],
+    network_allowlist: tuple[str, ...] | list[str] | None = None,
+    *,
+    container_compatible: bool = False,
 ) -> list[dict]:
     """Describe the selected isolated shell and any enforced network allowlist."""
     swap_shell = False
     fresh_bash = sys.platform == "win32" and bool(_windows_bash())
     hosts = tuple(str(host) for host in (network_allowlist or ()) if str(host).strip())
-    if not swap_shell and not fresh_bash and not hosts:
+    if not swap_shell and not fresh_bash and not hosts and not container_compatible:
         return tools
     out: list[dict] = []
     swapped = False
@@ -10347,6 +10350,9 @@ def apply_os_isolated_tool_descriptions(
                 description = description + _TERMINAL_CMD_NOTE
         if hosts:
             description = description + _NETWORK_ALLOWLIST_NOTE.format(hosts = ", ".join(hosts))
+        if container_compatible:
+            from .srt_nested import NESTED_DISCLOSURE
+            description = description + " " + NESTED_DISCLOSURE
         if description == original:
             out.append(tool)
             continue
@@ -10833,6 +10839,7 @@ def execute_tool(
     tool_execution_mode: str | None = None,
     current_subject: str | None = None,
     tool_ui_session_id: str | None = None,
+    nested_grant: str | None = None,
     limited_grant: str | None = None,
     launch_record_callback = None,
     network_policy: str | None = None,
@@ -11008,6 +11015,7 @@ def execute_tool(
                 current_subject = current_subject,
                 tool_ui_session_id = tool_ui_session_id,
                 limited_grant = limited_grant,
+                nested_grant = nested_grant,
                 launch_record_callback = launch_record_callback,
                 network_policy = network_policy,
             )
@@ -11025,6 +11033,7 @@ def execute_tool(
                 current_subject = current_subject,
                 tool_ui_session_id = tool_ui_session_id,
                 limited_grant = limited_grant,
+                nested_grant = nested_grant,
                 launch_record_callback = launch_record_callback,
                 network_policy = network_policy,
             )
@@ -16772,6 +16781,7 @@ def _python_exec(
     tool_execution_mode: str | None = None,
     current_subject: str | None = None,
     tool_ui_session_id: str | None = None,
+    nested_grant: str | None = None,
     limited_grant: str | None = None,
     launch_record_callback = None,
     network_policy: str | None = None,
@@ -16873,6 +16883,7 @@ def _python_exec(
                 current_subject = current_subject,
                 tool_ui_session_id = tool_ui_session_id,
                 limited_grant = limited_grant,
+                nested_grant = nested_grant,
                 timeout_seconds = timeout,
                 network_policy = _requested_network_policy(network_policy, full_access),
                 execution_kind = "python",
@@ -17116,6 +17127,7 @@ def _bash_exec(
     tool_execution_mode: str | None = None,
     current_subject: str | None = None,
     tool_ui_session_id: str | None = None,
+    nested_grant: str | None = None,
     limited_grant: str | None = None,
     launch_record_callback = None,
     network_policy: str | None = None,
@@ -17178,7 +17190,10 @@ def _bash_exec(
             run_marker = secrets.token_hex(16)
             safe_env = dict(safe_env)
             safe_env[_LIMITED_RUN_MARKER_ENV] = run_marker
-        os_isolated = not full_access and effective_execution_mode == "os_isolation_required"
+        os_isolated = not full_access and effective_execution_mode in (
+            "os_isolation_required",
+            "container_isolation",
+        )
         if os_isolated and sys.platform == "win32":
             script_path = _reserve_isolated_batch_script(workdir)
             _scratch_name = os.path.basename(script_path)
@@ -17205,6 +17220,7 @@ def _bash_exec(
                 current_subject = current_subject,
                 tool_ui_session_id = tool_ui_session_id,
                 limited_grant = limited_grant,
+                nested_grant = nested_grant,
                 timeout_seconds = timeout,
                 network_policy = _requested_network_policy(network_policy, full_access),
                 execution_kind = "terminal",

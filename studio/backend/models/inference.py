@@ -1973,7 +1973,7 @@ class ReasoningControlsRequest(BaseModel):
 # derivation keeps an unset mode lenient (a non-streaming request cannot prompt, so
 # it runs) to keep non-streaming clients and health checks working.
 _KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
-ToolExecutionMode = Literal["os_isolation_required", "limited", "full"]
+ToolExecutionMode = Literal["os_isolation_required", "container_isolation", "limited", "full"]
 # Network reach of an OS-isolated Python or Terminal launch. "deny" is the
 # fail-closed default; "allowlist" routes traffic through the backend's loopback
 # proxy to the advertised hosts and is accepted only where a backend supports it.
@@ -2008,13 +2008,12 @@ def _reject_unenforceable_network_policy(request: Any) -> None:
     plain Limited descriptions, and every Python or Terminal call fails with the
     same launch error after the generation has been spent.
     """
-    if (
-        getattr(request, "tool_network_policy", "deny") == "allowlist"
-        and getattr(request, "tool_execution_mode", None) == "limited"
-    ):
+    if getattr(request, "tool_network_policy", "deny") == "allowlist" and getattr(
+        request, "tool_execution_mode", None
+    ) in ("limited", "container_isolation"):
         raise ValueError(
             "tool_network_policy 'allowlist' requires tool_execution_mode "
-            "'os_isolation_required'; Limited mode cannot enforce a network allowlist"
+            "'os_isolation_required'; the selected mode does not support a network allowlist"
         )
 
 
@@ -2290,6 +2289,7 @@ class ChatCompletionRequest(BaseModel):
             "the existing unrestricted permission semantics."
         ),
     )
+    nested_grant: Optional[str] = None
     limited_grant: Optional[str] = Field(
         None,
         description = "[x-unsloth] Opaque, session-only Limited-mode grant.",
@@ -2877,6 +2877,12 @@ class ToolConfirmRequest(BaseModel):
 
 
 class ToolIsolationCapabilityResponse(BaseModel):
+    nested_eligible: bool = False
+    nested_profile_id: Optional[str] = None
+    nested_disclosure: str = ""
+    reason_code: Optional[str] = None
+    diagnostic: Optional[dict[str, Any]] = None
+    limited_disclosure: str = ""
     environment: str
     backend: str
     protection_state: str
@@ -3312,6 +3318,7 @@ class ResponsesRequest(BaseModel):
             "Limited requires a session-only grant and Full preserves unrestricted semantics."
         ),
     )
+    nested_grant: Optional[str] = None
     limited_grant: Optional[str] = None
     tool_ui_session_id: Optional[str] = None
     tool_network_policy: ToolNetworkPolicy = "deny"
@@ -3722,6 +3729,7 @@ class AnthropicMessagesRequest(BaseModel):
             "the existing unrestricted permission semantics."
         ),
     )
+    nested_grant: Optional[str] = None
     limited_grant: Optional[str] = None
     tool_ui_session_id: Optional[str] = None
     tool_network_policy: ToolNetworkPolicy = "deny"

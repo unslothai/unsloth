@@ -28,6 +28,57 @@ def _grant():
     )
 
 
+def test_nested_model_descriptions_disclose_proc_without_changing_other_tools():
+    from core.inference.srt_nested import NESTED_DISCLOSURE
+
+    catalog = [
+        {"function": {"name": name, "description": "original"}}
+        for name in ("python", "terminal", "web_search")
+    ]
+    result = tools.apply_os_isolated_tool_descriptions(catalog, container_compatible = True)
+    assert result[0]["function"]["description"].endswith(NESTED_DISCLOSURE)
+    assert result[1]["function"]["description"].endswith(NESTED_DISCLOSURE)
+    assert result[2] is catalog[2]
+    assert all(item["function"]["description"] == "original" for item in catalog)
+    normal = tools.apply_os_isolated_tool_descriptions(catalog)
+    assert all(NESTED_DISCLOSURE not in item["function"]["description"] for item in normal)
+
+
+@pytest.mark.parametrize("kind", ["python", "terminal"])
+def test_nested_grant_reaches_final_launch_without_model_argument_override(
+    tool_session, monkeypatch, kind
+):
+    plans = []
+
+    def refuse(plan):
+        plans.append(plan)
+        raise os_sandbox.SandboxUnavailableError("controlled admission refusal")
+
+    monkeypatch.setattr(tools, "prepare_tool_launch", refuse)
+    result = tools.execute_tool(
+        kind,
+        {
+            "code": "print(1)",
+            "command": "echo hello",
+            "nested_grant": "model-injected",
+            "tool_execution_mode": "full",
+        },
+        session_id = "call",
+        timeout = 5,
+        tool_execution_mode = "container_isolation",
+        current_subject = "actor",
+        tool_ui_session_id = "page",
+        nested_grant = "backend-grant",
+    )
+    assert "controlled admission refusal" in result
+    assert len(plans) == 1
+    assert plans[0].nested_grant == "backend-grant"
+    assert plans[0].limited_grant is None
+    assert plans[0].requested_mode == "container_isolation"
+    assert plans[0].execution_kind == kind
+    assert plans[0].current_subject == "actor"
+
+
 @pytest.mark.parametrize("kind", ["python", "terminal"])
 def test_required_refuses_before_payload_and_has_no_record(tool_session, kind):
     records = []

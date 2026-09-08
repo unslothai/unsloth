@@ -60,7 +60,7 @@
     "@anthropic-ai/sandbox-runtime/dist/sandbox/java-proxy-agent.js.map": "bb6c653d628d4cffc6d748007425091f0f6f62b7eca58960b4d29a53dab5eaa6",
     "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.d.ts": "12d4207d41459b293a81ccad2fd7377248ef0993bfe168d9302bdbb2f537f08a",
     "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.d.ts.map": "5d2ceff7b58421a9917fb146004b7e16c18c8b1631d118c33527922d37d22933",
-    "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js": "4b9651b7d9249b3f747eb01494af2f31cb4f11216afa93b13250e3d404639a25",
+    "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js": "6c9566dfb5f3488c9dbb97820466be49b0b534cb657ca8f775ddeadc68b187be",
     "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js.map": "fb0ad18e53c2b767b80e394950d7fea0b954ba43e1c7c39d73f8982517023f73",
     "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-violation-monitor.d.ts": "dc3ea3323a49c52d2bb6ee8006ead383ed197f23b5a3fb9144fcb962f99e50f3",
     "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-violation-monitor.d.ts.map": "5ceec79de57635f1dc9079078fb7727539526b7771c00ac31e216f0ca6294775",

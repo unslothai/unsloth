@@ -935,6 +935,7 @@ class InferenceBackend:
         tool_execution_mode: str = "os_isolation_required",
         current_subject: Optional[str] = None,
         tool_ui_session_id: Optional[str] = None,
+        nested_grant: Optional[str] = None,
         limited_grant: Optional[str] = None,
         network_policy: str = "deny",
     ):
@@ -1036,6 +1037,7 @@ class InferenceBackend:
             current_subject = current_subject,
             tool_ui_session_id = tool_ui_session_id,
             limited_grant = limited_grant,
+            nested_grant = nested_grant,
             network_policy = network_policy,
         )
 
