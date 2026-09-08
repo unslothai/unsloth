@@ -5732,10 +5732,14 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
         return sum(max(totals) for totals in directories)
 
     outside_original = _sum(
-        totals for directory, totals in per_directory.items() if directory.parts[:1] != ("original",)
+        totals
+        for directory, totals in per_directory.items()
+        if directory.parts[:1] != ("original",)
     )
     original_copy = _sum(
-        totals for directory, totals in per_directory.items() if directory.parts[:1] == ("original",)
+        totals
+        for directory, totals in per_directory.items()
+        if directory.parts[:1] == ("original",)
     )
     total = max(outside_original, original_copy)
     return total if total > 0 else None
