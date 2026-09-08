@@ -3,7 +3,7 @@
 
 """A section reported as one record may hold one row type, or the rest vanish.
 
-`assemble_rows` routes rows by `ROW_TYPE_SECTIONS` and then reports two of those sections as a
+`assemble_rows` routes rows by `ROW_TYPE_SECTIONS` and then reports some of those sections as a
 single record rather than a list. `ab_plan` was filed under `header` alongside `run_meta`, so the
 mapping named a destination and the collapse dropped the row on arrival: `record_counts` said
 `header: 2` while the payload carried one, and nothing landed in `unknown_rows` to show for it.
@@ -41,7 +41,7 @@ def _write(tmp_path: Path, rows: list[dict]) -> Path:
 
 
 def _session(session_id: str, *, treatment: str, balanced: bool, order: list[str]) -> list[dict]:
-    """One session's rows in emission order: `run_meta`, then `ab_plan` before the first cell."""
+    """One session's rows in emission order: every collapsed section's row before the first cell."""
 
     return [
         {
@@ -50,6 +50,12 @@ def _session(session_id: str, *, treatment: str, balanced: bool, order: list[str
             "tier": "standard",
             "studio_ref": "base-sha",
             "platform": {"engine": "chromium"},
+        },
+        {
+            "row_type": "comparability",
+            "session_id": session_id,
+            "key": f"cmp-{session_id}",
+            "fields": {"instrument_level": 2},
         },
         {
             "row_type": "ab_plan",
@@ -121,8 +127,8 @@ def test_record_counts_match_what_the_payload_carries(tmp_path):
 
 
 def test_a_collapsed_section_describes_the_first_session(tmp_path):
-    """`Recorder` appends, so one payload can hold several runs. `header` takes the first
-    `run_meta`; `ab_plan` has to take the first `ab_plan` or the two describe different runs."""
+    """`Recorder` appends, so one payload can hold several runs. Each collapsed section takes the
+    first row of its own type, or they describe different runs."""
 
     path = _write(
         tmp_path,
@@ -131,8 +137,8 @@ def test_a_collapsed_section_describes_the_first_session(tmp_path):
     )
     payload = assemble_rows(path)
 
-    assert payload["header"]["session_id"] == "s1"
-    assert payload["ab_plan"]["session_id"] == "s1"
+    for section in COLLAPSED_SECTIONS:
+        assert payload[section]["session_id"] == "s1", f"{section} describes another session"
     assert payload["ab_plan"]["treatment_ref"] == "first-sha"
 
 

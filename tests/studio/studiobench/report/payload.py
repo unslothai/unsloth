@@ -225,11 +225,11 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     # timing, and folding it into `actions` would put it in front of the scorer.
     "surface": "surfaces",
     # The comparability key. Its own section rather than `header` for two reasons: `header` is
-    # collapsed to its FIRST row when the payload is assembled, so a second row filed there is dropped
-    # without a word; and the row's `fields` block is identity bookkeeping, not a measurement, so the
-    # section is exempted from the bare-zero ban rather than made to fake a Measure. Left unmapped the
-    # row fell into `unknown_rows`, which nothing exempts, and the walker killed every real-path
-    # session on `$.unknown_rows[0].fields.instrument_level = 0`.
+    # collapsed to one record when the payload is assembled, so a second row type filed there is
+    # dropped without a word (see `COLLAPSED_SECTIONS`); and the row's `fields` block is identity
+    # bookkeeping, not a measurement, so the section is exempted from the bare-zero ban rather than
+    # made to fake a Measure. Left unmapped the row fell into `unknown_rows`, which nothing exempts,
+    # and the walker killed every real-path session on `$.unknown_rows[0].fields.instrument_level = 0`.
     "comparability": "comparability",
     # The terminal marker for a cell that did not finish. NOT `cells`, which is what the scorer reads,
     # and NOT an exclusion source: the `cell` row it follows is emitted with `completed: false`
@@ -247,6 +247,7 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
 COLLAPSED_SECTIONS: Mapping[str, str] = {
     "header": "run_meta",
     "ab_plan": "ab_plan",
+    "comparability": "comparability",
 }
 
 
@@ -254,7 +255,7 @@ def _collapsed(sections: Mapping[str, list[dict[str, Any]]], name: str) -> dict[
     """The single record a collapsed section reports, chosen by row type rather than position.
 
     The FIRST match, not the last, because `Recorder` appends: a resumed payload holds several
-    sessions, and `header` and `ab_plan` have to describe the same one.
+    sessions, and the collapsed sections all have to describe the same one.
     """
 
     row_type = COLLAPSED_SECTIONS[name]
@@ -312,7 +313,7 @@ def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
         "samples": sections.get("samples", []),
         "surfaces": sections.get("surfaces", []),
         "aborted_cells": sections.get("aborted_cells", []),
-        "comparability": (sections["comparability"][0] if sections.get("comparability") else {}),
+        "comparability": _collapsed(sections, "comparability"),
         "crashes": sections.get("crashes", []),
         "arms": [],
         "unknown_rows": unknown,
