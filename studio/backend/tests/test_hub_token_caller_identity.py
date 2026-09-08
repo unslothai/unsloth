@@ -93,6 +93,61 @@ def test_cache_reads_require_a_credential_that_reaches_the_repo(monkeypatch):
     assert probes["n"] == 1, "the negative answer was not memoized"
 
 
+def test_a_ui_session_that_saved_a_token_still_reads_its_own_cache(monkeypatch):
+    """The UI attaches the operator's saved token on most Hub routes, so an ordinary
+    single-user session is an EXPLICIT-token caller on exactly the routes this gates.
+
+    Measured before this: with a token saved in Settings and the Hub unreachable, that
+    session lost the GGUF variant list, the default chat template and the dataset format
+    check on repos already in its own cache. The same session with no token saved kept
+    all three. Sending your own credential must not buy you less than sending none.
+    """
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: True)
+    probes = {"n": 0}
+    monkeypatch.setattr(
+        hf_tokens, "_probe_repo_access", lambda *_a, **_k: probes.__setitem__("n", probes["n"] + 1)
+    )
+
+    ui = hf_token_arg("  hf_saved  ", allow_ambient_token = True)
+    api_key = hf_token_arg("  hf_saved  ", allow_ambient_token = False)
+
+    assert ui == "hf_saved" and api_key == "hf_saved", "same value, different caller class"
+    assert cache_reads_authorized(ui, repo_id = "org/private") is True
+    assert cache_reads_authorized(api_key, repo_id = "org/private") is False
+    assert probes["n"] == 0, "the UI session must not pay a round trip for its own token"
+
+
+def test_the_ambient_marker_is_a_string_everywhere_else(monkeypatch):
+    """It rides along the existing Optional[str | False] type, so nothing else may notice."""
+    ui = hf_token_arg("hf_saved", allow_ambient_token = True)
+
+    assert isinstance(ui, str)
+    assert ui == "hf_saved"
+    assert hash(ui) == hash("hf_saved"), "a cache key must not split on the marker"
+    assert ui.encode() == b"hf_saved"
+    assert capability_fingerprint(ui) == capability_fingerprint("hf_saved")
+    env: dict = {}
+    apply_token_to_child_env(env, ui)
+    assert env["HF_TOKEN"] == "hf_saved"
+    assert type(env["HF_TOKEN"]) is str or isinstance(env["HF_TOKEN"], str)
+
+
+def test_trimming_does_not_demote_a_ui_session_to_an_api_key():
+    """str.strip returns a plain str, which would put the operator back behind the probe."""
+    ui = hf_token_arg("  hf_saved  ", allow_ambient_token = True)
+
+    assert isinstance(normalize_token(ui), hf_tokens.AmbientAuthorizedToken)
+    assert normalize_token(ui) == "hf_saved"
+    # And the other direction stays put.
+    assert not isinstance(
+        normalize_token(hf_token_arg("hf_saved", allow_ambient_token = False)),
+        hf_tokens.AmbientAuthorizedToken,
+    )
+    assert normalize_token(False) is False
+    assert normalize_token(None) is None
+
+
 def test_a_verified_token_may_read_the_host_cache(monkeypatch):
     reset_repo_access_cache()
     monkeypatch.setattr("hub.utils.hf_tokens._probe_repo_access", lambda *_a, **_k: True)
@@ -178,6 +233,54 @@ def test_the_access_probe_hits_auth_check_not_repo_info():
     assert "repo_info(" not in source
     assert "Thread(" not in source
     assert "_REPO_ACCESS_PROBE_TIMEOUT_S" in source
+
+
+def test_the_hand_rolled_url_still_matches_the_one_auth_check_builds(monkeypatch):
+    """The probe copies auth_check because auth_check takes no timeout. The copy has to
+    track it.
+
+    /auth-check is not a documented REST contract, it is an implementation detail of the
+    client, and it has already moved once: hub 1.5.0 added a write= parameter that appends
+    a /write segment. Ask the INSTALLED auth_check what URL it builds and compare, so an
+    upstream change fails here instead of silently probing a path that 404s and denying
+    every explicit-token caller their cache.
+    """
+    import huggingface_hub
+
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    monkeypatch.delenv("HF_ENDPOINT", raising = False)
+
+    upstream = _patch_auth_check_get(monkeypatch, lambda *_a, **_k: _ok_auth_check_response())
+    # hf_api binds get_session at import, so patching huggingface_hub.utils alone does not
+    # reach it. The probe's own import is inside the function, which is why that one works.
+    monkeypatch.setattr("huggingface_hub.hf_api.get_session", lambda: upstream, raising = False)
+    try:
+        huggingface_hub.auth_check("org/repo", repo_type = "model", token = "hf_dummy")
+    except Exception:
+        # Only the URL it asked for matters; the fake response may not satisfy it.
+        pass
+    assert upstream.calls, "could not observe the URL auth_check builds"
+    upstream_url = upstream.calls[0]["url"]
+
+    ours = _patch_auth_check_get(monkeypatch, lambda *_a, **_k: _ok_auth_check_response())
+    cache_reads_authorized("hf_dummy", repo_id = "org/repo")
+
+    assert ours.calls, "the probe did not reach the session"
+    assert ours.calls[0]["url"] == upstream_url
+
+
+def test_a_redirect_is_not_an_authorization(monkeypatch):
+    """hf_raise_for_status passes 3xx through, and a client factory installed without
+    follow_redirects would hand a bare 307 back. Legacy repo aliases do redirect."""
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    _patch_auth_check_get(
+        monkeypatch,
+        lambda *_a, **_k: SimpleNamespace(status_code = 307, raise_for_status = lambda: None),
+    )
+
+    assert cache_reads_authorized("hf_dummy", repo_id = "org/repo") is False
 
 
 def test_a_hanging_auth_check_probe_times_out(monkeypatch):
@@ -285,6 +388,91 @@ def test_an_ordinary_repo_id_is_not_mangled_by_quoting(monkeypatch):
 
     assert cache_reads_authorized("hf_dummy", repo_id = "unsloth/Llama-3.2-1B") is True
     assert session.calls[0]["url"].endswith("/api/models/unsloth/Llama-3.2-1B/auth-check")
+
+
+@pytest.mark.parametrize("repo_id", ["org/../x", "../x", "org/./x", "..", "."])
+def test_a_dot_segment_repo_id_is_refused_before_the_wire(monkeypatch, repo_id):
+    """Quoting keeps "/" so "org/repo" stays two segments, which keeps ".." intact too, and
+    both clients then apply RFC 3986 dot-segment removal: "org/../x" is requested as
+    "/api/models/x". The memo would be keyed on what the caller named while the wire proof
+    was about a different repo."""
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    session = _patch_auth_check_get(monkeypatch, lambda *_a, **_k: _ok_auth_check_response())
+
+    assert cache_reads_authorized("hf_dummy", repo_id = repo_id) is False
+    assert session.calls == []
+
+
+def test_a_scheme_less_mirror_endpoint_is_normalized(monkeypatch):
+    """HfApi().endpoint hands back HF_ENDPOINT verbatim, so a scheme-less mirror built a
+    URL both clients reject outright and every explicit-token cache read on that machine
+    was denied without a request ever leaving the process. hf_endpoint_url is where the
+    backend already normalizes it."""
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    monkeypatch.setenv("HF_ENDPOINT", "hf-mirror.example")
+    session = _patch_auth_check_get(monkeypatch, lambda *_a, **_k: _ok_auth_check_response())
+
+    assert cache_reads_authorized("hf_dummy", repo_id = "org/repo") is True
+    assert session.calls[0]["url"] == (
+        "https://hf-mirror.example/api/models/org/repo/auth-check"
+    )
+
+
+def test_a_mirror_endpoint_keeps_its_own_scheme_and_loses_a_trailing_slash(monkeypatch):
+    """The normalizer must not rewrite an endpoint that is already well formed, and must
+    not leave "//api/" behind."""
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:8080/")
+    session = _patch_auth_check_get(monkeypatch, lambda *_a, **_k: _ok_auth_check_response())
+
+    assert cache_reads_authorized("hf_dummy", repo_id = "org/repo") is True
+    assert session.calls[0]["url"] == "http://127.0.0.1:8080/api/models/org/repo/auth-check"
+
+
+@pytest.mark.parametrize(
+    "exc_factory",
+    [
+        lambda: __import__("requests").exceptions.ConnectionError("refused"),
+        lambda: __import__("requests").exceptions.ProxyError("dead proxy"),
+        lambda: __import__("httpx").ConnectError("refused"),
+        lambda: ConnectionRefusedError("refused"),
+    ],
+)
+def test_a_hub_that_could_not_be_asked_is_not_a_denial(exc_factory):
+    """A refusal, a DNS failure and a dead proxy are as much "could not ask" as a stall is.
+    The asymmetry was measurable: a proxy that hung denied a valid token briefly, a proxy
+    that refused denied it for a full minute."""
+    assert hf_tokens._is_probe_timeout(exc_factory()) is True
+
+
+def test_the_unreachable_ttl_outlives_a_probe(monkeypatch):
+    """At 5s against a stalled Hub the memo expired before the next request could reach it:
+    a probe takes the full timeout and the memo then lived less than that, so callers
+    re-dialled and paid the stall again. The constant only does its job above the timeout."""
+    assert hf_tokens._REPO_ACCESS_UNREACHABLE_TTL_S > hf_tokens._REPO_ACCESS_PROBE_TIMEOUT_S
+    assert hf_tokens._REPO_ACCESS_UNREACHABLE_TTL_S < hf_tokens._REPO_ACCESS_TTL_S
+
+
+def test_an_unreachable_hub_memo_actually_spans_the_next_request(monkeypatch):
+    """The behaviour the constant above exists for, driven rather than asserted."""
+    import requests
+
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    monkeypatch.setattr(hf_tokens, "_REPO_ACCESS_PROBE_TIMEOUT_S", 0.2)
+    probes = {"n": 0}
+
+    def _refuse(*_a, **_k):
+        probes["n"] += 1
+        raise requests.exceptions.ConnectionError("refused")
+
+    _patch_auth_check_get(monkeypatch, _refuse)
+    assert cache_reads_authorized("hf_dummy", repo_id = "org/repo") is False
+    assert cache_reads_authorized("hf_dummy", repo_id = "org/repo") is False
+    assert probes["n"] == 1, "the unreachable answer did not survive to the next request"
 
 
 @pytest.mark.parametrize("repo_type", ["model", "dataset"])
@@ -1031,6 +1219,13 @@ def test_an_anonymous_config_read_does_not_strip_the_process_credential(monkeypa
 
 
 @pytest.mark.parametrize(
+    # The explicit-token leg is an API KEY, driven below with allow_ambient_token=False.
+    # It used to run as a UI session, which is the caller class that already holds the
+    # ambient credential (`allow_ambient_hf_token` is `not via_api_key`), so it asserted
+    # that the operator loses the fast path by saving a token in Settings. That is the
+    # regression `test_a_ui_session_that_saved_a_token_still_reads_its_own_cache` pins.
+    # What this test is for -- an unverified token does not get local_files_only -- is
+    # unchanged, and is now pinned against the caller the gate is actually aimed at.
     "hf_token, expected_local_only",
     [(None, True), ("hf_tok", False), (False, False)],
 )
@@ -1075,7 +1270,9 @@ def test_the_config_probes_do_not_go_local_only_for_an_anonymous_caller(
                 prefer_local_cache = True,
                 local_path = None,
                 header_hf_token = hf_token if isinstance(hf_token, str) else None,
-                allow_ambient_token = hf_token is not False,
+                # Ambient only for the tokenless leg. A caller that sends a token here is
+                # an API key, which is what `allow_ambient_hf_token` returns False for.
+                allow_ambient_token = hf_token is None,
                 current_subject = "tester",
             )
         )
@@ -1492,3 +1689,17 @@ def test_every_offline_reachable_route_refuses_before_it_reads(monkeypatch):
         assert (
             "anonymous_and_offline" in source
         ), f"{name} can still be answered from disk for a denied caller"
+
+
+def test_an_unreachable_hub_is_a_404_not_a_500():
+    """check-format has no refusal of its own: a denied caller returns None from the disk
+    route, falls through to a Hub that cannot answer, and the pair below came back. They
+    were not mapped, so the catch-all turned "I could not reach the Hub" into a 500.
+    seed/inspect raises its own 404; this is the same answer for the same condition."""
+    from huggingface_hub.errors import LocalEntryNotFoundError, OfflineModeIsEnabled
+    from hub.utils.hf_errors import hf_error_status
+
+    assert hf_error_status(LocalEntryNotFoundError("no cache, no hub")) == 404
+    assert hf_error_status(OfflineModeIsEnabled("offline")) == 404
+    # Still a 500 for things that really are ours.
+    assert hf_error_status(RuntimeError("boom")) is None

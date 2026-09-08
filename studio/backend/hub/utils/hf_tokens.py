@@ -17,11 +17,30 @@ HfTokenArg = Optional[Union[str, Literal[False]]]
 ANONYMOUS_CACHE_IDENTITY = "anon"
 
 
+class AmbientAuthorizedToken(str):
+    """An explicit token from a caller that is ALSO entitled to the ambient credential.
+
+    The UI sends the operator's own saved token on most Hub routes, so it arrives as a
+    plain string and is indistinguishable BY VALUE from an API key's token. Only the
+    caller class tells them apart, and that is exactly what ``allow_ambient_token``
+    carries, so it is recorded here rather than thrown away.
+
+    Without this, sending your own credential bought you strictly less than sending none:
+    a tokenless UI session keeps the host cache offline, while the same session with a
+    token saved in Settings had to prove reachability to a Hub it cannot reach, and lost
+    the GGUF variant list, the default chat template and the dataset format check on
+    repos already in its own cache. A subclass of ``str`` so every existing consumer,
+    fingerprint and cache key treats it as the string it is.
+    """
+
+    __slots__ = ()
+
+
 def hf_token_arg(hf_token: Optional[str], *, allow_ambient_token: bool) -> HfTokenArg:
     """Return the explicit token, or choose ambient versus anonymous access."""
     token = (hf_token or "").strip()
     if token:
-        return token
+        return AmbientAuthorizedToken(token) if allow_ambient_token else token
     return None if allow_ambient_token else False
 
 
@@ -67,7 +86,12 @@ def normalize_token(hf_token: HfTokenArg) -> HfTokenArg:
     """Trim an explicit token without laundering ``False`` into ``None`` (= ambient)."""
     if is_anonymous(hf_token):
         return False
-    return (hf_token or "").strip() or None
+    trimmed = (hf_token or "").strip() or None
+    # ``str.strip`` returns a plain ``str``, so trimming would quietly demote a UI
+    # session's token to an API key's and put it back behind the probe.
+    if trimmed is not None and isinstance(hf_token, AmbientAuthorizedToken):
+        return AmbientAuthorizedToken(trimmed)
+    return trimmed
 
 
 def is_anonymous(hf_token: HfTokenArg) -> bool:
@@ -78,11 +102,16 @@ def is_anonymous(hf_token: HfTokenArg) -> bool:
 # Positive and negative answers share this TTL: a revoked token must not keep
 # reading the host cache, and a flapping Hub must not be hit on every request.
 _REPO_ACCESS_TTL_S = 60.0
-# A probe that timed out never got an answer *about the credential*, so it is not worth a
-# minute. Short enough that one stalled connection does not deny a valid token for the
-# whole TTL, long enough that a Hub which is hanging for everyone is not re-dialled per
-# request. The request in hand is still denied: fail closed, just not for long.
-_REPO_ACCESS_UNREACHABLE_TTL_S = 5.0
+# A probe that never reached the Hub got no answer *about the credential*, so it is not
+# worth a minute. The request in hand is still denied: fail closed, just not for long.
+#
+# Longer than _REPO_ACCESS_PROBE_TIMEOUT_S on purpose. At 5s against a stalled Hub the memo
+# expired before the next request could reach it -- a probe takes the full 10s and the memo
+# then lived 5 -- so only callers arriving inside a 5s window were spared and everyone else
+# re-dialled and paid another 10s. Measured steady state was one probe per 15s per key with
+# most requests stalling. Above the timeout the memo actually spans consecutive requests,
+# which is what this constant was for.
+_REPO_ACCESS_UNREACHABLE_TTL_S = 30.0
 _REPO_ACCESS_CACHE_MAX = 1024
 _repo_access_cache: dict[tuple[str, str, str], tuple[float, bool]] = {}
 _repo_access_lock = threading.Lock()
@@ -95,13 +124,27 @@ _repo_access_inflight: dict[tuple[str, str, str], threading.Lock] = {}
 
 
 class _ProbeTimedOut(Exception):
-    """Raised when the /auth-check HTTP call hits its timeout budget."""
+    """Raised when /auth-check could not be asked at all, rather than answering."""
+
+
+# A refusal, a DNS failure and a dead proxy are as much "could not ask" as a stall is, and
+# the asymmetry was visible: a proxy that hung denied a valid token briefly, while a proxy
+# that refused denied it for a full minute. Both mean the Hub never judged the credential.
+# Name-based rather than by class, so neither client has to be imported to classify one.
+_UNREACHABLE_EXC_NAMES = frozenset({
+    "Timeout", "ReadTimeout", "ConnectTimeout", "ConnectError", "ConnectionError",
+    "ProxyError", "NetworkError", "TransportError", "NameResolutionError",
+})
+_UNREACHABLE_PACKAGES = frozenset({"requests", "httpx", "urllib3"})
 
 
 def _is_probe_timeout(exc: BaseException) -> bool:
+    """Could not ask, as opposed to asked and told no. Named for its original narrow case."""
     for cls in type(exc).__mro__:
         name = cls.__name__
-        if name in {"Timeout", "ReadTimeout", "ConnectTimeout"}:
+        # Bare builtins.ConnectionError is a real transport failure and is worth catching,
+        # but only the client packages below may claim the looser names.
+        if name in {"Timeout", "ReadTimeout", "ConnectTimeout", "ConnectionError"}:
             return True
         module = getattr(cls, "__module__", "") or ""
         # Top-level package, not a dotted prefix. httpx's exceptions live in ``httpx``
@@ -109,7 +152,9 @@ def _is_probe_timeout(exc: BaseException) -> bool:
         # bare TimeoutException all read as hard denials and took the full TTL instead of
         # the short one. That is the branch where the session IS httpx (hub 1.x), and a
         # pool timeout is what a burst of concurrent probes produces.
-        if module.split(".", 1)[0] in {"requests", "httpx", "urllib3"} and "Timeout" in name:
+        if module.split(".", 1)[0] in _UNREACHABLE_PACKAGES and (
+            "Timeout" in name or name in _UNREACHABLE_EXC_NAMES
+        ):
             return True
     return False
 
@@ -137,6 +182,15 @@ def cache_reads_authorized(
     metadata still returns for an invalid token, which would serve the host
     cache to a credential that cannot fetch the files.
 
+    What the probe does and does not establish, measured against the live Hub:
+    ``/auth-check`` answers "is this repo reachable", not "is this credential
+    valid". A PUBLIC repo returns 200 for any string, and for no credential at
+    all, so for public repos this authorizes everyone. That is the intended
+    scope: the reads being closed are of cached PRIVATE and GATED repos, which
+    is exactly where the endpoint discriminates (401 unauthenticated, 403 with
+    a token that lacks access, 404 for a private repo it cannot see). Do not
+    read a ``True`` from here as "this token is valid".
+
     Offline: the Hub probe cannot run, so an explicit token is denied unless a
     recent online probe is still memoized (see ``_REPO_ACCESS_TTL_S``). That is
     intentional fail-closed: without wire proof, the cache must not answer for a
@@ -159,6 +213,11 @@ def cache_reads_authorized(
     if not isinstance(hf_token, str):
         return False
     if not hf_token:
+        return True
+    if isinstance(hf_token, AmbientAuthorizedToken):
+        # A UI session that also sent the operator's own saved token. Sending your own
+        # credential must not buy you less than sending none, and a tokenless session of
+        # the same caller class reads the cache from the ``None`` branch above.
         return True
     repo = (repo_id or "").strip()
     if not repo:
@@ -271,9 +330,27 @@ def _inflight_lock(key: tuple[str, str, str]) -> threading.Lock:
         return lock
 
 
+def _probe_endpoint() -> str:
+    """The endpoint the rest of the backend means, not the raw env value.
+
+    ``HfApi().endpoint`` hands back ``HF_ENDPOINT`` verbatim, so a mirror configured as
+    ``hf-mirror.example`` with no scheme builds a URL both clients reject outright, and
+    every explicit-token cache read on that machine is denied without a request ever
+    leaving the process. ``hf_endpoint_url`` is where Unsloth already normalises that, and
+    says so: "Mirror users point this elsewhere". Fall back rather than fail if the import
+    is unavailable, since this module is imported beneath that one.
+    """
+    try:
+        from utils.utils import hf_endpoint_url
+        return hf_endpoint_url().rstrip("/")
+    except Exception:
+        from huggingface_hub import HfApi
+        return HfApi().endpoint
+
+
 def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:
     try:
-        from huggingface_hub import HfApi, constants
+        from huggingface_hub import constants
         from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status
 
         if repo_type not in constants.REPO_TYPES:
@@ -286,13 +363,26 @@ def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:
         # this is invisible to every real caller.
         from urllib.parse import quote
 
-        path = f"{HfApi().endpoint}/api/{repo_type}s/" f"{quote(repo_id, safe = '/')}/auth-check"
+        # Quoting keeps "/" so "org/repo" stays two segments, which also keeps ".." intact,
+        # and both clients then apply RFC 3986 dot-segment removal: "org/../x" is requested
+        # as "/api/models/x". The memo would be keyed on the id the caller named while the
+        # wire proof was about a different repo. Refuse rather than quote it away, since no
+        # real repo id has a dot segment.
+        if any(segment in {".", ".."} for segment in repo_id.split("/")):
+            return False
+        path = f"{_probe_endpoint()}/api/{repo_type}s/{quote(repo_id, safe = '/')}/auth-check"
         response = get_session().get(
             path,
             headers = build_hf_headers(token = token),
             timeout = _REPO_ACCESS_PROBE_TIMEOUT_S,
         )
         hf_raise_for_status(response)
+        # hf_raise_for_status passes 3xx through, and both default clients follow redirects
+        # so one never arrives. It does arrive if an operator installs a client factory
+        # without follow_redirects, and a bare 307 would then read as authorized without
+        # anything having been checked. Legacy repo aliases do redirect, so fail closed.
+        if 300 <= getattr(response, "status_code", 0) < 400:
+            return False
         return True
     except Exception as exc:
         if _is_probe_timeout(exc):

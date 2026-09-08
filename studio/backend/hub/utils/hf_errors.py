@@ -15,6 +15,13 @@ def hf_error_status(exc: Exception) -> Optional[int]:
         "RepositoryNotFoundError",
         "RevisionNotFoundError",
         "EntryNotFoundError",
+        # "Could not reach the Hub, and the cache could not answer either." That is a
+        # missing resource from the caller's side, not a server fault. Both became
+        # reachable once cache reads started requiring authorization: a caller refused
+        # the cache falls through to a Hub that is offline or unreachable, and the pair
+        # below is what comes back. They were landing on the generic 500.
+        "LocalEntryNotFoundError",
+        "OfflineModeIsEnabled",
     ):
         return 404
     if name == "GatedRepoError":
