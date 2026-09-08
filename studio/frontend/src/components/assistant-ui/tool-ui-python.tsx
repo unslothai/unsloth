@@ -4,6 +4,7 @@
 "use client";
 
 import { Spinner } from "@/components/ui/spinner";
+import { Badge } from "@/components/ui/badge";
 
 import { SandboxFiles } from "./sandbox-files-view";
 import { isSandboxFileList, type SandboxFile } from "./sandbox-files";
@@ -25,9 +26,7 @@ import { pythonToolImagePath } from "./python-tool-image-path";
 import { useSandboxImage } from "./use-sandbox-image";
 import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
 import { toolArgText } from "./tool-arg-text";
-import {
-  toolExecutionRecordLabel,
-} from "@/features/chat/types/api";
+import { toolExecutionRecordLabel } from "@/features/chat/types/api";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -67,7 +66,9 @@ function PythonToolImage({
   // and its revocation live in one place instead of two. A failed or cancelled image stays as its
   // accessible alt text. Keyed by url inside the hook: a re-used element reads idle, not the
   // previous file's blob, and a stale response cannot write state for a url it was not fetched for.
-  const { ref, state } = useSandboxImage(pythonToolImagePath(sessionId, filename));
+  const { ref, state } = useSandboxImage(
+    pythonToolImagePath(sessionId, filename),
+  );
 
   return (
     <img
@@ -158,11 +159,14 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
         icon={CodeIcon}
       />
       {executionLabel ? (
-        <div
-          data-slot="tool-execution-protection"
-          className="ml-5 w-fit rounded-full border border-border px-2 py-0.5 text-ui-11 text-muted-foreground"
-        >
-          {executionLabel}
+        <div className="ms-5 me-4 min-w-0">
+          <Badge
+            variant="outline"
+            data-slot="tool-execution-protection"
+            className="h-auto min-h-5 max-w-full whitespace-normal break-words py-1 text-xs font-normal"
+          >
+            {executionLabel}
+          </Badge>
         </div>
       ) : null}
       {!collapseByDefault && scriptCell}

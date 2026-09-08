@@ -107,14 +107,17 @@ test("composer hides inactive code isolation but retains Full and Limited warnin
       },
       useToolIsolationCapabilityRefresh() {},
       useState: () => [false, () => {}],
+      useRef: () => ({ current: null }),
       useChatRuntimeStore: (select: (state: unknown) => unknown) =>
         select(state),
       permissionModeOption: () => ({
         label: "Approve for me",
         description: "Approval description",
+        menuDescription: "Approval description",
         icon: "Icon",
       }),
       toolIsolationPresentation: () => ({ label: "Isolation status" }),
+      isolationSummary: () => "Isolation status",
     };
     for (const name of [
       "DropdownMenu",
@@ -125,6 +128,7 @@ test("composer hides inactive code isolation but retains Full and Limited warnin
       "DropdownMenuLabel",
       "PermissionModeMenuItems",
       "ToolIsolationMenuSection",
+      "ToolIsolationDetailsDialog",
       "LimitedModeConfirmDialog",
     ])
       context[name] = name;

@@ -69,8 +69,14 @@ async function stop(child) {
   if (child.exitCode === null && child.signalCode === null) {
     child.kill("SIGKILL");
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(Error("service did not exit after SIGKILL")), 5000);
-      child.once("exit", () => { clearTimeout(timer); resolve(); });
+      const timer = setTimeout(
+        () => reject(Error("service did not exit after SIGKILL")),
+        5000,
+      );
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
     });
   }
 }
@@ -133,9 +139,14 @@ try {
     .getByRole("button", { name: "Permission level for tool calls" })
     .click();
   const menu = await page.getByRole("menu").innerText();
-  assert.match(menu, /Runtime and filesystem checks passed/);
+  assert.match(menu, /Preview limitations apply/);
   assert.doesNotMatch(menu, /Required mode remains unavailable/);
-  await writeFile(path.join(artifacts, "limitations.txt"), menu);
+  await page
+    .getByRole("menuitem", { name: "Sandbox details", exact: true })
+    .click();
+  const details = await page.getByRole("dialog").innerText();
+  assert.match(details, /Limitations/);
+  await writeFile(path.join(artifacts, "limitations.txt"), details);
   await page.screenshot({
     path: path.join(artifacts, "limitations.png"),
     fullPage: true,
@@ -145,7 +156,9 @@ try {
     .getByRole("button", { name: "Permission level for tool calls" })
     .click();
   await page.getByRole("menuitem", { name: /^Full access/ }).click();
-  await page.getByRole("button", { name: "I understand", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Enable Full access", exact: true })
+    .click();
   await run("Python", "full-python", "full");
   await page.reload();
   await run("Terminal", "reload-required-terminal");

@@ -41,7 +41,7 @@ for (const [environment, limitations] of [
     const result = presentation("os_isolation_required", capability);
     assert.equal(result.state, "preview");
     assert.match(result.label, /Sandbox Runtime/);
-    assert.match(result.description, /Runtime and filesystem checks passed/);
+    assert.match(result.description, /preview limitations apply/i);
     assert.doesNotMatch(result.description, /blocked|unavailable/);
     for (const code of capability.limitations) {
       assert.doesNotMatch(TOOL_ISOLATION_LIMITATION_TEXT[code], /Required.*unavailable/);

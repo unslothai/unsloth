@@ -8,23 +8,23 @@
  *  render as its raw identifier (see permission-mode-select.tsx), which tests forbid. */
 export const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = {
   unrestricted_network:
-    "This execution can reach any network host available to the Studio process.",
+    "Tools can reach any network host that Studio can access.",
   host_files_readable:
-    "This execution can read files available to the Studio process, including private documents and credentials.",
+    "Tools can read files Studio can access, including private documents and credentials.",
   srt_windows_system_dns_unfenced:
-    "Windows system DNS requests are not confined by this runtime.",
+    "Windows system DNS requests are not restricted.",
   srt_windows_shared_account_grants:
-    "Windows sandbox account permissions are shared across sessions and have not been qualified for isolated concurrent tool runs.",
+    "Windows runs share an account. Isolation between simultaneous runs is unverified.",
   srt_macos_system_dns_unfenced:
-    "macOS system DNS requests are not confined by this runtime.",
+    "macOS system DNS requests are not restricted.",
   srt_private_unix_ipc_unqualified:
-    "Private interprocess communication has not been qualified for Python workers or tensor sharing.",
+    "Private communication between Python workers and tensor sharing is unverified.",
   srt_runtime_unavailable:
-    "The pinned sandbox runtime or its required platform helpers are unavailable. Required mode will not run tools.",
+    "Sandbox setup is incomplete. Required mode blocks tools until it is fixed.",
   srt_platform_unqualified:
-    "This platform has not passed the required isolation checks. Required mode will not run tools.",
+    "This platform has not passed isolation checks. Required mode blocks tools.",
   srt_platform_qualification_incomplete:
-    "SRT is in preview. Full platform security and compatibility checks are incomplete, and CUDA has not been qualified.",
+    "SRT is in preview. Security and compatibility checks are incomplete, including CUDA.",
   deprecated_undocumented_sbpl:
     "Apple deprecates sandbox-exec and does not document SBPL for third-party products.",
   detached_descendant_cleanup_unverified:
@@ -42,25 +42,25 @@ export const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = 
   null_device_and_named_pipes_denied:
     "Inside the Windows sandbox, Python cannot open NUL or create named pipes, so multiprocessing and imports that need them (such as torch) fail; use Limited or Full access for that work.",
   user_profile_readable:
-    "Limited mode on Windows can read your user profile, including documents and credentials stored as files, the temp folders of other Limited runs, and the memory of your other processes; only writes are confined.",
+    "Limited can read your documents, credentials, other runs’ temporary files, and other processes’ memory. Only writes are restricted.",
   user_profile_unreadable:
     "Limited mode on Windows could not read your user profile on this machine, so tools cannot see documents or credentials stored there. Writes stay confined to the chat working folder and a private temp folder, as they are in either case.",
   named_pipes_denied:
     "Limited mode on Windows cannot create named pipes on this machine, so multiprocessing queues and pools, and a DataLoader with num_workers above zero, will fail. Importing torch, single-process training and ordinary subprocesses are unaffected; use Full access for the rest.",
   network_unrestricted:
-    "Limited mode on Windows does not restrict the network; the tool can reach any host.",
+    "Limited can reach any network host.",
   everyone_writable_objects_writable:
-    "Limited mode on Windows can still write to locations that grant Everyone write access, such as some temp and public folders.",
+    "Limited can still write to folders with Everyone write access, including some public and temporary folders.",
   network_allowlist_invalid:
     "UNSLOTH_STUDIO_TOOL_NETWORK_ALLOWLIST could not be parsed or names no host, so network access for sandboxed tools stays off until it is fixed.",
   restricted_token_unavailable:
-    "The write-restricted token could not be built on this Windows host, so Limited mode runs with software safeguards only and can write anywhere the Studio process can.",
+    "Windows write restrictions are unavailable. Limited uses software checks only and can write anywhere Studio can.",
   proxy_allowlist_only_https_connect:
-    "The network allowlist admits only HTTPS connections to the listed hosts through a local proxy; plain HTTP, other ports and every other host are refused.",
+    "Only HTTPS to listed hosts is allowed through the proxy. HTTP, other ports, and other hosts are blocked.",
   network_allowlist_unsupported_on_windows:
     "The network allowlist is not offered on Windows; OS-isolated launches there have no network.",
   terminal_runtime_unselectable:
-    "The selected Terminal runtime could not be prepared for OS isolation. Terminal execution remains blocked in Required mode.",
+    "Terminal sandbox setup failed. Required mode blocks Terminal commands.",
 };
 
 /** Human label for the way Limited mode is implemented when it is more than the software
@@ -94,7 +94,7 @@ export function networkAllowlistSummary(hosts: readonly string[]): string {
   }
   const count = `${hosts.length} ${hosts.length === 1 ? "host" : "hosts"}`;
   const named = families.length > 0 ? `${families.join(", ")} (${count})` : count;
-  return `HTTPS only, to ${named}. Everything else stays blocked. Code in the sandbox can also send data to these hosts.`;
+  return `HTTPS only, to ${named}. Tools can send data to these hosts; all others are blocked.`;
 }
 
 /** Human label for the sandbox backend. The Windows backend has two profiles: the

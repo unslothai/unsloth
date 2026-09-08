@@ -6,11 +6,12 @@ import {
   CircleAlert,
   Globe,
   Hand,
+  Info,
   RefreshCw,
   ShieldCheck,
 } from "lucide-react";
 import type { ComponentType } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   AlertDialog,
@@ -23,6 +24,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -57,6 +65,7 @@ export const PERMISSION_MODE_OPTIONS: readonly {
   value: PermissionMode;
   label: string;
   description: string;
+  menuDescription: string;
   icon: ComponentType<{ className?: string; strokeWidth?: number }>;
 }[] = [
   {
@@ -64,6 +73,7 @@ export const PERMISSION_MODE_OPTIONS: readonly {
     label: "Ask for approval",
     description:
       "Always ask before tool calls, editing files or using the internet",
+    menuDescription: "Ask before each tool call",
     icon: Hand,
   },
   {
@@ -71,12 +81,14 @@ export const PERMISSION_MODE_OPTIONS: readonly {
     label: "Approve for me",
     description:
       "Run tool calls, but ask before high-risk actions like credential access, privilege escalation, or destructive commands",
+    menuDescription: "Ask only before risky actions",
     icon: ShieldCheck,
   },
   {
     value: "off",
     label: "Run automatically",
     description: "Run tool calls without approval prompts inside the sandbox",
+    menuDescription: "Skip approvals; keep sandbox settings",
     icon: SparklesGlyph,
   },
   {
@@ -84,18 +96,19 @@ export const PERMISSION_MODE_OPTIONS: readonly {
     label: "Full access",
     description:
       "Unrestricted: no approval prompts and the code sandbox is disabled",
+    menuDescription: "No approvals or sandbox",
     icon: CircleAlert,
   },
 ] as const;
 
 export const FULL_ACCESS_WARNING =
-  "Full access lets tool calls run without approval prompts or the code sandbox. They can modify or delete files, run commands, and make network requests. Enable it only when you trust the current task.";
+  "Tools can change or delete your files, run commands, and access the network without asking. The sandbox is off. Only enable this for tasks you trust.";
 
 export const TOOL_ISOLATION_UNAVAILABLE_WARNING =
-  "OS isolation isn’t available in this environment. Python and Terminal can run with Unsloth’s software safeguards, but they may access anything available to the Studio process.";
+  "The OS sandbox is unavailable. Software checks still run, but Python and Terminal may access your files, credentials, and network.";
 
 const TOOL_ISOLATION_RESTRICTED_TOKEN_NOTE =
-  "On this Windows host, Limited runs under a restricted token: writes outside the sandbox directory are refused, but files readable by your account, the network and other processes stay reachable.";
+  "On Windows, a restricted token limits writes. It does not isolate reads, network access, or other processes.";
 
 /** The Limited consent text for this host: the generic warning, plus what the Windows
  *  restricted token adds when the backend reports it. */
@@ -164,18 +177,18 @@ export function PermissionModeMenuItems({
               "text-bypass",
           )}
         >
-          <option.icon className="mt-0.5 size-4 shrink-0" strokeWidth={2} />
-          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="text-ui-13 leading-tight">{option.label}</span>
+          <option.icon className="size-4 shrink-0" strokeWidth={2} />
+          <span className="flex min-w-0 flex-1 flex-col gap-1">
+            <span className="text-sm leading-tight">{option.label}</span>
             <span className="text-xs font-normal leading-snug text-muted-foreground">
-              {option.description}
+              {option.menuDescription}
             </span>
           </span>
           {permissionMode === option.value ? (
             <HugeiconsIcon
               icon={Tick02Icon}
               strokeWidth={2}
-              className="ml-auto mt-0.5 size-4 shrink-0"
+              className="ml-auto size-4 shrink-0"
             />
           ) : null}
         </DropdownMenuItem>
@@ -189,16 +202,25 @@ export function PermissionModeMenuItems({
 export function FullAccessConfirmDialog({
   open,
   onOpenChange,
+  restoreFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  restoreFocus?: () => void;
 }) {
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent size="sm">
-        <AlertDialogHeader>
+      <AlertDialogContent
+        onCloseAutoFocus={(event) => {
+          if (restoreFocus) {
+            event.preventDefault();
+            restoreFocus();
+          }
+        }}
+      >
+        <AlertDialogHeader className="gap-2">
           <AlertDialogTitle>Enable Full access?</AlertDialogTitle>
           <AlertDialogDescription>{FULL_ACCESS_WARNING}</AlertDialogDescription>
         </AlertDialogHeader>
@@ -206,13 +228,12 @@ export function FullAccessConfirmDialog({
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
-            className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
             onClick={() => {
               setPermissionMode("full");
               onOpenChange(false);
             }}
           >
-            I understand
+            Enable Full access
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -220,10 +241,152 @@ export function FullAccessConfirmDialog({
   );
 }
 
+function isolationSummary(
+  state: ReturnType<typeof toolIsolationPresentation>["state"],
+  capability: ToolIsolationCapability | null,
+): string {
+  if (state === "full") return "Sandbox off";
+  if (state === "limited") return "Limited · no OS isolation";
+  if (!capability) return "Checking sandbox…";
+  if (state === "preview") return "Sandbox · Preview";
+  if (state === "protected") return "Sandbox on";
+  return "Sandbox unavailable";
+}
+
+function ToolIsolationDetailsDialog({
+  open,
+  onOpenChange,
+  restoreFocus,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  restoreFocus?: () => void;
+}) {
+  const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
+  const mode = useChatRuntimeStore((s) => s.toolExecutionMode);
+  const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
+  const networkPolicy = useChatRuntimeStore((s) => s.toolNetworkPolicy);
+  const presentation = toolIsolationPresentation(mode, capability, grant);
+  const isolated =
+    presentation.state === "protected" || presentation.state === "preview";
+  const limitedBackend = limitedBackendLabel(
+    capability?.limited_backend ?? null,
+  );
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="gap-6 p-6 max-sm:content-start"
+        onCloseAutoFocus={(event) => {
+          if (restoreFocus) {
+            event.preventDefault();
+            restoreFocus();
+          }
+        }}
+      >
+        <DialogHeader className="pe-8">
+          <DialogTitle>Sandbox details</DialogTitle>
+          <DialogDescription>{presentation.label}</DialogDescription>
+        </DialogHeader>
+        {capability ? (
+          <>
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
+              <dt className="text-muted-foreground">Environment</dt>
+              <dd className="break-words text-end">{capability.environment}</dd>
+              {isolated ? (
+                <>
+                  <dt className="text-muted-foreground">Runtime</dt>
+                  <dd className="break-words text-end">{capability.backend}</dd>
+                </>
+              ) : null}
+              {isolated && capability.profile_id ? (
+                <>
+                  <dt className="text-muted-foreground">Profile</dt>
+                  <dd className="break-all text-end">
+                    {capability.profile_id}
+                  </dd>
+                </>
+              ) : null}
+              {isolated ? (
+                <>
+                  <dt className="text-muted-foreground">Network</dt>
+                  <dd className="text-end">
+                    {capabilityOffersNetworkAllowlist(capability) &&
+                    networkPolicy === "allowlist"
+                      ? "Allowed hosts only"
+                      : "Off"}
+                  </dd>
+                </>
+              ) : null}
+            </dl>
+            {!isolated ? (
+              <p className="text-sm">{presentation.description}</p>
+            ) : null}
+            {presentation.state === "unavailable" && capability.reason ? (
+              <p className="whitespace-pre-wrap break-words text-sm">
+                {capability.reason}
+              </p>
+            ) : null}
+            {(isolated || presentation.state === "unavailable") &&
+            capability.limitations.length > 0 ? (
+              <section className="space-y-2">
+                <h3 className="text-sm font-medium">Limitations</h3>
+                <ul className="list-disc space-y-2 ps-4 text-sm leading-normal">
+                  {capability.limitations.map((code) => (
+                    <li key={code} className="break-words">
+                      {TOOL_ISOLATION_LIMITATION_TEXT[code] ?? code}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+            {presentation.state === "unavailable" && capability.remediation ? (
+              <p className="whitespace-pre-wrap break-words text-sm">
+                {capability.remediation}
+              </p>
+            ) : null}
+            {presentation.state !== "full" &&
+            (limitedBackend ||
+              presentation.state === "limited" ||
+              presentation.state === "unavailable") ? (
+              <section className="space-y-2 border-t border-border pt-4">
+                <h3 className="text-sm font-medium">
+                  {isolated ? "About Limited mode" : "Limited mode"}
+                </h3>
+                <p className="text-sm">
+                  Software checks still apply. Limited is not an OS sandbox.
+                </p>
+                {limitedBackend ? (
+                  <p className="text-sm text-muted-foreground">
+                    {limitedBackend}
+                  </p>
+                ) : null}
+                {capability.limited_limitations.length > 0 ? (
+                  <ul className="list-disc space-y-2 ps-4 text-sm leading-normal">
+                    {capability.limited_limitations.map((code) => (
+                      <li key={code} className="break-words">
+                        {TOOL_ISOLATION_LIMITATION_TEXT[code] ?? code}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </section>
+            ) : null}
+          </>
+        ) : (
+          <p className="text-sm">Checking this environment…</p>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function ToolIsolationMenuSection({
   onRequestLimited,
+  onRequestDetails,
 }: {
   onRequestLimited: () => void;
+  onRequestDetails: () => void;
 }) {
   useToolIsolationCapabilityRefresh();
   const mode = useChatRuntimeStore((s) => s.toolExecutionMode);
@@ -245,117 +408,44 @@ function ToolIsolationMenuSection({
   // Offer the toggle only when this backend advertises allowlist enforcement.
   const offersAllowlist =
     osIsolated && capabilityOffersNetworkAllowlist(capability);
-  const limitedBackend = limitedBackendLabel(
-    capability?.limited_backend ?? null,
-  );
-  const showLimitedFacts = presentation.state === "limited" || unavailable;
-  // A host whose Limited tier is more than the software safeguards (the Windows
-  // write-restricted token) says so even while OS isolation works, so the cost of
-  // choosing Limited can be read before isolation breaks or Limited is active.
-  const showLimitedTier = showLimitedFacts || limitedBackend !== null;
-
   return (
     <>
       <DropdownMenuSeparator />
-      <div className="space-y-2 px-3 py-2.5" aria-live="polite">
-        <div className="flex items-start gap-2">
+      <div className="space-y-2 px-3 py-3" aria-live="polite">
+        <div className="flex items-center gap-2">
           <ShieldCheck
             className={cn(
-              "mt-0.5 size-4 shrink-0",
-              presentation.state === "unavailable" && "text-destructive",
-              presentation.state === "limited" && "text-amber-600",
-              presentation.state === "full" && "text-bypass",
+              "size-4 shrink-0",
+              presentation.state === "unavailable" &&
+                !loading &&
+                capability &&
+                "text-destructive",
+              (presentation.state === "limited" ||
+                presentation.state === "full") &&
+                "text-bypass",
             )}
             strokeWidth={2}
           />
-          <div className="min-w-0 space-y-1">
-            <p className="text-ui-13 font-medium leading-tight">
-              {loading ? "Checking OS isolation…" : presentation.label}
-            </p>
-            <p className="text-xs leading-snug text-muted-foreground">
-              {presentation.description}
-            </p>
-          </div>
+          <p className="text-sm font-medium">
+            {loading
+              ? "Checking sandbox…"
+              : isolationSummary(presentation.state, capability)}
+          </p>
         </div>
-        {capability ? (
-          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <dt>Environment</dt>
-            <dd className="truncate text-right text-foreground/80">
-              {capability.environment}
-            </dd>
-            <dt>Backend</dt>
-            <dd className="truncate text-right text-foreground/80">
-              {capability.backend ?? "None qualified"}
-            </dd>
-            {capability.profile_id ? (
-              <>
-                <dt>Profile</dt>
-                <dd className="truncate text-right text-foreground/80">
-                  {capability.profile_id}
-                </dd>
-              </>
-            ) : null}
-            {osIsolated ? (
-              <>
-                <dt>Network</dt>
-                <dd className="truncate text-right text-foreground/80">
-                  {offersAllowlist && networkPolicy === "allowlist"
-                    ? "Allowlist"
-                    : "Off"}
-                </dd>
-              </>
-            ) : null}
-            {showLimitedTier && limitedBackend ? (
-              <>
-                <dt>Limited backend</dt>
-                <dd className="truncate text-right text-foreground/80">
-                  {limitedBackend}
-                </dd>
-              </>
-            ) : null}
-          </dl>
-        ) : null}
-        {capability?.reason ? (
-          <p className="whitespace-pre-wrap break-words text-xs leading-snug text-muted-foreground">
-            {capability.reason}
-          </p>
-        ) : null}
-        {capability?.limitations.map((limitation) => (
-          <p
-            key={limitation}
-            className="text-xs leading-snug text-amber-700 dark:text-amber-400"
-          >
-            {TOOL_ISOLATION_LIMITATION_TEXT[limitation] ?? limitation}
-          </p>
-        ))}
-        {capability?.remediation ? (
-          <p className="whitespace-pre-wrap break-words text-xs leading-snug text-muted-foreground">
-            {capability.remediation}
-          </p>
-        ) : null}
-        {showLimitedTier
-          ? capability?.limited_limitations.map((limitation) => (
-              <p
-                key={`limited-${limitation}`}
-                className="text-xs leading-snug text-amber-700 dark:text-amber-400"
-              >
-                {TOOL_ISOLATION_LIMITATION_TEXT[limitation] ?? limitation}
-              </p>
-            ))
-          : null}
-        {showLimitedFacts ? (
-          <p className="text-xs leading-snug text-muted-foreground">
-            Process Guard, sanitized environment, resource limits, descriptor
-            closure, workdir policy, timeout, cancellation, and cleanup remain
-            active, and code and commands are still analysed for known-dangerous
-            patterns. That analysis is best effort, not a boundary: Limited is
-            not an OS sandbox.
-          </p>
-        ) : null}
+        <p className="text-xs leading-normal text-foreground">
+          {presentation.description}
+        </p>
         {error ? (
-          <p className="text-xs leading-snug text-destructive">{error}</p>
+          <p className="break-words text-xs text-destructive">{error}</p>
         ) : null}
       </div>
+      <DropdownMenuItem
+        onSelect={() => setTimeout(onRequestDetails, 0)}
+        className="gap-2 text-sm"
+      >
+        <Info className="size-4" strokeWidth={2} />
+        Sandbox details
+      </DropdownMenuItem>
       {offersAllowlist && capability ? (
         <DropdownMenuItem
           onSelect={(event) => {
@@ -372,10 +462,10 @@ function ToolIsolationMenuSection({
           aria-checked={networkPolicy === "allowlist"}
           role="menuitemcheckbox"
         >
-          <Globe className="mt-0.5 size-4 shrink-0" strokeWidth={2} />
-          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="text-ui-13 leading-tight">
-              Allow network to package and model hosts
+          <Globe className="size-4 shrink-0" strokeWidth={2} />
+          <span className="flex min-w-0 flex-1 flex-col gap-1">
+            <span className="text-sm leading-tight">
+              Allow package and model downloads
             </span>
             <span className="text-xs font-normal leading-snug text-muted-foreground">
               {networkAllowlistSummary(capability.network_allowlist)}
@@ -385,7 +475,7 @@ function ToolIsolationMenuSection({
             <HugeiconsIcon
               icon={Tick02Icon}
               strokeWidth={2}
-              className="ml-auto mt-0.5 size-4 shrink-0"
+              className="ml-auto size-4 shrink-0"
             />
           ) : null}
         </DropdownMenuItem>
@@ -393,19 +483,19 @@ function ToolIsolationMenuSection({
       {unavailable ? (
         <DropdownMenuItem
           onSelect={() => setTimeout(onRequestLimited, 0)}
-          className="text-ui-13"
+          className="text-sm"
         >
           <CircleAlert className="size-4" strokeWidth={2} />
-          Use Limited mode for this session
+          Use Limited mode…
         </DropdownMenuItem>
       ) : null}
       {presentation.state === "limited" ? (
         <DropdownMenuItem
           onSelect={() => setMode("os_isolation_required")}
-          className="text-ui-13"
+          className="text-sm"
         >
           <ShieldCheck className="size-4" strokeWidth={2} />
-          Require OS isolation
+          Require sandbox
         </DropdownMenuItem>
       ) : null}
       {!loading &&
@@ -415,7 +505,7 @@ function ToolIsolationMenuSection({
             event.preventDefault();
             refresh().catch(() => undefined);
           }}
-          className="text-ui-13"
+          className="text-sm"
         >
           <RefreshCw className="size-4" strokeWidth={2} />
           Check again
@@ -428,9 +518,11 @@ function ToolIsolationMenuSection({
 export function LimitedModeConfirmDialog({
   open,
   onOpenChange,
+  restoreFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  restoreFocus?: () => void;
 }) {
   const requestGrant = useChatRuntimeStore((s) => s.requestLimitedToolGrant);
   const clearGrant = useChatRuntimeStore((s) => s.clearLimitedToolGrant);
@@ -446,8 +538,15 @@ export function LimitedModeConfirmDialog({
         onOpenChange(nextOpen);
       }}
     >
-      <AlertDialogContent size="sm">
-        <AlertDialogHeader>
+      <AlertDialogContent
+        onCloseAutoFocus={(event) => {
+          if (restoreFocus) {
+            event.preventDefault();
+            restoreFocus();
+          }
+        }}
+      >
+        <AlertDialogHeader className="gap-2">
           <AlertDialogTitle>Use Limited mode?</AlertDialogTitle>
           <AlertDialogDescription>
             {limitedModeWarning(capability)}
@@ -459,7 +558,7 @@ export function LimitedModeConfirmDialog({
         <AlertDialogFooter className="sm:items-center">
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
-            className="!h-auto !whitespace-normal !py-2 text-center"
+            className="whitespace-normal"
             disabled={loading}
             onClick={(event) => {
               event.preventDefault();
@@ -504,6 +603,9 @@ export function PermissionModeDropdown({
   const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [limitedConfirmOpen, setLimitedConfirmOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const restoreFocus = () => triggerRef.current?.focus();
   const active = permissionModeOption(permissionMode);
   const isolation = toolIsolationPresentation(
     toolExecutionMode,
@@ -515,12 +617,12 @@ export function PermissionModeDropdown({
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild={true}>
+        <DropdownMenuTrigger asChild={true} ref={triggerRef}>
           <Button
             variant="outline"
             size="sm"
             className={cn(
-              "gap-1.5",
+              "max-w-full gap-2",
               triggerClassName,
               // Last so a text color in triggerClassName cannot override it.
               permissionMode === "full" &&
@@ -528,25 +630,23 @@ export function PermissionModeDropdown({
             )}
             aria-label="Permission level for tool calls"
           >
-            <ActiveIcon className="size-3.5 shrink-0" strokeWidth={2} />
+            <ActiveIcon className="size-4 shrink-0" strokeWidth={2} />
             <span className="min-w-0 flex-1 truncate text-left">
               {active.label}
             </span>
-            <span className="truncate text-xs text-muted-foreground">
-              {isolation.label}
+            <span className="min-w-0 truncate text-xs text-muted-foreground">
+              {isolationSummary(isolation.state, capability)}
             </span>
-            <ChevronDown className="size-3.5 shrink-0 opacity-60" />
+            <ChevronDown className="size-4 shrink-0 opacity-60" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
           side={side}
           align={align}
-          className="w-[300px]"
+          className="w-80 max-w-[calc(100vw-2rem)]"
           avoidCollisions={true}
         >
-          <DropdownMenuLabel>
-            How should tool calls be approved?
-          </DropdownMenuLabel>
+          <DropdownMenuLabel>Tool permissions</DropdownMenuLabel>
           <PermissionModeMenuItems
             // Defer past the menu-close focus restoration so the dialog's focus trap is not broken by the
             // dropdown grabbing focus back.
@@ -556,14 +656,22 @@ export function PermissionModeDropdown({
           />
           <ToolIsolationMenuSection
             onRequestLimited={() => setLimitedConfirmOpen(true)}
+            onRequestDetails={() => setDetailsOpen(true)}
           />
         </DropdownMenuContent>
       </DropdownMenu>
       <FullAccessConfirmDialog
+        restoreFocus={restoreFocus}
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
       />
+      <ToolIsolationDetailsDialog
+        restoreFocus={restoreFocus}
+        open={detailsOpen}
+        onOpenChange={setDetailsOpen}
+      />
       <LimitedModeConfirmDialog
+        restoreFocus={restoreFocus}
         open={limitedConfirmOpen}
         onOpenChange={setLimitedConfirmOpen}
       />
@@ -589,6 +697,9 @@ export function PermissionModeComposerPill({
     (s) => s.setBypassConfirmOpen,
   );
   const [limitedConfirmOpen, setLimitedConfirmOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const restoreFocus = () => triggerRef.current?.focus();
   const active = permissionModeOption(permissionMode);
   const isolation = toolIsolationPresentation(
     toolExecutionMode,
@@ -604,7 +715,7 @@ export function PermissionModeComposerPill({
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild={true}>
+        <DropdownMenuTrigger asChild={true} ref={triggerRef}>
           <button
             type="button"
             className="composer-pill-btn composer-pill-permissions"
@@ -614,7 +725,7 @@ export function PermissionModeComposerPill({
             aria-label="Permission level for tool calls"
             title={
               showIsolation
-                ? `${active.label}: ${active.description}. ${isolation.label}.`
+                ? `${active.label}: ${active.menuDescription}. ${isolationSummary(isolation.state, capability)}.`
                 : `${active.label}: ${active.description}`
             }
           >
@@ -623,8 +734,8 @@ export function PermissionModeComposerPill({
             </span>
             <span>{active.label}</span>
             {showIsolation ? (
-              <span className="max-w-[190px] truncate text-ui-11 font-normal opacity-75">
-                {isolation.label}
+              <span className="truncate text-xs font-normal">
+                {isolationSummary(isolation.state, capability)}
               </span>
             ) : null}
             <HugeiconsIcon
@@ -639,11 +750,9 @@ export function PermissionModeComposerPill({
           align="start"
           sideOffset={0}
           avoidCollisions={true}
-          className="unsloth-plus-menu w-[300px]"
+          className="unsloth-plus-menu w-80 max-w-[calc(100vw-2rem)]"
         >
-          <DropdownMenuLabel>
-            How should tool calls be approved?
-          </DropdownMenuLabel>
+          <DropdownMenuLabel>Tool permissions</DropdownMenuLabel>
           <PermissionModeMenuItems
             // Defer past the menu-close focus restoration (see PermissionModeDropdown).
             onRequestFullAccess={() =>
@@ -652,10 +761,17 @@ export function PermissionModeComposerPill({
           />
           <ToolIsolationMenuSection
             onRequestLimited={() => setLimitedConfirmOpen(true)}
+            onRequestDetails={() => setDetailsOpen(true)}
           />
         </DropdownMenuContent>
       </DropdownMenu>
+      <ToolIsolationDetailsDialog
+        restoreFocus={restoreFocus}
+        open={detailsOpen}
+        onOpenChange={setDetailsOpen}
+      />
       <LimitedModeConfirmDialog
+        restoreFocus={restoreFocus}
         open={limitedConfirmOpen}
         onOpenChange={setLimitedConfirmOpen}
       />

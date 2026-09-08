@@ -3,6 +3,8 @@
 
 "use client";
 
+import { Badge } from "@/components/ui/badge";
+
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
 import { TerminalIcon } from "lucide-react";
@@ -20,9 +22,7 @@ import { ToolResultOutput } from "./tool-result-output";
 import { SandboxFiles } from "./sandbox-files-view";
 import { isSandboxToolResult, type SandboxFile } from "./sandbox-files";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import {
-  toolExecutionRecordLabel,
-} from "@/features/chat/types/api";
+import { toolExecutionRecordLabel } from "@/features/chat/types/api";
 
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
@@ -52,7 +52,11 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   // The same test the adapter applies: a foreign result that merely has text
   // would otherwise be rendered as that field alone.
   const structured = isSandboxToolResult(result)
-    ? (result as unknown as { text: string; sessionId?: string; files?: SandboxFile[] })
+    ? (result as unknown as {
+        text: string;
+        sessionId?: string;
+        files?: SandboxFile[];
+      })
     : null;
   const files = structured?.files ?? [];
   const sessionId = structured?.sessionId ?? "";
@@ -94,11 +98,14 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         icon={TerminalIcon}
       />
       {executionLabel ? (
-        <div
-          data-slot="tool-execution-protection"
-          className="ml-5 w-fit rounded-full border border-border px-2 py-0.5 text-ui-11 text-muted-foreground"
-        >
-          {executionLabel}
+        <div className="ms-5 me-4 min-w-0">
+          <Badge
+            variant="outline"
+            data-slot="tool-execution-protection"
+            className="h-auto min-h-5 max-w-full whitespace-normal break-words py-1 text-xs font-normal"
+          >
+            {executionLabel}
+          </Badge>
         </div>
       ) : null}
       <ToolFallbackContent>
@@ -130,7 +137,9 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
           ) : displayOutput ? (
             <div>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">output</span>
+                <span className="text-xs font-medium text-muted-foreground">
+                  output
+                </span>
                 <CopyBtn text={displayOutput} />
               </div>
               <ToolResultOutput text={displayOutput} />

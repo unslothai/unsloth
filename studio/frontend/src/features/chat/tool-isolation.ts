@@ -98,14 +98,13 @@ export function toolIsolationPresentation(
         state: "limited",
         label: `Limited · ${limitedBackendLabel(capability.limited_backend)}`,
         description:
-          "Writes outside the sandbox directory are refused by the restricted token; each execution record says whether it applied. Reads, the network and other processes are not isolated.",
+          "Writes are restricted. Files, network access, and other processes are not isolated.",
       };
     }
     return {
       state: "limited",
       label: "Limited · no OS isolation",
-      description:
-        "Software safeguards remain active and code is analysed before it runs, but that analysis is best effort and Limited is not an OS sandbox.",
+      description: "Software checks still apply. There is no OS sandbox.",
     };
   }
   if (!capability) {
@@ -128,14 +127,15 @@ export function toolIsolationPresentation(
       label: `Preview OS isolation · ${backendLabel(capability.backend, capability.environment, capability.profile_id)}`,
       description:
         capability.backend === "srt"
-          ? "Python and Terminal use SRT. Runtime and filesystem checks passed; platform limitations are listed below."
-          : "Python and Terminal use a preview sandbox whose live enforcement probe passed.",
+          ? "Python and Terminal use SRT. Preview limitations apply."
+          : "Python and Terminal use a preview sandbox. Limitations apply.",
     };
   }
   return {
     state: "unavailable",
     label: "OS isolation unavailable",
-    description: "Python and Terminal are blocked until you choose a mode.",
+    description:
+      "Python and Terminal are blocked. Check the setup or use Limited mode.",
   };
 }
 
