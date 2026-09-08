@@ -604,12 +604,6 @@ def cached_dataset_candidates(
 def dataset_cache_can_answer(repo_id: str) -> bool:
     """True if some cached copy of *repo_id* could satisfy a preview without the Hub.
 
-    Authorization gates exist to stop an unverified caller reading the operator's disk.
-    A dataset with nothing cached has nothing to leak, so denying it buys no protection
-    and costs a legitimate caller its preview whenever the access probe is unavailable
-    rather than merely negative: an HF_ENDPOINT mirror without the undocumented
-    /auth-check route, or one transient failure.
-
     Both caches count. ``datasets`` answers a streaming load from its own PREPARED cache,
     which is where the measured leak was, while the hub snapshot backs the file-level
     readers.
@@ -623,3 +617,29 @@ def dataset_cache_can_answer(repo_id: str) -> bool:
     except Exception:
         # Never let the guard's own failure open the path it guards.
         return True
+
+
+def refuse_unauthorized_dataset_preview(hf_token, dataset_name: str) -> None:
+    """Raise 404 when a cached dataset preview would be served to a caller who cannot reach it.
+
+    ``datasets`` satisfies a streaming load from its own cache without consulting the
+    credential, so an explicit token that cannot reach the repo is a leak online as well as
+    off. The anonymous sentinel has no network over which to establish access, so it is
+    refused offline. Both preview routes spelled this out separately, and not equivalently,
+    under comments claiming they mirrored each other; stating it once removes that trap.
+    """
+    from fastapi import HTTPException
+    from hub.utils.hf_tokens import cached_read_refused, is_anonymous
+    from utils.utils import hf_env_offline
+
+    refused = cached_read_refused(
+        hf_token,
+        repo_id = dataset_name,
+        repo_type = "dataset",
+        is_cached = lambda: dataset_cache_can_answer(dataset_name),
+    )
+    if refused and (isinstance(hf_token, str) or (is_anonymous(hf_token) and hf_env_offline())):
+        raise HTTPException(
+            status_code = 404,
+            detail = "Dataset preview is not available without Hub authorization.",
+        )

@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from hub.utils.hf_tokens import cache_reads_authorized
+from hub.utils.hf_tokens import cache_reads_authorized, cached_read_refused
 from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
@@ -399,10 +399,11 @@ def read_default_chat_template(
                 # hf_hub_download below serves the cached copy on an unreachable Hub
                 # without consulting the credential. The offline gate misses that: "hub
                 # unreachable" is not "env offline". get_paths_info is network-only, so its
-                # success is the wire proof. Second leg: nothing cached, nothing to leak.
-                return (
-                    cache_reads_authorized(hf_token, repo_id = resolved)
-                    or get_cache_path(resolved) is None
+                # success is the wire proof.
+                return not cached_read_refused(
+                    hf_token,
+                    repo_id = resolved,
+                    is_cached = lambda: get_cache_path(resolved) is not None,
                 )
             matched = [info for info in infos if getattr(info, "path", None) == rel]
             if not matched:

@@ -35,7 +35,7 @@ from hub.utils.dataset_cache import (
     load_cached_hf_dataset as _shared_load_cached_hf_dataset,
     split_label_matches as _split_label_matches,
 )
-from hub.utils.dataset_cache import dataset_cache_can_answer
+from hub.utils.dataset_cache import refuse_unauthorized_dataset_preview
 from hub.utils import download_registry
 from hub.utils.dataset_format import check_dataset_format, format_dataset_preview
 from hub.utils.hf_errors import hf_error_status
@@ -45,7 +45,6 @@ from hub.utils.paths import (
     resolve_dataset_path,
 )
 from hub.utils.hf_tokens import cache_reads_authorized
-from utils.utils import anonymous_and_offline
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.paths.path_utils import drop_shadowed_appledouble_names
 
@@ -364,25 +363,10 @@ def check_format_response(
         if not dataset_exists and _is_local_dataset_ref(request.dataset_name):
             raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
 
-        # Offline `datasets` answers a streaming load from its own prepared cache without
-        # ever consulting the credential, and both tiers run on the default
-        # prefer_local_cache=false, ahead of the guarded cache reader below. The anonymous
-        # sentinel is not the only caller that has not earned that disk: an explicit token
-        # that cannot reach the repo is the same leak, so this mirrors the seed-inspect gate.
-        if (
-            not dataset_exists
-            and dataset_cache_can_answer(request.dataset_name)
-            and not cache_reads_authorized(
-                hf_token,
-                repo_id = request.dataset_name,
-                repo_type = "dataset",
-            )
-            and (anonymous_and_offline(hf_token) or isinstance(hf_token, str))
-        ):
-            raise HTTPException(
-                status_code = 404,
-                detail = "Dataset preview is not available without Hub authorization.",
-            )
+        # Both streaming tiers run on the default prefer_local_cache=false, ahead of the
+        # guarded cache reader below, so the gate stands in front of them.
+        if not dataset_exists:
+            refuse_unauthorized_dataset_preview(hf_token, request.dataset_name)
         if dataset_exists:
             train_split = request.train_split or "train"
             preview_slice, total_rows = _load_local_preview_slice(

@@ -215,6 +215,32 @@ def cache_reads_authorized(
     return _explicit_token_reaches_repo(repo, hf_token, repo_type, offline = offline)
 
 
+def cached_read_refused(
+    hf_token: HfTokenArg,
+    *,
+    repo_id: str,
+    is_cached,
+    repo_type: str = "model",
+    offline: bool = False,
+) -> bool:
+    """Refuse a read only where the operator's disk could answer it AND this caller may not.
+
+    An uncached repo has nothing to leak, so refusing it protects nothing and costs a
+    legitimate caller its answer whenever the probe is merely unavailable rather than
+    negative (a mirror without the undocumented /auth-check, one transient failure). Uncached
+    goes to the Hub, which enforces its own access.
+
+    ``is_cached`` is asked FIRST, so nothing on disk means no probe, and must fail closed or
+    the guard's own failure opens the path it guards. Each reader passes its own predicate:
+    "cached" means a file at a revision, a dataset in either cache, or a repo dir, per site.
+    """
+    if not is_cached():
+        return False
+    return not cache_reads_authorized(
+        hf_token, repo_id = repo_id, repo_type = repo_type, offline = offline
+    )
+
+
 def _is_local_path(repo_id: str) -> bool:
     """Lazy: hub.utils.paths pulls in the path stack, this module is imported beneath it."""
     try:

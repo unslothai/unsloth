@@ -119,9 +119,8 @@ def _is_valid_repo_id(repo_id: str) -> bool:
 def _normalize_hf_token(hf_token) -> Optional[str]:
     if not isinstance(hf_token, str):
         return None
-    # Trims via normalize_token, not str.strip(): strip() returns a plain str and would drop
-    # the marker saying this token belongs to a UI session already entitled to ambient access,
-    # putting an ordinary session behind the access probe and denying it its own cache offline.
+    # normalize_token, not str.strip(): strip() returns a plain str, dropping the marker that
+    # says this is a UI session and costing it its own cache offline.
     return normalize_token(hf_token)
 
 
@@ -199,6 +198,7 @@ from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_tokens import (
     HfTokenArg,
     cache_reads_authorized,
+    cached_read_refused,
     hf_token_arg,
     is_anonymous,
     normalize_token,
@@ -2593,13 +2593,18 @@ async def scan_model_remote_code(
             model_name = resolve_cached_repo_id_case(model_name)
         # The scanner's hf_hub_download resolves a cached repo's configs without consulting
         # the credential, so a definitive has_remote_code can be answered off the operator's
-        # disk. Gating only the prefer_local snapshot optimization below left scan_target as
-        # the repo id and let the scan run anyway. Only a repo already in a cache can be
-        # served that way; an uncached one goes to the Hub, which enforces its own access.
-        if (
-            not local_model
-            and _repo_in_any_hf_cache(model_name)
-            and not cache_reads_authorized(hf_token, repo_id = model_name)
+        # disk. Gating only the prefer_local optimization below left the scan running anyway.
+        # _repo_in_any_hf_cache returns False when every cache root raises, which would open
+        # this path on an internal error; its other caller drives deletion semantics where
+        # that False is right, so fail closed here rather than changing it there.
+        def _repo_maybe_cached() -> bool:
+            try:
+                return _repo_in_any_hf_cache(model_name)
+            except Exception:
+                return True
+
+        if not local_model and cached_read_refused(
+            hf_token, repo_id = model_name, is_cached = _repo_maybe_cached
         ):
             raise HTTPException(
                 status_code = 404,

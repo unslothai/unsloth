@@ -18,6 +18,7 @@ from utils.paths import (
 )
 from hub.utils.hf_tokens import (
     ANONYMOUS_CACHE_IDENTITY,
+    cached_read_refused,
     qualify_cache_identity,
     HfTokenArg,
     apply_token_to_child_env,
@@ -575,17 +576,15 @@ def load_model_config(
             **revision_kwargs,
         )
 
-    # Only a repo whose config.json is already on disk can be served without authorizing.
-    # An uncached repo has nothing to leak, and AutoConfig's own authenticated request is
-    # then the thing the Hub checks, so refusing it here would break a mirror that serves
-    # /resolve but not the undocumented /auth-check, and every transient probe failure,
-    # while protecting nothing.
     if (
         isinstance(token, str)
         and token
         and not is_local_path(model_name)
-        and _config_json_already_cached(model_name, revision)
-        and not cache_reads_authorized(token, repo_id = model_name)
+        and cached_read_refused(
+            token,
+            repo_id = model_name,
+            is_cached = lambda: _config_json_already_cached(model_name, revision),
+        )
     ):
         raise OSError(f"config.json for {model_name} is not available to an unauthorized caller")
 
@@ -764,13 +763,13 @@ def _raw_config_has_vision_config(
             }
             if revision is not None:
                 download_kwargs["revision"] = revision
-            # hf_hub_download serves the cached file whenever the Hub is unreachable, even with
-            # local_files_only=False, and never consults the credential to do it. Measured: a
-            # planted cache entry plus a dead endpoint returns a private repo's config.json to a
-            # token that cannot read it. Only a repo already on disk can leak, so authorize just
-            # that case; anything not cached goes to the wire, where the Hub enforces access.
-            if _config_json_already_cached(model_name, revision) and not cache_reads_authorized(
-                hf_token, repo_id = model_name
+            # Measured: a planted cache entry plus a dead endpoint returns a private repo's
+            # config.json to a token that cannot read it, because hf_hub_download falls back
+            # to the cache even with local_files_only=False and never consults the credential.
+            if cached_read_refused(
+                hf_token,
+                repo_id = model_name,
+                is_cached = lambda: _config_json_already_cached(model_name, revision),
             ):
                 return None
             config_path = Path(hf_hub_download(**download_kwargs))
@@ -800,6 +799,18 @@ def _raw_config_has_vision_config(
 
 # why: inline _is_vlm and constants are prepended so the subprocess stays self-contained
 # and doesn't import the parent module graph. Built on demand to defer the registry read.
+def _offline_cache_read_refused(hf_token, model_name: str, repo_id: str, offline: bool) -> bool:
+    """Offline, the capability probes read the cache and never authorize, so local_files_only
+    being False does not put an unentitled caller back on the wire: it would just take the
+    disk. A local path the caller named itself is not the Hub cache and stays available.
+    """
+    return (
+        offline
+        and not is_local_path(model_name)
+        and not cache_reads_authorized(hf_token, repo_id = repo_id)
+    )
+
+
 def _config_json_already_cached(model_name: str, revision: Optional[str] = None) -> bool:
     """True if this repo's config.json is on disk, so an unauthorized read could be served it."""
     try:
@@ -1112,17 +1123,10 @@ def is_vision_model(
         resolved_name = model_name
     # Key on effective offline (kwarg OR env) so an offline probe can't poison a later lookup.
     effective_offline = bool(local_files_only or _env_offline())
-    # Offline the probe reads the cache and never authorizes, so local_files_only=False
-    # does not put an anonymous caller back on the wire. It gets the default instead.
-    # The online cache fallback is guarded inside _raw_config_has_vision_config, at the point
-    # where a cached file can actually be served, rather than here: gating the whole call
-    # would deny a legitimate token its answer on any Hub hiccup, for a repo that is not on
-    # disk and so has nothing to leak.
-    if (
-        effective_offline
-        and not is_local_path(model_name)
-        and not cache_reads_authorized(hf_token, repo_id = resolved_name)
-    ):
+    # The ONLINE cache fallback is guarded inside _raw_config_has_vision_config, where a
+    # cached file can actually be served; gating the whole call would deny a legitimate token
+    # its answer on any Hub hiccup for a repo that has nothing to leak.
+    if _offline_cache_read_refused(hf_token, model_name, resolved_name, effective_offline):
         return False
     cache_key: _CapabilityCacheKey = (
         resolved_name,
@@ -1313,13 +1317,7 @@ def detect_audio_type_checked(
 
     # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
     effective_offline = bool(local_files_only or _env_offline())
-    # Offline the probe reads the cache and never authorizes, so local_files_only=False
-    # does not put an anonymous caller back on the wire. Inconclusive for it instead.
-    if (
-        effective_offline
-        and not is_local_path(model_name)
-        and not cache_reads_authorized(hf_token, repo_id = model_name)
-    ):
+    if _offline_cache_read_refused(hf_token, model_name, model_name, effective_offline):
         return None, False
     # Checked on the RAW name, before the casing resolution below, because resolving a
     # repo id that is not in the cache walks every cache directory, and that walk is the
