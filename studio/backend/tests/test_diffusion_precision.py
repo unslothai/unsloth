@@ -580,7 +580,13 @@ def test_no_torchao_config_is_constructed_outside_quiet_config():
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            name = (
+                func.id
+                if isinstance(func, ast.Name)
+                else func.attr
+                if isinstance(func, ast.Attribute)
+                else ""
+            )
             if not (name.endswith("WeightConfig") or name.endswith("WeightOnlyConfig")):
                 continue
             offenders.append(f"{path.relative_to(backend)}:{node.lineno} {name}(...)")

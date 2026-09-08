@@ -224,6 +224,6 @@ def test_real_torchao_int_mm_is_patched_and_bit_identical():
         (randint8(40, 20), randint8(20, 64)),
     ]
     for a, b in cases:
-        assert torch.equal(patched(a, b), original(a, b)), (
-            f"patched safe_int_mm diverged from torchao's on {tuple(a.shape)} x {tuple(b.shape)}"
-        )
+        assert torch.equal(
+            patched(a, b), original(a, b)
+        ), f"patched safe_int_mm diverged from torchao's on {tuple(a.shape)} x {tuple(b.shape)}"

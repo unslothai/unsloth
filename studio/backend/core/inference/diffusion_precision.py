@@ -459,7 +459,11 @@ def _cast_nvfp4(encoder: Any, target: Any) -> None:
     # exclusions as the int8/fp8 TE modes; require_bf16 skips non-bf16 Linears so the cast engages instead of aborting.
     from torchao.quantization import quantize_
     from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
-    from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES, _quiet_config, make_filter_fn
+    from .diffusion_transformer_quant import (
+        DEFAULT_MIN_LINEAR_FEATURES,
+        _quiet_config,
+        make_filter_fn,
+    )
 
     filter_fn = make_filter_fn(
         DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True

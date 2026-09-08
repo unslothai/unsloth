@@ -5835,16 +5835,14 @@ def _make_safe_int_mm(mod, original):
             return out_dtype(torch.ops.aten.mm.default, torch.int32, input, mat2)
 
         # error checking for cublas path
-        assert mat2.device == input.device, (
-            f"need both tensors to be on the same device but got {mat2.device} and {input.device}"
-        )
+        assert (
+            mat2.device == input.device
+        ), f"need both tensors to be on the same device but got {mat2.device} and {input.device}"
         device_cpu = "cpu" in [mat2.device.type, input.device.type]
         # with input.shape = [i,j] and mat2.shape = [j,k]
         j_is_nonzero_multiple_of_8 = (input.shape[1] % 8 == 0) and (input.shape[1] > 0)
         k_is_nonzero_multiple_of_8 = (mat2.shape[1] % 8 == 0) and (mat2.shape[1] > 0)
-        bad_dimensions_for_cublas = not (
-            j_is_nonzero_multiple_of_8 and k_is_nonzero_multiple_of_8
-        )
+        bad_dimensions_for_cublas = not (j_is_nonzero_multiple_of_8 and k_is_nonzero_multiple_of_8)
 
         if device_cpu or bad_dimensions_for_cublas:
             # fallback path
@@ -5866,9 +5864,7 @@ def _make_safe_int_mm(mod, original):
         except Exception:
             # fallback path, would run on H100 for float8 dtypes
             # Exception on H100 float8 dtype : "addmm_cuda" not implemented for 'Float8_e4m3fn'
-            return torch.matmul(input.to(torch.float32), mat2.to(torch.float32)).to(
-                torch.int32
-            )
+            return torch.matmul(input.to(torch.float32), mat2.to(torch.float32)).to(torch.int32)
 
     safe_int_mm.__unsloth_patched__ = True
     safe_int_mm.__unsloth_original__ = original
@@ -5961,8 +5957,9 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
     Inserted at the FRONT of sys.meta_path, unlike the appended alias finders
     next to it: this module really exists, so PathFinder would answer first and
     a finder at the back would never be consulted. It answers only for the two
-    dotted names torchao has kept the function under and hands back the real spec with the loader wrapped, so the
-    import is byte for byte the one that would have happened. The re-entrancy
+    dotted names torchao has kept the function under, and hands back the real
+    spec with the loader wrapped, so the import is byte for byte the one that
+    would have happened. The re-entrancy
     flag is for the find_spec below, which walks sys.meta_path again.
     """
 
@@ -5972,7 +5969,12 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
         setattr(self, _TORCHAO_INTMM_SENTINEL, True)
         self._finding = False
 
-    def find_spec(self, fullname, path = None, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
         if fullname not in _TORCHAO_INTMM_MODULES or self._finding:
             return None
         self._finding = True
