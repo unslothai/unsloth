@@ -119,6 +119,27 @@ def test_cors_origin_regex_only_applies_to_the_desktop_lockdown(monkeypatch, api
     assert cors_origin_regex_for_mode(api_only = api_only, secure = secure) is None
 
 
+def test_a_malformed_origin_regex_is_dropped_not_handed_to_starlette(monkeypatch, caplog):
+    # Starlette compiles allow_origin_regex when it builds the middleware stack, and it
+    # builds that lazily on the first request, so a typo'd pattern gets past the "running"
+    # banner and then 500s every route including /api/health. Measured on a live api-only
+    # backend before this guard.
+    monkeypatch.setenv("UNSLOTH_CORS_ORIGIN_REGEX", "^http://(localhost")
+    with caplog.at_level("WARNING"):
+        assert cors_origin_regex_for_mode(api_only = True, secure = False) is None
+    assert "UNSLOTH_CORS_ORIGIN_REGEX" in caplog.text
+
+    middleware = _middleware()
+    assert _preflight(middleware, "tauri://localhost").status_code == 200
+    assert _preflight(middleware, "http://localhost:3000").status_code == 400
+
+
+def test_a_malformed_origin_regex_still_leaves_the_loopback_flag_working(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_CORS_ORIGIN_REGEX", "^http://(localhost")
+    monkeypatch.setenv("UNSLOTH_CORS_ALLOW_LOOPBACK", "1")
+    assert cors_origin_regex_for_mode(api_only = True, secure = False) == _LOOPBACK_ORIGIN_REGEX
+
+
 def test_main_passes_the_origin_regex_to_the_mounted_middleware():
     # The policy helpers are only worth anything if main.py hands them to add_middleware.
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
