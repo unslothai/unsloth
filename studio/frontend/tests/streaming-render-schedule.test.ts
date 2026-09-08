@@ -110,6 +110,10 @@ const MARKDOWN_CASES = [
   // has to be held like any other.
   `[foo\nbar]: /url\n\n${paragraphs(12)}[foo\nbar]: /url\n\nq\n\n`,
   `[foo\n${"y".repeat(300)}]: /url\n\n${paragraphs(12)}[foo\n${"y".repeat(300)}]: /url\n\nq\n\n`,
+  // 520 characters, but 1040 UTF-16 code units, so the bound only holds it if it
+  // counts code points. Streaming it a character at a time also cuts surrogate
+  // pairs in half, which the repair and the probe both have to survive.
+  `[${"😀".repeat(520)}]: /url\n\n${paragraphs(12)}[${"😀".repeat(520)}]: /url\n\nq\n\n`,
   // Retained-prefix contexts that nothing else reaches: a balanced single
   // underscore, one first seen inside inline code, and an underscore that
   // precedes the first bold marker.

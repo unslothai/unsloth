@@ -93,6 +93,12 @@ const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 // the whole valid range is covered. A label past it is outside the spec and
 // stays mis-lexed, which is the trade against that quadratic scan.
 //
+// `u` is what makes "the whole valid range" true. Without it the quantifier
+// counts UTF-16 code units, so an astral character costs two and the real bound
+// is 499 emoji, not 999 -- and Marked, which has no bound at all, registers
+// them. It is free: on the worst-case scan above it is inside the run-to-run
+// noise (100k: 104.83ms without, 103.29ms with).
+//
 // Two consumers pay for admitting `\n`, and they are bounded differently.
 // `updateLinkDefinitionParity` reads one block of a live tail capped at
 // STALLED_TAIL_CHARACTERS and returns early on a fence, so measured per chunk
@@ -102,7 +108,7 @@ const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 // reference present: 0.045ms over short lines and 0.026ms over citations, both
 // unchanged, against 2.45ms -> 11.95ms on one 50k line dense with `[`. That
 // last shape is the price, and it is the same shape the bound above exists for.
-const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\\]){1,999}\]:/;
+const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\\]){1,999}\]:/u;
 // The same probe plus the destination, for the remount key. Derived from
 // LINK_DEFINITION_RE, not written out again, so the key can never see fewer
 // definitions than the parity does: matching per line missed a label that spans
@@ -113,7 +119,7 @@ const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\\]){1,999}\]:/;
 // and costs a remount; missing one leaves a rendered reference literal.
 const LINK_DEFINITION_KEY_RE = new RegExp(
   `${LINK_DEFINITION_RE.source}[ \\t]*(?:\\n[ \\t]*)?[^\\n]*`,
-  "g",
+  `g${LINK_DEFINITION_RE.flags}`,
 );
 const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
