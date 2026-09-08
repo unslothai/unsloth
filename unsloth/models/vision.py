@@ -2582,14 +2582,14 @@ def check_dataset_for_missing_videos(
 ):
     """Validate that local video paths referenced in a dataset exist, catching missing files before training (torchvision otherwise returns an empty tensor and the model silently receives no video signal).
 
-        Args:
-            dataset:     Map-style Dataset, list of dicts, or iterable of examples (not a streaming IterableDataset, since iterating consumes it).
-            column:      Chat-messages column, default "messages"; "conversations", "prompt" and "completion" are also scanned.
-            raise_error: True (default) raises FileNotFoundError listing missing files; False warns and returns them.
-            checked:     Optional set of known-good paths for cross-call dedup.
+    Args:
+        dataset:     Map-style Dataset, list of dicts, or iterable of examples (not a streaming IterableDataset, since iterating consumes it).
+        column:      Chat-messages column, default "messages"; "conversations", "prompt" and "completion" are also scanned.
+        raise_error: True (default) raises FileNotFoundError listing missing files; False warns and returns them.
+        checked:     Optional set of known-good paths for cross-call dedup.
 
-        Returns:
-            List[str]: Missing file paths (empty when all exist).
+    Returns:
+        List[str]: Missing file paths (empty when all exist).
     """
     try:
         from datasets import IterableDataset as _IterableDataset

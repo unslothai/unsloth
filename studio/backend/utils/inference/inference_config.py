@@ -18,7 +18,6 @@ from utils.models.model_config import load_model_defaults
 logger = get_logger(__name__)
 
 
-
 _FAMILY_DEFAULTS: Optional[Dict[str, Any]] = None
 _FAMILY_PATTERNS: Optional[list] = None
 

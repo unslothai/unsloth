@@ -37,8 +37,6 @@ if platform.system() == "Darwin" and platform.machine() == "arm64":
     os.environ.setdefault("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1")
 
 
-
-
 class DeviceType(str, Enum):
     """Supported compute backends. str subclass for clean JSON serialization."""
 
@@ -46,7 +44,6 @@ class DeviceType(str, Enum):
     XPU = "xpu"
     MLX = "mlx"
     CPU = "cpu"
-
 
 
 DEVICE: Optional[DeviceType] = None
@@ -143,8 +140,6 @@ def _backend_label(device: DeviceType) -> str:
     if IS_ROCM and device == DeviceType.CUDA:
         return "rocm"
     return device.value
-
-
 
 
 def is_apple_silicon() -> bool:
@@ -1461,8 +1456,6 @@ def _detect_hardware_locked() -> DeviceType:
     return DEVICE
 
 
-
-
 def get_device() -> DeviceType:
     """Return the detected device, auto-detecting if detect_hardware() has not run. Prefer calling detect_hardware() explicitly at startup."""
     return ensure_hardware_detected()
@@ -2119,8 +2112,6 @@ def log_gpu_memory(context: str):
         logger.info(f"GPU Memory [{context}]: No GPU available (CPU-only)")
 
 
-
-
 def get_gpu_summary() -> Dict[str, Any]:
     """Compact summary of the primary GPU: gpu_name (e.g. "NVIDIA L4") and vram_total_gb, either of which may be None."""
     mem = get_gpu_memory_info()
@@ -2164,8 +2155,6 @@ def get_package_versions() -> Dict[str, Optional[str]]:
         versions["xpu"] = None
 
     return versions
-
-
 
 
 def _torch_get_device_module():
@@ -2386,8 +2375,6 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
         except Exception as e:
             logger.debug("torch device query failed for ordinal %d: %s", ordinal, e)
     return devices
-
-
 
 
 def _xpu_hierarchy_is_composite() -> bool:
@@ -4070,7 +4057,6 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         "devices": [],
         "index_kind": "vulkan",
     }
-
 
 
 _physical_gpu_count: Optional[int] = None

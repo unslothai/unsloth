@@ -20,7 +20,6 @@ from utils.paths.path_utils import is_appledouble_metadata
 logger = get_logger(__name__)
 
 
-
 # ── Offline / HF-cache helpers ──────────────────────────────────
 # An offline load must never touch the network (a DNS-dead session hangs on hub retries); these read the local HF cache.
 _HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -683,8 +682,6 @@ def snapshot_is_loadable(snapshot, model_name: str) -> bool:
     except Exception:
         # Completeness is a safety property here: an unprovable partial must keep the pending marker so the loader cannot silently reach the network.
         return False
-
-
 
 
 # ── Client-safe error helpers ───────────────────────────────────

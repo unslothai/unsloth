@@ -1961,7 +1961,6 @@ class FastModel(FastBaseModel):
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
 
         if is_peft:
-
             # Gemma4 ClippableLinear wraps nn.Linear and PEFT cannot inject LoRA on it directly, so patch PEFT to target the inner .linear child (same patch as vision.py). See huggingface/peft#3129.
             _clippable_linear_cls = None
             try:

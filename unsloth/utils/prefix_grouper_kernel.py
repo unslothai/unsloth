@@ -100,8 +100,6 @@ def _pad_len(T: int) -> int:
     return ((T + _PAD_MULTIPLE - 1) // _PAD_MULTIPLE) * _PAD_MULTIPLE
 
 
-
-
 @dataclass
 class PrefixSegInfo:
     """Per-flat-token segment metadata driving the shared-prefix block mask.
@@ -364,8 +362,6 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
             scale = scale,
         )
     return out[:, :, :T, :]
-
-
 
 
 def flex_shared_prefix_attention(

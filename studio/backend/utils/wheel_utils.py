@@ -24,8 +24,6 @@ _logger = logging.getLogger(__name__)
 FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releases/download"
 
 
-
-
 # No arch gate, deliberately: has_blackwell_gpu() skipped flash-attn before sm_100+ wheels existed (#5420) and became the bug once they did (#6961), denying B200 hosts a working wheel. An arch gate encodes a snapshot of what upstream ships and goes stale silently both ways; the post-install import check catches a wheel that will not load whatever the cause.
 def wheel_platform_tag() -> str | None:
     """pip platform tag for this host, or None where nothing we resolve is published. Windows is included because download.pytorch.org publishes CUDA-matched ``win_amd64`` xFormers wheels (see ``xformers_wheel_url``). It is NOT included for flash-attn / causal-conv1d / mamba-ssm, whose upstreams publish Linux assets only; ``probe_torch_wheel_env`` keeps that gate, not this function."""

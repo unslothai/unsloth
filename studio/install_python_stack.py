@@ -4801,7 +4801,6 @@ def _ensure_flash_attn() -> None:
         _step("warning", "No published flash-attn prebuilt wheel found", _cyan)
 
 
-
 USE_UV = False  # Set by _bootstrap_uv() at the start of install_python_stack()
 UV_NEEDS_SYSTEM = False  # Set by _bootstrap_uv() via probe
 
@@ -5869,8 +5868,6 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
     download_file(url, dest)
 
 
-
-
 def _has_working_git() -> bool:
     """Match install.sh's _has_working_git: on PATH *and* runnable, since a bare xcrun shim counts as missing there. Testing only shutil.which had the installer promise to skip the git+https triton requirement and fetch it anyway."""
     exe = shutil.which("git")
@@ -6239,9 +6236,6 @@ def install_python_stack() -> int:
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")
         _ensure_flash_attn()
-
-
-
 
     _progress("studio deps")
     pip_install(

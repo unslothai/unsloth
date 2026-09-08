@@ -1801,7 +1801,6 @@ import transformers.trainer
 transformers.trainer.get_model_param_count = get_model_param_count
 
 
-
 def patch_mistral_nemo_config(config):
     if "head_dim (" not in config:
         add_head_dim = (
@@ -1912,7 +1911,6 @@ else:
     # Exhaustive because both names are in __all__: an unbound branch (mlx) breaks `import *`.
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = DEVICE_TYPE_TORCH)
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = DEVICE_TYPE_TORCH)
-
 
 
 from transformers.utils import is_openai_available
@@ -2256,7 +2254,6 @@ from peft.utils.integrations import dequantize_module_weight
 
 if Version(peft_version) < Version("0.12.0"):
     from peft.tuners.lora.layer import LoraLayer
-
     try:
         source = inspect.getsource(LoraLayer.update_layer)
         text = "if weight is not None:\n"
@@ -4018,7 +4015,6 @@ def warn_if_zoo_cannot_merge_moe_experts():
     """Warn once when the installed unsloth_zoo cannot fold per-expert Linear MoE LoRA into a merged_16bit checkpoint. Older zoo releases keep the fused gate_up_proj / down_proj tensors and drop the per-expert deltas, so save_pretrained_merged("merged_16bit") would silently lose the expert training (the LoRA adapter itself still saves and reloads correctly)."""
     try:
         from unsloth_zoo import saving_utils as _saving_utils
-
         if hasattr(_saving_utils, "_fold_perexpert_lora_into_fused"):
             return
     except Exception:

@@ -211,7 +211,6 @@ def _safe_is_dir(p: Path) -> bool:
         return False
 
 
-
 TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "ministral-3-",  # Ministral-3-{3,8,14}B-{Instruct,Reasoning,Base}-2512
     "glm-4.7-flash",  # GLM-4.7-Flash
@@ -1648,8 +1647,6 @@ def get_transformers_tier(
 def needs_transformers_5(model_name: str) -> bool:
     """True if *model_name* requires any transformers 5.x version. Wrapper around :func:`get_transformers_tier` passing ``probe=False``, so a log-only parent caller never spawns sidecar probes (the worker re-resolves the exact tier with ``probe=True`` on the real activation path)."""
     return get_transformers_tier(model_name, probe = False) != "default"
-
-
 
 
 def _get_in_memory_version() -> str | None:

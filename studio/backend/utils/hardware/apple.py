@@ -40,8 +40,6 @@ _CF_STRING_ENCODING_UTF8 = 0x08000100
 _ENERGY_UNIT_DIVISORS = {"mJ": 1e3, "uJ": 1e6, "nJ": 1e9}
 
 
-
-
 def _fourcc(key: str) -> int:
     """Encode a 4-char SMC key/type name as a big-endian integer."""
     return int.from_bytes(key.encode("ascii"), "big")
@@ -70,8 +68,6 @@ def _is_gpu_energy_channel(name: str) -> bool:
     # Exact "GPU Energy" plus "DIE_N_GPU Energy" on Ultra chips; the separate
     # "GPU SRAM*" channels are not GPU core power.
     return name.endswith("GPU Energy") and "SRAM" not in name
-
-
 
 
 class _SMCKeyDataVers(ctypes.Structure):
@@ -114,8 +110,6 @@ class _SMCKeyData(ctypes.Structure):
         ("data32", ctypes.c_uint32),
         ("bytes", ctypes.c_uint8 * 32),
     ]
-
-
 
 
 def _load_iokit() -> ctypes.CDLL:
@@ -211,8 +205,6 @@ def _from_cfstr(cf: ctypes.CDLL, ref: Optional[int]) -> str:
     if not cf.CFStringGetCString(ref, buf, len(buf), _CF_STRING_ENCODING_UTF8):
         return ""
     return buf.value.decode("utf-8", errors = "replace").strip()
-
-
 
 
 class _SMCConnection:
@@ -323,8 +315,6 @@ class _SMCConnection:
         return _average_valid_temps(value for value in readings if value is not None)
 
 
-
-
 class _IOReportEnergy:
     """Persistent subscription to the "Energy Model" group for GPU wattage."""
 
@@ -384,7 +374,6 @@ class _IOReportEnergy:
         if total is None or total < 0:
             return None
         return round(total, 1)
-
 
 
 _smc: Optional[_SMCConnection] = None

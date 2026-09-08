@@ -257,7 +257,6 @@ def allow_child_processes() -> None:
     """Allow the current multiprocessing worker to spawn children (#9094). Children inherit the cleared flag since `Process.__init__` copies `_config`, so a grandchild that does not pass `daemon =` itself is non-daemonic and `_exit_function` would join it unconditionally and without a timeout, holding the worker's exit open forever. Everything a worker reaches today passes `daemon = True`; keep it that way."""
     try:
         from multiprocessing import process as multiprocessing_process
-
         config = getattr(multiprocessing_process.current_process(), "_config", None)
         if isinstance(config, dict):
             config["daemon"] = False

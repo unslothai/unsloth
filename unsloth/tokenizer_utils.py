@@ -1709,5 +1709,3 @@ def patch_sft_trainer_tokenizer():
             f"trl.trainer.{path_to_trainer}.{function_name} = {function_name}",
             globals(),
         )
-
-
