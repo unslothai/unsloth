@@ -439,18 +439,25 @@ def test_a_hard_link_wholly_inside_the_workdir_is_allowed(tmp_path):
 
 
 def test_a_nested_host_mount_under_the_workdir_is_refused(tmp_path, monkeypatch):
+    """Somebody else's storage wearing a path inside the one writable directory:
+    the workdir bind is recursive and takes it along, and the macOS subpath rule
+    grants writes across it, so the check is in the shared scan rather than here."""
     nested = tmp_path / "mounted"
     nested.mkdir()
+    real = os.path.ismount
     monkeypatch.setattr(
-        sandbox_linux, "_host_mount_points", lambda: ("/", os.path.realpath(nested))
+        os.path, "ismount", lambda path: os.path.samefile(path, nested) or real(path)
     )
     with pytest.raises(SandboxUnavailableError, match = "nested host mount"):
         sandbox_linux._validate_workdir(str(tmp_path))
 
 
 def test_the_workdir_itself_being_a_mount_point_is_allowed(tmp_path, monkeypatch):
+    """Only a mount UNDER the workdir is a boundary problem. The scan walks its
+    contents, so the workdir's own mount status is never asked about."""
+    real = os.path.ismount
     monkeypatch.setattr(
-        sandbox_linux, "_host_mount_points", lambda: ("/", os.path.realpath(tmp_path))
+        os.path, "ismount", lambda path: os.path.samefile(path, tmp_path) or real(path)
     )
     assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
 
@@ -996,3 +1003,41 @@ def test_a_runtime_prefix_contributes_its_certificate_store(tmp_path, monkeypatc
     monkeypatch.setattr(sys, "prefix", str(prefix))
     paths = sandbox_linux._runtime_read_paths(str(tmp_path / "session"), ("/usr/lib",))
     assert str(prefix / "ssl") in paths
+
+
+def test_a_workdir_reached_through_a_symlink_is_bound_at_the_spelling_the_caller_used(tmp_path):
+    """UNSLOTH_STUDIO_SANDBOX_HOME pointing at another volume is a supported
+    override, and tools.py builds the scratch script path, HOME and TMPDIR from
+    the spelling it was given. Binding only the canonical form starts bwrap fine
+    and then Python cannot open its own argv, after Popen, where auto can no
+    longer fall back."""
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    launch = sandbox_linux.prepare(_plan(link))
+    try:
+        binds = _pairs(launch.argv, "--bind")
+        assert (str(real), str(link)) in binds
+        # The canonical spelling too, so a tool that resolved a path for itself is
+        # not handed one the jail cannot open either.
+        assert (str(real), str(real)) in binds
+        assert launch.argv[launch.argv.index("--chdir") + 1] == str(link)
+        assert launch.argv[launch.argv.index("HOME") + 1] == str(link)
+    finally:
+        launch.cleanup()
+
+
+def test_a_cache_leaf_left_behind_as_a_file_is_refused_at_preparation(tmp_path, monkeypatch):
+    """--bind-try onto a leaf that is not a directory fails inside bwrap, after
+    Popen, so auto cannot fall back and the session stays broken. An existing leaf
+    gets the same O_DIRECTORY and O_NOFOLLOW check its ancestors get."""
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
+    workdir = tmp_path / "session"
+    (workdir / ".cache" / "huggingface").mkdir(parents = True)
+    (workdir / ".cache" / "huggingface" / "hub").write_text("not a directory")
+
+    with pytest.raises(SandboxUnavailableError, match = "not a plain directory"):
+        sandbox_linux.prepare(_plan(workdir))

@@ -217,50 +217,15 @@ def _bwrap_supports(bwrap: str, option: str) -> bool:
     return option in _bwrap_long_options(identity)
 
 
-def _host_mount_points() -> tuple[str, ...]:
-    """Every host mount point. Unreadable is a refusal, not an empty list.
-
-    Read straight out of mountinfo without resolving anything: the kernel already
-    reports mount points canonically, and calling realpath on each one would stat
-    every path component of every mount on the host, on every launch. That blocks
-    uninterruptibly on a stale NFS or sshfs mount and triggers automounts that
-    were not otherwise in anyone's way.
-    """
-    points: list[str] = []
-    try:
-        with open("/proc/self/mountinfo", encoding = "utf-8") as stream:
-            for line in stream:
-                fields = line.split()
-                if len(fields) < 5:
-                    raise SandboxUnavailableError("cannot parse the host mount table")
-                raw = (
-                    fields[4]
-                    .replace("\\040", " ")
-                    .replace("\\011", "\t")
-                    .replace("\\012", "\n")
-                    .replace("\\134", "\\")
-                )
-                points.append(raw)
-    except OSError as exc:
-        raise SandboxUnavailableError("cannot read the host mount table") from exc
-    return tuple(points)
-
-
 def _validate_workdir(workdir: str) -> str:
     """Canonicalise the session workdir, and refuse one that would carry the host in with it.
 
-    The nested-mount leg is the bubblewrap-specific half: the workdir bind is
-    recursive, so a mount under it comes along. The device-node and hard-link
-    legs are the boundary both backends claim, so they live in ``os_sandbox``.
+    Everything it refuses is the boundary both backends claim rather than a
+    bubblewrap detail, so the refusing is in ``os_sandbox``.
     """
     resolved = os.path.realpath(workdir)
     if not os.path.isdir(resolved) or os.path.dirname(resolved) == resolved:
         raise SandboxUnavailableError("the session workdir is not a safe canonical directory")
-    for mount in _host_mount_points():
-        if mount != resolved and _within(mount, resolved):
-            raise SandboxUnavailableError(
-                f"the session workdir contains a nested host mount: {mount}"
-            )
     scan_workdir_for_host_channels(resolved)
     return resolved
 
@@ -378,15 +343,14 @@ def _tmpdir(plan: ToolLaunchPlan, workdir: str) -> str:
     every one of those files. It stays the fallback for a caller that named no
     temp directory, or one outside the only writable path in here.
 
-    Canonicalised first, because the workdir is bound inside the jail under its
-    realpath and only that spelling exists in there: a TMPDIR reached through a
-    symlinked home would otherwise be set to a name nothing can open.
+    Containment is decided on the canonical form and the ANSWER is the caller's,
+    so a temp directory under a symlinked sandbox home is still spelled the way
+    tools.py spelled it, which is the spelling the workdir is bound at.
     """
     requested = plan.env.get("TMPDIR") or ""
     if not requested:
         return "/tmp"
-    resolved = os.path.realpath(requested)
-    return resolved if _within(resolved, workdir) else "/tmp"
+    return requested if _within(os.path.realpath(requested), workdir) else "/tmp"
 
 
 def _pythonpath(plan: ToolLaunchPlan, packages: str) -> str:
@@ -468,10 +432,23 @@ class _CacheMountpoints:
             ) from exc
 
     def _mkdir(self, name: str) -> None:
-        """``mkdir`` in the innermost directory, recorded only if it was made here."""
+        """``mkdir`` in the innermost directory, recorded only if it was made here.
+
+        An entry that already exists is opened with the same O_DIRECTORY and
+        O_NOFOLLOW the ancestors get, so a leaf a tool call left behind as a file
+        or a symlink is refused here rather than failing the --bind-try inside
+        bwrap, after Popen, where auto can no longer take its fallback.
+        """
         try:
             os.mkdir(name, dir_fd = self._fds[-1])
         except FileExistsError:
+            os.close(
+                os.open(
+                    name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd = self._fds[-1],
+                )
+            )
             return
         self._made.append((len(self._fds) - 1, name))
 
@@ -498,6 +475,14 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     if not plan.argv:
         raise SandboxUnavailableError("a sandboxed launch needs a command to run")
     workdir = _validate_workdir(plan.workdir)
+    # The spelling the CALLER used, which is the one tools.py built the scratch
+    # script path, HOME and TMPDIR from. When the sandbox home is reached through
+    # a symlink -- UNSLOTH_STUDIO_SANDBOX_HOME pointing at another volume is a
+    # supported override -- binding only the canonical form starts bwrap fine and
+    # then Python cannot open its own argv, after Popen, where auto can no longer
+    # fall back. Everything inside the jail is spelled this way; the canonical
+    # form stays the bind SOURCE and the one every safety check is made against.
+    inner = os.path.abspath(plan.workdir)
     system_roots = tuple(path for path in _SYSTEM_ROOTS if os.path.isdir(path))
     if os.path.isdir(_NIX_STORE) and _within(os.path.realpath(sys.executable), _NIX_STORE):
         system_roots += (_NIX_STORE,)
@@ -565,10 +550,15 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         argv += ["--tmpfs", "/dev/shm", "--tmpfs", "/tmp"]
         for path in tmp_runtime_paths:
             argv += ["--ro-bind", path, path]
-        argv += ["--bind", workdir, workdir, "--chdir", workdir]
+        argv += ["--bind", workdir, inner]
+        if inner != workdir:
+            # Both spellings resolve in here, so a tool that canonicalised a path
+            # for itself is not handed one the jail cannot open either.
+            argv += ["--bind", workdir, workdir]
+        argv += ["--chdir", inner]
         if model_cache is not None:
-            inner_cache = os.path.join(workdir, _MODEL_CACHE_RELPATH)
-            mountpoints = _CacheMountpoints(workdir, _MODEL_CACHE_SUBDIRS)
+            inner_cache = os.path.join(inner, _MODEL_CACHE_RELPATH)
+            mountpoints = _CacheMountpoints(inner, _MODEL_CACHE_SUBDIRS)
             for name in _MODEL_CACHE_SUBDIRS:
                 argv += [
                     "--bind-try",
@@ -576,11 +566,11 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
                     os.path.join(inner_cache, name),
                 ]
             argv += ["--setenv", "HF_HOME", inner_cache]
-        packages = os.path.join(workdir, _PACKAGE_TARGET_RELPATH)
+        packages = os.path.join(inner, _PACKAGE_TARGET_RELPATH)
         argv += [
             "--setenv",
             "HOME",
-            workdir,
+            inner,
             "--setenv",
             "TMPDIR",
             _tmpdir(plan, workdir),

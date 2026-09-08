@@ -230,9 +230,13 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
 
     Both backends make this one directory the whole writable set, so a socket or
     device node under it is a channel neither a mount namespace nor a Seatbelt
-    path rule closes, and a hard link whose inode also has a name outside the
-    workdir is a writable path out of it. Backend-agnostic on purpose: the
-    invariant is the boundary both profiles claim, not a bubblewrap detail.
+    path rule closes, a hard link whose inode also has a name outside the workdir
+    is a writable path out of it, and a nested mount is somebody else's storage
+    wearing a path inside it -- bubblewrap's workdir bind is recursive and takes
+    it along, and a Seatbelt subpath rule grants writes across it. The workdir
+    itself being a mount point is fine and stays allowed; what is refused is a
+    mount UNDER it. Backend-agnostic on purpose: the invariant is the boundary
+    both profiles claim, not a bubblewrap detail.
 
     Raises ``SandboxUnavailableError``. In ``auto`` the caller turns that into a
     software-safeguards launch rather than a refusal.
@@ -265,7 +269,16 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
                 raise SandboxUnavailableError(
                     f"the session workdir changed during its safety scan: {path}"
                 ) from exc
-            if stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            if stat.S_ISLNK(info.st_mode):
+                continue
+            if stat.S_ISDIR(info.st_mode):
+                # os.path.ismount rather than the mount table: it is two stats on
+                # a directory the walk has already reached, it needs no /proc, and
+                # it is the same answer on both platforms.
+                if os.path.ismount(path):
+                    raise SandboxUnavailableError(
+                        f"the session workdir contains a nested host mount: {path}"
+                    )
                 continue
             if not stat.S_ISREG(info.st_mode):
                 raise SandboxUnavailableError(
