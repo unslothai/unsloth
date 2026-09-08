@@ -1194,9 +1194,39 @@ jobs:
             -DisableRealtimeMonitoring $false -DisableIOAVProtection $false `
             -DisableScriptScanning $false -DisableBehaviorMonitoring $false `
             -DisableArchiveScanning $false -MAPSReporting Advanced `
-            -SubmitSamplesConsent SendAllSamples -CloudBlockLevel High `
+            -SubmitSamplesConsent SendAllSamples -CloudBlockLevel HighPlus `
             -CloudExtendedTimeout 50 -DisableBlockAtFirstSeen $false `
             -PUAProtection Enabled -ErrorAction Continue
+
+          # Attack surface reduction, in AUDIT mode (state 2), never Block.
+          # 01443614 is "block executable files from running unless they meet a
+          # prevalence, age, or trusted list criterion" -- the closest thing a
+          # runner can get to the cloud-reputation half of a Smart App Control
+          # verdict, which is otherwise untestable in CI because a freshly
+          # published hash has no reputation whether or not it is signed. Audit
+          # reports what would be refused and refuses nothing, so it cannot
+          # block our own installer; a Block state here would fire on the first
+          # run of every build we make, which is the normal case, not a finding.
+          $asrRules = @(
+            '01443614-cd74-433a-b99e-2ecdc07bfc25',  # low prevalence / new file
+            'be9ba2d9-53ea-4cdc-84e5-9b1eeee46550',  # executable content from mail
+            'b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4',  # untrusted unsigned from USB
+            'c1db55ab-c21a-4637-bb3f-a12568109d35'   # advanced ransomware protection
+          )
+          $asrActions = @('AuditMode') * $asrRules.Count
+          Add-MpPreference -AttackSurfaceReductionRules_Ids $asrRules `
+            -AttackSurfaceReductionRules_Actions $asrActions -ErrorAction Continue
+          # Verified, not assumed: a rule that did not apply reports no events,
+          # which reads identically to a rule that found nothing.
+          $asrApplied = @((Get-MpPreference).AttackSurfaceReductionRules_Ids)
+          $asrMissing = @($asrRules | Where-Object { $asrApplied -notcontains $_ })
+          if ($asrMissing) { Write-Host "::warning::ASR rules not applied: $($asrMissing -join ', ')" }
+          else { Write-Host "ASR audit rules applied: $($asrRules.Count)" }
+
+          # Bounds the ASR event query below. Windows Defender/Operational is a
+          # shared log, so without this the report would include whatever the
+          # runner image did before this job started.
+          $scanStart = Get-Date
 
           $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
           $plat = Get-ChildItem 'C:\ProgramData\Microsoft\Windows Defender\Platform' -Directory -ErrorAction SilentlyContinue |
@@ -1251,7 +1281,7 @@ jobs:
             if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
             if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
             if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
-            if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
+            if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected HighPlus" }
             # PUA is its own detection class and is off by default, so without
             # this a bundled installer stub that Defender rates as unwanted
             # rather than malicious passes the gate unremarked.
@@ -1416,6 +1446,24 @@ jobs:
             Write-Host "::error::Refusing to publish a Windows bundle Defender flags: $($detected -join '; ')"
             Write-Host 'If this is a false positive, submit it at https://www.microsoft.com/en-us/wdsi/filesubmission (Software developer -> incorrectly detected) and re-run once cleared.'
           }
+          # ASR audit findings. Reported, never fatal: these rules run in audit
+          # mode and 01443614 fires on low prevalence, which every freshly built
+          # binary has by definition. Failing on that would block every release.
+          # It is here because it is the one reputation-shaped signal a runner
+          # can produce, and a rule firing on something OTHER than newness is
+          # worth a human look before publishing.
+          $asrEvents = @(Get-WinEvent -FilterHashtable @{
+            LogName = 'Microsoft-Windows-Windows Defender/Operational'; Id = 1121, 1122
+          } -ErrorAction SilentlyContinue | Where-Object { $_.TimeCreated -ge $scanStart })
+          if ($asrEvents) {
+            Write-Host "::warning::$($asrEvents.Count) attack surface reduction audit event(s) during the scan"
+            foreach ($e in $asrEvents | Select-Object -First 20) {
+              Write-Host "  [$($e.Id)] $($e.TimeCreated): $(($e.Message -split "`n")[0])"
+            }
+          } else {
+            Write-Host 'No attack surface reduction audit events during the scan.'
+          }
+
           if ($detected -or $unscanned) { exit 1 }
           Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
           Write-Host "All $($paths.Count) Windows bundle(s) scanned clean."
