@@ -115,19 +115,19 @@ _BIDI_CONTROLS = frozenset("؜‎‏‪‫‬‭‮⁦⁧⁨⁩")
 
 def _escape_unprintable(text: str) -> str:
     """Spell as ``\\uXXXX`` what a terminal would ACT on or stdout cannot encode, leaving ordinary
-        non-ASCII text readable. The JSON renderer used to cover all three for free:
+    non-ASCII text readable. The JSON renderer used to cover all three for free:
 
-        * **Lone surrogates**, reachable through a request body, raise ``UnicodeEncodeError`` on a UTF-8
-          stdout, which inside an exception handler loses the traceback AND replaces the original
-          exception with the encoding error.
-        * **Terminal controls**: raw ESC lets request-derived text rewrite what the reader sees, and a
-          backspace run can rub out the prefix record forgery depends on.
-        * **Bidi controls** need no terminal, since any UAX #9 viewer reorders the line: a measured
-          "rejected upload" message DISPLAYS with its path reversed. Escaped, not stripped, so the
-          record still says one was there.
+    * **Lone surrogates**, reachable through a request body, raise ``UnicodeEncodeError`` on a UTF-8
+      stdout, which inside an exception handler loses the traceback AND replaces the original
+      exception with the encoding error.
+    * **Terminal controls**: raw ESC lets request-derived text rewrite what the reader sees, and a
+      backspace run can rub out the prefix record forgery depends on.
+    * **Bidi controls** need no terminal, since any UAX #9 viewer reorders the line: a measured
+      "rejected upload" message DISPLAYS with its path reversed. Escaped, not stripped, so the
+      record still says one was there.
 
-        Tab is kept: it shifts alignment but cannot move the cursor back or erase.
-        """
+    Tab is kept: it shifts alignment but cannot move the cursor back or erase.
+    """
     out = []
     for ch in text:
         code = ord(ch)

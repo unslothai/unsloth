@@ -268,9 +268,9 @@ def _nested_model(annotation: Any) -> Optional[type[BaseModel]]:
 
 def _readable(model: type[BaseModel], value: Any) -> Any:
     """Drop what this build's schema does not define, keeping every field it does. `extra = "forbid"` is right
-            for a submitted payload but wrong for reading storage back: a blob holding one field from a newer build
-            would otherwise fail validation, and a stored recipe the user can no longer read is worse than one
-            missing a field this build cannot render anyway."""
+    for a submitted payload but wrong for reading storage back: a blob holding one field from a newer build
+    would otherwise fail validation, and a stored recipe the user can no longer read is worse than one
+    missing a field this build cannot render anyway."""
     if isinstance(value, list):
         return [_readable(model, item) for item in value]
     if not isinstance(value, dict):
@@ -305,7 +305,7 @@ def _validated_without_invalid_fields(
     schema: type[BaseModel], payload: dict
 ) -> tuple[BaseModel, list[tuple[Any, ...]]]:
     """Validate, dropping only the fields that fail. Resetting the whole recipe over one unreadable field would
-            hand the client schema defaults, which it then autosaves over the rest of a good stored recipe."""
+    hand the client schema defaults, which it then autosaves over the rest of a good stored recipe."""
     remaining = payload
     removed_locations = []
     while True:
@@ -350,9 +350,9 @@ def _with_value_at_location(
 
 def _preserve_recovered_defaults(schema: type[BaseModel], stored: dict, submitted: dict) -> dict:
     """Do not mistake a recovery default for an edit to an unreadable stored field. A downgraded GET omits
-            known fields whose values this schema cannot validate, then Pydantic supplies their defaults in the
-            response; the client cannot tell those defaults from stored values and echoes them in its next state
-            write. Preserve the raw leaf only while the submitted value is still the synthesized value."""
+    known fields whose values this schema cannot validate, then Pydantic supplies their defaults in the
+    response; the client cannot tell those defaults from stored values and echoes them in its next state
+    write. Preserve the raw leaf only while the submitted value is still the synthesized value."""
     recovered, locations = _validated_without_invalid_fields(schema, _readable(schema, stored))
     recovered_values = recovered.model_dump()
     merged = submitted
@@ -891,8 +891,8 @@ _NO_LAUNCH = object()
 
 def _active_launch_placement():
     """``(state, policy_active, mlock_applicable)`` for the running child. ``state`` is ``_NO_LAUNCH``
-        when nothing is running or coming up, so the caller can tell "no process" from "a process with no
-        load-mode"."""
+    when nothing is running or coming up, so the caller can tell "no process" from "a process with no
+    load-mode"."""
     try:
         from routes.inference import get_llama_cpp_backend
 
@@ -911,11 +911,11 @@ def _active_launch_placement():
 
 def _model_memory_reload_required() -> bool:
     """True when the loaded process's memory placement contradicts the settings. Compares the state the child
-            ACTUALLY launched with (env defaults plus last-wins argv, so a user-supplied --mlock / --no-mmap counts)
-            against what the current settings would produce. The idle-unload veto applies immediately, so only
-            placement can be stale. Keyed on is_active, not is_loaded: a save that lands while a load is still
-            passing its health check would otherwise report no reload while the child is already committed to the
-            pre-save flags."""
+    ACTUALLY launched with (env defaults plus last-wins argv, so a user-supplied --mlock / --no-mmap counts)
+    against what the current settings would produce. The idle-unload veto applies immediately, so only
+    placement can be stale. Keyed on is_active, not is_loaded: a save that lands while a load is still
+    passing its health check would otherwise report no reload while the child is already committed to the
+    pre-save flags."""
     state, policy_active, mlock_applicable = _active_launch_placement()
     if state is _NO_LAUNCH:
         return False
@@ -928,10 +928,10 @@ def _model_memory_reload_required() -> bool:
 
 def _model_memory_mlock_active(want_mlock: bool) -> bool:
     """Whether page-locking is actually in force, not merely asked for. This drives the locked-memory cap
-            warning, so taking it from the toggles alone would tell a discrete-GPU user to raise a limit nothing
-            consults. With nothing running this is the intent; once a child exists it is what that child got, since
-            a full offload to a discrete GPU skips the lock and a diffusion runner has no load-mode at all. A
-            user's own --mlock counts, since the resolver reads the launched argv."""
+    warning, so taking it from the toggles alone would tell a discrete-GPU user to raise a limit nothing
+    consults. With nothing running this is the intent; once a child exists it is what that child got, since
+    a full offload to a discrete GPU skips the lock and a diffusion runner has no load-mode at all. A
+    user's own --mlock counts, since the resolver reads the launched argv."""
     if not want_mlock:
         return False
     state, _policy_active, _applicable = _active_launch_placement()
@@ -954,8 +954,8 @@ def _model_memory_response() -> ModelMemoryResponse:
 
 def _vram_budget_reload_required(fraction: float) -> bool:
     """True when a child is running that was sized against a different budget. Compares against the fraction the
-            child actually launched with, so re-saving the same value does not nag for a reload. Exact equality is
-            fine: both sides come from the same clamp."""
+    child actually launched with, so re-saving the same value does not nag for a reload. Exact equality is
+    fine: both sides come from the same clamp."""
     try:
         from routes.inference import get_llama_cpp_backend
 
@@ -1449,11 +1449,11 @@ def _bare_model_id(model_id: str) -> Optional[str]:
 
 def _fallback_supplies_extra_args(model_id: str, target_id: str) -> bool:
     """Whether a load for this model would still pick flags off another entry. The carry-over copies a legacy
-            bare ``repo`` row's flags onto the first ``repo:QUANT`` save and leaves the bare row in place, and a
-            load reads the qualified key first and the bare one after it, so clearing the box for the quant is only
-            a clear while the quant keeps a row of its own. Answered rather than repaired: stripping the flags off
-            the bare row was the first fix and it is too broad, since that row is the fallback for every quant that
-            has no row."""
+    bare ``repo`` row's flags onto the first ``repo:QUANT`` save and leaves the bare row in place, and a
+    load reads the qualified key first and the bare one after it, so clearing the box for the quant is only
+    a clear while the quant keeps a row of its own. Answered rather than repaired: stripping the flags off
+    the bare row was the first fix and it is too broad, since that row is the fallback for every quant that
+    has no row."""
     from utils.openai_auto_switch_settings import get_model_override
 
     for candidate in (
@@ -1471,8 +1471,8 @@ def _fallback_supplies_extra_args(model_id: str, target_id: str) -> bool:
 
 def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
     """Whether a quant of ``bare_id`` other than the ones being removed still has an entry. Such a quant has its
-            own settings and never reads the bare fallback, so this is not "is anyone inheriting" but "is this
-            forget the last one for the model"."""
+    own settings and never reads the bare fallback, so this is not "is anyone inheriting" but "is this
+    forget the last one for the model"."""
     from utils.openai_auto_switch_settings import split_quant_suffix
 
     removed = {key.strip().lower() for key in removed_ids}
@@ -1488,9 +1488,9 @@ def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
 
 def _legacy_standalone_gguf_key(model_id: str) -> Optional[str]:
     """The stored ``<path>:LABEL`` entry for a bare standalone .gguf path, if any. A loose file has no quant to
-            choose between, so it is keyed by the bare path, but the label derived from its filename is never empty
-            and that is how the picker keyed the same file before, so an upgraded install carries entries under it.
-            The auto-switch loader reads that spelling after the bare path misses."""
+    choose between, so it is keyed by the bare path, but the label derived from its filename is never empty
+    and that is how the picker keyed the same file before, so an upgraded install carries entries under it.
+    The auto-switch loader reads that spelling after the bare path misses."""
     import os
 
     if not model_id.lower().endswith(".gguf"):
@@ -1509,11 +1509,11 @@ def _legacy_standalone_gguf_key(model_id: str) -> Optional[str]:
 
 def _fill_target_id(target_id: str) -> str:
     """Where a one-time backfill write for ``target_id`` has to land. A fill only adds, so unlike a save it
-            cannot retire the other spelling of a cached repo. Creating the snapshot-path key while the server
-            already holds the repo id would leave two entries for one quant, and the loader reads the load path
-            before the advertised id, so an upgraded browser's pre-upgrade copy would shadow the newer server
-            config. Only in that direction: a repo-id key never outranks an existing path entry, and two snapshot
-            paths name two caches."""
+    cannot retire the other spelling of a cached repo. Creating the snapshot-path key while the server
+    already holds the repo id would leave two entries for one quant, and the loader reads the load path
+    before the advertised id, so an upgraded browser's pre-upgrade copy would shadow the newer server
+    config. Only in that direction: a repo-id key never outranks an existing path entry, and two snapshot
+    paths name two caches."""
     from core.inference.model_ids import hf_cache_repo_id
     from utils.openai_auto_switch_settings import split_quant_suffix
 
@@ -1541,7 +1541,7 @@ _override_write_lock = threading.Lock()
 
 def _serialized_override_write(func):
     """Run ``func`` under _override_write_lock. functools.wraps carries __wrapped__, which
-        inspect.signature follows, so FastAPI still sees the endpoint's own parameters and dependencies."""
+    inspect.signature follows, so FastAPI still sees the endpoint's own parameters and dependencies."""
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -1826,7 +1826,7 @@ def _model_names_gguf_repo(model: str) -> bool:
 
 def _llama_runtime_available() -> bool:
     """Whether a llama-server binary this install can launch is present. Shares the embedder's own probe
-        so the resolver and the loader cannot disagree about whether the backend exists."""
+    so the resolver and the loader cannot disagree about whether the backend exists."""
     from core.rag import embeddings
     try:
         return embeddings._llama_server_runtime_available()
@@ -1836,9 +1836,9 @@ def _llama_runtime_available() -> bool:
 
 def _llama_backend_active(model: str | None = None) -> bool:
     """Whether llama serves the active model, or would serve ``model`` if supplied. Delegates to the embeddings
-            module so a runtime fallback from sentence-transformers to llama-server is honored: in that state the
-            process loads only inert GGUF, so the ST pickle gate below must not hard-block a repo whose GGUF
-            companion is clean. Before any backend is built this reflects the resolver."""
+    module so a runtime fallback from sentence-transformers to llama-server is honored: in that state the
+    process loads only inert GGUF, so the ST pickle gate below must not hard-block a repo whose GGUF
+    companion is clean. Before any backend is built this reflects the resolver."""
     from core.rag import embeddings
     try:
         if model is not None:
@@ -1850,7 +1850,7 @@ def _llama_backend_active(model: str | None = None) -> bool:
 
 def _resolves_as_local_gguf(model: str) -> bool:
     """True when ``model`` is a local .gguf file or a directory holding one, so a save on the
-        llama-server backend needs no HF verification: the artifact itself is the proof."""
+    llama-server backend needs no HF verification: the artifact itself is the proof."""
     from core.rag.embed_llama_server import LlamaServerBackend
     try:
         return LlamaServerBackend._resolve_local_gguf(model) is not None
@@ -1860,8 +1860,8 @@ def _resolves_as_local_gguf(model: str) -> bool:
 
 def _local_gguf_backend_error(model: str) -> str | None:
     """409 detail when ``model`` is a local dir without a .gguf but this install embeds via llama-server
-            (macOS/CPU default), which needs one: a sentence-transformers-only folder would verify fine yet fail at
-            first index. ``force`` skips this check like HF verification."""
+    (macOS/CPU default), which needs one: a sentence-transformers-only folder would verify fine yet fail at
+    first index. ``force`` skips this check like HF verification."""
     from pathlib import Path
 
     from utils.paths import normalize_path
@@ -1889,8 +1889,8 @@ def _local_gguf_backend_error(model: str) -> str | None:
 
 def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
     """409 detail when the llama-server backend would find no .gguf for an HF repo: neither the derived
-            companion repo nor the repo itself has one, so saves that verify as embedding models would fail at
-            first index. ``force`` skips this like HF verification."""
+    companion repo nor the repo itself has one, so saves that verify as embedding models would fail at
+    first index. ``force`` skips this like HF verification."""
     from pathlib import Path
 
     if Path(model).expanduser().exists():
@@ -2006,8 +2006,8 @@ def _list_repo_files_bounded(repo: str, hf_token: Optional[str]) -> list[str]:
 
 def _gguf_conversion_name_matches(hit_name: str, base: str) -> bool:
     """Whether a search hit names a conversion of exactly ``base``. Prefix matching is unsafe (``foo`` must
-            never resolve to ``foo-bar-GGUF``); the Hub filter already requires GGUF, so this accepts only the
-            common conversion suffix spellings and the exact model name."""
+    never resolve to ``foo-bar-GGUF``); the Hub filter already requires GGUF, so this accepts only the
+    common conversion suffix spellings and the exact model name."""
     name = hit_name.casefold()
     base = base.casefold()
     return name == base or name in {f"{base}-gguf", f"{base}_gguf", f"{base}.gguf"}
@@ -2015,8 +2015,8 @@ def _gguf_conversion_name_matches(hit_name: str, base: str) -> bool:
 
 def _gguf_files_for_pick(names: list[str], picked: str) -> Optional[list[str]]:
     """The complete downloadable file family for a picked GGUF. llama-server opens split siblings implicitly,
-            so a single selected shard is not a usable plan, and incomplete published families are rejected.
-            Deferred to the loader so the plan offered here and the transfer name one set."""
+    so a single selected shard is not a usable plan, and incomplete published families are rejected.
+    Deferred to the loader so the plan offered here and the transfer name one set."""
     from core.rag.embed_llama_server import LlamaServerBackend
     return LlamaServerBackend._split_family(names, picked)
 
@@ -2031,8 +2031,8 @@ def _pick_downloadable_gguf(names: list[str]) -> Optional[list[str]]:
 
 def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
     """``(repo, files)`` for a GGUF conversion of ``model`` published by the same owner under a name the -GGUF
-            candidates do not cover. Same owner only: a third party's "Qwen3-Embedding-8B-GGUF" is an unverified
-            re-upload, and picking unsloth/X must download unsloth's own weights."""
+    candidates do not cover. Same owner only: a third party's "Qwen3-Embedding-8B-GGUF" is an unverified
+    re-upload, and picking unsloth/X must download unsloth's own weights."""
     from core.rag import config as rag_config
 
     # The loader cannot open a discovered mirror while an explicit repo override is active, so
@@ -2149,16 +2149,16 @@ def _st_backend_available() -> bool:
 
 def _is_st_weight_name(basename: str) -> bool:
     """Whether a filename is a checkpoint, not just something ending in a suffix. Shared with the loader
-        so the plan and the cache check cannot disagree."""
+    so the plan and the cache check cannot disagree."""
     from utils.utils import is_st_weight_name
     return is_st_weight_name(basename)
 
 
 def _st_weight_source(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
     """``(repo, weight files)`` for the repo an ST load of ``model`` would open. A slashless name such as
-            ``all-MiniLM-L6-v2`` resolves under the ``sentence-transformers/`` namespace, which is what the loader's
-            own ``st_repo_id_candidates`` encodes; probing only the literal id refused the alias outright and a
-            forced save then pinned it cache-only."""
+    ``all-MiniLM-L6-v2`` resolves under the ``sentence-transformers/`` namespace, which is what the loader's
+    own ``st_repo_id_candidates`` encodes; probing only the literal id refused the alias outright and a
+    forced save then pinned it cache-only."""
     from utils.utils import st_repo_id_candidates
 
     for candidate in st_repo_id_candidates(model) or [model]:
@@ -2188,8 +2188,8 @@ def _st_weight_files(model: str, hf_token: Optional[str]) -> Optional[list[str]]
 
 def _cached_snapshot_has_st_weights(model: str) -> bool:
     """Whether the cached snapshot holds a checkpoint ST itself can open. ``hf_cache_snapshot_is_loadable``
-            counts ``.gguf``, which is right for the llama backend and wrong here: a cached GGUF-only repo would
-            come back ready with no checkpoint ST can load. No network."""
+    counts ``.gguf``, which is right for the llama backend and wrong here: a cached GGUF-only repo would
+    come back ready with no checkpoint ST can load. No network."""
     try:
         from utils.utils import snapshot_has_st_weights
         return snapshot_has_st_weights(model)
@@ -2199,9 +2199,9 @@ def _cached_snapshot_has_st_weights(model: str) -> bool:
 
 def _cached_st_source(model: str):
     """``(repo id, snapshot dir)`` the cached ST weights for ``model`` came from. Same predicate as
-            ``_cached_snapshot_has_st_weights``, keeping the repo it matched under rather than reducing it to a yes:
-            for a slashless alias that repo is the ``sentence-transformers/`` one, and the PUT verifies and scans
-            it."""
+    ``_cached_snapshot_has_st_weights``, keeping the repo it matched under rather than reducing it to a yes:
+    for a slashless alias that repo is the ``sentence-transformers/`` one, and the PUT verifies and scans
+    it."""
     try:
         from utils.utils import cached_st_source
         return cached_st_source(model)
@@ -2228,8 +2228,8 @@ def _cached_st_weight_names(model: str) -> list[str]:
 
 def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
     """``(repo, files)`` for running ``model`` on sentence-transformers instead. An embedder with no GGUF still
-            works from its own safetensors, for about 1 GB more memory, which beats refusing the model or pulling a
-            stranger's conversion."""
+    works from its own safetensors, for about 1 GB more memory, which beats refusing the model or pulling a
+    stranger's conversion."""
     if not _st_backend_available():
         return None
     # A complete local snapshot is the same proof the listing gives, and works
@@ -2323,7 +2323,7 @@ def _resolve_embedding_model_plan(
     resolved: str, token: Optional[str]
 ) -> EmbeddingModelResolveResponse:
     """Server-owned artifact/backend plan shared by GET and PUT, so the PUT never persists a client
-        assertion the GET did not validate."""
+    assertion the GET did not validate."""
     on_llama = _llama_backend_active(resolved)
     backend: Literal["llama", "sentence-transformers"] = (
         "llama" if on_llama else "sentence-transformers"
@@ -2977,8 +2977,8 @@ def update_current_date_prompt(
 
 def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
     """Only a signed-in UI session may change who needs a key. An sk-unsloth key must not be able to switch
-            authentication off for the whole install, and a keyless caller must not be able to widen its own scope;
-            both are ``authenticated_via_api_key``, so one check covers them."""
+    authentication off for the whole install, and a keyless caller must not be able to widen its own scope;
+    both are ``authenticated_via_api_key``, so one check covers them."""
     if via_api_key:
         raise HTTPException(
             status_code = 403,

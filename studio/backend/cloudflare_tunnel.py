@@ -319,9 +319,9 @@ def _probe_edge(
 
 def _verify_through_edge(host: str, deadline: float) -> bool:
     """Verify at the edge, which selects the tunnel by SNI rather than by address. Error 1033 and an intercepting
-        proxy's own page are both answers and are not told apart here, so only the marker ends the wait. Nothing
-        answering at all is this path being blocked, which the hostname may still get through.
-        """
+    proxy's own page are both answers and are not told apart here, so only the marker ends the wait. Nothing
+    answering at all is this path being blocked, which the hostname may still get through.
+    """
     addresses = _edge_addresses()
     if not addresses:
         return False
@@ -390,8 +390,8 @@ def _origin_url(host: str, port: int) -> str:
 
 class CloudflareTunnel:
     """A cloudflared quick tunnel to a local Studio endpoint. Best-effort throughout. Use a loopback address for
-        wildcard binds so cloudflared's upstream stays local-only while matching Studio's active address family.
-        """
+    wildcard binds so cloudflared's upstream stays local-only while matching Studio's active address family.
+    """
 
     def __init__(
         self,
@@ -495,8 +495,8 @@ class CloudflareTunnel:
 
     def wait_for_ready(self, timeout: float = _READY_TIMEOUT) -> Optional[str]:
         """Block until the tunnel is actually serving -- the URL has been minted *and* at least one edge connection
-                has registered -- or until timeout. Returns the URL only when ready, so callers never advertise a URL
-                that would return Cloudflare error 1033 (HTTP 530)."""
+        has registered -- or until timeout. Returns the URL only when ready, so callers never advertise a URL
+        that would return Cloudflare error 1033 (HTTP 530)."""
         self._ready_event.wait(timeout)
         return self.url if self.ready else None
 

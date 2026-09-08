@@ -40,9 +40,9 @@ def _getch_windows() -> str:  # pragma: no cover - exercised via fake on Linux C
 
 class _RestoreTtyOnSignals:
     """Restore terminal attrs if SIGTERM/SIGHUP kills the prompt mid-read. A finally block can't run when a
-        signal terminates the process, leaving the shared terminal in cbreak/no-echo. Best-effort: no-op off the
-        main thread or where the signals are absent.
-        """
+    signal terminates the process, leaving the shared terminal in cbreak/no-echo. Best-effort: no-op off the
+    main thread or where the signals are absent.
+    """
 
     def __init__(self, fd: int, old_attrs) -> None:
         self._fd = fd

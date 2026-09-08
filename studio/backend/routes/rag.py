@@ -73,9 +73,9 @@ def _rag_connection() -> sqlite3.Connection:
 
 def _availability(available: bool) -> dict:
     """Availability marker carried by the KB list, the one response that degrades rather than erroring.
-        Additive: a client that only reads the list is unaffected, one that reads this can say "RAG cannot run here"
-        instead of showing an empty page that looks ready to use and offering a Create that can only 503.
-        """
+    Additive: a client that only reads the list is unaffected, one that reads this can say "RAG cannot run here"
+    instead of showing an empty page that looks ready to use and offering a Create that can only 503.
+    """
     return {
         "ragAvailable": available,
         "ragUnavailableReason": None if available else _UNAVAILABLE_DETAIL,
@@ -147,8 +147,8 @@ def _save_upload(file: UploadFile) -> tuple[str, str]:
 
 def _save_native_path_upload(lease: str) -> tuple[str, str]:
     """Persist a desktop drop; returns (stored_path, filename). The webview never gets to name a path directly:
-        Rust signs the path it saw and we re-verify + re-stat that grant here before reading a byte.
-        """
+    Rust signs the path it saw and we re-verify + re-stat that grant here before reading a byte.
+    """
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
     try:
@@ -318,8 +318,8 @@ def _require_scope_owner(
     conn: sqlite3.Connection | None = None,
 ) -> None:
     """404 unless the scope's owner still exists. ``conn`` reuses a connection the caller already holds:
-        sqlite-vec loads per connection, so opening a second one to read a single row pays that twice.
-        """
+    sqlite-vec loads per connection, so opening a second one to read a single row pays that twice.
+    """
     if scope_type == "knowledge_base":
         if conn is not None:
             exists = store.get_kb(conn, scope_id) is not None

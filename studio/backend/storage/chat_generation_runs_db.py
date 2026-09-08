@@ -168,10 +168,10 @@ def _append_events_locked(
 
 def _missing_lease_columns(exc: sqlite3.OperationalError) -> bool:
     """Whether `exc` is this database still waiting on the progress-lease migration. _connect lets a call through
-        when contention blocks the ALTER, so every statement naming progress_at or progress_tokens can meet a table
-        that predates them. Degrading to the pre-migration behaviour keeps that window harmless: without it a
-        blocked migration would abort a generation with `no such column` the moment the writer let go.
-        """
+    when contention blocks the ALTER, so every statement naming progress_at or progress_tokens can meet a table
+    that predates them. Degrading to the pre-migration behaviour keeps that window harmless: without it a
+    blocked migration would abort a generation with `no such column` the moment the writer let go.
+    """
     message = str(exc).lower()
     return "no such column" in message and (
         "progress_at" in message or "progress_tokens" in message

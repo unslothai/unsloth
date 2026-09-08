@@ -47,8 +47,8 @@ def bootstrap_deadline_remaining_seconds() -> Optional[int]:
 
 def bootstrap_timeout_seconds(env = None) -> int:
     """Resolve the deadline in seconds. ``0`` (or invalid/negative) disables it. A malformed value falls back to
-        the default rather than disabling, so a typo cannot silently remove the protection.
-        """
+    the default rather than disabling, so a typo cannot silently remove the protection.
+    """
     env = os.environ if env is None else env
     raw = env.get(BOOTSTRAP_TIMEOUT_ENV_VAR)
     if raw is None or raw.strip() == "":

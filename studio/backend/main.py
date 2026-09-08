@@ -238,8 +238,8 @@ _STUDIO_INSTALL_ID_RE = _re.compile(r"^[0-9a-f]{64}$")
 
 def _read_studio_install_id() -> str:
     """Per-install opaque id at $STUDIO_HOME/share/studio_install_id. Returns "" when absent or not a 64-char
-            lowercase-hex token; then /api/health emits "" and the launcher accepts any healthy backend. Carries no
-            install-path info (matters when Unsloth runs -H 0.0.0.0)."""
+    lowercase-hex token; then /api/health emits "" and the launcher accepts any healthy backend. Carries no
+    install-path info (matters when Unsloth runs -H 0.0.0.0)."""
     try:
         token = (
             (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id")
@@ -256,7 +256,7 @@ _STUDIO_ROOT_ID_CACHE: str = _read_studio_install_id()
 
 def _studio_root_id() -> str:
     """Same-install discriminator for /api/health (cached at import). Empty when no installer token is
-        present; the launcher treats "" as "accept any healthy backend"."""
+    present; the launcher treats "" as "accept any healthy backend"."""
     return _STUDIO_ROOT_ID_CACHE
 
 
@@ -420,10 +420,10 @@ def _start_helper_precache_if_enabled() -> None:
 
 def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
     """llama.cpp capability (MTP support) + freshness (release age) probes, run OFF the startup critical path.
-            Both are cached and freshness has a 24h disk TTL, but on a cold/expired cache the freshness check makes
-            a blocking GitHub request, and on macOS the first `llama-server --help` exec can stall on Gatekeeper
-            verification, and neither must gate `Application startup complete`. Writes app.state only; nothing reads
-            those values synchronously at startup."""
+    Both are cached and freshness has a 24h disk TTL, but on a cold/expired cache the freshness check makes
+    a blocking GitHub request, and on macOS the first `llama-server --help` exec can stall on Gatekeeper
+    verification, and neither must gate `Application startup complete`. Writes app.state only; nothing reads
+    those values synchronously at startup."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         from utils.llama_cpp_freshness import (
@@ -463,7 +463,7 @@ def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
 
 def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     """Run the llama.cpp startup probes on a daemon thread, off the startup critical path. Skipped entirely
-            when update checks are disabled, so a fully offline boot makes no background network calls."""
+    when update checks are disabled, so a fully offline boot makes no background network calls."""
     if os.environ.get("UNSLOTH_DISABLE_UPDATE_CHECK") == "1":
         return
 
@@ -489,9 +489,9 @@ def _post_warm_current_generation() -> int:
 
 def _start_post_warm_thread() -> bool:
     """Put up a post-warm worker for this lifespan. True iff one was started. Starts one even while a previous
-            worker is parked in the warm join: declining there left a restart with no worker at all, since the old
-            one was alive so this returned early, then read the shutdown and exited. Generations make the overlap
-            safe."""
+    worker is parked in the warm join: declining there left a restart with no worker at all, since the old
+    one was alive so this returned early, then read the shutdown and exited. Generations make the overlap
+    safe."""
     global _post_warm_thread, _post_warm_generation
     with _post_warm_lock:
         _post_warm_generation += 1
@@ -509,8 +509,8 @@ def _start_post_warm_thread() -> bool:
 
 def _stop_post_warm_thread() -> None:
     """Retire whatever worker is current; never wait for it. Joining would hold shutdown for the rest of the ML
-            stack import, the stall this path exists to avoid; bumping the generation suffices, since the worker
-            re-reads it after its join."""
+    stack import, the stall this path exists to avoid; bumping the generation suffices, since the worker
+    re-reads it after its join."""
     global _post_warm_generation
     with _post_warm_lock:
         _post_warm_generation += 1
@@ -518,7 +518,7 @@ def _stop_post_warm_thread() -> None:
 
 def _post_warm_retired(generation: Optional[int]) -> bool:
     """True when this post-warm worker's lifespan has ended (logs once when it has). The remaining work imports
-            optional platform or RAG scheduling modules, so none of it may start for a stopped lifespan."""
+    optional platform or RAG scheduling modules, so none of it may start for a stopped lifespan."""
     if generation is None or _post_warm_current_generation() == generation:
         return False
     import structlog as _structlog
@@ -551,9 +551,9 @@ def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
 
 def _post_warm_background_work(generation: Optional[int] = None) -> None:
     """Platform repair and linked-folder lifecycle work after the coordinated warm. MLX repair used to probe the
-            runtime before the socket bound; joining first keeps that optional probe out of the login-screen
-            critical path. Linked-folder startup only loads embeddings when a queued sync has real ingestion
-            work."""
+    runtime before the socket bound; joining first keeps that optional probe out of the login-screen
+    critical path. Linked-folder startup only loads embeddings when a queued sync has real ingestion
+    work."""
     # No-op when the warm never started, so this is safe under the kill switch.
     join_background_warm()
 
@@ -584,8 +584,8 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
 
 def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
     """Clear the compiled cache unless a sibling backend of this install is live. The decision lives in
-            cache_cleanup, next to the paths it clears and the lock that serializes it against a sibling's startup;
-            run_server puts the probe on app.state because main.py must not import run.py back."""
+    cache_cleanup, next to the paths it clears and the lock that serializes it against a sibling's startup;
+    run_server puts the probe on app.state because main.py must not import run.py back."""
     _clear_compiled_cache_unless_shared(getattr(app.state, "live_sibling_backend", None))
 
 
@@ -949,7 +949,7 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
 
 class SecurityHeadersMiddleware:
     """Set baseline security headers; splice per-response inline-script nonces into CSP. Pure ASGI (not
-        BaseHTTPMiddleware) so streaming responses are not wrapped in an anyio stream."""
+    BaseHTTPMiddleware) so streaming responses are not wrapped in an anyio stream."""
 
     def __init__(self, app):
         self.app = app
@@ -1031,8 +1031,8 @@ if _DOCS_ASSETS_DIR.is_dir():
 
     def _docs_url(request: Request, path: str) -> str:
         """Prefix with the mount point, as FastAPI's own docs routes do. Behind a path-stripping proxy (or
-                `uvicorn --root-path`) the browser sees the prefix the server never does, so an unprefixed URL
-                escapes the mapping and 404s."""
+        `uvicorn --root-path`) the browser sees the prefix the server never does, so an unprefixed URL
+        escapes the mapping and 404s."""
         return f"{request.scope.get('root_path', '').rstrip('/')}{path}"
 
     @app.get("/docs", include_in_schema = False)
@@ -1623,9 +1623,9 @@ def _media_generation_active() -> bool:
 
 def _inference_active() -> bool:
     """True while at least one generation is in flight, published so the desktop health watchdog can tell a
-            backend that is busy serving from one that has died: a saturated host can stall the event loop past a
-            probe budget, and killing there ends a response the user is still waiting on. Failures report "not
-            busy"."""
+    backend that is busy serving from one that has died: a saturated host can stall the event loop past a
+    probe budget, and killing there ends a response the user is still waiting on. Failures report "not
+    busy"."""
     try:
         from state import active_generations
         if active_generations.count() > 0:
@@ -2130,7 +2130,7 @@ def get_hardware_info(
 
 def _strip_crossorigin(html_bytes: bytes) -> bytes:
     """Remove ``crossorigin`` attributes from script/link tags. Vite's default ``crossorigin`` forces
-        CORS mode on font loads, which Firefox HTTPS-Only Mode breaks over plain HTTP."""
+    CORS mode on font loads, which Firefox HTTPS-Only Mode breaks over plain HTTP."""
     html = html_bytes.decode("utf-8")
     html = _re.sub(r'\s+crossorigin(?:="[^"]*")?', "", html)
     return html.encode("utf-8")
@@ -2138,8 +2138,8 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
 
 def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     """Inject bootstrap credentials when password change is pending. Returns
-        ``(html_bytes, script_nonce_or_None)``; callers forward the nonce via
-        ``_CSP_SCRIPT_NONCE_HEADER`` so CSP allows the inline script."""
+    ``(html_bytes, script_nonce_or_None)``; callers forward the nonce via
+    ``_CSP_SCRIPT_NONCE_HEADER`` so CSP allows the inline script."""
     import json as _json
     import secrets as _secrets
 
@@ -2168,9 +2168,9 @@ _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
     """Canonicalise an Origin to ``(scheme, host, port)`` for equality. Browsers strip default ports (RFC 6454
-            sec 6.1) and scheme/host are case-insensitive (RFC 3986), so a bare string compare misclassifies
-            same-origin requests as cross-origin. Returns ``None`` on unparseable input so callers fall to the safer
-            cross-origin default."""
+    sec 6.1) and scheme/host are case-insensitive (RFC 3986), so a bare string compare misclassifies
+    same-origin requests as cross-origin. Returns ``None`` on unparseable input so callers fall to the safer
+    cross-origin default."""
     scheme = (scheme or "").strip().lower()
     if not scheme or not netloc:
         return None
@@ -2230,7 +2230,7 @@ _PROXIED_CLIENT_HEADERS = (
 
 def _host_header_is_loopback(host_header: Optional[str]) -> bool:
     """Loopback/localhost check on the raw Host header, read directly so a malformed or absent Host
-        cannot fall back to ``request.url.hostname``'s (loopback) ASGI server address."""
+    cannot fall back to ``request.url.hostname``'s (loopback) ASGI server address."""
     if not host_header:
         return False
     host = host_header.strip()
@@ -2257,8 +2257,8 @@ def _is_local_bootstrap_request(request: Request) -> bool:
 
 def _is_same_origin_request(request: Request) -> bool:
     """True when Origin is missing or matches request's scheme://host:port. Missing Origin counts as same-origin
-            (top-level GETs omit it); both sides are canonicalised via :func:`_canonical_origin`, and callers must
-            emit ``Vary: Origin``."""
+    (top-level GETs omit it); both sides are canonicalised via :func:`_canonical_origin`, and callers must
+    emit ``Vary: Origin``."""
     origin = request.headers.get("origin")
     if origin is None:
         # Missing header: top-level same-document GETs omit Origin.
@@ -2339,8 +2339,8 @@ def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
 
 def _is_remote_frontend_request(scope, app_state) -> bool:
     """True for a request the desktop backend may answer with its packaged web UI: Cloudflare's own edge, or one
-            of the sockets the runtime LAN listener bound, both identified by the connection itself rather than a
-            client header the caller controls."""
+    of the sockets the runtime LAN listener bound, both identified by the connection itself rather than a
+    client header the caller controls."""
     from lan_access import request_on_lan_listener
     return _is_live_cloudflare_frontend_request(scope, app_state) or request_on_lan_listener(scope)
 
@@ -2364,7 +2364,7 @@ def setup_frontend(
     tunnel_only: bool = False,
 ):
     """Mount frontend static files (optional). ``tunnel_only`` restricts the mount to remote callers:
-        the Cloudflare edge, or a socket the runtime LAN listener bound."""
+    the Cloudflare edge, or a socket the runtime LAN listener bound."""
     if not build_path.exists():
         return False
 

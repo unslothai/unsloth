@@ -48,8 +48,8 @@ _cache: dict[str, Any] = {"fingerprint": None, "expires_at": 0.0, "payload": Non
 
 def _as_float(value: Any) -> Optional[float]:
     """Coerce JSON numbers defensively; metadata is written by the client. json accepts integers of any width,
-        and float() raises OverflowError past ~1e308, so one oversized counter would 500 the whole panel.
-        """
+    and float() raises OverflowError past ~1e308, so one oversized counter would 500 the whole panel.
+    """
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):

@@ -47,9 +47,9 @@ router = APIRouter()
 
 def _require_a_credential_of_its_own(what: str):
     """Refuse a caller that nothing but keyless API access let in. For effects that outlive the setting: turning
-        keyless access back off does not withdraw a key it handed out, restore one it destroyed, or undo a sign-out
-        it forced. Listing keys is refused with them because it names the key to revoke.
-        """
+    keyless access back off does not withdraw a key it handed out, restore one it destroyed, or undo a sign-out
+    it forced. Listing keys is refused with them because it names the key to revoke.
+    """
 
     def dependency(no_credential: bool = Depends(authenticated_without_credential)) -> None:
         if no_credential:
@@ -87,25 +87,25 @@ def _cli_is_inside(prefix: str) -> bool:
 def _reset_password_command() -> str:
     """Shell command shown in the 'incorrect password' hint.
 
-        Prefer the absolute path to this install's ``unsloth`` launcher (sibling of the running interpreter) so the
-        hint works even when its dir isn't on PATH. POSIX paths are shell-quoted. On Windows we use the bare
-        absolute path only when it has no spaces (a quoted path differs between cmd and PowerShell); otherwise, or
-        if the launcher can't be located, fall back to the PATH form.
+    Prefer the absolute path to this install's ``unsloth`` launcher (sibling of the running interpreter) so the
+    hint works even when its dir isn't on PATH. POSIX paths are shell-quoted. On Windows we use the bare
+    absolute path only when it has no spaces (a quoted path differs between cmd and PowerShell); otherwise, or
+    if the launcher can't be located, fall back to the PATH form.
 
-        Windows never names unsloth.exe here, present or not. Existing is not the same as runnable: an Application
-        Control policy leaves the generated, unsigned unsloth.exe on disk and denies it at CreateProcess (issue
-        #8490), and a bare `unsloth` resolves to that same file because PATHEXT puts .EXE ahead of the .cmd shim.
-        Whoever is locked out of Unsloth is exactly who needs this command to work, so it must not be the one a
-        policy refuses. Preference order is therefore the interpreter's module entry, which needs no quoting in cmd
-        or PowerShell, then `unsloth.cmd` -- spelling the extension is what stops PATHEXT reaching for the
-        executable.
+    Windows never names unsloth.exe here, present or not. Existing is not the same as runnable: an Application
+    Control policy leaves the generated, unsigned unsloth.exe on disk and denies it at CreateProcess (issue
+    #8490), and a bare `unsloth` resolves to that same file because PATHEXT puts .EXE ahead of the .cmd shim.
+    Whoever is locked out of Unsloth is exactly who needs this command to work, so it must not be the one a
+    policy refuses. Preference order is therefore the interpreter's module entry, which needs no quoting in cmd
+    or PowerShell, then `unsloth.cmd` -- spelling the extension is what stops PATHEXT reaching for the
+    executable.
 
-        -I only when the package is inside this interpreter's own prefix. -I implies -s, so a ``pip install --user``
-        install would be told to run a command that cannot find itself; unsloth_cli/__main__.py documents that
-        exception and the bootstrap to use instead, and this prints that bootstrap. It is safe to show to either
-        shell: the trampoline contains single quotes only, so one pair of double quotes wraps it identically in cmd
-        and in PowerShell.
-        """
+    -I only when the package is inside this interpreter's own prefix. -I implies -s, so a ``pip install --user``
+    install would be told to run a command that cannot find itself; unsloth_cli/__main__.py documents that
+    exception and the bootstrap to use instead, and this prints that bootstrap. It is safe to show to either
+    shell: the trampoline contains single quotes only, so one pair of double quotes wraps it identically in cmd
+    and in PowerShell.
+    """
     try:
         bin_dir = os.path.dirname(os.path.abspath(sys.executable))
         if os.name == "nt":
@@ -288,8 +288,8 @@ def _prune_stale_buckets(now: float) -> None:
 
 def _prune_stale_ip_buckets(now: float) -> None:
     """Drop empty / expired per-IP buckets to bound memory under spray. The dict is otherwise reclaimed only on a
-        successful login, so a failure-only spray from many (or spoofed) IPs would grow it without bound.
-        """
+    successful login, so a failure-only spray from many (or spoofed) IPs would grow it without bound.
+    """
     stale: list[str] = []
     for bucket_ip, bucket in _LOGIN_IP_BUCKETS.items():
         _prune_bucket(bucket, now)

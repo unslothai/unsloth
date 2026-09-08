@@ -278,8 +278,8 @@ def enqueue_api_usage(receipt: ApiUsageReceipt) -> None:
 
 def release_api_usage_writer(lease: str) -> None:
     """Release one lifespan and boundedly drain after the last owner exits. A timed-out daemon retains its
-        accepted queue, but the global gate is always cleared so a successor lifespan can start a fresh writer.
-        """
+    accepted queue, but the global gate is always cleared so a successor lifespan can start a fresh writer.
+    """
     global _writer, _writer_stopping
     writer = None
     with _writer_condition:

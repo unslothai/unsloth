@@ -73,11 +73,11 @@ def _denied_path_prefixes() -> list[str]:
 def is_denied_system_path(path: str) -> bool:
     """True if *path* is, or descends from, a denied system directory.
 
-        Mirrors the denylist add_scan_folder() enforces at registration, so the browser refuses /etc,
-        /proc, C:\\Windows and the like even when the allowlist holds a broad root. The /run carve-out
-        keeps Linux removable-media mounts browseable. Expects an already-resolved (realpath) path so
-        symlinks cannot escape into a denied subtree.
-        """
+    Mirrors the denylist add_scan_folder() enforces at registration, so the browser refuses /etc,
+    /proc, C:\\Windows and the like even when the allowlist holds a broad root. The /run carve-out
+    keeps Linux removable-media mounts browseable. Expects an already-resolved (realpath) path so
+    symlinks cannot escape into a denied subtree.
+    """
     is_win = platform.system() == "Windows"
     check = os.path.normcase(path) if is_win else path
     for prefix in _denied_path_prefixes():
@@ -118,9 +118,9 @@ def _default_project_root(project: dict) -> str:
 class ProjectWorkspaceError(OSError):
     """Raised when a project's workspace folder cannot be created.
 
-        Tagged, and carrying the folder, so a caller can name it: the same upsert also touches the
-        database directory, which is a different path with a different fix.
-        """
+    Tagged, and carrying the folder, so a caller can name it: the same upsert also touches the
+    database directory, which is a different path with a different fix.
+    """
 
     def __init__(self, path: str, cause: OSError):
         super().__init__(str(cause))
@@ -2020,8 +2020,8 @@ def update_chat_thread(
     settings_write: Optional[dict] = None,
 ) -> Optional[dict]:
     """Patch a thread. With expected_title, the write only lands while the row still holds that title,
-        so a concurrent rename wins instead of being lost. expected_opening_message_id guards a title
-        derived from that message: if it is gone, the write is rejected rather than expanding deleted text."""
+    so a concurrent rename wins instead of being lost. expected_opening_message_id guards a title
+    derived from that message: if it is gone, the write is rejected rather than expanding deleted text."""
     allowed = {
         "title": ("title", patch.get("title")),
         "modelType": ("model_type", patch.get("modelType")),
@@ -2510,7 +2510,6 @@ def clear_chat_history(
     operation_id: Optional[str] = None,
     include_chat_generation_runs: bool = False,
 ) -> "tuple[list[str], list[str]] | tuple[list[str], list[str], list[str]]":
-
     result = clear_chat_history_with_replay_status(
         additional_thread_ids,
         operation_id = operation_id,

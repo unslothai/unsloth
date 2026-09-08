@@ -164,9 +164,9 @@ _CHAT_THREAD_PATH_RE = re.compile(r"^/api/chat/threads/(?!$)[^/]+(/forks)?$")
 
 def normalize_poll_path(path: str) -> str:
     """Collapse a per-resource id so a templated path can join a suppression class. Used for classification and
-        the de-duplication bucket only; the emitted line still carries the real path. One bucket across ids is
-        deliberate, as with the liveness group: four tabs polling four threads are still one question.
-        """
+    the de-duplication bucket only; the emitted line still carries the real path. One bucket across ids is
+    deliberate, as with the liveness group: four tabs polling four threads are still one question.
+    """
     m = _CHAT_THREAD_PATH_RE.match(path)
     if m is None:
         return path
@@ -184,9 +184,9 @@ _SELF_READ_PATHS = {
 
 def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) -> bool:
     """GET-only. Suppress a 2xx poll line that carries no signal, plus a chat list poll's transient pre-auth 401
-        (only in the bootstrap window before the first successful token refresh). Mutations, real (post-refresh)
-        auth failures, and all other errors always log. --verbose disables the whole suppressor, except for the log
-        viewer's own reads."""
+    (only in the bootstrap window before the first successful token refresh). Mutations, real (post-refresh)
+    auth failures, and all other errors always log. --verbose disables the whole suppressor, except for the log
+    viewer's own reads."""
     if method != "GET":
         return False
     if 200 <= status_code < 300 and path in _SELF_READ_PATHS:
@@ -219,8 +219,8 @@ def _mark_exception_logged(exc: BaseException) -> None:
 
 class _DropDuplicateAsgiException(logging.Filter):
     """Drop uvicorn's "Exception in ASGI application" record when request_failed has already logged that same
-        exception. Anything else, including a failure that never reached this middleware, passes through untouched.
-        --verbose keeps both copies."""
+    exception. Anything else, including a failure that never reached this middleware, passes through untouched.
+    --verbose keeps both copies."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         if _VERBOSE_ACCESS_LOG:
@@ -238,8 +238,8 @@ class _DropDuplicateAsgiException(logging.Filter):
 
 def install_uvicorn_duplicate_exception_filter() -> None:
     """Attach the duplicate-traceback filter to uvicorn's error logger. Same logger-level filter technique as
-        run.py's startup-line rewrite; safe to call more than once because a second identical install only re-checks
-        the same records."""
+    run.py's startup-line rewrite; safe to call more than once because a second identical install only re-checks
+    the same records."""
     logging.getLogger("uvicorn.error").addFilter(_DropDuplicateAsgiException())
 
 
@@ -258,7 +258,7 @@ class LoggingMiddleware:
         self, method: str, path: str, query: bytes, status_code: int, now: float
     ) -> bool:
         """True if an identical GET/2xx log fired < window ago (query string is part of the identity). Non-GET/non-2xx
-                never dedup; quiet-poll paths use the longer heartbeat. Stamps only on emit, so steady polls still log."""
+        never dedup; quiet-poll paths use the longer heartbeat. Stamps only on emit, so steady polls still log."""
         if method != "GET" or not (200 <= status_code < 300):
             return False
         # A query makes the request something other than the background poll, so it keeps its own identity

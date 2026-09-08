@@ -233,9 +233,9 @@ for _slots_form in _both_forms("/slots/{id_slot}"):
 
 def add_get_denials(app) -> None:
     """404 the engine paths on GET as well, for an app with no frontend mounted. The GET denial normally comes
-        from main.py's SPA catch-all, registered only when setup_frontend() finds a build. In API-only mode there is
-        none, so these paths matched on method alone and answered 405, which a client reads as "endpoint exists".
-        """
+    from main.py's SPA catch-all, registered only when setup_frontend() finds a build. In API-only mode there is
+    none, so these paths matched on method alone and answered 405, which a client reads as "endpoint exists".
+    """
     for path in sorted(_ENGINE_PROBE_PATHS) + sorted(_UNSERVED_V1_PROBE_PATHS):
         for form in _both_forms(f"/{path}"):
             app.add_api_route(form, _probe_not_found, methods = ["GET"], include_in_schema = False)

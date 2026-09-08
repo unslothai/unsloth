@@ -96,9 +96,9 @@ def _derived_h3_task(gguf_filename: Optional[str], kind: str) -> Optional[str]:
 
 def _guard_video_load_against_training() -> None:
     """Refuse loading a video model while a training run is active. Unlike chat, a video pipeline's VRAM can't be
-        cheaply estimated before the load, so the load is refused outright rather than fit-checked. No-op when
-        training is inactive or its state can't be read. Raises HTTP 409. Mirrors the image load's
-        _guard_diffusion_load_against_training."""
+    cheaply estimated before the load, so the load is refused outright rather than fit-checked. No-op when
+    training is inactive or its state can't be read. Raises HTTP 409. Mirrors the image load's
+    _guard_diffusion_load_against_training."""
     from core.training import get_training_backend
 
     try:
@@ -223,8 +223,8 @@ async def load_video_model_gated(
     user_initiated: bool = False,
 ):
     """Everything ``POST /video/load`` does, plus who asked for it. Media auto-switch awaits this rather than the
-        route so the idle unload can tell an API-loaded pipeline from one the user picked on the Video page.
-        """
+    route so the idle unload can tell an API-loaded pipeline from one the user picked on the Video page.
+    """
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
@@ -706,8 +706,8 @@ async def export_gallery_video(
 
 def _forget_terminal_video(video_id: Optional[str]) -> None:
     """Clear the backend's completed-job record for a clip that just left the gallery, so a page reload does not
-        merge it back as a card whose file is gone. Best-effort: an unavailable backend only means the stale record
-        survives, which is what happened before this call existed."""
+    merge it back as a card whose file is gone. Best-effort: an unavailable backend only means the stale record
+    survives, which is what happened before this call existed."""
     try:
         from core.inference.video import get_video_backend
         get_video_backend().forget_terminal_video(video_id)
@@ -775,6 +775,7 @@ async def clear_gallery_videos(current_subject: str = Depends(get_current_subjec
     if failed:
         raise HTTPException(status_code = 500, detail = "Could not delete every video job.")
     return {"removed": len(cleared)}
+
 
 _VIDEO_SIZE_RE = _re.compile(r"^(\d{1,5})\s*x\s*(\d{1,5})$")
 _VIDEO_SECONDS_MAX = 120.0

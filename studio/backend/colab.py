@@ -67,8 +67,8 @@ def _is_colab_proxy_url(url: str, port: int) -> bool:
 
 def _is_colab_runtime() -> bool:
     """True on a hosted Colab notebook kernel. Reuses the backend's main Colab detector (``/content`` + Colab env
-        / ``google.colab``) instead of a single env var, which is not always present on hosted runtimes.
-        """
+    / ``google.colab``) instead of a single env var, which is not always present on hosted runtimes.
+    """
     try:
         from main import _IS_COLAB
         return bool(_IS_COLAB)
@@ -520,8 +520,8 @@ def _show_and_embed(
     cloudflare_requested: bool = False,
 ):
     """Render the Unsloth ready card + iframe for *port*. Prefer Colab's ``serve_kernel_port_as_iframe`` on real
-        Colab; raw HTML iframe is the fallback. Cloudflare cards stay clickable.
-        """
+    Colab; raw HTML iframe is the fallback. Cloudflare cards stay clickable.
+    """
     url = get_colab_url(port)
     logger.info(f"🌐 Unsloth Studio URL: {url}")
     if cloudflare_url:

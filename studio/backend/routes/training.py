@@ -2650,13 +2650,13 @@ def _preflight_diffusion_resume(
 ) -> None:
     """Validate ``config["resume_from_checkpoint"]`` against ``identity``, optionally PINNING it.
 
-        Pinning rewrites the config's resume path to the exact ``checkpoint-<N>`` directory accepted, so
-        the trainer resumes the bundle this preflight approved rather than re-picking "newest" from a
-        directory that could have changed. Called twice, once before the dataset is known and once with
-        its fingerprint, both times BEFORE the resident GPU models are freed. The FIRST pass does not
-        pin: its identity has no dataset fingerprint, so it can accept the newest bundle on the strength
-        of a check it did not make, leaving the dataset-aware pass nothing to do but reject it when
-        scanning the original directory would have found a matching older checkpoint. Raises ResumeError."""
+    Pinning rewrites the config's resume path to the exact ``checkpoint-<N>`` directory accepted, so
+    the trainer resumes the bundle this preflight approved rather than re-picking "newest" from a
+    directory that could have changed. Called twice, once before the dataset is known and once with
+    its fingerprint, both times BEFORE the resident GPU models are freed. The FIRST pass does not
+    pin: its identity has no dataset fingerprint, so it can accept the newest bundle on the strength
+    of a check it did not make, leaving the dataset-aware pass nothing to do but reject it when
+    scanning the original directory would have found a matching older checkpoint. Raises ResumeError."""
     from core.training.diffusion_checkpoint import preflight_resume
 
     path, _step = preflight_resume(
@@ -3021,10 +3021,10 @@ def _resolve_dataset_caption(
     folder: Path, image_path: Path, meta_captions: dict[str, str]
 ) -> Optional[str]:
     """Resolve an item's caption using the same sidecar > metadata precedence the trainer applies in
-        ``discover_image_caption_pairs``. A per-item .txt/.caption sidecar wins and is stripped, so an
-        empty (tombstone) sidecar shadows metadata and yields "", which the trainer skips (``if
-        caption:``) and so must not count as captioned. Clips resolve through this same function: the
-        clip discovery applies the identical precedence over a different extension set."""
+    ``discover_image_caption_pairs``. A per-item .txt/.caption sidecar wins and is stripped, so an
+    empty (tombstone) sidecar shadows metadata and yields "", which the trainer skips (``if
+    caption:``) and so must not count as captioned. Clips resolve through this same function: the
+    clip discovery applies the identical precedence over a different extension set."""
     caption: Optional[str] = None
     sidecar_present = False
     for ext in (".txt", ".caption"):

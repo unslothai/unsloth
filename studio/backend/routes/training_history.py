@@ -66,10 +66,10 @@ def _canonical_output_dir(output_dir: Optional[str]) -> Optional[Path]:
 
 def _preview_fields(output_dir: Optional[str], sharing_on: bool) -> dict:
     """Previewability + the signed `/p` share ref for a run's output dir. The signature is what makes the share
-        link a capability: these routes are authenticated, so only the run's owner ever receives it. When public
-        sharing is switched off, omit the signature so the UI hides the copy-link affordance (and the link would 404
-        anyway). ``sharing_on`` is resolved once per request.
-        """
+    link a capability: these routes are authenticated, so only the run's owner ever receives it. When public
+    sharing is switched off, omit the signature so the UI hides the copy-link affordance (and the link would 404
+    anyway). ``sharing_on`` is resolved once per request.
+    """
     ref = preview_ref(output_dir)
     return {
         "has_preview_model": has_preview_model(output_dir),

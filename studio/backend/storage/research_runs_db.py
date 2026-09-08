@@ -850,9 +850,9 @@ _CLAIMABLE_SQL = """SELECT r.id FROM research_runs r
 
 def _has_claimable(now: int) -> bool:
     """Read-only probe for claimable work, taking no write lock. The supervisor polls twice a second forever and
-        almost every poll finds nothing, so opening BEGIN IMMEDIATE first meant an idle Studio held the writer lock
-        2x/second and any slow writer elsewhere became a stream of "database is locked" here.
-        """
+    almost every poll finds nothing, so opening BEGIN IMMEDIATE first meant an idle Studio held the writer lock
+    2x/second and any slow writer elsewhere became a stream of "database is locked" here.
+    """
     conn = get_connection()
     try:
         return conn.execute(_CLAIMABLE_SQL, (now,)).fetchone() is not None

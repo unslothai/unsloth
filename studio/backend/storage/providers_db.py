@@ -105,9 +105,9 @@ def get_connection() -> sqlite3.Connection:
 @contextmanager
 def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
     """Atomically mutate a provider row and its saved credentials. Provider metadata and encrypted credentials
-        share ``studio.db``, so a single SQLite write transaction prevents other processes from observing a new
-        endpoint with the previous key (or the inverse) while a provider edit is in progress.
-        """
+    share ``studio.db``, so a single SQLite write transaction prevents other processes from observing a new
+    endpoint with the previous key (or the inverse) while a provider edit is in progress.
+    """
     # Ensure both tables exist before opening the transaction. The credential module commits schema
     # initialization on its own connection.
     from storage import credential_secrets
