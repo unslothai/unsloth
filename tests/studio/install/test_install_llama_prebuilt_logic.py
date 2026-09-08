@@ -1178,12 +1178,8 @@ def test_replace_with_busy_retry_prints_the_acl_repair_once_when_the_retries_are
     with pytest.raises(OSError):
         replace_with_busy_retry(source, destination, attempts = 4, repair_hint = True)
 
-    assert [line for line in logged if "takeown" in line] == [
-        f'takeown /F "{source}" /R /D Y'
-    ]
-    assert [line for line in logged if "icacls" in line] == [
-        f'icacls "{source}" /reset /T /C'
-    ]
+    assert [line for line in logged if "takeown" in line] == [f'takeown /F "{source}" /R /D Y']
+    assert [line for line in logged if "icacls" in line] == [f'icacls "{source}" /reset /T /C']
     # src, not dst: the aside-move's dst does not exist yet.
     assert not [line for line in logged if str(destination) in line]
     # log_lines, not one embedded-newline log call, so every line keeps the prefix.
