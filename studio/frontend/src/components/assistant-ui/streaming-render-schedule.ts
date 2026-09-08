@@ -78,6 +78,18 @@ const LINK_DEFINITION_LINE_RE =
 // The two block shapes whose body is literal code: an opening fence, and an indent that
 // reaches column four -- four spaces, or a tab, which advances to the same column.
 const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*[^ \t\r\n])/;
+// A backtick opener may not carry a backtick in its info string, or it is not a fence at all
+// and the line is ordinary prose -- which is where a reference can still be waiting. Tilde
+// openers have no such rule, so their info string is left alone.
+const BACKTICK_OPENER_RE = /^ {0,3}`{3,}([^\n]*)/;
+
+function isCodeBlock(block: string): boolean {
+  if (!CODE_BLOCK_RE.test(block)) {
+    return false;
+  }
+  const backtick = BACKTICK_OPENER_RE.exec(block);
+  return backtick === null || !backtick[1].includes("`");
+}
 const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
 // Still the first line of a single block, for `updateLinkDefinitionParity` below.
@@ -123,7 +135,7 @@ function documentProse(markdown: string): string | null {
     return null;
   }
   const prose = blocksOf(markdown)
-    .filter((block) => !CODE_BLOCK_RE.test(block))
+    .filter((block) => !isCodeBlock(block))
     .join("\n");
   return LINK_DEFINITION_LINE_RE.test(prose) && LINK_REFERENCE_RE.test(prose)
     ? prose

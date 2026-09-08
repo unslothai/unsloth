@@ -118,6 +118,11 @@ const NEUTRAL_BLOCKS = [
   "<my-widget>\n```\n",
   "- <pre>\n  ```\n  </pre>",
   "> ```ts\n> [g]: number\n> ```",
+  // A backtick opener carrying a backtick in its info string is not a fence at all.
+  "```bad` still prose",
+  "````bad` still prose",
+  // A tilde opener has no such rule, so this one really is a fence.
+  "~~~bad` really a fence\n~~~",
 ];
 
 test("a reply whose reference only resolves in one piece is never split into blocks", () => {
@@ -157,6 +162,25 @@ test("line endings other than LF do not hide the definition", () => {
     }
     assert.equal(markdownRenderScope(reply), "document", JSON.stringify(reply));
   }
+});
+
+test("a backtick opener carrying a backtick is prose, not a fence", () => {
+  // CommonMark forbids a backtick in a backtick fence's info string, so the line never opens a
+  // fence and the block is ordinary prose -- which is where a reference can still be waiting.
+  for (const opener of ["```bad`", "````bad`", "```js`x`"]) {
+    const reply = `${opener} See [guide][g].\n\n[g]: /guide\n`;
+    assert.ok(
+      asOneDocument(reply) > asBlocks(reply),
+      `${opener} should lose its anchor when split`,
+    );
+    assert.equal(markdownRenderScope(reply), "document", opener);
+  }
+
+  // A tilde opener has no such rule: backticks in its info string are fine and it is a fence,
+  // so the definition inside it is code and the reply keeps block rendering.
+  const tilde = "~~~bad` See [guide][g].\n\n[g]: /guide\n";
+  assert.equal(asOneDocument(tilde), asBlocks(tilde));
+  assert.equal(markdownRenderScope(tilde), "blocks");
 });
 
 test("a definition lookalike that no parser registers keeps block rendering", () => {
