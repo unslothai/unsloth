@@ -361,18 +361,39 @@ test("a healthy read resets the stall window", async () => {
   // So measure the reset against the same loop without one. The comparison
   // divides the platform out: whatever a poll costs, a window restarted halfway
   // through must carry the loop about half as far again.
-  const withoutReset = await readsBeforeSettling(0);
-  assert.ok(
-    withoutReset > 8,
-    `the baseline is too short to compare against: ${withoutReset} reads. ` +
-      "Raise STALL_MS.",
-  );
+  // The two halves of the comparison are separate wall-clock runs, so anything
+  // that slows the runner between them skews the ratio. A windows-latest runner
+  // is shared and noisy enough to do that: this failed on main at 56 reads with
+  // a reset against 47 without, a ratio of 1.19 where a half-way restart should
+  // give about 1.5. One sample decided it, and the sample was unlucky.
+  //
+  // Take the majority of three rounds rather than one sample, and NOT the best
+  // of three. The noise runs in both directions, so with the reset removed --
+  // where the two loops are the same loop and should score about 1.0 -- a round
+  // that happened to schedule the second run faster could clear the bar on its
+  // own, and accepting the most favourable round would make three chances at
+  // that instead of one. A majority is strictly stronger than the single sample
+  // this replaces in both directions: it takes two unlucky rounds to fail a
+  // healthy reset, and two lucky ones to pass a missing one.
+  const rounds: string[] = [];
+  let cleared = 0;
+  for (let round = 1; round <= 3; round += 1) {
+    const withoutReset = await readsBeforeSettling(0);
+    assert.ok(
+      withoutReset > 8,
+      `the baseline is too short to compare against: ${withoutReset} reads. ` +
+        "Raise STALL_MS.",
+    );
 
-  const withReset = await readsBeforeSettling(Math.floor(withoutReset / 2));
+    const withReset = await readsBeforeSettling(Math.floor(withoutReset / 2));
+    if (withReset >= withoutReset * 1.25) cleared += 1;
+    rounds.push(`${withReset} with a reset against ${withoutReset} without`);
+  }
+
   assert.ok(
-    withReset >= withoutReset * 1.25,
-    "a healthy read did not restart the stall window: " +
-      `${withReset} reads with one, ${withoutReset} without. A run of ` +
+    cleared >= 2,
+    "a healthy read did not restart the stall window, in " +
+      `${cleared} of ${rounds.length} rounds: ${rounds.join("; ")}. A run of ` +
       "unreadable polls is inheriting the elapsed time of the run before it, so " +
       "a slow download that keeps reporting progress can still be abandoned.",
   );

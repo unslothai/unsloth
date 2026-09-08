@@ -436,7 +436,8 @@ async def test_mcp_server(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
 ):
-    # URL/header validation must surface as 400 like create/update
+    # URL/header validation must surface as 400 like create/update so the frontend's create-form pre-flight gets the
+    # same error semantics as the save call. Only catch transport/timeout errors below.
     url = _validate_url(payload.url)
     # Caller-supplied and unstored, so the gate has to land before
     # list_tools_async -- after it the process has already started.

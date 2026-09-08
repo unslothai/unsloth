@@ -384,3 +384,41 @@ test("the budget read is shared, not one request per mounted card", async () => 
     "the change event must refresh the cache, or a save never reaches the cards",
   );
 });
+
+// ---------------------------------------------------------------------------
+// A verdict on a VARIANT scores the whole footprint the download plan fetches
+
+test("a variant's fit counts the companions fetched with it", async () => {
+  // Bartowski Muse Glimmer Q3_K_S: 12.79 GB of weights, a 3.85 GB projector and a
+  // 1.45 GB DFlash drafter. Only the weights clear a 16 GiB card.
+  const { classifyGgufVariantFit, ggufVariantFitSizeBytes } = await import(
+    "../src/lib/gguf-fit.ts"
+  );
+  const weights = 12_789_199_648;
+  const variant = {
+    size_bytes: weights,
+    download_size_bytes: weights + 3_849_173_920 + 1_451_094_176,
+  };
+  const budget = { gpuGb: 16, systemRamGb: 32 };
+
+  assert.equal(ggufVariantFitSizeBytes(variant), variant.download_size_bytes);
+  assert.equal(
+    classifyGgufVariantFit({ size_bytes: weights }, budget),
+    "fits",
+    "the fixture only proves anything while the weights alone still fit",
+  );
+  assert.equal(classifyGgufVariantFit(variant, budget), "partial");
+});
+
+test("a total below the weights never lowers the estimate", async () => {
+  // A positive-but-smaller total is the case a `??` or `||` fallback lets through.
+  const { ggufVariantFitSizeBytes } = await import("../src/lib/gguf-fit.ts");
+  const bytes = 12 * GIB;
+  for (const download_size_bytes of [undefined, 0, bytes - 1, 1]) {
+    assert.equal(
+      ggufVariantFitSizeBytes({ size_bytes: bytes, download_size_bytes }),
+      bytes,
+      `a total of ${download_size_bytes} must not score below the weights`,
+    );
+  }
+});

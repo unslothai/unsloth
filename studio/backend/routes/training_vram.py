@@ -418,6 +418,10 @@ def free_chat_models_for_training(reason: str) -> List[str]:
     try:
         from core.inference import get_inference_backend
         inf = get_inference_backend()
+        # No CPU exemption here, unlike the GGUF branch and the STT sidecars: it would
+        # key off a marker the orchestrator writes rather than the worker that masked,
+        # and a marker that disagreed is an OOM mid-training. Freeing a model that held
+        # no VRAM only costs a reload.
         if inf.active_model_name or inf.loading_models:
             name = inf.active_model_name or next(iter(inf.loading_models), None)
             logger.info(
@@ -452,6 +456,33 @@ def free_chat_models_for_training(reason: str) -> List[str]:
     return freed
 
 
+def _stt_sidecar_holds_no_vram(sidecar) -> bool:
+    """True only when the resident dictation model is provably in CPU RAM.
+
+    Conservative on purpose: anything unreadable answers False and the sidecar is
+    freed as before. Skipping one that does hold VRAM would starve the run this
+    is making room for, which is far worse than a needless reload.
+    """
+    try:
+        device = getattr(sidecar, "device", None)
+        if isinstance(device, str) and device.strip().lower() == "cpu":
+            return True
+        # whisper.cpp and llama.cpp report a runtime name rather than a device, so read
+        # the flag each sets when it started without the GPU. Prefer the fact over the
+        # wish: mtmd's _gpu_disabled is what the live server was started with, while
+        # _forced_cpu is the standing preference, recorded even on the branch that does
+        # NOT restart a server with a request in flight, so reading it reports a server
+        # still at -ngl 99 as holding no VRAM.
+        gpu_disabled = getattr(sidecar, "_gpu_disabled", None)
+        if gpu_disabled is not None:
+            return gpu_disabled is True
+        # whisper.cpp sets _forced_cpu only alongside a spawned --no-gpu and clears it
+        # on release, so there it is the fact.
+        return getattr(sidecar, "_forced_cpu", False) is True
+    except Exception:  # noqa: BLE001 - a probe must never fail the release it precedes
+        return False
+
+
 def free_stt_model_for_training(reason: str) -> List[str]:
     """Unload the dictation model(s) before training. Never raises.
 
@@ -475,7 +506,11 @@ def free_stt_model_for_training(reason: str) -> List[str]:
             freed.append("stt:loading")
         else:
             model = sidecar.loaded_model
-            if model:
+            if model and _stt_sidecar_holds_no_vram(sidecar):
+                logger.info(
+                    "Keeping CPU-placed STT model '%s' through training (%s)", model, reason
+                )
+            elif model:
                 logger.info("Unloading STT model '%s' for training (%s)", model, reason)
                 sidecar.unload()
                 freed.append(f"stt:{model}")
@@ -497,7 +532,13 @@ def free_stt_model_for_training(reason: str) -> List[str]:
             freed.append("stt:gguf-loading")
         else:
             ggml_model = ggml.loaded_model
-            if ggml_model:
+            if ggml_model and _stt_sidecar_holds_no_vram(ggml):
+                logger.info(
+                    "Keeping CPU-placed GGUF STT model '%s' through training (%s)",
+                    ggml_model,
+                    reason,
+                )
+            elif ggml_model:
                 logger.info("Unloading GGUF STT model '%s' for training (%s)", ggml_model, reason)
                 ggml.unload()
                 freed.append(f"stt:{ggml_model}")
@@ -518,7 +559,13 @@ def free_stt_model_for_training(reason: str) -> List[str]:
             freed.append("stt:mtmd-loading")
         else:
             mtmd_model = mtmd.loaded_model
-            if mtmd_model:
+            if mtmd_model and _stt_sidecar_holds_no_vram(mtmd):
+                logger.info(
+                    "Keeping CPU-placed mtmd STT model '%s' through training (%s)",
+                    mtmd_model,
+                    reason,
+                )
+            elif mtmd_model:
                 logger.info("Unloading mtmd STT model '%s' for training (%s)", mtmd_model, reason)
                 mtmd.unload()
                 freed.append(f"stt:{mtmd_model}")
