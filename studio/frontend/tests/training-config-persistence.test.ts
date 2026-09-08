@@ -314,6 +314,8 @@ test("a session persisted inside CPT recovers its pre-CPT LoRA params", () => {
 test("a baseline captured inside CPT is not mistaken for pre-CPT params", () => {
   const migrated = migrateTrainingConfig(
     {
+      selectedModel: "org/model",
+      modelDefaultsAppliedFor: "org/model",
       trainingMethod: "cpt",
       advancedSettingsBaseline: {
         loraRank: 128,
