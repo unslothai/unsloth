@@ -161,9 +161,7 @@ def test_a_gpuless_build_host_resolves_the_cpu_bundle(machine, cuda_artifact, cp
     This is what install.sh --local runs inside the Docker build, and it is why the CUDA
     bundle the base baked is overwritten. amd64 is NOT exempt.
     """
-    attempts = _linux_published_attempts(
-        _host(machine), _release([cuda_artifact, cpu_artifact])
-    )
+    attempts = _linux_published_attempts(_host(machine), _release([cuda_artifact, cpu_artifact]))
     assert [choice.name for choice in attempts] == [cpu_artifact.asset_name]
     assert [choice.install_kind for choice in attempts] == [cpu_artifact.install_kind]
 
@@ -264,7 +262,15 @@ def _stub_bin(tmp_path):
     return stub_dir
 
 
-def _run_keep_decision(tmp_path, *, marker, server, requested_tag, repo = FORK, env = None):
+def _run_keep_decision(
+    tmp_path,
+    *,
+    marker,
+    server,
+    requested_tag,
+    repo = FORK,
+    env = None,
+):
     install_dir = tmp_path / "llama.cpp"
     (install_dir / "build" / "bin").mkdir(parents = True, exist_ok = True)
     if marker is not None:
@@ -311,11 +317,25 @@ _KEEP_CASES = [
     ("base_image_cuda_marker_base_build", _BASE_IMAGE_MARKER, True, LLAMA_TAG, ON, "KEEP"),
     ("base_image_cuda_marker_latest", _BASE_IMAGE_MARKER, True, "latest", ON, "KEEP"),
     ("installer_written_cuda_marker", _INSTALLER_CUDA_MARKER, True, RELEASE_TAG, ON, "KEEP"),
-    ("knob_true", _BASE_IMAGE_MARKER, True, RELEASE_TAG, {"UNSLOTH_LLAMA_KEEP_PREBUILT": "true"}, "KEEP"),
+    (
+        "knob_true",
+        _BASE_IMAGE_MARKER,
+        True,
+        RELEASE_TAG,
+        {"UNSLOTH_LLAMA_KEEP_PREBUILT": "true"},
+        "KEEP",
+    ),
     ("rocm_bundle", _marker(platform = "linux-rocm"), True, RELEASE_TAG, ON, "KEEP"),
     # the shipped defect: a CPU bundle must still be replaced
     ("shipped_cpu_marker", _SHIPPED_CPU_MARKER, True, RELEASE_TAG, ON, "REPLACE"),
-    ("cpu_platform_no_backend_key", _marker(platform = "linux-arm64"), True, RELEASE_TAG, ON, "REPLACE"),
+    (
+        "cpu_platform_no_backend_key",
+        _marker(platform = "linux-arm64"),
+        True,
+        RELEASE_TAG,
+        ON,
+        "REPLACE",
+    ),
     ("deliberate_force_cpu", _marker(force_cpu = True), True, RELEASE_TAG, ON, "REPLACE"),
     # stale trees must still be replaced
     (
@@ -326,13 +346,27 @@ _KEEP_CASES = [
         ON,
         "REPLACE",
     ),
-    ("other_fork", _marker(published_repo = "someone-else/llama.cpp"), True, RELEASE_TAG, ON, "REPLACE"),
+    (
+        "other_fork",
+        _marker(published_repo = "someone-else/llama.cpp"),
+        True,
+        RELEASE_TAG,
+        ON,
+        "REPLACE",
+    ),
     ("no_marker_at_all", None, True, RELEASE_TAG, ON, "REPLACE"),
     ("marker_is_not_json", "not json", True, RELEASE_TAG, ON, "REPLACE"),
     ("no_llama_server_binary", _BASE_IMAGE_MARKER, False, RELEASE_TAG, ON, "REPLACE"),
     # the knob is opt-in, and an explicit backend request still wins
     ("knob_unset", _BASE_IMAGE_MARKER, True, RELEASE_TAG, {}, "REPLACE"),
-    ("knob_zero", _BASE_IMAGE_MARKER, True, RELEASE_TAG, {"UNSLOTH_LLAMA_KEEP_PREBUILT": "0"}, "REPLACE"),
+    (
+        "knob_zero",
+        _BASE_IMAGE_MARKER,
+        True,
+        RELEASE_TAG,
+        {"UNSLOTH_LLAMA_KEEP_PREBUILT": "0"},
+        "REPLACE",
+    ),
     (
         "explicit_backend_request",
         _BASE_IMAGE_MARKER,
@@ -396,6 +430,6 @@ def test_dockerfile_studio_sets_the_knob_and_asserts_the_cuda_backend():
     assert "/opt/unsloth/llama.cpp/build/bin/libggml-cuda.so" in text
     assertion = text.index("/opt/unsloth/llama.cpp/libggml-cuda.so")
     assert install < assertion, "the CUDA backend assertion must run AFTER install.sh"
-    assert "exit 1" in text[assertion : assertion + 600], (
-        "a missing CUDA backend library must fail the build, not just print"
-    )
+    assert (
+        "exit 1" in text[assertion : assertion + 600]
+    ), "a missing CUDA backend library must fail the build, not just print"
