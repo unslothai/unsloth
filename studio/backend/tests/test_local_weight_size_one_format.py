@@ -94,6 +94,19 @@ def test_root_copy_wins_over_a_larger_original_copy(tmp_path):
     assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
 
 
+def test_original_only_base_beside_an_external_tower_counts_both(tmp_path):
+    _write(tmp_path / "original" / "consolidated.00.pth", 16000)
+    _write(tmp_path / "vision_tower" / "pytorch_model.bin", 1700)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 17700
+
+
+def test_uppercase_extension_is_not_a_loadable_weight(tmp_path):
+    _write(tmp_path / "model.safetensors", 1000)
+    _write(tmp_path / "stale.SAFETENSORS", 5000)
+    _write(tmp_path / "stale.BIN", 5000)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+
+
 def test_same_directory_dual_format_still_charges_one_copy(tmp_path):
     _write(tmp_path / "model.safetensors", 1000)
     _write(tmp_path / "pytorch_model.bin", 1000)

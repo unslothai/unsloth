@@ -5713,18 +5713,19 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
     # checkpoint-*/global_step* snapshots, but export loads only the model at
     # the root, so counting them would multiply the estimate.
     skip_prefixes = ("checkpoint-", "global_step")
-    # (directory, weight family) -> {(format, stem): bytes}. Files of one family in one
-    # directory are the same weights in alternative formats, so a family costs its
-    # largest copy; a differently named payload beside them (projector.pt, a tower's
-    # pytorch_model.bin in its own folder) is its own family and is always counted.
+    # (directory, weight family) -> {(format, stem, vendor_copy): bytes}. Files of one
+    # family in one directory are the same weights in alternative formats, so a family
+    # costs one copy: the largest one the loader reads, or the vendor's original/ copy
+    # when that is the only one. A differently named payload beside them (projector.pt,
+    # a tower's pytorch_model.bin in its own folder) is its own family and always counts.
     copies_by_family: dict = {}
     for file in model_path.rglob("*"):
         if not file.is_file():
             continue
-        name = file.name.lower()
         rel = file.relative_to(model_path)
         if any(part.startswith(skip_prefixes) for part in rel.parts):
             continue
+        name = file.name
         stem, ext = os.path.splitext(name)
         if ext == ".safetensors":
             kind = "safetensors"
@@ -5734,24 +5735,20 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
             continue
         stem = _WEIGHT_SHARD_SUFFIX.sub("", stem)
         family = _WEIGHT_FAMILY_ALIASES.get(stem, stem)
-        copies = copies_by_family.setdefault((rel.parent, family), {})
-        copies[(kind, stem)] = copies.get((kind, stem), 0) + file.stat().st_size
+        # A top-level original/ holds the vendor's copy of the root weights (Meta).
+        directory = rel.parent
+        vendor_copy = directory.parts[:1] == ("original",)
+        if vendor_copy:
+            directory = Path(*directory.parts[1:])
+        copies = copies_by_family.setdefault((directory, family), {})
+        copies[(kind, stem, vendor_copy)] = (
+            copies.get((kind, stem, vendor_copy), 0) + file.stat().st_size
+        )
 
-    def _sum(families) -> int:
-        return sum(max(copies.values()) for copies in families)
-
-    outside_original = _sum(
-        copies
-        for (directory, _), copies in copies_by_family.items()
-        if directory.parts[:1] != ("original",)
-    )
-    original_copy = _sum(
-        copies
-        for (directory, _), copies in copies_by_family.items()
-        if directory.parts[:1] == ("original",)
-    )
-    # A top-level original/ is the vendor's copy of the root weights; size what loads.
-    total = outside_original or original_copy
+    total = 0
+    for copies in copies_by_family.values():
+        loaded = [size for (_, _, vendor_copy), size in copies.items() if not vendor_copy]
+        total += max(loaded) if loaded else max(copies.values())
     return total if total > 0 else None
 
 
