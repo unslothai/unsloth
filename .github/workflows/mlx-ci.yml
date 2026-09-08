@@ -18,8 +18,8 @@
 #
 #   1. unsloth._IS_MLX flips True on Darwin+arm64 with mlx genuinely
 #      installed (no spoof).
-#   2. Every PR-A MLX-only unsloth_zoo module (mlx_loader, mlx_trainer,
-#      mlx_compile, mlx_utils, mlx_cce, gated_delta_vjp) imports
+#   2. Every MLX-only unsloth_zoo module (mlx.loader, mlx.trainer,
+#      mlx.compile, mlx.utils, mlx.cce, gated_delta_vjp) imports
 #      against the real `mlx` + `mlx-lm` + `mlx-vlm` PyPI wheels --
 #      each does `import mlx.core as mx` at module top level, so this
 #      catches a future change that breaks the real wheels without
@@ -102,6 +102,7 @@ on:
       # already triggers on them.
       - 'studio/backend/tests/test_mlx_inference_backend.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
+      - 'tests/studio/test_mlx_ci_import_contract.py'
       - 'tests/studio/run_real_mlx_smoke.py'
       - 'tests/studio/agent_workspace_mlx_runtime_harness.py'
       - 'tests/studio/run_real_mlx_agent_workspace.py'
@@ -127,6 +128,7 @@ on:
       - 'studio/backend/utils/mlx_repair.py'
       - 'studio/backend/tests/test_mlx_inference_backend.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
+      - 'tests/studio/test_mlx_ci_import_contract.py'
       - 'tests/studio/run_real_mlx_smoke.py'
       - 'tests/studio/agent_workspace_mlx_runtime_harness.py'
       - 'tests/studio/run_real_mlx_agent_workspace.py'
@@ -305,19 +307,20 @@ jobs:
           python -c "
           import importlib
           for name in [
-              'unsloth_zoo.mlx_loader',
-              'unsloth_zoo.mlx_trainer',
-              'unsloth_zoo.mlx_compile',
-              'unsloth_zoo.mlx_utils',
-              'unsloth_zoo.mlx_cce',
+              'unsloth_zoo.mlx.loader',
+              'unsloth_zoo.mlx.trainer',
+              'unsloth_zoo.mlx.compile',
+              'unsloth_zoo.mlx.utils',
+              'unsloth_zoo.mlx.cce',
               'unsloth_zoo.gated_delta_vjp',
           ]:
               importlib.import_module(name)
               print('OK:', name)
-          from unsloth_zoo.mlx_loader import FastMLXModel
-          from unsloth_zoo.mlx_trainer import UnslothMLXTrainer
+          from unsloth_zoo.mlx.loader import FastMLXModel
+          from unsloth_zoo.mlx.trainer import MLXTrainer, MLXTrainingConfig
           print('OK: FastMLXModel =', FastMLXModel)
-          print('OK: UnslothMLXTrainer =', UnslothMLXTrainer)
+          print('OK: MLXTrainer =', MLXTrainer)
+          print('OK: MLXTrainingConfig =', MLXTrainingConfig)
           "
 
       # AST contract: test_hardware_dispatch_matrix.py and
@@ -350,7 +353,8 @@ jobs:
           UNSLOTH_COMPILE_DISABLE: '1'
         run: |
           python -m pytest -v --tb=short \
-            tests/studio/test_mlx_training_worker_behaviors.py
+            tests/studio/test_mlx_training_worker_behaviors.py \
+            tests/studio/test_mlx_ci_import_contract.py
 
       # The inference backend's numerical tests importorskip mlx, so they skip on
       # studio-backend-ci.yml's ubuntu runner and only ever execute here. Run from
