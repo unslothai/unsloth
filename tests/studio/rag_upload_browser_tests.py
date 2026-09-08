@@ -27,7 +27,8 @@ def request(path, body = None):
 
 
 def wait_state(predicate):
-    deadline = time.monotonic() + 8
+    # Same contention as the browser waits below: three engines on a two-core runner.
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         state = request("/__state")
         if predicate(state):
@@ -156,7 +157,7 @@ def large_batch(page):
     page.evaluate(
         "window.pending=window.sim.uploadNames(Array.from({length:12},(_,i)=>'report-'+i+'.txt'));void 0"
     )
-    deadline = time.monotonic() + 4
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline and len(request("/__state")["uploads"]) < 12:
         time.sleep(0.05)
     data = request("/__state")

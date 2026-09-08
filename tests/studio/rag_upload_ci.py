@@ -93,8 +93,10 @@ else:
         check = True,
     ).stdout
     interpreter = next(
-        entry["path"] for entry in json.loads(listed) if entry["version"].startswith("3.12.")
+        (entry["path"] for entry in json.loads(listed) if entry["version"].startswith("3.12.")),
+        "",
     )
+    assert interpreter, f"uv installed no 3.12 to build the venv from: {listed}"
 assert run(
     "venv", [bootstrap, "-m", "uv", "venv", "--clear", "--python", interpreter, root / "venv"]
 )
