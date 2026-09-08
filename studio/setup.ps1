@@ -576,13 +576,38 @@ function Get-InstalledLlamaPrebuiltRelease {
         return $null
     }
 
+    # An interrupted write leaves an empty marker, which deserializes to $null: reading a
+    # property off that is fatal under a caller's Set-StrictMode, and printed "@" without one.
+    if ($null -eq $payload -or $payload -isnot [System.Management.Automation.PSCustomObject]) {
+        return $null
+    }
+    if (-not ($payload.PSObject.Properties.Name -ccontains 'published_repo') -or
+        -not ($payload.PSObject.Properties.Name -ccontains 'release_tag')) {
+        return $null
+    }
     if (-not $payload.published_repo -or -not $payload.release_tag) {
         return $null
     }
 
     $message = "installed release: $($payload.published_repo)@$($payload.release_tag)"
-    if ($payload.tag -and $payload.tag -ne $payload.release_tag) {
-        $message += " (tag $($payload.tag))"
+    # tag is optional too, so it carries the same strict-mode hazard as backend.
+    $llamaTag = ""
+    if ($payload.PSObject.Properties.Name -ccontains 'tag') {
+        $llamaTag = [string]$payload.tag
+    }
+    if ($llamaTag -and $llamaTag -ne $payload.release_tag) {
+        $message += " (tag $llamaTag)"
+    }
+    # Name the backend: a Vulkan and a ROCm bundle print an identical line without it.
+    # Absent in every marker written before #8520, and a missing property is fatal under a
+    # caller's Set-StrictMode. -ccontains and the type/shape checks keep this byte-identical
+    # to the setup.sh twin, which is case-sensitive and renders non-strings differently.
+    $backendName = ""
+    if (($payload.PSObject.Properties.Name -ccontains 'backend') -and ($payload.backend -is [string])) {
+        $backendName = $payload.backend.Trim()
+    }
+    if ($backendName -match '^[A-Za-z0-9._+-]{1,32}$') {
+        $message += " -- $backendName backend"
     }
     return $message
 }
