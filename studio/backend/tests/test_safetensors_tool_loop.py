@@ -1843,166 +1843,69 @@ class TestLoopBasic:
         contents = [e for e in events if e["type"] == "content"]
         assert contents and "sunny" in contents[-1]["text"].lower()
 
-    def test_function_xml_form(self):
-        loop, exec_fn = _make_loop(
-            turns = [
-                ["<function=python><parameter=code>print(1)</parameter></function>"],
-                ["Result: 1"],
-            ],
-            exec_results = ["1\n"],
-        )
+    @pytest.mark.parametrize(
+        "chunks, answer, exec_result, expected_call, reply_fragment, tool_call_id",
+        [
+            pytest.param(["<function=python><parameter=code>print(1)</parameter></function>"],
+                "Result: 1", "1\n", ("python", {"code": "print(1)"}), "Result: 1", None,
+                id = "function_xml_form"),
+            # The loop must recognise Llama-3's <|python_tag|> marker, drain the rest of the
+            # turn, and execute the call.
+            pytest.param(["<|python_tag|>web_search.call(", 'query="weather in Tokyo"', ")"],
+                "The weather is sunny.", "Sunny, 22C", ("web_search", {"query": "weather in Tokyo"}),
+                "sunny", None, id = "llama3_python_tag_form"),
+            # Llama-3.1 / 3.2 emit a bare-JSON tool call ``{"name":..,"parameters":..}`` with NO
+            # XML signal. The loop's safety-net parse must still fire the tool instead of treating
+            # the turn as "planned without calling tools" and re-prompting the model into giving
+            # up. Regression for the has_tool_signal gate that dropped these; GGUF's llama-server
+            # parses them natively.
+            pytest.param(['{"name": "web_search", "parameters": {"query": "weather in SF"}}'],
+                "The weather is sunny.", "Sunny, 18C", ("web_search", {"query": "weather in SF"}),
+                "sunny", None, id = "llama3_bare_json_form_fires_tool"),
+            # Pre-v11 Mistral emission ``[TOOL_CALLS] [{...}]``; its ids must propagate to
+            # tool_start events.
+            pytest.param(['[TOOL_CALLS] [{"name":"web_search",', '"arguments":{"query":"hi"},"id":"abc"}]'],
+                "done", "ok", ("web_search", {"query": "hi"}), None, "abc",
+                id = "mistral_pre_v11_form"),
+            # v11+ Mistral emission: bare ``name{json}`` after the trigger.
+            pytest.param(['[TOOL_CALLS]web_search{"query":"hi"}'],
+                "done", "ok", ("web_search", {"query": "hi"}), None, None, id = "mistral_v11_form"),
+            # Gemma 4 emission: ``<|tool_call>call:NAME{...}<tool_call|>``.
+            pytest.param(["<|tool_call>call:web_search{", 'query:<|"|>weather<|"|>', "}<tool_call|>"],
+                "sunny", "Sunny, 22C", ("web_search", {"query": "weather"}), None, None,
+                id = "gemma4_form"),
+            # DeepSeek V3.1: the buffer state machine must wake on the opener and the parser must
+            # extract the V3.1 bare-JSON body.
+            pytest.param([_DS_OPEN, _DS_CALL_BEGIN + "web_search", _DS_SEP,
+                '{"query":"Tokyo weather"}', _DS_CALL_END, _DS_END],
+                "The weather is sunny.", "Sunny, 22C", ("web_search", {"query": "Tokyo weather"}),
+                "sunny", None, id = "deepseek_v3_1_form"),
+            # GLM 4.x emission: ``<tool_call>NAME\n<arg_key>...``.
+            pytest.param(["<tool_call>web_search\n", "<arg_key>query</arg_key>\n",
+                "<arg_value>Tokyo</arg_value>\n", "</tool_call>"],
+                "found", "...", ("web_search", {"query": "Tokyo"}), None, None, id = "glm_form"),
+            # Kimi K2: the BARE name must reach execute_tool even though the model emitted
+            # ``functions.web_search:0``, while tool_start keeps the full id so the conversation
+            # roundtrip can replay it verbatim.
+            pytest.param(["<|tool_calls_section_begin|>", "<|tool_call_begin|>functions.web_search:0",
+                "<|tool_call_argument_begin|>", '{"query":"Tokyo"}', "<|tool_call_end|>",
+                "<|tool_calls_section_end|>"],
+                "done", "...", ("web_search", {"query": "Tokyo"}), None, "functions.web_search:0",
+                id = "kimi_form"),
+        ],
+    )
+    def test_emission_form_reaches_execute_tool(
+        self, chunks, answer, exec_result, expected_call, reply_fragment, tool_call_id
+    ):
+        loop, exec_fn = _make_loop(turns = [chunks, [answer]], exec_results = [exec_result])
         events = _collect_events(loop)
-        assert exec_fn.calls == [("python", {"code": "print(1)"})]
+        assert exec_fn.calls == [expected_call]
         contents = [e for e in events if e["type"] == "content"]
-        assert "Result: 1" in contents[-1]["text"]
-
-    def test_llama3_python_tag_form(self):
-        # The agentic loop must recognise Llama-3's <|python_tag|>
-        # marker, drain the rest of the turn, and execute the call.
-        loop, exec_fn = _make_loop(
-            turns = [
-                [
-                    "<|python_tag|>web_search.call(",
-                    'query="weather in Tokyo"',
-                    ")",
-                ],
-                ["The weather is sunny."],
-            ],
-            exec_results = ["Sunny, 22C"],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "weather in Tokyo"})]
-        contents = [e for e in events if e["type"] == "content"]
-        assert "sunny" in contents[-1]["text"].lower()
-
-    def test_llama3_bare_json_form_fires_tool(self):
-        # Llama-3.1 / 3.2 emit a bare-JSON tool call
-        # ``{"name":..,"parameters":..}`` with NO XML signal. The loop's
-        # safety-net parse must still fire the tool instead of treating the
-        # turn as "planned without calling tools" and re-prompting the model
-        # into giving up. Regression for the has_tool_signal gate that
-        # dropped these; GGUF's llama-server parses them natively.
-        loop, exec_fn = _make_loop(
-            turns = [
-                ['{"name": "web_search", "parameters": {"query": "weather in SF"}}'],
-                ["The weather is sunny."],
-            ],
-            exec_results = ["Sunny, 18C"],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "weather in SF"})]
-        contents = [e for e in events if e["type"] == "content"]
-        assert "sunny" in contents[-1]["text"].lower()
-
-    def test_mistral_pre_v11_form(self):
-        # Pre-v11 Mistral emission: ``[TOOL_CALLS] [{...}]``.
-        loop, exec_fn = _make_loop(
-            turns = [
-                [
-                    '[TOOL_CALLS] [{"name":"web_search",',
-                    '"arguments":{"query":"hi"},"id":"abc"}]',
-                ],
-                ["done"],
-            ],
-            exec_results = ["ok"],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "hi"})]
-        # Mistral-provided ids must propagate to tool_start events.
-        tool_start = next(e for e in events if e["type"] == "tool_start")
-        assert tool_start["tool_call_id"] == "abc"
-
-    def test_mistral_v11_form(self):
-        # v11+ Mistral emission: bare ``name{json}`` after the trigger.
-        loop, exec_fn = _make_loop(
-            turns = [
-                ['[TOOL_CALLS]web_search{"query":"hi"}'],
-                ["done"],
-            ],
-            exec_results = ["ok"],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "hi"})]
-
-    def test_gemma4_form(self):
-        # Gemma 4 emission: ``<|tool_call>call:NAME{...}<tool_call|>``.
-        loop, exec_fn = _make_loop(
-            turns = [
-                [
-                    "<|tool_call>call:web_search{",
-                    'query:<|"|>weather<|"|>',
-                    "}<tool_call|>",
-                ],
-                ["sunny"],
-            ],
-            exec_results = ["Sunny, 22C"],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "weather"})]
-
-    def test_deepseek_v3_1_form(self):
-        # DeepSeek V3.1 emission inside the agentic loop -- the buffer state machine must wake on
-        # ``<｜tool▁calls▁begin｜>`` and the parser must extract the V3.1 bare-JSON body.
-        loop, exec_fn = _make_loop(
-            turns = [
-                [
-                    "<｜tool▁calls▁begin｜>",
-                    "<｜tool▁call▁begin｜>web_search",
-                    "<｜tool▁sep｜>",
-                    '{"query":"Tokyo weather"}',
-                    "<｜tool▁call▁end｜>",
-                    "<｜tool▁calls▁end｜>",
-                ],
-                ["The weather is sunny."],
-            ],
-            exec_results = ["Sunny, 22C"],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "Tokyo weather"})]
-        contents = [e for e in events if e["type"] == "content"]
-        assert contents and "sunny" in contents[-1]["text"].lower()
-
-    def test_glm_form(self):
-        # GLM 4.x emission: ``<tool_call>NAME\n<arg_key>...``.
-        loop, exec_fn = _make_loop(
-            turns = [
-                [
-                    "<tool_call>web_search\n",
-                    "<arg_key>query</arg_key>\n",
-                    "<arg_value>Tokyo</arg_value>\n",
-                    "</tool_call>",
-                ],
-                ["found"],
-            ],
-            exec_results = ["..."],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "Tokyo"})]
-
-    def test_kimi_form(self):
-        # Kimi K2 emission ``<|tool_calls_section_begin|>...``.
-        loop, exec_fn = _make_loop(
-            turns = [
-                [
-                    "<|tool_calls_section_begin|>",
-                    "<|tool_call_begin|>functions.web_search:0",
-                    "<|tool_call_argument_begin|>",
-                    '{"query":"Tokyo"}',
-                    "<|tool_call_end|>",
-                    "<|tool_calls_section_end|>",
-                ],
-                ["done"],
-            ],
-            exec_results = ["..."],
-        )
-        events = _collect_events(loop)
-        # The bare name must reach execute_tool, even though the model
-        # emitted ``functions.web_search:0`` as the formatted id.
-        assert exec_fn.calls == [("web_search", {"query": "Tokyo"})]
-        # tool_start carries the original full id so the conversation
-        # roundtrip can replay it verbatim.
-        tool_start = next(e for e in events if e["type"] == "tool_start")
-        assert tool_start["tool_call_id"] == "functions.web_search:0"
+        if reply_fragment is not None:
+            assert contents and reply_fragment in contents[-1]["text"]
+        if tool_call_id is not None:
+            tool_start = next(e for e in events if e["type"] == "tool_start")
+            assert tool_start["tool_call_id"] == tool_call_id
 
     def test_render_html_emits_provisional_tool_start(self):
         exec_fn, turn_iter = _shared_setup_1()
