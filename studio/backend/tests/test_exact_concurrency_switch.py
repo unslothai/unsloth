@@ -236,7 +236,20 @@ class TestTheAutoFallback:
 
 class TestTheReportedState:
     def _state(self, **kw):
+        # The build's own answer, read off the `--preempt-ram` capability: the same fork
+        # carries both, and a build without the mode starts fine while ignoring the variable.
+        kw.setdefault("supports_exact", True)
         return LlamaCppBackend._exact_state_after_launch(**kw)
+
+    @pytest.mark.parametrize("setting", ["auto", "on"])
+    def test_a_build_that_ignores_the_variable_is_not_reported_as_on(self, setting):
+        assert (
+            self._state(
+                setting = setting, env = {exact.CHILD_ENV: "1"}, args = _STUDIO_ARGV,
+                supports_exact = False,
+            )
+            == exact.EXACT_STATE_UNAVAILABLE
+        )
 
     def test_off_when_the_load_never_asked(self):
         assert self._state(setting = "off", env = {}, args = _STUDIO_ARGV) == exact.EXACT_STATE_OFF

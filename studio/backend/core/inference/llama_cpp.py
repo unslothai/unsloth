@@ -2024,10 +2024,18 @@ _SERVER_PARK_COMMENTS = (_SERVER_PARKED_COMMENT, _SERVER_RESUMED_COMMENT, _SERVE
 _PREEMPT_KEEPALIVE_S = 2.0
 
 
-def _preempt_ram_disabled_in(args) -> bool:
-    """True when the launch line carries `--preempt-ram 0`, which switches the server's
-    parking off; the last occurrence wins, as llama-server's own parser has it."""
-    disabled = False
+def _preempt_ram_disabled_in(args, env: Optional[Mapping[str, str]] = None) -> bool:
+    """True when this launch switches the server's parking off with a zero RAM budget.
+
+    Both sources, because the child obeys both: ``--preempt-ram`` carries
+    ``set_env("LLAMA_ARG_PREEMPT_RAM")``, so a zero in the environment disables parking with
+    nothing on the launch line to show for it. Read in llama.cpp's own order -- the
+    environment first, then argv last-wins over it -- so a Studio-managed budget still beats
+    an inherited zero, and Studio does not stand its own planner down for a server that will
+    never park.
+    """
+    value = (os.environ if env is None else env).get("LLAMA_ARG_PREEMPT_RAM")
+    disabled = value is not None and str(value).strip() == "0"
     tokens = [str(a) for a in (args or ())]
     for i, tok in enumerate(tokens):
         if tok == "--preempt-ram":
@@ -7020,15 +7028,31 @@ class LlamaCppBackend:
 
     @staticmethod
     def _exact_state_after_launch(
-        *, setting: str, env: Mapping[str, str], args: Optional[Sequence[str]]
+        *,
+        setting: str,
+        env: Mapping[str, str],
+        args: Optional[Sequence[str]],
+        supports_exact: bool,
     ) -> str:
-        """What to report for a child that has just come up healthy: the load asked, the variable
-        is still on the child's environment, and the launch can carry the mode. It cannot catch a
-        build predating unslothai/llama.cpp#194, which ignores the variable and starts fine."""
+        """What to report for a child that has just come up healthy: the load asked, the binary
+        implements the mode, the variable is still on the child's environment, and the launch can
+        carry it.
+
+        ``supports_exact`` is the positive evidence, and without it the state is
+        ``unavailable``: a build predating unslothai/llama.cpp#194 ignores
+        ``LLAMA_EXACT_CONCURRENCY`` and starts perfectly, so a launch that merely ASKED proves
+        nothing, and `on` is an opt-in byte-identity contract that must not be reported on a
+        server that is not honouring it. The fork prints nothing at load when the mode is
+        running -- only refusals on the way to exiting -- so the caller passes the
+        ``--preempt-ram`` capability from `--help` instead: unslothai/llama.cpp#184 and #194
+        ship in the same build, so the flag standing in for the variable is the only signal
+        there is short of decoding twice.
+        """
         if not _exact.wants_exact(setting):
             return _exact.EXACT_STATE_OFF
         running = (
-            _exact.child_flag_set(env)
+            bool(supports_exact)
+            and _exact.child_flag_set(env)
             # The same env-aware readers the rest of the load uses: both flags have LLAMA_ARG_
             # twins llama.cpp applies before argv.
             and _kv_unified_from_args(args, env = env)
@@ -24994,9 +25018,10 @@ class LlamaCppBackend:
                 self._commit_effective_parallel_slots(n_parallel)
                 self._swa_full = swa_full
                 self._kv_cache_unified = kv_cache_unified
-                # A hand-typed `--preempt-ram 0` switches the server's parking off, and then
-                # the build's flag alone is no reason to stand down.
-                if _preempt_ram_disabled_in(_last_spawn_cmd or cmd):
+                # A `--preempt-ram 0` on the launch line or a `LLAMA_ARG_PREEMPT_RAM=0` in the
+                # child's environment switches the server's parking off, and then the build's
+                # flag alone is no reason to stand down.
+                if _preempt_ram_disabled_in(_last_spawn_cmd or cmd, env = env):
                     self._server_preempts_kv = False
                 # Read off the argv that LAUNCHED and the env it launched with, not the intent:
                 # several respawns rewrite one or the other.
@@ -25005,6 +25030,10 @@ class LlamaCppBackend:
                     setting = _exact_setting,
                     env = env,
                     args = _last_spawn_cmd or cmd,
+                    # The build's own answer, not the launch's intent. See the helper.
+                    supports_exact = bool(
+                        (_launch_caps(binary) or {}).get("supports_preempt_ram")
+                    ),
                 )
                 if self._exact_concurrency == _exact.EXACT_STATE_UNAVAILABLE:
                     if _exact_setting == _exact.EXACT_ON:
@@ -25014,16 +25043,18 @@ class LlamaCppBackend:
                         self._healthy = False
                         _raise_terminal_load_failure(
                             "Exact concurrency is set to 'on', but this llama-server "
-                            "came up without it: the launch it recovered to has no "
-                            "flash attention or no unified KV cache, which the mode "
-                            "requires. Set exact concurrency to 'auto' to load anyway, "
-                            "or 'off' to stop asking for it."
+                            "came up without it: either this build does not implement "
+                            "the mode, or the launch it recovered to has no flash "
+                            "attention or no unified KV cache, which the mode requires. "
+                            "Set exact concurrency to 'auto' to load anyway, or 'off' "
+                            "to stop asking for it."
                         )
                     self._record_load_warning(
-                        "Exact concurrency was requested but this llama-server would not "
-                        "run with it, so the model is loaded without it: a chat's output "
-                        "can differ depending on which other chats share the KV cache. "
-                        "Set exact concurrency to 'on' to fail the load instead."
+                        "Exact concurrency was requested but this llama-server does not "
+                        "implement it or would not run with it, so the model is loaded "
+                        "without it: a chat's output can differ depending on which other "
+                        "chats share the KV cache. Set exact concurrency to 'on' to fail "
+                        "the load instead."
                     )
                 # Re-derived from the slot count that LAUNCHED, not the one the sizing
                 # pass saw. The drafter drop and the non-MTP retry both hand slots back

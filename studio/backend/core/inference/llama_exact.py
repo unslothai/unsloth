@@ -5,8 +5,10 @@
 
 A llama-server built with unslothai/llama.cpp#194 reads ``LLAMA_EXACT_CONCURRENCY`` from its OWN
 environment, and a sequence's generated tokens are then byte-identical however many chats share
-its cache. There is no flag, nothing in ``--help`` and nothing in ``/props``, so the launch is
-the only probe there is.
+its cache. There is no flag for it, nothing in ``--help`` and nothing in ``/props``, and the
+server prints nothing at load when the mode is running, so a build that implements it is told
+apart from one that ignores the variable only by ``--preempt-ram``, which ships in the same
+fork.
 
 Three values, because two cannot express "I would like this" against "I require this": ``off``
 (the default, the mode costing about 9 per cent of solo decode), ``auto`` (relaunch once without

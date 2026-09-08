@@ -15,7 +15,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Protocol, runtime_checkable
 
-from core.inference.llama_admission import LlamaAdmissionLease, _bool_env
+from core.inference.llama_admission import (
+    LlamaAdmissionLease,
+    _bool_env,
+    llama_admission_config_from_env,
+)
 from core.inference.llama_exact import EXACT_STATE_OFF, EXACT_STATES
 
 
@@ -343,6 +347,20 @@ def preemption_enabled() -> bool:
     return _bool_env(PREEMPT_ENV, DEFAULT_PREEMPT_ENABLED)
 
 
+def preemption_eligible() -> bool:
+    """The switches that have to be on before anything here may choose a victim.
+
+    The rollout switch is not the only opt-out. Every charge the controller plans against is an
+    admission lease, so with admission control or the KV budget off the ledger is a column of
+    zeroes: choosing on it pauses live streams for an accounting that is not running. Read here
+    rather than at the call site so ``active`` and ``plan_preemptions`` cannot drift apart.
+    """
+    if not preemption_enabled():
+        return False
+    config = llama_admission_config_from_env()
+    return bool(config.enabled and config.kv_budget)
+
+
 def preemption_buffer_tokens(
     budget: int,
     *,
@@ -554,7 +572,7 @@ class PreemptionController:
     @property
     def active(self) -> bool:
         with self._lock:
-            return bool(self._kv_unified) and self._budget > 0 and preemption_enabled()
+            return bool(self._kv_unified) and self._budget > 0 and preemption_eligible()
 
     def register(
         self,
@@ -986,7 +1004,7 @@ class PreemptionController:
         """Who must stop so ``needed`` more tokens fit. Sets each victim's ``preempt_event`` and
         marks it PAUSED, so decision and signal cannot drift."""
         with self._lock:
-            if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
+            if not self._kv_unified or self._budget <= 0 or not preemption_eligible():
                 return []
             if self._server_mode:
                 # llama-server parks and restores slots itself. Choosing a victim here would
