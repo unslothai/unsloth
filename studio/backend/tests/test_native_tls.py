@@ -161,9 +161,6 @@ def test_activate_fails_open_when_injection_raises(monkeypatch):
     assert native_tls.activate_native_tls() is False
 
 
-# ── #9218: the Linux desktop's owned backend trusts the OS store by default ──
-
-
 @pytest.mark.parametrize(
     ("platform", "desktop_kind", "expected"),
     [
@@ -182,15 +179,10 @@ def test_linux_desktop_owner_flips_native_tls_default(
 
 
 def test_linux_explicit_opt_out_wins_over_desktop_owner(monkeypatch):
-    # The env override outranks the desktop detection: a user who needs
-    # certifi-only verification keeps a way back.
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", "0")
     monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "tauri")
     assert native_tls.native_tls_enabled() is False
-
-
-# ── the `python -c` probe children resolve the same decision ──
 
 
 def test_activate_spells_the_resolved_decision_into_the_env(monkeypatch):
@@ -201,9 +193,7 @@ def test_activate_spells_the_resolved_decision_into_the_env(monkeypatch):
     _fake_truststore(monkeypatch)
 
     assert native_tls.activate_native_tls() is True
-    # main.py pops the desktop-owner vars before probes spawn, so the children
-    # re-resolve from the tri-state flag: a default that flipped on here must
-    # read as on there. setdefault, so an explicit user value is never rewritten.
+    # The probe children only see the flag: main.py pops the marker before they spawn.
     assert os.environ["UNSLOTH_STUDIO_NATIVE_TLS"] == "1"
 
 
@@ -231,9 +221,8 @@ def _run_inline_gate(
         monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", owner_kind)
     if flag is not None:
         monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", flag)
-    # A child's `sys` is whatever it was handed: only platform and path are
-    # read. `import truststore` still consults the real sys.modules, which
-    # _fake_truststore holds the stub in.
+    # The gate reads only sys.platform and sys.path off the handed-in `sys`;
+    # `import truststore` still finds _fake_truststore's stub in the real sys.modules.
     child_sys = _types.SimpleNamespace(platform = platform, path = [])
     namespace = {"os": os, "sys": child_sys, "_TRUSTSTORE_VENDOR": "/vendor"}
     exec(native_tls.inline_gate_source(), namespace)
@@ -241,7 +230,6 @@ def _run_inline_gate(
 
 
 def test_inline_gate_injects_for_linux_desktop_child(monkeypatch):
-    # A child launched directly by the desktop app sees the handshake marker.
     assert _run_inline_gate(monkeypatch, "linux", owner_kind = "tauri") == ["inject"]
 
 
