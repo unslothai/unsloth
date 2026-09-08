@@ -9,11 +9,9 @@ import {
   renderConversationBlocks,
 } from "../src/features/chat/utils/conversation-markdown.ts";
 
-/** The rendered transcript for one plain-text block, the shape most cases here use. */
 const renderText = (text: string): string =>
   renderConversationBlocks([{ kind: "text", text }]);
 
-/** The rendered transcript for one citation. */
 const renderSource = (title: string, url: string): string =>
   renderConversationBlocks([{ kind: "source", title, url }]);
 

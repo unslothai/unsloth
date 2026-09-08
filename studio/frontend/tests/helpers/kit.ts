@@ -9,26 +9,18 @@ import type { ResidentAdoptionState } from "../../src/features/hub/lib/adopt-inf
 import type { ResidentStatusRefreshTargets } from "../../src/features/hub/lib/resident-status-refresh.ts";
 
 /**
- * A module under `src` read as text, addressed the way the app imports it: the
- * path is relative to `src`, so it does not move when a test file does.
- *
- * Tests that assert on source shape rather than behaviour read the module this
- * way; the shape is the assertion, so the text has to be the shipped file.
+ * A module under `src` read as text, path relative to `src` so it survives a test
+ * file moving. Shape assertions need the shipped file, not a copy of it.
  */
 export function readSrc(relative: string): string {
   return readFileSync(new URL(`../../src/${relative}`, import.meta.url), "utf8");
 }
 
-/**
- * A repository file read as text, addressed relative to `studio/frontend/tests`
- * so a call reads the same as the `new URL` it replaces. Prefer `readSrc` for
- * anything under `src`; this is for the Rust crate, configs and the like.
- */
+/** A repository file read as text, relative to `studio/frontend/tests` like the `new URL` it replaces. Prefer `readSrc` under `src`. */
 export function readText(relative: string): string {
   return readFileSync(new URL(`../${relative}`, import.meta.url), "utf8");
 }
 
-/** `readSrc` for a caller that is already awaiting. */
 export function readSrcAsync(relative: string): Promise<string> {
   return readFile(new URL(`../../src/${relative}`, import.meta.url), "utf8");
 }

@@ -2,12 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# The counters and assertions the tests/sh suites share. Sourced, never executed:
+# Counters and assertions shared by the tests/sh suites. Sourced, never executed:
 # both runners glob test_*.sh, so this name deliberately sits outside the glob.
-#
-# A suite whose assertion needs a different message or a different comparison keeps
-# its own definition -- shadowing one of these after the source is what to do, since
-# the wording of a failure is part of what the suite is telling its reader.
+# A suite wanting a different message or comparison shadows one of these after the
+# source -- the wording of a failure is part of what the suite tells its reader.
 
 PASS=0
 FAIL=0

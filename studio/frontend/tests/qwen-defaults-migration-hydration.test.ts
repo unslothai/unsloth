@@ -50,9 +50,8 @@ const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Stage what the server holds and forget the writes recorded so far. The staged
- * GET sequence is cleared too unless a test is about to install its own, since
- * a leftover response from an earlier test answers the next hydration.
+ * Stage what the server holds and drop the writes recorded so far. Staged GETs are
+ * cleared too unless `keepReads`: a leftover response answers the next hydration.
  */
 function seedSettings(
   settings: Record<string, unknown>,
@@ -63,7 +62,6 @@ function seedSettings(
   settingsHttp.puts.length = 0;
 }
 
-/** The recorded write carrying a per-model row for QWEN38, if one landed. */
 const modelPut = (): Record<string, unknown> | undefined =>
   settingsHttp.puts.find(
     (put) =>
@@ -73,7 +71,6 @@ const modelPut = (): Record<string, unknown> | undefined =>
   );
 const hasModelPut = (): boolean => modelPut() !== undefined;
 
-/** QWEN38's per-model row as the server now holds it. */
 const persistedRow = (): Record<string, unknown> =>
   (
     settingsHttp.settings.inferenceParamsByModel as Record<

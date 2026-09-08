@@ -24,8 +24,7 @@ ST_TAGS = [
     "master",
 ]
 
-# Every check below runs once per tag; a test that must not run on some of them
-# skips from inside, so the window stays visible in the report.
+# Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
 pytestmark = pytest.mark.parametrize("tag", ST_TAGS)
 
 

@@ -28,7 +28,7 @@ function chatRecord(chat: Record<string, unknown>, outer: Record<string, unknown
   return { id: "rec", user_id: "u", title: "t", chat, created_at: 1_700_000_000, ...outer };
 }
 
-/** The commonest record shape: one history graph with the branch `currentId` open. */
+/** One history graph with the branch `currentId` open, the shape most cases use. */
 function recordOf(
   messages: Record<string, unknown>[],
   currentId: string | null,

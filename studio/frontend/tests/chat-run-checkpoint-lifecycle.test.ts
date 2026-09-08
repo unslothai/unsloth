@@ -76,7 +76,6 @@ function createFakeTimers() {
   };
 }
 
-/** A scheduler over fake timers that records the thread id of every save. */
 function recordingScheduler(
   options: Parameters<typeof createRunCheckpointScheduler>[1] = {},
 ) {
@@ -91,7 +90,7 @@ function recordingScheduler(
   return { clock, saved, scheduler };
 }
 
-/** The same, over a save whose settling the test controls. */
+/** The same, over a save the test settles by hand. */
 function gatedScheduler(
   options: Parameters<typeof createRunCheckpointScheduler>[1] = {},
 ) {
