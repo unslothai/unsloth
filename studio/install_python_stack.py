@@ -420,26 +420,17 @@ def _macos_release_major() -> "int | None":
         return None
 
 
-# Apple Silicon is not one target. The supported MLX versions publish
-# macosx_14_0_arm64 wheels and no sdist, and none of them ships a cp39 wheel, so
-# macOS 13 and Python 3.9 have nothing for the pins below to resolve to.
-#
-# Asked before the install rather than discovered by it, for the reason
-# _torchcodec_spec_is_installable gives: pip_install exits on failure, so the step
-# would end the whole install on a host that today just comes up chat-only. Read
-# off the wheel index rather than guessed -- `uv pip install --python-platform
-# aarch64-apple-darwin mlx==0.32.1` reports no matching platform tag, and the same
-# resolve at --python-version 3.9 reports no matching implementation tag.
+# The pinned MLX versions publish macosx_14_0_arm64 wheels, no sdist and no cp39, so
+# macOS 13 and Python 3.9 have nothing to resolve to (`uv pip install --python-platform
+# aarch64-apple-darwin mlx==0.32.1`). Asked before the install, like
+# _torchcodec_spec_is_installable: pip_install exits on failure, so trying would end an
+# install that today just comes up chat-only.
 _MLX_MIN_PYTHON = (3, 10)
 _MLX_MIN_MACOS_MAJOR = 14
 
 
 def _mlx_pins_are_installable() -> bool:
-    """Does this host have a wheel for the MLX versions the installer pins?
-
-    An unreadable macOS version counts as too old, like the torchcodec floor:
-    skipping costs Train/Export on that launch, attempting costs the install.
-    """
+    """Wheel for the pinned MLX versions here? An unreadable macOS reads as too old."""
     if sys.version_info < _MLX_MIN_PYTHON:
         return False
     return (_macos_release_major() or 0) >= _MLX_MIN_MACOS_MAJOR
@@ -7452,15 +7443,12 @@ def install_python_stack() -> int:
     if not _repair_damaged_core_payload(_core_package_names(package_name), local_repo = local_repo):
         return 1
 
-    # macOS arm64: fresh installs skip core packages but still need MLX, so this
-    # does not key off skip_base. Keep these pins aligned with utils/mlx_repair.py
-    # and unsloth-zoo (UV_OVERRIDE relaxes the mlx-vlm / mlx-lm transformers pin --
-    # set at module load).
-    # Not on a --no-torch install: it declined the training stack, and the runtime's
-    # no_torch verdict tells the user an update will not put it back.
+    # macOS arm64: not keyed off skip_base, because a fresh install skips core packages
+    # and still needs MLX. Not on --no-torch: it declined the training stack. Pins stay
+    # aligned with utils/mlx_repair.py and unsloth-zoo; UV_OVERRIDE (set at module load)
+    # relaxes the mlx-vlm / mlx-lm transformers pin.
     if IS_MAC_ARM and not NO_TORCH:
-        # Both branches spend the slot, so the progress denominator does not depend
-        # on the host's macOS release or interpreter.
+        # Both branches spend the slot, so the denominator does not depend on the host.
         if _mlx_pins_are_installable():
             _progress("MLX stack (Apple Silicon)")
             pip_install(
