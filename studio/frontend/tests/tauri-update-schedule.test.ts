@@ -22,6 +22,10 @@ interface HookHarnessOptions {
   noUpdateAt?: number;
   rejectDiscard?: boolean;
   tauri?: boolean;
+  // Records the install path's side effects in call order.
+  trace?: string[];
+  // Lets the install reach start_backend_update instead of failing at listen().
+  listenSucceeds?: boolean;
 }
 
 function createEventTarget() {
@@ -227,6 +231,8 @@ function hookHarness(
     noUpdateAt,
     rejectDiscard = false,
     tauri = true,
+    trace,
+    listenSucceeds = false,
   }: HookHarnessOptions = {},
 ) {
   const browser = installBrowserClock();
@@ -246,7 +252,9 @@ function hookHarness(
   }>(new URL("../src/hooks/use-tauri-update.ts", import.meta.url), {
     react: host.react,
     "@/features/chat": {
-      flushPendingChatSettings: async () => undefined,
+      flushPendingChatSettings: async () => {
+        trace?.push("flush");
+      },
     },
     "@/features/training": {
       isTrainingStartPending: () => false,
@@ -300,6 +308,10 @@ function hookHarness(
     },
     "@tauri-apps/api/core": {
       invoke: async (command: string) => {
+        trace?.push(`invoke:${command}`);
+        if (command === "start_backend_update") {
+          throw new Error("backend update failed");
+        }
         if (command === "desktop_update_policy") {
           return {
             mode: "in_app",
@@ -313,7 +325,8 @@ function hookHarness(
     },
     "@tauri-apps/api/event": {
       listen: async () => {
-        throw new Error("backend update failed");
+        if (!listenSucceeds) throw new Error("backend update failed");
+        return () => undefined;
       },
     },
   });
@@ -434,6 +447,28 @@ test("scheduled checks preserve update recovery", async (t) => {
   await settle();
   assert.equal(hook.checks(), 1);
   assert.equal(hook.statusUpdates.at(-1), "error");
+});
+
+test("a desktop update flushes chat settings before it touches the backend", async (t) => {
+  const trace: string[] = [];
+  const hook = hookHarness(t, { listenSucceeds: true, trace });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+  await hook.controller.installUpdate();
+  await settle();
+  trace.length = 0;
+
+  await hook.controller.installUpdate();
+  await settle();
+
+  const flush = trace.indexOf("flush");
+  const backendUpdate = trace.indexOf("invoke:start_backend_update");
+  assert.ok(flush >= 0, "the install path did not flush chat settings");
+  assert.ok(backendUpdate >= 0, "the install path never started the update");
+  assert.ok(
+    flush < backendUpdate,
+    `the flush must precede the backend update: ${trace.join(", ")}`,
+  );
 });
 
 test("restoring an overdue hidden window checks immediately", async (t) => {
