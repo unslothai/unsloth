@@ -56,11 +56,12 @@ test("on shows Exact and explains what it buys", () => {
   );
 });
 
-test("unavailable says so, and names the server as the one that refused", () => {
+test("unavailable says so, without blaming the server for a mode Studio may have withheld", () => {
   const chip = exactConcurrencyChip("unavailable");
   assert.ok(chip);
   assert.equal(chip.label, "Exact unavailable");
-  assert.match(chip.title, /llama-server refused it/);
+  assert.match(chip.title, /not running with it/);
+  assert.doesNotMatch(chip.title, /refused/);
   assert.match(
     chip.title,
     /identical output regardless of other chats sharing this model/,

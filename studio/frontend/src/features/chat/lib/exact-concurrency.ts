@@ -9,7 +9,8 @@
  */
 
 /** `on` the server was launched with it and came up; `off` it was not asked for; `unavailable`
- *  it was asked for under `auto` and the server refused. */
+ *  it was asked for under `auto` and this load is not running with it, whether the server
+ *  refused or Studio withheld it (its own pausing, parking off, a short parking budget). */
 export type ExactConcurrencyState = "on" | "off" | "unavailable";
 
 /** `off` for anything unrecognised, including the `undefined` a backend older than the switch
@@ -38,9 +39,9 @@ export function exactConcurrencyChip(
   if (state === "unavailable") {
     return {
       label: "Exact unavailable",
-      // Named as the server's refusal rather than a Studio failure: the setting was honoured
-      // and llama-server declined it.
-      title: `Exact concurrency was requested (${EXACT_MEANING}), but llama-server refused it, so this model is running without it.`,
+      // Not "refused": Studio withholds the mode itself on some launches, and the load
+      // warnings carry the reason.
+      title: `Exact concurrency was requested (${EXACT_MEANING}), but this load is not running with it, so a chat's output can depend on the other chats sharing this model.`,
     };
   }
   return null;

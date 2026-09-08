@@ -35,7 +35,8 @@ DEFAULT_EXACT_SETTING = EXACT_OFF
 CHILD_ENV = "LLAMA_EXACT_CONCURRENCY"
 
 # What the finished load reports. `unavailable` carries what a boolean cannot: the mode was
-# asked for, the server would not give it, and the chat is running anyway.
+# asked for, the load is running without it (the server refused, or Studio withheld it), and
+# the chat is running anyway.
 EXACT_STATE_ON = "on"
 EXACT_STATE_OFF = "off"
 EXACT_STATE_UNAVAILABLE = "unavailable"

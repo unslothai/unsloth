@@ -454,17 +454,55 @@ def _renew_interval_seconds() -> float:
     return min(30.0, max(0.25, lease / 4.0))
 
 
+# The floor between two live `/metrics` probes. The renewal cadence derives from the lease and
+# reaches 0.25s for a very short one, which would turn a silent park into four scrapes a second.
+_PARK_PROBE_MIN_INTERVAL_S = 5.0
+# Last live probe, monotonic. Module level rather than per run: the answer is server wide, so one
+# scrape serves every silent run, and a mutable holder keeps this importable from a worker thread.
+_park_probe_at: list = [None]
+
+
+def _server_park_probe_now(backend: Any) -> bool:
+    """Ask `/metrics` ourselves whether a slot is parked right now, rate limited across runs.
+
+    The read wrapper only asks at its read deadline, and before the first token that deadline IS
+    the 20 minute first-token budget, i.e. the whole default lease. Waiting for its stamp means a
+    request parked during prefill renews nothing until the sweeper has already had its chance to
+    cancel a healthy generation, and any shorter UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S loses the
+    race outright. Bounded by the wrapper's own _SERVER_PARK_STALL_CAP_S: a server that reports a
+    park forever still has its stream cut there, so renewing here cannot keep a wedged run alive.
+
+    Blocking (one HTTP GET); only ever called from a worker thread. The backend stamps the grace
+    when this returns True, so the cheap stamp check covers the calls that follow.
+    """
+    if not bool(getattr(backend, "server_preempts_kv", False)):
+        return False  # nothing parks slots, so silence is a stall and /metrics is noise
+    probe = getattr(backend, "_server_park_grace", None)
+    if not callable(probe):
+        return False
+    now = time.monotonic()
+    last = _park_probe_at[0]
+    if last is not None and now - last < _PARK_PROBE_MIN_INTERVAL_S:
+        return False
+    _park_probe_at[0] = now
+    return bool(probe())
+
+
 def _server_park_excused_recently() -> bool:
-    """Whether the resident llama-server's read wrapper has lately excused a silent stream as
-    parked from `/metrics`. Only a swap build predating the stream notices parks in silence;
-    one with them sends `: preempt-keepalive`, which the run loop renews on directly."""
+    """Whether the resident llama-server has lately excused a silent stream as parked from
+    `/metrics`, asking it ourselves when no stamp is in hand. Only a swap build predating the
+    stream notices parks in silence; one with them sends `: preempt-keepalive`, which the run
+    loop renews on directly."""
     try:
         from routes.inference import get_llama_cpp_backend
 
-        probe = getattr(get_llama_cpp_backend(), "server_park_grace_recent", None)
-        if probe is None:
-            return False
-        return bool(probe(_renew_interval_seconds() * 2.0))
+        backend = get_llama_cpp_backend()
+        probe = getattr(backend, "server_park_grace_recent", None)
+        if probe is not None and bool(probe(_renew_interval_seconds() * 2.0)):
+            return True
+        # No stamp: the read wrapper has not reached its deadline yet, so ask directly rather than
+        # let the lease expire waiting for it.
+        return _server_park_probe_now(backend)
     except Exception:
         return False
 

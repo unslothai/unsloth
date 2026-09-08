@@ -1360,8 +1360,8 @@ class _InferenceRuntimeFields(BaseModel):
             "Whether the running llama-server decodes in exact concurrency, where a "
             "chat's tokens do not depend on the chats sharing its KV cache. 'on' the "
             "server was launched with it and came up, 'off' it was not asked for, "
-            "'unavailable' it was asked for under 'auto' and the server refused, so "
-            "the load is running without it."
+            "'unavailable' it was asked for under 'auto' and the load is running "
+            "without it, whether the server refused it or Studio withheld it."
         ),
     )
     requested_exact_concurrency: Optional[str] = Field(

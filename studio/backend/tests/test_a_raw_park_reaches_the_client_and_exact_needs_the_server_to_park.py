@@ -240,6 +240,76 @@ class TestASilentParkStillRenewsTheLease:
         assert "await self._try_touch_progress(run_id)" in source[branch : branch + 400]
 
 
+class TestTheRunLoopProbesParkingRatherThanWaitForTheStamp:
+    """The read wrapper only asks `/metrics` when its read deadline fires, and before the first
+    token that deadline IS the 20 minute first-token budget, i.e. the whole default lease. A run
+    parked during prefill therefore had no stamp to renew from until the sweeper had already had
+    its chance to cancel it, and any shorter lease lost outright. The run loop asks for itself."""
+
+    @pytest.fixture(autouse = True)
+    def _reset_probe_rate_limit(self):
+        runs._park_probe_at[0] = None
+        yield
+        runs._park_probe_at[0] = None
+
+    class _Backend:
+        """A swap build that parks in silence and has never been asked, so it has no stamp."""
+
+        server_preempts_kv = True
+
+        def __init__(self):
+            self.asked = 0
+
+        def server_park_grace_recent(self, within_s):
+            return False
+
+        def _server_park_grace(self):
+            self.asked += 1
+            return True
+
+    def test_a_park_with_no_stamp_yet_still_renews(self, monkeypatch):
+        backend = self._Backend()
+        monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: backend)
+        assert runs._server_park_excused_recently() is True
+        assert backend.asked == 1
+
+    def test_a_server_that_does_not_park_is_never_scraped(self, monkeypatch):
+        backend = self._Backend()
+        backend.server_preempts_kv = False
+        monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: backend)
+        assert runs._server_park_excused_recently() is False
+        assert backend.asked == 0
+
+    def test_nothing_parked_is_not_excused(self, monkeypatch):
+        backend = self._Backend()
+        backend._server_park_grace = lambda: False
+        monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: backend)
+        assert runs._server_park_excused_recently() is False
+
+    def test_the_stamp_still_wins_and_costs_no_scrape(self, monkeypatch):
+        backend = self._Backend()
+        backend.server_park_grace_recent = lambda within_s: True
+        monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: backend)
+        assert runs._server_park_excused_recently() is True
+        assert backend.asked == 0
+
+    def test_the_live_probe_is_rate_limited_across_runs(self, monkeypatch):
+        backend = self._Backend()
+        monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: backend)
+        assert runs._server_park_excused_recently() is True
+        # A short lease drives the renewal cadence to 0.25s; the floor keeps that off /metrics.
+        assert runs._server_park_excused_recently() is False
+        assert backend.asked == 1
+        runs._park_probe_at[0] = time.monotonic() - runs._PARK_PROBE_MIN_INTERVAL_S - 0.1
+        assert runs._server_park_excused_recently() is True
+        assert backend.asked == 2
+
+    def test_the_probe_stays_off_the_event_loop(self):
+        """It blocks on one HTTP GET, so the silent branch must keep reaching it via to_thread."""
+        source = inspect.getsource(runs.ChatGenerationSupervisor)
+        assert "elif await asyncio.to_thread(_server_park_excused_recently):" in source
+
+
 class TestAutoDoesNotStartAModeItWillReportUnavailable:
     _ARGV = ["llama-server", "--kv-unified"]
 
