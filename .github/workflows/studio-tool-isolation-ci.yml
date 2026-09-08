@@ -73,6 +73,66 @@ jobs:
           UNSLOTH_SRT_NATIVE_TESTS: '1'
         run: python -m pytest --noconftest studio/backend/tests/test_srt_native_tools.py studio/backend/tests/test_srt_read_root_count.py -q --timeout=120
 
+  linux-userns-restricted:
+    # linux-native runs on ubuntu-22.04, which predates the restriction. Ubuntu 23.10+
+    # ships kernel.apparmor_restrict_unprivileged_userns=1 by default, so bwrap cannot
+    # build a sandbox on a current desktop even with bubblewrap installed. That is the
+    # host most Linux users have, and it is the one that decides what the breaking
+    # change actually breaks. This job proves the refusal is clean and that the message
+    # a stuck user reads names the real cause rather than only offering Limited.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: studio/backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set isolated Studio state directory
+        run: echo "UNSLOTH_STUDIO_HOME=$RUNNER_TEMP/srt-studio-home" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Install Linux prerequisites
+        timeout-minutes: 8
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '150'
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh bash -c 'sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep'
+      - name: Install Python test dependencies
+        run: python -m pip install pytest pytest-timeout structlog psutil Pillow fastapi
+      - name: Install and verify the shipped locked helper
+        run: python studio/install_srt_runtime.py
+      - name: Reproduce the stock Ubuntu 23.10+ user-namespace policy
+        # The runner image relaxes this; put it back so the job measures the distro
+        # default rather than GitHub's. Restored in the always() step below.
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          if unshare --user --map-root-user true 2>/dev/null; then
+            echo "::error::the restriction did not take effect; this job would prove nothing"
+            exit 1
+          fi
+      - name: Required refuses, and says what is actually wrong
+        run: |
+          python - <<'PY'
+          from core.inference.os_sandbox import capability_snapshot
+          c = capability_snapshot(force=True)
+          assert not c.available, f"expected a refusal under the restriction, got {c}"
+          assert c.protection_state == "unavailable", c
+          # A user here has already installed bubblewrap and run the helper successfully.
+          # "Install the prerequisites" and "use Limited" are not answers on their own.
+          assert "apparmor_restrict_unprivileged_userns" in c.remediation, c.remediation
+          print(c.reason)
+          print(c.remediation)
+          PY
+      - name: Required still refuses to run the payload
+        run: python -m pytest --noconftest studio/backend/tests/test_srt_launch_contract.py studio/backend/tests/test_srt_platform_capability.py -q --timeout=60
+      - name: Restore the runner policy
+        if: always()
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
   desktop-native:
     strategy:
       fail-fast: false

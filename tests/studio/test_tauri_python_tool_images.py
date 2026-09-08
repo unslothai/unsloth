@@ -4,6 +4,7 @@
 """Packaged desktop routing contract for Python tool images."""
 
 import json
+import re
 from pathlib import Path
 
 
@@ -20,7 +21,11 @@ def test_python_tool_images_use_authenticated_blob_urls() -> None:
     source = PYTHON_TOOL_UI.read_text(encoding = "utf-8")
     hook = SANDBOX_IMAGE_HOOK.read_text(encoding = "utf-8")
 
-    assert "useSandboxImage(pythonToolImagePath(sessionId, filename))" in source
+    # Whitespace-tolerant: prettier wraps this call across lines once the argument list grows,
+    # and the delegation is what this pins, not the formatter's line breaks.
+    assert re.search(
+        r"useSandboxImage\(\s*pythonToolImagePath\(sessionId,\s*filename\),?\s*\)", source
+    )
     assert 'import { authFetch } from "@/features/auth";' in hook
     assert "authFetch(url, { signal: controller.signal })" in hook
     assert "new AbortController()" in hook

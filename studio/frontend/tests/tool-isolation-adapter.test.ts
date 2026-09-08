@@ -37,7 +37,7 @@ const record = (
 });
 
 test("SRT execution labels require an isolated server record", () => {
-  assert.equal(toolExecutionRecordLabel(record({ backend: "srt", profile_id: "srt-0.0.75-strict-v1" })), "OS isolation · Sandbox Runtime (SRT)");
+  assert.equal(toolExecutionRecordLabel(record({ backend: "srt", profile_id: "srt-0.0.75-strict-v1" })), "Preview OS isolation · Sandbox Runtime (SRT)");
   assert.equal(toolExecutionRecordLabel(record({ backend: "srt", os_isolation: false })), null);
   assert.equal(toolExecutionRecordLabel(record({ backend: "srt", effective_mode: "limited", os_isolation: false })), "Limited · no OS isolation");
 });

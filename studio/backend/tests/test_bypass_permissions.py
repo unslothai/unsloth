@@ -167,6 +167,44 @@ def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(captured_popen, monk
 
 
 @_POSIX_ONLY
+def test_real_prepare_tool_launch_cannot_drop_the_process_guard(tmp_path):
+    # The seam above stubs prepare_tool_launch, so it proves tools.py puts
+    # _sandbox_preexec on the spec -- not that a real backend keeps it. tools.py now
+    # takes the launch preexec from prepared_launch.preexec_fn, so a backend that
+    # returned None would silently drop setsid/rlimits/no-new-privs and every
+    # assertion in this file would still pass. Pin the invariant at the real seam:
+    # a mode that advertises process_guard must hand back a preexec that installs it.
+    from core.inference import os_sandbox, tool_isolation
+
+    capability = tool_isolation.capability_snapshot()
+    if capability.available:
+        pytest.skip("Limited is refused while OS isolation is available; Required owns this host")
+    subject = "process-guard-invariant"
+    session = "test_bypass_permissions"
+    grant = tool_isolation.issue_limited_grant(
+        current_subject = subject,
+        tool_ui_session_id = session,
+        probe_generation = capability.probe_generation,
+    )
+    prepared = os_sandbox.prepare_tool_launch(
+        os_sandbox.ToolLaunchPlan(
+            argv = (sys.executable, "-c", "print(1)"),
+            workdir = str(tmp_path),
+            env = {},
+            preexec_fn = tools._sandbox_preexec,
+            requested_mode = "limited",
+            current_subject = subject,
+            tool_ui_session_id = session,
+            limited_grant = grant.token,
+        )
+    )
+    record = prepared.execution_record
+    assert record is not None
+    assert "process_guard" in record.retained_safeguards
+    assert prepared.preexec_fn is tools._sandbox_preexec
+
+
+@_POSIX_ONLY
 def test_python_bypass_uses_bypass_preexec_and_bypass_env(captured_popen, monkeypatch):
     monkeypatch.setenv("HOSTVAR", "benign-xyz")
     monkeypatch.setenv("HF_TOKEN", "secret-abc")

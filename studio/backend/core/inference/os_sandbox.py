@@ -253,6 +253,66 @@ def descendant_sweep_supported() -> bool:
 
 SandboxLaunchSpec = ToolLaunchPlan
 
+_LINUX_REQUIRED_BINARIES = ("bwrap", "socat", "rg")
+_BLOCKED_REMEDIATION = (
+    "Required remains blocked. Use Limited only after reviewing its session warning, "
+    "or separately confirm Full access."
+)
+
+
+def _linux_userns_blocked_by_apparmor() -> bool:
+    """Whether this host has Ubuntu's AppArmor restriction on unprivileged user namespaces.
+
+    Ubuntu 23.10+ ships ``kernel.apparmor_restrict_unprivileged_userns=1``, which
+    denies ``unshare(CLONE_NEWUSER)`` to any binary without a permitting profile.
+    bwrap needs that namespace, so an installed bubblewrap still cannot build a
+    sandbox and the probe fails with a bare "helper closed its control channel".
+    Read-only: Studio reports the condition and never changes host security policy.
+    """
+    try:
+        with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding = "utf-8") as f:
+            if f.read().strip() != "1":
+                return False
+    except OSError:
+        return False
+    # The sysctl alone is not proof: a profile may permit bwrap. Ask the kernel.
+    try:
+        probe = subprocess.run(
+            ["unshare", "--user", "--map-root-user", "true"],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            timeout = 10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode != 0
+
+
+def _linux_unavailable_remediation() -> str:
+    """Name what this host is actually missing, instead of only offering Limited.
+
+    SRT_TOOL_ISOLATION.md tells users to install prerequisites "if the capability
+    message requests them"; without this the message never requested anything, so
+    a host that installed the helper successfully had no next step to take.
+    """
+    missing = [name for name in _LINUX_REQUIRED_BINARIES if shutil.which(name) is None]
+    if missing:
+        return (
+            f"Install the missing Linux prerequisites ({', '.join(missing)}) with your "
+            "distribution's package manager, then retry. " + _BLOCKED_REMEDIATION
+        )
+    if _linux_userns_blocked_by_apparmor():
+        return (
+            "This host denies unprivileged user namespaces "
+            "(kernel.apparmor_restrict_unprivileged_userns=1, the default on Ubuntu 23.10 and "
+            "newer), so bubblewrap cannot build a sandbox even though it is installed. Grant "
+            "bwrap the userns permission with an AppArmor profile "
+            "(/etc/apparmor.d/bwrap-userns-restrict from the apparmor-profiles package), then "
+            "retry. Studio does not change host security policy. " + _BLOCKED_REMEDIATION
+        )
+    return _BLOCKED_REMEDIATION
+
 
 def _runtime_identity() -> str:
     """Consent changes when the selected interpreter or shipped adapter changes."""
@@ -355,7 +415,11 @@ def capability_snapshot(
         limitations = limitations,
         probe_generation = hashlib.sha256((identity + "unavailable").encode()).hexdigest(),
         environment_fingerprint = identity,
-        remediation = "Required remains blocked. Use Limited only after reviewing its session warning, or separately confirm Full access.",
+        remediation = (
+            _linux_unavailable_remediation()
+            if sys.platform == "linux"
+            else _BLOCKED_REMEDIATION
+        ),
         limited_limitations = ("unrestricted_network", "host_files_readable")
         + (() if sys.platform == "win32" else ("detached_descendant_cleanup_unverified",)),
     )

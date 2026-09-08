@@ -812,7 +812,10 @@ function toolExecutionRecordBaseLabel(
   }
   if (!record.os_isolation) return null;
   if (record.backend === "srt") {
-    return "OS isolation · Sandbox Runtime (SRT)";
+    // "Preview", like every other unqualified backend below and like the capability pill in
+    // tool-isolation.ts: os_sandbox.py reports SRT as protection_state="preview", qualified=False
+    // on every platform, so the per-call badge must not read stronger than the pill above it.
+    return "Preview OS isolation · Sandbox Runtime (SRT)";
   }
   if (record.backend === "windows-lpac") {
     // Mirrors backendLabel in tool-isolation-labels.ts (this module stays free of runtime

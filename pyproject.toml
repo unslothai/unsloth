@@ -1671,6 +1671,7 @@ pythonpath = ["."]
 markers = [
     "gpu: needs a real accelerator, and usually downloads a checkpoint to use it",
     "slow: minutes rather than seconds, and covered again more cheaply elsewhere",
+    "allow_network: reaches a real public host, so it needs egress on top of its own env gate",
 ]
 
 # Deselected by default, not deleted: CI runs them in their own leg with

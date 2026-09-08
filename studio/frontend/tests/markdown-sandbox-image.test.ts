@@ -136,7 +136,12 @@ test("the fetch carries the header and gives the object URL back on cleanup", ()
 
   // ONE hook, not two. `tool-ui-python.tsx` was the only place this fetch existed; duplicating it is
   // how the markdown path ended up without one in the first place.
-  assert.ok(TOOL_UI.includes("useSandboxImage(pythonToolImagePath(sessionId, filename))"));
+  // Whitespace-tolerant, like the authFetch assertion above: prettier wraps this call across
+  // lines, and the delegation is what this pins, not the formatter's line breaks.
+  assert.ok(
+    /useSandboxImage\(\s*pythonToolImagePath\(sessionId,\s*filename\),?\s*\)/.test(TOOL_UI),
+    "the Python card delegates to the shared hook",
+  );
   assert.equal(
     TOOL_UI.includes("createObjectURL"),
     false,

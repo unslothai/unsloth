@@ -71,6 +71,14 @@ def _tool_lifecycle_backend_on_unqualified_hosts(monkeypatch):
 
 # ── grandchild-survival probes ───────────────────────────────────
 #
+# These run in the default Required mode, NOT with disable_sandbox. The group they
+# kill is the one _sandbox_preexec's setsid creates, and Full access swaps that for
+# _bypass_preexec -- so a run with disable_sandbox=True would exercise a teardown
+# path no user gets and would keep passing if the sandboxed one regressed. The
+# autouse fixture above is what keeps them portable: it substitutes only backend
+# preparation on an unqualified host and forwards spec.preexec_fn unchanged, so the
+# real process guard is still in force here.
+#
 # Several tests below prove a negative: a backgrounded grandchild that holds the
 # leader's stdout open must NOT get to write its sentinel, because the drain is
 # required to kill the process group. Proving that used to mean giving the
@@ -612,7 +620,7 @@ def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     # communicate(timeout=None), so the late output is included.
     command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
     chunks: list[str] = []
-    result = _bash_exec(command, timeout = None, output_callback = chunks.append, disable_sandbox = True)
+    result = _bash_exec(command, timeout = None, output_callback = chunks.append)
     assert "parent-done" in result
     assert "late-grandchild-output" in result
     assert "late-grandchild-output" in "".join(chunks)
@@ -630,7 +638,6 @@ def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
         command,
         timeout = 1,
         output_callback = lambda _t: None,
-        disable_sandbox = True,
     )
     assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
@@ -646,7 +653,7 @@ def test_bash_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
     result = _bash_exec(
-        command, timeout = 1, disable_sandbox = True
+        command, timeout = 1
     )  # no output_callback -> communicate path
     assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
@@ -1391,7 +1398,6 @@ def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_pa
             command,
             cancel_event = cancel_event,
             timeout = 30,
-            disable_sandbox = True,
         )
     finally:
         timer.cancel()
@@ -1418,7 +1424,6 @@ def test_python_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_
             code,
             cancel_event = cancel_event,
             timeout = 30,
-            disable_sandbox = True,
         )
     finally:
         timer.cancel()

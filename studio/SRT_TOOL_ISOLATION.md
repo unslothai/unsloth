@@ -16,6 +16,8 @@ Normal Studio setup runs `studio/install_srt_runtime.py` on Linux, macOS and Win
 
 Linux also needs `bubblewrap`, `socat`, `ripgrep` and usable OS confinement facilities. Install missing prerequisites with your distribution's package manager if the capability message requests them; Studio does not change host security policy to enable them. Existing Studio setup manages an isolated Node where supported; a desktop frontend bundle alone does not supply the backend helper.
 
+Installing `bubblewrap` is not always enough. Ubuntu 23.10 and newer ship `kernel.apparmor_restrict_unprivileged_userns=1`, which denies the user namespace `bwrap` needs unless an AppArmor profile permits it, so the live probe fails on an otherwise complete install. Sandbox details names this case when it applies. Grant the permission with a profile, for example `/etc/apparmor.d/bwrap-userns-restrict` from the `apparmor-profiles` package, then retry. Studio reports the condition and never relaxes it for you.
+
 macOS uses the operating system's `sandbox-exec`/Seatbelt implementation. Required retains the upstream native read policy: commands can read host files accessible to Studio, including unrelated documents and credentials. It restricts writes but does not confine reads to the runtime and workdir. Capability responses, execution records and Sandbox details disclose `host_files_readable`. The native probe checks workdir writes and a denied host write; it does not qualify read confinement. Install `ripgrep` with `brew install ripgrep` if it is missing; no separate account or WFP setup applies.
 
 For an explicit reinstall from an already populated npm cache:

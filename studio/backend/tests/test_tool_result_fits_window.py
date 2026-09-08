@@ -377,6 +377,36 @@ class TestPagingTheRest:
 _CHARS_PER_TOKEN = 3
 
 
+def _guarded_execution() -> dict[str, object]:
+    """Kwargs for the strongest mode this host can authorize, never Full.
+
+    Two truncation tests below reason about the process cap ("a fork fails the call
+    before it ever truncates"), and that cap is a Process Guard rlimit. Required and
+    Limited both retain it; Full (disable_sandbox) drops resource_limits entirely, so
+    running them there would quietly retire the premise their comments rest on.
+    Required is refused on a host without a qualified backend, and Limited is refused
+    on a host that has one, so pick whichever this host will actually authorize.
+    """
+    from core.inference import tool_isolation
+
+    capability = tool_isolation.capability_snapshot()
+    if capability.available:
+        return {}
+    subject = "tool-result-fits-window"
+    session = "test_tool_result_fits_window"
+    grant = tool_isolation.issue_limited_grant(
+        current_subject = subject,
+        tool_ui_session_id = session,
+        probe_generation = capability.probe_generation,
+    )
+    return {
+        "tool_execution_mode": "limited",
+        "current_subject": subject,
+        "tool_ui_session_id": session,
+        "limited_grant": grant.token,
+    }
+
+
 def _tokenizer(monkeypatch):
     # `token_budget` is the counter's own early-out and defaults to "no budget", exactly
     # as the real one does.
@@ -860,7 +890,7 @@ class TestOneChatsOutputStaysItsOwn:
             30,
             session_id,
             thread_id = thread_id,
-            disable_sandbox = True,
+            **_guarded_execution(),
         )
         return seen
 
@@ -2147,7 +2177,7 @@ class TestTheResultIsFittedAsItIsReplayed:
             "terminal",
             {"command": "seq 4000 | sed 's/.*/__FILES__:x/'"},
             result_budget_tokens = 400,
-            disable_sandbox = True,
+            **_guarded_execution(),
         )
 
         head, _, notice = out.partition("\n\n... (truncated to ")
