@@ -377,3 +377,45 @@ test("an unrelated edit does not strand the previous model adapter params", asyn
   assert.equal(state.loraVariant, "dora");
   assert.deepEqual(state.targetModules, ["all-linear"]);
 });
+
+test("a LoRA edit before entering CPT still wins", async () => {
+  useTrainingConfigStore.getState().reset();
+  const resolveModelConfig = deferLfmDefaults();
+
+  useTrainingConfigStore
+    .getState()
+    .selectTrainingModel("LiquidAI/LFM2-1.2B", "text");
+  useTrainingConfigStore.getState().setLoraRank(64);
+  useTrainingConfigStore.getState().setLoraAlpha(64);
+  useTrainingConfigStore.getState().setLoraVariant("dora");
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  resolveModelConfig();
+  await waitForModelDefaults("LiquidAI/LFM2-1.2B");
+
+  assert.equal(useTrainingConfigStore.getState().loraRank, 128);
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  const state = useTrainingConfigStore.getState();
+  assert.equal(state.loraRank, 64);
+  assert.equal(state.loraAlpha, 64);
+  assert.equal(state.loraVariant, "dora");
+});
+
+test("LoRA params imported before entering CPT still win", async () => {
+  useTrainingConfigStore.getState().reset();
+  const resolveModelConfig = deferLfmDefaults();
+
+  useTrainingConfigStore
+    .getState()
+    .selectTrainingModel("LiquidAI/LFM2-1.2B", "text");
+  useTrainingConfigStore
+    .getState()
+    .applyConfigPatch({ lora: { lora_r: 64, lora_alpha: 64 } });
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  resolveModelConfig();
+  await waitForModelDefaults("LiquidAI/LFM2-1.2B");
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  const state = useTrainingConfigStore.getState();
+  assert.equal(state.loraRank, 64);
+  assert.equal(state.loraAlpha, 64);
+});
