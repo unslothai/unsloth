@@ -411,10 +411,12 @@ def _registered_command_name(command) -> str:
 
     `@start_app.command()` with no name leaves `command.name` None, and dropping those
     would silently shrink the roster -- the failure mode this whole derivation exists to
-    avoid. Typer's rule is `main.get_command_name`; inline the same lowercase/underscore
-    swap so the fallback holds on the older typers `pyproject.toml` still allows.
+    avoid. Ask Typer itself rather than copying the rule, so a roster name can never
+    drift from the name the CLI actually dispatches on.
     """
-    return command.name or command.callback.__name__.lower().replace("_", "-")
+    from typer.main import get_command_name
+
+    return command.name or get_command_name(command.callback.__name__)
 
 
 def _scan_start_commands() -> tuple:
@@ -479,13 +481,11 @@ class TestExplicitFlagsThroughTheRealCli:
     )
     def test_flags_equal_to_their_default_are_recorded(self, flag, expected):
         load = self._load_for(["codex", "--no-launch", *flag])
-        assert load is not None, "the command never reached _connect"
         assert expected in load.supplied
         assert expected in load.overrides()
 
     def test_a_bare_invocation_records_nothing(self):
         load = self._load_for(["codex", "--no-launch"])
-        assert load is not None
         assert load.supplied == frozenset()
         assert load.overrides() == frozenset()
 
@@ -504,7 +504,6 @@ class TestExplicitFlagsThroughTheRealCli:
     @pytest.mark.parametrize("command", AGENT_COMMANDS)
     def test_every_agent_command_tracks_flags_identically(self, command):
         load = self._load_for([command, "--no-launch", "--context-length", "0"])
-        assert load is not None, f"{command} never reached _connect"
         assert "max_seq_length" in load.supplied
         # overrides() is what _resolve_model reads; supplied alone never reaches the load.
         assert "max_seq_length" in load.overrides()
