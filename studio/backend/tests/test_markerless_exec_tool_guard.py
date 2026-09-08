@@ -683,7 +683,7 @@ def test_the_provisional_card_skips_a_blocked_leading_object():
     chain that is the object that will NOT run, so the card opens as ``terminal`` with ``call_0``
     and the real ``web_search`` call then reuses that id."""
     from core.inference.llama_cpp import _sniff_text_tool_name
-    from core.inference.tool_call_parser import leading_blocked_bare_json_end
+    from core.inference.tool_call_parser import blocked_markerless_prefix_end
 
     pad = "x" * 260
     chain = (
@@ -695,9 +695,9 @@ def test_the_provisional_card_skips_a_blocked_leading_object():
     assert [c["function"]["name"] for c in calls] == ["web_search"]
     # A benign leading object is not skipped, and neither is a non-call one.
     assert (
-        leading_blocked_bare_json_end('{"name": "web_search", "parameters": {}}', EXEC_ENABLED) == 0
+        blocked_markerless_prefix_end('{"name": "web_search", "parameters": {}}', 0, EXEC_ENABLED) == 0
     )
-    assert leading_blocked_bare_json_end('{"answer": 1}', EXEC_ENABLED) == 0
+    assert blocked_markerless_prefix_end('{"answer": 1}', 0, EXEC_ENABLED) == 0
 
 
 def test_every_leading_blocked_object_is_skipped_before_the_sniff():
@@ -1146,3 +1146,116 @@ def test_the_bare_gemma_scan_skips_the_regex_when_there_is_no_call_word(monkeypa
     assert sweeps, "a text containing 'call' must still reach the regex"
     # Resuming from an offset must not lose the lookbehind character before the window.
     assert tcp.promotable_gemma_call_pos("xrecall:web_search{q:1}", gate, 2) == -1
+
+
+# --- round 2: blocked markerless prefixes are consumed markup, not prose ---------------
+
+
+def test_a_blocked_prefix_anchors_the_promotable_peer_in_every_markerless_format():
+    """The parser scans past a blocked call and promotes the peer behind it.
+
+    The strip has to agree, or the executed call's raw serialization stays in the content
+    beside the structured ``tool_calls`` entry and the next tool iteration replays both.
+    Only the Gemma form anchored, so the rehearsal and bare-JSON prefixes leaked.
+    """
+    gate = {"terminal", "web_search"}
+    for prefix in (
+        'terminal[ARGS]{"x":1}',
+        '{"name":"terminal","arguments":{"cmd":"x"}}',
+        'call:terminal{cmd:<|"|>x<|"|>}',
+    ):
+        text = f'{prefix} call:web_search{{q:<|"|>1<|"|>}}'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = gate)
+        assert [c["function"]["name"] for c in calls] == ["web_search"], prefix
+        shown = strip_tool_markup(text, final = True, enabled_tool_names = gate)
+        assert "call:web_search" not in shown, f"peer left in content after {prefix}"
+        assert prefix in shown, f"blocked prefix must stay visible: {prefix}"
+
+
+def test_the_gguf_card_is_named_after_the_call_that_will_actually_run():
+    """A provisional card named after a blocked prefix shows a terminal call that never
+    runs, and the real call then reuses that card by id."""
+    from core.inference.llama_cpp import _sniff_text_tool_name
+
+    gate = {"terminal", "web_search"}
+    for chain in (
+        'terminal[ARGS]{"command":"x","name":"terminal"} web_search[ARGS]{"q":"c"}',
+        '{"name":"terminal","parameters":{"command":"x"}};'
+        '{"name":"web_search","parameters":{"query":"y"}}',
+        'call:terminal{c:<|"|>x<|"|>} call:web_search{q:<|"|>1<|"|>}',
+    ):
+        runs = [c["function"]["name"]
+                for c in (parse_tool_calls_from_text(chain, enabled_tool_names = gate) or [])]
+        assert runs == ["web_search"], chain
+        assert _sniff_text_tool_name(chain, gate) in ("", "web_search"), chain
+
+
+def test_a_nested_rehearsal_inside_a_blocked_body_is_arguments_not_a_sibling():
+    """Truncating at the nested match cut the blocked call mid-string and took the rest of
+    the turn with it, so the user lost text that was never a call."""
+    gate = {"terminal", "web_search"}
+    text = 'terminal[ARGS]{"command":"prefix web_search[ARGS]{} suffix"} tail text'
+    assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
+    assert strip_tool_markup(text, final = True, enabled_tool_names = gate) == text
+
+    # A genuine sibling AFTER the blocked body is still promoted and still stripped.
+    sibling = 'terminal[ARGS]{"x":1} web_search[ARGS]{"q":"y"}'
+    calls = parse_tool_calls_from_text(sibling, enabled_tool_names = gate)
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+    assert "web_search[ARGS]" not in strip_tool_markup(
+        sibling, final = True, enabled_tool_names = gate)
+
+
+def test_a_tool_name_longer_than_the_stream_overlap_is_still_found():
+    """The safetensors scan advances ``start`` by a fixed 27-byte overlap. A longer name left
+    the ``call:`` opener behind the window, so the raw call streamed to the client before the
+    end-of-turn parser promoted it."""
+    from core.inference.safetensors_agentic import (
+        _earliest_tool_signal, _TOOL_SIGNAL_OVERLAP,
+    )
+
+    assert _TOOL_SIGNAL_OVERLAP < 64, "the 64-char provider cap is what this must cover"
+    for name in ("ab", "web_search", "search_the_web_for_recent_news_items", "a" * 64):
+        gate = {"terminal", name}
+        tools = [{"function": {"name": n}} for n in sorted(gate)]
+        text = f'some preamble here call:{name}{{q:<|"|>x<|"|>}}'
+        scanned, pos = 0, -1
+        for i in range(1, len(text) + 1):
+            pos = _earliest_tool_signal(
+                text[:i], (), tools, start = max(0, scanned - _TOOL_SIGNAL_OVERLAP))
+            scanned = i
+        assert pos >= 0, f"streamed scan lost a {len(name)}-char name"
+        assert parse_tool_calls_from_text(text, enabled_tool_names = gate)
+
+    # An execution-class name is still not a boundary, whatever its length.
+    tools = [{"function": {"name": "terminal"}}]
+    assert _earliest_tool_signal(
+        'x call:terminal{c:<|"|>ls<|"|>}', (), tools, start = 0) == -1
+
+
+def test_the_tool_catalogue_is_not_rebuilt_for_every_streamed_delta():
+    """``_earliest_tool_signal`` runs per delta. Materializing a large MCP catalogue each
+    time made an ordinary completion O(tokens x tools)."""
+    from core.inference.safetensors_agentic import (
+        _earliest_tool_signal, _TOOL_SIGNAL_OVERLAP,
+    )
+
+    built = []
+
+    class CountingList(list):
+        def __iter__(self):
+            built.append(1)
+            return super().__iter__()
+
+    tools = CountingList({"function": {"name": f"mcp__s{i}__t{i}"}} for i in range(200))
+    prose = "The result you asked about is straightforward. " * 20
+    scanned = 0
+    for i in range(6, len(prose) + 6, 6):
+        _earliest_tool_signal(
+            prose[:i], (), tools, start = max(0, scanned - _TOOL_SIGNAL_OVERLAP))
+        scanned = i
+    assert built == [], f"catalogue walked {len(built)} times over call-free prose"
+
+    # It is still consulted once a real candidate appears.
+    _earliest_tool_signal('call:mcp__s1__t1{q:<|"|>x<|"|>}', (), tools, start = 0)
+    assert built, "a real candidate must still resolve the catalogue"

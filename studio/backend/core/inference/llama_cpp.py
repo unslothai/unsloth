@@ -393,7 +393,7 @@ from core.inference.tool_call_parser import (
     blocked_bare_json_chain_may_continue,
     blocked_gemma_chain_may_continue,
     held_bare_gemma_tail_len,
-    leading_blocked_bare_json_end,
+    blocked_markerless_prefix_end,
     leading_bare_gemma_call_is_promotable,
     promotable_gemma_call_pos,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
@@ -2095,7 +2095,7 @@ def _gguf_has_genuine_tool_signal(text: str, signals, active_tools: list[dict]) 
             return True
     # Bare Gemma is not in ``signals``, but the parser promotes it wherever it sits, so a
     # mid-prose one is a boundary too.
-    return promotable_gemma_call_pos(text, set(_gguf_active_tool_names(active_tools))) >= 0
+    return promotable_gemma_call_pos(text, lambda: set(_gguf_active_tool_names(active_tools))) >= 0
 
 
 _TEXT_TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([\w.\-]+)"')
@@ -2113,9 +2113,11 @@ def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
     would show a call that never runs. The ``"name":`` arm searches the whole prefix and so
     also sees a trusted ``[TOOL_CALLS][{"name":"terminal",..}]``; the markerless bare-JSON
     form cannot reach it, since ``strip_leading_bare_json_call`` refuses to drain it."""
-    # A blocked leading object will NOT run, so naming the card after it hands the client a
-    # terminal card that the real web_search call then reuses by id.
-    text = text[leading_blocked_bare_json_end(text, enabled_names) :]
+    # A blocked leading call will NOT run, so naming the card after it hands the client a
+    # terminal card that the real web_search call then reuses by id. Every markerless format
+    # has to be skipped, not just bare JSON: the unanchored ``"name":`` arm otherwise reads
+    # the blocked rehearsal's own arguments.
+    text = text[blocked_markerless_prefix_end(text, 0, enabled_names) :]
     m = _TEXT_TOOL_NAME_RE.search(text[:4096])
     if m and m.group(1) in enabled_names:
         return m.group(1)

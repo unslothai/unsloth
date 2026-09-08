@@ -13,6 +13,7 @@ from core.inference.native_tool_tokens import (
     NativeToolTokenDecoder,
     decode_with_native_tool_tokens,
     decoder_preserves_token,
+    stop_token_text,
 )
 from core.inference.safetensors_agentic import run_safetensors_tool_loop
 from core.inference.tool_call_parser import parse_tool_calls_from_text
@@ -336,3 +337,48 @@ def test_a_tokenizer_whose_special_ids_raise_falls_back_instead_of_killing_the_t
         assert decoder.decode([1, 2]) == "<1><2>"
         assert decoder.preserves("<tool_call>") is False
         assert decoder_preserves_token(tokenizer, "<tool_call>") is False
+
+
+def test_a_stop_token_is_named_by_decoding_when_conversion_cannot_name_it():
+    """``_special_token_sets`` keeps a control it recognised through the DECODE fallback, so
+    an adapter that cannot name an id can still have that control preserved. Naming the stop
+    token by conversion alone then left it unmatched, and an allowlisted control that is also
+    EOS stayed in the reply as raw markup."""
+
+    class ConvertUnavailable:
+        all_special_ids = [7]
+
+        def __init__(self, raises = False):
+            self._raises = raises
+
+        def convert_ids_to_tokens(self, token_id):
+            if self._raises:
+                raise RuntimeError("adapter cannot name ids")
+            return None
+
+        def decode(self, token_ids, skip_special_tokens = False, **kwargs):
+            out = []
+            for i in token_ids:
+                if int(i) == 7:
+                    if not skip_special_tokens:
+                        out.append("<|end_message|>")
+                else:
+                    out.append("hi")
+            return "".join(out)
+
+    for raises in (False, True):
+        tokenizer = ConvertUnavailable(raises = raises)
+        # The decoder keeps it, so the cleanup must be able to name it.
+        assert "<|end_message|>" in NativeToolTokenDecoder(tokenizer).decode([1, 7])
+        assert stop_token_text(tokenizer, 7) == "<|end_message|>"
+
+    class Unusable:
+        all_special_ids = [7]
+
+        def convert_ids_to_tokens(self, token_id):
+            return None
+
+        def decode(self, token_ids, **kwargs):
+            raise RuntimeError("nothing works")
+
+    assert stop_token_text(Unusable(), 7) is None

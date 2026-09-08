@@ -232,9 +232,12 @@ def _earliest_tool_signal(
             # Bare/prose [ARGS]: skip it so a later real call in the same chunk is still found.
             from_idx = p + len("[ARGS]")
     # Bare Gemma is not in ``signals``, but the parser promotes it wherever it sits, so a
-    # mid-prose one is a boundary too.
+    # mid-prose one is a boundary too. The catalogue is passed lazily: this runs per streamed
+    # delta, and materializing a large MCP tool list per token dominated ordinary completions.
     gemma = promotable_gemma_call_pos(
-        candidate, None if unrestricted else _active_tool_names(active_tools), start
+        candidate,
+        None if unrestricted else (lambda: _active_tool_names(active_tools)),
+        start,
     )
     if gemma >= 0 and (best < 0 or gemma < best):
         best = gemma

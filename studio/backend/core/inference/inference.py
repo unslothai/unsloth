@@ -56,6 +56,7 @@ from core.inference.native_tool_tokens import (
     closes_an_open_envelope,
     decoder_preserves_token,
     reasoning_control_tokens,
+    stop_token_text,
 )
 from io import StringIO
 import structlog
@@ -2955,10 +2956,7 @@ class InferenceBackend:
             if isinstance(stop_token_ids, int):
                 stop_token_ids = (stop_token_ids,)
             for token_id in stop_token_ids or ():
-                try:
-                    token = tokenizer.convert_ids_to_tokens(int(token_id))
-                except Exception:
-                    token = None
+                token = stop_token_text(tokenizer, token_id)
                 if isinstance(token, str) and token and text.endswith(token):
                     if closes_an_open_envelope(text, token):
                         # A native CLOSER that is also the stop token still closes the envelope

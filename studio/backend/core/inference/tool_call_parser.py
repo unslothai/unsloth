@@ -602,6 +602,41 @@ def _gemma_call_is_anchored(text: str, start: int, floor: int) -> bool:
     return any(text.endswith(closer, floor, i + 1) for closer in _GEMMA_ANCHOR_CLOSERS)
 
 
+def blocked_markerless_prefix_end(text: str, start: int, enabled_tool_names) -> int:
+    """End of the run of blocked markerless calls at ``start``, else ``start``.
+
+    The parser scans past a blocked call in ANY markerless format and promotes the peer behind
+    it, so that run is consumed markup: the strip must anchor the peer to it, and the GGUF
+    card sniff must not read the blocked call's own arguments for a name."""
+    cursor = start
+    while True:
+        probe = text[cursor:]
+        lead = strip_llama3_leading_sentinels(probe.lstrip(" \t\n\r;"))
+        stripped = lead
+        offset = cursor + (len(probe) - len(lead))
+        gem = _GEMMA_BARE_TC_RE.match(text, offset)
+        if gem is not None and _markerless_blocked_execution(gem.group(1), enabled_tool_names):
+            end = _gemma_body_brace_end(text, gem.end() - 1)
+            if end is None:
+                return cursor
+            cursor = end + 1
+            continue
+        reh = _tool_healing._REHEARSAL_RE.match(text, offset)
+        if reh is not None and _markerless_blocked_execution(reh.group(1), enabled_tool_names):
+            end = _tool_healing._balanced_json_span(text, reh.end())
+            if end is None:
+                return cursor
+            cursor = end + 1
+            continue
+        if stripped.startswith("{"):
+            end = _balanced_brace_end(text, offset)
+            name = _top_level_bare_json_name(text[offset : (end + 1) if end else len(text)])
+            if end is not None and _markerless_blocked_execution(name, enabled_tool_names):
+                cursor = end + 1
+                continue
+        return cursor
+
+
 def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] = None) -> str:
     """Strip closed wrapper-less Gemma ``call:NAME{...}`` calls with balanced brace
     scanning (nested arguments are removed whole). Gated like the parser: a name that is
@@ -617,7 +652,10 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         out.append(text[:cursor])
     # Anchor origin, advanced only past calls this strip removed, so ``call:a{} call:b{}`` stays a pair while prose
     # after a call does not inherit its anchor.
-    floor = cursor
+    # A blocked prefix in EITHER markerless format anchors too. Only the Gemma form did, so
+    # ``terminal[ARGS]{..} call:web_search{..}`` promoted the peer while leaving its raw text
+    # in the content, and the next tool iteration replayed the same call twice.
+    floor = blocked_markerless_prefix_end(text, cursor, enabled_tool_names)
     while cursor < n:
         m = _GEMMA_BARE_TC_RE.search(text, cursor)
         if not m:
@@ -2809,13 +2847,24 @@ def promotable_gemma_call_pos(
     call and serialize it before it runs. The boundary is the call's own start, so prose ahead
     of it still streams.
 
+    ``start`` is a resume hint, not a hard floor: it is widened by ``_MAX_GEMMA_PREFIX_TAIL``,
+    because the streaming caller advances it by a fixed 27-byte overlap, and a tool name
+    longer than that left the ``call:`` opener behind the window, hiding a call the
+    end-of-turn parser then promotes. 256 covers 4x the 64-character cap every provider
+    enforces on tool names (OpenAI/Bedrock ``^[a-zA-Z0-9_-]{1,64}$``, MCP SEP-986).
+
     Sentinel-gated like ``_promotable_gemma_call_pos``: an exact pre-filter that keeps a
-    per-chunk scan of call-free prose off the regex."""
-    start = text.find(_GEMMA_BARE_SENTINEL, start)
+    per-chunk scan of call-free prose off the regex. ``enabled_tool_names`` may be a
+    zero-argument callable, resolved only once a candidate exists, so an ordinary completion
+    never materializes a large MCP catalogue per streamed chunk."""
+    # Widen, do not seek: an rfind window has to contain the whole sentinel, so a ``call``
+    # straddling the boundary was missed and a short-named call went unseen.
+    start = text.find(_GEMMA_BARE_SENTINEL, max(0, start - _MAX_GEMMA_PREFIX_TAIL))
     if start < 0:
         return -1
+    names = enabled_tool_names() if callable(enabled_tool_names) else enabled_tool_names
     for m in _GEMMA_BARE_TC_RE.finditer(text, start):
-        if _markerless_promotable(m.group(1), enabled_tool_names):
+        if _markerless_promotable(m.group(1), names):
             return m.start()
     return -1
 
@@ -2904,29 +2953,6 @@ def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set
     # Separators are not an answer, so a tail of them counts as empty (as in the bare-JSON
     # sibling); otherwise the peer arriving after them streams before promotion.
     return gemma_tail_may_hide_a_call(probe[end + 1 :].lstrip(" \t\n\r;"), enabled_tool_names)
-
-
-def leading_blocked_bare_json_end(text: str, enabled_tool_names: Optional[set]) -> int:
-    """Offset just past a leading guarded bare-JSON call, or 0. The provisional-card sniff
-    searches the whole drained prefix for ``"name"``, so on a blocked-first chain it would
-    otherwise name the card after the object that will NOT run."""
-    consumed = 0
-    rest = text
-    while True:
-        probe = strip_llama3_leading_sentinels(rest.lstrip())
-        if consumed:
-            probe = probe.lstrip(" \t\n\r;")
-        if not probe.startswith("{"):
-            return consumed
-        end = _balanced_brace_end(probe, 0)
-        if end is None:
-            return consumed
-        if not _markerless_blocked_execution(_top_level_bare_json_name(probe), enabled_tool_names):
-            return consumed
-        # Every consecutive blocked object, not just the first: the card must be named after
-        # the peer that will actually run.
-        consumed = len(text) - len(probe) + end + 1
-        rest = probe[end + 1 :]
 
 
 def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int | None:

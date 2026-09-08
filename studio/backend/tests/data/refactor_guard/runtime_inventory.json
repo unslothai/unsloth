@@ -150,6 +150,7 @@
       "annotations",
       "blocked_bare_json_chain_may_continue",
       "blocked_gemma_chain_may_continue",
+      "blocked_markerless_prefix_end",
       "continue_after_length_message",
       "gemma_tail_may_hide_a_call",
       "has_tool_signal",
@@ -159,7 +160,6 @@
       "is_short_intent_without_action",
       "json",
       "leading_bare_gemma_call_is_promotable",
-      "leading_blocked_bare_json_end",
       "parse_tool_calls_from_text",
       "promotable_gemma_call_pos",
       "re",
@@ -242,7 +242,6 @@
       "is_reprompt_restatement": "core.inference.tool_call_parser.is_reprompt_restatement(text: 'str', previous: 'str') -> 'bool'",
       "is_short_intent_without_action": "core.inference.tool_call_parser.is_short_intent_without_action(text: 'str') -> 'bool'",
       "leading_bare_gemma_call_is_promotable": "core.inference.tool_call_parser.leading_bare_gemma_call_is_promotable(stripped: 'str', enabled_tool_names) -> 'bool'",
-      "leading_blocked_bare_json_end": "core.inference.tool_call_parser.leading_blocked_bare_json_end(text: 'str', enabled_tool_names: 'Optional[set]') -> 'int'",
       "parse_tool_calls_from_text": "core.inference.tool_call_parser.parse_tool_calls_from_text(content: 'str', *, id_offset: 'int' = 0, allow_incomplete: 'bool' = True, enabled_tool_names: 'Optional[set]' = None) -> 'list[dict]'",
       "promotable_gemma_call_pos": "core.inference.tool_call_parser.promotable_gemma_call_pos(text: 'str', enabled_tool_names, start: 'int' = 0) -> 'int'",
       "reasoning_cap_spent_message": "core.inference.tool_call_parser.reasoning_cap_spent_message(max_tokens: 'Optional[int]' = None) -> 'str'",
@@ -254,7 +253,8 @@
       "strip_segment": "core.inference.tool_call_parser.strip_segment(segment: 'str', *, seg_final: 'bool', enabled_tool_names: 'Optional[set]' = None) -> 'str'",
       "strip_tool_markup": "core.inference.tool_call_parser.strip_tool_markup(text: 'str', *, final: 'bool' = False, enabled_tool_names: 'Optional[set]' = None) -> 'str'",
       "thinking_exhausted_message": "core.inference.tool_call_parser.thinking_exhausted_message(context_length: 'Optional[int]' = None) -> 'str'",
-      "unfinished_thought_progress": "core.inference.tool_call_parser.unfinished_thought_progress(reasoning: 'str') -> 'str'"
+      "unfinished_thought_progress": "core.inference.tool_call_parser.unfinished_thought_progress(reasoning: 'str') -> 'str'",
+      "blocked_markerless_prefix_end": "core.inference.tool_call_parser.blocked_markerless_prefix_end(text: 'str', start: 'int', enabled_tool_names) -> 'int'"
     }
   },
   "core.tool_healing": {

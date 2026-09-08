@@ -210,6 +210,28 @@ def decode_with_native_tool_tokens(
     )
 
 
+def stop_token_text(tokenizer, token_id) -> "str | None":
+    """The text a stop id renders as, or None.
+
+    Mirrors ``_special_token_sets``: an adapter that cannot name an id via
+    ``convert_ids_to_tokens`` can still decode it, and the decoder keeps a control it
+    recognises that way. Naming it here by conversion alone left such a token unmatched, so
+    an allowlisted control that is also EOS stayed in the reply as raw markup."""
+    for lookup in (
+        lambda: tokenizer.convert_ids_to_tokens(int(token_id)),
+        lambda: _decode_without_special_spacing(
+            tokenizer, [int(token_id)], skip_special_tokens = False
+        ),
+    ):
+        try:
+            token = lookup()
+        except Exception:  # noqa: BLE001 -- third-party tokenizer adapters vary
+            continue
+        if isinstance(token, str) and token:
+            return token
+    return None
+
+
 def decoder_preserves_token(
     tokenizer,
     token: str,

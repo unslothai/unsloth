@@ -153,16 +153,25 @@ def _rehearsal_strip(m, pat, text, spans, enabled_tool_names) -> str:
 
     A non-promotable name or quoted example is kept. The tail pattern runs to EOF, so ANY
     kept match can still cover a later real call: keep the kept part and strip from that
-    call on, or the truncated markup leaks into the answer."""
+    call on, or the truncated markup leaks into the answer.
+
+    A match inside the kept call's own balanced body is that call's ARGUMENTS, not a later
+    sibling. Truncating there cut the blocked call mid-string and took the rest of the turn
+    with it, so a command quoting ``web_search[ARGS]{}`` lost its own tail."""
     if _markerless_promotable(m.group(1), enabled_tool_names) and not _in_code(spans, m.start()):
         return ""
+    # The kept call's own argument object; a match inside it is that call's arguments.
+    reh = _REHEARSAL_RE.search(text, m.start(), m.end())
+    body_end = _balanced_json_span(text, reh.end()) if reh is not None else None
     pos = m.start()
     while True:
         nxt = pat.search(text, pos + 1)
         if nxt is None or nxt.start() >= m.end():
             return m.group(0)
-        if not _in_code(spans, nxt.start()) and _markerless_promotable(
-            nxt.group(1), enabled_tool_names
+        if (
+            (body_end is None or nxt.start() > body_end)
+            and not _in_code(spans, nxt.start())
+            and _markerless_promotable(nxt.group(1), enabled_tool_names)
         ):
             return m.group(0)[: nxt.start() - m.start()]
         pos = nxt.start()

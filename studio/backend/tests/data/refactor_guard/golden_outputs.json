@@ -42,7 +42,7 @@
     "_signal_inside_leading_wrapperless_gemma": "e86b5a942f855e7228d865031c7a2d03c60837a0c7d219475013295558ba19c1",
     "_skip_mistral_call_id": "df19f4198fa8e5f7472a47ae59a8efe5aadf15737dacf7c8c0f2d8f367b45f34",
     "_strip_function_xml_calls": "88b342ae0b8dad25cfbbaeaf2f77b5f3a1fea9c2553d03f7cad2e19b5230594a",
-    "_strip_gemma_wrapperless_calls": "77680f3cfe98fd6d22b319f012e025323c8a21c6b764485bb7bc38ced4cc3423",
+    "_strip_gemma_wrapperless_calls": "c24914207ed0e96d79db811a00ce0b5c689dc28922ddf9c173b3ab1e2f1934c8",
     "_strip_glm_calls": "5d2c536c4a3fbbc2e25525b266b06da99e469c10cd0551020f341c9c6f6d01a6",
     "_strip_mistral_closed_calls": "874d69e07bf2c7007ed945493c4e065bbdea740d4d9e1f64cbeda382cc8c90c8",
     "_strip_mistral_reasoning": "3a97a231706b3ab23b3c7f28e69170eca6f749ed0388dd93bccc25150e97faf6",
@@ -60,7 +60,6 @@
     "is_reprompt_restatement": "5a3fe224ba657bf9ea1706ef997b81e5c97535b0e03d6699962f386ecbaf15a0",
     "is_short_intent_without_action": "1ed247c04b2b2bae560ef52224328500d36644b68274015b8efd2c2b9072ac4b",
     "leading_bare_gemma_call_is_promotable": "f97184954908b5ae23160649f0aadf26a8f3f1b65534d9cc350d91504f478a94",
-    "leading_blocked_bare_json_end": "f3435202989442aa7e2570822350125a60169a324cc5d96c0ef3e7458f431e4e",
     "parse_tool_calls_from_text": "ba30927f137041f685bfb65b3b58bd180f1c5007e8a35e76ead4cb841c5698ac",
     "promotable_gemma_call_pos": "70c768036fb37edebc476d8136d5e47e1fb5e6b6691b0cd47becc687552f3071",
     "repeated_result_message": "d6e89e731201e216a32e40ccaadc19eaf0f796cee28f4af73675b731666f7e27",
@@ -68,9 +67,10 @@
     "starved_result_message": "0970549670906c513a1de39c5fb073a1b08b06919c14ba2b7dd1145cbd9caa51",
     "strip_leading_bare_json_call": "99eb64662edae2a7404834def44076a021999fc257ef387d0032f1ccc69709b9",
     "strip_llama3_leading_sentinels": "de12417a3603b3fca509343aae9c28b8ac19ae4f7ce440c42d2bdd766ef0cf15",
-    "strip_segment": "7258f57b4aebf4cdc0d3803dfcfb3e88ffea205b38ffb12c169ca35cc4b6f86a",
-    "strip_tool_markup": "898ec0dde62556e426a14742f60d878c4950d08bd7204b44ab4595c25ff7ec27",
-    "unfinished_thought_progress": "9d557ae4ed87151307746a8c62575b4479aeb7130f1f5ebb78dd60c710e66f71"
+    "strip_segment": "ab73f0458e87999b2569735af5115a867978e706854a99832b96cca3ce1d0fd4",
+    "strip_tool_markup": "a25d161440ff6b6b9feab7d1397eddebd2d366910119e4b29a1a2a59a06b1008",
+    "unfinished_thought_progress": "9d557ae4ed87151307746a8c62575b4479aeb7130f1f5ebb78dd60c710e66f71",
+    "blocked_markerless_prefix_end": "7bd9e6545e6b4a8cf5342e24e80bfa662d3183754e1ef3736e1f8cadaeea4d58"
   },
   "core.tool_healing": {
     "_balanced_brace_end": "1cf820d9573369a82ae1e0f9779d811b23356c560e513b18a7cba09310fad565",
