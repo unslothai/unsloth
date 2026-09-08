@@ -1295,6 +1295,7 @@ def max_context_for(
     kv_bytes_floor: int = 0,
     floor_ctx: int = 0,
     n_seq: int = 1,
+    kv_on_host: bool = False,
 ) -> int:
     """Largest context whose cache fits, rounded down to 256 as CUDA wants.
 
@@ -1315,7 +1316,7 @@ def max_context_for(
     fixed = (
         layout.block_resident_bytes
         + layout.other_resident_bytes
-        + layout.recurrent_bytes * max(1, n_seq)
+        + (0 if kv_on_host else layout.recurrent_bytes * max(1, n_seq))
         + (0 if spill_lm_head else layout.lm_head_bytes)
         + (0 if spill_all_ffn else layout.spillable_bytes)
     )
@@ -1326,6 +1327,9 @@ def max_context_for(
     floor_at = max(0, floor_ctx)
 
     def cache_at(ctx: int) -> int:
+        if kv_on_host:
+            # -nkvo puts both caches in host RAM, so no context charges VRAM here.
+            return 0
         naive = per_token * ctx
         if floor <= 0:
             return naive
@@ -1341,7 +1345,29 @@ def max_context_for(
     top = _usable_vram(vram_bytes_per_device, opts, 0) - fixed
     if top <= 0:
         return 0
-    hi = (top // per_token) // 256 * 256
+    # ``top // per_token`` bounds the answer only while the cache really grows with
+    # the context. It does NOT when ``cache_at`` above is flat: -nkvo holds both
+    # caches in host RAM (llama.cpp allocates the KV buffers on the GPU unless
+    # --no-kv-offload is given), and a windowed cache is capped by the window
+    # (llama_kv_cache_unified_iswa sizes the SWA half at n_ctx_swa, not n_ctx), which
+    # is why this file charges a measured SWA floor context-flat in the first place.
+    # Bounding a flat cache by the naive product cuts the search off far below the
+    # real answer -- the measured example in this module has that product 13x the
+    # real SWA cache -- so the only context-linear term left, the reserve, sets the
+    # bound instead.
+    if kv_on_host or (layout.has_swa and floor > 0):
+        slack = top - cache_at(1)
+        if slack < 0:
+            return 0
+        per_token_reserve = max(0, opts.overhead_bytes_per_token)
+        if per_token_reserve > 0:
+            hi = max(0, opts.overhead_free_ctx) + slack // per_token_reserve
+        else:
+            # Nothing grows with the context at all; only training length caps it.
+            hi = layout.n_ctx_train or (top // per_token)
+        hi = hi // 256 * 256
+    else:
+        hi = (top // per_token) // 256 * 256
     if layout.n_ctx_train:
         hi = min(hi, layout.n_ctx_train // 256 * 256)
     if hi <= 0 or not fits(256):
@@ -1462,6 +1488,7 @@ def plan_placement(
             kv_bytes_floor = kv_bytes_floor,
             floor_ctx = n_ctx,
             n_seq = max(1, opts.n_parallel),
+            kv_on_host = opts.kv_on_host,
         )
         if shrunk >= opts.min_ctx:
             return _finish(
@@ -1519,6 +1546,7 @@ def plan_placement(
                 kv_bytes_floor = kv_bytes_floor,
                 floor_ctx = n_ctx,
                 n_seq = max(1, opts.n_parallel),
+                kv_on_host = opts.kv_on_host,
             )
             hi = min(hi, n_ctx) // 256 * 256
             if declined is not None and hi >= n_ctx:
@@ -1944,6 +1972,34 @@ def _plan_at(
 
     if needed <= budget:
         gave_up = _knob_description(knobs, opts)
+        if n_devices > 1 and gave_up:
+            # A pooled fit is not a per-device fit, and a knob-only plan is emitted
+            # as ``-ngl -1 --fit off`` (llama_cpp.py:_spill_plan_flags_for), which
+            # takes llama.cpp's own per-device fitter out of the loop. A card that
+            # is still over then throws on load ("unable to allocate %s buffer" in
+            # llama_model_base::load_tensors) rather than loading slowly. Spilling
+            # plans already run this check; run it here too.
+            uneven = _per_device_shortfall(
+                layout,
+                opts,
+                n_ctx,
+                {},
+                False,
+                vram_bytes_per_device,
+                quantised = quantised,
+                kv_bytes_floor = floor,
+                split_weights_per_device = split_weights_per_device,
+                kv_layer_weights = kv_layer_weights,
+                extra_on_device0 = _outside_layout_bytes(opts, knobs),
+            )
+            if uneven is not None:
+                return Plan(
+                    n_ctx = n_ctx,
+                    reason = (
+                        f"the pooled budget fits after {gave_up}, but {uneven}; "
+                        "leaving llama.cpp's own fitter to place it"
+                    ),
+                )
         return _finish(
             layout,
             opts,

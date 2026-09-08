@@ -2043,3 +2043,154 @@ def test_the_shrink_prices_the_budget_at_the_shrunk_context():
     plan = plan_placement(layout, [10 * GIB], 64 * GIB, 131072, opts = opts)
     assert plan.changed and not plan.insufficient, plan.reason
     assert 4096 <= plan.n_ctx < 131072, plan.n_ctx
+
+
+# ------------------------------------- knob-only fits are per-device fits too
+
+
+def _mixed_card_vision_layout():
+    """A tail-heavy dense model: the pooled budget fits, one card's rows do not."""
+    blocks = tuple(
+        BlockLayout(
+            index = i,
+            spillable_bytes = (700 * MIB if i < 25 else 800 * MIB),
+            resident_bytes = (217 * MIB if i < 25 else 224 * MIB),
+        )
+        for i in range(32)
+    )
+    return ModelLayout(
+        arch = "qwen35",
+        n_layers = 32,
+        n_attention_layers = 32,
+        blocks = blocks,
+        lm_head_bytes = 512 * MIB,
+        token_embd_bytes = 256 * MIB,
+        kv_bytes_per_token_f16 = 4096,
+        recurrent_bytes = 0,
+        n_ctx_train = 262144,
+        complete = True,
+    )
+
+
+def test_a_knob_only_fit_is_checked_device_by_device():
+    """Moving the projector can make the POOLED budget fit while the small card
+    stays over. That plan reshapes the launch, so the seam emits
+    ``-ngl -1 --fit off`` and llama.cpp's own per-device fitter never runs; the
+    over card then throws on load rather than loading slowly. Abstain instead."""
+    layout = _mixed_card_vision_layout()
+    opts = PlanOptions(
+        overhead_bytes_per_device = 1 * GIB,
+        pipeline_overhead_bytes = 0,
+        mmproj_bytes = 3 * GIB,
+        mmproj_movable = True,
+        n_parallel = 1,
+    )
+    vram = [24 * GIB, 8 * GIB]
+    # The pooled arithmetic really does say yes once the projector moves.
+    assert all_resident_bytes(layout, 8192) > 27 * GIB
+    assert all_resident_bytes(layout, 8192) <= 30 * GIB
+    # And device 1 really is over.
+    assert (
+        _per_device_shortfall(
+            layout,
+            opts,
+            8192,
+            {},
+            False,
+            vram,
+            quantised = False,
+            kv_bytes_floor = 0,
+            split_weights_per_device = vram,
+            extra_on_device0 = 0,
+        )
+        is not None
+    )
+
+    plan = plan_placement(layout, vram, 128 * GIB, 8192, opts = opts)
+    assert not plan.mmproj_to_host
+    assert not plan.reshapes_launch
+    assert not plan.spills_anything
+    assert plan_to_args(plan) == []
+    assert "device 1" in plan.reason
+
+
+# ------------------------------------- the context bound and where the cache is
+
+
+def _bound_layout(*, resident_per_block: int, has_swa: bool = False):
+    blocks = tuple(
+        BlockLayout(index = i, spillable_bytes = 180 * MIB, resident_bytes = resident_per_block)
+        for i in range(48)
+    )
+    return ModelLayout(
+        arch = "gemma3" if has_swa else "qwen35",
+        n_layers = 48,
+        n_attention_layers = 48,
+        blocks = blocks,
+        lm_head_bytes = 600 * MIB,
+        token_embd_bytes = 600 * MIB,
+        kv_bytes_per_token_f16 = 98304,
+        recurrent_bytes = 0,
+        n_ctx_train = 131072,
+        has_swa = has_swa,
+        complete = True,
+    )
+
+
+def test_the_context_bound_leaves_a_host_held_cache_in_host_ram():
+    """-nkvo holds both caches in host RAM, so no context charges them to VRAM.
+    Charging them anyway bounded the descending ladder at a fraction of the
+    context that fits, and the launch lost the difference for nothing."""
+    layout = _bound_layout(resident_per_block = 130 * MIB)
+    opts = PlanOptions(
+        overhead_bytes_per_device = 1 * GIB,
+        context_policy = ContextPolicy.FIT_ONLY,
+        kv_on_host = True,
+        min_ctx = 4096,
+        ctx_step = 1024,
+    )
+    vram = [8 * GIB]
+
+    bound = max_context_for(layout, vram, spill_all_ffn = True, opts = opts, kv_on_host = True)
+    assert resident_floor_bytes(layout, bound, kv_on_host = True) <= _usable_vram_for(
+        vram, opts, bound
+    )
+    # The old bound came off the f16 product, which -nkvo never puts on the card.
+    assert bound > 40960
+
+    plan = plan_placement(layout, vram, 256 * GIB, 131072, opts = opts)
+    assert plan.n_ctx > 65536
+    assert not plan.insufficient
+
+
+def test_a_windowed_cache_does_not_cap_the_context_bound_at_the_naive_product():
+    """``cache_at`` charges a measured SWA floor context-FLAT, so the layout's
+    full-context product is not an upper bound on the answer. Deriving the search
+    ceiling from it cut a gemma-shaped launch to a fraction of its trained
+    length."""
+    layout = _bound_layout(resident_per_block = 100 * MIB, has_swa = True)
+    opts = PlanOptions(
+        overhead_bytes_per_device = 1 * GIB,
+        context_policy = ContextPolicy.FIT_ONLY,
+        min_ctx = 4096,
+        ctx_step = 1024,
+    )
+    vram = [8 * GIB]
+    floor = 400 * MIB
+
+    bound = max_context_for(
+        layout, vram, spill_all_ffn = True, opts = opts, kv_bytes_floor = floor, floor_ctx = 131072
+    )
+    assert bound > 65536
+    assert resident_floor_bytes(layout, bound, kv_bytes_floor = floor) <= _usable_vram_for(
+        vram, opts, bound
+    )
+
+    plan = plan_placement(layout, vram, 128 * GIB, 131072, opts = opts, kv_bytes_floor = floor)
+    assert plan.n_ctx > 65536
+    assert not plan.insufficient
+
+
+def _usable_vram_for(vram, opts, n_ctx):
+    from core.inference.offload_planner import _usable_vram
+    return _usable_vram(vram, opts, n_ctx)
