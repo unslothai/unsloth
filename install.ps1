@@ -1088,6 +1088,14 @@ function Install-UnslothStudio {
         if ([string]::IsNullOrWhiteSpace($body)) { return $null }
         $best = $null
         $bestKey = $null
+        # PEP 440 order within one numeric release: dev < a < b < rc < final, then by number.
+        $prerelease = {
+            param([string]$v)
+            $r = ($v -split '\+', 2)[0]
+            if ($r -match '\.dev(\d+)') { return @(0, [long]$Matches[1]) }
+            if ($r -match '(?i)(a|b|rc)(\d+)') { return @(@{ a = 1; b = 2; rc = 3 }[$Matches[1].ToLowerInvariant()], [long]$Matches[2]) }
+            return @(4, [long]0)
+        }
         foreach ($match in [regex]::Matches($body, "$Project-[^`"'<>\s]*?win_arm64\.whl")) {
             $name = $match.Value
             try { $name = [System.Uri]::UnescapeDataString($name) } catch {}
@@ -1103,10 +1111,9 @@ function Install-UnslothStudio {
             if ($null -eq $bestKey -or $key -gt $bestKey) {
                 $bestKey = $key; $best = $version
             } elseif ($key -eq $bestKey) {
-                # Same release: a final build outranks any .dev one (PEP 440), and later stamps win among devs.
-                $devNew = [regex]::Match($version, '\.dev(\d+)'); $devBest = [regex]::Match($best, '\.dev(\d+)')
-                if ($devBest.Success -and -not $devNew.Success) { $best = $version }
-                elseif ($devBest.Success -and $devNew.Success -and ([long]$devNew.Groups[1].Value -gt [long]$devBest.Groups[1].Value)) { $best = $version }
+                # Same release: PEP 440 order, so a final build outranks every prerelease and later numbers win within a kind.
+                $rankNew = & $prerelease $version; $rankBest = & $prerelease $best
+                if (($rankNew[0] -gt $rankBest[0]) -or (($rankNew[0] -eq $rankBest[0]) -and ($rankNew[1] -gt $rankBest[1]))) { $best = $version }
             }
         }
         return $best
@@ -4668,7 +4675,31 @@ exit 0
         if ($script:WoaNativeCudaTorch -ne $WoaNativeBeforeReprobe) {
             # $null only if every candidate vanished between the passes; keep this one.
             $ReselectedPython = Remove-SkippedPython (Find-CompatiblePython)
-            if ($ReselectedPython) { $DetectedPython = $ReselectedPython }
+            if ($ReselectedPython) {
+                # The reselection ranks the requested minor first, so it can hand back an interpreter the
+                # probe has not answered for (an ARM64 3.12 after 3.13 went native). That one is probed
+                # too; when it has no stack, the interpreter the probe accepted is kept and its answer restored.
+                $_woaReselectedFreeThreaded = $false
+                if ((Get-HostMachineArch) -eq "arm64") {
+                    $_woaReselectedFreeThreaded = Test-PythonFreeThreaded -PythonExe $ReselectedPython.Path
+                }
+                if (($ReselectedPython.Version -ne $WoaProbedMinor) -or
+                    ($_woaReselectedFreeThreaded -ne $WoaProbedFreeThreaded)) {
+                    Initialize-WoaNativeCudaTorch -PythonMinor $ReselectedPython.Version `
+                        -FreeThreaded $_woaReselectedFreeThreaded
+                    if ($script:WoaNativeCudaTorch) {
+                        $WoaProbedMinor = $ReselectedPython.Version
+                        $WoaProbedFreeThreaded = $_woaReselectedFreeThreaded
+                        $DetectedPython = $ReselectedPython
+                    } else {
+                        substep "windows on arm: Python $($ReselectedPython.Version) has no win_arm64 CUDA stack; keeping Python $($DetectedPython.Version), which has one." "Yellow"
+                        Initialize-WoaNativeCudaTorch -PythonMinor $WoaProbedMinor `
+                            -FreeThreaded $WoaProbedFreeThreaded
+                    }
+                } else {
+                    $DetectedPython = $ReselectedPython
+                }
+            }
             if ($script:WoaNativeCudaTorch) {
                 step "gpu" "Windows on ARM + NVIDIA: native CUDA wheels available -- installing the ARM64 stack" "Green"
                 substep "torch index: $(Remove-IndexUrlCredentials $script:WoaTorchIndexUrl)"
@@ -5903,6 +5934,13 @@ exit 0
         [System.IO.File]::WriteAllLines($WoaOverrides, [string[]]$WoaOverrideLines, (New-Object System.Text.UTF8Encoding($false)))
         $_woaOverrideValue = @(Get-UvSafePath $WoaOverrides)
         foreach ($_woaKeepFile in $_woaKeepFiles) { $_woaOverrideValue += (Get-UvSafePath $_woaKeepFile) }
+        # Under `irm | iex` these are the caller's own session variables: snapshotted once here and put
+        # back when the installer returns, after the setup child and an autostarted Studio inherited them.
+        if ($null -eq $script:WoaResolverEnvSaved) {
+            $script:WoaResolverEnvSaved = @{
+                UV_OVERRIDE = $env:UV_OVERRIDE; UV_FIND_LINKS = $env:UV_FIND_LINKS; PIP_FIND_LINKS = $env:PIP_FIND_LINKS
+            }
+        }
         $env:UV_OVERRIDE = ($_woaOverrideValue -join " ")
         # Additive, ours first to win a tie. UV_FIND_LINKS is comma-separated, PIP_FIND_LINKS not.
         $_woaCallerUvLinks = $env:UV_FIND_LINKS
@@ -8234,10 +8272,21 @@ sys.exit(2 if conflict else (0 if installed else 1))
 }
 
 # Under `irm | iex` the script scope IS the caller's session; an earlier value must not leak.
+$script:WoaResolverEnvSaved = $null
 $script:TorchOverridesFile = $null
 try {
     Install-UnslothStudio @args
 } finally {
+    # The resolver variables exported for the native ARM64 stack are process-scoped, so the caller's own
+    # `uv pip` in this session would otherwise keep resolving with Studio's overrides and wheelhouse.
+    if ($script:WoaResolverEnvSaved) {
+        foreach ($_woaEnvName in @($script:WoaResolverEnvSaved.Keys)) {
+            $_woaEnvValue = $script:WoaResolverEnvSaved[$_woaEnvName]
+            if ($null -eq $_woaEnvValue) { Remove-Item "Env:$_woaEnvName" -ErrorAction SilentlyContinue }
+            else { Set-Item "Env:$_woaEnvName" $_woaEnvValue }
+        }
+        $script:WoaResolverEnvSaved = $null
+    }
     # UNSLOTH_KEPT_TORCH is a process-scoped handoff, and the session outlives the installer.
     Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
     # The generated overrides file copies the caller's UV_OVERRIDE contents; never leave it.

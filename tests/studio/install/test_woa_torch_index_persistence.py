@@ -4726,6 +4726,63 @@ class TestAFinalBuildOutranksADevelopmentBuildOfTheSameRelease:
                 "2.15.0.dev20260901+cu134",
                 "a newer release still wins as a dev build",
             ),
+            (
+                [
+                    "torch-2.15.0rc1%2Bcu134-cp313-cp313-win_arm64.whl",
+                    "torch-2.15.0%2Bcu134-cp313-cp313-win_arm64.whl",
+                ],
+                "2.15.0+cu134",
+                "a release candidate ranks below the final build",
+            ),
+            (
+                [
+                    "torch-2.15.0%2Bcu134-cp313-cp313-win_arm64.whl",
+                    "torch-2.15.0rc1%2Bcu134-cp313-cp313-win_arm64.whl",
+                ],
+                "2.15.0+cu134",
+                "in either order",
+            ),
+            (
+                [
+                    "torch-2.15.0a1%2Bcu134-cp313-cp313-win_arm64.whl",
+                    "torch-2.15.0b1%2Bcu134-cp313-cp313-win_arm64.whl",
+                    "torch-2.15.0rc1%2Bcu134-cp313-cp313-win_arm64.whl",
+                ],
+                "2.15.0rc1+cu134",
+                "rc above beta above alpha",
+            ),
+            (
+                [
+                    "torch-2.15.0rc2%2Bcu134-cp313-cp313-win_arm64.whl",
+                    "torch-2.15.0rc1%2Bcu134-cp313-cp313-win_arm64.whl",
+                ],
+                "2.15.0rc2+cu134",
+                "a later number wins within a kind",
+            ),
+            (
+                [
+                    "torch-2.15.0rc1%2Bcu134-cp313-cp313-win_arm64.whl",
+                    "torch-2.15.0.dev20260901%2Bcu134-cp313-cp313-win_arm64.whl",
+                ],
+                "2.15.0rc1+cu134",
+                "and a dev build sits below every prerelease",
+            ),
+            (
+                [
+                    "torch-2.15.0b1%2Bcu134-cp313-cp313-win_arm64.whl",
+                    "torch-2.15.0a1%2Bcu134-cp313-cp313-win_arm64.whl",
+                ],
+                "2.15.0b1+cu134",
+                "beta above alpha, listed first",
+            ),
+            (
+                [
+                    "torch-2.15.0a2%2Bcu134-cp313-cp313-win_arm64.whl",
+                    "torch-2.15.0b1%2Bcu134-cp313-cp313-win_arm64.whl",
+                ],
+                "2.15.0b1+cu134",
+                "beta above a later alpha",
+            ),
         ],
     )
     def test_the_pick(self, fn, source, names, expected, why):
@@ -5161,6 +5218,130 @@ class TestASuppliedWheelUnderAnotherNameIsReadFromItsArchive:
             "cp313-cp313-win_arm64",
         )
         assert self._probe(str(wheel)) == "local"
+
+
+class TestAReselectedInterpreterIsProbedBeforeItIsTaken:
+    """After the re-probe flips native mode, Find-CompatiblePython runs again with the new arch
+    preference, and it ranks the requested minor first. It could hand back an ARM64 3.12 whose
+    probe had failed while the flip came from 3.13, and the 3.13 answers were then carried into
+    a 3.12 venv. The reselected interpreter is probed too; with no stack of its own, the one
+    the probe accepted is kept and its answer restored."""
+
+    @staticmethod
+    def _block():
+        start = INSTALL_SRC.index("    # Re-probe for the interpreter actually selected")
+        end = INSTALL_SRC.index("    # An emulated x64 python cannot load", start)
+        return INSTALL_SRC[start:end]
+
+    def _run(self, detected, reselected, native_minors):
+        natives = ", ".join(f"'{m}'" for m in native_minors)
+        script = _script(
+            "$PythonVersion = '3.12'",
+            "$script:Messages = @()",
+            "$script:Probes = @()",
+            "function substep { param($m, $c) $script:Messages += $m }",
+            "function step { param($a, $b, $c) }",
+            "function Get-HostMachineArch { 'arm64' }",
+            "function Remove-IndexUrlCredentials { param($u) $u }",
+            "function Test-PythonFreeThreaded { param($PythonExe) $false }",
+            "function Remove-SkippedPython { param($p) $p }",
+            f"$script:Natives = @({natives})",
+            "$script:WoaNativeCudaTorch = $false",
+            "function Initialize-WoaNativeCudaTorch { param($PythonMinor, $FreeThreaded)",
+            "  $script:Probes += $PythonMinor",
+            "  $script:WoaNativeCudaTorch = [bool]($script:Natives -contains $PythonMinor)",
+            "  $script:WoaTorchIndexUrl = if ($script:WoaNativeCudaTorch) { 'https://i.test' } else { $null } }",
+            f"$DetectedPython = @{{ Version = '{detected[0]}'; Path = 'p{detected[0]}'; Arch = '{detected[1]}' }}",
+            f"function Find-CompatiblePython {{ @{{ Version = '{reselected[0]}'; Path = 'p{reselected[0]}'; Arch = '{reselected[1]}' }} }}",
+            self._block(),
+            "Write-Output ('PY=' + $DetectedPython.Version)",
+            "Write-Output ('NATIVE=' + $script:WoaNativeCudaTorch)",
+            "Write-Output ('PROBED=' + $WoaProbedMinor)",
+            "Write-Output ('PROBES=' + ($script:Probes -join ','))",
+            "Write-Output ('MSG=' + ($script:Messages -join ' | '))",
+        )
+        return dict(l.split("=", 1) for l in _ps_ok(script).stdout.splitlines() if "=" in l)
+
+    @requires_pwsh
+    def test_a_reselected_minor_without_a_stack_is_not_taken(self):
+        # Requested 3.12 (no stack); detected 3.13 goes native; the reselection offers ARM64 3.12.
+        out = self._run(("3.13", "arm64"), ("3.12", "arm64"), ["3.13"])
+        assert out["PY"] == "3.13", out["MSG"]
+        assert out["NATIVE"] == "True" and out["PROBED"] == "3.13"
+        assert out["PROBES"] == "3.13,3.12,3.13", (
+            "probed the offer, then restored the accepted answer"
+        )
+        assert "keeping Python 3.13, which has one" in out["MSG"]
+
+    @requires_pwsh
+    def test_a_reselected_minor_with_a_stack_is_taken(self):
+        out = self._run(("3.13", "arm64"), ("3.12", "arm64"), ["3.13", "3.12"])
+        assert out["PY"] == "3.12" and out["NATIVE"] == "True" and out["PROBED"] == "3.12"
+        assert out["PROBES"] == "3.13,3.12"
+
+    @requires_pwsh
+    def test_the_same_interpreter_back_is_not_probed_again(self):
+        out = self._run(("3.13", "x86_64"), ("3.13", "arm64"), ["3.13"])
+        assert out["PY"] == "3.13" and out["NATIVE"] == "True"
+        assert out["PROBES"] == "3.13"
+
+
+class TestTheResolverVariablesDoNotOutliveTheInstaller:
+    """Under `irm | iex` the process-scoped UV_OVERRIDE, UV_FIND_LINKS and PIP_FIND_LINKS set for
+    the native stack were the caller's own session variables and stayed set, so every later
+    `uv pip` in that shell resolved with Studio's override file and wheelhouse. They are
+    snapshotted before the first assignment and put back in the script-level finally, after
+    the function (and with it the autostarted Studio) has returned."""
+
+    def test_the_snapshot_precedes_the_first_assignment(self):
+        snap = INSTALL_SRC.index("$script:WoaResolverEnvSaved = @{")
+        first = INSTALL_SRC.index('$env:UV_OVERRIDE = ($_woaOverrideValue -join " ")')
+        assert snap < first
+        block = INSTALL_SRC[snap : snap + 200]
+        for name in ("UV_OVERRIDE", "UV_FIND_LINKS", "PIP_FIND_LINKS"):
+            assert f"{name} = $env:{name}" in block, name
+
+    def test_the_restore_is_in_the_script_level_finally(self):
+        run = INSTALL_SRC.index("    Install-UnslothStudio @args\n} finally {")
+        assert "$script:WoaResolverEnvSaved" in INSTALL_SRC[run:]
+        reset = INSTALL_SRC.rindex("$script:WoaResolverEnvSaved = $null\n", 0, run)
+        assert INSTALL_SRC.index("try {", reset) < run, (
+            "cleared right before the run, so an earlier session value cannot leak in"
+        )
+
+    @staticmethod
+    def _restore_block():
+        start = INSTALL_SRC.index(
+            "    # The resolver variables exported for the native ARM64 stack"
+        )
+        end = INSTALL_SRC.index("    # UNSLOTH_KEPT_TORCH is a process-scoped handoff", start)
+        return INSTALL_SRC[start:end]
+
+    @requires_pwsh
+    def test_the_callers_values_come_back_and_absent_ones_are_removed(self):
+        script = _script(
+            "$env:UV_OVERRIDE = 'C:\\studio\\overrides.txt'",
+            "$env:UV_FIND_LINKS = 'C:\\studio\\wheels,C:\\mine'",
+            "$env:PIP_FIND_LINKS = 'C:\\studio\\wheels'",
+            "$script:WoaResolverEnvSaved = @{ UV_OVERRIDE = $null; UV_FIND_LINKS = 'C:\\mine'; PIP_FIND_LINKS = $null }",
+            self._restore_block(),
+            "Write-Output ('OV=' + [string]$env:UV_OVERRIDE)",
+            "Write-Output ('UV=' + [string]$env:UV_FIND_LINKS)",
+            "Write-Output ('PIP=' + [string]$env:PIP_FIND_LINKS)",
+            "Write-Output ('SAVED=' + [string]($null -eq $script:WoaResolverEnvSaved))",
+        )
+        out = dict(l.split("=", 1) for l in _ps_ok(script).stdout.splitlines() if "=" in l)
+        assert out == {"OV": "", "UV": "C:\\mine", "PIP": "", "SAVED": "True"}
+
+    @requires_pwsh
+    def test_nothing_snapshotted_touches_nothing(self):
+        script = _script(
+            "$env:UV_FIND_LINKS = 'C:\\mine'",
+            "$script:WoaResolverEnvSaved = $null",
+            self._restore_block(),
+            "Write-Output ('UV=' + [string]$env:UV_FIND_LINKS)",
+        )
+        assert _ps_last(script) == "UV=C:\\mine"
 
 
 class TestTheNoAudioDecisionFollowsTheProbe:

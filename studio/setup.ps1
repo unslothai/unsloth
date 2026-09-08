@@ -3895,6 +3895,14 @@ function Get-WoaCudaWheelVersionParity {
     if ([string]::IsNullOrWhiteSpace($body)) { return $null }
     $best = $null
     $bestKey = $null
+    # PEP 440 order within one numeric release: dev < a < b < rc < final, then by number.
+    $prerelease = {
+        param([string]$v)
+        $r = ($v -split '\+', 2)[0]
+        if ($r -match '\.dev(\d+)') { return @(0, [long]$Matches[1]) }
+        if ($r -match '(?i)(a|b|rc)(\d+)') { return @(@{ a = 1; b = 2; rc = 3 }[$Matches[1].ToLowerInvariant()], [long]$Matches[2]) }
+        return @(4, [long]0)
+    }
     foreach ($match in [regex]::Matches($body, "$Project-[^`"'<>\s]*?win_arm64\.whl")) {
         $name = $match.Value
         try { $name = [System.Uri]::UnescapeDataString($name) } catch {}
@@ -3908,10 +3916,9 @@ function Get-WoaCudaWheelVersionParity {
         try { $key = [version]$numeric } catch { continue }
         if ($null -eq $bestKey -or $key -gt $bestKey) { $bestKey = $key; $best = $version }
         elseif ($key -eq $bestKey) {
-            # Same release: a final build outranks any .dev one (PEP 440), and later stamps win among devs.
-            $devNew = [regex]::Match($version, '\.dev(\d+)'); $devBest = [regex]::Match($best, '\.dev(\d+)')
-            if ($devBest.Success -and -not $devNew.Success) { $best = $version }
-            elseif ($devBest.Success -and $devNew.Success -and ([long]$devNew.Groups[1].Value -gt [long]$devBest.Groups[1].Value)) { $best = $version }
+            # Same release: PEP 440 order, so a final build outranks every prerelease and later numbers win within a kind.
+            $rankNew = & $prerelease $version; $rankBest = & $prerelease $best
+            if (($rankNew[0] -gt $rankBest[0]) -or (($rankNew[0] -eq $rankBest[0]) -and ($rankNew[1] -gt $rankBest[1]))) { $best = $version }
         }
     }
     return $best
