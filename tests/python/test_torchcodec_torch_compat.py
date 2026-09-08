@@ -29,6 +29,18 @@ def _tomllib():
     return pytest.importorskip("tomli")
 
 
+@pytest.fixture(autouse = True)
+def _no_inherited_index_config(monkeypatch):
+    """Nearly every test here reads the index configuration, so a developer's own
+    UNSLOTH_TORCH_INDEX_URL must not be what decides which URL the suite asserts."""
+    for name in (
+        "UNSLOTH_TORCH_INDEX_URL",
+        "UNSLOTH_TORCH_INDEX_FAMILY",
+        "UNSLOTH_PYTORCH_MIRROR",
+    ):
+        monkeypatch.delenv(name, raising = False)
+
+
 def _load_import_fixes_module():
     spec = importlib.util.spec_from_file_location(
         "unsloth_import_fixes_under_test",
@@ -80,67 +92,76 @@ def test_torchcodec_exclusive_upper_bound():
     assert fixes._torchcodec_exclusive_upper("0.9") == "<0.10.0"
 
 
-def test_torch290_rejects_torchcodec_07(monkeypatch):
+# One row per (torch, torchcodec) pair the runtime guard has an opinion about: the
+# substrings the warning must carry, and the ones it must not. `None` for `contains` means
+# the guard has to stay silent -- the pair is supported and a warning would be noise.
+_GUARD_CASES = [
+    # Inside the lockstep table: each torch minor takes its own codec line and no other.
+    ("2.9.0+cu128", "0.7.0", (), ("audio-torch210",)),
+    ("2.8.0+cu128", "0.7.0", None, ()),
+    # Untagged torch needs no index pin, so the convenient extra stays on offer...
+    ("2.10.0", "0.11.0", ("torchcodec 0.11.0", "audio-torch210", "<0.11.0"), ("<11.0",)),
+    # ...while a tagged one cannot carry an index in an extra, so it gets the pin alone.
+    (
+        "2.10.0+cu128",
+        "0.11.0",
+        ("--index-url https://download.pytorch.org/whl/cu128", "<0.11.0"),
+        ("audio-torch210",),
+    ),
+    ("2.10.0+cu128", "0.10.0+cu128", None, ()),
+    # The guard must not be silent on the torch minor where the mismatch happens.
+    (
+        "2.11.0",
+        "0.10.0+cu128",
+        ("torchcodec 0.10.0+cu128", "audio-torch211", ">=0.11", "<0.12.0"),
+        ("audio-torch210",),
+    ),
+    ("2.11.0+cu128", "0.11.1+cu128", None, ()),
+    # The ABI-stable floor starts at torch 2.11: 2.10 keeps the exact pairing.
+    ("2.10.0", "0.15.0", ("audio-torch210",), ()),
+    # A torch minor older than the matrix keeps the original no-opinion behaviour.
+    ("2.4.0", "0.0.3", None, ()),
+]
+
+# torchcodec 0.12+ targets torch >=2.11, so it is not locked to one minor.
+_GUARD_CASES += [
+    (torch_version, codec_version, None, ())
+    for torch_version in ("2.11.0+cu128", "2.12.0", "2.13.0+cu130")
+    for codec_version in ("0.12.0", "0.15.0+cu130")
+]
+
+# 0.11 is pinned to torch 2.11 exactly, so 2.12/2.13 with a pre-0.12 codec still warns, and
+# no audio-torch2xx extra exists for those minors, so none is offered.
+_GUARD_CASES += [
+    (torch_version, codec_version, ("torchcodec>=0.12.0",), ("unsloth[audio-torch",))
+    for torch_version in ("2.12.1+cu130", "2.13.0")
+    for codec_version in ("0.11.1", "0.10.0")
+]
+
+
+@pytest.mark.parametrize(
+    "torch_version, codec_version, contains, absent",
+    _GUARD_CASES,
+    ids = [f"torch{t}-codec{c}" for t, c, _, _ in _GUARD_CASES],
+)
+def test_the_runtime_guard_reports_exactly_the_pairs_the_matrix_forbids(
+    monkeypatch, torch_version, codec_version, contains, absent
+):
     import importlib.metadata
 
     fixes = _load_import_fixes_module()
-    _stub_torch(monkeypatch, "2.9.0+cu128")
-    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.7.0")
+    _stub_torch(monkeypatch, torch_version)
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: codec_version)
 
     hint = fixes._torchcodec_version_mismatch_hint()
-    assert hint is not None
-    assert "audio-torch210" not in hint
-
-
-def test_torch280_accepts_torchcodec_07(monkeypatch):
-    import importlib.metadata
-
-    fixes = _load_import_fixes_module()
-    _stub_torch(monkeypatch, "2.8.0+cu128")
-    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.7.0")
-
-    assert fixes._torchcodec_version_mismatch_hint() is None
-
-
-def test_torch210_rejects_torchcodec_011(monkeypatch):
-    import importlib.metadata
-
-    fixes = _load_import_fixes_module()
-    monkeypatch.setattr(
-        importlib.metadata,
-        "version",
-        lambda _name: "0.11.0",
-    )
-
-    # Untagged torch: no index pin is needed, so the extra stays on offer.
-    _stub_torch(monkeypatch, "2.10.0")
-    hint = fixes._torchcodec_version_mismatch_hint()
-    assert hint is not None
-    assert "torchcodec 0.11.0" in hint
-    assert "audio-torch210" in hint
-    assert "<0.11.0" in hint
-    assert "<11.0" not in hint
-
-    # Tagged torch: the extra cannot carry an index, so the pinned command is offered alone.
-    _stub_torch(monkeypatch, "2.10.0+cu128")
-    tagged = fixes._torchcodec_version_mismatch_hint()
-    assert "--index-url https://download.pytorch.org/whl/cu128" in tagged
-    assert "audio-torch210" not in tagged
-    assert "<0.11.0" in tagged
-
-
-def test_torch210_accepts_torchcodec_010(monkeypatch):
-    import importlib.metadata
-
-    fixes = _load_import_fixes_module()
-    _stub_torch(monkeypatch, "2.10.0+cu128")
-    monkeypatch.setattr(
-        importlib.metadata,
-        "version",
-        lambda _name: "0.10.0+cu128",
-    )
-
-    assert fixes._torchcodec_version_mismatch_hint() is None
+    if contains is None:
+        assert hint is None, f"{torch_version} + torchcodec {codec_version} is supported upstream"
+        return
+    assert hint is not None, f"{torch_version} + torchcodec {codec_version} must not go unreported"
+    for text in contains:
+        assert text in hint, f"{text!r} missing from {hint!r}"
+    for text in absent:
+        assert text not in hint, f"{text!r} should not appear in {hint!r}"
 
 
 def test_import_fixes_loads_on_python39_syntax():
@@ -156,95 +177,6 @@ def _load_install_python_stack():
     import install_python_stack
 
     return install_python_stack
-
-
-def test_torch211_rejects_torchcodec_010(monkeypatch):
-    """The guard must not be silent on the torch minor where the mismatch happens."""
-    import importlib.metadata
-
-    fixes = _load_import_fixes_module()
-    monkeypatch.setattr(
-        importlib.metadata,
-        "version",
-        lambda _name: "0.10.0+cu128",
-    )
-    # Untagged, so the extra is offered; the tagged case is covered below.
-    _stub_torch(monkeypatch, "2.11.0")
-
-    hint = fixes._torchcodec_version_mismatch_hint()
-    assert hint is not None, "torch 2.11 + torchcodec 0.10 must not go unreported"
-    assert "torchcodec 0.10.0+cu128" in hint
-    assert "audio-torch211" in hint
-    assert ">=0.11" in hint
-    assert "<0.12.0" in hint
-    assert "audio-torch210" not in hint
-
-
-def test_torch211_accepts_torchcodec_011(monkeypatch):
-    import importlib.metadata
-
-    fixes = _load_import_fixes_module()
-    _stub_torch(monkeypatch, "2.11.0+cu128")
-    monkeypatch.setattr(
-        importlib.metadata,
-        "version",
-        lambda _name: "0.11.1+cu128",
-    )
-
-    assert fixes._torchcodec_version_mismatch_hint() is None
-
-
-def test_torch211_accepts_abi_stable_torchcodec(monkeypatch):
-    """torchcodec 0.12+ targets torch >=2.11, so it is not locked to one minor."""
-    import importlib.metadata
-
-    fixes = _load_import_fixes_module()
-    for torch_version in ("2.11.0+cu128", "2.12.0", "2.13.0+cu130"):
-        for codec_version in ("0.12.0", "0.15.0+cu130"):
-            _stub_torch(monkeypatch, torch_version)
-            monkeypatch.setattr(importlib.metadata, "version", lambda _name, _v = codec_version: _v)
-            assert (
-                fixes._torchcodec_version_mismatch_hint() is None
-            ), f"{torch_version} + torchcodec {codec_version} is supported upstream"
-
-
-def test_torch210_still_rejects_abi_stable_torchcodec(monkeypatch):
-    """The ABI-stable floor starts at torch 2.11: 2.10 keeps the exact pairing."""
-    import importlib.metadata
-
-    fixes = _load_import_fixes_module()
-    _stub_torch(monkeypatch, "2.10.0")
-    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.15.0")
-
-    hint = fixes._torchcodec_version_mismatch_hint()
-    assert hint is not None
-    assert "audio-torch210" in hint
-
-
-def test_torch_past_last_lockstep_row_rejects_legacy_torchcodec(monkeypatch):
-    """0.11 is pinned to torch 2.11 exactly, so 2.12/2.13 with a pre-0.12 codec still warns."""
-    import importlib.metadata
-
-    fixes = _load_import_fixes_module()
-    for torch_version in ("2.12.1+cu130", "2.13.0"):
-        for codec_version in ("0.11.1", "0.10.0"):
-            _stub_torch(monkeypatch, torch_version)
-            monkeypatch.setattr(importlib.metadata, "version", lambda _name, _v = codec_version: _v)
-            hint = fixes._torchcodec_version_mismatch_hint()
-            assert hint is not None, f"{torch_version} + torchcodec {codec_version} must warn"
-            assert "torchcodec>=0.12.0" in hint
-            # No audio-torch2xx extra exists for these minors, so none is offered.
-            assert "unsloth[audio-torch" not in hint
-
-
-def test_torch_below_the_table_stays_silent(monkeypatch):
-    """A torch minor older than the matrix keeps the original no-opinion behaviour."""
-    import importlib.metadata
-
-    fixes = _load_import_fixes_module()
-    _stub_torch(monkeypatch, "2.4.0")
-    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.0.3")
-    assert fixes._torchcodec_version_mismatch_hint() is None
 
 
 def test_pyproject_declares_torch211_audio_extra_with_python_gate():
@@ -343,24 +275,6 @@ def test_select_torchcodec_spec_matches_pyproject_audio_extras():
         match = re.search(rf"^{extra} = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL)
         assert match is not None, extra
         assert ips._select_torchcodec_spec(torch_version) in match.group(1), extra
-
-
-def test_select_torchcodec_spec_matches_compat_matrix():
-    """Installer specs must admit exactly the minors the compat matrix allows."""
-    from packaging.specifiers import SpecifierSet
-
-    fixes = _load_import_fixes_module()
-    ips = _load_install_python_stack()
-    probes = [f"0.{n}.0" for n in range(0, 16)]
-    for torch_minor, allowed in fixes._TORCH_TORCHCODEC_MINORS.items():
-        specifier = SpecifierSet(
-            ips._select_torchcodec_spec(f"{torch_minor}.0").split("torchcodec", 1)[1]
-        )
-        admitted = {p.rsplit(".", 1)[0] for p in probes if specifier.contains(p)}
-        assert admitted == allowed, (
-            f"torch {torch_minor}: installer admits {sorted(admitted)}, "
-            f"matrix allows {sorted(allowed)}"
-        )
 
 
 # The published torchcodec compatibility table, transcribed from upstream. Sources agree:
@@ -462,40 +376,84 @@ def test_the_two_pypi_only_rows_stay_unpinned():
     )
 
 
-def test_audio_extras_carry_the_python_ceiling_their_codec_line_has():
-    """torchcodec publishes no sdist, so an extra left open above its last cp tag makes pip
-    fail the whole install instead of skipping audio. requires-python is open-ended (>=3.9),
-    so a newer interpreter reaches these extras; the marker has to stop it.
+# extra -> the first interpreter that must NOT select it, one that must, and whether its
+# codec line ships a Linux aarch64 wheel.
+#
+# torchcodec publishes no sdist, so an extra left open above its last cp tag, or on a host
+# with no wheel, makes pip fail the whole install instead of skipping audio -- and the
+# cu*/rocm*/intel torch 2.10 extras pull it in. requires-python is open-ended (>=3.9), so a
+# newer interpreter reaches these extras too; the marker has to stop it, and it has to match
+# install_python_stack.py.
+#
+# The Python ceilings come from the same upstream table _TORCHCODEC_PYTHON_WINDOWS encodes:
+# the 0.6/0.7 line stops at 3.13, everything from 0.9 up runs to 3.14. aarch64 is per-extra
+# rather than blanket: torchcodec had no aarch64 wheel until 0.11.0, and every release since
+# has kept it, so audio-torch211 must ALLOW aarch64 while the older extras, which top out at
+# 0.10, must still exclude it.
+_AUDIO_EXTRA_GATES = {
+    "audio-torch211": ("3.15", "3.14", True),
+    "audio-torch210": ("3.15", "3.14", False),
+    "audio-torch290": ("3.15", "3.14", False),
+    "audio-torch280": ("3.14", "3.13", False),
+}
 
-    The ceilings come from the same upstream table _TORCHCODEC_PYTHON_WINDOWS encodes: the
-    0.6/0.7 line stops at 3.13, everything from 0.9 up runs to 3.14.
-    """
+# Windows ARM64 and Intel Mac have no wheel at any torchcodec version.
+_WHEELED_HOSTS = (
+    {"sys_platform": "linux", "platform_machine": "x86_64"},
+    {"sys_platform": "win32", "platform_machine": "AMD64"},
+    {"sys_platform": "darwin", "platform_machine": "arm64"},
+)
+_WHEELLESS_HOSTS = (
+    {"sys_platform": "win32", "platform_machine": "ARM64"},
+    {"sys_platform": "darwin", "platform_machine": "x86_64"},
+)
+
+
+def _audio_extras():
+    extras = _tomllib().loads(PYPROJECT.read_text(encoding = "utf-8"))["project"][
+        "optional-dependencies"
+    ]
+    return {n: d for n, d in extras.items() if n.startswith("audio-torch")}
+
+
+def test_every_audio_extra_has_a_gate_of_its_own():
+    """A new extra added without a row here would go through the gates below untested."""
+    assert set(_audio_extras()) == set(_AUDIO_EXTRA_GATES)
+
+
+@pytest.mark.parametrize("extra", sorted(_AUDIO_EXTRA_GATES))
+def test_an_audio_extra_is_gated_to_the_hosts_and_pythons_its_wheels_cover(extra):
     markers = pytest.importorskip("packaging.markers")
-    text = PYPROJECT.read_text(encoding = "utf-8")
+    too_new, supported, allows_aarch64 = _AUDIO_EXTRA_GATES[extra]
+    deps = _audio_extras()[extra]
+    assert deps, extra
 
-    # extra -> the first interpreter that must NOT select it, and one that must.
-    expected = {
-        "audio-torch211": ("3.15", "3.14"),
-        "audio-torch210": ("3.15", "3.14"),
-        "audio-torch290": ("3.15", "3.14"),
-        "audio-torch280": ("3.14", "3.13"),
-    }
-    for extra, (too_new, supported) in expected.items():
-        match = re.search(rf"^{extra} = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL)
-        assert match is not None, extra
-        marker_text = match.group(1).split(";", 1)[1].rsplit('"', 1)[0].strip()
-        marker = markers.Marker(marker_text)
-        env = {
-            "sys_platform": "linux",
-            "platform_machine": "x86_64",
-            "platform_system": "Linux",
-            "os_name": "posix",
-        }
+    for dep in deps:
+        _, _, marker_text = dep.partition(";")
+        assert marker_text.strip(), f"{extra}: {dep!r} has no marker"
+        marker = markers.Marker(marker_text.strip())
+
+        base = {"python_version": "3.12", "platform_system": "Linux", "os_name": "posix"}
+        for case in _WHEELED_HOSTS:
+            assert marker.evaluate({**base, **case}), f"{extra} must install on {case}"
+        for case in _WHEELLESS_HOSTS:
+            assert not marker.evaluate(
+                {**base, **case}
+            ), f"{extra} has no wheel for {case} and must not be resolved there"
+        aarch64 = marker.evaluate(
+            {**base, "sys_platform": "linux", "platform_machine": "aarch64"}
+        )
+        assert aarch64 == allows_aarch64, (
+            f"{extra} {'must not exclude' if allows_aarch64 else 'must not be resolved on'} "
+            "Linux aarch64"
+        )
+
+        linux = {**_WHEELED_HOSTS[0], "platform_system": "Linux", "os_name": "posix"}
         assert not marker.evaluate(
-            {**env, "python_version": too_new}
+            {**linux, "python_version": too_new}
         ), f"{extra} still selects torchcodec on Python {too_new}, which has no wheel"
         assert marker.evaluate(
-            {**env, "python_version": supported}
+            {**linux, "python_version": supported}
         ), f"{extra} stopped selecting torchcodec on Python {supported}, which does"
 
 
@@ -508,7 +466,11 @@ def test_compat_matrix_matches_the_published_upstream_table():
 def test_installer_never_selects_a_torchcodec_built_against_another_torch():
     """The window handed to pip must not contain a release upstream pairs with a different
     torch: pip takes the HIGHEST match, so a window one minor too wide installs the mismatch
-    this whole module exists to prevent."""
+    this whole module exists to prevent.
+
+    This also ties the installer to the runtime guard's own matrix, since
+    test_compat_matrix_matches_the_published_upstream_table pins that matrix to the literal
+    below."""
     from packaging.specifiers import SpecifierSet
 
     ips = _load_install_python_stack()
@@ -528,64 +490,6 @@ def test_installer_never_selects_a_torchcodec_built_against_another_torch():
         assert (
             highest.rsplit(".", 1)[0] in allowed
         ), f"torch {torch_minor}: pip would resolve {spec} to {highest}"
-
-
-def test_audio_extras_are_gated_to_platforms_with_a_torchcodec_wheel():
-    """torchcodec publishes no sdist, so an ungated pin makes pip fail the whole install on
-    a host with no wheel instead of just skipping audio -- and the cu*/rocm*/intel torch
-    2.10 extras pull it in. The marker must match install_python_stack.py.
-
-    Linux aarch64 is per-extra rather than blanket: torchcodec had no aarch64 wheel when
-    this test was written, but 0.11.0 added manylinux_2_28_aarch64 and every release since
-    has kept it. So audio-torch211, whose line is >=0.11,<0.12, must ALLOW aarch64, while
-    the older extras, which top out at 0.10, must still exclude it. Windows ARM64 and Intel
-    Mac have no wheel at any version and stay excluded everywhere.
-    """
-    markers = pytest.importorskip("packaging.markers")
-    tomllib = _tomllib()
-    extras = tomllib.loads(PYPROJECT.read_text(encoding = "utf-8"))["project"][
-        "optional-dependencies"
-    ]
-    audio = {n: d for n, d in extras.items() if n.startswith("audio-torch")}
-    assert audio, "expected audio-torch* extras"
-
-    supported = [
-        {"sys_platform": "linux", "platform_machine": "x86_64"},
-        {"sys_platform": "win32", "platform_machine": "AMD64"},
-        {"sys_platform": "darwin", "platform_machine": "arm64"},
-    ]
-    # No wheel at any torchcodec version, so excluded from every extra.
-    never_supported = [
-        {"sys_platform": "win32", "platform_machine": "ARM64"},
-        {"sys_platform": "darwin", "platform_machine": "x86_64"},
-    ]
-    linux_aarch64 = {"sys_platform": "linux", "platform_machine": "aarch64"}
-    # The extras whose window reaches 0.11.0, where the aarch64 wheel first appears.
-    aarch64_capable = {"audio-torch211"}
-
-    for name, deps in audio.items():
-        for dep in deps:
-            _, _, marker_text = dep.partition(";")
-            assert marker_text.strip(), f"{name}: {dep!r} has no marker"
-            marker = markers.Marker(marker_text.strip())
-            env = {"python_version": "3.12"}
-            for case in supported:
-                assert marker.evaluate({**env, **case}), f"{name} must install on {case}"
-            for case in never_supported:
-                assert not marker.evaluate(
-                    {**env, **case}
-                ), f"{name} has no wheel for {case} and must not be resolved there"
-            allows_aarch64 = marker.evaluate({**env, **linux_aarch64})
-            if name in aarch64_capable:
-                assert allows_aarch64, (
-                    f"{name} selects the >=0.11 line, which ships manylinux_2_28_aarch64, "
-                    "so it must not exclude Linux aarch64"
-                )
-            else:
-                assert not allows_aarch64, (
-                    f"{name} tops out below 0.11, where no aarch64 wheel exists, "
-                    "so it must not be resolved there"
-                )
 
 
 def test_validator_and_runtime_guard_agree_on_the_whole_matrix(monkeypatch):
@@ -790,47 +694,49 @@ def test_the_installer_never_selects_a_spec_with_no_wheel_here(monkeypatch):
                 )
 
 
-def test_linux_aarch64_is_served_from_the_011_line_onwards(monkeypatch):
-    """aarch64 got its first wheel at 0.11.0, which is the line this branch selects."""
-    ips = _load_install_python_stack()
-    _patch_host(ips, monkeypatch, "linux-aarch64")
-    assert ips._PLATFORM_HAS_TORCHCODEC_WHEEL is not None
-    # torch 2.11 -> the 0.11 line, which has aarch64.
-    assert ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.11.0"))
-    # torch 2.10 -> the 0.10 line, which does not.
-    assert not ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.10.0"))
-
-
-def test_a_mac_below_14_declines_the_abi_stable_line(monkeypatch):
-    """torchcodec 0.12+ is macosx_14_0 only, so an older Mac must not be sent to it."""
-    ips = _load_install_python_stack()
-    _patch_host(ips, monkeypatch, "macos-arm64-13")
-    assert not ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.12.0"))
-    assert ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.11.0"))
-    _patch_host(ips, monkeypatch, "macos-arm64-14")
-    assert ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.12.0"))
-
-
-def test_the_gate_declines_a_line_whose_python_window_excludes_this_interpreter(monkeypatch):
-    """Architecture is not the only wheel axis. torch 2.5 selects the 0.1 line, and 0.1 stops
-    at Python 3.12 -- on 3.13 there is no wheel to install even on plain linux-x86_64.
-
-    This was masked while the 2.5 window ran to <0.3.0: it reached 0.2, which does ship cp313,
-    so the gate said yes for a release built against torch 2.6.
-    """
-    ips = _load_install_python_stack()
-    _patch_host(ips, monkeypatch, "linux-x86_64")
-    spec = ips._select_torchcodec_spec("2.5.0")
-
-    monkeypatch.setattr(ips.sys, "version_info", (3, 12, 0, "final", 0))
-    assert ips._torchcodec_spec_is_installable(spec)
-    monkeypatch.setattr(ips.sys, "version_info", (3, 13, 0, "final", 0))
-    assert not ips._torchcodec_spec_is_installable(spec)
-
+# The cells of the sweep above that were real bugs or are the documented transitions, with
+# the answer written by hand rather than read off _TORCHCODEC_WHEEL_HISTORY. The sweep
+# checks the gate against that oracle and so passes just as happily when both are wrong;
+# these say what the answer has to be.
+#   (host, python, torch minor, must the gate install?)
+_WHEEL_GATE_ANCHORS = [
+    # aarch64 got its first wheel at 0.11.0, the line torch 2.11 selects; 2.10 takes 0.10.
+    ("linux-aarch64", (3, 12), 11, True),
+    ("linux-aarch64", (3, 12), 10, False),
+    # torchcodec 0.12+ is macosx_14_0 only, so an older Mac must not be sent to it.
+    ("macos-arm64-13", (3, 12), 12, False),
+    ("macos-arm64-13", (3, 12), 11, True),
+    ("macos-arm64-14", (3, 12), 12, True),
+    # Architecture is not the only wheel axis. torch 2.5 selects the 0.1 line, which stops at
+    # Python 3.12, so 3.13 has nothing to install even on plain linux-x86_64. This was masked
+    # while the 2.5 window ran to <0.3.0: it reached 0.2, which does ship cp313, so the gate
+    # said yes for a release built against torch 2.6.
+    ("linux-x86_64", (3, 12), 5, True),
+    ("linux-x86_64", (3, 13), 5, False),
     # The floor moves too: 0.8+ dropped 3.9, so torch 2.9 has nothing for a 3.9 interpreter.
-    monkeypatch.setattr(ips.sys, "version_info", (3, 9, 0, "final", 0))
-    assert not ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.9.0"))
-    assert ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.8.0"))
+    ("linux-x86_64", (3, 9), 9, False),
+    ("linux-x86_64", (3, 9), 8, True),
+]
+# win_amd64 starts at 0.7.0 and torch 2.5-2.7 select lines below it. Reachable rather than
+# theoretical: the cu118 index tops out at torch 2.7.
+_WHEEL_GATE_ANCHORS += [
+    ("windows-amd64", (3, 12), minor, minor >= 8) for minor in (5, 6, 7, 8, 10, 11, 12)
+]
+
+
+@pytest.mark.parametrize(
+    "label, python, torch_minor, installable",
+    _WHEEL_GATE_ANCHORS,
+    ids = [f"{h}-py{p[0]}.{p[1]}-torch2.{m}" for h, p, m, _ in _WHEEL_GATE_ANCHORS],
+)
+def test_the_wheel_gate_answers_the_transitions_it_was_written_for(
+    monkeypatch, label, python, torch_minor, installable
+):
+    ips = _load_install_python_stack()
+    _patch_host(ips, monkeypatch, label)
+    monkeypatch.setattr(ips.sys, "version_info", python + (0, "final", 0))
+    spec = ips._select_torchcodec_spec(f"2.{torch_minor}.0")
+    assert ips._torchcodec_spec_is_installable(spec) == installable, spec
 
 
 def test_python_windows_match_the_published_upstream_table():
@@ -842,21 +748,6 @@ def test_python_windows_match_the_published_upstream_table():
         ((0, 8, 0), (3, 10), (3, 13)),
         ((0, 9, 0), (3, 10), (3, 14)),
     )
-
-
-def test_windows_declines_the_pre_070_lines(monkeypatch):
-    """win_amd64 starts at 0.7.0; torch 2.5-2.7 select windows below it.
-
-    Reachable rather than theoretical: the cu118 index tops out at torch 2.7.
-    """
-    ips = _load_install_python_stack()
-    _patch_host(ips, monkeypatch, "windows-amd64")
-    for minor in (5, 6, 7):
-        spec = ips._select_torchcodec_spec(f"2.{minor}.0")
-        assert not ips._torchcodec_spec_is_installable(spec), spec
-    for minor in (8, 10, 11, 12):
-        spec = ips._select_torchcodec_spec(f"2.{minor}.0")
-        assert ips._torchcodec_spec_is_installable(spec), spec
 
 
 def test_the_torchcodec_step_cannot_end_the_install():
@@ -932,8 +823,6 @@ def test_the_codec_index_honours_an_explicitly_pinned_torch_mirror(monkeypatch):
     configuration, so the codec install fails outright where public PyTorch is unreachable."""
     from studio import install_python_stack as ips
 
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
     assert ips._torchcodec_index_url("2.11.0+cu128") == "https://download.pytorch.org/whl/cu128"
 
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/pytorch/cu128/")
@@ -958,8 +847,6 @@ def test_the_runtime_remedy_honours_a_configured_torch_index(monkeypatch):
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.11.0")
     _stub_torch(monkeypatch, "2.10.0+cu128")
 
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
     assert "--index-url https://download.pytorch.org/whl/cu128" in (
         fixes._torchcodec_version_mismatch_hint() or ""
     )
@@ -991,8 +878,6 @@ def test_a_mismatched_accelerator_build_is_named_when_the_codec_cannot_load(monk
     import types
 
     fixes = _load_import_fixes_module()
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
     _stub_torch(monkeypatch, "2.11.0+cu128")
 
     codec = types.ModuleType("torchcodec")
@@ -1021,7 +906,6 @@ def test_the_printed_codec_index_is_redacted(monkeypatch):
     monkeypatch.setenv(
         "UNSLOTH_TORCH_INDEX_URL", "https://user:secret@mirror.corp.example/pytorch/cu128/"
     )
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
 
     # The installer still receives the exact URL, credentials and all.
     resolved = ips._torchcodec_index_url("2.11.0+cu128")
@@ -1048,8 +932,6 @@ def test_the_codec_index_follows_a_configured_pytorch_mirror(monkeypatch):
     import importlib
 
     monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.corp.example/whl")
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
     from studio import install_python_stack as ips
 
     ips = importlib.reload(ips)  # _PYTORCH_WHL_BASE is read at import time
@@ -1071,8 +953,6 @@ def test_the_runtime_remedy_follows_a_configured_pytorch_mirror(monkeypatch):
     fixes = _load_import_fixes_module()
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.11.0")
     _stub_torch(monkeypatch, "2.10.0+cu128")
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
 
     monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://user:secret@mirror.corp.example/whl")
     hint = fixes._torchcodec_version_mismatch_hint()
@@ -1102,9 +982,6 @@ def test_the_provenance_hint_does_not_assert_a_cause_it_has_not_established(monk
     import types
 
     fixes = _load_import_fixes_module()
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
-    monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
     _stub_torch(monkeypatch, "2.12.0+cu128")
 
     codec = types.ModuleType("torchcodec")
@@ -1153,9 +1030,6 @@ def test_the_provenance_remedy_pins_the_compatible_window(monkeypatch):
     import types
 
     fixes = _load_import_fixes_module()
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
-    monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
 
     codec = types.ModuleType("torchcodec")
     codec.__version__ = "0.8.0"
@@ -1235,9 +1109,6 @@ def test_the_provenance_hint_reads_a_codec_it_cannot_import(monkeypatch):
     import sys
 
     fixes = _load_import_fixes_module()
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
-    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
-    monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
     _stub_torch(monkeypatch, "2.11.0+cu128")
     # No importable torchcodec at all, which is what a failed initialisation leaves behind.
     monkeypatch.delitem(sys.modules, "torchcodec", raising = False)
