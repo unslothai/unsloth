@@ -683,7 +683,9 @@ def test_request_sanitization_refuses_a_tool_enabled_turn_when_the_toggle_is_off
         _sanitize_request(_model(enable_tools = True))
 
 
-def test_a_launcher_default_tool_policy_is_admitted_by_default_and_refused_under_the_toggle(monkeypatch):
+def test_a_launcher_default_tool_policy_is_admitted_by_default_and_refused_under_the_toggle(
+    monkeypatch,
+):
     set_tool_policy_default(True)
     assert _sanitize_request(_model())["stream"] is True
     monkeypatch.setenv("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "0")
@@ -699,8 +701,11 @@ def test_a_cli_tools_override_is_admitted_even_when_the_request_disables_tools(m
         _sanitize_request(_model(enable_tools = False))
 
 
-def test_a_checkpoint_recall_tool_loop_is_admitted_by_default_and_refused_under_the_toggle(monkeypatch):
+def test_a_checkpoint_recall_tool_loop_is_admitted_by_default_and_refused_under_the_toggle(
+    monkeypatch,
+):
     import routes.inference as inference_routes
+
     monkeypatch.setattr(
         inference_routes, "_checkpoint_recall_may_enable_tools", lambda request: True, raising = False
     )
