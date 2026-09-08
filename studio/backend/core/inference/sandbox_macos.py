@@ -49,6 +49,7 @@ import threading
 
 from .os_sandbox import (
     PROFILE_VERSION,
+    SESSION_PACKAGES_RELPATH,
     PreparedSandboxLaunch,
     SandboxUnavailableError,
     ToolLaunchPlan,
@@ -92,7 +93,7 @@ SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
 # Where `pip install` writes, relative to the session workdir. Shared spelling
 # with the Linux backend so a chat behaves the same on both.
-PACKAGE_TARGET_RELPATH = ".unsloth-packages"
+PACKAGE_TARGET_RELPATH = SESSION_PACKAGES_RELPATH
 
 _READ_ROOTS = (
     "/Library/Apple/System/Library/Frameworks",
@@ -478,7 +479,7 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
         candidates.extend(
             posixpath.join(prefix, name)
-            for name in ("bin", "include", "lib", "lib64", "pyvenv.cfg")
+            for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg")
         )
     try:
         paths = sysconfig.get_paths()

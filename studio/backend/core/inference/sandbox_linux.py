@@ -36,6 +36,7 @@ from functools import lru_cache
 from . import sandbox_seccomp
 from .os_sandbox import (
     PROFILE_VERSION,
+    SESSION_PACKAGES_RELPATH,
     PreparedSandboxLaunch,
     SandboxUnavailableError,
     ToolLaunchPlan,
@@ -132,7 +133,7 @@ _TLS_PRIVATE_DIRS = (
 # and the next one. Better than main, where the same command mutates the venv the
 # Unsloth server itself runs from. A dot directory so _snapshot_workdir_files
 # does not offer site-packages to the user as artifacts of their tool call.
-_PACKAGE_TARGET_RELPATH = ".unsloth-packages"
+_PACKAGE_TARGET_RELPATH = SESSION_PACKAGES_RELPATH
 # The one deliberate hole in the home mask. Model weights are gigabytes and a
 # private empty cache per tool call would re-download them every time, which is
 # how a sandbox gets turned off. Bound at the jail's own HOME so the default
@@ -268,6 +269,9 @@ def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[st
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site"),
     ]
     # The subdirectories a Python installation lives in, never the prefix itself.
+    # "libexec" for git: a Conda or Homebrew prefix that supplies its own git
+    # keeps git-remote-https and the rest of the helpers there, and PATH selects
+    # that git, so an https clone fails at the helper without it.
     # "include" is in the list for the same reason /usr/include is a system root:
     # a pip install with no wheel builds from source and needs Python.h, which
     # for a uv- or pyenv-managed interpreter lives under the prefix rather than
@@ -278,7 +282,8 @@ def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[st
     # exists to keep closed.
     for prefix in prefixes:
         candidates.extend(
-            os.path.join(prefix, name) for name in ("bin", "include", "lib", "lib64", "pyvenv.cfg")
+            os.path.join(prefix, name)
+            for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg")
         )
     try:
         paths = sysconfig.get_paths()

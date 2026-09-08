@@ -7243,6 +7243,35 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
     return tool_execution_mode
 
 
+def _session_packages_env(env: dict, workdir: str) -> dict:
+    """Keep a session's installed packages importable on a launch that is not isolated.
+
+    The backends point PIP_TARGET at ``<workdir>/.unsloth-packages`` and put it on
+    PYTHONPATH, so a package installed by an isolated call lives there. A later
+    call in the same session can still fall back -- a socket appears in the
+    workdir, the tree crosses the scan limit -- and without this it would lose the
+    package and its console scripts halfway through a chat.
+
+    Only when the directory already exists, which is what keeps a host that never
+    isolates byte-identical to main: nothing ever created one there, so nothing is
+    added and pip still installs where it always did.
+    """
+    packages = os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
+    if not os.path.isdir(packages):
+        return env
+    updated = dict(env)
+    updated["PYTHONPATH"] = os.pathsep.join(
+        part for part in (updated.get("PYTHONPATH", ""), packages) if part
+    )
+    # Last, for the reason the backends put it last: the directory is writable by
+    # the tool call, and a planted binary must not shadow a bare command the
+    # approval logic treats as safe.
+    updated["PATH"] = os.pathsep.join(
+        part for part in (updated.get("PATH", ""), os.path.join(packages, "bin")) if part
+    )
+    return updated
+
+
 def _software_safeguards_launch(plan, fault: str):
     """The launch ``auto`` falls back to when no OS boundary can be built.
 
@@ -7254,7 +7283,10 @@ def _software_safeguards_launch(plan, fault: str):
     return os_sandbox.PreparedSandboxLaunch(
         argv = plan.argv,
         workdir = plan.workdir,
-        env = plan.env,
+        # The other two doors into a launch without OS isolation come back from
+        # os_sandbox and are handled in _prepare_tool_launch; this is the one that
+        # builds its own.
+        env = _session_packages_env(plan.env, plan.workdir),
         preexec_fn = plan.preexec_fn,
         backend = "software-safeguards",
         timeout_seconds = plan.timeout_seconds,
@@ -7279,8 +7311,15 @@ def _software_safeguards_launch(plan, fault: str):
                 )
                 if item != "timeout" or plan.timeout_seconds is not None
             ),
+            # The same set the unavailable-host fallback discloses, plus what
+            # went wrong. This launch is that launch: host files readable, network
+            # open, and reaping unqualified unless the sweep is verified. Naming
+            # only the fault made the record depend on which door the fallback
+            # came through.
             limitations = (
-                ("security_restrictions_disabled", fault) if full else ("no_os_isolation", fault)
+                ("security_restrictions_disabled", fault)
+                if full
+                else (*os_sandbox._software_only_limitations(), fault)
             ),
         ),
     )
@@ -7313,6 +7352,12 @@ def _prepare_tool_launch(plan):
                 prepared.backend,
             )
             prepared.preexec_fn = plan.preexec_fn
+        if prepared.execution_record is not None and not prepared.execution_record.os_isolation:
+            # Covers all three shapes a launch without OS isolation arrives in:
+            # a host that cannot isolate, a backend that declined this launch, and
+            # a planner that broke. The isolated path already has it from the
+            # backend, which is also what put the packages there.
+            prepared.env = _session_packages_env(prepared.env, plan.workdir)
         return prepared
     except os_sandbox.SandboxUnavailableError:
         # An unknown mode is a caller error rather than a host that cannot

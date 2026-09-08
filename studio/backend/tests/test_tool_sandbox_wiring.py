@@ -33,6 +33,7 @@ from __future__ import annotations
 import ast
 import inspect
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -595,7 +596,14 @@ def test_auto_falls_back_when_the_backend_declines_this_launch(monkeypatch, run,
     record = tools._last_tool_execution_record
     assert record.effective_mode == "software_safeguards"
     assert record.os_isolation is False
-    assert record.limitations == ("no_os_isolation", "sandbox_declined_this_launch")
+    # The same set the unavailable-host fallback discloses, plus the fault: this
+    # launch is that launch, so the record must not depend on which door it came
+    # through.
+    assert record.limitations == (
+        *os_sandbox._software_only_limitations(),
+        "sandbox_declined_this_launch",
+    )
+    assert "host_files_readable" in record.limitations
 
 
 def test_required_still_refuses_when_the_backend_declines_this_launch(monkeypatch):
@@ -723,3 +731,37 @@ def test_the_fallback_never_claims_a_descendant_sweep_it_does_not_perform():
     else:
         assert "detached_descendant_cleanup_unverified" in limitations
     assert not hasattr(os_sandbox, "descendant_sweep_supported")
+
+
+def test_a_package_installed_in_an_isolated_call_survives_a_fallback(monkeypatch):
+    """The backends put PIP_TARGET at <workdir>/.unsloth-packages and keep it on
+    PYTHONPATH, so a package an isolated call installed lives there. A later call
+    in the same session can still fall back, and losing the package halfway
+    through a chat is the visible half of that."""
+    workdir = tools._get_workdir(_SESSION)
+    packages = os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
+    os.makedirs(os.path.join(packages, "bin"), exist_ok = True)
+    with open(os.path.join(packages, "installed_by_an_earlier_call.py"), "w") as handle:
+        handle.write("VALUE = 'from the session package directory'\n")
+    _declining_backend(monkeypatch, "the session workdir contains a device or IPC node")
+    try:
+        out = tools._python_exec(
+            "import installed_by_an_earlier_call as m; print('IMPORTED', m.VALUE)",
+            None,
+            60,
+            _SESSION,
+        )
+        assert "from the session package directory" in out, out
+        path = tools._bash_exec("printf '%s' \"$PATH\"", None, 60, _SESSION)
+        assert path.strip().split(os.pathsep)[-1] == os.path.join(packages, "bin")
+    finally:
+        shutil.rmtree(packages, ignore_errors = True)
+
+
+def test_a_host_that_never_isolated_keeps_main_s_environment(monkeypatch):
+    """The other half: the package directory only joins the path when it exists,
+    so a host with no sandbox at all is handed back exactly what it handed in."""
+    workdir = tools._get_workdir(_SESSION)
+    shutil.rmtree(os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH), ignore_errors = True)
+    handed_in = {"PATH": "/usr/bin", "PYTHONPATH": "/shim"}
+    assert tools._session_packages_env(handed_in, workdir) == handed_in

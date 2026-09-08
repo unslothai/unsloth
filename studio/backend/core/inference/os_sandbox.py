@@ -44,6 +44,11 @@ TOOL_EXECUTION_MODES = ("auto", "required", "full")
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
 
+# Where a session's pip installs live, relative to the workdir. Both backends
+# point PIP_TARGET at it and tools.py keeps it on the path of a launch that
+# fell back, so a package survives a call that could not be isolated.
+SESSION_PACKAGES_RELPATH = ".unsloth-packages"
+
 # What a launch keeps when the OS boundary is NOT in force. This is exactly the
 # set main already applies, named so the record can state it rather than imply it.
 _SOFTWARE_SAFEGUARDS = (

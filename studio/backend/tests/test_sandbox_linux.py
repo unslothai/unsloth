@@ -896,3 +896,16 @@ def test_the_compiler_headers_a_source_build_needs_are_readable(prepared):
     if include and os.path.isdir(include):
         bound = [source for source, _ in _pairs(prepared.argv, "--ro-bind")]
         assert any(sandbox_linux._within(include, path) for path in (*sources, *bound)), include
+
+
+def test_a_runtime_prefix_contributes_its_git_helpers(tmp_path, monkeypatch):
+    """A Conda or Homebrew prefix that supplies its own git keeps git-remote-https
+    and the rest in <prefix>/libexec, and the sanitized PATH selects that git, so
+    an https clone fails at the helper without it."""
+    prefix = tmp_path / "conda"
+    for name in ("bin", "libexec", "lib"):
+        (prefix / name).mkdir(parents = True)
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    paths = sandbox_linux._runtime_read_paths(str(tmp_path / "session"), ("/usr/lib",))
+    assert str(prefix / "libexec") in paths
+    assert str(prefix) not in paths
