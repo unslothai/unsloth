@@ -96,14 +96,14 @@ def test_an_image_without_an_orientation_tag_is_untouched():
 # rotate a quarter turn), not off Pillow -- a table copied from the implementation would
 # agree with a wrong implementation.
 _AS_DISPLAYED = {
-    1: ((300, 100), ["red", "green", "blue", "yellow"]),      # identity
-    2: ((300, 100), ["green", "red", "yellow", "blue"]),      # mirrored left-right
-    3: ((300, 100), ["yellow", "blue", "green", "red"]),      # rotated 180
-    4: ((300, 100), ["blue", "yellow", "red", "green"]),      # mirrored top-bottom
-    5: ((100, 300), ["red", "blue", "green", "yellow"]),      # flipped about the main diagonal
-    6: ((100, 300), ["blue", "red", "yellow", "green"]),      # quarter turn clockwise
-    7: ((100, 300), ["yellow", "green", "blue", "red"]),      # flipped about the anti-diagonal
-    8: ((100, 300), ["green", "yellow", "red", "blue"]),      # quarter turn anticlockwise
+    1: ((300, 100), ["red", "green", "blue", "yellow"]),  # identity
+    2: ((300, 100), ["green", "red", "yellow", "blue"]),  # mirrored left-right
+    3: ((300, 100), ["yellow", "blue", "green", "red"]),  # rotated 180
+    4: ((300, 100), ["blue", "yellow", "red", "green"]),  # mirrored top-bottom
+    5: ((100, 300), ["red", "blue", "green", "yellow"]),  # flipped about the main diagonal
+    6: ((100, 300), ["blue", "red", "yellow", "green"]),  # quarter turn clockwise
+    7: ((100, 300), ["yellow", "green", "blue", "red"]),  # flipped about the anti-diagonal
+    8: ((100, 300), ["green", "yellow", "red", "blue"]),  # quarter turn anticlockwise
 }
 
 
@@ -130,8 +130,10 @@ def test_the_orientation_tag_never_decides_whether_an_image_is_accepted(orientat
         decode_b64_image(data, max_side = 200)
     with pytest.raises(ValueError, match = "too large"):
         decode_b64_image(data, max_pixels = 20_000)
-    assert decode_b64_image(data, max_side = 300, max_pixels = 30_000).size == \
-        _AS_DISPLAYED[orientation][0]
+    assert (
+        decode_b64_image(data, max_side = 300, max_pixels = 30_000).size
+        == _AS_DISPLAYED[orientation][0]
+    )
 
 
 def test_an_oversized_image_is_refused_before_its_pixels_are_read(monkeypatch):
