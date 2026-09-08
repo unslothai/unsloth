@@ -18,7 +18,6 @@ import {
 import type {
   CachedInventoryRow,
   DiscoverRow,
-  InventoryRow,
   LocalInventoryRow,
   ModelsTab,
 } from "../types";
@@ -46,8 +45,6 @@ export interface ModelsCatalogState {
   inventoryError: boolean;
   inventoryWarning: boolean;
   query: string;
-  activeCheckpoint: string | null;
-  activeGgufVariant: string | null;
   searchError: string | null;
   searchFailure?: HubFailure | null;
   online: boolean;
@@ -74,7 +71,6 @@ export interface ModelsCatalogHandlers {
   onRetry: () => void;
   onInventoryChange?: () => void;
   onSwitchDevice?: () => void;
-  onOpenModelSettings?: (row: InventoryRow) => void;
 }
 
 function assignRef<T>(ref: RefObject<T | null>, value: T | null) {
@@ -113,8 +109,6 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     inventoryError,
     inventoryWarning,
     query,
-    activeCheckpoint,
-    activeGgufVariant,
     searchError,
     searchFailure,
     online,
@@ -134,7 +128,6 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     onRetry,
     onInventoryChange,
     onSwitchDevice,
-    onOpenModelSettings,
   } = handlers;
   const [scrolled, setScrolled] = useState(false);
   const [streamingActive, setStreamingActive] = useState(false);
@@ -476,8 +469,6 @@ export const ModelsCatalog = memo(function ModelsCatalog({
                 typeFilterActive={typeFilterActive}
                 onClearFilters={onClearFilters}
                 scrollElement={downloadedScrollEl}
-                activeCheckpoint={activeCheckpoint}
-                activeGgufVariant={activeGgufVariant}
                 isDataset={isDataset}
                 inventoryTokens={inventoryTokens}
                 deviceType={deviceType}
@@ -485,7 +476,6 @@ export const ModelsCatalog = memo(function ModelsCatalog({
                 columns={discoverView === "two" ? 2 : 1}
                 sort={inventorySort}
                 onInventoryChange={onInventoryChange}
-                onOpenModelSettings={onOpenModelSettings}
               />
             </div>
           ) : (
