@@ -17,8 +17,8 @@ Unsloth transformers pin AND installs a current mlx-vlm, and it requires the sam
 minimum versions unsloth-zoo declares so a backtracked old mlx-vlm (which still
 imports but breaks VLM Train/Export) is never accepted as healthy.
 
-Mirrors the runtime backend self-heal already used for tilelang
-(core.training.worker._ensure_tilelang_backend_unconditional): default-on,
+Mirrors the runtime backend self-heal already used for causal-conv1d
+(core.training.worker._ensure_causal_conv1d_fast_path): default-on,
 best-effort, opt out with UNSLOTH_DISABLE_MLX_AUTOREPAIR=1.
 """
 
