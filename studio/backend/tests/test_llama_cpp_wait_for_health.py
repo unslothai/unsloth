@@ -1338,7 +1338,7 @@ class TestHealthPublicationIsAtomicWithTeardown:
 
         b._kill_process(teardown = True)
 
-        assert b._healthy is False, (
-            "teardown left _healthy set, so a publication that won the race is never undone"
-        )
+        assert (
+            b._healthy is False
+        ), "teardown left _healthy set, so a publication that won the race is never undone"
         assert b._publish_healthy() is False, "a later publication slipped past the teardown"
