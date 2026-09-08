@@ -27796,18 +27796,37 @@ def _reject_unserviceable_responses_attachment(part, *, role = "user") -> None:
             )
 
 
+# The only part types a flatten may discard without losing something the caller sent.
+# ``input_text`` / ``output_text`` survive the flatten as text; ``refusal`` and
+# ``summary_text`` are the model's own output metadata, which clients round-trip and the
+# prompt does not need. OpenAI's part enumeration is input_text, input_image, output_text,
+# refusal, input_file, computer_screenshot, summary_text -- so an allowlist, not an
+# ``input_`` prefix test, which would miss ``computer_screenshot``.
+_RESPONSES_FLATTENABLE_PART_TYPES = frozenset(
+    {"input_text", "output_text", "refusal", "summary_text"}
+)
+
+
 def _reject_unserviceable_responses_attachments(item) -> None:
     """Run the attachment refusal over one input message's content parts.
 
-    Role matters for images: only a user turn keeps its parts. Every other role is flattened
-    by ``_responses_message_text``, which keeps text and dropped the image in silence, because
-    Chat Completions wants a plain string on system and assistant and strict templates reject
-    an array there. So an image on those roles cannot be forwarded, only refused.
+    Role matters: only a user turn keeps its parts. Every other role is flattened by
+    ``_responses_message_text``, which keeps text and silently dropped everything else,
+    because Chat Completions wants a plain string on system and assistant and strict
+    templates reject an array there. Nothing can be forwarded there, only refused.
     """
     if isinstance(item.content, str):
         return
     for part in item.content or []:
         _reject_unserviceable_responses_attachment(part, role = item.role)
+        part_type = getattr(part, "type", None)
+        if item.role != "user" and part_type not in _RESPONSES_FLATTENABLE_PART_TYPES:
+            _raise_unsupported_openai_parameter(
+                "input",
+                f"Responses message content parts of type '{part_type}' are not supported on "
+                f"{item.role} messages; {item.role} content is flattened to text by the local "
+                "adapter.",
+            )
 
 
 def _reject_unknown_responses_message_part(part) -> None:

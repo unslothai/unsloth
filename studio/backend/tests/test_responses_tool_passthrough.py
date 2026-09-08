@@ -1071,9 +1071,8 @@ class TestResponsesMessagePartMatrix:
     @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids=_matrix_id)
     @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
     def test_attachments_refused_on_every_role(self, case, role):
-        # Only attachments are hoisted, so an unmodelled text part passes here while the
-        # same part is refused on a user turn. Every image is refused on these roles,
-        # servable or not: _responses_message_text keeps text and would drop it.
+        # These roles flatten to text, so only a text-ish part survives; everything else,
+        # servable image included, is caller content the flatten would drop.
         part, refused, needle = case
         payload = ResponsesRequest(
             input = [
@@ -1081,13 +1080,15 @@ class TestResponsesMessagePartMatrix:
                 {"role": "user", "content": "go on"},
             ],
         )
+        if part["type"] in ("input_text", "output_text", "refusal", "summary_text"):
+            assert _normalise_responses_input(payload)
+            return
         if part["type"] == "input_file":
             expected = needle
         elif part["type"] == "input_image":
             expected = needle if refused else "only supported on user messages"
         else:
-            assert _normalise_responses_input(payload)
-            return
+            expected = part["type"]
         with pytest.raises(HTTPException) as exc:
             _normalise_responses_input(payload)
         assert exc.value.status_code == 400
@@ -1120,6 +1121,59 @@ class TestResponsesMessagePartMatrix:
         assert exc.value.status_code == 400
         assert "only supported on user messages" in str(exc.value.detail)
         assert role in str(exc.value.detail)
+
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    @pytest.mark.parametrize(
+        "part",
+        [
+            {"type": "input_audio", "input_audio": {"data": "AA", "format": "wav"}},
+            {"type": "computer_screenshot", "image_url": "https://example.com/a.png"},
+            {"type": "input_brand_new", "value": 1},
+        ],
+        ids = ["input_audio", "computer_screenshot", "future"],
+    )
+    def test_a_non_text_part_is_refused_on_a_role_that_flattens(self, role, part):
+        # The flatten keeps text and drops the rest, so anything else on these roles is
+        # caller content that vanishes. A user turn already refused these by name.
+        text_part = (
+            {"type": "output_text", "text": "hi"}
+            if role == "assistant"
+            else {"type": "input_text", "text": "hi"}
+        )
+        payload = ResponsesRequest(
+            input = [
+                {"role": role, "content": [text_part, part]},
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert part["type"] in str(exc.value.detail)
+        assert role in str(exc.value.detail)
+
+    @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
+    def test_assistant_output_metadata_survives_the_flatten(self, part_type):
+        # refusal and summary_text are the model's own output, which clients round-trip.
+        # They carry nothing the prompt needs, so the flatten may drop them in silence and
+        # a replay turn must not start failing.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "earlier answer"},
+                        {"type": part_type, "text": "x", "refusal": "x"},
+                    ],
+                },
+                {"role": "user", "content": "why?"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [
+            ("assistant", "earlier answer"),
+            ("user", "why?"),
+        ]
 
     def test_a_servable_image_still_passes_on_a_user_turn(self):
         payload = ResponsesRequest(
