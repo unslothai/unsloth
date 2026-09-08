@@ -829,6 +829,103 @@ class TestARetryThatGrewItsPrompt:
             <= 16384 // 4
         )
 
+    def test_the_retry_never_gets_a_second_allowance(self):
+        """One lease covers both attempts, so the retry spends what is left of it.
+
+        Under a 16K unified pool with four slots the first attempt is charged a share:
+        prompt 3007 plus a 1089-token allowance. The model fills the allowance with an
+        unparseable call, the nudge appends it and asks again, and the retry prompt is now
+        past the share -- where the wire bound hands out the flat unstated allowance. That
+        is 1024 tokens of KV nobody reserved, and four such chats occupy 21736 of 16384.
+        """
+        budget, slots = 16384, 4
+        backend = _backend_stub(window = budget, total = budget, slots = slots)
+        first_messages = [{"role": "user", "content": "word " * 2400}]
+        payload = _chat("word " * 2400, max_tokens = budget)
+        allowance = _openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, conversation = first_messages
+        )
+        charge = _openai_llama_admission_tokens(
+            payload,
+            budget = budget,
+            capacity = slots,
+            context_window = budget,
+            conversation = first_messages,
+        )
+        first_prompt = _openai_llama_admission_wire_prompt_tokens(
+            first_messages, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        )
+        # The charge IS the first attempt's wire occupancy, which is what the retry has.
+        assert first_prompt + allowance == charge == budget // slots
+
+        grown = first_messages + [
+            # The whole allowance came back as an unparseable call.
+            {"role": "assistant", "content": "blah " * allowance},
+            {"role": "user", "content": "That was not a valid tool call. Try again."},
+        ]
+        retry_prompt = _openai_llama_admission_wire_prompt_tokens(
+            grown, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        )
+        assert retry_prompt >= budget // slots, retry_prompt
+
+        unbounded = _openai_llama_admission_retry_max_tokens(
+            {"messages": grown},
+            admission_output_allowance = allowance,
+            request = None,
+            llama_backend = backend,
+        )
+        # Without the first attempt to measure against, a fresh flat allowance.
+        assert unbounded == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+
+        bound = _openai_llama_admission_retry_max_tokens(
+            {"messages": grown},
+            admission_output_allowance = allowance,
+            request = None,
+            llama_backend = backend,
+            first_messages = first_messages,
+        )
+        growth = retry_prompt - first_prompt
+        assert bound == max(1, allowance - growth)
+        assert bound < unbounded
+        # What the retry adds to the prompt it inherited is what the lease still holds.
+        assert bound <= max(1, charge - retry_prompt)
+
+    def test_a_retry_that_grew_a_little_keeps_the_rest_of_its_allowance(self):
+        """An over-share prompt is charged prompt + the flat allowance, and a short
+        malformed answer leaves most of it, so the retry occupies exactly the charge."""
+        budget, slots = 16384, 4
+        backend = _backend_stub(window = budget, total = budget, slots = slots)
+        # Already past a 4096 share on the first attempt.
+        first_messages = [{"role": "user", "content": "word " * 4000}]
+        payload = _chat("word " * 4000, max_tokens = budget)
+        allowance = _openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend, conversation = first_messages
+        )
+        assert allowance == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        charge = _openai_llama_admission_tokens(
+            payload,
+            budget = budget,
+            capacity = slots,
+            context_window = budget,
+            conversation = first_messages,
+        )
+        grown = first_messages + [
+            {"role": "assistant", "content": "blah " * 40},
+            {"role": "user", "content": "Try again."},
+        ]
+        retry_prompt = _openai_llama_admission_wire_prompt_tokens(
+            grown, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        )
+        bound = _openai_llama_admission_retry_max_tokens(
+            {"messages": grown},
+            admission_output_allowance = allowance,
+            request = None,
+            llama_backend = backend,
+            first_messages = first_messages,
+        )
+        assert bound > 1
+        assert retry_prompt + bound == charge
+
     def test_a_client_that_named_a_cap_is_left_alone(self):
         backend = _backend_stub(window = 16384, total = 16384, slots = 4)
         grown = {"messages": [{"role": "user", "content": "word " * 500}], "max_tokens": 512}
@@ -1061,3 +1158,144 @@ class TestTheAnthropicSurface:
 
         allowance = seen["tools"]["admission_output_allowance"]
         assert allowance is not None and allowance <= 16384 // 4
+
+
+class TestBothPassthroughsPriceTheirRetry:
+    """The wire cap the nudge retry actually goes out with, on both routes.
+
+    The arithmetic is proved above; this proves each passthrough hands the first
+    attempt's messages over, since neither can reach a lease from where it retries.
+    """
+
+    _GARBAGE = "<tool_call>call lookup somehow???"
+    _TOOL = {
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "Look something up",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+    @pytest.fixture(autouse = True)
+    def _isolate(self, monkeypatch):
+        reset_llama_admission_queues()
+        monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 64))
+        yield
+        reset_llama_admission_queues()
+
+    @staticmethod
+    def _backend():
+        return SimpleNamespace(
+            base_url = "http://llama.test",
+            context_length = 16384,
+            _kv_cache_context_total = 16384,
+            effective_parallel_slots = 4,
+            _request_reasoning_kwargs = lambda *_a, **_k: None,
+        )
+
+    class _Scripted:
+        def __init__(self, bodies):
+            self.bodies = list(bodies)
+            self.posts = []
+
+        async def post(
+            self,
+            _url,
+            json = None,
+            timeout = None,
+            headers = None,
+        ):
+            self.posts.append(json)
+            return httpx.Response(
+                200, json = self.bodies[min(len(self.posts) - 1, len(self.bodies) - 1)]
+            )
+
+        async def aclose(self):
+            return None
+
+    def _reply(self, content):
+        return {
+            "id": "chatcmpl-up",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "gguf",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+        }
+
+    def _assert_retry_stays_inside_the_lease(self, backend, posts):
+        assert len(posts) == 2, len(posts)
+        first, retry = posts
+        first_prompt = _openai_llama_admission_wire_prompt_tokens(
+            first["messages"], image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        )
+        retry_prompt = _openai_llama_admission_wire_prompt_tokens(
+            retry["messages"], image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        )
+        # Past its share, where the wire bound would otherwise hand out a fresh 1024.
+        assert retry_prompt >= 16384 // 4, retry_prompt
+        assert retry["max_tokens"] < _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        growth = retry_prompt - first_prompt
+        assert retry["max_tokens"] <= max(1, first["max_tokens"] - growth)
+
+    def test_the_openai_passthrough_prices_its_retry(self, monkeypatch):
+        backend = self._backend()
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "word " * 2400}],
+            tools = [self._TOOL],
+            max_tokens = 16384,
+            nudge_tool_calls = True,
+        )
+        client = self._Scripted(
+            [self._reply(self._GARBAGE + " blah" * 1200), self._reply(self._GARBAGE)]
+        )
+        monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+
+        asyncio.run(
+            inf_mod._openai_passthrough_non_streaming_upstream(
+                backend, payload, "gguf", monitor_id = None
+            )
+        )
+        self._assert_retry_stays_inside_the_lease(backend, client.posts)
+
+    def test_the_anthropic_passthrough_prices_its_retry(self, monkeypatch):
+        backend = self._backend()
+        messages = [{"role": "user", "content": "word " * 2400}]
+        payload = _Payload(messages = messages, max_tokens = 16384)
+        allowance = _openai_llama_admission_enforced_max_tokens(
+            payload,
+            request = None,
+            llama_backend = backend,
+            conversation = messages,
+            injected_tools = [self._TOOL],
+        )
+        assert allowance is not None
+        client = self._Scripted(
+            [self._reply(self._GARBAGE + " blah" * 1200), self._reply(self._GARBAGE)]
+        )
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+
+        asyncio.run(
+            inf_mod._anthropic_passthrough_non_streaming(
+                backend,
+                messages,
+                [self._TOOL],
+                0.7,
+                0.95,
+                None,
+                allowance,
+                "msg_test",
+                "gguf",
+                nudge_tool_calls = True,
+                admission_output_allowance = allowance,
+            )
+        )
+        self._assert_retry_stays_inside_the_lease(backend, client.posts)

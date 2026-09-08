@@ -2348,9 +2348,16 @@ def _openai_llama_admission_retry_max_tokens(
     llama_backend,
     injected_tools = None,
     payload = None,
+    first_messages = None,
 ) -> Optional[int]:
     """The cap for a passthrough retry whose prompt grew. Gated on the first attempt's
-    bound, so a client with its own cap does not start being bounded here."""
+    bound, so a client with its own cap does not start being bounded here.
+
+    One lease covers both attempts and no re-cost sits between them, so the retry is not
+    priced as a fresh request: a grown prompt past its share would be handed the flat
+    allowance on top of the charge. With ``first_messages`` the growth is measured by the
+    same estimator and the retry writes at most ``allowance - growth``, floored at one.
+    """
     if admission_output_allowance is None:
         return None
     share = _openai_llama_admission_share(request, llama_backend)
@@ -2368,6 +2375,14 @@ def _openai_llama_admission_retry_max_tokens(
         window = _openai_llama_admission_context_window(llama_backend) or budget or share,
         budget = budget,
     )
+    if first_messages is not None:
+        first_prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
+            first_messages,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            injected_tools = injected_tools,
+        )
+        growth = max(0, prompt_tokens - first_prompt_tokens)
+        bound = max(1, min(bound, admission_output_allowance - growth))
     current = _positive_int_or_none(retry_body.get("max_tokens"))
     return bound if current is None else min(current, bound)
 
@@ -33074,6 +33089,9 @@ async def _anthropic_passthrough_non_streaming(
                 request = request,
                 llama_backend = llama_backend,
                 injected_tools = _healing_tools,
+                # One lease covers both attempts, so the retry writes what is left of the
+                # first attempt's allowance, not a fresh one.
+                first_messages = body.get("messages") or [],
             )
             if _retry_bound is not None:
                 retry_body["max_tokens"] = _retry_bound
@@ -35070,6 +35088,9 @@ async def _openai_passthrough_non_streaming_upstream(
             llama_backend = llama_backend,
             injected_tools = body.get("tools"),
             payload = payload,
+            # One lease covers both attempts, so the retry writes what is left of the
+            # first attempt's allowance, not a fresh one.
+            first_messages = body.get("messages") or [],
         )
         if _retry_bound is not None:
             retry_body["max_tokens"] = _retry_bound
