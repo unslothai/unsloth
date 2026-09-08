@@ -955,7 +955,9 @@ def test_an_efi_dismount_failure_is_never_reported_as_a_completed_stage():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     dismount = ps1[ps1.index("function Dismount-Efi") : ps1.index("function Test-PolicyActive")]
     assert "$script:EfiStillMounted = $true" in dismount
-    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    prepare = ps1[
+        ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
+    ]
     assert "if ($script:EfiStillMounted) {" in prepare
     revert = ps1[ps1.index("function Invoke-Revert") :]
     assert "-or $script:EfiStillMounted" in revert
@@ -995,10 +997,9 @@ def test_a_partial_collection_is_marked_inside_the_zip():
     assert collect.index("foreach ($item in Get-ChildItem -LiteralPath $dir -Recurse -File)") < warn
     assert warn < collect.index("Compress-Archive -Path (Join-Path $stage '*')")
     # And a retry that succeeded clears the failed attempt's marker.
-    assert (
-        collect.index("Remove-Item -LiteralPath (Join-Path $dir 'events-collection-error.txt')")
-        > collect.index("could not read $CI_LOG, so the event window was not collected")
-    )
+    assert collect.index(
+        "Remove-Item -LiteralPath (Join-Path $dir 'events-collection-error.txt')"
+    ) > collect.index("could not read $CI_LOG, so the event window was not collected")
 
 
 def test_the_app_control_verdict_cannot_pass_on_an_unread_channel():
@@ -1031,5 +1032,5 @@ def test_the_audit_channel_resize_is_verified_not_assumed():
     workflow = WORKFLOW.read_text(encoding = "utf-8")
     step = workflow[workflow.index("- name: Require a runner that can host a policy") :]
     step = step[: step.index("- name: Fetch the Smart App Control audit policies")]
-    assert "if ($LASTEXITCODE -ne 0) { throw \"wevtutil sl $log exited" in step
+    assert 'if ($LASTEXITCODE -ne 0) { throw "wevtutil sl $log exited' in step
     assert "$maxSize -lt 67108864" in step
