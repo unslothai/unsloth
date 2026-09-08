@@ -652,9 +652,7 @@ def test_bash_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     sentinel = tmp_path / "grandchild_ran"
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
-    result = _bash_exec(
-        command, timeout = 1
-    )  # no output_callback -> communicate path
+    result = _bash_exec(command, timeout = 1)  # no output_callback -> communicate path
     assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
 

@@ -471,9 +471,7 @@ def _capability_snapshot(
         probe_generation = hashlib.sha256((identity + "unavailable").encode()).hexdigest(),
         environment_fingerprint = identity,
         remediation = (
-            _linux_unavailable_remediation()
-            if sys.platform == "linux"
-            else _BLOCKED_REMEDIATION
+            _linux_unavailable_remediation() if sys.platform == "linux" else _BLOCKED_REMEDIATION
         ),
         limited_limitations = ("unrestricted_network", "host_files_readable")
         + (() if sys.platform == "win32" else ("detached_descendant_cleanup_unverified",)),

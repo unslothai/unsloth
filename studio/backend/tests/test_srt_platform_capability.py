@@ -36,7 +36,11 @@ def test_supported_platform_uses_live_probe_not_strict_dns_gate(monkeypatch, pla
 def test_missing_linux_prerequisites_are_named_in_the_remediation(monkeypatch):
     # SRT_TOOL_ISOLATION.md tells the user to install prerequisites "if the capability
     # message requests them", so the message has to actually request them.
-    monkeypatch.setattr(os_sandbox.shutil, "which", lambda name, **kwargs: None if name == "socat" else "/usr/bin/" + name)
+    monkeypatch.setattr(
+        os_sandbox.shutil,
+        "which",
+        lambda name, **kwargs: None if name == "socat" else "/usr/bin/" + name,
+    )
     monkeypatch.setattr(os_sandbox, "_linux_userns_blocked_by_apparmor", lambda: False)
     remediation = os_sandbox._linux_unavailable_remediation()
     assert "socat" in remediation
