@@ -326,9 +326,7 @@ def test_a_cached_lone_tagged_build_resolves_under_its_legacy_bare_pin(tmp_path,
     from hub.utils import gguf as gguf_module
 
     snapshot = _materialize(tmp_path / "snap", [("gemma-4-31B_q4_0-it.gguf", 17)])
-    monkeypatch.setattr(
-        gguf_module, "iter_snapshots_preferring_whole", lambda *a, **k: [snapshot]
-    )
+    monkeypatch.setattr(gguf_module, "iter_snapshots_preferring_whole", lambda *a, **k: [snapshot])
     resolved = gguf_module.resolve_local_gguf_path("google/gemma-4-31B-it-qat-q4_0-gguf", "q4_0")
     assert resolved == str(snapshot / "gemma-4-31B_q4_0-it.gguf")
 
