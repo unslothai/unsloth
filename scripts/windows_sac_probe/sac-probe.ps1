@@ -241,6 +241,29 @@ function Dismount-Efi([bool] $Mounted) {
     }
 }
 
+# Retries a dismount an earlier stage could not complete. Mount-Efi is the only
+# other reader of the marker, and revert calls it only inside the policy block,
+# which is skipped once AuditPolicyApplied is false: a dismount that failed after
+# a successful refresh cleared that flag, so the next revert never came back for
+# the partition and stamped the rollback complete with S: still exposed.
+# Nothing is ever mounted here.
+function Clear-EfiOwnership {
+    if (-not (Test-Path -LiteralPath $EFI_OWNED_MARKER)) { return }
+    if (-not (Test-Path -LiteralPath 'S:\')) {
+        Remove-Item -LiteralPath $EFI_OWNED_MARKER -Force -ErrorAction SilentlyContinue
+        return
+    }
+    if (-not (Test-Path -LiteralPath 'S:\EFI\Microsoft\Boot')) {
+        # Somebody else's volume took the letter after our mount went away.
+        # Unmounting it would be a change to a machine we came here to restore.
+        Write-Warning 'S: is no longer the EFI system partition; leaving the drive letter alone and dropping this probe''s claim on it'
+        Remove-Item -LiteralPath $EFI_OWNED_MARKER -Force -ErrorAction SilentlyContinue
+        return
+    }
+    Write-Warning 'S: was left mounted by an earlier stage of this probe; unmounting it'
+    Dismount-Efi $true
+}
+
 function Test-PolicyActive([string] $Guid) {
     $bare = $Guid.Trim('{', '}').ToLowerInvariant()
     foreach ($p in (Get-SacState).Policies) {
@@ -686,6 +709,13 @@ function Save-Baseline([string] $dir) {
         # built. collect refuses to read an empty window as an allow unless
         # this is $true.
         AuditPolicyControlFired = $null
+        # The same question for the cell that runs with no -AuditPolicy at all,
+        # where the only thing that can produce a verdict is Smart App Control
+        # enforcing for real. $true when an unsigned control was refused with a
+        # 3077 (or audited with a 3076) on the boot that measured, $null when no
+        # control could be built. Re-asked by run after a reboot, because the
+        # registry mode in the baseline is a reading from the previous boot.
+        SacControlFired         = $null
         # A policy with the NoISG GUID that was there before prepare: kept
         # aside and put back by revert rather than deleted as ours.
         AuditPolicyPreexisting  = $false
@@ -971,6 +1001,25 @@ function Invoke-Prepare {
         Write-Host 'and re-run with -AuditPolicy <path to SmartAppControlAuditNoISG.bin> to log what'
         Write-Host 'would be blocked. Without it, only real enforcement (3077) shows up, and only on a'
         Write-Host 'machine where Smart App Control is genuinely on.'
+        # So establish that it is, rather than letting collect infer an allow
+        # from a registry read. VerifiedAndReputablePolicyState says which mode
+        # Windows intends; whether the policy actually loaded and is refusing
+        # unsigned code on this boot is a separate question, and it is the one
+        # the verdict rests on. Ahead of window-start.txt below, so the control's
+        # own 3077 never lands in the measured window.
+        $sacBefore = Get-SacState
+        if ($sacBefore.Mode -eq 'enforcement') {
+            Write-Section 'Positive control'
+            $sacFired = Test-AuditPolicyEvaluating
+            if ($false -eq $sacFired) {
+                throw "Smart App Control reads as 'enforcement' but an unsigned control binary ran here without raising a 3076 or 3077, so nothing is refusing unsigned code on this boot and a window with no events would be meaningless. Re-run prepare with -AuditPolicy, or on a machine where enforcement is live."
+            }
+            # Add-Member, not an assignment: a baseline reused from an earlier
+            # prepare of this label predates the field, and setting a property a
+            # PSCustomObject does not carry throws.
+            $baseline | Add-Member -NotePropertyName SacControlFired -NotePropertyValue $sacFired -Force
+            $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
+        }
     }
 
     # Marks the window collect will export. Set before Studio is installed and
@@ -1082,6 +1131,37 @@ function Invoke-Run {
                     throw "the audit policy $NOISG_GUID is listed as active but an unsigned control raised no 3076 or 3077 on this boot, so it is not evaluating loads and this run would be meaningless. Run revert and prepare again."
                 }
                 $runBaseline.AuditPolicyControlFired = $controlFired
+                $runBaseline | ConvertTo-Json -Depth 6 |
+                    Set-Content -LiteralPath $runBaselinePath -Encoding UTF8
+            }
+        } elseif ([string]$runBaseline.Sac.Mode -eq 'enforcement') {
+            # The same revalidation for the cell with no audit policy, where the
+            # only thing that can produce a verdict is Smart App Control refusing
+            # code for real. Windows settles that state at boot
+            # (VerifiedAndReputablePolicyState is reconciled against
+            # VerifiedAndReputablePolicyStateMinValueSeen on the boot path), and
+            # the registry value can in any case disagree with the policy set
+            # that actually loaded, so prepare's reading says nothing about this
+            # boot. Without this, an empty window on a machine that stopped
+            # enforcing after prepare read as a clean allow.
+            Write-Section 'Smart App Control still enforcing'
+            $sacNow = Get-SacState
+            if ($sacNow.Mode -ne 'enforcement') {
+                throw "Smart App Control read as 'enforcement' when this label was prepared but reads as '$($sacNow.Mode)' now (a reboot since prepare?), so nothing here can log a verdict and this run's empty window would read as an allow. Run revert and prepare again."
+            }
+            Write-Host 'Smart App Control is enforcing'
+            $bootedAt = $null
+            try { $bootedAt = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime } catch { }
+            $preparedAt = $null
+            try { $preparedAt = [datetime]::Parse($runBaseline.CapturedAt) } catch { }
+            if (($bootedAt -and $preparedAt -and $bootedAt -gt $preparedAt) -or
+                ($true -ne $runBaseline.SacControlFired)) {
+                Write-Host 'confirming on this boot that unsigned code is actually refused here'
+                $sacFired = Test-AuditPolicyEvaluating
+                if ($false -eq $sacFired) {
+                    throw "Smart App Control reads as 'enforcement' but an unsigned control ran on this boot without raising a 3076 or 3077, so it is not refusing unsigned code and this run would be meaningless. Run revert and prepare again."
+                }
+                $runBaseline | Add-Member -NotePropertyName SacControlFired -NotePropertyValue $sacFired -Force
                 $runBaseline | ConvertTo-Json -Depth 6 |
                     Set-Content -LiteralPath $runBaselinePath -Encoding UTF8
             }
@@ -1399,9 +1479,19 @@ function Invoke-Collect {
     # exactly the window it exists for, one holding no verdict at all.
     $verdicts = $blocks + $audits
     $baselineForControl = Join-Path $dir 'baseline.json'
+    # Read once, here, and written to sac-state-after.json below: the allow
+    # verdict has to rest on the state of the machine that held the window open,
+    # not on the registry reading prepare took before a reboot the probe
+    # explicitly supports.
+    $sacNow = Get-SacState
     if ($verdicts -eq 0 -and (Test-Path -LiteralPath $baselineForControl)) {
         $b = Get-Content -LiteralPath $baselineForControl -Raw | ConvertFrom-Json
-        $sacMode = [string]$b.Sac.Mode
+        # Both ends of the window, and neither is redundant. The baseline value
+        # is what was enforcing when the loads during prepare happened; $sacNow
+        # is what is enforcing now. A window that spans a change of mode cannot
+        # be graded either way.
+        $sacMode = [string]$sacNow.Mode
+        $sacAtPrepare = [string]$b.Sac.Mode
         if ($b.AuditPolicyApplied -and $true -ne $b.AuditPolicyControlFired) {
             $collectionProblems += 'no positive control confirmed the audit policy was evaluating loads, so a window with no 3076 or 3077 here is a NULL result, not an allow'
             Write-Warning 'No Unsloth path raised a 3076 or 3077, but no positive control confirmed the audit policy was evaluating loads on this machine. Do NOT report this cell as "not blocked".'
@@ -1411,7 +1501,7 @@ function Invoke-Collect {
             Write-Warning 'No Unsloth path raised a 3076 or 3077, but nothing was observed loading in this window (see collection-warnings.txt in the zip). Do NOT report this cell as "not blocked".'
         } elseif ($b.AuditPolicyApplied) {
             Write-Host 'no Unsloth path raised a 3076 or 3077, and the positive control confirmed the policy was evaluating loads'
-        } elseif ($sacMode -ne 'enforcement') {
+        } elseif ($sacMode -ne 'enforcement' -or $sacAtPrepare -ne 'enforcement') {
             # -AuditPolicy is optional, and without it nothing on this machine
             # can produce a verdict unless Smart App Control is genuinely
             # enforcing: enforcement logs 3077 by itself, but the policy Smart
@@ -1420,10 +1510,21 @@ function Invoke-Collect {
             # (Microsoft, "Test your app with Smart App Control"). So an empty
             # window on any other machine says nothing, and shipping it without
             # a marker is how it gets read as an allow.
-            $collectionProblems += "no audit policy was applied and Smart App Control is '$sacMode' here, so nothing on this machine could log a 3076 and nothing could enforce a 3077: a window with no verdict is a NULL result, not an allow. Re-run prepare with -AuditPolicy."
-            Write-Warning "No Unsloth path raised a 3076 or 3077, but this cell ran with no audit policy and Smart App Control '$sacMode', so no verdict could have been logged either way. Do NOT report this cell as `"not blocked`"; re-run prepare with -AuditPolicy."
+            # Both readings are checked because they can differ: Windows settles
+            # the mode on the boot path, and the probe supports a reboot between
+            # the stages, so a window opened under enforcement can close on a
+            # machine that stopped enforcing partway through it.
+            $collectionProblems += "no audit policy was applied and Smart App Control is '$sacMode' now ('$sacAtPrepare' when this label was prepared), so nothing on this machine could log a 3076 and nothing could enforce a 3077 for the whole window: a window with no verdict is a NULL result, not an allow. Re-run prepare with -AuditPolicy."
+            Write-Warning "No Unsloth path raised a 3076 or 3077, but this cell ran with no audit policy and Smart App Control '$sacMode' ('$sacAtPrepare' at prepare), so no verdict could have been logged either way. Do NOT report this cell as `"not blocked`"; re-run prepare with -AuditPolicy."
+        } elseif ($true -ne $b.SacControlFired) {
+            # Enforcement in the registry is an intent, not an observation. This
+            # branch is what is left once no control could be built (PowerShell 7
+            # cannot emit one), and an unverified cell must not be the one that
+            # earns the allow line.
+            $collectionProblems += 'no audit policy was applied and no unsigned positive control confirmed that Smart App Control actually refused code on the boot that measured, so a window with no 3077 here is a NULL result, not an allow. Re-run prepare and run from Windows PowerShell 5.1, which can build the control.'
+            Write-Warning 'No Unsloth path raised a 3077 and Smart App Control reads as enforcing, but no unsigned positive control confirmed it was refusing code on this boot. Do NOT report this cell as "not blocked".'
         } else {
-            Write-Host 'no Unsloth path raised a 3077, and Smart App Control is enforcing, so this window is a real allow'
+            Write-Host 'no Unsloth path raised a 3077, Smart App Control is enforcing, and an unsigned positive control confirmed it refuses code on this boot, so this window is a real allow'
         }
     }
 
@@ -1468,7 +1569,9 @@ function Invoke-Collect {
         Write-Warning "Defender detections were NOT collected: $_. defender-query-error.txt records why; do not read the absence of detections as a clean window."
     }
 
-    Get-SacState | ConvertTo-Json -Depth 6 |
+    # The same object the verdict above was graded against, not a second reading:
+    # the zip has to show the reader exactly what collect decided on.
+    $sacNow | ConvertTo-Json -Depth 6 |
         Set-Content -LiteralPath (Join-Path $dir 'sac-state-after.json') -Encoding UTF8
 
     # Studio's own logs, which carry the request timings and the backend errors.
@@ -1595,6 +1698,12 @@ function Invoke-Revert {
     }
     $baseline = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
     $ROLLBACK_POLICY = Get-RollbackPolicyPath $dir
+
+    # Ahead of the policy block, and outside it: the block below is skipped
+    # whenever AuditPolicyApplied is already false, which is exactly the state a
+    # revert whose dismount failed leaves behind. Reclaiming here runs on every
+    # revert, so the retry the operator is told to make actually retries.
+    Clear-EfiOwnership
 
     # The policy block may throw (mount, copy or CiTool). The log and Defender
     # restorations below do not depend on it and must still run; the failure
@@ -1744,21 +1853,26 @@ function Invoke-Revert {
         Where-Object { $_ } | Select-Object -Unique
     $recorded = @()
     if ($baseline.StudioInstalledByProbe) { $recorded = @($baseline.StudioInstallRoots) }
-    $trees = @($recorded |
-        Where-Object { $_ -and (Test-Path -LiteralPath $_) } |
-        Where-Object {
-            $full = [IO.Path]::GetFullPath($_).TrimEnd('\')
-            $inside = @($allowedRoots | Where-Object {
-                $full -eq $_ -or $full.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase)
-            }).Count -gt 0
-            if ($inside) { $true }
-            else {
-                Write-Warning "not repairing ACLs on ${full}: outside the configured install roots ($($allowedRoots -join ', '))"
-                $false
-            }
-        } |
-        Select-Object -Unique)
-    if ($trees.Count -eq 0) {
+    $trees = @()
+    $rejected = @()
+    foreach ($path in $recorded) {
+        if (-not $path) { continue }
+        # A recorded tree that is gone needs no repair. Only one that still
+        # exists and is out of scope is a rollback this revert did not carry out.
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $full = [IO.Path]::GetFullPath($path).TrimEnd('\')
+        $inside = @($allowedRoots | Where-Object {
+            $full -eq $_ -or $full.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase)
+        }).Count -gt 0
+        if ($inside) { $trees += $full }
+        else {
+            $rejected += $full
+            Write-Warning "not repairing ACLs on ${full}: outside the configured install roots ($($allowedRoots -join ', ')). prepare recorded this tree, so it is administrator-owned and still unreadable to you: set the UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH this label was prepared with and run revert again."
+        }
+    }
+    $trees = @($trees | Select-Object -Unique)
+    $rejected = @($rejected | Select-Object -Unique)
+    if ($trees.Count -eq 0 -and $rejected.Count -eq 0) {
         Write-Host 'nothing to repair: this run did not install Studio'
     }
     # Counted, not just warned about. This loop is outside the Defender
@@ -1767,7 +1881,12 @@ function Invoke-Revert {
     # failure the loop was added for. icacls returns nonzero when any object in
     # the tree failed even under /C, so a partial repair counts as a failure
     # here on purpose.
-    $aclFailures = 0
+    # Seeded with the trees this revert refused to touch, not zero. An override
+    # that was only ever set in the prepare shell is gone after a reboot, so the
+    # recorded trees fall outside the roots derived here; warning and filtering
+    # them out left $aclFailures at zero and revert stamped the baseline complete
+    # over administrator-owned trees the user still cannot read.
+    $aclFailures = $rejected.Count
     foreach ($tree in $trees) {
         try {
             # Grants the invoking user only. Nothing here widens access for

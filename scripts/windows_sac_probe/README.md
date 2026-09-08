@@ -186,6 +186,16 @@ skipped, the cell is recorded as unverified, and `collect` says so rather than
 reading an empty window as an allow. The control binary is built outside the run
 directory and deleted immediately, so it never reaches the evidence zip.
 
+Without `-AuditPolicy`, on a machine where Smart App Control reads as enforcing,
+`prepare` runs the same control for the same reason: there the 3077 refusing it
+is the only thing that shows enforcement is live. The registry mode is an
+intent, not an observation, and Windows settles it on the boot path, so `run`
+asks again whenever the machine booted since the baseline was captured, and
+`collect` refuses the allow line unless the control fired on the boot that
+measured. A control `run` has to repeat lands inside the window, so its own
+3076 or 3077 shows up in the export naming `unsigned-control.exe`; it is scoped
+`other`, is not part of any Unsloth count, and is the proof, not the finding.
+
 Running `prepare` again with the same label (after a failure, or to add
 `-AuditPolicy`) keeps the baseline the first pass captured, so `revert` still
 restores the machine as it was before the first pass. Once `revert` has
@@ -280,20 +290,34 @@ signed, and so is `lemonade-sdk/llamacpp-rocm` (72 PE files, 0 signed), so U-on
 is what tells us whether download prevalence alone carries a build through.
 
 To pin a specific runtime for a cell, the runtime has to be **installed** with
-that pin and Studio restarted before `run`; `UNSLOTH_LLAMA_RELEASE_TAG` is read
-by the installer only, and `run` neither installs nor restarts anything:
+that pin **before `prepare`**.
+`UNSLOTH_LLAMA_RELEASE_TAG` is read by the installer only, and `run`
+never installs. The order is not a formality:
+`prepare` opens the event window and then installs or restarts Studio, so a
+runtime swapped in afterwards leaves loads from *both* releases inside one
+window. `collect` scopes those events by directory, and the installer overwrites
+the same managed `llama.cpp` directory, while the signature inventory hashes only
+the files that survive the swap. A 3076 or 3077 raised by the release you
+replaced would then be read as the pinned release's, which is exactly the
+comparison the matrix exists to make.
 
 ```powershell
 $env:UNSLOTH_LLAMA_RELEASE_TAG = 'b10715-mix-86bd2d3'   # an older, more established build
-# re-run the Studio installer (studio\setup.ps1) so it fetches that release,
-# then restart Studio, then:
-.\sac-probe.ps1 -Stage run -Label custom-b10715-sac-on
+# re-run the Studio installer (studio\setup.ps1) so it fetches that release, then:
+.\sac-probe.ps1 -Stage prepare -Label custom-b10715-sac-on
+.\sac-probe.ps1 -Stage run     -Label custom-b10715-sac-on
 ```
 
+If you already ran `prepare` for the cell, run `prepare` again once the pinned
+release is installed. A second `prepare` on the same label reopens the window and
+deletes the previous one's evidence, and it keeps the baseline the first pass
+captured, so `revert` still restores the machine as it was before the first pass.
+
 For the upstream row, point Studio at an upstream build through its custom
-llama.cpp folder setting (or `UNSLOTH_LLAMA_CPP_PATH`) and restart it. Either
-way, check `signature-inventory.json` afterwards: the SHA-256 of each file is
-what says which build a cell actually exercised, not the label.
+llama.cpp folder setting (or `UNSLOTH_LLAMA_CPP_PATH`) and restart it, again
+before `prepare` and for the same reason. Either way, check
+`signature-inventory.json` afterwards: the SHA-256 of each file is what says
+which build a cell actually exercised, not the label.
 
 ## Reading the output
 

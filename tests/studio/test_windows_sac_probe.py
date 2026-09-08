@@ -978,7 +978,7 @@ def test_revert_exits_nonzero_when_a_studio_tree_acl_repair_failed():
     revert = ps1[ps1.index("function Invoke-Revert") :]
     assert revert.count("$aclFailures++") == 2, "both the nonzero icacls and the catch count"
     assert "$aclFailures -gt 0" in revert
-    assert revert.index("$aclFailures = 0") < revert.index("$aclFailures -gt 0")
+    assert revert.index("$aclFailures = $rejected.Count") < revert.index("$aclFailures -gt 0")
 
 
 def test_a_partial_inventory_says_so_in_the_evidence():
@@ -999,10 +999,11 @@ def test_a_partial_collection_is_marked_inside_the_zip():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
     # evtx export, staging, redaction failure, no-interpreter, an unverified
-    # empty window, one that no policy could have filled, and a scenario that
-    # loaded nothing: every path that would let the archive be read as more
-    # than it is records itself.
-    assert collect.count("$collectionProblems += ") == 7
+    # empty window, one that no policy could have filled, one Smart App Control
+    # was never shown to be refusing code in, and a scenario that loaded
+    # nothing: every path that would let the archive be read as more than it is
+    # records itself.
+    assert collect.count("$collectionProblems += ") == 8
     redact = collect[collect.index("$redactor = Join-Path") :]
     assert redact.index('$collectionProblems += "log redaction failed') < redact.index(
         "Remove-Item -LiteralPath (Join-Path $dir 'studio-logs')"
@@ -1208,10 +1209,12 @@ def test_a_window_with_no_audit_policy_is_a_null_result_unless_sac_enforces():
     and every other empty window is inconclusive rather than an allow."""
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
-    assert "$sacMode = [string]$b.Sac.Mode" in collect
-    assert "} elseif ($sacMode -ne 'enforcement') {" in collect
-    guard = collect[collect.index("} elseif ($sacMode -ne 'enforcement') {") :]
-    guard = guard[: guard.index("} else {")]
+    assert "$sacMode = [string]$sacNow.Mode" in collect
+    assert "$sacAtPrepare = [string]$b.Sac.Mode" in collect
+    branch = "} elseif ($sacMode -ne 'enforcement' -or $sacAtPrepare -ne 'enforcement') {"
+    assert branch in collect
+    guard = collect[collect.index(branch) + len(branch) :]
+    guard = guard[: guard.index("} elseif ")]
     # In the zip, not only on a console the reader never sees.
     assert "$collectionProblems +=" in guard
     assert "NULL result, not an allow" in guard
@@ -1446,3 +1449,91 @@ def test_run_revalidates_the_policy_and_the_control_after_a_reboot():
     assert run.index("Test-PolicyActive $NOISG_GUID") < run.index(
         "Write-Section 'Venv signature inventory'"
     )
+
+
+def test_a_failed_dismount_is_reclaimed_by_the_next_revert():
+    """The policy block clears AuditPolicyApplied even when the dismount that
+    follows the refresh failed, so the next revert skipped the block, never
+    reached Mount-Efi, and stamped the rollback complete with S: still up."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    assert "function Clear-EfiOwnership {" in ps1
+    reclaim = ps1[ps1.index("function Clear-EfiOwnership") : ps1.index("function Test-PolicyActive")]
+    # Reclaims only; a revert must never mount the partition itself.
+    assert "mountvol.exe" not in reclaim
+    assert "Dismount-Efi $true" in reclaim
+    # And only when S: is still the partition we left there.
+    assert "Test-Path -LiteralPath 'S:\\EFI\\Microsoft\\Boot'" in reclaim
+    revert = ps1[ps1.index("function Invoke-Revert") :]
+    assert "Clear-EfiOwnership" in revert
+    # Outside the policy block, and before it: the block is skipped entirely
+    # once AuditPolicyApplied is false, which is the state that needs the retry.
+    assert revert.index("Clear-EfiOwnership") < revert.index("if ($baseline.AuditPolicyApplied) {")
+
+
+def test_a_recorded_tree_revert_refuses_to_touch_is_a_rollback_failure():
+    """A UNSLOTH_STUDIO_HOME set for the prepare shell only is gone after a
+    reboot, so the trees prepare recorded fall outside the roots revert derives.
+    Warning and filtering them out left $aclFailures at zero and revert reported
+    a machine it had not restored."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    revert = ps1[ps1.index("function Invoke-Revert") :]
+    assert "$rejected += $full" in revert
+    assert "$aclFailures = $rejected.Count" in revert
+    # A recorded tree that no longer exists needs no repair and is not a failure.
+    assert "if (-not (Test-Path -LiteralPath $path)) { continue }" in revert
+    # ... and "this run did not install Studio" is false when trees were refused.
+    assert "if ($trees.Count -eq 0 -and $rejected.Count -eq 0) {" in revert
+    assert revert.index("$aclFailures = $rejected.Count") < revert.index("foreach ($tree in $trees)")
+
+
+def test_an_allow_needs_live_enforcement_and_a_control_on_the_boot_that_measured():
+    """Without -AuditPolicy the allow verdict rested on Sac.Mode as prepare read
+    it. The probe supports a reboot between the stages, Windows settles the mode
+    on the boot path, and the registry value can disagree with the policy set
+    that loaded, so that reading says nothing about the window it graded."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    # Graded on the live state, and on both ends of the window.
+    assert "$sacNow = Get-SacState" in collect
+    assert "$sacMode = [string]$sacNow.Mode" in collect
+    assert "$sacAtPrepare = [string]$b.Sac.Mode" in collect
+    assert collect.index("$sacNow = Get-SacState") < collect.index("$sacMode = [string]$sacNow.Mode")
+    # Enforcement in the registry is an intent; the refusal is the observation.
+    assert "} elseif ($true -ne $b.SacControlFired) {" in collect
+    allow = collect.index("so this window is a real allow")
+    assert collect.index("} elseif ($true -ne $b.SacControlFired) {") < allow
+    # The zip shows the reader the same state the verdict used.
+    assert "$sacNow | ConvertTo-Json -Depth 6 |" in collect
+    assert "Get-SacState | ConvertTo-Json" not in collect
+
+    ps1_head = ps1[: ps1.index("function Invoke-Run")]
+    assert "SacControlFired         = $null" in ps1_head
+    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    assert "$sacBefore = Get-SacState" in prepare
+    assert "$sacFired = Test-AuditPolicyEvaluating" in prepare
+    # Before the window opens, or the control's own 3077 lands in the evidence.
+    assert prepare.index("$sacFired = Test-AuditPolicyEvaluating") < prepare.index(
+        "'window-start.txt'"
+    )
+    run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
+    assert "} elseif ([string]$runBaseline.Sac.Mode -eq 'enforcement') {" in run
+    assert "if ($sacNow.Mode -ne 'enforcement') {" in run
+    assert "($true -ne $runBaseline.SacControlFired)" in run
+    assert "-NotePropertyName SacControlFired" in run
+
+
+def test_the_readme_pins_the_runtime_before_the_window_opens():
+    """prepare opens the event window and then installs or restarts Studio, so
+    installing the pinned release afterwards put loads from two releases in one
+    window, over the one managed directory collect scopes events by."""
+    body = (PROBE_DIR / "README.md").read_text(encoding = "utf-8")
+    pin = body[body.index("To pin a specific runtime for a cell") : body.index("## Reading the output")]
+    assert "before `prepare`" in pin
+    assert "-Stage prepare -Label custom-b10715-sac-on" in pin
+    # The pinned prepare comes first in the block the operator copies.
+    assert pin.index("-Stage prepare -Label custom-b10715-sac-on") < pin.index(
+        "-Stage run     -Label custom-b10715-sac-on"
+    )
+    assert "restart Studio, then:" not in pin
+    # And the upstream row carries the same ordering.
+    assert "again\nbefore `prepare`" in pin
