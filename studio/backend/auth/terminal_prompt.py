@@ -145,11 +145,55 @@ def _getch_posix() -> str:  # pragma: no cover - needs a real tty
 _getch: Callable[[], str] = _getch_windows if os.name == "nt" else _getch_posix
 
 
-def _read_password(prompt: str, *, out: "TextIO | None" = None) -> str:
+class PromptUnattended(Exception):
+    """A terminal is attached but nobody answered the prompt before the deadline.
+
+    A pty is not a person. ``tmux new -d``, ``screen -dmS`` and ``docker run -dt``
+    all allocate a real, foreground pty that no one is reading, so isatty() is
+    True on both streams and the read simply never returns. Callers that must
+    never block a launch pass a deadline and treat this as a refusal.
+    """
+
+
+def _wait_for_first_key(timeout: float) -> bool:
+    """Whether a keystroke arrived within ``timeout`` seconds.
+
+    Must be called with the terminal already in cbreak mode: in canonical mode
+    the driver holds input until a newline, so the fd would not become readable
+    on the first character. True on any doubt, which is the blocking behaviour.
+    """
+    if os.name == "nt":
+        import time
+
+        try:
+            import msvcrt
+        except ImportError:
+            return True
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if msvcrt.kbhit():
+                return True
+            time.sleep(0.05)
+        return False
+    import select
+
+    try:
+        fd = sys.stdin.fileno()
+        ready, _, _ = select.select([fd], [], [], timeout)
+    except (AttributeError, OSError, ValueError):
+        return True
+    return bool(ready)
+
+
+def _read_password(
+    prompt: str, *, out: "TextIO | None" = None, first_key_timeout: "float | None" = None
+) -> str:
     """Read one masked line: echo ``*`` per char, support backspace editing.
 
     Raises KeyboardInterrupt on Ctrl-C and EOFError on Ctrl-D/Ctrl-Z with an
-    empty buffer; the terminal is restored on every exit path.
+    empty buffer; the terminal is restored on every exit path. With
+    ``first_key_timeout`` set, raises PromptUnattended when the FIRST keystroke
+    never arrives; once someone starts typing there is no deadline.
     """
     if out is None:
         out = sys.stderr
@@ -157,6 +201,10 @@ def _read_password(prompt: str, *, out: "TextIO | None" = None) -> str:
     out.flush()
     chars: list[str] = []
     with _prompt_raw_mode():
+        if first_key_timeout is not None and not _wait_for_first_key(first_key_timeout):
+            out.write("\n")
+            out.flush()
+            raise PromptUnattended
         while True:
             key = _getch()
             if key == "":
@@ -225,6 +273,7 @@ def prompt_for_password_change(
     username: str = "unsloth",
     out: "TextIO | None" = None,
     exposure: str = "on the public internet",
+    first_key_timeout: "float | None" = None,
 ) -> bool:
     """Force a new admin password before exposure; True on success.
 
@@ -235,6 +284,12 @@ def prompt_for_password_change(
     the public internet; a raw ``-H 0.0.0.0`` bind is every network interface,
     which is the LAN behind a NAT router and the internet on a cloud box with a
     public address. Claiming the wrong one trains people to ignore the message.
+
+    ``first_key_timeout`` bounds the wait for the FIRST keystroke and returns
+    False if it never comes. Only a caller that must not block a launch passes
+    it: a detached pty (``tmux new -d``, ``docker run -dt``) looks exactly like
+    an attended terminal, so without a deadline such a launch waits forever and
+    never binds its socket. Unset (the tunnel) keeps blocking indefinitely.
     """
     if out is None:
         out = sys.stderr
@@ -244,9 +299,14 @@ def prompt_for_password_change(
         "password now. Ctrl+C to abort.\n\n"
     )
     out.flush()
+    # Only the first read is deadlined; once a key arrives someone is there.
+    pending_timeout = first_key_timeout
     try:
         while True:
-            new_password = _read_password("New password: ", out = out)
+            new_password = _read_password(
+                "New password: ", out = out, first_key_timeout = pending_timeout
+            )
+            pending_timeout = None
             if len(new_password) < min_length:
                 out.write(f"Password must be at least {min_length} characters; try again.\n")
                 out.flush()
@@ -270,6 +330,13 @@ def prompt_for_password_change(
             out.write(f"Password updated for '{username}'.\n")
             out.flush()
             return True
+    except PromptUnattended:
+        out.write(
+            "No response at the terminal; leaving the auto-generated admin "
+            "password in place.\n"
+        )
+        out.flush()
+        return False
     except (KeyboardInterrupt, EOFError):
         out.write("Password change aborted; not exposing Unsloth.\n")
         out.flush()

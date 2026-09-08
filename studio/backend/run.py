@@ -2141,6 +2141,40 @@ def _stream_isatty(stream) -> bool:
         return False
 
 
+# How long a raw-bind prompt waits for the FIRST keystroke before giving up and
+# launching anyway. Only the first: once someone is typing there is no deadline.
+#
+# 30s, not longer. The launches that reach this with nobody watching are the ones
+# that allocate a pty and then never read it -- `docker run -dt`, `tmux new -d`,
+# `screen -dmS`, some CI runners -- and they want to bind promptly. A container
+# that takes two minutes to answer a healthcheck can be killed and restarted by
+# the orchestrator, which would turn "delayed" into a restart loop; 30s stays
+# inside a default Docker HEALTHCHECK start period. Someone who is actually
+# looking at the prompt starts typing well inside that, and someone who is not
+# gets the refusal path, which warns and launches with the bootstrap deadline
+# armed. Mirrored in the CLI.
+_UNATTENDED_PROMPT_SECONDS = 30.0
+
+
+def _prompt_owns_the_terminal() -> bool:
+    """Whether this process may DRIVE the terminal, not merely see one.
+
+    A backgrounded shell job (`unsloth studio -H 0.0.0.0 &`) inherits the
+    terminal, so isatty() is True, but the masked prompt calls termios.tcsetattr,
+    and POSIX sends SIGTTOU to a background process group that does; the default
+    action stops the process. The launch would freeze before the socket binds
+    instead of starting, which is exactly the "never block a launch that worked"
+    case this gate is careful about everywhere else. Treat it as no terminal.
+
+    True on any doubt: no job control (Windows), no controlling terminal, or a
+    stream with no fileno. Nothing can stop us there, so the isatty answer stands.
+    """
+    try:
+        return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
+    except (AttributeError, OSError, ValueError):
+        return True
+
+
 def _terminal_password_gate(
     *,
     tunnel_will_start: bool,
@@ -2197,7 +2231,11 @@ def _terminal_password_gate(
     # now would move first seeding earlier, open the SQLite file sooner and give a
     # read-only or locked home a new place to fail, none of which a container
     # operator asked for. Tunnel launches are unaffected: they always came here.
-    if not tunnel_will_start and not (_stream_isatty(sys.stdin) and _stream_isatty(sys.stderr)):
+    if not tunnel_will_start and not (
+        _stream_isatty(sys.stdin)
+        and _stream_isatty(sys.stderr)
+        and _prompt_owns_the_terminal()
+    ):
         return True, False
 
     from auth import hashing as _auth_hashing
@@ -2293,6 +2331,13 @@ def _terminal_password_gate(
         apply_change = _apply_change,
         out = sys.stderr,
         exposure = ("on the public internet" if tunnel_will_start else "on every network interface"),
+        # A raw bind must never block a launch that used to start. A detached pty
+        # (`tmux new -d`, `screen -dmS`, `docker run -dt`) passes every isatty and
+        # process-group test yet nobody will ever type, so an undeadlined read
+        # waits forever and the socket never binds. No answer is handled below as
+        # a refusal: proceed on the bootstrap deadline, exactly as before. The
+        # tunnel keeps waiting indefinitely; it fails closed rather than proceed.
+        first_key_timeout = None if tunnel_will_start else _UNATTENDED_PROMPT_SECONDS,
     )
     if changed:
         return True, True

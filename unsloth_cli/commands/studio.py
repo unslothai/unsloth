@@ -1238,7 +1238,7 @@ def _should_prompt_password_change(
         # A tunnel launch prompts regardless of the terminal; the headless
         # fallback is handled downstream.
         return True
-    return is_external_host(host) and _prompt_streams_interactive()
+    return is_external_host(host) and _prompt_streams_interactive() and _prompt_owns_the_terminal()
 
 
 def _prompt_streams_interactive() -> bool:
@@ -1247,6 +1247,46 @@ def _prompt_streams_interactive() -> bool:
         return sys.stdin.isatty() and sys.stderr.isatty()
     except (AttributeError, ValueError):
         return False
+
+
+# How long a raw-bind prompt waits for the first keystroke before giving up and
+# launching anyway. Long enough for someone watching the terminal to react, short
+# enough that an unattended pty is not held hostage. Mirrors run.py.
+# How long a raw-bind prompt waits for the FIRST keystroke before giving up and
+# launching anyway. Only the first: once someone is typing there is no deadline.
+#
+# 30s, not longer. The launches that reach this with nobody watching are the ones
+# that allocate a pty and then never read it -- `docker run -dt`, `tmux new -d`,
+# `screen -dmS`, some CI runners -- and they want to bind promptly. A container
+# that takes two minutes to answer a healthcheck can be killed and restarted by
+# the orchestrator, which would turn "delayed" into a restart loop; 30s stays
+# inside a default Docker HEALTHCHECK start period. Someone who is actually
+# looking at the prompt starts typing well inside that, and someone who is not
+# gets the refusal path, which warns and launches with the bootstrap deadline
+# armed. Mirrored in the CLI.
+_UNATTENDED_PROMPT_SECONDS = 30.0
+
+
+def _prompt_owns_the_terminal() -> bool:
+    """Whether this process may DRIVE the terminal, not merely see one.
+
+    A backgrounded shell job (`unsloth studio -H 0.0.0.0 &`) inherits the
+    terminal, so isatty() is True, but read_masked calls termios.tcsetattr, and
+    POSIX sends SIGTTOU to a background process group that does; the default
+    action stops the process. The launch would freeze at the prompt instead of
+    starting, which is the one thing widening this gate to raw binds must not do
+    -- such a launch started fine before, protected by the bootstrap deadline.
+    Only the raw-bind branch consults this: a tunnel launch is published on the
+    public internet and keeps failing closed rather than quietly proceeding.
+
+    True on any doubt: no job control (Windows), no controlling terminal, or a
+    stream with no fileno. Nothing can stop us there, so the isatty answer stands.
+    Mirror of run.py's _prompt_owns_the_terminal -- keep the two in sync.
+    """
+    try:
+        return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
+    except (AttributeError, OSError, ValueError):
+        return True
 
 
 def _bootstrap_deadline_active() -> bool:
@@ -1756,7 +1796,28 @@ def _enforce_password_change_before_exposure(
             err = True,
         )
         try:
-            new_password = _password_prompt.prompt_new_password(_is_current_password)
+            new_password = _password_prompt.prompt_new_password(
+                _is_current_password,
+                # A raw bind must never block a launch that used to start. A
+                # detached pty (`tmux new -d`, `screen -dmS`, `docker run -dt`)
+                # passes every isatty and process-group test yet nobody will ever
+                # type, so an undeadlined read waits forever and no server is ever
+                # started. Fall back to the protection that launch already had,
+                # the bootstrap deadline. A tunnel keeps waiting: it publishes a
+                # public URL, so it fails closed rather than proceeding.
+                first_key_timeout = None if tunnel_will_start else _UNATTENDED_PROMPT_SECONDS,
+            )
+        except _password_prompt.PromptUnattended:
+            typer.echo(
+                "Warning: no response at the terminal, so Unsloth is starting with "
+                "the auto-generated admin password on a bind that is reachable from "
+                "the network. Unsloth shuts down after the bootstrap deadline "
+                "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) unless the password "
+                "is changed. Change it by logging in, or with `unsloth studio "
+                "reset-password`.",
+                err = True,
+            )
+            return
         except (KeyboardInterrupt, EOFError):
             typer.echo(
                 "\nError: password change aborted; refusing to expose Unsloth "

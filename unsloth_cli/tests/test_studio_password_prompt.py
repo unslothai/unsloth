@@ -12,6 +12,7 @@ test_studio_cloudflare_flag.py.
 
 from __future__ import annotations
 
+import io
 import sqlite3
 import sys
 from pathlib import Path
@@ -203,7 +204,7 @@ def _install_prompt_env(
     # dedicated test that overrides this.
     monkeypatch.setattr(studio_mod, "_tunnel_binary_confirmed_unavailable", lambda: False)
 
-    def fake_prompt(verify_current, out = None):
+    def fake_prompt(verify_current, out = None, **_kw):
         events.append(("prompt", verify_current))
         if isinstance(scripted, BaseException):
             raise scripted
@@ -1832,3 +1833,159 @@ def test_cli_and_backend_agree_on_which_hosts_are_exposed(monkeypatch, host):
         f"{host!r}: CLI prompts={cli_prompts} but the backend considers it "
         f"exposed={backend_exposed}; the parent gate and the child gate disagree"
     )
+
+
+# ── a backgrounded shell job is not a usable terminal ─────────────────
+
+
+def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
+    """`unsloth studio -H 0.0.0.0 &` must still launch.
+
+    A background job inherits the terminal, so isatty() is True on both streams,
+    but the masked prompt calls termios.tcsetattr; POSIX sends SIGTTOU to a
+    background process group that does, and the default action STOPS the process.
+    The launch would freeze at the prompt before the socket binds, i.e. a launch
+    that worked before this gate widened to raw binds stops working. It keeps the
+    protection it already had, the bootstrap deadline.
+    """
+    studio = _studio()
+    monkeypatch.setattr(studio, "_prompt_streams_interactive", lambda: True)
+    monkeypatch.setattr(studio.os, "tcgetpgrp", lambda _fd: 4242)
+    monkeypatch.setattr(studio.os, "getpgrp", lambda: 99)
+    monkeypatch.setattr(studio.sys, "stdin", _FdStream())
+
+    assert studio._should_prompt_password_change(
+        cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
+    ) is False
+    # The tunnel is published on the public internet either way: it must keep
+    # failing closed rather than quietly proceeding.
+    assert studio._should_prompt_password_change(
+        cloudflare = None, host = "0.0.0.0", secure = True, api_only = False
+    ) is True
+
+
+def test_a_foreground_raw_bind_still_prompts(monkeypatch):
+    """The ordinary interactive case is untouched."""
+    studio = _studio()
+    monkeypatch.setattr(studio, "_prompt_streams_interactive", lambda: True)
+    monkeypatch.setattr(studio.os, "tcgetpgrp", lambda _fd: 4242)
+    monkeypatch.setattr(studio.os, "getpgrp", lambda: 4242)
+    monkeypatch.setattr(studio.sys, "stdin", _FdStream())
+
+    assert studio._should_prompt_password_change(
+        cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
+    ) is True
+
+
+@pytest.mark.parametrize("raised", [OSError("ENOTTY"), AttributeError(), ValueError()])
+def test_no_job_control_falls_back_to_the_isatty_answer(monkeypatch, raised):
+    """Windows / no controlling terminal: nothing can stop us, so still prompt."""
+    studio = _studio()
+    monkeypatch.setattr(studio, "_prompt_streams_interactive", lambda: True)
+
+    def _boom(_fd):
+        raise raised
+
+    monkeypatch.setattr(studio.os, "tcgetpgrp", _boom, raising = False)
+    monkeypatch.setattr(studio.sys, "stdin", _FdStream())
+
+    assert studio._should_prompt_password_change(
+        cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
+    ) is True
+
+
+class _FdStream:
+    def fileno(self): return 0
+    def isatty(self): return True
+
+
+# ── a pty is not a person ────────────────────────────────────────────
+
+
+def test_an_unattended_pty_still_launches_a_raw_bind(monkeypatch, tmp_path):
+    """`tmux new -d 'unsloth studio -H 0.0.0.0'` must still start Unsloth.
+
+    A detached pty (tmux/screen/`docker run -dt`) is a real, foreground terminal
+    that nobody will ever type into: both streams are ttys and the process owns
+    the terminal, so every interactivity test says "prompt" and the read then
+    never returns. The gate runs before any server exists, so without a deadline
+    the launch hangs forever instead of starting. It must fall back to the
+    protection it already had, the bootstrap deadline.
+    """
+    studio_mod = _studio()
+    events = _install_prompt_env(
+        monkeypatch,
+        tmp_path,
+        interactive = True,
+        scripted = studio_mod._password_prompt.PromptUnattended(),
+    )
+    monkeypatch.setattr(studio_mod, "_prompt_owns_the_terminal", lambda: True)
+    _seed_auth(studio_mod)
+
+    result = _invoke_studio_default(monkeypatch, events, ["-H", "0.0.0.0"])
+
+    kinds = [kind for kind, _ in events]
+    assert kinds == ["prompt", "exec"], events
+    assert result.exit_code == 0, result.output
+    # Unchanged password, and the seeded file is kept: a raw bind never strips.
+    assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
+
+
+def test_an_unattended_pty_still_aborts_a_tunnel_launch(monkeypatch, tmp_path):
+    """A tunnel publishes a public URL, so it gets no deadline and no fallback."""
+    studio_mod = _studio()
+    seen = {}
+
+    def _fake_prompt(verify_current, out = None, **kw):
+        seen.update(kw)
+        return _NEW_PW
+
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _fake_prompt)
+    _seed_auth(studio_mod)
+
+    _invoke_studio_default(monkeypatch, events, ["--secure"])
+    assert seen["first_key_timeout"] is None
+
+
+def test_a_raw_bind_prompt_carries_the_unattended_deadline(monkeypatch, tmp_path):
+    """The other half: only the launch that must not be blocked is deadlined."""
+    studio_mod = _studio()
+    seen = {}
+
+    def _fake_prompt(verify_current, out = None, **kw):
+        seen.update(kw)
+        return _NEW_PW
+
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _fake_prompt)
+    monkeypatch.setattr(studio_mod, "_prompt_owns_the_terminal", lambda: True)
+    _seed_auth(studio_mod)
+
+    _invoke_studio_default(monkeypatch, events, ["-H", "0.0.0.0"])
+    assert seen["first_key_timeout"] == studio_mod._UNATTENDED_PROMPT_SECONDS
+
+
+def test_read_masked_gives_up_on_a_pty_nobody_types_into(monkeypatch):
+    """The mechanism itself, against a real pty with no writer."""
+    import os
+    import pty
+
+    from unsloth_cli.commands import _password_prompt
+
+    master, slave = pty.openpty()
+
+    class _PtyStdin:
+        encoding = "utf-8"
+        def fileno(self): return slave
+        def isatty(self): return True
+
+    try:
+        monkeypatch.setattr(_password_prompt.sys, "stdin", _PtyStdin())
+        out = io.StringIO()
+        with pytest.raises(_password_prompt.PromptUnattended):
+            _password_prompt.read_masked("New password: ", out, first_key_timeout = 0.25)
+    finally:
+        os.close(master)
+        os.close(slave)
