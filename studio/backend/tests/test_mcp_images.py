@@ -4,15 +4,64 @@
 from __future__ import annotations
 
 import base64
+import importlib
+import importlib.machinery
 import io
 import json
 import json as _json
 import sys
+import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
+
+
+# core.inference.inference imports unsloth and trl at module scope; studio-backend-ci.yml
+# does not install them, so stub them here rather than rely on an earlier test file having done so.
+def _stub_if_missing(
+    name,
+    attrs = (),
+    named_spec = False,
+):
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001
+        pass
+    module = types.ModuleType(name)
+    module.__spec__ = importlib.machinery.ModuleSpec(name, None) if named_spec else None
+    module.__version__ = "0.0.0"
+    module.__getattr__ = lambda _attr: MagicMock()
+    for attr in attrs:
+        setattr(module, attr, MagicMock())
+    sys.modules[name] = module
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, module)
+
+
+for _torchao in (
+    "torchao",
+    "torchao.prototype",
+    "torchao.prototype.safetensors",
+    "torchao.prototype.safetensors.safetensors_support",
+    "torchao.prototype.safetensors.safetensors_utils",
+    "torchao.quantization",
+    "torchao.dtypes",
+    "torchao.float8",
+    "torchao.utils",
+):
+    _stub_if_missing(_torchao, named_spec = True)
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+_stub_if_missing("unsloth_zoo")
+_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
 from PIL import Image
 
