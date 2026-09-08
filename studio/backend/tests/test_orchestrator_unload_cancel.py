@@ -2646,3 +2646,67 @@ def test_a_scoped_load_cancel_that_never_reports_back_releases_the_load():
         with inf._scoped_load_attempts_lock:
             inf._scoped_load_attempts.clear()
             inf._scoped_load_cancel_tombstones.clear()
+
+
+def test_shutdown_cancels_loads_that_have_not_reached_the_backend():
+    """A /load between admission and the backend call holds nothing the backend's
+    shutdown flag can see: it can sit in the lifecycle gate or preflight for
+    minutes and then arrive in a lifecycle that has already been reset, loading a
+    model the new server never asked for. _graceful_shutdown cancels through the
+    attempt's own event, the same path /unload uses.
+    """
+    import importlib
+
+    inf = importlib.import_module("routes.inference")
+
+    def _attempt(token, path):
+        return inf._ScopedLoadAttempt(
+            token = token,
+            request_id = None,
+            model_path = path,
+            subject = "s",
+            cancel_event = threading.Event(),
+            cancel_complete = threading.Event(),
+        )
+
+    pending = _attempt("pending-token", "owner/model")
+    running = _attempt("running-token", "owner/other")
+
+    with inf._scoped_load_attempts_lock:
+        inf._pending_load_attempts[pending.token] = pending
+    prior_running = inf._running_load_attempt
+    inf._running_load_attempt = running
+    try:
+        assert inf.cancel_pending_loads() == 2
+        assert pending.cancel_event.is_set(), "a queued load survived the shutdown"
+        assert running.cancel_event.is_set(), "the running load survived the shutdown"
+    finally:
+        inf._running_load_attempt = prior_running
+        with inf._scoped_load_attempts_lock:
+            inf._pending_load_attempts.pop(pending.token, None)
+
+
+def test_a_running_attempt_already_in_the_pending_map_is_not_counted_twice():
+    import importlib
+
+    inf = importlib.import_module("routes.inference")
+
+    both = inf._ScopedLoadAttempt(
+        token = "same-token",
+        request_id = None,
+        model_path = "owner/model",
+        subject = "s",
+        cancel_event = threading.Event(),
+        cancel_complete = threading.Event(),
+    )
+    with inf._scoped_load_attempts_lock:
+        inf._pending_load_attempts[both.token] = both
+    prior_running = inf._running_load_attempt
+    inf._running_load_attempt = both
+    try:
+        assert inf.cancel_pending_loads() == 1
+        assert both.cancel_event.is_set()
+    finally:
+        inf._running_load_attempt = prior_running
+        with inf._scoped_load_attempts_lock:
+            inf._pending_load_attempts.pop(both.token, None)

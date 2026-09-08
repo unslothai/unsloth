@@ -1637,7 +1637,17 @@ def _graceful_shutdown(server = None):
 
     # 5. Kill llama-server subprocess (if loaded).
     try:
-        from routes.inference import _llama_cpp_backend
+        from routes.inference import _llama_cpp_backend, cancel_pending_loads
+        # Before the kill: a /load still in the lifecycle gate or preflight holds
+        # nothing the backend's shutdown flag can see, so it would reach the
+        # backend in a lifecycle that has since been reset and load a model the
+        # next server never asked for. Non-blocking, so shutdown does not wait.
+        try:
+            cancelled = cancel_pending_loads()
+            if cancelled:
+                logger.info("Cancelled %d in-flight model load(s) for shutdown", cancelled)
+        except Exception as e:
+            logger.warning("Could not cancel in-flight loads: %s", e)
         if _llama_cpp_backend is not None:
             _llama_cpp_backend._kill_process(teardown = True)
     except Exception as e:

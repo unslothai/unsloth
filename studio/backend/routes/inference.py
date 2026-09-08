@@ -13080,6 +13080,28 @@ _SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S = 15.0
 _SCOPED_LOAD_CANCEL_TOMBSTONE_LIMIT_PER_SUBJECT = 256
 
 
+def cancel_pending_loads() -> int:
+    """Cancel every in-flight /load. Called by the app shutdown, before the kill.
+
+    The backend's shutdown flag only guards its own spawn, and a request between
+    admission and that call is not yet holding anything the flag can see: it can
+    sit in the lifecycle gate or preflight for minutes, then reach the backend in
+    a lifecycle that has already been reset and load a model the new server never
+    asked for. Cancelling through the attempt's own event stops it wherever it is,
+    including mid-download, using the path /unload already uses.
+
+    Best-effort and non-blocking: shutdown must not wait on a load's teardown.
+    """
+    with _scoped_load_attempts_lock:
+        attempts = list(_pending_load_attempts.values())
+        running = _running_load_attempt
+    if running is not None and all(a.token != running.token for a in attempts):
+        attempts.append(running)
+    for attempt in attempts:
+        attempt.cancel_event.set()
+    return len(attempts)
+
+
 def _prune_scoped_load_cancel_tombstones(now: float) -> None:
     expired = [
         key for key, (_, expires_at) in _scoped_load_cancel_tombstones.items() if expires_at <= now

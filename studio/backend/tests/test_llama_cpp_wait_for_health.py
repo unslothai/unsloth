@@ -1575,3 +1575,22 @@ def test_a_lifecycle_cannot_reopen_while_a_teardown_is_still_killing():
         "the spawn lock was free while the teardown was still killing, so "
         "_begin_server_lifecycle could reopen the lifecycle mid-kill"
     )
+
+
+def test_the_shutdown_cancels_loads_before_it_kills_the_server():
+    """Order matters: killing first leaves the load to respawn into the teardown."""
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    tree = ast.parse(run_py)
+    fn = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_graceful_shutdown"
+    )
+    src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
+
+    assert "cancel_pending_loads()" in src, "shutdown does not cancel in-flight loads"
+    assert src.index("cancel_pending_loads()") < src.index("_kill_process(teardown = True)"), (
+        "the loads are cancelled after the kill, so one can still spawn into the teardown"
+    )

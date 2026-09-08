@@ -1136,7 +1136,11 @@ def test_kill_process_stops_crash_watchdog(monkeypatch):
 def test_kill_process_stops_watchdog_before_terminate():
     # Ordering matters: stop the watchdog before terminating so the watchdog's
     # post-death stop re-check reliably sees a planned kill.
-    src = inspect.getsource(LlamaCppBackend._kill_process)
+    # Both halves: the termination moved into _kill_process_body, and the ordering
+    # this asserts is within that body.
+    src = inspect.getsource(LlamaCppBackend._kill_process) + inspect.getsource(
+        LlamaCppBackend._kill_process_body
+    )
     stop = src.find("_stop_mtp_crash_watchdog()")
     term = src.find(".terminate(")
     assert 0 <= stop < term, "must stop the watchdog before terminating"
