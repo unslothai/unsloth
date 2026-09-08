@@ -905,10 +905,7 @@ class InferenceOrchestrator:
                         else:
                             self._mark_worker_started(owner)
                     other.put(resp)
-                # Outside the mailbox check on purpose: a response for a request whose
-                # mailbox is already gone -- cancel releases it before the worker stops
-                # emitting -- belongs to nobody, so it must not be handed to this reader.
-                # Unaddressed frames still fall through: the guard above needs a rid.
+                # Outside the mailbox check on purpose: a released request's late frames go to nobody.
                 return None
             return resp
 
@@ -2003,9 +2000,7 @@ class InferenceOrchestrator:
                     if not self._ensure_subprocess_alive():
                         raise RuntimeError(self._subprocess_crash_message("count"))
                     continue
-                # _direct_reader now drops a reply whose own mailbox is gone -- an earlier
-                # count that timed out while the worker still held its command -- so this
-                # check is the backstop for the window before that release lands.
+                # _direct_reader already drops a reply whose mailbox is gone; this is the backstop.
                 if (
                     candidate.get("type") == "count_tokens_response"
                     and candidate.get("request_id") == request_id
