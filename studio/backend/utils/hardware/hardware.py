@@ -5698,6 +5698,10 @@ _TORCH_BOOKKEEPING_PREFIXES = (
     "training_args.",
     "trainer_state.",
 )
+_WEIGHT_SHARD_SUFFIX = re.compile(r"(-\d+-of-\d+|\.\d+)$")
+# pytorch_model.bin is the torch spelling of model.safetensors; consolidated.* is a
+# whole-model copy shipped beside the sharded transformers weights (Mistral, Meta).
+_WEIGHT_FAMILY_ALIASES = {"pytorch_model": "model", "consolidated": "model"}
 
 
 def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
@@ -5709,7 +5713,11 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
     # checkpoint-*/global_step* snapshots, but export loads only the model at
     # the root, so counting them would multiply the estimate.
     skip_prefixes = ("checkpoint-", "global_step")
-    per_directory: dict = {}
+    # (directory, weight family) -> {(format, stem): bytes}. Files of one family in one
+    # directory are the same weights in alternative formats, so a family costs its
+    # largest copy; a differently named payload beside them (projector.pt, a tower's
+    # pytorch_model.bin in its own folder) is its own family and is always counted.
+    copies_by_family: dict = {}
     for file in model_path.rglob("*"):
         if not file.is_file():
             continue
@@ -5717,31 +5725,35 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
         rel = file.relative_to(model_path)
         if any(part.startswith(skip_prefixes) for part in rel.parts):
             continue
-        if name.endswith(".safetensors"):
-            slot = 0
-        elif name.endswith((".bin", ".pt", ".pth")) and not name.startswith(
+        stem, ext = os.path.splitext(name)
+        if ext == ".safetensors":
+            kind = "safetensors"
+        elif ext in (".bin", ".pt", ".pth") and not name.startswith(
             _TORCH_BOOKKEEPING_PREFIXES
         ):
-            slot = 1
+            kind = "torch"
         else:
             continue
-        totals = per_directory.setdefault(rel.parent, [0, 0])
-        totals[slot] += file.stat().st_size
+        stem = _WEIGHT_SHARD_SUFFIX.sub("", stem)
+        family = _WEIGHT_FAMILY_ALIASES.get(stem, stem)
+        copies = copies_by_family.setdefault((rel.parent, family), {})
+        copies[(kind, stem)] = copies.get((kind, stem), 0) + file.stat().st_size
 
-    def _sum(directories) -> int:
-        return sum(max(totals) for totals in directories)
+    def _sum(families) -> int:
+        return sum(max(copies.values()) for copies in families)
 
     outside_original = _sum(
-        totals
-        for directory, totals in per_directory.items()
+        copies
+        for (directory, _), copies in copies_by_family.items()
         if directory.parts[:1] != ("original",)
     )
     original_copy = _sum(
-        totals
-        for directory, totals in per_directory.items()
+        copies
+        for (directory, _), copies in copies_by_family.items()
         if directory.parts[:1] == ("original",)
     )
-    total = max(outside_original, original_copy)
+    # A top-level original/ is the vendor's copy of the root weights; size what loads.
+    total = outside_original or original_copy
     return total if total > 0 else None
 
 

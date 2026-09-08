@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for ``_get_local_weight_size_bytes``.
-
-The sizer must charge one copy of the weights and no torch bookkeeping. It used
-to sum every ``.safetensors``/``.bin``/``.pt``/``.pth`` under the model dir, so a
-repo shipping both formats (root safetensors plus ``original/consolidated.*.pth``)
-priced two models, and a full-finetune output dir also charged
-``training_args.bin`` / ``optimizer.pt``. The inflated bytes reach
-``estimate_fp16_model_size_bytes`` (which prefers the larger of local vs config)
-and are then billed again as optimizer + gradient state under full fine-tuning.
+"""``_get_local_weight_size_bytes`` charges one copy of the weights and no torch bookkeeping.
 
 Run:
     python -m pytest studio/backend/tests/test_local_weight_size_one_format.py -q
@@ -76,6 +68,13 @@ def test_torch_only_tower_beside_safetensors_language_model(tmp_path):
     assert _get_local_weight_size_bytes(str(tmp_path)) == 15100
 
 
+def test_independent_torch_payload_in_the_same_directory_is_counted(tmp_path):
+    _write(tmp_path / "model.safetensors", 13400)
+    _write(tmp_path / "mm_projector.bin", 1700)
+    _write(tmp_path / "projector.pt", 300)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 15400
+
+
 def test_freely_named_torch_checkpoints_are_counted(tmp_path):
     _write(tmp_path / "open_clip" / "open_clip_pytorch_model.bin", 3900)
     _write(tmp_path / "lora" / "pytorch_lora_weights.bin", 150)
@@ -89,7 +88,40 @@ def test_original_copy_counts_when_it_is_the_only_copy(tmp_path):
     assert _get_local_weight_size_bytes(str(tmp_path)) == 16000
 
 
+def test_root_copy_wins_over_a_larger_original_copy(tmp_path):
+    _write(tmp_path / "model.safetensors", 1000)
+    _write(tmp_path / "original" / "consolidated.00.pth", 1100)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+
+
 def test_same_directory_dual_format_still_charges_one_copy(tmp_path):
     _write(tmp_path / "model.safetensors", 1000)
     _write(tmp_path / "pytorch_model.bin", 1000)
     assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+
+
+def test_sharded_dual_format_charges_the_larger_copy(tmp_path):
+    _write(tmp_path / "model-00001-of-00002.safetensors", 600)
+    _write(tmp_path / "model-00002-of-00002.safetensors", 400)
+    _write(tmp_path / "pytorch_model-00001-of-00002.bin", 650)
+    _write(tmp_path / "pytorch_model-00002-of-00002.bin", 400)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1050
+
+
+def test_consolidated_beside_sharded_safetensors_charges_one_copy(tmp_path):
+    _write(tmp_path / "consolidated.safetensors", 1000)
+    _write(tmp_path / "model-00001-of-00002.safetensors", 600)
+    _write(tmp_path / "model-00002-of-00002.safetensors", 400)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+
+
+def test_same_stem_dual_format_charges_one_copy(tmp_path):
+    _write(tmp_path / "v1-5-pruned.safetensors", 4000)
+    _write(tmp_path / "v1-5-pruned.pth", 4000)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 4000
+
+
+def test_adapter_dual_format_charges_one_copy(tmp_path):
+    _write(tmp_path / "adapter_model.safetensors", 300)
+    _write(tmp_path / "adapter_model.bin", 300)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 300
