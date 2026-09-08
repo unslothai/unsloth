@@ -1452,6 +1452,7 @@ def _viable_masked(
     devices: list,
     masked: "list | None" = None,
     inferred: "str | None" = None,
+    rocm: "tuple | None" = (6, 4),
     **mask: str,
 ) -> bool:
     """_forced_rocm_route_is_viable on a masked host, with the resolution left live.
@@ -1480,6 +1481,13 @@ def _viable_masked(
         "_physical_amd_gfx_archs",
         lambda: list(devices) or ([inferred] if inferred else []),
     )
+    # The version the host happens to have installed is not part of any case here, and
+    # reading it made every arm answer differently on a machine carrying /opt/rocm than on
+    # one without: _forced_rocm_route_is_viable asks _detect_rocm_version, an unreadable
+    # version reads as 0.0, and below 6.0 no generic wheel tag resolves, so the route is
+    # declined whatever the mask did. 6.4 is a version whose tag resolves; the three arms
+    # that are ABOUT the version pass their own.
+    monkeypatch.setattr(stack, "_detect_rocm_version", lambda: rocm)
     for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising = False)
     for var, value in mask.items():
@@ -1897,15 +1905,13 @@ def test_a_rocm_version_no_wheel_family_serves_is_not_a_viable_route(stack, monk
     rocmX.Y tag resolves, the missing-kernel reroute does not fire for an arch the generic wheel
     does carry, and _ensure_rocm_torch prints "No PyTorch wheel for ROCm 5.7" and installs
     nothing. _ensure_cuda_torch had already stood down for that swap."""
-    monkeypatch.setattr(stack, "_detect_rocm_version", lambda: (5, 7))
-    assert _viable_masked(stack, monkeypatch, devices = ["gfx908"]) is False
+    assert _viable_masked(stack, monkeypatch, devices = ["gfx908"], rocm = (5, 7)) is False
 
 
 def test_the_same_arch_on_a_version_with_a_wheel_family_is_viable(stack, monkeypatch):
     """The control: the same card on ROCm 6.4, where the tag resolves and the install proceeds.
     Without it the rule could be "gfx908 never routes"."""
-    monkeypatch.setattr(stack, "_detect_rocm_version", lambda: (6, 4))
-    assert _viable_masked(stack, monkeypatch, devices = ["gfx908"]) is True
+    assert _viable_masked(stack, monkeypatch, devices = ["gfx908"], rocm = (6, 4)) is True
 
 
 def test_an_arch_the_generic_wheel_lacks_still_routes_on_an_old_version(stack, monkeypatch):
@@ -1913,8 +1919,17 @@ def test_an_arch_the_generic_wheel_lacks_still_routes_on_an_old_version(stack, m
     it exists beside: gfx1103 has no generic kernels at any tag, so _ensure_rocm_torch reroutes
     it to AMD's per-arch index whatever the version reads. Declining on the tag alone would
     withdraw the swap from exactly the hosts the reroute was written for."""
-    monkeypatch.setattr(stack, "_detect_rocm_version", lambda: (5, 7))
-    assert _viable_masked(stack, monkeypatch, devices = ["gfx1103"]) is True
+    assert _viable_masked(stack, monkeypatch, devices = ["gfx1103"], rocm = (5, 7)) is True
+
+
+def test_the_route_test_does_not_read_the_hosts_rocm_version(stack, monkeypatch):
+    """The guard for the pin above, since its absence is not visible in a passing run. A
+    version this cannot read is 0.0, which is below every generic wheel tag, so the same
+    mask and the same card decline on a host with no /opt/rocm and approve on a host with
+    one. Every arm here is about masks rather than versions, so leaving it live meant this
+    file passed on a developer box carrying ROCm and failed fourteen ways on CI."""
+    monkeypatch.setattr(stack, "_detect_rocm_version", lambda: None)
+    assert _viable_masked(stack, monkeypatch, devices = ["gfx1100"]) is True
 
 
 def test_a_declared_arch_does_not_answer_over_an_unresolvable_mask_in_python(stack, monkeypatch):
