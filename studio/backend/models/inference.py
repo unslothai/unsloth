@@ -14,6 +14,7 @@ from pydantic import (
     BaseModel,
     Discriminator,
     Field,
+    PrivateAttr,
     Tag,
     field_validator,
     model_validator,
@@ -49,6 +50,7 @@ class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    _gguf_companion_roots: tuple[str, ...] = PrivateAttr(default = ())
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,
@@ -270,6 +272,19 @@ class LoadRequest(BaseModel):
             "non-GGUF models."
         ),
     )
+    audio_device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
+        None,
+        description = (
+            "Native audio (TTS / music) models only: where to hold the weights. "
+            "'cpu' keeps them in CPU RAM rather than the GPU -- slower generation, "
+            "but it leaves VRAM for other models and runs checkpoints too large for "
+            "the card. 'gpu' prefers the accelerator; 'auto' (default) detects. "
+            "Ignored for every non-audio model, and for GGUF audio: llama.cpp "
+            "placement comes from gpu_memory_mode and gpu_layers, which are decided "
+            "before anything can know a GGUF is audio. Send gpu_memory_mode='manual' "
+            "with gpu_layers=0 and speculative_type='off' to hold a GGUF TTS in RAM."
+        ),
+    )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
         description = (
@@ -410,6 +425,14 @@ class TranscribeRequest(BaseModel):
         None,
         description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
     )
+    device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
+        None,
+        description = (
+            "Where to hold the model: 'cpu' keeps it in CPU RAM, 'gpu' prefers the "
+            "accelerator, 'auto' (default) detects. Applies when this request has to "
+            "load the model; a resident model on another device is reloaded to honour it."
+        ),
+    )
 
 
 class SttLoadRequest(BaseModel):
@@ -419,6 +442,13 @@ class SttLoadRequest(BaseModel):
     engine: Optional[str] = Field(
         None,
         description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
+    device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
+        None,
+        description = (
+            "Where to hold the model: 'cpu' keeps it in CPU RAM rather than the GPU, "
+            "'gpu' prefers the accelerator, 'auto' (default) detects."
+        ),
     )
 
 
@@ -453,6 +483,14 @@ class ValidateModelRequest(BaseModel):
     # refuse a load that then fits.
     disable_vision: bool = Field(False)
     gpu_ids: Optional[List[int]] = Field(None)
+    # Sized with too: preflighting a CPU load would refuse one that takes no VRAM.
+    audio_device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
+        None,
+        description = (
+            "Native audio placement intended for the follow-up load. 'cpu' skips "
+            "the GPU-memory preflight, which that load would not use."
+        ),
+    )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
         description = (
@@ -1744,20 +1782,64 @@ class CompactionContentPart(BaseModel):
     )
 
 
+class InputAudio(BaseModel):
+    # Non-empty: an empty payload is not lifted, so the turn would otherwise proceed as
+    # text alone and answer "transcribe this" about a recording that was never sent.
+    data: str = Field(
+        ..., min_length = 1, description = "Base64-encoded audio, without a data: prefix."
+    )
+    format: Optional[str] = Field(
+        None, description = 'Declared container, e.g. "wav"; the decoder sniffs it anyway.'
+    )
+
+
+class InputAudioContentPart(BaseModel):
+    """Audio content part in a multimodal message, in OpenAI's documented shape."""
+
+    type: Literal["input_audio"]
+    input_audio: InputAudio
+
+
+class UnknownContentPart(BaseModel):
+    """Catch-all for unmodelled part types, mirroring ``ResponsesUnknownContentPart``."""
+
+    type: str
+
+    model_config = {"extra": "allow"}
+
+
+_KNOWN_CONTENT_PART_TAGS = frozenset(
+    {
+        "text",
+        "image_url",
+        "input_audio",
+        "input_document",
+        "reasoning",
+        "image_generation_call",
+        "compaction",
+    }
+)
+
+
 def _content_part_discriminator(v):
-    if isinstance(v, dict):
-        return v.get("type")
-    return getattr(v, "type", None)
+    tag = v.get("type") if isinstance(v, dict) else getattr(v, "type", None)
+    # A list or dict tag is unhashable, so testing membership would raise TypeError out of
+    # request validation as a 500. Declining to name a member leaves pydantic to report it.
+    if not isinstance(tag, str):
+        return None
+    return tag if tag in _KNOWN_CONTENT_PART_TAGS else "unknown"
 
 
 ContentPart = Annotated[
     Union[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
+        Annotated[InputAudioContentPart, Tag("input_audio")],
         Annotated[InputDocumentContentPart, Tag("input_document")],
         Annotated[OpenAIReasoningContentPart, Tag("reasoning")],
         Annotated[ImageGenerationCallContentPart, Tag("image_generation_call")],
         Annotated[CompactionContentPart, Tag("compaction")],
+        Annotated[UnknownContentPart, Tag("unknown")],
     ],
     Discriminator(_content_part_discriminator),
 ]
@@ -2896,8 +2978,10 @@ class ResponsesOutputTextPart(BaseModel):
 class ResponsesUnknownContentPart(BaseModel):
     """Catch-all for unmodelled content-part types.
 
-    Keeps validation green for newer part types (e.g. ``input_audio``); skipped
-    during normalisation rather than rejected with a 422.
+    Keeps validation green for newer part types (e.g. ``input_audio``) so an unrelated turn
+    is never answered with a 422 schema dump. Normalisation then refuses the part by name,
+    the way ``UnknownContentPart`` is refused on the Chat Completions side: landing here
+    means the part was understood well enough to say what it is, not that it can be served.
     """
 
     type: str
@@ -3141,7 +3225,7 @@ class ResponsesOutputMessage(BaseModel):
 
     type: Literal["message"] = "message"
     id: str = Field(default_factory = lambda: f"msg_{uuid.uuid4().hex[:12]}")
-    status: Literal["completed", "in_progress"] = "completed"
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
     role: Literal["assistant"] = "assistant"
     content: list[ResponsesOutputTextContent] = Field(default_factory = list)
 
@@ -3210,7 +3294,7 @@ class ResponsesResponse(BaseModel):
     id: str = Field(default_factory = lambda: f"resp_{uuid.uuid4().hex[:12]}")
     object: Literal["response"] = "response"
     created_at: int = Field(default_factory = lambda: int(time.time()))
-    status: Literal["completed", "in_progress", "failed"] = "completed"
+    status: Literal["completed", "in_progress", "incomplete", "failed"] = "completed"
     model: str = "default"
     output: list[ResponsesOutputItem] = Field(default_factory = list)
     usage: ResponsesUsage = Field(default_factory = ResponsesUsage)
@@ -4411,7 +4495,11 @@ class AudioSpeechRequest(BaseModel):
 
     input: str = Field(..., min_length = 1, description = "The text to synthesize.")
     model: Optional[str] = Field(
-        None, description = "Model id (informational; the loaded audio model is used)."
+        None,
+        description = (
+            "Model id. A downloaded text-to-speech model named here is loaded first when "
+            "model auto-switch is on; otherwise the loaded audio model is used."
+        ),
     )
     voice: Optional[str] = Field(None, description = "Voice name (accepted, unused).")
     response_format: Optional[str] = Field(

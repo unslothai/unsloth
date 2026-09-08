@@ -76,8 +76,6 @@ class ChangePasswordRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# API key schemas
-# ---------------------------------------------------------------------------
 
 
 class CreateApiKeyRequest(BaseModel):

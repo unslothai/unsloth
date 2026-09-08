@@ -8,8 +8,11 @@ field on backend/frontend types and the chat-adapter.ts generation + wiring."""
 from __future__ import annotations
 
 import ast
+import asyncio
 import re
 from pathlib import Path
+
+import pytest
 
 
 WORKSPACE = Path(__file__).resolve().parents[2]
@@ -44,37 +47,51 @@ def test_chat_completion_request_has_cancel_id_field():
     ), "ChatCompletionRequest must expose a cancel_id field for per-run cancellation routing"
 
 
-def test_cancel_route_matches_cancel_id_exclusively_when_present():
-    # A stale POST with cancel_id AND session_id must not cancel a later run via
-    # session_id; the handler must early-return through an exclusive-cancel_id path
-    # (atomic helper, or a keys list with ONLY cancel_id).
+@pytest.mark.parametrize(
+    "body, expected_calls, cancelled",
+    [
+        ({"cancel_id": "old-run", "session_id": "new-run"}, [("cancel", "old-run")], 1),
+        ({"cancel_id": "reserved-task", "session_id": "new-run"}, [], 0),
+        ({"session_id": "new-run"}, [("keys", ["new-run"])], 2),
+        ({"session_id": "reserved-task"}, [], 0),
+    ],
+)
+def test_cancel_route_matches_cancel_id_exclusively_when_present(body, expected_calls, cancelled):
+    # A stale POST with cancel_id AND session_id must not cancel a later run via session_id;
+    # the handler must early-return through an exclusive-cancel_id path (atomic helper, or a keys list with ONLY
+    # cancel_id).
     for node in ast.walk(ast.parse(ROUTES_SRC)):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "cancel_inference":
             break
     else:
         raise AssertionError("cancel_inference handler missing")
 
-    cancel_id_exclusive_branch = False
-    for sub in ast.walk(node):
-        if not isinstance(sub, ast.If):
-            continue
-        test_src = ast.unparse(sub.test)
-        if "cancel_id" not in test_src or "isinstance" not in test_src:
-            continue
-        branch_src = "\n".join(ast.unparse(s) for s in sub.body)
-        before_return = branch_src.split("return", 1)[0]
-        matches_cancel_id_only = (
-            "_cancel_by_cancel_id_or_stash(cancel_id)" in branch_src
-            or "_cancel_by_keys([cancel_id])" in branch_src
-        )
-        if matches_cancel_id_only and "session_id" not in before_return:
-            cancel_id_exclusive_branch = True
-            break
-    assert cancel_id_exclusive_branch, (
-        "cancel_inference must early-return with an exclusive cancel_id "
-        "match when a cancel_id is supplied, so a stale stop POST "
-        "cannot cancel a later run on the same thread via session_id"
+    # Execute the real handler with its routing collaborators isolated. A text
+    # search for "session_id" also matches the reserved-task guard's name and
+    # cannot distinguish a safe refusal from a dangerous fallback cancellation.
+    node.decorator_list = []
+    node.args.defaults = []
+    module = ast.Module(
+        body = [
+            ast.ImportFrom(module = "__future__", names = [ast.alias(name = "annotations")], level = 0),
+            node,
+        ],
+        type_ignores = [],
     )
+    calls = []
+    namespace = {
+        "is_reserved_agent_task_session_id": lambda value: value == "reserved-task",
+        "_cancel_by_cancel_id_or_stash": lambda value: calls.append(("cancel", value)) or 1,
+        "_cancel_by_keys": lambda values: calls.append(("keys", values)) or 2,
+    }
+    exec(compile(ast.fix_missing_locations(module), "cancel-route", "exec"), namespace)
+
+    class Request:
+        async def json(self):
+            return body
+
+    assert asyncio.run(namespace["cancel_inference"](Request(), "test")) == {"cancelled": cancelled}
+    assert calls == expected_calls
 
 
 def test_cancel_route_falls_back_to_session_or_completion_when_no_cancel_id():
@@ -129,8 +146,7 @@ def test_chat_adapter_sends_cancel_id_in_abort_cancel_post():
 
 
 def test_abort_cancel_post_uses_plain_fetch_with_manual_auth_header():
-    # authFetch redirects to login on 401, kicking the user out mid-stop if the
-    # token expired. Use plain fetch + manual Authorization for a best-effort cancel.
+    # authFetch redirects to login on 401, kicking the user out mid-stop if the token expired.
     start = ADAPTER_SRC.find("const onAbortCancel")
     assert start >= 0, "onAbortCancel handler missing"
     rest = ADAPTER_SRC[start:]

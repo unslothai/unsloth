@@ -8,8 +8,10 @@ gallery persistence and the raw-WAV response without torch, weights or a GPU."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request
@@ -28,8 +30,8 @@ _WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-payload"
 def _make_client(monkeypatch, generate = None):
     calls = []
 
-    async def _fake_generate(text, payload, request, current_subject, **_kwargs):
-        calls.append({"text": text, "payload": payload})
+    async def _fake_generate(text, payload, request, current_subject, **kwargs):
+        calls.append({"text": text, "payload": payload, **kwargs})
         if generate is not None:
             return await generate(text)
         return _WAV, 24000, "unsloth/orpheus-3b-0.1-ft", "snac"
@@ -197,6 +199,39 @@ def test_an_over_context_prompt_is_a_client_error(monkeypatch):
     routes_module._raise_if_prompt_leaves_no_speech_budget("A short line.")
 
 
+@pytest.mark.parametrize("model", [None, "", "org/B-GGUF"])
+def test_speech_model_selection(monkeypatch, model):
+    cli, calls, _saved = _make_client(monkeypatch)
+    body = {"input": "hi", **({"model": model} if model is not None else {})}
+    assert cli.post("/v1/audio/speech", json = body).status_code == 200
+    assert calls[0]["requested_model"] == (model or routes_module._RELOAD_ONLY_MODEL)
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_only_resident_requests_use_the_pre_switch_budget(monkeypatch, named):
+    async def _switch(_model, *_a, **kw):
+        assert kw["require_speech"] is True
+        raise RuntimeError("reached the switch")
+
+    monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 2048)
+    payload = SimpleNamespace(audio_instructions = None, audio_language = None)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+    model = "org/B-GGUF" if named else routes_module._RELOAD_ONLY_MODEL
+    with pytest.raises(RuntimeError if named else HTTPException) as error:
+        asyncio.run(
+            routes_module._generate_tts_wav(
+                "a long line",
+                payload,
+                request,
+                "tester",
+                requested_model = model,
+            )
+        )
+    assert str(error.value) == "reached the switch" if named else error.value.status_code == 400
+
+
 def test_the_shared_core_guards_before_generating():
     """Wired in _generate_tts_wav so /audio/generate inherits it, not only /audio/speech."""
     import inspect
@@ -219,9 +254,7 @@ def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
         if "_raise_if_prompt_leaves_no_speech_budget(text)" in line
     ]
     restore = next(
-        i
-        for i, line in enumerate(source.splitlines())
-        if "_RELOAD_ONLY_MODEL, request, current_subject" in line
+        i for i, line in enumerate(source.splitlines()) if "await _maybe_auto_switch_model(" in line
     )
     assert len(guards) == 2, "one check before the restore, one after"
     assert guards[0] < restore < guards[1]

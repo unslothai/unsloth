@@ -57,8 +57,7 @@ _MAX_VARIANT_FRAGMENT_LENGTH = 64
 _CACHE_SCOPE_DIGEST_LENGTH = 32
 _HASH_PREFIXES = ("sha256-", "@sha256-")
 _LEGACY_HASH_FRAGMENT = re.compile(r"sha256-[0-9a-f]{32}")
-# Either tag _variant_fragment stamps, so a reader can spot a digest handed to it
-# in place of a variant name.
+# Either tag _variant_fragment stamps, so a reader can spot a digest handed to it in place of a variant name.
 _HASHED_FRAGMENT = re.compile(r"@?sha256-[0-9a-f]{32}")
 
 
@@ -91,9 +90,8 @@ def _subdir(name: str, *, create: bool = False) -> Optional[Path]:
 
 
 def repo_cache_basename(repo_type: RepoType, repo_id: str) -> str:
-    # Reject a bad repo_type at runtime: a wrong value would silently produce a
-    # wrong filename and a misclassified scanner row (the Literal only guards
-    # statically; dynamic/JSON-sourced values slip past it).
+    # Reject a bad repo_type at runtime: the Literal only guards statically and dynamic/JSON-sourced
+    # values slip past it, silently producing a wrong filename and a misclassified scanner row.
     if repo_type not in _VALID_REPO_TYPES:
         raise ValueError(f"repo_type must be one of {_VALID_REPO_TYPES}, got {repo_type!r}")
     return f"{repo_type}s--{repo_id.replace('/', '--')}".lower()
@@ -187,8 +185,8 @@ def _variant_fragment(
     legacy_hash_key: bool = False,
 ) -> str:
     normalized_variant = variant.strip().lower()
-    # Double-hyphen variants can alias a repository component plus the
-    # ``--variant--`` delimiter, so give them an injective hashed fragment.
+    # Double-hyphen variants can alias a repository component plus the --variant-- delimiter, so give
+    # them an injective hashed fragment.
     if _SAFE_VARIANT_FRAGMENT.fullmatch(normalized_variant) and (
         legacy_variant_key
         or ("--" not in normalized_variant and not normalized_variant.startswith(_HASH_PREFIXES))
@@ -271,12 +269,9 @@ def normalize_hub_cache(hub_cache: str | Path) -> str:
     try:
         resolved = str(Path(hub_cache).expanduser().resolve(strict = False))
     except (OSError, RuntimeError, ValueError):
-        # Windows can refuse to resolve a path it can still open (OneDrive
-        # placeholders, a locked junction). Degrade to the expanded spelling
-        # rather than dropping the scope. It has to be exactly what
-        # legacy_cache_scope_name below builds, or that read-side counterpart
-        # would not recover the state this branch writes -- so expanduser here
-        # too, and fall back again if even that is unavailable.
+        # Windows can refuse to resolve a path it can still open (OneDrive placeholders, a locked
+        # junction), so degrade to the expanded spelling; it has to be exactly what
+        # legacy_cache_scope_name builds, or the read side cannot recover this state.
         try:
             resolved = str(Path(hub_cache).expanduser())
         except (OSError, RuntimeError, ValueError):
@@ -307,9 +302,8 @@ def legacy_cache_scope_name(hub_cache: str | Path) -> str:
     try:
         normalized = os.path.normcase(str(Path(hub_cache).expanduser()))
     except (OSError, RuntimeError, ValueError):
-        # Guarded like normalize_hub_cache, and for the same reason: this is now
-        # fed the caller's raw spelling, so a homeless "~" that expanduser
-        # refuses would otherwise escape a plain read as a RuntimeError.
+        # Guarded like normalize_hub_cache: this is fed the caller's raw spelling, so a homeless "~" that
+        # expanduser refuses would otherwise escape a plain read as a RuntimeError.
         normalized = os.path.normcase(str(hub_cache))
     return _cache_scope_digest(normalized)
 
@@ -337,9 +331,7 @@ def _cache_scope(
 ) -> Optional[Path]:
     if hub_cache is None:
         return parent
-    # A precomputed scope skips re-deriving the digest -- and with it the
-    # ``resolve`` inside it -- once per probe when a caller fans one cache path
-    # out across the filename-migration spellings.
+    # A precomputed scope skips re-deriving the digest, and the resolve inside it, once per probe.
     scoped = parent / (cache_scope or cache_scope_name(hub_cache))
     if not create:
         return scoped

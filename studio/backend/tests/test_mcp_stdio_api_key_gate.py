@@ -580,8 +580,9 @@ def test_studio_mcp_surface_refuses_stdio_recipes(monkeypatch):
     """mcp_server.py calls the validate route function directly, so the ViaApiKey
     dependency never runs and its `= False` default would read as a UI session.
     That remote static bearer surface must pass True itself or the gate is dead."""
-    import importlib
+    import importlib.util
     import sys
+    from pathlib import Path
     from types import ModuleType
 
     class FakeFastMCP:
@@ -595,9 +596,14 @@ def test_studio_mcp_surface_refuses_stdio_recipes(monkeypatch):
     fastmcp = ModuleType("fastmcp")
     fastmcp.FastMCP = FakeFastMCP
     monkeypatch.setitem(sys.modules, "fastmcp", fastmcp)
-    sys.modules.pop("mcp_server", None)
-
-    mcp_server = importlib.import_module("mcp_server")
+    # Import under a private name so the fake FastMCP cannot contaminate the
+    # real mcp_server cached by other tests (notably the training-start guard).
+    spec = importlib.util.spec_from_file_location(
+        "_test_stdio_mcp_server", Path(__file__).resolve().parents[1] / "mcp_server.py"
+    )
+    mcp_server = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, mcp_server)
+    spec.loader.exec_module(mcp_server)
     server = mcp_server.create_studio_mcp()
     seen = {}
 

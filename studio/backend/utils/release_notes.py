@@ -26,9 +26,8 @@ from packaging.version import InvalidVersion, Version
 
 from .update_status import DISABLE_ENV_VAR, RELEASE_NOTES_URL
 
-# A release entry carries its whole body, about 40 KiB lately, so the endpoint's
-# maximum of 100 would be near 4 MiB, twice the cap below, and the fetch would
-# fail outright. 30 is about 1.2 MiB, and the newest release is at the top.
+# A release entry carries its whole body (~40 KiB lately), so per_page=100 would be ~4 MiB, twice
+# the cap below, and the fetch would fail outright. 30 is ~1.2 MiB, newest first.
 RELEASES_API_URL = "https://api.github.com/repos/unslothai/unsloth/releases?per_page=30"
 RELEASES_URL_ENV_VAR = "UNSLOTH_RELEASES_URL"
 RELEASES_TIMEOUT_SECONDS = 3
@@ -37,23 +36,21 @@ _RELEASES_CHUNK_BYTES = 64 * 1024
 _RELEASES_MIN_READ_SECONDS = 0.05
 RELEASES_SUCCESS_TTL_SECONDS = 30 * 60
 RELEASES_FAILURE_TTL_SECONDS = 5 * 60
-# Unauthenticated callers get 60 requests an hour per IP, so an address that has
-# spent them backs off rather than retrying every 5 minutes. Used when the
-# response carries no reset to wait for.
+# Unauthenticated callers get 60 requests an hour per IP, so a spent address backs off instead of
+# retrying every 5 minutes. Used when the response carries no reset to wait for.
 RELEASES_RATE_LIMITED_TTL_SECONDS = 15 * 60
-# GitHub says not to request again before X-RateLimit-Reset, so its reset wins
-# over the back-off above. The window is an hour, so a skewed or proxied header
-# is held to that ceiling rather than trusted outright.
+# GitHub's X-RateLimit-Reset wins over the back-off above, but the window is an hour, so a skewed
+# or proxied header is held to that ceiling rather than trusted outright.
 RELEASES_RATE_LIMIT_MAX_SECONDS = 60 * 60
 RELEASE_NOTES_MAX_CHARS = 20_000
 
-# The repo also publishes llama.cpp prebuilts (`b8475`), legacy month tags
-# (`February-2026`) and `desktop-v...` drafts. Only an Unsloth version tag is an
-# announcement the popup should show.
+# The repo also publishes llama.cpp prebuilts, legacy month tags and desktop drafts; only an
+# Unsloth version tag is an announcement the popup should show.
+# The prebuilt tags look like `b8475` and the legacy month tags like `February-2026`.
 _RELEASE_TAG_PATTERN = re.compile(r"^v\d+(?:\.\d+)+")
 
-# CommonMark needs a space, tab or line end after the hashes: a non-breaking
-# space is text, a bare `##` an empty heading that still ends the section above.
+# CommonMark needs a space, tab or line end after the hashes: a non-breaking space is text, and a
+# bare `##` is an empty heading that still ends the section above.
 _HEADING_PATTERN = re.compile(r"^ {0,3}(?P<hashes>#{1,6})(?:[ \t]+(?P<title>.*?))?[ \t]*$")
 # A heading may close with its own run of hashes, which is not part of the title.
 _CLOSING_SEQUENCE = re.compile(r"(?:^|[ \t])#+[ \t]*$")
@@ -61,12 +58,12 @@ _CLOSING_SEQUENCE = re.compile(r"(?:^|[ \t])#+[ \t]*$")
 _TITLE_MARKUP = re.compile(r"[`*_~]|\[|\]\([^)]*\)|<[^>]*>")
 _FULL_CHANGELOG_LINE = re.compile(r"^ {0,3}\*{0,2}full changelog\*{0,2}\s*:", re.IGNORECASE)
 _FENCE_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
-# CommonMark type 1 HTML blocks: literal until a closing tag, which the spec
-# says need not be the one that opened the block.
+# CommonMark type 1 HTML blocks: literal until a closing tag, which the spec says need not be the
+# one that opened the block.
 _RAW_HTML_OPEN = re.compile(r"^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)", re.IGNORECASE)
 _RAW_HTML_CLOSE = re.compile(r"</(pre|script|style|textarea)\s*>", re.IGNORECASE)
-# Types 3 to 5 are literal too, each ending on its own delimiter. Comments open
-# mid-line, so they are handled separately.
+# Types 3 to 5 are literal too, each ending on its own delimiter; comments open mid-line, so they
+# are handled separately.
 _RAW_BLOCKS = (
     (_RAW_HTML_OPEN, _RAW_HTML_CLOSE),
     (re.compile(r"^ {0,3}<\?"), re.compile(r"\?>")),
@@ -74,8 +71,8 @@ _RAW_BLOCKS = (
     # A declaration needs an uppercase letter, so `<!note` stays ordinary text.
     (re.compile(r"^ {0,3}<![A-Z]"), re.compile(r">")),
 )
-# Type 6 runs to the next blank line, so `<details>` holds Markdown only after
-# one. Open and close tags both start a block.
+# Type 6 runs to the next blank line, so `<details>` holds Markdown only after one. Open and close
+# tags both start a block.
 _HTML_BLOCK_OPEN = re.compile(r"^ {0,3}</?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)")
 # Blocks that break into an open paragraph, closing it rather than continuing it.
 _INTERRUPTS = re.compile(
@@ -90,12 +87,12 @@ _SETEXT_UNDERLINE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 # A quoted paragraph continues on unmarked lines, which belong to the quote.
 _BLOCK_QUOTE = re.compile(r"^ {0,3}>")
 _QUOTE_MARKER = re.compile(r"^ {0,3}>[ \t]?")
-# A heading at an item's content column belongs to that item. The marker needs
-# whitespace after it, so `2.0` is a version, not an item.
+# A heading at an item's content column belongs to that item. The marker needs whitespace after
+# it, so `2.0` is a version, not an item.
 _LIST_ITEM = re.compile(r"^[ \t]*(?P<marker>[-*+]|\d{1,9}[.)])(?P<space>[ \t]+|$)")
 _THEMATIC_BREAK = re.compile(r"^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
-# Past this the content after a marker is indented code, so the item's content
-# starts one column past the marker instead.
+# Past this the content after a marker is indented code, so the item's content starts one column
+# past the marker instead.
 _MAX_ITEM_PADDING = 4
 _HTML_BLOCK_TAGS = frozenset(
     """
@@ -116,29 +113,23 @@ _HTML_TAG_ONLY_LINE = re.compile(
 _COMMENT_BLOCK_OPEN = re.compile(r"^ {0,3}<!--")
 _COMMENT_OPEN = "<!--"
 _COMMENT_CLOSE = "-->"
-# Stands in for a line the renderer hides: `#` is a block of its own, so list
-# tracking never reads it as a marker or a lazy continuation.
+# Stands in for a line the renderer hides: `#` is a block of its own.
 _HIDDEN_BLOCK = "#"
 _SAFE_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.!+-]{0,63}$")
 
-# Sections GitHub or the release workflow generates. Matched on the normalised
-# title, so `## What's Changed in Unsloth-Zoo` and a curly apostrophe still
-# match. Narrow rather than a substring sweep: "What changed in Gemma 4" is an
-# announcement one apostrophe away.
+# Sections GitHub or the release workflow generates, matched on the normalised title. Narrow
+# rather than a substring sweep: "What changed in Gemma 4" is an announcement one apostrophe away.
 _GENERATED_TITLES = frozenset({"what's changed", "whats changed", "new contributors"})
 _GENERATED_PREFIXES = ("what's changed in ", "whats changed in ")
 _GENERATED_SUFFIXES = ("zoo changes", "notebooks changes", "changelog")
-# The install block, worded differently in almost every release ("Updating /
-# installing Unsloth", "To update Unsloth", "Update Unsloth via `pip install`").
-# Naming Unsloth or Unsloth separates those from "Updating models is now 2x
-# faster", which is a change and not instructions.
+# The install block, worded differently in almost every release. Naming Unsloth separates those
+# from "Updating models is now 2x faster", which is a change and not instructions.
 _UPGRADE_PREFIXES = ("update", "updating", "to update", "how to update")
 _UPGRADE_SUBJECTS = ("unsloth", "studio")
 _UPGRADE_TITLES = frozenset({"update instructions", "install instructions"})
 _PROVENANCE = "build provenance"
-# Platform headings the install block splits its commands across, written as its
-# siblings as often as its children, so level alone does not end the block. The
-# separator is a slash or a comma, however it is spaced.
+# Platform headings the install block splits its commands across, written as its siblings as often
+# as its children, so level alone does not end the block.
 _PLATFORM_SEPARATOR = re.compile(r"\s*[/,]\s*")
 _PLATFORM_TITLES = frozenset(
     {
@@ -436,8 +427,7 @@ def scan_blocks(text: str):
             and paragraph != []
             and _SETEXT_UNDERLINE.match(visible) is not None
             and (visible.strip()[:1] == "-")
-            # Never a boundary in a list item: dedented the dashes are a break,
-            # at the content column the heading is nested.
+            # Never a boundary in a list item: dedented the dashes are a break
             and not lists.columns
         )
         if setext:
@@ -616,15 +606,15 @@ def get_latest_release(refresh: bool = False) -> ReleaseSource:
     global _remote_cache, _remote_fetching
 
     if refresh:
-        # Only a cached failure is dropped, never a rate-limit lockout: retrying
-        # into one spends nothing and only delays the reset.
+        # Only a cached failure is dropped, never a rate-limit lockout: retrying into one spends nothing
+        # and only delays the reset.
         with _cache_condition:
             rate_limited = _rate_limited_until > time.time()
             if _remote_cache and _remote_cache.source.release is None and not rate_limited:
                 _remote_cache = None
 
-    # A caller waits only as long as a fetch may take, then answers without notes
-    # rather than holding a worker behind a stalled upstream.
+    # A caller waits only as long as a fetch may take, then answers without notes rather than
+    # holding a worker behind a stalled upstream.
     deadline = time.monotonic() + RELEASES_TIMEOUT_SECONDS + 1
     while True:
         now = time.monotonic()
@@ -657,8 +647,6 @@ def get_latest_release(refresh: bool = False) -> ReleaseSource:
             _remote_cache = _ReleaseCacheEntry(source = source, expires_at = time.monotonic() + ttl)
         return source
     finally:
-        # Released here, not on the Exception path: stranding the single-flight
-        # flag on BaseException makes every later caller wait out the deadline.
         with _cache_condition:
             _remote_fetching = False
             _cache_condition.notify_all()

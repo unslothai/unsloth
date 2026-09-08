@@ -68,7 +68,7 @@ COPY_LOCATORS = (
     "get_by_alt_text",
     "get_by_title",
 )
-# The per-line pattern this guard replaced. Kept only to prove the gap it left.
+# The per-line pattern this guard replaced.
 PER_LINE = r"get_by_(placeholder|label)\(|get_by_role\([^)]*name\s*="
 
 

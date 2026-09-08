@@ -96,8 +96,8 @@ def test_the_derived_root_is_used_when_nothing_is_set(monkeypatch):
 
 
 def test_a_pypi_update_never_looks_for_a_checkout(monkeypatch, tmp_path):
-    # Without --local there is no local repo to find, and a stale
-    # STUDIO_LOCAL_REPO must not leak into the setup environment.
+    # Without --local there is no local repo to find, and a stale STUDIO_LOCAL_REPO must not leak into
+    # the setup environment.
     site = tmp_path / "site-packages"
     site.mkdir()
     studio, seen = _neutered(monkeypatch)
@@ -109,9 +109,9 @@ def test_a_pypi_update_never_looks_for_a_checkout(monkeypatch, tmp_path):
 
 
 def test_a_relative_override_is_absolutised(monkeypatch, tmp_path):
-    # setup.sh does `cd "$SCRIPT_DIR"` before install_python_stack.py runs, so
-    # a relative path handed straight through resolves against studio/ (which
-    # has no pyproject.toml) and hits the exact uv error the guard replaces.
+    # setup.sh does `cd "$SCRIPT_DIR"` before install_python_stack.py runs, so a relative path handed
+    # straight through resolves against studio/ (which has no pyproject.toml) and hits the exact uv
+    # error the guard replaces.
     checkout = tmp_path / "unsloth"
     checkout.mkdir()
     (checkout / "pyproject.toml").write_text("[project]\nname = 'unsloth'\n")
@@ -139,8 +139,8 @@ def test_a_tilde_override_is_expanded(monkeypatch, tmp_path):
 
 
 def test_a_blank_override_falls_back_to_the_derived_root(monkeypatch):
-    # `STUDIO_LOCAL_REPO= ` (install.sh resets it to empty) must not become
-    # Path(" ") and fail the guard on a perfectly good checkout.
+    # `STUDIO_LOCAL_REPO= ` (install.sh resets it to empty) must not become Path(" ") and fail the
+    # guard on a perfectly good checkout.
     studio, seen = _neutered(monkeypatch)
     monkeypatch.setenv("STUDIO_LOCAL_REPO", "   ")
     result = CliRunner().invoke(studio.studio_app, ["update", "--local"])
@@ -201,9 +201,8 @@ def test_a_pypi_update_passes_no_checkout(monkeypatch):
 
 
 def test_windows_is_shown_a_powershell_assignment(monkeypatch, tmp_path):
-    # `VAR=value command` is POSIX shell syntax. PowerShell parses the
-    # assignment as a command name, so the only recovery instruction the guard
-    # prints was unusable on the platform the guard exists for.
+    # `VAR=value command` is POSIX shell syntax. PowerShell parses the assignment as a command name, so
+    # the only recovery instruction the guard prints was unusable on the platform it exists for.
     import platform as _platform
 
     site = tmp_path / "Lib" / "site-packages"

@@ -67,7 +67,17 @@ _REAL_POPEN = subprocess.Popen
 
 
 def _installer_command(cmd) -> bool:
-    return any("install_llama_prebuilt" in str(part) for part in cmd)
+    """An INSTALL spawn, not one of the installer's read-only resolvers.
+
+    The same script answers --resolve-prebuilt / --resolve-backends, and the status
+    poll runs one to spot a drifted automatic backend. Faking those would hand the
+    caller's captured argv to a probe instead of to the install, which is the #8170
+    failure the docstring below describes, arriving from inside this module.
+    """
+    parts = [str(part) for part in cmd]
+    if not any("install_llama_prebuilt" in part for part in parts):
+        return False
+    return not any(part.startswith("--resolve-") for part in parts)
 
 
 def _patch_installer_popen(
@@ -144,6 +154,7 @@ def _clean_state(monkeypatch, tmp_path):
     freshness.reset_caches()
     upd._reset_job_for_tests()
     upd._resolve_memo.clear()
+    upd._backends_memo.clear()
     # Isolate the freshness disk cache so the suite never writes the real
     # ~/.unsloth cache (the default when storage_roots can't be imported).
     monkeypatch.setattr(freshness, "_cache_dir", lambda: tmp_path / ".freshness_cache")
@@ -159,6 +170,7 @@ def _clean_state(monkeypatch, tmp_path):
     freshness.reset_caches()
     upd._reset_job_for_tests()
     upd._resolve_memo.clear()
+    upd._backends_memo.clear()
 
 
 def _no_prebuilt(monkeypatch):
@@ -1387,3 +1399,152 @@ def test_status_source_build_includes_update_size(monkeypatch, tmp_path):
     assert st["source_build"] is True
     assert st["update_available"] is True
     assert st["update_size_bytes"] == 77_000_000
+
+
+def test_update_changelog_uses_full_installed_release_identity(monkeypatch, tmp_path):
+    binary = _write_install(
+        tmp_path,
+        "b10698",
+        release_tag = "b10698-mix-old",
+    )
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b10715-mix-new",
+    )
+    seen = {}
+
+    def fake_changelog(
+        repo,
+        installed,
+        latest,
+        *,
+        force_refresh = False,
+    ):
+        seen.update(
+            repo = repo,
+            installed = installed,
+            latest = latest,
+            force_refresh = force_refresh,
+        )
+        return {
+            "changes": [{"summary": "New model", "links": []}],
+            "total_changes": 1,
+            "truncated": False,
+            "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/new",
+        }
+
+    monkeypatch.setattr(upd, "changelog_for_update", fake_changelog)
+
+    result = upd.get_update_changelog(force_refresh = True)
+
+    assert result["matched"] is True
+    assert result["installed_tag"] == "b10698"
+    assert result["latest_tag"] == "b10715-mix-new"
+    assert result["changes"][0]["summary"] == "New model"
+    assert seen == {
+        "repo": "unslothai/llama.cpp",
+        "installed": "b10698-mix-old",
+        "latest": "b10715-mix-new",
+        "force_refresh": True,
+    }
+
+
+def test_update_changelog_retry_keeps_the_banner_target(monkeypatch, tmp_path):
+    # Retry must compare the pair the banner shows: the frontend rejects a response
+    # whose tags differ from the ones it asked about, leaving the panel in error.
+    binary = _write_install(tmp_path, "b10698", release_tag = "b10698-mix-old")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    published = {"tag": "b10715-mix-new"}
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: published["tag"],
+    )
+    # The banner rendered this target on its last hourly status check.
+    assert freshness.latest_published_release("unslothai/llama.cpp") == "b10715-mix-new"
+    published["tag"] = "b10800-mix-newer"  # published while the banner sat open
+    monkeypatch.setattr(
+        upd,
+        "changelog_for_update",
+        lambda *_args, **_kwargs: {
+            "changes": [{"summary": "New model", "links": []}],
+            "total_changes": 1,
+            "truncated": False,
+            "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/new",
+        },
+    )
+
+    result = upd.get_update_changelog(force_refresh = True)
+
+    assert result["latest_tag"] == "b10715-mix-new"
+    assert result["matched"] is True
+
+
+def test_update_changelog_answers_the_pair_the_caller_asked_about(monkeypatch, tmp_path):
+    # Another surface's forced status check advances the process-wide memo, so
+    # without the caller's pair the panel answers about a target it rejects.
+    binary = _write_install(tmp_path, "b10698", release_tag = "b10698-mix-old")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b10800-mix-newer",
+    )
+    seen = {}
+
+    def fake_changelog(
+        repo,
+        installed,
+        latest,
+        *,
+        force_refresh = False,
+    ):
+        seen.update(installed = installed, latest = latest)
+        return {
+            "changes": [],
+            "total_changes": 0,
+            "truncated": False,
+            "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/x",
+        }
+
+    monkeypatch.setattr(upd, "changelog_for_update", fake_changelog)
+
+    result = upd.get_update_changelog(installed_tag = "b10698", latest_tag = "b10715-mix-new")
+
+    assert result["latest_tag"] == "b10715-mix-new"
+    assert seen["latest"] == "b10715-mix-new"
+    assert result["matched"] is True
+
+    # The release page offered on the failure path points at that same target.
+    monkeypatch.setattr(upd, "changelog_for_update", lambda *_a, **_k: None)
+    failed = upd.get_update_changelog(installed_tag = "b10698", latest_tag = "b10715-mix-new")
+
+    assert failed["release_url"].endswith("b10715-mix-new")
+
+
+def test_update_changelog_ignores_a_pair_from_a_different_install(monkeypatch, tmp_path):
+    # The tree was swapped underneath the caller: answer with the server's view.
+    binary = _write_install(tmp_path, "b10698", release_tag = "b10698-mix-old")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b10800-mix-newer",
+    )
+    monkeypatch.setattr(
+        upd,
+        "changelog_for_update",
+        lambda *_args, **_kwargs: {
+            "changes": [],
+            "total_changes": 0,
+            "truncated": False,
+            "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/x",
+        },
+    )
+
+    result = upd.get_update_changelog(installed_tag = "b9000", latest_tag = "b10715-mix-new")
+
+    assert result["installed_tag"] == "b10698"
+    assert result["latest_tag"] == "b10800-mix-newer"

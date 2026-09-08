@@ -52,6 +52,13 @@ export const ar = {
     shutdown: "إيقاف التشغيل",
   },
   shell: {
+    find: {
+      label: "البحث في الصفحة",
+      previous: "التطابق السابق",
+      next: "التطابق التالي",
+      close: "إغلاق البحث",
+      truncated: "هذه الصفحة أطول من أن يتم البحث فيها بالكامل.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -222,6 +229,10 @@ export const ar = {
       browserReserved:
         "قد يحتفظ متصفحك بهذه التركيبة لنفسه. تعمل في تطبيق سطح المكتب.",
       actions: {
+        findInPage: {
+          label: "البحث في الصفحة",
+          description: "البحث في نص هذه الصفحة",
+        },
         openSettings: {
           label: "فتح الإعدادات",
           description: "فتح مربع حوار الإعدادات",
@@ -480,6 +491,13 @@ export const ar = {
         customModelDescription: "اسم النموذج المرسل إلى /v1/audio/transcriptions.",
         sttModelLabel: "نموذج التعرّف على الكلام",
         sttModelDescription: "اختر نموذج STT أو ابحث عنه لتشغيله محليًا.",
+        sttDeviceLabel: "التحميل إلى",
+        sttDeviceAuto: "وحدة معالجة الرسومات عند توفرها",
+        sttDeviceCpu: "ذاكرة المعالج",
+        sttDeviceAutoDescription:
+          "استخدم وحدة معالجة الرسومات إن وُجدت، وإلا فالمعالج.",
+        sttDeviceCpuDescription:
+          "احتفظ بالنموذج في ذاكرة النظام. النسخ أبطأ، لكن دون استخدام ذاكرة الرسومات.",
         sttModelSearchPlaceholder: "ابحث عن نموذج",
         sttModelSearching: "جارٍ البحث في Hugging Face…",
         sttModelValidating: "جارٍ التحقق من التوافق مع Whisper…",
@@ -903,7 +921,11 @@ export const ar = {
         currentStreak: "التتابع الحالي",
         longestStreak: "أطول تتابع",
         activityTitle: "نشاط التوكنات",
-        activityDescription: "{total} خلال آخر {weeks}",
+        activityDescription: {
+          daily: "{total} خلال آخر {weeks}",
+          weekly: "أسبوع الذروة {total} · آخر {weeks}",
+          cumulative: "{total} متراكمة خلال آخر {weeks}",
+        },
         mode: {
           daily: "يومي",
           weekly: "أسبوعي",
@@ -1232,7 +1254,7 @@ export const ar = {
       description:
         "اربط وكلاء البرمجة مثل Claude Code وCodex بنموذج محلي باستخدام unsloth start.",
       intro:
-        "يربط Claude Code وCodex وHermes وOpenClaw وOpenCode وغيرها من الوكلاء بنموذج يقدّمه Unsloth محليًا، دون اتصال بالإنترنت تمامًا. يشغّل خادمًا متوافقًا مع OpenAI ولا يمسّ ملفات إعدادات وكيلك إطلاقًا.",
+        "يربط Claude Code وCodex وDeepSeek Harness وHermes وOpenClaw وOpenCode وغيرها من الوكلاء بنموذج يقدّمه Unsloth محليًا، دون اتصال بالإنترنت تمامًا. يشغّل خادمًا متوافقًا مع OpenAI ولا يمسّ ملفات إعدادات وكيلك إطلاقًا.",
       readDocs: "قراءة التوثيق",
       copy: "نسخ",
       copied: "تم النسخ",
@@ -2123,6 +2145,7 @@ export const ar = {
       memoryEfficient: "موفّر للذاكرة",
       weightDecomposed: "أوزان مُفكَّكة",
       notSupportedAppleSilicon: "غير مدعوم على Apple Silicon",
+      doraNeedsVisionLayersOff: "أوقف تدريب طبقات الرؤية لاستخدام DoRA",
       optimization: "التحسين",
       schedule: "الجدولة",
       memory: "الذاكرة",

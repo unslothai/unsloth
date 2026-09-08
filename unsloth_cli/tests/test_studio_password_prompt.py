@@ -12,7 +12,9 @@ test_studio_cloudflare_flag.py.
 
 from __future__ import annotations
 
+import io
 import sqlite3
+import os
 import sys
 from pathlib import Path
 
@@ -31,36 +33,110 @@ def _studio():
 
 
 _BASE = ["--model", "unsloth/Qwen3-1.7B-GGUF"]
+
+
+@pytest.fixture(autouse = True)
+def _no_leaked_unattended_marker(monkeypatch):
+    """Start every test with the unattended marker unset.
+
+    The gate writes it straight into os.environ, right in production (inherited
+    across the re-exec) but wrong in a test process, where it survives into every
+    later test and silently suppresses the prompt they assert on.
+    """
+    import unsloth_cli.commands.studio as studio_mod
+    monkeypatch.delenv(studio_mod._UNATTENDED_PROMPT_DONE_ENV, raising = False)
+
+
 _NEW_PW = "brand-new-password"
 
 
 # ── pure trigger matrix ──────────────────────────────────────────────
 
 
+_TUNNEL_MATRIX = [
+    # --secure always implies the tunnel (host already forced to loopback).
+    (None, "127.0.0.1", True, False, True),
+    (True, "127.0.0.1", True, False, True),
+    (None, "127.0.0.1", True, True, True),
+    # --cloudflare tunnels only non-api-only wildcard binds.
+    (True, "0.0.0.0", False, False, True),
+    (True, "::", False, False, True),
+    (True, "::0", False, False, True),
+    (True, "0:0:0:0:0:0:0:0", False, False, True),
+    (True, "0", False, False, True),
+    (True, "::ffff:0.0.0.0", False, False, True),
+    (True, "", False, False, False),
+    (True, "127.0.0.1", False, False, False),
+    (True, "0.0.0.0", False, True, False),
+    # Off/unset never starts a tunnel without --secure.
+    (None, "0.0.0.0", False, False, False),
+    (False, "0.0.0.0", False, False, False),
+    (None, "127.0.0.1", False, False, False),
+]
+
+
+@pytest.mark.parametrize("cloudflare,host,secure,api_only,expected", _TUNNEL_MATRIX)
+def test_launch_publishes_tunnel_matrix(cloudflare, host, secure, api_only, expected):
+    """The narrow predicate. Unchanged, and pinned so it stays that way.
+
+    The strip-and-lockout guards key off this one, and a raw wildcard bind never
+    strips .bootstrap_password, so it must not be pulled in here even though it
+    does now prompt.
+    """
+    assert (
+        _studio()._launch_publishes_tunnel(
+            cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
+        )
+        is expected
+    )
+
+
 @pytest.mark.parametrize(
-    "cloudflare,host,secure,api_only,expected",
+    "cloudflare,host,secure,api_only,interactive,expected",
     [
-        # --secure always implies the tunnel (host already forced to loopback).
-        (None, "127.0.0.1", True, False, True),
-        (True, "127.0.0.1", True, False, True),
-        (None, "127.0.0.1", True, True, True),
-        # --cloudflare tunnels only non-api-only wildcard binds.
-        (True, "0.0.0.0", False, False, True),
-        (True, "::", False, False, True),
-        (True, "::0", False, False, True),
-        (True, "0:0:0:0:0:0:0:0", False, False, True),
-        (True, "0", False, False, True),
-        (True, "::ffff:0.0.0.0", False, False, True),
-        (True, "", False, False, False),
-        (True, "127.0.0.1", False, False, False),
-        (True, "0.0.0.0", False, True, False),
-        # Off/unset never prompts without --secure.
-        (None, "0.0.0.0", False, False, False),
-        (False, "0.0.0.0", False, False, False),
-        (None, "127.0.0.1", False, False, False),
+        # Every tunnel launch prompts regardless of the terminal; the headless
+        # fallback is downstream.
+        *[(c, h, s, a, False, e) for c, h, s, a, e in _TUNNEL_MATRIX if e],
+        *[(c, h, s, a, True, e) for c, h, s, a, e in _TUNNEL_MATRIX if e],
+        # The change: a RAW non-loopback bind with a terminal attached. Reachable
+        # by the whole network with the seeded password live, and it starts no
+        # tunnel, so before this it got no prompt at all.
+        (None, "0.0.0.0", False, False, True, True),
+        (False, "0.0.0.0", False, False, True, True),
+        (None, "::", False, False, True, True),
+        (None, "0", False, False, True, True),
+        (None, "::ffff:0.0.0.0", False, False, True, True),
+        # Concrete LAN addresses and hostnames, NOT just wildcard spellings. The
+        # backend counts these as exposed, so the parent must too; otherwise an
+        # older re-exec'd child, which has no backend gate, prompts nowhere.
+        (None, "192.168.1.50", False, False, True, True),
+        (None, "10.0.0.5", False, False, True, True),
+        (None, "172.16.4.9", False, False, True, True),
+        (None, "example.com", False, False, True, True),
+        (None, "myhost.local", False, False, True, True),
+        (None, "[::]", False, False, True, True),
+        # Headless raw binds stay as they were: no prompt, no strip, no refusal.
+        # Long-running containers are the common use, covered by the deadline.
+        (None, "0.0.0.0", False, False, False, False),
+        (False, "0.0.0.0", False, False, False, False),
+        (None, "::", False, False, False, False),
+        (None, "192.168.1.50", False, False, False, False),
+        # --api-only authenticates by API key, not the admin password.
+        (None, "0.0.0.0", False, True, True, False),
+        (None, "192.168.1.50", False, True, True, False),
+        # Loopback is not exposed, so nothing changes for plain `unsloth studio`.
+        (None, "127.0.0.1", False, False, True, False),
+        (None, "localhost", False, False, True, False),
+        (None, "::1", False, False, True, False),
+        # An empty host is rejected by the CLI long before this; never prompt on
+        # it, even though is_external_host("") is True.
+        (None, "", False, False, True, False),
     ],
 )
-def test_should_prompt_password_change_matrix(cloudflare, host, secure, api_only, expected):
+def test_should_prompt_password_change_matrix(
+    monkeypatch, cloudflare, host, secure, api_only, interactive, expected
+):
+    monkeypatch.setattr(_studio(), "_prompt_streams_interactive", lambda: interactive)
     assert (
         _studio()._should_prompt_password_change(
             cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
@@ -142,7 +218,11 @@ def _install_prompt_env(
     # dedicated test that overrides this.
     monkeypatch.setattr(studio_mod, "_tunnel_binary_confirmed_unavailable", lambda: False)
 
-    def fake_prompt(verify_current, out = None):
+    def fake_prompt(
+        verify_current,
+        out = None,
+        **_kw,
+    ):
         events.append(("prompt", verify_current))
         if isinstance(scripted, BaseException):
             raise scripted
@@ -186,6 +266,12 @@ def _install_run_reexec(monkeypatch, events):
     )
     fake_bin = fake_venv / "bin" / "unsloth"
     real_is_file = Path.is_file
+    # The fixture describes a POSIX install ("bin/unsloth", "/fake/..." paths), so
+    # pin BOTH platform probes, not just sys.platform: the launcher name comes from
+    # platform.system(), so a Windows runner looks for unsloth.exe, misses the
+    # fixture's POSIX name and exits with "venv missing 'unsloth' entry point"
+    # before any of these tests asserts anything. Windows has its own test below.
+    monkeypatch.setattr(studio_mod.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         Path,
         "is_file",
@@ -227,6 +313,38 @@ def _invoke_run(monkeypatch, events, args):
         context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
     return CliRunner().invoke(app, args, catch_exceptions = True)
+
+
+def test_run_reexecs_through_the_windows_console_script(monkeypatch):
+    # Windows ships the console script as unsloth.exe, so `studio run` looks for
+    # that name. Runs on every platform since platform.system() is the only thing
+    # that decides; the branch was previously untested, which is how the
+    # POSIX-only fixture above went unnoticed.
+    import typer as _typer
+
+    studio_mod = _studio()
+    events = []
+    _install_run_reexec(monkeypatch, events)
+    monkeypatch.setattr(studio_mod.platform, "system", lambda: "Windows")
+    windows_bin = Path("/fake/studio/venv/unsloth_studio/bin/unsloth.exe")
+    real_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda self: True if str(self) == str(windows_bin) else real_is_file(self),
+    )
+    # The bare POSIX name is NOT a file here, so a launch that ignored
+    # platform.system() would exit instead of re-execing.
+    monkeypatch.setattr(studio_mod, "_managed_cli_package_present", lambda _python: False)
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+    )(studio_mod.run)
+    result = CliRunner().invoke(app, _BASE + ["--api-only"], catch_exceptions = True)
+
+    assert result.exit_code == 0, result.output
+    assert [kind for kind, _ in events] == ["exec"], events
 
 
 @pytest.mark.parametrize("command", ["default", "run"])
@@ -694,7 +812,7 @@ def test_studio_default_connect_failure_fails_closed(monkeypatch, tmp_path):
     assert "exec" not in kinds, events
     assert result.exit_code == 1, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "refusing to publish" in combined.lower()
+    assert "refusing to expose" in combined.lower()
     # Not stripped: a retry can still prompt/strip once the lock clears.
     assert bootstrap_file.exists()
 
@@ -717,7 +835,7 @@ def test_studio_default_seed_commit_failure_fails_closed(monkeypatch, tmp_path):
     assert "exec" not in kinds, events
     assert result.exit_code == 1, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "refusing to publish" in combined.lower()
+    assert "refusing to expose" in combined.lower()
     # The half-written seed file is stripped, and no admin row was committed.
     assert not (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
     verify = sqlite3.connect(_auth_db(tmp_path))
@@ -1706,3 +1824,462 @@ def test_studio_default_password_applies_on_headless_wildcard_no_tunnel(monkeypa
     assert after["must_change_password"] == 0
     assert after["password_hash"] != before["password_hash"]
     assert "--password" not in _exec_argv(events)
+
+
+# ── CLI / backend exposure agreement ─────────────────────────────────
+
+
+_EXPOSURE_HOSTS = [
+    # wildcard spellings
+    "0.0.0.0",
+    "::",
+    "::0",
+    "0:0:0:0:0:0:0:0",
+    "0",
+    "::ffff:0.0.0.0",
+    # loopback aliases
+    "127.0.0.1",
+    "localhost",
+    "::1",
+    # concrete external addresses and names
+    "192.168.1.50",
+    "10.0.0.5",
+    "172.16.4.9",
+    "example.com",
+    "myhost.local",
+    # odd spellings
+    "[::]",
+    "0.0.0.0.0",
+]
+
+
+@pytest.mark.parametrize("host", _EXPOSURE_HOSTS)
+def test_cli_and_backend_agree_on_which_hosts_are_exposed(monkeypatch, host):
+    """The parent and the child must classify exposure identically.
+
+    Separate implementations in separate packages (the CLI cannot import the
+    backend), consulted at different moments: the parent before re-exec, the child
+    after. When they disagree the prompt lands in the child, and against an OLDER
+    studio-venv child (supported by the mixed-version path, and with no gate) it
+    lands nowhere and the seeded password is served.
+
+    Measured before the fix: wildcard was False but exposed was True for
+    192.168.1.50, 10.0.0.5, example.com, myhost.local, [::] and 0.0.0.0.0.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_bootstrap_timeout_probe",
+        _REPO_ROOT / "studio" / "backend" / "auth" / "bootstrap_timeout.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(_REPO_ROOT / "studio" / "backend"))
+    try:
+        spec.loader.exec_module(module)
+        backend_exposed = module._is_exposed_bind(host, False)
+    finally:
+        sys.path.remove(str(_REPO_ROOT / "studio" / "backend"))
+
+    monkeypatch.setattr(_studio(), "_prompt_streams_interactive", lambda: True)
+    cli_prompts = _studio()._should_prompt_password_change(
+        cloudflare = None, host = host, secure = False, api_only = False
+    )
+    assert cli_prompts is backend_exposed, (
+        f"{host!r}: CLI prompts={cli_prompts} but the backend considers it "
+        f"exposed={backend_exposed}; the parent gate and the child gate disagree"
+    )
+
+
+# ── a backgrounded shell job is not a usable terminal ─────────────────
+
+
+def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
+    """`unsloth studio -H 0.0.0.0 &` must still launch.
+
+    A background job inherits the terminal, so isatty() is True on both streams,
+    but the masked prompt calls termios.tcsetattr; POSIX SIGTTOUs a background
+    process group that does, and the default action STOPS the process. The launch
+    would freeze before the socket binds, so a launch that worked before this gate
+    widened stops working. It keeps the bootstrap deadline it already had.
+    """
+    studio = _studio()
+    monkeypatch.setattr(studio, "_prompt_streams_interactive", lambda: True)
+    monkeypatch.setattr(studio.os, "tcgetpgrp", lambda _fd: 4242)
+    monkeypatch.setattr(studio.os, "getpgrp", lambda: 99)
+    monkeypatch.setattr(studio.sys, "stdin", _FdStream())
+
+    assert (
+        studio._should_prompt_password_change(
+            cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
+        )
+        is False
+    )
+    # A tunnel is public either way, so it keeps failing closed.
+    assert (
+        studio._should_prompt_password_change(
+            cloudflare = None, host = "0.0.0.0", secure = True, api_only = False
+        )
+        is True
+    )
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
+def test_a_foreground_raw_bind_still_prompts(monkeypatch):
+    """The ordinary interactive case is untouched."""
+    studio = _studio()
+    monkeypatch.setattr(studio, "_prompt_streams_interactive", lambda: True)
+    monkeypatch.setattr(studio.os, "tcgetpgrp", lambda _fd: 4242)
+    monkeypatch.setattr(studio.os, "getpgrp", lambda: 4242)
+    monkeypatch.setattr(studio.sys, "stdin", _FdStream())
+
+    assert (
+        studio._should_prompt_password_change(
+            cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
+        )
+        is True
+    )
+
+
+@pytest.mark.parametrize("raised", [OSError("ENOTTY"), AttributeError(), ValueError()])
+def test_no_job_control_falls_back_to_the_isatty_answer(monkeypatch, raised):
+    """Windows / no controlling terminal: nothing can stop us, so still prompt."""
+    studio = _studio()
+    monkeypatch.setattr(studio, "_prompt_streams_interactive", lambda: True)
+
+    def _boom(_fd):
+        raise raised
+
+    monkeypatch.setattr(studio.os, "tcgetpgrp", _boom, raising = False)
+    monkeypatch.setattr(studio.sys, "stdin", _FdStream())
+
+    assert (
+        studio._should_prompt_password_change(
+            cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
+        )
+        is True
+    )
+
+
+class _FdStream:
+    def fileno(self):
+        return 0
+
+    def isatty(self):
+        return True
+
+
+# ── a pty is not a person ────────────────────────────────────────────
+
+
+def test_an_unattended_pty_still_launches_a_raw_bind(monkeypatch, tmp_path):
+    """`tmux new -d 'unsloth studio -H 0.0.0.0'` must still start Unsloth.
+
+    A detached pty (tmux/screen/`docker run -dt`) is a real, foreground terminal
+    nobody will ever type into: both streams are ttys and the process owns the
+    terminal, so every interactivity test says "prompt" and the read never
+    returns. The gate runs before any server exists, so undeadlined the launch
+    hangs forever. It must fall back to the bootstrap deadline it already had.
+    """
+    studio_mod = _studio()
+    events = _install_prompt_env(
+        monkeypatch,
+        tmp_path,
+        interactive = True,
+        scripted = studio_mod._password_prompt.PromptUnattended(),
+    )
+    monkeypatch.setattr(studio_mod, "_prompt_owns_the_terminal", lambda: True)
+    _seed_auth(studio_mod)
+
+    result = _invoke_studio_default(monkeypatch, events, ["-H", "0.0.0.0"])
+
+    kinds = [kind for kind, _ in events]
+    assert kinds == ["prompt", "exec"], events
+    assert result.exit_code == 0, result.output
+    # Unchanged password, and the seeded file is kept: a raw bind never strips.
+    assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
+
+
+def test_an_unattended_pty_still_aborts_a_tunnel_launch(monkeypatch, tmp_path):
+    """A tunnel publishes a public URL, so it gets no deadline and no fallback."""
+    studio_mod = _studio()
+    seen = {}
+
+    def _fake_prompt(
+        verify_current,
+        out = None,
+        **kw,
+    ):
+        seen.update(kw)
+        return _NEW_PW
+
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _fake_prompt)
+    _seed_auth(studio_mod)
+
+    _invoke_studio_default(monkeypatch, events, ["--secure"])
+    assert seen["first_key_timeout"] is None
+
+
+def test_a_raw_bind_prompt_carries_the_unattended_deadline(monkeypatch, tmp_path):
+    """The other half: only the launch that must not be blocked is deadlined."""
+    studio_mod = _studio()
+    seen = {}
+
+    def _fake_prompt(
+        verify_current,
+        out = None,
+        **kw,
+    ):
+        seen.update(kw)
+        return _NEW_PW
+
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _fake_prompt)
+    monkeypatch.setattr(studio_mod, "_prompt_owns_the_terminal", lambda: True)
+    _seed_auth(studio_mod)
+
+    _invoke_studio_default(monkeypatch, events, ["-H", "0.0.0.0"])
+    assert seen["first_key_timeout"] == studio_mod._UNATTENDED_PROMPT_SECONDS
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
+def test_read_masked_gives_up_on_a_pty_nobody_types_into(monkeypatch):
+    """The mechanism itself, against a real pty with no writer."""
+    import os
+    import pty
+
+    from unsloth_cli.commands import _password_prompt
+
+    master, slave = pty.openpty()
+
+    class _PtyStdin:
+        encoding = "utf-8"
+
+        def fileno(self):
+            return slave
+
+        def isatty(self):
+            return True
+
+    try:
+        monkeypatch.setattr(_password_prompt.sys, "stdin", _PtyStdin())
+        out = io.StringIO()
+        with pytest.raises(_password_prompt.PromptUnattended):
+            _password_prompt.read_masked("New password: ", out, first_key_timeout = 0.25)
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+@pytest.mark.parametrize(
+    "cloudflare,host,secure,expect_tunnel_wording",
+    [
+        # --secure always publishes a tunnel.
+        (None, "127.0.0.1", True, True),
+        # --cloudflare tunnels only WILDCARD hosts...
+        (True, "0.0.0.0", False, True),
+        # ...so a concrete bind is reachable through the raw socket, not a URL.
+        (True, "192.168.1.50", False, False),
+        (True, "example.com", False, False),
+        # No tunnel requested at all.
+        (None, "0.0.0.0", False, False),
+        (None, "192.168.1.50", False, False),
+    ],
+)
+def test_the_exposure_wording_matches_what_will_actually_happen(
+    monkeypatch, tmp_path, cloudflare, host, secure, expect_tunnel_wording
+):
+    """The prompt must not claim a public Cloudflare URL that never starts.
+
+    `--cloudflare -H 192.168.1.50` requests a tunnel that will not start, since a
+    non-secure tunnel needs a wildcard host. Deriving the message from the request
+    rather than the predicate told the operator their credential was about to go
+    on a public URL when it was going on the LAN.
+    """
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "_prompt_streams_interactive", lambda: True)
+    tunnel = studio_mod._launch_publishes_tunnel(
+        cloudflare = cloudflare, host = host, secure = secure, api_only = False
+    )
+    assert tunnel is expect_tunnel_wording
+
+
+def test_the_cli_deadline_sentence_tracks_the_configured_timeout(monkeypatch):
+    """The CLI fallback must not promise a shutdown that will never arm."""
+    studio_mod = _studio()
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    assert "shuts down after the bootstrap deadline" in studio_mod._deadline_sentence()
+    for disabled in ("0", "-1"):
+        monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", disabled)
+        sentence = studio_mod._deadline_sentence()
+        assert "DISABLED for this launch" in sentence, disabled
+        assert "shuts down after" not in sentence, disabled
+
+
+def test_a_raw_bind_ctrl_c_does_not_abort_the_launch(monkeypatch, tmp_path):
+    """Ctrl+C on `unsloth studio -H 0.0.0.0` must leave it starting.
+
+    The CLI mirror is the gate that actually runs for that command, so exiting
+    here makes run.py's warn-and-proceed unreachable and leaves the
+    `docker run -it` case unprotected.
+    """
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    _seed_auth(studio_mod)
+
+    def _abort(*_a, **_kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _abort)
+
+    # Returns rather than raising typer.Exit: the launch continues.
+    studio_mod._enforce_password_change_before_exposure(
+        cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
+    )
+    assert _auth_state(studio_mod)["must_change_password"] == 1
+    del events
+
+
+def test_a_tunnel_ctrl_c_still_aborts(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    _seed_auth(studio_mod)
+
+    def _abort(*_a, **_kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _abort)
+
+    import typer
+
+    with pytest.raises(typer.Exit):
+        studio_mod._enforce_password_change_before_exposure(
+            cloudflare = None, host = "127.0.0.1", secure = True, api_only = False
+        )
+
+
+def test_a_second_cli_gate_does_not_re_wait_the_same_dead_terminal(monkeypatch, tmp_path):
+    """`unsloth studio run` re-execs and re-enters this gate on the SAME pty.
+
+    The parent waits its deadline, nobody types, and it marks the terminal as
+    already tried. Without honouring that the child waits the whole deadline
+    again, so 30s becomes 60s before the backend gate even has its turn, long
+    enough to trip a startup watchdog. Peeked, never popped: run.py consumes it.
+    """
+    studio_mod = _studio()
+    calls = []
+
+    def _fake_prompt(
+        verify_current,
+        out = None,
+        **kw,
+    ):
+        calls.append(kw)
+        raise studio_mod._password_prompt.PromptUnattended
+
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _fake_prompt)
+    monkeypatch.setattr(studio_mod, "_prompt_owns_the_terminal", lambda: True)
+    _seed_auth(studio_mod)
+
+    # Parent: waits, gets nothing, marks the terminal.
+    _invoke_studio_default(monkeypatch, events, ["-H", "0.0.0.0"])
+    assert len(calls) == 1
+    import os as _os
+
+    assert _os.environ.get(studio_mod._UNATTENDED_PROMPT_DONE_ENV) == "1"
+
+    # Child, after the re-exec: same terminal, must not sit on it again.
+    _invoke_studio_default(monkeypatch, events, ["-H", "0.0.0.0"])
+    assert len(calls) == 1, "the re-executed gate waited on the dead terminal again"
+    assert _os.environ.get(studio_mod._UNATTENDED_PROMPT_DONE_ENV) == "1", "popped, not peeked"
+
+
+def test_the_mark_never_lets_a_tunnel_skip_its_prompt(monkeypatch, tmp_path):
+    """A public URL fails closed, mark or no mark."""
+    studio_mod = _studio()
+    calls = []
+
+    def _fake_prompt(
+        verify_current,
+        out = None,
+        **kw,
+    ):
+        calls.append(kw)
+        return _NEW_PW
+
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _fake_prompt)
+    monkeypatch.setattr(studio_mod, "_prompt_owns_the_terminal", lambda: True)
+    monkeypatch.setenv(studio_mod._UNATTENDED_PROMPT_DONE_ENV, "1")
+    _seed_auth(studio_mod)
+
+    _invoke_studio_default(monkeypatch, events, ["--secure"])
+    assert len(calls) == 1, "a tunnel launch skipped its prompt because of the mark"
+
+
+def _banner(monkeypatch, tmp_path, args):
+    """Run the gate far enough to capture the banner it prints, then bail out.
+
+    Clears the unattended mark first: bailing out with an interrupt SETS it on a
+    raw bind, so a second call in the same test would capture no banner.
+    """
+    import os as _os
+
+    studio_mod = _studio()
+    _os.environ.pop(studio_mod._UNATTENDED_PROMPT_DONE_ENV, None)
+
+    def _fake_prompt(
+        verify_current,
+        out = None,
+        **kw,
+    ):
+        raise KeyboardInterrupt
+
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _fake_prompt)
+    monkeypatch.setattr(studio_mod, "_prompt_owns_the_terminal", lambda: True)
+    _seed_auth(studio_mod)
+    result = _invoke_studio_default(monkeypatch, events, args)
+    return (result.output or "") + (getattr(result, "stderr", "") or "")
+
+
+def test_the_banner_does_not_promise_an_abort_a_raw_bind_will_not_perform(monkeypatch, tmp_path):
+    """`Ctrl+C to abort` is true for a tunnel and false for a raw bind.
+
+    On a raw bind the interrupt declines the prompt and the launch continues by
+    design, because it worked before this gate existed. An operator who reads
+    "abort", presses Ctrl+C and walks away would be leaving a server up on the
+    network with the auto-generated password.
+    """
+    raw = _banner(monkeypatch, tmp_path, ["-H", "0.0.0.0"])
+    assert "Ctrl+C to abort" not in raw
+    assert "Ctrl+C to skip" in raw
+
+    tunnel = _banner(monkeypatch, tmp_path, ["--secure"])
+    assert "Ctrl+C to abort" in tunnel
+
+
+def test_a_concrete_bind_is_not_described_as_every_interface(monkeypatch, tmp_path):
+    """`-H 192.168.1.50` listens on one address, so say so.
+
+    The gate widened to is_external_host, routing concrete non-loopback hosts down
+    the wildcard's path, where they inherited its wording.
+    """
+    concrete = _banner(monkeypatch, tmp_path, ["-H", "192.168.1.50"])
+    assert "on every network interface" not in concrete
+    assert "192.168.1.50" in concrete
+
+    wildcard = _banner(monkeypatch, tmp_path, ["-H", "0.0.0.0"])
+    assert "on every network interface" in wildcard

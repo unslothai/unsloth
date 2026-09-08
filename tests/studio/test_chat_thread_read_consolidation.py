@@ -27,7 +27,9 @@ def test_chat_run_reuses_one_thread_metadata_read() -> None:
 
     # The first shared read must sit after the model-ready wait, so a chat moved
     # to another project mid-load is still seen by the reads that follow.
-    model_ready_boundary = run.index(squash("// Re-read store after auto-load / model-ready wait."))
+    model_ready_boundary = run.index(
+        squash("      const liveRuntime = useChatRuntimeStore.getState();")
+    )
     first_shared_read = run.index(squash("const sandboxSessionId = await resolveSandboxSessionId("))
     assert first_shared_read > model_ready_boundary
 
@@ -35,7 +37,12 @@ def test_chat_run_reuses_one_thread_metadata_read() -> None:
     for call in (
         "resolveProjectId(resolvedThreadId,readThreadRecord",
         "resolveSandboxSessionId(resolvedThreadId,readThreadRecord",
-        "resolveChatInstructions(resolvedThreadId,params.systemPrompt,params.systemVariables,readThreadRecord",
         "resolveUseAdapter(resolvedThreadId,options,readThreadRecord",
     ):
         assert call in run
+
+    # Project instructions are now resolved by the backend's context snapshot.
+    # The client resolves only the user's prompt, without another metadata read
+    # or a second copy of the project instructions.
+    assert "resolveChatInstructions(" not in run
+    assert "resolveUserSystemPrompt(params.systemPrompt,params.systemVariables" in run
