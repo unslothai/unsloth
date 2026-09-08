@@ -3129,7 +3129,7 @@ def test_a_code_integrity_block_escalates_the_retry_window(tmp_path, monkeypatch
 
     def _run(cmd, **kwargs):
         calls.append(cmd)
-        # 0xC0E90002, the Smart App Control refusal, as an exit status.
+        # The Smart App Control refusal, as an exit status.
         return _types.SimpleNamespace(stdout = "", stderr = "", returncode = 0xC0E90002)
 
     monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
@@ -3197,7 +3197,7 @@ def test_inconclusive_probe_retries_after_a_bounded_cache_window(tmp_path, monke
     assert LlamaCppBackend.probe_server_capabilities(str(fake)) is retried
     assert len(calls) == 2
 
-    # A timeout is TRANSIENT, so the window stays flat; only a confirmed block doubles.
+    # A timeout is TRANSIENT: the window stays flat, only a block doubles.
     now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
     recovered = LlamaCppBackend.probe_server_capabilities(str(fake))
     assert recovered["mtp_probe_inconclusive"] is False

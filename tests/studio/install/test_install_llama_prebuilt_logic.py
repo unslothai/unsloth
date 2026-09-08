@@ -6942,9 +6942,7 @@ def test_windows_upstream_bundles_require_the_shared_runtime_too():
     assert "llama-common.dll" in patterns
 
 
-# Exact DLL/EXE payload of the real ggml-org/llama.cpp win-cpu-x64 zips either
-# side of the impl-library split (ggml-org/llama.cpp#23462, between b9279 and
-# b9283). b9279 is a complete, healthy archive that simply predates the split.
+# Real win-cpu-x64 zip payloads either side of the impl split (llama.cpp#23462).
 _PRE_SPLIT_WINDOWS_PAYLOAD = (
     "llama.dll",
     "llama-common.dll",
@@ -6962,7 +6960,6 @@ _POST_SPLIT_WINDOWS_PAYLOAD = _PRE_SPLIT_WINDOWS_PAYLOAD + ("llama-server-impl.d
     [
         ("b9279", _PRE_SPLIT_WINDOWS_PAYLOAD, True),
         ("b9283", _POST_SPLIT_WINDOWS_PAYLOAD, True),
-        # The split-era guard this PR added must still bite on a post-split tag.
         ("b9283", _PRE_SPLIT_WINDOWS_PAYLOAD, False),
     ],
     ids = ["pre-split-monolithic", "post-split-complete", "post-split-truncated"],
@@ -7025,9 +7022,8 @@ def test_existing_install_matches_plan_windows_rejects_missing_llama_common(tmp_
 
 
 def test_a_fresh_windows_install_is_payload_checked_not_just_vulkan():
-    """The check has to run where the bundle is first unpacked, not only on the
-    reuse path. A source guard because reaching that call needs a real download.
-    """
+    """A source guard: reaching that call needs a real download, but the check
+    has to run where the bundle is unpacked, not only on the reuse path."""
     source = MODULE_PATH.read_text(encoding = "utf-8")
     gate = source[source.index("overlaying prebuilt bundle") :]
     gate = gate[: gate.index("preflight_linux_installed_binaries")]

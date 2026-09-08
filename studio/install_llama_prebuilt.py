@@ -6945,19 +6945,15 @@ def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
     return tree if isinstance(tree, str) and tree else None
 
 
-# ggml-org/llama.cpp#23462 ("cmake: remove STATIC from impl libraries") split the
-# per-binary entry code out of the executables into paired ``lib<binary>-impl``
-# shared libraries, landing between b9279 and b9283. An archive for an older
-# pinned tag is monolithic and correctly ships no llama-server-impl.dll, so
-# requiring it there rejects a healthy prebuilt and drops the install to a source
-# build. Same boundary the runtime_patterns_for_choice note records.
+# ggml-org/llama.cpp#23462 split per-binary entry code into ``lib<binary>-impl``
+# libraries between b9279 and b9283; an older archive is monolithic and healthy
+# without llama-server-impl.dll, so requiring it there forces a source build.
 LLAMA_SERVER_IMPL_SPLIT_BUILD = 9283
 
 
 def _release_build_number(tag: str | None) -> int | None:
-    """Upstream build number of a ``bNNNN`` tag, also matching the fork's
-    ``bNNNN-mix-<sha>``. None when the tag carries no build number (a branch or
-    commit pin), which callers treat as "assume current"."""
+    """Build number of a ``bNNNN`` tag, also matching the fork's ``bNNNN-mix-<sha>``.
+    None for a branch or commit pin, which callers treat as "assume current"."""
     if not isinstance(tag, str):
         return None
     match = re.match(r"b(\d+)(?:[-.]|$)", tag.strip())
@@ -6967,10 +6963,8 @@ def _release_build_number(tag: str | None) -> int | None:
 def _windows_shared_groups(source_label: str | None, tag: str | None = None) -> list[list[str]]:
     """Runtime files every Windows install kind owes, before its backend DLL.
 
-    Requiring only ``llama.dll`` let a truncated extract validate and then fail at
-    exec. Gated on the prebuilt sources, which build with ``BUILD_SHARED_LIBS``
-    on; ``setup.ps1`` links statically, so requiring these there fails a healthy
-    tree.
+    Requiring only ``llama.dll`` let a truncated extract validate then fail at exec.
+    Prebuilt sources only: ``setup.ps1`` links statically and ships none of these.
     """
     groups: list[list[str]] = [["llama.dll"]]
     if source_label in {"published", "upstream"}:
@@ -7368,9 +7362,8 @@ def validate_prebuilt_choice(
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
     server_path, quantize_path = install_from_archives(choice, host, install_dir, work_dir)
-    # Every WINDOWS kind, not just Vulkan: gating only Vulkan here activated a
-    # fresh tree missing llama-common.dll and reported success. Not widened to
-    # Linux or macOS, whose groups this change does not touch.
+    # Every WINDOWS kind: gating only Vulkan activated a fresh tree missing
+    # llama-common.dll and reported success.
     if (
         choice.install_kind in VULKAN_INSTALL_KINDS or choice.install_kind.startswith("windows-")
     ) and not runtime_payload_is_healthy(install_dir, host, choice):

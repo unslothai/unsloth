@@ -2,8 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """Recognise a Windows code integrity refusal in a failed process launch.
 
-Smart App Control, WDAC and AppLocker refuse through the same kernel path: a
-"Bad Image" dialog names a dependent DLL, and no reinstall can repair it.
+Smart App Control, WDAC and AppLocker all refuse through the same kernel path.
 """
 
 from __future__ import annotations
@@ -33,18 +32,12 @@ _BLOCK_WINERRORS = {
     4551: "code integrity blocked the image",
 }
 
-# Windows reports 0xC0E90002 for a Smart App Control block AND for an admin's
-# WDAC policy, so that status is ambiguous and must offer both remedies. Only
-# winerror 1260 and the AppLocker / Group Policy wording positively identify an
-# admin-owned policy, where turning off SAC fixes nothing and downgrades security.
+# 0xC0E90002 is SAC or WDAC, so only 1260 and the AppLocker wording prove admin.
 _ADMIN_POLICY_REASONS = frozenset({_REASON_ADMIN_POLICY})
 _SMART_APP_CONTROL_REASONS = frozenset({_REASON_SMART_APP_CONTROL})
 
-# 0xC0000428 and winerror 577 report a HASH MISMATCH, not a policy verdict.
-# Microsoft's own text for both is "signed incorrectly or damaged", and event
-# 5038 names disk error and unauthorized modification beside it, so a truncated
-# or damaged copy of an otherwise acceptable file lands here too -- and there
-# replacing the file IS the remedy. These two must not deny corruption.
+# A hash mismatch, not a policy verdict: Microsoft's text is "signed incorrectly
+# or damaged" (event 5038), so these must not deny corruption.
 _INVALID_HASH_REASONS = frozenset({_REASON_INVALID_HASH_STATUS, _REASON_INVALID_HASH_WINERROR})
 
 _STATUS_TEXT_RE = re.compile(r"0x(c0e90002|c0000428|c0000602)\b", re.IGNORECASE)
@@ -71,7 +64,7 @@ def code_integrity_block_reason(error: object) -> str | None:
         reason = _BLOCK_WINERRORS.get(winerror)
         if reason is not None:
             return reason
-        # winerror can also carry the raw NTSTATUS on some launch failures.
+        # winerror also carries the raw NTSTATUS on some launch failures.
         reason = _BLOCK_STATUS_CODES.get(winerror & 0xFFFFFFFF)
         if reason is not None:
             return reason
@@ -80,7 +73,7 @@ def code_integrity_block_reason(error: object) -> str | None:
     if isinstance(error, int):
         returncode = error
     if isinstance(returncode, int):
-        # A negative return code is the signed reading of the same 32-bit status.
+        # A negative return code is the same status read as signed.
         reason = _BLOCK_STATUS_CODES.get(returncode & 0xFFFFFFFF)
         if reason is not None:
             return reason
@@ -95,8 +88,8 @@ def code_integrity_block_reason(error: object) -> str | None:
         return _REASON_SMART_APP_CONTROL
     if _ADMIN_POLICY_TEXT_RE.search(text):
         return _REASON_ADMIN_POLICY
-    # "Bad Image" alone is NOT a block: Windows prints it for a corrupt or
-    # wrong-architecture DLL too, where reinstalling IS the right remedy.
+    # "Bad Image" alone is NOT a block: a corrupt DLL prints it too, and there
+    # reinstalling IS the remedy.
     return None
 
 
@@ -133,7 +126,6 @@ def code_integrity_user_message(binary: str, reason: str) -> str:
             "Smart App Control has no per-application exception; turning it off in "
             "Windows Security under App & browser control is the only local workaround."
         )
-    # Ambiguous status: name both remedies rather than asserting either.
     return opening + (
         "If Smart App Control is on, it has no per-application exception and turning "
         "it off in Windows Security under App & browser control is the only local "

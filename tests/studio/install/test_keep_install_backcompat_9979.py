@@ -128,8 +128,7 @@ _SHARED_PAYLOAD = {
         "libggml-cpu.so",
         "libmtmd.so",
     ],
-    # Written unconditionally: the check is "has", not "has only", so the
-    # source-build cells, which do not require these, still pass.
+    # Written unconditionally: the check is "has", not "has only".
     "windows": [
         "llama.dll",
         "llama-common.dll",

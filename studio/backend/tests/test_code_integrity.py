@@ -34,13 +34,13 @@ def test_win32_error_numbers_are_recognised(winerror: int):
 
 @pytest.mark.parametrize("status", [0xC0E90002, 0xC0000428, 0xC0000602])
 def test_ntstatus_return_codes_are_recognised(status: int):
-    # Popen reports the same status as a negative int once it is read as signed.
+    # Popen reports the same status as a negative int, read as signed.
     assert code_integrity_block_reason(status) is not None
     assert code_integrity_block_reason(status - (1 << 32)) is not None
 
 
 def test_application_control_phrasing():
-    """The wording from unslothai/unsloth#8490, where unsloth.exe was blocked."""
+    """The wording from unslothai/unsloth#8490."""
     text = (
         "Program 'unsloth.exe' failed to run: An Application Control policy has blocked this file"
     )
@@ -64,8 +64,8 @@ def test_user_message_names_the_binary_and_rules_out_reinstalling():
 
 
 def test_an_administrator_policy_block_is_not_sent_to_smart_app_control():
-    """winerror 1260 and the AppLocker/Group Policy wording identify an admin's
-    policy, where turning Smart App Control off lifts nothing."""
+    """winerror 1260 and the AppLocker wording mean an admin policy, which
+    turning Smart App Control off does not lift."""
     for error in (_WinError(1260), "An Application Control policy has blocked this file"):
         reason = code_integrity_block_reason(error)
         assert reason is not None
@@ -79,7 +79,7 @@ def test_an_administrator_policy_block_is_not_sent_to_smart_app_control():
     assert "only local workaround" in sac_message
     assert "administers this device" not in sac_message
 
-    # SAC and WDAC both report 0xC0E90002, so that status offers both remedies.
+    # SAC and WDAC both report 0xC0E90002, so it offers both remedies.
     ambiguous = code_integrity_user_message(r"C:\x", code_integrity_block_reason(0xC0E90002))
     assert "Smart App Control" in ambiguous
     assert "managed by an administrator" in ambiguous
@@ -87,8 +87,7 @@ def test_an_administrator_policy_block_is_not_sent_to_smart_app_control():
 
 def test_an_invalid_image_hash_does_not_deny_corruption():
     """0xC0000428 / winerror 577 are a hash mismatch, which Windows reports for a
-    damaged file as readily as for one a policy refuses, so the message must not
-    tell the user the download is intact and reinstalling cannot help."""
+    damaged file too, so the message must not rule out a reinstall."""
     for error in (0xC0000428, 0xC0000428 - (1 << 32), _WinError(577)):
         reason = code_integrity_block_reason(error)
         assert reason is not None
@@ -96,18 +95,16 @@ def test_an_invalid_image_hash_does_not_deny_corruption():
         assert r"C:\Users\x\.unsloth\llama.cpp" in message
         assert "not a corrupt download" not in message
         assert "Reinstalling" in message
-        # Still names the policy remedies, since the cause is not certain.
         assert "Smart App Control" in message
         assert "managed by an administrator" in message
 
-    # The unambiguous policy statuses keep asserting that a reinstall is futile.
     policy = code_integrity_user_message(r"C:\x", code_integrity_block_reason(0xC0E90002))
     assert "not a corrupt download" in policy
 
 
 def test_bad_image_without_a_status_is_not_called_a_policy_block():
     """Windows prints the same sentence for a corrupt or wrong-architecture DLL,
-    which do need the reinstall this module rules out."""
+    which does need the reinstall this module rules out."""
     corrupt = (
         r"C:\Users\x\.unsloth\llama.cpp\build\bin\Release\ggml-base.dll is either not "
         r"designed to run on Windows or it contains an error."
