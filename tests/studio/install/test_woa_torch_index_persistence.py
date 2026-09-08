@@ -134,10 +134,9 @@ class TestWriteSide:
 
     def test_the_installer_passes_the_handover_variable_through(self):
         """install.ps1 exports it; nothing else supplies this value."""
-        source = STACK_SRC
         assert re.search(
             r"woa_torch_index\s*=\s*os\.environ\.get\(\s*[\"']UNSLOTH_WOA_SELECTED_TORCH_INDEX[\"']",
-            source,
+            STACK_SRC,
         ), "install_python_stack.py no longer forwards the index install.ps1 selected"
 
 
@@ -302,15 +301,14 @@ class TestResolverEnvironmentRestore:
         is_woa: bool = True,
         preset: str = "",
     ) -> dict:
-        setup = SETUP_SRC
         script = _script(
             "$script:Warnings = @()",
             "function substep { param($m, $c) $script:Warnings += ,$m }",
             f"$StudioHome = '{tmp_path}'",
             f"function Test-WinArm64Venv {{ ${str(is_woa).lower()} }}",
             preset,
-            _function_source(setup, "Get-UvSafePath"),
-            _function_source(setup, "Restore-WoaResolverEnvironment"),
+            _function_source(SETUP_SRC, "Get-UvSafePath"),
+            _function_source(SETUP_SRC, "Restore-WoaResolverEnvironment"),
             "Restore-WoaResolverEnvironment",
             "[pscustomobject]@{",
             "  ov = $env:UV_OVERRIDE; uvfl = $env:UV_FIND_LINKS; pipfl = $env:PIP_FIND_LINKS",
@@ -408,9 +406,8 @@ class TestResolverEnvironmentRestore:
 
     def test_the_restore_runs_before_the_dependency_pass(self):
         """After it, the brotli resolve has already been attempted."""
-        setup = SETUP_SRC
-        restore = setup.index("\nRestore-WoaResolverEnvironment")
-        stack = setup.index('python "$PSScriptRoot\\install_python_stack.py"')
+        restore = SETUP_SRC.index("\nRestore-WoaResolverEnvironment")
+        stack = SETUP_SRC.index('python "$PSScriptRoot\\install_python_stack.py"')
         assert restore < stack
 
 
@@ -447,26 +444,24 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
 
     def test_the_recovered_index_is_put_back_in_the_environment(self):
         """The bug this guards: recovering the index into a local variable only."""
-        text = SETUP_SRC
-        assign = text.index("$WinArm64TorchIndexUrl = if (")
-        export = text.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $_woaMarkerIndex")
-        stack = text.index('python "$PSScriptRoot\\install_python_stack.py"')
+        assign = SETUP_SRC.index("$WinArm64TorchIndexUrl = if (")
+        export = SETUP_SRC.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $_woaMarkerIndex")
+        stack = SETUP_SRC.index('python "$PSScriptRoot\\install_python_stack.py"')
         assert assign < export < stack, "recovered, re-exported, then read by the stack"
-        block = text.rindex("if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {", 0, export)
+        block = SETUP_SRC.rindex("if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {", 0, export)
         assert (
-            "$_woaMarkerIndex = $_woaPinnedIndex" in text[block:export]
+            "$_woaMarkerIndex = $_woaPinnedIndex" in SETUP_SRC[block:export]
         ), "guarded: neither record present must not export an empty value"
 
     def test_studio_txt_is_installed_in_no_torch_mode(self):
         """The premise of the placement test above."""
-        source = STACK_SRC
-        call = source.index('req = REQ_ROOT / "studio.txt"')
-        line_start = source.rfind("\n", 0, source.rindex("pip_install(", 0, call)) + 1
-        indent = len(source[line_start:]) - len(source[line_start:].lstrip())
+        call = STACK_SRC.index('req = REQ_ROOT / "studio.txt"')
+        line_start = STACK_SRC.rfind("\n", 0, STACK_SRC.rindex("pip_install(", 0, call)) + 1
+        indent = len(STACK_SRC[line_start:]) - len(STACK_SRC[line_start:].lstrip())
         assert (
             indent == 4
         ), "the studio.txt install is no longer unconditional inside install_python_stack()"
-        skip_list = source[source.index("NO_TORCH_SKIP_PACKAGES = {") :][:400]
+        skip_list = STACK_SRC[STACK_SRC.index("NO_TORCH_SKIP_PACKAGES = {") :][:400]
         assert "ddgs" not in skip_list, "ddgs is still installed when NO_TORCH is set"
 
 
@@ -598,9 +593,8 @@ class TestTheLlamaArm64CudaOptOut:
         UNSLOTH_LLAMA_ARM64_CUDA=0 would keep working right up until the fork published
         an approved artifact, then silently stop.
         """
-        source = LLAMA_SRC
-        start = source.index("def resolve_asset_choice(")
-        body = source[start:]
+        start = LLAMA_SRC.index("def resolve_asset_choice(")
+        body = LLAMA_SRC[start:]
         marker = body.index("host.is_windows and host.is_arm64")
         branch = body[marker : marker + 4000]
         gate = branch.index("if host.has_usable_nvidia")
@@ -610,22 +604,19 @@ class TestTheLlamaArm64CudaOptOut:
 
     def test_the_now_unreachable_inner_check_is_gone(self):
         """With the branch gated, a second test inside it could only ever be true."""
-        source = LLAMA_SRC
-        start = source.index("def resolve_asset_choice(")
-        assert "if _upstream_arm64_cuda_allowed():" not in source[start:]
+        start = LLAMA_SRC.index("def resolve_asset_choice(")
+        assert "if _upstream_arm64_cuda_allowed():" not in LLAMA_SRC[start:]
 
     def test_the_docstring_matches_the_scope(self):
         """The helper documented itself as upstream-only; it now gates every bundle."""
-        source = LLAMA_SRC
-        start = source.index("def _upstream_arm64_cuda_allowed(")
-        doc = source[start : source.index('"""', source.index('"""', start) + 3)]
+        start = LLAMA_SRC.index("def _upstream_arm64_cuda_allowed(")
+        doc = LLAMA_SRC[start : LLAMA_SRC.index('"""', LLAMA_SRC.index('"""', start) + 3)]
         assert "published or upstream" in doc
 
     def test_the_upstream_resolver_branch_specifically(self):
-        source = LLAMA_SRC
-        start = source.index("def resolve_upstream_asset_choice(")
-        end = source.index("\ndef ", start + 10)
-        body = source[start:end]
+        start = LLAMA_SRC.index("def resolve_upstream_asset_choice(")
+        end = LLAMA_SRC.index("\ndef ", start + 10)
+        body = LLAMA_SRC[start:end]
         marker = body.index("if host.is_windows and host.is_arm64:")
         arm64_block = body[marker : marker + 900]
         assert (
@@ -771,9 +762,8 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         """The premise of widening: resolve_asset_choice falls through to the published
         windows-arm64 bundle when no ARM64 CUDA asset is available on an NVIDIA host.
         """
-        source = LLAMA_SRC
-        start = source.index("def resolve_asset_choice(")
-        body = source[start:]
+        start = LLAMA_SRC.index("def resolve_asset_choice(")
+        body = LLAMA_SRC[start:]
         marker = body.index("host.is_windows and host.is_arm64")
         assert (
             'published_asset_choice_for_kind(release, "windows-arm64")'
@@ -785,18 +775,16 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         attempted first, so a CPU bundle accepted here is still replaced the day an ARM64
         CUDA asset appears.
         """
-        source = LLAMA_SRC
-        raise_at = source.index("raise ExistingInstallSatisfied(attempt, tried_fallback)")
-        window = source[max(0, raise_at - 1200) : raise_at]
+        raise_at = LLAMA_SRC.index("raise ExistingInstallSatisfied(attempt, tried_fallback)")
+        window = LLAMA_SRC[max(0, raise_at - 1200) : raise_at]
         assert (
             "choice = attempt" in window
         ), "the reuse check is per attempt; a plan-level one would pin the user to CPU"
 
     def test_the_falsy_spellings_match_the_python_helper(self):
         """One vocabulary; the two must not drift apart."""
-        source = LLAMA_SRC
-        start = source.index("def _upstream_arm64_cuda_allowed(")
-        body = source[start : source.index("\ndef ", start + 10)]
+        start = LLAMA_SRC.index("def _upstream_arm64_cuda_allowed(")
+        body = LLAMA_SRC[start : LLAMA_SRC.index("\ndef ", start + 10)]
         python_set = set(re.findall(r'"(0|false|no|off)"', body))
         ps_block = SETUP_SRC
         ps_line = ps_block[ps_block.index("$_arm64CudaOptOut =") :].split("\n")[0]
@@ -2464,8 +2452,7 @@ class TestAnOverrideConflictCanHideInAnInclude:
         assert (
             INSTALL_SRC.count("$_woaOvEntries") == 3
         ), "the conflict scan and the fold have diverged"
-        setup = SETUP_SRC
-        assert "foreach ($_woaEntry in (Get-RequirementEntries -Path $_woaFile))" in setup
+        assert "foreach ($_woaEntry in (Get-RequirementEntries -Path $_woaFile))" in SETUP_SRC
 
 
 class TestAFloorIsPep440AboutPrereleases:
@@ -2906,19 +2893,17 @@ class TestThePipFallbackIsRefusedOnTheNativeStack:
 
     def test_both_fallback_paths_are_covered(self):
         """uv failing and uv never being available reach pip by different routes."""
-        source = STACK_SRC
-        assert source.count("_woa_overrides_are_load_bearing()") == 3, (
+        assert STACK_SRC.count("_woa_overrides_are_load_bearing()") == 3, (
             "one definition and both fallback sites; a route that skips the check would "
             "silently resolve the wrong stack"
         )
-        after_uv_failed = source.index("if _woa_overrides_are_load_bearing():")
-        pip_build = source.index("pip_cmd = _build_pip_cmd(args)")
+        after_uv_failed = STACK_SRC.index("if _woa_overrides_are_load_bearing():")
+        pip_build = STACK_SRC.index("pip_cmd = _build_pip_cmd(args)")
         assert after_uv_failed < pip_build, "the check has to precede the pip command"
 
     def test_the_message_names_the_remedy(self):
-        source = STACK_SRC
         assert (
-            "Install uv and re-run" in source
+            "Install uv and re-run" in STACK_SRC
         ), "a refusal with no way forward is worse than the silent fallback it replaces"
 
 
@@ -3349,9 +3334,8 @@ class TestTheManifestRecordsTheSameIndexAsTheMarker:
 
     def test_the_stack_writes_that_variable_into_the_manifest(self):
         """The premise: without this read the export would reach nothing."""
-        source = STACK_SRC
-        assert "UNSLOTH_WOA_SELECTED_TORCH_INDEX" in source
-        assert "woa_torch_index" in source
+        assert "UNSLOTH_WOA_SELECTED_TORCH_INDEX" in STACK_SRC
+        assert "woa_torch_index" in STACK_SRC
 
     def test_the_manifest_is_preferred_over_the_marker_on_read(self):
         """Which is why the two must agree rather than the marker being enough."""
