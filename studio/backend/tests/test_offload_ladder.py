@@ -989,9 +989,9 @@ def test_a_cpu_pinned_projector_is_charged_to_host_ram():
 
     plan = plan_placement(layout, [card], ram, ctx, kv_bytes_floor = floor, opts = o)
     assert plan.mmproj_to_host and not plan.spilled_blocks, plan.reason
-    assert plan.host_bytes == layout.token_embd_bytes + mmproj, (
-        "a CPU-pinned projector is host RAM this plan has to pay for"
-    )
+    assert (
+        plan.host_bytes == layout.token_embd_bytes + mmproj
+    ), "a CPU-pinned projector is host RAM this plan has to pay for"
     assert plan.load_mode_none
     assert plan.cache_ram_mib == 0, "nothing is left under the headroom for the prompt cache"
 
