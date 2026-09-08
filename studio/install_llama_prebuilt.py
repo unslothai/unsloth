@@ -7012,9 +7012,11 @@ def runtime_payload_health_groups(
         # taken from the shipped macos-arm64 bundle rather than guessed. The dot
         # is what keeps each pattern off its siblings: libggml.* cannot match
         # libggml-base. Each library is a symlink chain onto one versioned file
-        # (libggml.dylib -> libggml.0.dylib -> libggml.0.23.0.dylib), so any name
-        # is enough here and losing the target is caught by the resolved is_file
-        # test in _payload_match_is_loadable.
+        # (libggml.dylib -> libggml.0.dylib -> libggml.0.23.0.dylib). Losing the
+        # target is caught by the resolved is_file test in
+        # _payload_match_is_loadable, and losing the middle link, which is the
+        # install name dyld actually asks for, by the version-depth test there:
+        # libggml.0.23.0.dylib cannot satisfy the group on its own.
         #
         # blas, metal and rpc are deliberately absent: they are the accelerator
         # and transport backends, the way libggml-cuda is on Linux, and requiring
@@ -7082,6 +7084,8 @@ def install_runtime_dir(install_dir: Path, host: HostInfo) -> Path:
 
 """``libfoo.so``, or ``libfoo.so.0``, but not ``libfoo.so.0.0.10360``."""
 _LINKER_NAME_RE = re.compile(r"^.+\.so(?P<version>(?:\.\d+)*)$")
+"""``libfoo.dylib``, or ``libfoo.0.dylib``, but not ``libfoo.0.23.0.dylib``."""
+_DYLIB_NAME_RE = re.compile(r"^.+?(?P<version>(?:\.\d+)*)\.dylib$")
 
 
 def _payload_match_is_loadable(path: Path) -> bool:
@@ -7094,15 +7098,22 @@ def _payload_match_is_loadable(path: Path) -> bool:
     ``libllama.so.0.0.10360``, and ``libllama.so*`` matches both, so quarantining
     the SONAME left the group satisfied by the twin while ``llama-server
     --version`` exited 127. A name with more version components than a SONAME can
-    only be the twin, so it does not count on its own. Non-soname names
-    (``.dll``, ``.dylib``, a bare executable) are unaffected.
+    only be the twin, so it does not count on its own.
+
+    macOS names the same pair the other way round, and needs the same rule: the
+    shipped bundle carries ``libggml.dylib -> libggml.0.dylib ->
+    libggml.0.23.0.dylib``, and ``llama-server``'s LC_LOAD_DYLIB entry is
+    ``@rpath/libggml.0.dylib`` (the install name recorded in the terminal file's
+    own LC_ID_DYLIB), so losing the middle link is fatal to dyld while
+    ``libggml.*.dylib`` stays satisfied by the terminal file. ``.dll`` names and
+    bare executables are unaffected.
     """
     try:
         if not path.is_file():
             return False
     except OSError:
         return False
-    match = _LINKER_NAME_RE.match(path.name)
+    match = _LINKER_NAME_RE.match(path.name) or _DYLIB_NAME_RE.match(path.name)
     if match is None:
         return True
     return match.group("version").count(".") <= 1
@@ -7235,10 +7246,17 @@ def installed_runtime_health(
         return False, "llama_runtime_payload_incomplete"
     # The payload groups name libraries only, so on Linux and macOS a quarantined
     # llama-server would otherwise read as a complete install.
-    # _existing_install_runs requires both of these too.
+    # _existing_install_runs requires both of these too, and asks for the execute
+    # bit rather than mere presence, so this asks the same way: extraction damage
+    # or security software that clears the bit without deleting the file leaves
+    # _find_llama_server_binary rejecting the tree (os.access X_OK, "non
+    # executable", no fallback) while an exists() check here still answered Ready.
+    # os.access is F_OK in all but name on Windows, so this is the POSIX
+    # distinction only. The reason stays llama_runtime_binaries_missing: the
+    # repair is the same reinstall, and the frontend renders that reason already.
     ext = ".exe" if host.is_windows else ""
     for name in ("server", "quantize"):
-        if not (runtime_dir / f"llama-{name}{ext}").exists():
+        if not os.access(runtime_dir / f"llama-{name}{ext}", os.X_OK):
             return False, "llama_runtime_binaries_missing"
     return True, ""
 

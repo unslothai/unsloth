@@ -498,6 +498,7 @@ def _active_helper():
     namespace = {
         "os": __import__("os"),
         "sys": __import__("sys"),
+        "Path": pathlib.Path,
         "_PACKAGE_ROOT": pathlib.Path(__file__).resolve().parents[3],
     }
     exec(compile(text[start:end], "<helper>", "exec"), namespace)
@@ -519,16 +520,77 @@ def test_a_deleted_llama_server_path_does_not_suppress_the_managed_verdict(tmp_p
     assert active() is False
 
 
-def test_a_broken_symlink_pin_still_counts_as_pinned(tmp_path, monkeypatch):
-    """lexists, not exists: a dangling pin stops the finder with an unavailable-path warning
-    rather than falling through, so the managed verdict is still not ours to report."""
+def test_a_dangling_symlink_pin_falls_through_like_any_absent_pin(tmp_path, monkeypatch):
+    """Codex 3959620579, P2, correcting this test's own earlier claim. ``_file_status`` asks
+    ``Path.is_file()``, which follows the link, so a pin whose target was deleted or
+    quarantined reads as "absent" there and the finder walks on to the managed tree. lexists
+    called that a pin and left the tree the backend really loads ungraded, so an incomplete
+    managed runtime reported Ready. A pin that resolves to a file, executable or not, does
+    stop the finder and is still not ours to grade."""
     if os.name == "nt":
         pytest.skip("POSIX symlink semantics")
+    active = _active_helper()
+
     link = tmp_path / "pinned"
     os.symlink(tmp_path / "never-existed", link)
-    active = _active_helper()
+    assert os.path.lexists(link) and not link.is_file()
     monkeypatch.setenv("LLAMA_SERVER_PATH", str(link))
+    assert active() is True
+
+    (tmp_path / "never-existed").write_text("", encoding = "utf-8")
     assert active() is False
+
+
+def test_an_explicit_runtime_override_outranks_a_stale_stored_folder(monkeypatch):
+    """Codex 3959620607, P2. The finder reads UNSLOTH_LLAMA_CPP_PATH at step 1b and the
+    stored folder only at step 2, so an override with an older selection still in the
+    settings database is the tree the backend opens. Reading the setting first returned
+    False, nothing graded that tree, and preflight stayed Ready over a runtime missing files.
+    default_managed_llama_dir points at exactly the override, so it is ours to grade."""
+    active = _active_helper()
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", "/opt/relocated/llama.cpp")
+    _stub_stored_selection(monkeypatch, "/home/someone/older-build")
+    assert active() is True
+
+    # The desktop's own marker is the exception: the finder skips the override when
+    # it set it, so the stored folder wins again and the managed tree is not ours.
+    monkeypatch.setenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", "1")
+    assert active() is False
+
+
+def _stub_stored_selection(monkeypatch, selected):
+    """A stored custom folder, without a settings database or the backend package.
+
+    The helper imports ``studio.backend.utils.llama_cpp_path_settings`` by name, so the
+    parents have to be in sys.modules too or the real packages are pulled in.
+    """
+    import types
+
+    for name in ("studio", "studio.backend", "studio.backend.utils"):
+        module = types.ModuleType(name)
+        module.__path__ = []
+        monkeypatch.setitem(sys.modules, name, module)
+    settings = types.ModuleType("studio.backend.utils.llama_cpp_path_settings")
+    settings.get_stored_custom_llama_cpp_path = lambda: selected
+    monkeypatch.setitem(sys.modules, "studio.backend.utils.llama_cpp_path_settings", settings)
+
+
+def test_a_skipped_runtime_verdict_says_so_in_its_reason(monkeypatch):
+    """Codex 3959620616, P2, the CLI half. Null because another runtime is selected is not
+    null because nothing is installed: the first expires when the user clears the selection,
+    which the desktop's fingerprint does not watch. Naming it lets managed.rs decline to
+    cache it. Read off the source, so it holds without the venv."""
+    source = (
+        pathlib.Path(__file__).resolve().parents[3] / "unsloth_cli" / "commands" / "studio.py"
+    ).read_text(encoding = "utf-8")
+    body = source.split("def desktop_capabilities(", 1)[1].split("if json_output:", 1)[0]
+    assert 'payload["llama_runtime_reason"] = "llama_runtime_not_managed"' in body
+    assert "llama_runtime_not_managed" in (
+        pathlib.Path(__file__).resolve().parents[3]
+        / "studio" / "src-tauri" / "src" / "preflight" / "managed.rs"
+    ).read_text(encoding = "utf-8"), "the desktop must know the reason the CLI emits"
 
 
 def test_the_stored_settings_lookup_can_reach_its_own_database_module(monkeypatch):

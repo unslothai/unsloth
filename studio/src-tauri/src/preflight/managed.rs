@@ -357,7 +357,7 @@ fn llama_runtime_override_from(
     {
         return Some(home?.join(rest));
     }
-    if let Some(named) = named_user_home(value) {
+    if let Some(named) = named_user_home(value, home) {
         return Some(named);
     }
     let path = PathBuf::from(value);
@@ -377,11 +377,11 @@ fn llama_runtime_override_from(
 /// alone made the value relative, anchored it under the desktop's own directory,
 /// and fingerprinted a tree the child never opens. getpwnam is the same lookup
 /// Python makes, so the two agree for LDAP and SSSD users as well as local ones.
-/// None off unix, where ntpath has its own rule and process.rs already carries
-/// it, and None when the name is unknown, which leaves the value to be anchored
-/// like any other relative path rather than guessed at.
+/// None when the name is unknown, which leaves the value to be anchored like any
+/// other relative path rather than guessed at. Windows has its own rule and its
+/// own arm below.
 #[cfg(unix)]
-fn named_user_home(value: &str) -> Option<PathBuf> {
+fn named_user_home(value: &str, _home: Option<&Path>) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
 
     let rest = value.strip_prefix('~')?;
@@ -414,9 +414,50 @@ fn named_user_home(value: &str) -> Option<PathBuf> {
     Some(if tail.is_empty() { home } else { home.join(tail) })
 }
 
-#[cfg(not(unix))]
-fn named_user_home(_value: &str) -> Option<PathBuf> {
+#[cfg(windows)]
+fn named_user_home(value: &str, home: Option<&Path>) -> Option<PathBuf> {
+    named_windows_user_home(value, home?, std::env::var("USERNAME").ok().as_deref())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn named_user_home(_value: &str, _home: Option<&Path>) -> Option<PathBuf> {
     None
+}
+
+/// `~name` on Windows, the way ntpath.expanduser resolves it: the sibling of this
+/// profile, and only where ntpath is willing to guess at all.
+///
+/// Leaving it alone made the value relative, so the fingerprint watched
+/// `<cwd>\~other\llama.cpp` while process.rs pins the variable for the child
+/// through its own `expand_windows_user` and the CLI's `Path.expanduser()` reads
+/// it the same way, both landing on the real profile. Quarantine under that
+/// profile then never invalidated a cached healthy result.
+///
+/// Compiled on every platform so the rule is testable off Windows; only the
+/// Windows arm above calls it. None when ntpath would decline (a profile folder
+/// not named after the current user, an unknown USERNAME), which leaves the value
+/// anchored like any other relative path rather than guessed at.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn named_windows_user_home(value: &str, home: &Path, username: Option<&str>) -> Option<PathBuf> {
+    let rest = value.strip_prefix('~')?;
+    let end = rest.find(['\\', '/']).unwrap_or(rest.len());
+    let (name, tail) = (&rest[..end], &rest[end..]);
+    if name.is_empty() {
+        return None;
+    }
+    let home = home.to_string_lossy();
+    // Split on the string, not with Path::parent: these are Windows paths
+    // whichever platform is reading them.
+    let cut = home.rfind(['\\', '/'])?;
+    let this_profile = &home[cut + 1..];
+    let base = match username {
+        Some(user) if user == name => home.clone().into_owned(),
+        // C:\Users\alice.DOMAIN is not alice's sibling, so ntpath refuses unless
+        // this profile is named after the current user.
+        Some(user) if user == this_profile => format!("{}{}", &home[..cut + 1], name),
+        _ => return None,
+    };
+    Some(PathBuf::from(format!("{base}{tail}")))
 }
 
 /// The managed llama.cpp install root, the same one default_managed_llama_dir
@@ -537,7 +578,27 @@ fn read_cached_capability(fingerprint: &ManagedBinFingerprint) -> Option<Desktop
     }
 }
 
+/// The CLI's word for "another runtime is the active one, so the managed tree is
+/// not mine to grade". Its null verdict is about a selection, not about the tree.
+const LLAMA_RUNTIME_NOT_MANAGED: &str = "llama_runtime_not_managed";
+
+/// Whether the runtime verdict in this answer was skipped rather than reached.
+fn llama_runtime_verdict_was_skipped(capability: &DesktopCapability) -> bool {
+    capability.llama_runtime_ok.is_none()
+        && capability.llama_runtime_reason.as_deref() == Some(LLAMA_RUNTIME_NOT_MANAGED)
+}
+
 fn write_cached_capability(fingerprint: &ManagedBinFingerprint, capability: &DesktopCapability) {
+    if llama_runtime_verdict_was_skipped(capability) {
+        // Nothing in this fingerprint watches which runtime is selected: the
+        // stored custom folder lives in the settings database and LLAMA_SERVER_PATH
+        // in the environment. Caching the skip meant that clearing the selection
+        // made a damaged managed tree active with its fingerprint unchanged, so
+        // the cache kept serving the Ready it was never graded for and repair was
+        // never offered. Re-probing costs one CLI call, and only for the users who
+        // run their own build.
+        return;
+    }
     let Some(path) = capability_cache_path() else {
         return;
     };
@@ -1797,6 +1858,83 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_runtime_verdict_the_cli_skipped_is_never_cached() {
+        // Codex 3959620616, P2. The CLI declines to grade the managed tree while a
+        // custom runtime is selected, and nothing in this fingerprint watches that
+        // selection: it lives in the settings database and in LLAMA_SERVER_PATH.
+        // Caching the skip meant that clearing the selection made a damaged managed
+        // tree active with its fingerprint unchanged, so the cache kept answering
+        // Ready for a tree nobody had graded.
+        let home = CapabilityCacheHome::new("skipped-verdict");
+        let root = scratch_dir("runtime-skipped-verdict");
+        install_fake_runtime(&root);
+        let fingerprint = fingerprint_for_runtime(&root);
+
+        let mut skipped = healthy_capability();
+        skipped.llama_runtime_ok = None;
+        skipped.llama_runtime_reason = Some(LLAMA_RUNTIME_NOT_MANAGED.to_string());
+        // Still Ready, so this is about the cache and not about the verdict.
+        assert!(desktop_capability_ready(&skipped));
+        write_cached_capability(&fingerprint, &skipped);
+        assert!(
+            !home.cache_file().exists(),
+            "a verdict that was never reached must not reach the cache"
+        );
+        assert!(read_cached_capability(&fingerprint).is_none());
+
+        // The other null, "nothing is installed", is a fact about the tree that the
+        // fingerprint does watch, so it still caches.
+        let mut not_installed = healthy_capability();
+        not_installed.llama_runtime_ok = None;
+        not_installed.llama_runtime_reason = Some(String::new());
+        write_cached_capability(&fingerprint, &not_installed);
+        assert!(
+            read_cached_capability(&fingerprint).is_some(),
+            "only the skipped verdict is uncacheable, or every launch pays a probe"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_named_windows_profile_resolves_where_the_child_will_look() {
+        // Codex 3959620595, P2. process.rs pins UNSLOTH_LLAMA_CPP_PATH for the child
+        // through expand_windows_user, and the CLI reads it with ntpath.expanduser,
+        // so both land on the sibling profile while this fingerprinted
+        // <cwd>\~other\llama.cpp. Quarantine under the real profile then never
+        // invalidated a cached healthy result. Same cases as process.rs's own test,
+        // so the two readers cannot drift apart.
+        let home = Path::new("C:\\Users\\me");
+        assert_eq!(
+            named_windows_user_home("~other\\llama.cpp", home, Some("me")),
+            Some(PathBuf::from("C:\\Users\\other\\llama.cpp")),
+        );
+        assert_eq!(
+            named_windows_user_home("~other/llama.cpp", home, Some("me")),
+            Some(PathBuf::from("C:\\Users\\other/llama.cpp")),
+        );
+        assert_eq!(
+            named_windows_user_home("~me\\llama.cpp", home, Some("me")),
+            Some(PathBuf::from("C:\\Users\\me\\llama.cpp")),
+        );
+        assert_eq!(
+            named_windows_user_home("~other", home, Some("me")),
+            Some(PathBuf::from("C:\\Users\\other")),
+        );
+        // ntpath declines to guess when this profile is not named after the current
+        // user, since C:\Users\me.DOMAIN is not other's sibling. None here leaves the
+        // value anchored as a relative path, which is what happened before.
+        assert_eq!(
+            named_windows_user_home("~other\\llama.cpp", Path::new("C:\\Users\\me.DOMAIN"), Some("me")),
+            None,
+        );
+        assert_eq!(named_windows_user_home("~other\\llama.cpp", home, None), None);
+        // A bare tilde is the current profile and is handled before this is reached.
+        assert_eq!(named_windows_user_home("~", home, Some("me")), None);
+        assert_eq!(named_windows_user_home("~\\llama.cpp", home, Some("me")), None);
     }
 
     #[test]

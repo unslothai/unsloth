@@ -4981,11 +4981,33 @@ def _managed_llama_runtime_is_the_active_one() -> bool:
     # Nonblank is not the test: _scan_pinned treats an absent pin as no pin and
     # falls through to the managed tree, so suppressing the verdict for a path
     # that was deleted would leave a quarantined managed runtime reporting Ready.
-    # A pin that exists but is denied or not executable does stop the finder, so
-    # existence rather than usability is the line, and lexists answers for a
-    # broken symlink too.
-    if pinned and os.path.lexists(pinned):
-        return False
+    # The line is the finder's own _file_status, not the directory entry: a pin
+    # that exists but is denied or not executable does stop the finder, while a
+    # symlink whose target was deleted or quarantined is is_file() False, reads as
+    # "absent" there, and falls through like any missing pin. lexists called that
+    # a pin and left the managed tree the backend really loads ungraded.
+    if pinned:
+        try:
+            stops_the_finder = Path(pinned).is_file()
+        except PermissionError:
+            # is_file raises rather than answering for a locked file on Windows;
+            # _file_status retries and then calls it "denied", which halts the
+            # finder with no fallback.
+            stops_the_finder = True
+        except OSError:
+            stops_the_finder = False
+        if stops_the_finder:
+            return False
+    # UNSLOTH_LLAMA_CPP_PATH outranks the stored folder in the finder (1b before
+    # 2), and default_managed_llama_dir points at exactly that tree, so it is ours
+    # to grade even when an older selection is still in the settings database.
+    # Reading the setting first left the tree the backend actually opens ungraded.
+    # The managed marker is the exception: the finder skips the override when the
+    # desktop set it, so the stored folder wins again.
+    if (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip() and os.environ.get(
+        "UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH"
+    ) != "1":
+        return True
     # studio/backend on sys.path first. llama_cpp_path_settings imports
     # storage.studio_db as a top level package and swallows the failure, so
     # without this the stored selection always reads as absent and a user whose
@@ -5039,6 +5061,15 @@ def desktop_capabilities(
             health = installed_runtime_health()
             if health is not None:
                 payload["llama_runtime_ok"], payload["llama_runtime_reason"] = health
+        else:
+            # Null with a reason, because the two nulls are not the same thing.
+            # Nothing installed is a fact about the machine and stays true until
+            # the tree changes, so the desktop may cache it. This one is a fact
+            # about a selection the desktop's fingerprint does not watch, so the
+            # answer expires the moment the user clears their custom folder, and
+            # managed.rs declines to cache it on the strength of this reason.
+            # The verdict itself is still null, so nothing turns stale on it.
+            payload["llama_runtime_reason"] = "llama_runtime_not_managed"
     except Exception:
         pass
     try:

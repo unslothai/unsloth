@@ -43,7 +43,9 @@ def _installed(tmp_path: Path, *, binaries: bool = False) -> Path:
     if binaries:
         ext = ".exe" if host.is_windows else ""
         for name in ("server", "quantize"):
-            (runtime_dir / f"llama-{name}{ext}").write_text("", encoding = "utf-8")
+            binary = runtime_dir / f"llama-{name}{ext}"
+            binary.write_text("", encoding = "utf-8")
+            os.chmod(binary, 0o755)
     return root
 
 
@@ -277,7 +279,11 @@ def _macos_tree(tmp_path: Path) -> Path:
         encoding = "utf-8",
     )
     for name in ("server", "quantize"):
-        (runtime_dir / f"llama-{name}").write_text("", encoding = "utf-8")
+        binary = runtime_dir / f"llama-{name}"
+        binary.write_text("", encoding = "utf-8")
+        # An installed entrypoint is executable, and the probe now asks for that
+        # rather than for mere presence, the way _existing_install_runs does.
+        os.chmod(binary, 0o755)
     _macos_payload(runtime_dir)
     return root
 
@@ -334,3 +340,56 @@ def test_the_macos_accelerator_backends_are_not_required(tmp_path):
     ]:
         path.unlink()
     assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+def test_losing_the_macos_install_name_link_is_caught(tmp_path):
+    """Codex 3959620556, P1. The middle link of the chain is the one dyld asks for, and it
+    is the one a name-only match hides: llama-server's LC_LOAD_DYLIB entry is
+    ``@rpath/libggml.0.dylib`` (read out of the shipped macos-arm64 bundle, and matching the
+    LC_ID_DYLIB recorded in libggml.0.23.0.dylib itself), so with it quarantined the process
+    dies in dyld while ``libggml.*.dylib`` is still satisfied by the terminal file. The
+    version-depth rule that already covers ``libfoo.so.0`` beside ``libfoo.so.0.0.10360``
+    covers this too."""
+    root = _macos_tree(tmp_path)
+    runtime_dir = root / "build" / "bin"
+    (runtime_dir / "libggml.0.dylib").unlink()
+    # The terminal file is still there and still a real file, which is what made this
+    # read as healthy.
+    assert (runtime_dir / "libggml.0.23.0.dylib").is_file()
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (
+        False,
+        "llama_runtime_payload_incomplete",
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+def test_a_bare_versionless_macos_dylib_still_satisfies_its_group(tmp_path):
+    """The other direction, so the rule above cannot become a reinstall loop: a bundle that
+    ships libfoo.dylib with no chain at all is a name the loader can resolve and must stay
+    healthy."""
+    root = _macos_tree(tmp_path)
+    runtime_dir = root / "build" / "bin"
+    for path in [p for p in runtime_dir.iterdir() if p.name.split(".")[0] == "libggml"]:
+        path.unlink()
+    (runtime_dir / "libggml.dylib").write_text("", encoding = "utf-8")
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX permission bits")
+@pytest.mark.parametrize("name", ["server", "quantize"])
+def test_a_runtime_binary_stripped_of_its_execute_bit_is_broken(tmp_path, name):
+    """Codex 3959620570, P2. Extraction damage or security software can clear the bit without
+    deleting the file. ``_find_llama_server_binary`` then classifies it non-executable and
+    refuses to fall back to another runtime, and ``_existing_install_runs`` rejects the tree
+    on the same ``os.access(X_OK)``, so an ``exists()`` check here was the only thing left
+    calling it Ready."""
+    root = _macos_tree(tmp_path)
+    binary = root / "build" / "bin" / f"llama-{name}"
+    os.chmod(binary, 0o755)
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+    os.chmod(binary, 0o644)
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (
+        False,
+        "llama_runtime_binaries_missing",
+    )
