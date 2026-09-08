@@ -1,19 +1,28 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The installer must survive a host where Add-Type cannot compile.
+"""The installer must survive a host where the native path helper cannot be built.
 
-install.ps1 resolves path identity through a C# helper it compiles at runtime.
-Windows PowerShell 5.1 -- the interpreter studio/src-tauri/src/install.rs spawns
--- compiles by writing the source into %TEMP% and running csc.exe, so a %TEMP%
-that cannot hold a file (or a scanner that eats what was just written there)
-makes Add-Type throw CS2001. That exception used to travel up Get-StudioPathHash
-and end a first launch as "Could not create the Unsloth install lock" (#9140),
-with nothing about the message pointing at the compiler.
+install.ps1 resolves path identity through three kernel32 imports. It used to get
+them by compiling C#, and Windows PowerShell 5.1 -- the interpreter
+studio/src-tauri/src/install.rs spawns -- compiles by writing the source into
+%TEMP% and running csc.exe. A %TEMP% that could not hold a file made Add-Type
+throw CS2001, and that exception travelled up Get-StudioPathHash to end a first
+launch as "Could not create the Unsloth install lock" (#9140). Behavioural
+antivirus then blocked the DLL the compiler produced, which is a failure no
+retry can route around, so the imports are emitted with DefinePInvokeMethod now
+and no compiler runs at all.
 
-These run under pwsh on any platform: the failure being guarded is that a thrown
-Add-Type aborts the install, and that is shell-independent. Windows PowerShell
-5.1's CodeDom behaviour itself is exercised by the Windows-only tests in
+Both halves are still guarded here. That no compiler is reachable is the first
+half, and this file asserts it by sabotaging Add-Type and showing nothing changes.
+That a host where even the emit fails still installs is the second, and it is the
+same fallback the compile failure used to land on: a lexical answer, Exact false,
+and a lock that is still acquired.
+
+These run under pwsh on any platform. Emit succeeds here while kernel32 does not
+resolve, so the type builds exactly as it does on 5.1 and every call through it
+fails, which covers the build side and the call side separately. Windows
+PowerShell 5.1 behaviour itself is exercised by the Windows-only tests in
 test_windows_installer_concurrency_guard.py.
 """
 
@@ -36,10 +45,17 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
-# Stands in for every Add-Type in install.ps1 that compiles C# rather than loading an assembly.
+# A compiler that always fails. install.ps1 no longer calls Add-Type at all, so this
+# now proves the absence rather than exercising a fallback: every test that installs
+# it must behave exactly as it does without it.
 SABOTAGE = (
     """function Add-Type { throw "(0) : error CS2001: Source file 'a.0.cs' could not be found" }"""
 )
+
+# What a host that cannot emit looks like. Constrained Language Mode and App
+# Control's Dynamic Code Security both land here, and Test-StudioCanDefineNativeTypes
+# is the gate they come through, so overriding it is the whole of "no native side".
+NO_NATIVE = """function Test-StudioCanDefineNativeTypes { return $false }"""
 
 
 def _extract(pattern: str, source: str) -> str:
@@ -63,7 +79,10 @@ LOCK_CHAIN = (
     "Initialize-StudioTempEnvironment",
     "Restore-StudioTempEnvironment",
     "Write-StudioFinalPathDegraded",
+    "Test-StudioCanDefineNativeTypes",
+    "New-StudioEmittedNativeType",
     "Initialize-StudioFinalPathNativeType",
+    "Get-StudioNativeFinalPath",
     "Resolve-StudioLinkTarget",
     "Get-StudioSubstTarget",
     "Get-StudioLexicalPath",
@@ -131,19 +150,26 @@ def _lines(result: subprocess.CompletedProcess, prefix: str) -> list[str]:
 
 
 @requires_pwsh
-def test_install_lock_is_acquired_when_the_compiler_fails(tmp_path: Path):
-    """The bug, exactly: a throwing Add-Type must not cost the install its lock."""
+def test_install_lock_is_acquired_when_the_native_helper_is_unavailable(tmp_path: Path):
+    """The bug from #9140, at the rung it lives on now.
+
+    It was a throwing Add-Type then and it is a host that cannot define a type at
+    all now, which is the same thing to every caller: no exact answer. The lock
+    must still be acquired, and the reason said once.
+    """
     studio_home = tmp_path / "studio"
     studio_home.mkdir()
     result = _run_powershell(
         _script(
             f"""
+{NO_NATIVE}
 $name = Get-StudioInstallMutexName -Path '{studio_home}'
 Write-Output "NAME:$name"
 $mutex = Enter-StudioInstallMutex -Path '{studio_home}'
 Write-Output "LOCK:$($null -ne $mutex)"
 Exit-StudioInstallMutex -Mutex $mutex
-"""
+""",
+            sabotage = False,
         )
     )
     assert result.returncode == 0, result.stderr
@@ -151,14 +177,43 @@ Exit-StudioInstallMutex -Mutex $mutex
     assert re.fullmatch(
         r"NAME:Global\\UnslothStudioInstall-[0-9a-f]{64}", _lines(result, "NAME:")[0]
     )
-    # And it says why it degraded, once, without dumping the C# it tried to build.
+    # And it says why it degraded, once, without dumping anything it tried to build.
     warnings = [line for line in result.stdout.splitlines() if "native path resolver" in line]
     assert len(warnings) == 1
     assert "using System" not in result.stdout
 
 
 @requires_pwsh
-def test_the_compiler_is_not_retried_for_every_path(tmp_path: Path):
+def test_a_dead_compiler_is_not_something_the_installer_can_notice(tmp_path: Path):
+    """The other half, and the reason the file is named for a fallback it no longer needs.
+
+    install.ps1 reaches no compiler, so replacing Add-Type with one that always throws
+    has to change nothing at all: the lock is taken, the native side is built anyway,
+    and no degraded warning is printed. A failure here means a compile came back.
+    """
+    studio_home = tmp_path / "studio"
+    studio_home.mkdir()
+    result = _run_powershell(
+        _script(
+            f"""
+$mutex = Enter-StudioInstallMutex -Path '{studio_home}'
+Write-Output "LOCK:$($null -ne $mutex)"
+Exit-StudioInstallMutex -Mutex $mutex
+Write-Output "TYPE:$([bool]("UnslothStudioFinalPathV3" -as [type]))"
+"""
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "LOCK:") == ["LOCK:True"]
+    assert _lines(result, "TYPE:") == ["TYPE:True"]
+    assert not [line for line in result.stdout.splitlines() if "native path resolver" in line]
+
+
+@requires_pwsh
+def test_the_compiler_is_never_called_however_many_paths_are_resolved(tmp_path: Path):
+    """Zero, not "few". The count used to be two, one attempt and one retry under a
+    private %TEMP%, and both of those launched csc.exe, which is the chain behavioural
+    antivirus blocked."""
     result = _run_powershell(
         _script(
             f"""
@@ -174,17 +229,44 @@ Write-Output "CALLS:$global:AddTypeCalls"
         )
     )
     assert result.returncode == 0, result.stderr
-    # One attempt, one retry with a private %TEMP%, then cached: the scan below resolves a path per running process.
-    assert _lines(result, "CALLS:") == ["CALLS:2"]
+    assert _lines(result, "CALLS:") == ["CALLS:0"]
 
 
 @requires_pwsh
-def test_the_private_temp_retry_recovers_the_native_helper(tmp_path: Path):
-    """Surviving a dead compiler is the floor. The retry has to actually work.
+def test_the_type_is_built_once_however_many_paths_are_resolved(tmp_path: Path):
+    """The caching the retry count used to stand in for. The install scan resolves a
+    path per running process, so building the type per call would be paid dozens of
+    times."""
+    result = _run_powershell(
+        _script(
+            f"""
+$global:Emits = 0
+# A scriptblock copy, not Get-Item function:. A FunctionInfo re-resolves by NAME when
+# it is invoked, so calling it from the replacement calls the replacement.
+$global:RealEmit = ${{function:New-StudioEmittedNativeType}}
+function New-StudioEmittedNativeType {{
+    param([string]$TypeName, [object[]]$Imports)
+    $global:Emits++
+    & $global:RealEmit -TypeName $TypeName -Imports $Imports
+}}
+foreach ($i in 1..5) {{ Get-StudioFinalPath -Path '{tmp_path}' | Out-Null }}
+Write-Output "EMITS:$global:Emits"
+""",
+            sabotage = False,
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "EMITS:") == ["EMITS:1"]
 
-    Add-Type is replaced by a stub that behaves the way 5.1's CodeDom does: it
-    writes the source into %TEMP% and fails when that cannot hold a file, and it
-    calls the real cmdlet once it can, so the type genuinely gets defined.
+
+@requires_pwsh
+def test_the_native_helper_is_built_with_no_usable_temp_at_all(tmp_path: Path):
+    """What replaced the private-%TEMP% retry: nothing, because nothing needs %TEMP%.
+
+    The retry existed because compiling wrote a source file there and a %TEMP% that
+    could not hold one failed the install. Emit writes nothing anywhere, so the same
+    unusable %TEMP% that used to need a retry is now simply irrelevant, and the
+    variables are handed back exactly as they arrived.
     """
     blocker = tmp_path / "blocker"
     blocker.write_text("not a directory", encoding = "utf-8")
@@ -201,25 +283,11 @@ def test_the_private_temp_retry_recovers_the_native_helper(tmp_path: Path):
     result = _run_powershell(
         _script(
             f"""
-$script:RealAddType = Get-Command Add-Type -CommandType Cmdlet
-$global:Attempts = 0
-function Add-Type {{
-    param([string]$TypeDefinition, [string]$ErrorAction)
-    $global:Attempts++
-    $probe = Join-Path $env:TMP ("codedom-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + ".0.cs")
-    try {{
-        [System.IO.File]::WriteAllText($probe, $TypeDefinition)
-        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
-    }} catch {{
-        throw "(0) : error CS2001: Source file '$probe' could not be found"
-    }}
-    & $script:RealAddType -TypeDefinition $TypeDefinition -ErrorAction Stop
-}}
-# Skip the session-wide temp fix, so the RETRY is the only thing that can save it.
+# Skip the session-wide temp fix, so nothing but the emit itself can save this.
 $script:StudioTempChecked = $true
 $info = Resolve-StudioFinalPathInfo -Path '{studio_home}'
-Write-Output "ATTEMPTS:$global:Attempts"
-Write-Output "LOADED:$([bool]("UnslothStudioFinalPathV2" -as [type]))"
+Write-Output "LOADED:$([bool]("UnslothStudioFinalPathV3" -as [type]))"
+Write-Output "INMEMORY:$([string]::IsNullOrEmpty(("UnslothStudioFinalPathV3" -as [type]).Assembly.Location))"
 Write-Output "PATH:$($info.Path)"
 Write-Output "TMP:$env:TMP"
 Write-Output "TEMP:$env:TEMP"
@@ -229,15 +297,15 @@ Write-Output "TEMP:$env:TEMP"
         env = env,
     )
     assert result.returncode == 0, result.stderr
-    assert _lines(result, "ATTEMPTS:") == ["ATTEMPTS:2"]
     assert _lines(result, "LOADED:") == ["LOADED:True"]
+    assert _lines(result, "INMEMORY:") == ["INMEMORY:True"]
     assert not [line for line in result.stdout.splitlines() if "native path resolver" in line]
-    # Restored exactly, broken values and all: they are the caller's, not ours.
+    # Handed back exactly, broken values and all: they are the caller's, not ours.
     assert _lines(result, "TMP:") == [f"TMP:{dead}"]
     assert _lines(result, "TEMP:") == [f"TEMP:{dead}"]
     assert list((local_app_data / "Unsloth Studio" / "temp").glob("ust-*")) == []
-    # The P/Invoke targets kernel32, so off Windows the type loads but the CALL fails; it has to degrade to a usable
-    # answer rather than throw.
+    # The imports target kernel32, so off Windows the type builds and the CALL fails; it
+    # has to degrade to a usable answer rather than throw.
     assert _lines(result, "PATH:")[0].startswith("PATH:")
     assert _lines(result, "PATH:") != ["PATH:"]
 
