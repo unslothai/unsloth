@@ -320,6 +320,12 @@ def test_a_hybrid_host_whose_amd_card_raised_it_still_gets_the_permission_hint(m
         "CHAT_ONLY_MISMATCH_VENDORS",
         frozenset({"amd", "nvidia"}),
     )
+    # Stubbed rather than read off the box. The workspace this was written on happens
+    # to carry a ROCm torch, so the assertion below was passing for the host's reason
+    # instead of the test's; on a hybrid host the hint needs the install to target AMD,
+    # and a venv that asked for ROCm and got a CPU wheel is exactly this verdict.
+    monkeypatch.setattr(hardware, "_expected_rocm_flavor_was_chosen", lambda: True)
+    monkeypatch.setattr(hardware, "_torch_reports_a_hip_runtime", lambda: False)
     monkeypatch.setenv("USER", "ada")
     message = hardware._gpu_present_but_unusable_message(
         "video generation",
@@ -464,3 +470,146 @@ def test_a_missing_kfd_node_keeps_the_kernel_stack_hint():
 def test_the_hint_still_runs_on_a_host_with_nothing_closed():
     """The negative control: the branch's original behaviour is untouched."""
     assert _kernel_stack_hint_runs("")
+
+
+def test_a_hybrid_host_running_cuda_torch_keeps_the_pytorch_message(monkeypatch, linux):
+    """A supported AMD card qualifies for the mismatch whatever wheel is installed, so
+    a hybrid host records both vendors even when the verdict is about the NVIDIA card.
+    No group membership makes a CUDA wheel use the AMD card, so the reinstall advice is
+    the right one there."""
+    from utils.hardware import hardware
+
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(
+        hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd", "nvidia"}),
+    )
+    monkeypatch.setattr(hardware, "_expected_rocm_flavor_was_chosen", lambda: False)
+    monkeypatch.setattr(hardware, "_torch_reports_a_hip_runtime", lambda: False)
+    message = hardware._gpu_present_but_unusable_message(
+        "video generation",
+        verdict = ("torch_cuda_unavailable", "2.11.0+cu130"),
+    )
+    assert "Repair installation" in message
+    assert "usermod" not in message
+
+
+def test_an_amd_only_host_needs_no_runtime_evidence(monkeypatch, linux):
+    """The control, and the #10466 host: AMD is the only vendor that qualified, so the
+    verdict can only be about it and the wheel's own tag adds nothing."""
+    from utils.hardware import hardware
+
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
+    monkeypatch.setattr(hardware, "_expected_rocm_flavor_was_chosen", lambda: False)
+    monkeypatch.setattr(hardware, "_torch_reports_a_hip_runtime", lambda: False)
+    monkeypatch.setenv("USER", "ada")
+    message = hardware._gpu_present_but_unusable_message(
+        "video generation",
+        verdict = ("torch_cuda_unavailable", "2.11.0+rocm7.0"),
+    )
+    assert "usermod -a -G render,video ada" in message
+
+
+def test_a_cuda_plus_vulkan_build_is_treated_as_cuda(monkeypatch, linux):
+    """_is_vulkan_backend defers such a build to CUDA, so it is a CUDA install for
+    every other purpose and must be one here too. Requiring CUDA to be the ONLY shipped
+    library left this layout uncovered."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"cuda", "vulkan"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert "usermod" not in reason
+    assert "CUDA_VISIBLE_DEVICES" in reason
+
+
+def test_a_cpu_only_llama_build_is_not_sent_after_the_groups(monkeypatch, linux):
+    """A build with no GPU library cannot offload to any card, so its empty probe is
+    not a permission problem and the groups cannot change it."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"cpu", "base"})),
+    )
+    assert "usermod" not in LlamaCppBackend._explain_empty_gpu_probe(
+        "/nonexistent/llama-server"
+    )
+
+
+def test_a_mask_is_reported_alongside_the_permission_hint(monkeypatch, linux):
+    """Two independent blockers need two fixes. The groups do not clear a visibility
+    mask, so returning the hint alone hid the half the user also has to undo."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setenv("USER", "ada")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"hip"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert "usermod -a -G render,video ada" in reason
+    assert "HIP_VISIBLE_DEVICES is empty" in reason
+
+
+def test_no_mask_leaves_the_hint_alone(monkeypatch, linux):
+    """The control: the sentence must not grow a trailing clause on a host with no mask
+    set, which is every host the #10466 wording was written for."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setenv("USER", "ada")
+    for var in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"hip"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert reason.endswith("sudo usermod -a -G render,video ada")
+
+
+def test_the_hint_says_so_when_kfd_does_not_exist_at_all(monkeypatch, linux):
+    """install.sh keeps the missing-kernel-stack diagnosis for this host; the runtime
+    message has to as well. A closed render node is real and the groups open it, but
+    they cannot create /dev/kfd, so a ROCm caller is not repaired by them alone."""
+    _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = set())
+    monkeypatch.setenv("USER", "ada")
+    hint = amd.amd_node_permission_hint()
+    assert "usermod -a -G render,video ada" in hint
+    assert "/dev/kfd" in hint
+    assert "kernel stack" in hint
+
+
+def test_a_closed_but_present_kfd_node_says_nothing_about_the_kernel_stack(
+    monkeypatch, linux
+):
+    """The control: /dev/kfd exists, so the stack is loaded and the groups are the whole
+    repair. Telling this user to install it would be the #10466 mistake."""
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setenv("USER", "ada")
+    assert "kernel stack" not in amd.amd_node_permission_hint()
+
+
+def test_a_vulkan_caller_is_not_told_about_a_kernel_stack_it_does_not_need(
+    monkeypatch, linux
+):
+    """Vulkan never opens /dev/kfd, so its absence is not that caller's problem."""
+    _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = set())
+    assert "kernel stack" not in amd.amd_node_permission_hint(needs_kfd = False)

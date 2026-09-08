@@ -2086,8 +2086,19 @@ def _gpu_present_but_unusable_message(
     # can raise the same two reasons while an AMD node happens to be closed, and there
     # the PyTorch advice below is right and joining the render group repairs nothing.
     # The vendors are already recorded for the mismatch being reported right now.
+    #
+    # Recording AMD is necessary and not sufficient. CHAT_ONLY_MISMATCH_VENDORS is
+    # qualifying physical inventory, and a supported AMD card qualifies whatever wheel
+    # is installed, so a hybrid host running CUDA torch records both vendors. There the
+    # verdict is about the NVIDIA card, no group changes the CUDA wheel, and the repair
+    # below is the right one. So AMD also has to be what this install targets: it is the
+    # only qualifying vendor, or the venv asked for ROCm, or torch carries a HIP runtime.
+    vendors = {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}
+    amd_is_the_target = vendors == {"amd"} or (
+        _expected_rocm_flavor_was_chosen() or _torch_reports_a_hip_runtime()
+    )
     node_hint = None
-    if "amd" in {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}:
+    if "amd" in vendors and amd_is_the_target:
         try:
             from utils.hardware.amd import amd_node_permission_hint
             node_hint = amd_node_permission_hint()

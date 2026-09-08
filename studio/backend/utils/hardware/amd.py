@@ -706,9 +706,19 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     # Claim only what the closed set actually blocks.
     blocked = "no GPU backend can use" if any(p != _KFD_NODE for p in closed) else "ROCm cannot use"
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
-    return (
+    hint = (
         f"This account cannot open {', '.join(closed)}, so {blocked} the "
         f"AMD card even though the driver is loaded. Add the account to the render and "
         f"video groups and then log out and back in: "
         f"sudo usermod -a -G render,video {user}"
     )
+    # Group membership cannot create a device node. A caller that needs /dev/kfd on a
+    # host without one has a second, unrelated problem, and the sentence above is then
+    # only true of the render node that was found: the DRM driver is loaded, the ROCm
+    # kernel stack is not. install.sh already says both; this is the runtime half.
+    if needs_kfd and not os.path.exists(_KFD_NODE):
+        hint += (
+            " ROCm also needs /dev/kfd, which does not exist on this host, so the ROCm "
+            "kernel stack has to be installed as well; the groups alone will not create it."
+        )
+    return hint

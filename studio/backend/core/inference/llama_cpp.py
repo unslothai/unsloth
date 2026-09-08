@@ -9852,26 +9852,17 @@ class LlamaCppBackend:
             # never opens /dev/kfd and a closed one is not why its probe came back
             # empty; it keeps its own reason below.
             #
-            # A build that cannot drive an AMD card at all is asked about neither. On a
-            # hybrid host a CUDA build finds AMD nodes present and closed while its own
-            # probe came back empty for some unrelated reason -- a visibility mask, the
-            # arch gate -- and joining the render group would repair none of it. Only a
-            # positively CUDA-only build is skipped, so an unreadable install still gets
-            # the hint rather than losing it to a detection miss.
+            # Asked only of a build that can actually drive an AMD card, and only about
+            # the nodes that build opens. _is_vulkan_backend already answers "which
+            # backend does this install defer to", so a CUDA-plus-Vulkan build counts as
+            # CUDA and a CPU-only build as neither; both would otherwise be sent after a
+            # repair that cannot change what they enumerate. An install this probe cannot
+            # read stays eligible, so a detection miss does not lose the #10466 host.
             _is_vulkan = LlamaCppBackend._is_vulkan_backend(binary)
             _backends = LlamaCppBackend._installed_ggml_backends(binary)
-            _cuda_only = "cuda" in _backends and not _backends.intersection({"vulkan", "hip"})
-            node_hint = None
-            if not _cuda_only:
-                try:
-                    from utils.hardware.amd import amd_node_permission_hint
-                    node_hint = amd_node_permission_hint(needs_kfd = not _is_vulkan)
-                except Exception:  # noqa: BLE001
-                    node_hint = None
-            if node_hint:
-                return node_hint
-            if _is_vulkan:
-                return "the Vulkan probe reported no device"
+            _amd_capable = not LlamaCppBackend._backend_lacks_gpu_lib(binary) and (
+                _is_vulkan or "hip" in _backends or not _backends
+            )
 
             masks = []
             for var in (
@@ -9884,6 +9875,25 @@ class LlamaCppBackend:
                 if raw is not None:
                     masks.append(f"{var}={raw!r}" if raw.strip() else f"{var} is empty")
             mask_note = f" ({', '.join(masks)})" if masks else ""
+
+            node_hint = None
+            if _amd_capable:
+                try:
+                    from utils.hardware.amd import amd_node_permission_hint
+                    node_hint = amd_node_permission_hint(needs_kfd = not _is_vulkan)
+                except Exception:  # noqa: BLE001
+                    node_hint = None
+            if node_hint:
+                # A mask hides devices whatever the node permissions are, so a host with
+                # both needs both fixes and the early return was hiding the second one.
+                if masks:
+                    return (
+                        f"{node_hint} A device visibility mask is also in force "
+                        f"({', '.join(masks)}), which the groups do not clear."
+                    )
+                return node_hint
+            if _is_vulkan:
+                return "the Vulkan probe reported no device"
 
             try:
                 import torch
