@@ -43,15 +43,6 @@ def _shared_setup_1(monitor):
     return messages, monitor_id, payload
 
 
-# Shared setup for test_non_reasoning_gguf_stream_keeps_literal_think_tags_visible, test_reasoning_capable_gguf_stream_parses_think_tags_by_default, test_reasoning_only_stream_stays_out_of_visible_message_text and 4 more.
-def _shared_setup_2(run, self):
-    lines = asyncio.run(run())
-
-    reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
-    text_deltas = self._payloads(lines, "response.output_text.delta")
-    return lines, reasoning_deltas, text_deltas
-
-
 # Shared setup for test_a_healed_truncated_tool_call_remains_incomplete, test_finalized_healed_tool_call_stamps_first_token, test_healed_responses_tool_call_reports_a_tool_call_stop and 2 more.
 def _shared_setup_3(api_monitor, tool):
     payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
@@ -2030,6 +2021,26 @@ class TestResponsesStreamAdapter:
             chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
         return chunks
 
+    def _stream_lines(self, payload, messages, monitor_id = None):
+        """Drive _responses_stream to completion and return the SSE lines it wrote."""
+
+        async def run():
+            response = await _responses_stream(
+                payload, messages, self._Request(), monitor_id = monitor_id
+            )
+            return await self._collect(response)
+
+        return asyncio.run(run())
+
+    def _stream_deltas(self, payload, messages):
+        """The SSE lines plus the reasoning and output-text deltas carried in them."""
+        lines = self._stream_lines(payload, messages)
+        return (
+            lines,
+            self._payloads(lines, "response.reasoning_text.delta"),
+            self._payloads(lines, "response.output_text.delta"),
+        )
+
     @staticmethod
     def _payloads(lines, event_name):
         prefix = f"event: {event_name}\n"
@@ -2126,11 +2137,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines, reasoning_deltas, text_deltas = _shared_setup_2(run, self)
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
         assert "".join(event["delta"] for event in text_deltas) == "33"
         completed = self._payloads(lines, "response.completed")[0]
@@ -2153,16 +2160,7 @@ class TestResponsesStreamAdapter:
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         messages, monitor_id, payload = _shared_setup_1(monitor)
 
-        async def run():
-            response = await _responses_stream(
-                payload,
-                messages,
-                self._Request(),
-                monitor_id = monitor_id,
-            )
-            return await self._collect(response)
-
-        asyncio.run(run())
+        self._stream_lines(payload, messages, monitor_id)
 
         [entry] = monitor.snapshot()
         assert entry["status"] == "completed"
@@ -2187,16 +2185,7 @@ class TestResponsesStreamAdapter:
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         messages, monitor_id, payload = _shared_setup_1(monitor)
 
-        async def run():
-            response = await _responses_stream(
-                payload,
-                messages,
-                self._Request(),
-                monitor_id = monitor_id,
-            )
-            return await self._collect(response)
-
-        asyncio.run(run())
+        self._stream_lines(payload, messages, monitor_id)
 
         [entry] = monitor.snapshot()
         assert entry["decode_ms"] == 1000
@@ -2231,16 +2220,7 @@ class TestResponsesStreamAdapter:
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         messages, monitor_id, payload = _shared_setup_1(monitor)
 
-        async def run():
-            response = await _responses_stream(
-                payload,
-                messages,
-                self._Request(),
-                monitor_id = monitor_id,
-            )
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
+        lines = self._stream_lines(payload, messages, monitor_id)
 
         assert self._payloads(lines, "response.output_item.done")[-1]["item"]["name"] == "lookup"
         [entry] = monitor.snapshot()
@@ -2267,16 +2247,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True)
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(
-                payload,
-                messages,
-                self._Request(),
-                monitor_id = monitor_id,
-            )
-            return await self._collect(response)
-
-        asyncio.run(run())
+        self._stream_lines(payload, messages, monitor_id)
 
         [entry] = monitor.snapshot()
         assert entry["status"] == "cancelled"
@@ -2358,16 +2329,7 @@ class TestResponsesStreamAdapter:
         monkeypatch.setattr(inf_mod, "_ResponsesReasoningExtractor", FakeExtractor)
         messages, monitor_id, payload = _shared_setup_1(monitor)
 
-        async def run():
-            response = await _responses_stream(
-                payload,
-                messages,
-                self._Request(),
-                monitor_id = monitor_id,
-            )
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
+        lines = self._stream_lines(payload, messages, monitor_id)
 
         assert self._payloads(lines, "response.output_text.delta")[-1]["delta"] == "tail"
         [entry] = monitor.snapshot()
@@ -2397,16 +2359,7 @@ class TestResponsesStreamAdapter:
         monkeypatch.setattr(inf_mod, "_ResponsesReasoningExtractor", FakeExtractor)
         messages, monitor_id, payload = _shared_setup_1(monitor)
 
-        async def run():
-            response = await _responses_stream(
-                payload,
-                messages,
-                self._Request(),
-                monitor_id = monitor_id,
-            )
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
+        lines = self._stream_lines(payload, messages, monitor_id)
 
         assert self._payloads(lines, "response.output_text.delta") == []
         assert self._payloads(lines, "response.reasoning_text.delta")[-1]["delta"] == "plan"
@@ -2424,11 +2377,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True)
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines, reasoning_deltas, text_deltas = _shared_setup_2(run, self)
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
         assert "".join(event["delta"] for event in text_deltas) == "answer"
         completed = self._payloads(lines, "response.completed")[0]
@@ -2449,11 +2398,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines, reasoning_deltas, text_deltas = _shared_setup_2(run, self)
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert reasoning_deltas == []
         assert "".join(event["delta"] for event in text_deltas) == "show <think>x</think> tags"
         completed = self._payloads(lines, "response.completed")[0]
@@ -2471,11 +2416,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines, reasoning_deltas, text_deltas = _shared_setup_2(run, self)
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
         assert text_deltas == []
         completed = self._payloads(lines, "response.completed")[0]
@@ -2492,11 +2433,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines, reasoning_deltas, text_deltas = _shared_setup_2(run, self)
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
         assert text_deltas == []
         completed = self._payloads(lines, "response.completed")[0]
@@ -2513,11 +2450,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True)
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines, reasoning_deltas, text_deltas = _shared_setup_2(run, self)
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
         assert "".join(event["delta"] for event in text_deltas) == "33"
         completed = self._payloads(lines, "response.completed")[0]
@@ -2547,11 +2480,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True)
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines, reasoning_deltas, text_deltas = _shared_setup_2(run, self)
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan next"
         assert "".join(event["delta"] for event in text_deltas) == "33"
         assert "reasoning_text" not in "".join(event["delta"] for event in reasoning_deltas)
@@ -2584,11 +2513,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True)
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
+        lines = self._stream_lines(payload, messages)
 
         done_events = self._payloads(lines, "response.output_item.done")
         assert [event["output_index"] for event in done_events] == [0, 1]
@@ -2792,11 +2717,7 @@ class TestResponsesStreamAdapter:
         )
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
+        lines = self._stream_lines(payload, messages)
 
         assert captured["body"]["stream_options"] == {"include_usage": True}
         joined = "".join(lines)
