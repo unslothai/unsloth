@@ -105,8 +105,9 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
             ), f"{name}:{number} pairs a hidden window with a bypassed policy: {line.strip()}"
 
 
-# Every runtime-compiled P/Invoke left in the installers. Each costs a csc.exe compile and is scored, so a new entry
-# needs a reason; a PowerShell equivalent usually exists.
+# Every native import left in the installers, however it is declared. install.ps1 defines its three through
+# reflection emit, which costs no compile at all; studio/setup.ps1 still uses Add-Type for the console thunk, which
+# costs a csc.exe run. Either way a new entry needs a reason, and a PowerShell equivalent usually exists.
 ALLOWED_PINVOKES = {
     # Canonicalising linked ancestors of security-relevant paths.
     # No PS 5.1 equivalent: ResolveLinkTarget is .NET 6+, and .Target misses a linked ancestor of a non-link leaf.
@@ -124,27 +125,31 @@ ALLOWED_PINVOKES = {
     # Per-item Explorer icon refresh, standalone path only.
     # ie4uinit.exe -show is the global broadcast, which alone does not recover a stale .lnk, so it is not a substitute.
     "SHChangeNotify",
-    # PID -> image path for the venv-holder check.
-    # Win32_Process answers the same question, but test_windows_installer_concurrency_guard.py bans it and $process.Path
-    # there: the races #7764 closed came from inferring "in use" from anything but a confirmed executable identity.
-    "OpenProcess",
-    "QueryFullProcessImageNameW",
+    # Closing the handle CreateFileW opened.
     "CloseHandle",
 }
+
+
+# The two ways a native import can be declared. Add-Type takes C# and runs csc.exe; DefinePInvokeMethod builds the
+# same stub in memory. The second is invisible to a DllImport regex, so without this the inventory above would silently
+# stop covering install.ps1 the moment it stopped compiling.
+def _native_imports(text: str) -> set:
+    imported = set()
+    for match in re.finditer(r"DllImport\(\"[^\"]+\"[^)]*\)\][^;{]*?extern\s+[\w.\[\]]+\s+(\w+)", text):
+        imported.add(match.group(1))
+    # install.ps1's multi-line declarations put the parameter list on later lines.
+    for match in re.finditer(r"extern\s+[\w.<>\[\]]+\s+(\w+)\s*\(", text):
+        imported.add(match.group(1))
+    if "DefinePInvokeMethod" in text:
+        for match in re.finditer(r"@\{\s*Name\s*=\s*\"(\w+)\"", text):
+            imported.add(match.group(1))
+    return imported
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
 def test_no_new_native_imports(name: str) -> None:
     text = _text(name)
-    imported = set()
-    for match in re.finditer(
-        r"DllImport\(\"[^\"]+\"[^)]*\)\][^;{]*?extern\s+[\w.\[\]]+\s+(\w+)", text
-    ):
-        imported.add(match.group(1))
-    # install.ps1's multi-line declarations put the parameter list on later lines.
-    for match in re.finditer(r"extern\s+[\w.<>\[\]]+\s+(\w+)\s*\(", text):
-        imported.add(match.group(1))
-    unexpected = imported - ALLOWED_PINVOKES
+    unexpected = _native_imports(text) - ALLOWED_PINVOKES
     assert not unexpected, (
         f"{name} imports {sorted(unexpected)} from native code. Prefer a PowerShell or .NET "
         f"equivalent; if there genuinely is none, add it to ALLOWED_PINVOKES with the reason."
@@ -211,3 +216,43 @@ def test_printed_remediation_survives_the_hardening(name: str) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_the_installer_never_runs_the_c_sharp_compiler() -> None:
+    """The desktop app spawns Windows PowerShell 5.1, which compiles Add-Type by writing C# to
+    %TEMP% and running csc.exe. A GUI binary launching a windowless PowerShell that launches a
+    compiler and drops a DLL in %TEMP% is a dropper's shape whatever the code says, and it was
+    blocked in the field. Reflection emit builds the same stub in memory: no compiler process,
+    no source on disk, no DLL, nothing in %TEMP%.
+
+    install.ps1 is the script the desktop bundles and runs, so it is the one that must never
+    compile. studio/setup.ps1 is reached through the already-installed CLI, not spawned by the
+    app, and still uses Add-Type for the console thunk.
+    """
+    text = _text("install.ps1")
+    assert "Add-Type -TypeDefinition" not in text, (
+        "install.ps1 compiles C# again. The desktop path must stay csc.exe-free; define native "
+        "methods with DefinePInvokeMethod instead."
+    )
+    assert "DefinePInvokeMethod" in text, "install.ps1 no longer emits its native imports; update this guard"
+    # The private-%TEMP% retry is gone with it. Redirecting TEMP to compile again after a block
+    # cannot beat a filter driver, and "blocked writing an executable to TEMP, change TEMP, write
+    # it again" is itself an evasion heuristic. Scoped to the resolver: Initialize-StudioTempEnvironment
+    # legitimately redirects an unusable inherited TEMP, and that is a different thing.
+    start = text.index("function Initialize-StudioFinalPathNativeType")
+    body = text[start : text.index("\n    function ", start + 1)]
+    assert "$env:TMP" not in body and "$env:TEMP" not in body, (
+        "the native resolver touches the temporary directory again; it should need nothing there"
+    )
+
+
+def test_the_native_resolver_still_has_a_lexical_fallback() -> None:
+    """The point of the change is the acquisition, not the ladder. A host where emit fails has to
+    degrade exactly as a host that could not compile already did, which is a path the installer
+    has always taken and still completes on.
+    """
+    text = _text("install.ps1")
+    assert "Write-StudioFinalPathDegraded" in text
+    assert "Get-StudioLexicalPath" in text
+    # Constrained Language Mode forbids defining types at all, by emit as by Add-Type.
+    assert "$languageMode -ne \"FullLanguage\"" in text

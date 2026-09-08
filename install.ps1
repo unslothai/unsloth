@@ -852,13 +852,13 @@ function Install-UnslothStudio {
     }
 
     function Initialize-StudioFinalPathNativeType {
-        if ("UnslothStudioFinalPathV2" -as [type]) {
+        if ("UnslothStudioFinalPathV3" -as [type]) {
             $script:StudioFinalPathNativeState = $true
             return $true
         }
         if ($null -ne $script:StudioFinalPathNativeState) { return $script:StudioFinalPathNativeState }
-        # Constrained Language Mode forbids Add-Type, so compiling would only produce
-        # a second, less honest error.
+        # Constrained Language Mode forbids defining types at all, by emit as by
+        # Add-Type, so compiling would only produce a second, less honest error.
         $languageMode = "FullLanguage"
         try { $languageMode = [string]$ExecutionContext.SessionState.LanguageMode } catch {}
         if ($languageMode -ne "FullLanguage") {
@@ -866,151 +866,117 @@ function Install-UnslothStudio {
             Write-StudioFinalPathDegraded -Reason "PowerShell is in $languageMode"
             return $false
         }
-        Initialize-StudioTempEnvironment
-        $source = @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-using System.Text;
-using Microsoft.Win32.SafeHandles;
-
-public static class UnslothStudioFinalPathV2
-{
-    private const uint FileShareRead = 0x00000001;
-    private const uint FileShareWrite = 0x00000002;
-    private const uint FileShareDelete = 0x00000004;
-    private const uint OpenExisting = 3;
-    private const uint FileFlagBackupSemantics = 0x02000000;
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern SafeFileHandle CreateFileW(
-        string fileName,
-        uint desiredAccess,
-        uint shareMode,
-        IntPtr securityAttributes,
-        uint creationDisposition,
-        uint flagsAndAttributes,
-        IntPtr templateFile);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern uint GetFinalPathNameByHandleW(
-        SafeFileHandle file,
-        StringBuilder path,
-        uint pathLength,
-        uint flags);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr OpenProcess(
-        uint desiredAccess,
-        bool inheritHandle,
-        int processId);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool QueryFullProcessImageNameW(
-        IntPtr process,
-        uint flags,
-        StringBuilder path,
-        ref uint pathLength);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CloseHandle(IntPtr handle);
-
-    public static string Resolve(string path)
-    {
-        using (SafeFileHandle handle = CreateFileW(
-            path,
-            0,
-            FileShareRead | FileShareWrite | FileShareDelete,
-            IntPtr.Zero,
-            OpenExisting,
-            FileFlagBackupSemantics,
-            IntPtr.Zero))
-        {
-            if (handle.IsInvalid)
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-
-            StringBuilder buffer = new StringBuilder(512);
-            uint length = GetFinalPathNameByHandleW(
-                handle, buffer, (uint)buffer.Capacity, 0);
-            if (length == 0)
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            if (length >= buffer.Capacity)
-            {
-                buffer = new StringBuilder((int)length + 1);
-                length = GetFinalPathNameByHandleW(
-                    handle, buffer, (uint)buffer.Capacity, 0);
-                if (length == 0)
-                    throw new Win32Exception(Marshal.GetLastWin32Error());
-            }
-            if (length >= buffer.Capacity)
-                throw new InvalidOperationException("Final path exceeded the allocated buffer");
-            return buffer.ToString();
-        }
-  }
-
-    public static string GetProcessImagePath(int processId)
-    {
-        const uint ProcessQueryLimitedInformation = 0x1000;
-        IntPtr process = OpenProcess(ProcessQueryLimitedInformation, false, processId);
-        if (process == IntPtr.Zero)
-        {
-            return null;
-        }
-        try
-        {
-            StringBuilder path = new StringBuilder(32768);
-            uint pathLength = (uint)path.Capacity;
-            return QueryFullProcessImageNameW(process, 0, path, ref pathLength)
-                ? path.ToString()
-                : null;
-        }
-        finally
-        {
-            CloseHandle(process);
-        }
-  }
-}
-'@
-        $firstError = $null
+        # Reflection emit, not Add-Type. Add-Type on 5.1 (the interpreter the
+        # desktop app spawns) compiles by writing C# to %TEMP% and running
+        # csc.exe. Bitdefender blocks the DLL that produces: a windowless
+        # PowerShell, spawned by a GUI binary, launching a compiler and writing
+        # executable content to %TEMP% is a dropper's shape, whatever the code
+        # says. The same script piped from `irm | iex` is not blocked, because
+        # there the parent is the user's own console, so the compile is only half
+        # the signal and this is the half we own.
+        #
+        # Emit builds the interop stub in memory: no compiler process, no source
+        # on disk, no DLL, and nothing in %TEMP% at all. Everything below the
+        # capability check is unchanged, so a host where this fails degrades
+        # exactly as a host that could not compile already did, which is a path
+        # the installer has always taken and still completes on.
         try {
-            Add-Type -TypeDefinition $source -ErrorAction Stop
-        } catch {
-            $firstError = $_.Exception.Message
-        }
-        # A compile that reports failure can still have loaded the type, and the same
-        # name cannot be defined twice in one session.
-        if ("UnslothStudioFinalPathV2" -as [type]) {
-            $script:StudioFinalPathNativeState = $true
-            return $true
-        }
-        $private = New-StudioPrivateTempDirectory
-        if ($private) {
-            $hadTmp = ($null -ne $env:TMP)
-            $previousTmp = $env:TMP
-            $hadTemp = ($null -ne $env:TEMP)
-            $previousTemp = $env:TEMP
-            try {
-                # Both, because GetTempPath reads TMP first.
-                $env:TMP = $private
-                $env:TEMP = $private
-                try { Add-Type -TypeDefinition $source -ErrorAction Stop } catch {}
-            } finally {
-                if ($hadTmp) { $env:TMP = $previousTmp } else { Remove-Item Env:\TMP -ErrorAction SilentlyContinue }
-                if ($hadTemp) { $env:TEMP = $previousTemp } else { Remove-Item Env:\TEMP -ErrorAction SilentlyContinue }
-                # Only now: deleting while csc.exe still holds it is the race being
-                # worked around.
-                Remove-Item -LiteralPath $private -Recurse -Force -ErrorAction SilentlyContinue
+            $assemblyName = New-Object System.Reflection.AssemblyName "UnslothStudioNative"
+            $assembly = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
+                $assemblyName, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
+            $module = $assembly.DefineDynamicModule("UnslothStudioNative")
+            $builder = $module.DefineType(
+                "UnslothStudioFinalPathV3", "Public, Class, AutoClass, AnsiClass, BeforeFieldInit")
+
+            $winapi = [System.Runtime.InteropServices.CallingConvention]::Winapi
+            $unicode = [System.Runtime.InteropServices.CharSet]::Unicode
+            $standard = [System.Reflection.CallingConventions]::Standard
+            $attributes = "Public, Static, HideBySig, PinvokeImpl"
+            $preserveSig = [System.Reflection.MethodImplAttributes]::PreserveSig
+
+            # DefinePInvokeMethod cannot ask for SetLastError, so nothing below
+            # reads GetLastWin32Error. The C# it replaces threw a Win32Exception
+            # the callers only ever turned back into "use the lexical answer", so
+            # returning null loses a code nothing acted on.
+            $imports = @(
+                @{ Name = "CreateFileW"; Return = [IntPtr]
+                   Args = @([string], [uint32], [uint32], [IntPtr], [uint32], [uint32], [IntPtr]) },
+                @{ Name = "GetFinalPathNameByHandleW"; Return = [uint32]
+                   Args = @([IntPtr], [System.Text.StringBuilder], [uint32], [uint32]) },
+                @{ Name = "CloseHandle"; Return = [bool]; Args = @([IntPtr]) }
+            )
+            foreach ($import in $imports) {
+                $method = $builder.DefinePInvokeMethod(
+                    $import.Name, "kernel32.dll", $import.Name, $attributes,
+                    $standard, $import.Return, $import.Args, $winapi, $unicode)
+                $method.SetImplementationFlags(
+                    $method.GetMethodImplementationFlags() -bor $preserveSig)
             }
+            $null = $builder.CreateType()
+        } catch {
+            $script:StudioFinalPathNativeState = $false
+            Write-StudioFinalPathDegraded -Reason (($_.Exception.Message -split "`r?`n")[0].Trim())
+            return $false
         }
-        if ("UnslothStudioFinalPathV2" -as [type]) {
+        if ("UnslothStudioFinalPathV3" -as [type]) {
             $script:StudioFinalPathNativeState = $true
             return $true
         }
         $script:StudioFinalPathNativeState = $false
-        # First line of the compiler output, not the whole C# dump it echoes after.
-        $reason = if ($firstError) { ($firstError -split "`r?`n")[0].Trim() } else { "compilation failed" }
-        Write-StudioFinalPathDegraded -Reason $reason
+        Write-StudioFinalPathDegraded -Reason "the native path resolver could not be defined"
         return $false
+    }
+
+    # GetFinalPathNameByHandleW is the only exact answer: it follows junctions,
+    # symlinks and SUBST drives, expands 8.3 aliases and reports the on-disk
+    # spelling, none of which GetFullPath does.
+    #
+    # This is what the compiled Resolve() did, moved out of C# so the imports
+    # above are all the native code there is. Same flags, same two-pass buffer
+    # growth. Null rather than an exception when the handle or the call fails:
+    # every caller already treats "no exact answer" as "use the lexical one".
+    function Get-StudioNativeFinalPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+
+        $invalidHandle = [IntPtr](-1)
+        $fileShareAll = [uint32]7          # READ | WRITE | DELETE
+        $openExisting = [uint32]3
+        $backupSemantics = [uint32]0x02000000   # required to open a DIRECTORY
+
+        # Every native call is guarded, not just the ones that can fail usefully.
+        # An emitted stub binds its import on first CALL, not when the type is
+        # defined, so a host missing the export raises here rather than above, and
+        # the caller must see the same "no exact answer" it sees from a handle it
+        # could not open. The callers already treat null that way; throwing past
+        # them would be a new failure mode this change has no business inventing.
+        $handle = $invalidHandle
+        try {
+            $handle = [UnslothStudioFinalPathV3]::CreateFileW(
+                $Path, [uint32]0, $fileShareAll, [IntPtr]::Zero,
+                $openExisting, $backupSemantics, [IntPtr]::Zero)
+        } catch {
+            return $null
+        }
+        if ($handle -eq $invalidHandle -or $handle -eq [IntPtr]::Zero) { return $null }
+        try {
+            $buffer = New-Object System.Text.StringBuilder 512
+            $length = [UnslothStudioFinalPathV3]::GetFinalPathNameByHandleW(
+                $handle, $buffer, [uint32]$buffer.Capacity, [uint32]0)
+            if ($length -eq 0) { return $null }
+            if ($length -ge $buffer.Capacity) {
+                $buffer = New-Object System.Text.StringBuilder ([int]$length + 1)
+                $length = [UnslothStudioFinalPathV3]::GetFinalPathNameByHandleW(
+                    $handle, $buffer, [uint32]$buffer.Capacity, [uint32]0)
+                if ($length -eq 0) { return $null }
+            }
+            # Still short is the only answer worth trusting.
+            if ($length -ge $buffer.Capacity) { return $null }
+            return $buffer.ToString()
+        } catch {
+            return $null
+        } finally {
+            try { [void][UnslothStudioFinalPathV3]::CloseHandle($handle) } catch {}
+        }
     }
 
     function Resolve-StudioLinkTarget {
@@ -1189,7 +1155,8 @@ public static class UnslothStudioFinalPathV2
         $resolved = $null
         if (Initialize-StudioFinalPathNativeType) {
             try {
-                $resolved = [UnslothStudioFinalPathV2]::Resolve($existingPath)
+                $resolved = Get-StudioNativeFinalPath -Path $existingPath
+                if ([string]::IsNullOrWhiteSpace($resolved)) { throw "no exact answer" }
                 $exact = $true
             } catch {
                 # The helper COMPILED and still could not answer: a path renamed
@@ -1578,8 +1545,11 @@ public static class UnslothStudioFinalPathV2
     }
     Write-StudioLine ""
 
-    # Here so its warning lands under the banner. A no-op the second time: a --tauri
-    # run with a custom root reaches it first via Initialize-StudioFinalPathNativeType.
+    # Here so its warning lands under the banner. The only caller now: the native
+    # path resolver used to reach it first, because compiling wrote to %TEMP%, and
+    # it no longer writes anything anywhere. Nothing between the banner and here
+    # touches the temporary directory, so the fix-up still lands before the first
+    # user of it.
     Initialize-StudioTempEnvironment
 
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
@@ -3261,26 +3231,19 @@ exit 0
         }
     }
 
-    # QueryFullProcessImageNameW answers for processes whose MainModule is not
-    # readable here, but needs the compiled helper. Without a fallback a host that
-    # cannot compile would find NO running processes and overwrite a venv Unsloth has
-    # open, so the ladder ends at Win32_Process. Every rung reports a real executable
+    # Process.Path first, then Win32_Process. Every rung reports a real executable
     # image; a command line or working directory mentioning the path is never proof.
+    #
+    # QueryFullProcessImageNameW used to lead this ladder, which meant importing
+    # OpenProcess and QueryFullProcessImageNameW purely for a rung the two below
+    # already answer, on every host, compiled or not. It bought little: without
+    # SeDebugPrivilege it fails on another user's process exactly as these do, and
+    # Win32_Process needs no process handle at all. Dropping it removes three of
+    # the five native imports, and the rungs kept here are the ones every host
+    # that could not compile has always run on.
     $script:StudioProcessImageTable = $null
-    $script:StudioProcessImageWarned = $false
     function Get-StudioProcessImagePath {
         param([Parameter(Mandatory = $true)][int]$ProcessId)
-        if (Initialize-StudioFinalPathNativeType) {
-            try {
-                $native = [UnslothStudioFinalPathV2]::GetProcessImagePath($ProcessId)
-                if (-not [string]::IsNullOrWhiteSpace($native)) { return $native }
-            } catch {}
-            return $null
-        }
-        if (-not $script:StudioProcessImageWarned) {
-            $script:StudioProcessImageWarned = $true
-            Write-StudioLine "[WARN] Scanning for running Unsloth processes without the native helper; a process this shell cannot inspect may go unnoticed." -ForegroundColor Yellow
-        }
         $process = $null
         try { $process = Get-Process -Id $ProcessId -ErrorAction Stop } catch { $process = $null }
         if ($process) {
