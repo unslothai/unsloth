@@ -937,16 +937,23 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     missing = _amd_nodes_the_runtime_lacks(needs_kfd = needs_kfd)
     parts: "list[str]" = []
     if closed:
-        # Claim only what the closed set actually blocks.
-        blocked = (
-            "no GPU backend can use" if any(p != _KFD_NODE for p in closed) else "ROCm cannot use"
-        )
+        # Claim only what the closed set actually blocks, and only for the devices it is
+        # about. A render node shut beside an OPEN sibling leaves both runtimes a complete
+        # path to that other GPU, so "no GPU backend can use the AMD card" is false there --
+        # and _explain_empty_gpu_probe reaches exactly that host, appending this sentence
+        # after saying the closed node is not why the probe is empty.
         user = os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
         joinable, unnamed, no_group, acl, owned, privileged = _groups_that_own(closed)
-        parts.append(
-            f"This account cannot open {', '.join(closed)}, so {blocked} the "
-            f"AMD card even though the driver is loaded."
-        )
+        if not any(_p != _KFD_NODE for _p in closed):
+            _claim = "so ROCm cannot use the AMD card even though the driver is loaded"
+        elif an_amd_render_node_is_open():
+            _claim = (
+                "so no GPU backend can use the card behind them, even though the driver is "
+                "loaded and another AMD render node on this host is open"
+            )
+        else:
+            _claim = "so no GPU backend can use the AMD card even though the driver is loaded"
+        parts.append(f"This account cannot open {', '.join(closed)}, {_claim}.")
         # Prescribed only where joining a group is the repair. A host whose nodes could not
         # be stat'd at all still gets the documented pair, since some advice beats none; a
         # host whose nodes were read and offer no joinable group gets the sentences below
@@ -966,10 +973,17 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             _adds = " ".join(f"--group-add {_g}" for _g in unnamed)
             _noun = "GID" if len(unnamed) == 1 else "GIDs"
             _verb = "which has" if len(unnamed) == 1 else "which have"
+            # Creating the group only gives the numeric owner a name; the account is
+            # still outside it and the node is still shut. Both halves of the bare-host
+            # repair, and one per GID: with two unnamed GIDs a singular instruction repairs
+            # at most one of the nodes.
+            _each = "it" if len(unnamed) == 1 else "each of them"
+            _first = unnamed[0]
             parts.append(
                 f"Some of those nodes belong to {_noun} {_gids}, {_verb} no group entry on "
-                f"this system, so usermod cannot name them: create a group with that GID, "
-                f"or recreate the container passing {_adds}."
+                f"this system, so usermod cannot name them: create a group for {_each} and "
+                f"add the account to it (sudo groupadd -g {_first} <name>, then sudo usermod "
+                f"-a -G <name> {user}), or recreate the container passing {_adds}."
             )
         if no_group:
             parts.append(

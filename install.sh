@@ -5561,6 +5561,23 @@ elif [ "$_amd_node_diag_route" = true ] && \
         substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
         substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
 fi
+# The runtime half's needs_kfd, for the installer. /dev/kfd is opened by ROCm and by
+# nothing else, so a run that will install neither ROCm torch nor a ROCm llama.cpp bundle
+# has no use for it and must not be sent after a group for it. SKIP_TORCH alone is NOT
+# that run: --no-torch still installs a GGUF bundle, and the ROCm bundle opens /dev/kfd
+# exactly as torch would, which is the #10466 shape. Only an explicit backend request
+# settles it, since the bundle itself is chosen later, in setup.sh.
+_run_may_open_kfd() {
+    [ "$SKIP_TORCH" = false ] && return 0
+    case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
+            | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+        vulkan|cpu) return 1 ;;
+    esac
+    return 0
+}
+if ! _run_may_open_kfd; then
+    _closed_amd_nodes=$(printf '%s\n' "$_closed_amd_nodes" | grep -vx /dev/kfd || true)
+fi
 # The driver is loaded and the nodes exist, so neither a wheel nor a kernel stack
 # repairs this; only group membership does. Nothing else in this installer asks
 # whether the account can OPEN a node it just found (#10466). /dev/kfd alone stops
@@ -5615,13 +5632,20 @@ if [ "$_amd_node_diag_route" = true ] && [ -n "$_closed_amd_nodes" ]; then
         # does not exist, and naming only the first leaves the second node shut.
         _closed_amd_gid_adds=$(printf '%s' "$_closed_amd_gids" | tr ',' '\n' \
             | sed 's/^/--group-add /' | tr '\n' ' ' | sed 's/ *$//')
+        # groupadd alone only gives the numeric owner a NAME: the account is still
+        # outside the group and the node is still shut, so both halves are printed. The
+        # first GID leads the example, and every GID needs the pair.
+        _closed_amd_gid_first=$(printf '%s' "$_closed_amd_gids" | cut -d, -f1)
         case "$_closed_amd_gids" in
             *,*) substep "  Some of those nodes belong to GIDs $_closed_amd_gids, which have no" "$C_WARN"
-                 substep "  group entry here, so usermod cannot name them: create groups with those" ;;
+                 substep "  group entry here, so usermod cannot name them: create a group for each" ;;
             *)   substep "  Some of those nodes belong to GID $_closed_amd_gids, which has no" "$C_WARN"
-                 substep "  group entry here, so usermod cannot name it: create a group with that" ;;
+                 substep "  group entry here, so usermod cannot name it: create a group for it" ;;
         esac
-        substep "  GID, or recreate the container passing $_closed_amd_gid_adds."
+        substep "  and add yourself to every one of them:"
+        substep "  sudo groupadd -g $_closed_amd_gid_first <name>"
+        substep "  sudo usermod -a -G <name> ${USER:-\$USER}"
+        substep "  or recreate the container passing $_closed_amd_gid_adds."
     fi
     if [ -n "$_closed_amd_modes" ]; then
         substep "  $_closed_amd_modes does not grant its own group read and write, so no" "$C_WARN"

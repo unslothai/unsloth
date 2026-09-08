@@ -962,18 +962,19 @@ def test_the_same_empty_mask_still_counts_for_a_hip_build(monkeypatch, linux):
 
 
 def test_an_unnamed_gid_is_not_handed_to_usermod(monkeypatch, linux):
-    """A GID with no group entry is reported, not prescribed. usermod -a -G takes names
-    only: shadow 4.13 answers ``group '993' does not exist`` and exits 6, run live on this
-    host to check rather than read out of the man page.
+    """A GID with no group entry is never the -G argument. usermod -a -G takes names only:
+    shadow 4.13 answers ``group '993' does not exist`` and exits 6, run live on this host to
+    check rather than read out of the man page.
 
-    Fails before the fix, which put the bare number in the -G argument."""
+    Fails before the fix, which put the bare number in the -G argument. The assertion is on
+    the NUMBER rather than on the command: the repair now names usermod on purpose, after a
+    groupadd that gives the GID a name, and asserting the command itself is absent would
+    forbid the half that makes the account a member."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993], [], [], [], []))
     monkeypatch.setenv("USER", "ada")
     hint = amd.amd_node_permission_hint()
-    # The sentence names usermod to say it cannot help, so the assertion is on the
-    # COMMAND rather than on the word.
-    assert "usermod -a -G" not in hint
+    assert "usermod -a -G 993" not in hint
     assert "--group-add 993" in hint
 
 
@@ -2130,3 +2131,155 @@ def test_a_live_hip_runtime_still_gets_the_node_hint_alone(monkeypatch, linux):
     )
     assert "Repair installation" not in message
     assert "usermod -a -G render,video ada" in message
+
+
+
+def test_a_closed_node_beside_an_open_sibling_does_not_speak_for_the_card(monkeypatch, linux):
+    """One shut render node on a multi-AMD host leaves the other GPU fully reachable: HIP has
+    /dev/kfd plus an open render node, and the Vulkan loader has the same. Claiming "no GPU
+    backend can use the AMD card" there contradicts _explain_empty_gpu_probe, which appends
+    this sentence right after saying the closed node is NOT why the probe came back empty."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128", "/dev/dri/renderD129"],
+        openable = {"/dev/kfd", "/dev/dri/renderD129"},
+    )
+    hint = amd.amd_node_permission_hint()
+    assert "/dev/dri/renderD128" in hint
+    assert "no GPU backend can use the AMD card" not in hint
+    assert "the card behind them" in hint and "another AMD render node" in hint
+
+
+def test_the_same_node_with_no_open_sibling_still_speaks_for_the_card(monkeypatch, linux):
+    """The control, and the case the wording was written for: the only render node is shut,
+    so nothing enumerates and the claim about the card is exactly right. Without this the fix
+    could be "never claim the card", which is the #10466 message gone."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = {"/dev/kfd"},
+    )
+    hint = amd.amd_node_permission_hint()
+    assert "no GPU backend can use the AMD card" in hint
+
+
+def test_a_kfd_only_closed_set_still_claims_only_rocm(monkeypatch, linux):
+    """The second control: the render node is open here too, but /dev/kfd has no sibling, so
+    the narrowing must not weaken this arm. Vulkan works; ROCm does not."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = {"/dev/dri/renderD128"},
+    )
+    hint = amd.amd_node_permission_hint()
+    assert "ROCm cannot use the AMD card" in hint
+
+
+def test_an_unnamed_gid_hint_also_adds_the_account(monkeypatch, linux):
+    """groupadd gives the numeric owner a NAME. It does not put this account in the group, so
+    a user who follows the sentence to the letter still cannot open the node. Both halves, and
+    one per GID: with two unnamed GIDs the singular instruction repaired at most one node."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993, 994], [], [], [], []))
+    hint = amd.amd_node_permission_hint()
+    assert "993, 994" in hint
+    assert "each of them" in hint
+    assert "sudo groupadd -g 993" in hint and "sudo usermod -a -G <name>" in hint
+    assert "--group-add 993 --group-add 994" in hint
+
+
+def test_a_single_unnamed_gid_reads_singular(monkeypatch, linux):
+    """The control: the plural wording must not be the only wording, or one GID reads as two
+    and the sentence stops matching what it printed."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993], [], [], [], []))
+    hint = amd.amd_node_permission_hint()
+    assert "GID 993" in hint and "GIDs" not in hint
+    assert "create a group for it" in hint
+    assert "sudo groupadd -g 993" in hint
+
+
+def test_the_installer_also_adds_the_account_for_unnamed_gids(tmp_path):
+    """The installer twin of the rule above: it printed the container flags per GID after the
+    earlier fix, but still said only "create a group" for the bare host."""
+    out = _install_sh_hint("/dev/dri/renderD128", repairs = "gid:993\ngid:994")
+    assert "sudo groupadd -g 993" in out
+    assert "sudo usermod -a -G <name> ada" in out
+    assert "--group-add 993 --group-add 994" in out
+    assert "create a group for each" in out
+
+
+def _install_sh_kfd_scope(closed_nodes: str, *, skip_torch: bool, backend: "str | None") -> str:
+    """The closed-node message with the KFD scoping in front of it.
+
+    A separate lift from _install_sh_hint because the filter sits ABOVE the block that
+    harness extracts -- deliberately, so the diagnosis itself stays one self-contained
+    block -- and the thing under test here is which nodes reach it.
+    """
+    import subprocess
+
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    fn_start = next(i for i, line in enumerate(lines) if line.startswith("_run_may_open_kfd() {"))
+    block_start = next(
+        i
+        for i, line in enumerate(lines)
+        if line.endswith('[ -n "$_closed_amd_nodes" ]; then') and line.startswith("if ")
+    )
+    end = next(i for i in range(block_start, len(lines)) if lines[i] == "fi")
+    script = "\n".join(
+        [
+            'substep() { echo "$1"; }',
+            'C_WARN=""',
+            "_amd_render_node_present() { return 0; }",
+            "id() { echo 4242; }",
+            "_amd_node_diag_route=true",
+            "OS=linux",
+            f"SKIP_TORCH={'true' if skip_torch else 'false'}",
+            "_amd_node_repairs() { printf '%s\\n' 'join:render'; }",
+            "\n".join(lines[fn_start : end + 1]),
+        ]
+    )
+    env = {**os.environ, "_closed_amd_nodes": closed_nodes, "USER": "ada"}
+    env.pop("UNSLOTH_LLAMA_CPP_BACKEND", None)
+    if backend is not None:
+        env["UNSLOTH_LLAMA_CPP_BACKEND"] = backend
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, env = env)
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+def test_a_vulkan_only_no_torch_run_is_not_sent_after_kfd():
+    """/dev/kfd is opened by ROCm and by nothing else, so a run installing neither ROCm torch
+    nor a ROCm GGUF bundle has no use for it. This is the shell twin of the needs_kfd argument
+    the runtime half already takes."""
+    out = _install_sh_kfd_scope("/dev/kfd", skip_torch = True, backend = "vulkan")
+    assert out.strip() == ""
+
+
+def test_no_torch_alone_still_reports_a_closed_kfd():
+    """The control, and the reason SKIP_TORCH cannot decide this on its own: --no-torch still
+    installs a GGUF bundle, the ROCm bundle opens /dev/kfd exactly as torch would, and which
+    bundle it will be is chosen later, in setup.sh. Suppressing here would hide the #10466
+    diagnosis from the GGUF users it was written for."""
+    out = _install_sh_kfd_scope("/dev/kfd", skip_torch = True, backend = None)
+    assert "cannot open its device nodes" in out
+    assert "/dev/kfd" in out
+
+
+def test_a_vulkan_only_run_still_reports_a_closed_render_node():
+    """The second control: Vulkan opens the render node, so the scoping must take /dev/kfd and
+    nothing else. A filter that dropped the whole diagnosis would silence the node that blocks
+    every backend."""
+    out = _install_sh_kfd_scope(
+        "/dev/kfd\n/dev/dri/renderD128", skip_torch = True, backend = "vulkan"
+    )
+    assert "/dev/dri/renderD128" in out
+    assert "/dev/kfd" not in out
+
+
+def test_a_torch_install_is_unaffected_by_the_backend_request():
+    """And the control for every ordinary run: ROCm torch opens /dev/kfd whatever the GGUF
+    bundle is, so an explicit Vulkan llama.cpp request must not scope the torch diagnosis."""
+    out = _install_sh_kfd_scope("/dev/kfd", skip_torch = False, backend = "vulkan")
+    assert "/dev/kfd" in out
