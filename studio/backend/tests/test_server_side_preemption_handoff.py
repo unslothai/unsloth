@@ -280,7 +280,10 @@ class TestThePauseReachesTheClient:
         body = {"messages": [{"role": "user", "content": "write me an essay"}], "stream": True}
         if tools:
             body["enable_tools"] = True
-        response = TestClient(app).post("/chat/completions", json = body)
+        # The Studio UI's opt-in: tools with confirmation are refused without it.
+        response = TestClient(app, headers = {"X-Unsloth-Events": "1"}).post(
+            "/chat/completions", json = body
+        )
         assert response.status_code == 200
         return response.text
 
