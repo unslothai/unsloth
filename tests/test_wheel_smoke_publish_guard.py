@@ -55,7 +55,7 @@ def _run_guard(tmp_path, build_sh_body):
     script = tmp_path / "_guard.py"
     script.write_text(_guard_source())
     return subprocess.run(
-        [sys.executable, str(script)], cwd=tmp_path, capture_output=True, text=True
+        [sys.executable, str(script)], cwd = tmp_path, capture_output = True, text = True
     )
 
 
