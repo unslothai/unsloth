@@ -116,10 +116,7 @@ def _colab_python_version() -> str | None:
 
 
 def _marker_environment(colab: dict[str, str]) -> dict[str, str] | None:
-    """The environment PEP 508 markers are evaluated against, or None to skip them.
-
-    Only the Colab image, the one environment this can name; anything else replays every
-    requirement."""
+    """The environment PEP 508 markers are evaluated against, or None to skip them: only the Colab image, the one environment this can name, since anything else replays every requirement."""
     if not colab:
         return None
     full = _colab_python_version()
@@ -162,10 +159,7 @@ _MARKER_VARIABLES = frozenset(
 
 
 def _requirement_applies(raw: str, environment: dict[str, str] | None) -> bool:
-    """False only when the requirement carries a marker that is false for `environment`.
-
-    pip skips such a requirement, so replaying its bounds moves a version the cell never touches.
-    Anything unjudgeable (unparseable marker, no `packaging`, no environment) is replayed."""
+    """False only when the requirement carries a marker that is false for `environment`. pip skips such a requirement, so replaying its bounds moves a version the cell never touches; anything unjudgeable (unparseable marker, no `packaging`, no environment) is replayed."""
     if environment is None or ";" not in raw:
         return True
     marker_text = raw.split(";", 1)[1].strip()
@@ -223,10 +217,7 @@ def _split_marker(text: str) -> tuple[list[str], list[str]]:
 
 
 def _marker_truth(text: str, environment: dict[str, str]) -> bool | None:
-    """Three-valued marker evaluation: True, False, or unknown.
-
-    An unanswerable field makes its own TERM unknown, not the whole marker: a decisive
-    `python_version < '3.0' and implementation_name == 'cpython'` stays false on a 3.13 image."""
+    """Three-valued marker evaluation: True, False, or unknown. An unanswerable field makes its own TERM unknown, not the whole marker: a decisive `python_version < '3.0' and implementation_name == 'cpython'` stays false on a 3.13 image."""
     text = text.strip()
     if not text:
         return None

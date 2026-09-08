@@ -383,11 +383,7 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
 
 
 def _installed_without_torch() -> bool:
-    """True when this venv was installed --no-torch (GGUF-only).
-
-    Unknown reads as False: an install predating the manifest keeps today's
-    repair behaviour rather than silently losing it.
-    """
+    """True when this venv was installed --no-torch (GGUF-only). Unknown reads as False: an install predating the manifest keeps today's repair behaviour rather than silently losing it."""
     try:
         from studio.install_manifest import recorded_no_torch
         return recorded_no_torch() is True

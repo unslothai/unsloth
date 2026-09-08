@@ -1187,10 +1187,7 @@ def verdict_blames_the_mlx_stack() -> bool:
 
 
 def settle_the_no_torch_verdict(epoch: int) -> bool:
-    """For the post-warm probe that measured a --no-torch host's stack unusable: nothing will
-    overturn mlx_unavailable now, so publish no_torch and let the sidebar stop polling.
-    ``epoch`` predates the measurement, as for overturn_the_mlx_verdict: a shutdown since
-    retired that probe, and the next lifespan measures for itself."""
+    """For the post-warm probe that measured a --no-torch host's stack unusable: nothing will overturn mlx_unavailable now, so publish no_torch and let the sidebar stop polling. ``epoch`` predates the measurement, as for overturn_the_mlx_verdict: a shutdown since retired that probe, and the next lifespan measures for itself."""
     global CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, _NO_TORCH_SETTLED_EPOCH
     with _DETECT_LOCK:
         if epoch != current_detection_epoch():

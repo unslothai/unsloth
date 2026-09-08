@@ -415,14 +415,7 @@ _TORCHCODEC_MIN_ON_TORCH_INDEX = (0, 3, 0)
 
 
 def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
-    """`"12"`, `"13"`, or `""` when this codec install needs no NPP runtime.
-
-    The resident torch's LOCAL TAG first, the index URL only as a fallback. Matching
-    `/cuNNN$` on the URL failed for a supported UNSLOTH_TORCH_INDEX_URL ending in
-    `/simple?token=...`, so a `+cu128` host skipped NPP and the codec then failed to import
-    without a system CUDA toolkit. The tag is also the better source: _torchcodec_index_url
-    only returns an index once it has seen a `cpu` or `cuNNN` tag, so the tag is always there.
-    """
+    """`"12"`, `"13"`, or `""` when this codec install needs no NPP runtime. The resident torch's LOCAL TAG first, the index URL only as a fallback: matching `/cuNNN$` on the URL failed for a supported UNSLOTH_TORCH_INDEX_URL ending in `/simple?token=...`, so a `+cu128` host skipped NPP and the codec then failed to import without a system CUDA toolkit. The tag is also the better source, since _torchcodec_index_url only returns an index once it has seen a `cpu` or `cuNNN` tag."""
     local = str(torch_version or "").partition("+")[2].strip().lower()
     match = re.fullmatch(r"cu(\d+)", local)
     if match:
@@ -436,19 +429,9 @@ def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
 def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str | None":
     """The torchcodec index serving the resident torch's build, or None to stay unpinned.
 
-    torchcodec is published per accelerator exactly the way torch is: PyPI carries one
-    default flavor and the rest live at download.pytorch.org/whl/<tag>. Upstream's install
-    docs say to pass --index-url and "make sure to install the corresponding PyTorch version
-    as well", so a cu126 or cu128 venv that takes PyPI's default gets a codec built against a
-    different CUDA and libtorchcodec cannot dlopen. docker/Dockerfile already pins cu128 by
-    hand for this reason.
+    torchcodec is published per accelerator exactly the way torch is: PyPI carries one default flavor and the rest live at download.pytorch.org/whl/<tag>. Upstream's install docs say to pass --index-url and "make sure to install the corresponding PyTorch version as well", so a cu126 or cu128 venv that takes PyPI's default gets a codec built against a different CUDA and libtorchcodec cannot dlopen; docker/Dockerfile already pins cu128 by hand for this reason.
 
-    Only an EXPLICIT local tag pins. An untagged torch is PyPI's own build, whose counterpart
-    is PyPI's default torchcodec -- already the right pairing. That is the opposite reading
-    from _torch_flavor_tag, which maps untagged to "cpu" for the Windows repair path; here an
-    untagged Linux torch is a CUDA build, so pinning cpu would install the wrong one.
-    rocm and xpu publish no torchcodec under that name, so they stay unpinned rather than
-    being sent to an index that cannot serve them.
+    Only an EXPLICIT local tag pins. An untagged torch is PyPI's own build, whose counterpart is PyPI's default torchcodec, already the right pairing; that is the opposite reading from _torch_flavor_tag, which maps untagged to "cpu" for the Windows repair path, whereas here an untagged Linux torch is a CUDA build and pinning cpu would install the wrong one. rocm and xpu publish no torchcodec under that name, so they stay unpinned rather than being sent to an index that cannot serve them.
     """
     if not torch_version:
         return None
@@ -483,12 +466,7 @@ def _torchcodec_spec_bounds(spec: str) -> "tuple[tuple[int, ...], tuple[int, ...
 
 
 def _torchcodec_spec_is_installable(spec: str) -> bool:
-    """Does this host have a wheel for any release the spec admits?
-
-    Asked before the install rather than discovered by it, because the install step exits on
-    failure. Answering no means the audio extra is skipped, which is what a host with no wheel
-    got before this step existed.
-    """
+    """Does this host have a wheel for any release the spec admits? Asked before the install rather than discovered by it, because the install step exits on failure; answering no means the audio extra is skipped, which is what a host with no wheel got before this step existed."""
     host_floor = _torchcodec_platform_floor()
     if host_floor is None:
         return False
@@ -507,9 +485,7 @@ def _torchcodec_spec_is_installable(spec: str) -> bool:
 
 
 def _select_torchcodec_spec(torch_version: "str | None") -> str:
-    """Map an installed torch version (e.g. '2.11.0+cu128') to the torchcodec spec built
-    against it. Falls back to _TORCHCODEC_DEFAULT_SPEC for torch <=2.4, a non-2.x major, or
-    an unparseable/missing version. Pure function."""
+    """Map an installed torch version (e.g. '2.11.0+cu128') to the torchcodec spec built against it. Falls back to _TORCHCODEC_DEFAULT_SPEC for torch <=2.4, a non-2.x major, or an unparseable/missing version. Pure function."""
     if not torch_version:
         return _TORCHCODEC_DEFAULT_SPEC
     release = str(torch_version).split("+", 1)[0]  # drop +cu128/+rocm7.2/+cpu

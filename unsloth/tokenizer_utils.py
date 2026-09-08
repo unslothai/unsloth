@@ -103,10 +103,7 @@ def _is_gemma4_config(config):
 
 
 def _is_gemma4_tokenizer(tokenizer):
-    """processor_class = Gemma4Processor, usually only in init_kwargs.
-
-    The class is GemmaTokenizer, so a class-name check never fires.
-    """
+    """processor_class = Gemma4Processor, usually only in init_kwargs. The class is GemmaTokenizer, so a class-name check never fires."""
     for obj in _tokenizer_objects(tokenizer):
         processor_class = getattr(obj, "processor_class", None)
         if processor_class is None:
@@ -130,10 +127,7 @@ def _chat_template_emits_bos(tokenizer):
 
 
 def _tokenizer_auto_adds_bos(tokenizer):
-    """Does this tokenizer already emit <bos>?
-
-    Not add_bos_token: google/gemma-4-E2B reports False and still prepends.
-    """
+    """Does this tokenizer already emit <bos>? Not add_bos_token: google/gemma-4-E2B reports False and still prepends."""
     bos_token_id = getattr(tokenizer, "bos_token_id", None)
     if bos_token_id is None:
         return bool(getattr(tokenizer, "add_bos_token", False))
@@ -159,11 +153,7 @@ def _strip_bos_from_chat_template_text(chat_template):
 
 
 def _dedupe_bos_chat_template(tokenizer):
-    """Drop template-emitted BOS when the tokenizer already prepends one.
-
-    A processor keeps its own copy and save_pretrained writes that one, so both must lose it.
-    Only the inner tokenizer can be asked: calling a processor needs an image.
-    """
+    """Drop template-emitted BOS when the tokenizer already prepends one. A processor keeps its own copy and save_pretrained writes that one, so both must lose it. Only the inner tokenizer can be asked: calling a processor needs an image."""
     if not _tokenizer_auto_adds_bos(getattr(tokenizer, "tokenizer", tokenizer)):
         return
     for obj in _tokenizer_objects(tokenizer):
@@ -195,11 +185,7 @@ def _needs_gemma4_base_bos(tokenizer, config = None):
 
 
 def _enable_add_bos_token(tokenizer):
-    """Make the tokenizer prepend <bos>, and warn if that could not be done.
-
-    Nothing is recorded for save_pretrained: transformers 5.x drops add_bos_token from
-    tokenizer_config.json, so the setter's post_processor rewrite is what persists.
-    """
+    """Make the tokenizer prepend <bos>, and warn if that could not be done. Nothing is recorded for save_pretrained: transformers 5.x drops add_bos_token from tokenizer_config.json, so the setter's post_processor rewrite is what persists."""
     for obj in _tokenizer_objects(tokenizer):
         # Already correct: keep its post_processor rather than rebuilding one.
         if _tokenizer_auto_adds_bos(obj):
