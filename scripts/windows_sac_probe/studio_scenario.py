@@ -216,6 +216,32 @@ def discover_port(explicit: Optional[int]) -> int:
     )
 
 
+def default_studio_home() -> str:
+    """Studio's own precedence (utils/paths/storage_roots.studio_root):
+    UNSLOTH_STUDIO_HOME, then the STUDIO_HOME alias, then the legacy home. A
+    value that is only whitespace counts as unset there, so it does here."""
+    override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
+    if not override:
+        override = (os.environ.get("STUDIO_HOME") or "").strip()
+    return override or str(Path.home() / ".unsloth" / "studio")
+
+
+def resolve_studio_home(value: str) -> Path:
+    """The same normalization Studio applies: strip, expanduser, resolve.
+
+    A supported override like ``UNSLOTH_STUDIO_HOME=~\\my-studio`` is a
+    cwd-relative directory named ``~`` to pathlib, so the bootstrap credential
+    was looked for somewhere the running Studio never wrote it: an installation
+    that had never been opened then read as already rotated and the login was
+    attempted with the operator's replacement password instead.
+    """
+    home = Path(value.strip()).expanduser()
+    try:
+        return home.resolve()
+    except (OSError, ValueError):
+        return home
+
+
 def authenticate(base_url: str, home: Path, password: Optional[str]) -> str:
     """Log in, rotating the bootstrap credential when this home has never been used.
 
@@ -470,11 +496,7 @@ def main() -> int:
     parser.add_argument("--password", default = os.environ.get("SAC_PROBE_STUDIO_PASSWORD"))
     parser.add_argument(
         "--home",
-        default = (
-            os.environ.get("UNSLOTH_STUDIO_HOME")
-            or os.environ.get("STUDIO_HOME")
-            or str(Path.home() / ".unsloth" / "studio")
-        ),
+        default = default_studio_home(),
         help = "Studio home (where auth/ lives); follows UNSLOTH_STUDIO_HOME like Studio does",
     )
     parser.add_argument(
@@ -492,7 +514,7 @@ def main() -> int:
     base_url = f"http://127.0.0.1:{port}"
     print(f"Studio on {base_url}")
 
-    token = authenticate(base_url, Path(args.home), args.password)
+    token = authenticate(base_url, resolve_studio_home(args.home), args.password)
     print("authenticated")
 
     # Which llama-server Studio will run, in its own precedence: a folder

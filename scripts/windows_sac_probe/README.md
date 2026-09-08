@@ -188,8 +188,11 @@ directory and deleted immediately, so it never reaches the evidence zip.
 
 Running `prepare` again with the same label (after a failure, or to add
 `-AuditPolicy`) keeps the baseline the first pass captured, so `revert` still
-restores the machine as it was before the first pass. `collect` refuses a label
-that was never prepared rather than exporting unrelated events.
+restores the machine as it was before the first pass. Once `revert` has
+finished, that baseline is spent: a later `prepare` on the same label captures a
+new one, so a `revert` after it restores the machine as it is now rather than as
+it was before a run that has already been undone. `collect` refuses a label that
+was never prepared rather than exporting unrelated events.
 
 ### On a machine with no Unsloth on it
 

@@ -410,21 +410,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $since = [datetime]::Parse($env:AUDIT_START).ToUniversalTime()
-          $events = @()
-          try {
-            $events = @(Get-WinEvent -FilterHashtable @{
-              LogName = 'Microsoft-Windows-CodeIntegrity/Operational'; Id = 3076; StartTime = $since
-            } -ErrorAction Stop)
-          } catch {
-            # Only "nothing matched" is an empty window. Any other query failure
-            # used to become an empty array and read as "no runtime binary would
-            # be refused", which is the one conclusion this job must not reach
-            # by accident. The control's earlier query does not vouch for this one.
-            if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') {
-              Write-Host "::error::could not read the CodeIntegrity channel, so this verdict has no evidence behind it: $_"
-              exit 1
-            }
-          }
 
           # Scope to the extracted runtime. Everything else on a hosted runner
           # (the agent, the toolcache, our own control binary) is not ours to
@@ -439,7 +424,34 @@ jobs:
           $tail = if ($dir) {
             [Management.Automation.WildcardPattern]::Escape(($dir -replace '^[A-Za-z]:', ''))
           } else { $null }
-          $ours = @($events | Where-Object { $tail -and $_.Message -like "*$tail*" })
+
+          # Polled on the same bounded interval as the positive control, and for
+          # the same reason: 3076 delivery is asynchronous, the exercise step
+          # ends the moment llama-server exits, and a single query run before
+          # the record lands would report the shipped runtime as allowed. An
+          # allow is the one verdict here that must never be reached by timing.
+          $events = @()
+          $ours = @()
+          foreach ($attempt in 1..10) {
+            $events = @()
+            try {
+              $events = @(Get-WinEvent -FilterHashtable @{
+                LogName = 'Microsoft-Windows-CodeIntegrity/Operational'; Id = 3076; StartTime = $since
+              } -ErrorAction Stop)
+            } catch {
+              # Only "nothing matched" is an empty window. Any other query failure
+              # used to become an empty array and read as "no runtime binary would
+              # be refused", which is the one conclusion this job must not reach
+              # by accident. The control's earlier query does not vouch for this one.
+              if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') {
+                Write-Host "::error::could not read the CodeIntegrity channel, so this verdict has no evidence behind it: $_"
+                exit 1
+              }
+            }
+            $ours = @($events | Where-Object { $tail -and $_.Message -like "*$tail*" })
+            if ($ours.Count -gt 0) { break }
+            if ($attempt -lt 10) { Start-Sleep -Seconds 3 }
+          }
 
           Write-Host "3076 events in window: $($events.Count); naming the shipped runtime: $($ours.Count)"
           $rows = foreach ($e in $ours) {

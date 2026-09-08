@@ -1069,17 +1069,21 @@ def test_prepare_proves_the_audit_policy_actually_evaluates_loads():
     that loaded and evaluates nothing produces a window with no 3076 in it,
     which reads exactly like a clean allow. The CI job runs the same control."""
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
-    fn = ps1[ps1.index("function Test-AuditPolicyEvaluating") : ps1.index("function Invoke-Prepare")]
+    fn = ps1[
+        ps1.index("function Test-AuditPolicyEvaluating") : ps1.index("function Invoke-Prepare")
+    ]
     assert "-OutputType ConsoleApplication" in fn
     # An enforcing machine refuses the control outright: that 3077 is stronger
     # evidence of evaluation than the 3076 an audit-only machine produces.
     assert "$_.Id -eq 3076 -or $_.Id -eq 3077" in fn
     # Polled, not slept once, and never staged into the evidence.
     assert "foreach ($attempt in 1..10)" in fn
-    assert 'Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue' in fn
-    assert "$dir = Join-Path $WorkDir \".control-$Label\"" in fn
+    assert "Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue" in fn
+    assert '$dir = Join-Path $WorkDir ".control-$Label"' in fn
 
-    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    prepare = ps1[
+        ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
+    ]
     assert prepare.index("-not (Test-PolicyActive $NOISG_GUID)") < prepare.index(
         "$controlFired = Test-AuditPolicyEvaluating"
     ), "the control runs only once the policy is verified to be in the active set"
@@ -1092,3 +1096,85 @@ def test_prepare_proves_the_audit_policy_actually_evaluates_loads():
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
     assert "$true -ne $b.AuditPolicyControlFired" in collect
     assert "NULL result, not an allow" in collect
+
+
+def test_only_a_3076_or_3077_counts_as_a_verdict_for_the_null_result_warning():
+    """3033 and 3090-3092 are context. Keying the warning on the total scoped
+    count meant one scoped allow-and-origin record presented an unverified
+    window, holding no verdict at all, as an ordinary result."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    assert "$verdicts = $blocks + $audits" in collect
+    assert "if ($verdicts -eq 0 -and (Test-Path -LiteralPath $baselineForControl))" in collect
+    assert "if ($ours.Count -eq 0 -and (Test-Path -LiteralPath $baselineForControl))" not in collect
+
+
+def test_a_completed_revert_spends_its_baseline():
+    """revert leaves baseline.json behind, so a later prepare on the same label
+    reused the first run's snapshot and a second revert would write those stale
+    Defender values back over whatever the machine legitimately carries now."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    assert "RevertCompletedAt       = $null" in ps1
+    prepare = ps1[
+        ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
+    ]
+    assert "if ($previous -and -not $previous.RevertCompletedAt) {" in prepare
+    assert "$baseline = Save-Baseline $dir" in prepare
+
+    revert = ps1[ps1.index("function Invoke-Revert") :]
+    assert "-NotePropertyName RevertCompletedAt" in revert
+    # Past every failure check: a partial revert still needs its baseline.
+    assert revert.index("revert did not fully restore this machine") < revert.index(
+        "-NotePropertyName RevertCompletedAt"
+    )
+
+
+def test_the_app_control_verdict_polls_before_reporting_an_allow():
+    """3076 delivery is asynchronous - the positive control polls for exactly
+    that reason - and the exercise step ends the moment llama-server exits, so
+    one query could run before the record landed and report a clean allow."""
+    workflow = WORKFLOW.read_text(encoding = "utf-8")
+    verdict = workflow[workflow.index("      - name: Verdict\n        if: always()") :]
+    verdict = verdict[: verdict.index("      - name: Export the CodeIntegrity events")]
+    assert "foreach ($attempt in 1..10) {" in verdict
+    assert "if ($ours.Count -gt 0) { break }" in verdict
+    assert "Start-Sleep -Seconds 3" in verdict
+    # The scoping still happens inside the loop, or polling proves nothing.
+    assert verdict.index("foreach ($attempt in 1..10) {") < verdict.index(
+        '$_.Message -like "*$tail*"'
+    )
+
+
+def test_the_scenario_password_is_cleared_even_when_the_run_is_interrupted():
+    """Ctrl+C stops the pipeline without entering the normal path or the catch,
+    and the script runs in the operator's own session, so the secret stayed in
+    that console and was inherited by everything started from it afterwards."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
+    clear = "Remove-Item Env:\\SAC_PROBE_STUDIO_PASSWORD -ErrorAction SilentlyContinue"
+    assert run.count(clear) == 1
+    assert run.index("} finally {") < run.index(clear)
+
+
+def test_a_custom_studio_home_is_normalized_the_way_studio_normalizes_it(monkeypatch):
+    """UNSLOTH_STUDIO_HOME=~\\my-studio is supported (storage_roots.studio_root
+    calls expanduser().resolve()), but the raw string is a cwd-relative
+    directory named '~', so auth/.bootstrap_password was read from the wrong
+    place and a never-opened Studio logged in with the wrong password."""
+    s = _load_scenario()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "  ~/my-studio  ")
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    assert s.resolve_studio_home(s.default_studio_home()) == Path.home() / "my-studio"
+
+    # Whitespace alone is unset, exactly as Studio treats it.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "   ")
+    assert s.default_studio_home() == str(Path.home() / ".unsloth" / "studio")
+
+    # The PowerShell half resolves the same override the same way, or the venv
+    # is inventoried in one place and the event scoping matches no event at all.
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    assert "function Resolve-ConfiguredPath" in ps1
+    assert "function Get-StudioHomeOverride" in ps1
+    assert "$override = if ($env:UNSLOTH_STUDIO_HOME)" not in ps1
+    home = ps1[ps1.index("function Get-StudioHome {") : ps1.index("function Get-LlamaDir")]
+    assert "$override = Get-StudioHomeOverride" in home

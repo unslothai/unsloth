@@ -85,10 +85,37 @@ $NOISG_GUID = '{5283AC0F-FFF1-49AE-ADA1-8A933130CAD6}'
 $NOISG_DEST = "S:\efi\microsoft\boot\cipolicies\active\$NOISG_GUID.cip"
 $CI_LOG = 'Microsoft-Windows-CodeIntegrity/Operational'
 
+# A configured path the way Studio normalises one
+# (utils/paths/storage_roots.studio_root): trimmed, ~ expanded, made absolute.
+# The raw string is not usable: `UNSLOTH_STUDIO_HOME=~\my-studio` is a directory
+# literally named '~' under the current one to .NET, so the venv would be
+# inventoried in the wrong place and the event scoping, which matches the
+# configured path against the real path in each event message, would match
+# nothing and file every Unsloth event under 'other'.
+function Resolve-ConfiguredPath([string] $value) {
+    if (-not $value) { return $null }
+    $trimmed = $value.Trim()
+    if (-not $trimmed) { return $null }
+    $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+    if ($trimmed -eq '~') { $trimmed = $userHome }
+    elseif ($trimmed.StartsWith('~\') -or $trimmed.StartsWith('~/')) {
+        $trimmed = Join-Path $userHome $trimmed.Substring(2)
+    }
+    try { return [IO.Path]::GetFullPath($trimmed) } catch { return $trimmed }
+}
+
+# The configured Studio home, in Studio's precedence: UNSLOTH_STUDIO_HOME, then
+# the STUDIO_HOME alias, and a value that is only whitespace counts as unset.
+function Get-StudioHomeOverride {
+    $override = Resolve-ConfiguredPath $env:UNSLOTH_STUDIO_HOME
+    if (-not $override) { $override = Resolve-ConfiguredPath $env:STUDIO_HOME }
+    return $override
+}
+
 # Where Studio keeps its state, resolved the way Studio resolves it: the
 # UNSLOTH_STUDIO_HOME override (STUDIO_HOME alias), else the legacy home.
 function Get-StudioHome {
-    $override = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $env:STUDIO_HOME }
+    $override = Get-StudioHomeOverride
     if ($override) { return $override }
     return (Join-Path $env:USERPROFILE '.unsloth\studio')
 }
@@ -102,9 +129,11 @@ function Get-StudioHome {
 # and the inventory reads that when it is there. Inventorying the wrong tree
 # would omit exactly the files the events are about.
 function Get-LlamaDir {
-    if ($env:LLAMA_SERVER_PATH) { return (Split-Path -Parent $env:LLAMA_SERVER_PATH) }
-    if ($env:UNSLOTH_LLAMA_CPP_PATH) { return $env:UNSLOTH_LLAMA_CPP_PATH }
-    $override = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $env:STUDIO_HOME }
+    $binary = Resolve-ConfiguredPath $env:LLAMA_SERVER_PATH
+    if ($binary) { return (Split-Path -Parent $binary) }
+    $installDir = Resolve-ConfiguredPath $env:UNSLOTH_LLAMA_CPP_PATH
+    if ($installDir) { return $installDir }
+    $override = Get-StudioHomeOverride
     if ($override) { return (Join-Path $override 'llama.cpp') }
     return (Join-Path $env:USERPROFILE '.unsloth\llama.cpp')
 }
@@ -470,7 +499,7 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
         # llama.cpp dir (line 1886), so a custom home moves both. Hard coding the
         # legacy root left the custom-home trees out of StudioInstallRoots and
         # revert then never repaired their ACLs.
-        $override = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $env:STUDIO_HOME }
+        $override = Get-StudioHomeOverride
         $installRoots = @($unslothHome, $override, (Split-Path -Parent (Get-LlamaDir))) |
             Where-Object { $_ } | Select-Object -Unique
         $candidates = @(
@@ -562,6 +591,9 @@ function Save-Baseline([string] $dir) {
         # A policy with the NoISG GUID that was there before prepare: kept
         # aside and put back by revert rather than deleted as ours.
         AuditPolicyPreexisting  = $false
+        # Stamped by a revert that fully succeeded. prepare treats a baseline
+        # carrying it as spent and captures a new one.
+        RevertCompletedAt       = $null
     }
     $path = Join-Path $dir 'baseline.json'
     $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $path -Encoding UTF8
@@ -634,13 +666,27 @@ function Invoke-Prepare {
     $ROLLBACK_POLICY = Get-RollbackPolicyPath $dir
     Write-Section 'Baseline'
     $baselinePath = Join-Path $dir 'baseline.json'
+    $previous = $null
     if (Test-Path -LiteralPath $baselinePath) {
-        # A retry of this label. The machine already carries whatever the first
-        # pass changed, so snapshotting it again would record the raised
-        # settings, and our own policy, as the state revert should restore.
-        $baseline = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+        $previous = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+    }
+    if ($previous -and -not $previous.RevertCompletedAt) {
+        # A retry of this label whose changes are still on the machine. It
+        # already carries whatever the first pass changed, so snapshotting it
+        # again would record the raised settings, and our own policy, as the
+        # state revert should restore.
+        $baseline = $previous
         Write-Warning "reusing the baseline captured at $($baseline.CapturedAt) by an earlier prepare of this label; revert restores that state"
     } else {
+        # No baseline, or one whose revert completed: revert put the machine
+        # back and then left the file behind, so reusing it would hand the next
+        # revert a snapshot of how the machine looked before the FIRST run.
+        # Anything legitimately changed in between - a Defender preference, the
+        # CodeIntegrity channel - would be overwritten with those stale values,
+        # which for Defender means lowering protections nobody asked to lower.
+        if ($previous) {
+            Write-Host "the previous run of label '$Label' was reverted at $($previous.RevertCompletedAt); capturing a fresh baseline"
+        }
         $baseline = Save-Baseline $dir
     }
     Write-Host ("Smart App Control: {0} (registry state {1})" -f $baseline.Sac.Mode, $baseline.Sac.RegistryState)
@@ -936,7 +982,6 @@ function Invoke-Run {
         try {
             & python @scenarioArgs 2>&1 | Tee-Object -FilePath $log
             $code = $LASTEXITCODE
-            Remove-Item Env:\SAC_PROBE_STUDIO_PASSWORD -ErrorAction SilentlyContinue
             $scenarioStatus = [pscustomobject]@{
                 Ran      = $true
                 ExitCode = $code
@@ -944,10 +989,16 @@ function Invoke-Run {
             }
             Write-Host "scenario exit code: $code"
         } catch {
-            Remove-Item Env:\SAC_PROBE_STUDIO_PASSWORD -ErrorAction SilentlyContinue
             $scenarioStatus = [pscustomobject]@{ Ran = $true; ExitCode = $null; Reason = "$_" }
             Write-Warning "scenario failed: $_"
         } finally {
+            # In the finally, not on the two ordinary paths. Ctrl+C stops the
+            # pipeline without entering either of them, and a finally block runs
+            # even then (about_Try_Catch_Finally). A script runs inside the
+            # operator's own elevated session, so a variable left behind stays
+            # in that console and is inherited by everything started from it
+            # afterwards; the point of the separate name is that it does not.
+            Remove-Item Env:\SAC_PROBE_STUDIO_PASSWORD -ErrorAction SilentlyContinue
             $ErrorActionPreference = $prev
         }
     }
@@ -1144,14 +1195,19 @@ function Invoke-Collect {
     # loads. prepare throws when its control did not fire, so the case left here
     # is the one where no control could be built (PowerShell 7); saying nothing
     # would let that run be read as a clean result.
+    # Keyed on the absence of a 3076/3077 verdict, not on the scoped event
+    # count. 3033, 3090, 3091, 3092 and 3099 are context: a single scoped
+    # allow-and-origin record made $ours non-empty and skipped this warning for
+    # exactly the window it exists for, one holding no verdict at all.
+    $verdicts = $blocks + $audits
     $baselineForControl = Join-Path $dir 'baseline.json'
-    if ($ours.Count -eq 0 -and (Test-Path -LiteralPath $baselineForControl)) {
+    if ($verdicts -eq 0 -and (Test-Path -LiteralPath $baselineForControl)) {
         $b = Get-Content -LiteralPath $baselineForControl -Raw | ConvertFrom-Json
         if ($b.AuditPolicyApplied -and $true -ne $b.AuditPolicyControlFired) {
-            $collectionProblems += 'no positive control confirmed the audit policy was evaluating loads, so an empty event window here is a NULL result, not an allow'
-            Write-Warning 'No Unsloth path raised a code integrity event, but no positive control confirmed the audit policy was evaluating loads on this machine. Do NOT report this cell as "not blocked".'
+            $collectionProblems += 'no positive control confirmed the audit policy was evaluating loads, so a window with no 3076 or 3077 here is a NULL result, not an allow'
+            Write-Warning 'No Unsloth path raised a 3076 or 3077, but no positive control confirmed the audit policy was evaluating loads on this machine. Do NOT report this cell as "not blocked".'
         } elseif ($b.AuditPolicyApplied) {
-            Write-Host 'no Unsloth path raised an event, and the positive control confirmed the policy was evaluating loads'
+            Write-Host 'no Unsloth path raised a 3076 or 3077, and the positive control confirmed the policy was evaluating loads'
         }
     }
 
@@ -1455,7 +1511,7 @@ function Invoke-Revert {
     # come into being during this run, and it must resolve under a root the
     # environment designates right now.
     $user = "$env:USERDOMAIN\$env:USERNAME"
-    $override = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $env:STUDIO_HOME }
+    $override = Get-StudioHomeOverride
     $allowedRoots = @(
         $env:USERPROFILE, $override, (Get-StudioHome),
         (Get-LlamaDir), (Split-Path -Parent (Get-LlamaDir))
@@ -1520,6 +1576,13 @@ function Invoke-Revert {
         }
         throw "revert did not fully restore this machine: $restoreFailures Defender preference(s), $aclFailures Studio tree ACL repair(s), $(if ($null -ne $ciRestoreError) { 'the CodeIntegrity log settings' } else { 'no log settings' })$(if ($script:EfiStillMounted) { ' and the EFI mount' }) still differ from the baseline. See the warnings above."
     }
+    # Only here, past every failure check: a revert that left something raised
+    # still needs its baseline, and a rerun must find it unspent. Marked rather
+    # than deleted so the record of what the machine looked like stays with the
+    # rest of the run's evidence.
+    $baseline | Add-Member -NotePropertyName RevertCompletedAt `
+        -NotePropertyValue ((Get-Date).ToString('o')) -Force
+    $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
     Write-Host 'revert complete. Smart App Control itself was never changed by this script.'
 }
 
