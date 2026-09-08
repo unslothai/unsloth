@@ -28629,7 +28629,6 @@ class LlamaCppBackend:
         top_k: int = 20,
         min_p: float = 0.01,
         max_tokens: Optional[int] = None,
-        admission_output_allowance: Optional[int] = None,
         repetition_penalty: float = 1.0,
         presence_penalty: float = 0.0,
         frequency_penalty: float = 0.0,
@@ -28650,6 +28649,12 @@ class LlamaCppBackend:
         thread_id: Optional[str] = None,
         tools_withheld: bool = False,
         _allow_respawn_retry: bool = True,
+        # Appended, never inserted: no bare `*` here either, so a parameter placed among
+        # the existing ones would rebind a positional caller's arguments silently.
+        #
+        # What KV admission reserved for this request's output. Applied to the wire cap
+        # only; `max_tokens` keeps the caller's own figure.
+        admission_output_allowance: Optional[int] = None,
     ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -29041,7 +29046,6 @@ class LlamaCppBackend:
         top_k: int = 20,
         min_p: float = 0.01,
         max_tokens: Optional[int] = None,
-        admission_output_allowance: Optional[int] = None,
         repetition_penalty: float = 1.0,
         presence_penalty: float = 0.0,
         frequency_penalty: float = 0.0,
@@ -29082,6 +29086,9 @@ class LlamaCppBackend:
         # the cap sent tracks the same conversation the charge was just taken on; None
         # leaves the bound in force alone.
         on_conversation_grew: Optional[Callable[[list], Optional[int]]] = None,
+        # What KV admission reserved for this run's output, applied to the wire cap of
+        # every request the loop sends. Appended for the same reason as the hook.
+        admission_output_allowance: Optional[int] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.

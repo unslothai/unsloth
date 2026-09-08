@@ -224,10 +224,11 @@ class TestOldCallers:
         parameter = signature.parameters["on_conversation_grew"]
         assert parameter.default is None, "the hook must be optional for existing callers"
 
-    def test_the_hook_was_appended_rather_than_inserted(self):
-        """No bare ``*`` in this signature, so every parameter is positional-or-keyword and
-        inserting one silently rebinds the arguments after it for positional callers, with
-        no exception to report it."""
+    def test_admission_parameters_were_appended_rather_than_inserted(self):
+        """No bare ``*`` in these signatures, so every parameter is positional-or-keyword
+        and inserting one silently rebinds the arguments after it for positional callers,
+        with no exception to report it. Both admission parameters therefore go at the end,
+        newest last, and the hook keeps the position it was appended at."""
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -235,9 +236,14 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
+        assert names[-2:] == [
+            "on_conversation_grew",
+            "admission_output_allowance",
+        ], f"a parameter was inserted rather than appended; signature ends {names[-4:]}"
+        plain = list(inspect.signature(LlamaCppBackend.generate_chat_completion).parameters)
         assert (
-            names[-1] == "on_conversation_grew"
-        ), f"the hook must be last; signature ends {names[-3:]}"
+            plain[-1] == "admission_output_allowance"
+        ), f"a parameter was inserted rather than appended; signature ends {plain[-3:]}"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         assert DEFAULT_RECOST_WAIT_TIMEOUT_S > 0
