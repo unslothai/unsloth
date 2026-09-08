@@ -822,3 +822,38 @@ def test_the_readme_clones_a_durable_ref():
     assert "--branch windows-sac-probe" not in body
     assert "git clone --depth 1 https://github.com/unslothai/unsloth" in body
     assert "-SendSamples" in body
+
+
+def test_the_app_control_audit_keeps_its_positive_control():
+    """No 3076 events must never be reportable as a pass on its own.
+
+    A signature-only policy that failed to load produces exactly the same empty
+    event set as a bundle Windows is happy with, so the job builds an unsigned
+    binary, runs it, and requires that it be flagged. The verdict step is gated
+    on that control having fired, which is the whole reason the result means
+    anything; a change that drops either half turns the job into a green tick
+    that proves nothing.
+    """
+    import yaml
+
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    parsed = yaml.safe_load(body)
+    job = parsed["jobs"]["code-integrity"]
+    steps = {s.get("name", ""): s for s in job["steps"]}
+
+    control = next(n for n in steps if n.startswith("Positive control"))
+    assert "control_fired=true" in steps[control]["run"]
+    assert "control_fired=false" in steps[control]["run"]
+
+    # The gate itself. Without it a runner where the policy never loaded reports
+    # a clean audit.
+    assert steps["Verdict"]["if"] == "always() && steps.control.outputs.control_fired == 'true'"
+
+    # Applying a policy is not the same as it being active, and the job must
+    # refuse rather than assume.
+    apply_step = next(steps[n] for n in steps if n.startswith("Apply the policy"))
+    assert "not in the active policy set after refresh" in apply_step["run"]
+
+    # Audit, never enforcement: an enforcing policy could brick the runner.
+    assert "SmartAppControlAuditNoISG" in body
+    assert "--remove-policy" in body

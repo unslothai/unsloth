@@ -222,3 +222,212 @@ jobs:
             exit 1
           }
           Write-Host "::warning::$unsigned unsigned PE file(s) in the published Windows bundles. See the job summary."
+
+  # ── Signature-only App Control audit ──────────────────────────────────────
+  # The job above reads certificate tables. This one asks Windows itself, by
+  # applying the Smart App Control ruleset with the cloud reputation (ISG)
+  # checks removed and letting the loader evaluate our binaries.
+  #
+  # SmartAppControlAuditNoISG evaluates signatures ONLY, which is why it works
+  # on a runner where Smart App Control is off and can never be turned on
+  # (enabling SAC is one-way and needs a clean OEM install). That is exactly
+  # the half of the SAC verdict signing changes, so it is the half CI can own.
+  # It is an AUDIT policy: it logs CodeIntegrity 3076 for what it would refuse
+  # and blocks nothing, so it cannot brick the runner.
+  #
+  # What this job still cannot prove: the reputation half. A freshly published
+  # hash has no ISG reputation whether or not it is signed, and no CI runner
+  # can exercise that. Real enforcement (3077) needs SAC genuinely on.
+  code-integrity:
+    name: App Control audit (signature-only)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require a runner that can host a policy
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # CiTool is inbox from Windows 11 22H2 / Server 2025. Without it the
+          # policy cannot be applied, and a job that then found no events would
+          # report a clean audit it never ran.
+          $citool = Get-Command CiTool.exe -ErrorAction SilentlyContinue
+          if (-not $citool) { throw 'CiTool.exe is absent; this runner cannot host an App Control policy' }
+          Write-Host "CiTool: $($citool.Source)"
+          Write-Host "OS: $((Get-CimInstance Win32_OperatingSystem).Caption) $([Environment]::OSVersion.Version)"
+
+          # 3076 lands in this log. If it is disabled the audit sees nothing.
+          $log = 'Microsoft-Windows-CodeIntegrity/Operational'
+          & wevtutil.exe sl $log /e:true /ms:67108864
+          $cfg = (& wevtutil.exe gl $log) -join "`n"
+          if ($cfg -notmatch 'enabled:\s*true') { throw "$log is still disabled; the audit cannot collect evidence" }
+          Write-Host "$log enabled"
+
+      - name: Fetch the Smart App Control audit policies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path policy | Out-Null
+          # Published by Microsoft as the sample SAC policies. Downloaded rather
+          # than vendored: it is Microsoft's ruleset, not ours to fork.
+          Invoke-WebRequest -Uri 'https://aka.ms/sacauditpolicies' -OutFile policy/sac.zip -UseBasicParsing
+          Expand-Archive -LiteralPath policy/sac.zip -DestinationPath policy/extracted -Force
+          $noisg = Get-ChildItem -LiteralPath policy/extracted -Recurse -File |
+            Where-Object { $_.Name -like 'SmartAppControlAuditNoISG*' } | Select-Object -First 1
+          if (-not $noisg) {
+            Write-Host 'archive contents:'
+            Get-ChildItem -LiteralPath policy/extracted -Recurse -File | ForEach-Object { Write-Host "  $($_.FullName)" }
+            throw 'SmartAppControlAuditNoISG was not in the downloaded archive'
+          }
+          Write-Host "policy: $($noisg.FullName)"
+          Add-Content -Path $env:GITHUB_ENV -Value "SAC_POLICY=$($noisg.FullName)"
+
+      - name: Apply the policy and verify it is active
+        id: apply
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = & CiTool.exe --update-policy "$env:SAC_POLICY" 2>&1 | Out-String
+          Write-Host $out
+          & CiTool.exe --refresh 2>&1 | Out-String | Write-Host
+
+          # Listing a policy is not the same as it being active. A job that
+          # skipped this and then found no 3076 events would report an allow
+          # verdict for a policy that never loaded.
+          $policies = (& CiTool.exe -lp -json 2>$null | ConvertFrom-Json).Policies
+          $sac = @($policies | Where-Object { $_.FriendlyName -like '*Smart App Control*' -or $_.FriendlyName -like '*SmartAppControl*' })
+          foreach ($p in $policies) { Write-Host ("  policy {0} enforced={1}" -f $p.FriendlyName, $p.IsEnforced) }
+          if ($sac.Count -eq 0) { throw 'the Smart App Control audit policy is not in the active policy set after refresh' }
+          Add-Content -Path $env:GITHUB_ENV -Value "SAC_POLICY_ID=$($sac[0].PolicyID)"
+          Add-Content -Path $env:GITHUB_ENV -Value "AUDIT_START=$((Get-Date).ToUniversalTime().ToString('o'))"
+
+      - name: Positive control -- an unsigned binary must raise 3076
+        id: control
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Without this the whole job is unfalsifiable: "no 3076 events" reads
+          # identically whether our binaries are fine or the policy is not
+          # evaluating anything. An unsigned executable we build here MUST be
+          # flagged; if it is not, the result below says nothing.
+          # One line, not a here-string: a PowerShell here-string terminator has
+          # to start at column 0, which would break out of this YAML block.
+          $src = 'public class UnsignedControl { public static void Main() { System.Console.WriteLine("control"); } }'
+          $exe = Join-Path $PWD 'unsigned-control.exe'
+          Add-Type -TypeDefinition $src -OutputAssembly $exe -OutputType ConsoleApplication
+          if (-not (Test-Path $exe)) { throw 'could not build the unsigned control binary' }
+          & $exe 2>&1 | Write-Host
+          Start-Sleep -Seconds 5
+
+          $since = [datetime]::Parse($env:AUDIT_START).ToUniversalTime()
+          $events = @(Get-WinEvent -FilterHashtable @{
+            LogName = 'Microsoft-Windows-CodeIntegrity/Operational'; Id = 3076; StartTime = $since
+          } -ErrorAction SilentlyContinue)
+          $fired = @($events | Where-Object { $_.Message -like '*unsigned-control*' })
+          Write-Host "3076 events since policy apply: $($events.Count); naming the control: $($fired.Count)"
+          if ($fired.Count -eq 0) {
+            Write-Host '::error::the unsigned positive control raised no 3076 event, so this policy is not evaluating loads here; the bundle result below would be meaningless'
+            "control_fired=false" | Add-Content -Path $env:GITHUB_OUTPUT
+            exit 1
+          }
+          "control_fired=true" | Add-Content -Path $env:GITHUB_OUTPUT
+          Write-Host 'positive control fired; the policy is evaluating loads on this runner'
+
+      - name: Load the shipped runtime under the policy
+        id: exercise
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.release_tag || 'latest' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = if ($env:RELEASE_TAG -eq 'latest') {
+            gh release view --repo unslothai/llama.cpp --json tagName -q .tagName
+          } else { $env:RELEASE_TAG }
+          Write-Host "exercising release $tag"
+
+          # The CPU x64 bundle: smallest that still carries the whole DLL graph
+          # this is about (llama, ggml, mtmd and the common/impl DLLs). The
+          # GPU profiles differ only by backend DLLs, which the inventory job
+          # covers for every profile.
+          $asset = @(gh release view $tag --repo unslothai/llama.cpp --json assets -q '.assets[].name' |
+            Where-Object { $_ -like '*windows-x64-cpu*' -and $_ -like '*.zip' })[0]
+          if (-not $asset) { throw "no windows-x64-cpu asset on $tag" }
+          gh release download $tag --repo unslothai/llama.cpp --pattern $asset --dir . --clobber
+          Expand-Archive -LiteralPath $asset -DestinationPath runtime -Force
+
+          $server = Get-ChildItem -LiteralPath runtime -Recurse -Filter 'llama-server.exe' | Select-Object -First 1
+          if (-not $server) { throw 'llama-server.exe not found in the bundle' }
+          Add-Content -Path $env:GITHUB_ENV -Value "RUNTIME_DIR=$($server.Directory.FullName)"
+
+          # --version maps the process and every DLL it links, which is what the
+          # policy evaluates. A refusal here is the failure this job exists for,
+          # so its exit code is reported, not thrown on: the verdict step reads
+          # the event log, which is the authoritative record either way.
+          & $server.FullName --version 2>&1 | Write-Host
+          Write-Host "llama-server --version exited $LASTEXITCODE"
+
+      - name: Verdict
+        if: always() && steps.control.outputs.control_fired == 'true'
+        shell: pwsh
+        env:
+          ENFORCE: ${{ github.event.inputs.enforce || 'true' }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $since = [datetime]::Parse($env:AUDIT_START).ToUniversalTime()
+          $events = @(Get-WinEvent -FilterHashtable @{
+            LogName = 'Microsoft-Windows-CodeIntegrity/Operational'; Id = 3076; StartTime = $since
+          } -ErrorAction SilentlyContinue)
+
+          # Scope to the extracted runtime. Everything else on a hosted runner
+          # (the agent, the toolcache, our own control binary) is not ours to
+          # answer for, and counting it would make this permanently red.
+          $dir = $env:RUNTIME_DIR
+          $ours = @($events | Where-Object { $dir -and $_.Message -like "*$dir*" })
+
+          Write-Host "3076 events in window: $($events.Count); naming the shipped runtime: $($ours.Count)"
+          $rows = foreach ($e in $ours) {
+            $file = if ($e.Message -match '(?m)^\s*File Name:\s*(.+)$') { $Matches[1].Trim() } else { '(unparsed)' }
+            [pscustomobject]@{ Time = $e.TimeCreated; File = $file }
+          }
+          if ($rows) { $rows | Format-Table -AutoSize | Out-String | Write-Host }
+
+          $summary = "## App Control audit (signature-only)`n`n" +
+            "Policy: SmartAppControlAuditNoISG (signatures only, no cloud reputation)`n`n" +
+            "3076 events naming the shipped runtime: **$($ours.Count)**`n"
+          $summary | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+          if ($ours.Count -eq 0) {
+            Write-Host 'No binary in the shipped runtime would be refused on signature grounds.'
+            exit 0
+          }
+          if ($env:ENFORCE -eq 'true') {
+            Write-Host "::error::$($ours.Count) file(s) in the shipped runtime would be blocked by the signature-only policy"
+            exit 1
+          }
+          Write-Host "::warning::$($ours.Count) file(s) in the shipped runtime would be blocked by the signature-only policy"
+
+      - name: Remove the policy
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Hosted runners are disposable, but a self-hosted runner picking this
+          # workflow up would otherwise keep the policy for every later job.
+          if ($env:SAC_POLICY_ID) {
+            & CiTool.exe --remove-policy $env:SAC_POLICY_ID 2>&1 | Out-String | Write-Host
+            & CiTool.exe --refresh 2>&1 | Out-String | Write-Host
+          }
+          & CiTool.exe -lp 2>&1 | Select-String -Pattern 'Friendly Name' | Write-Host
+
+      - name: Upload code integrity events
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-integrity-events
+          path: |
+            unsigned-control.exe
+          if-no-files-found: ignore
