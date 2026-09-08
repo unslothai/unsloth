@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An image-only user turn must not carry an empty text block to Anthropic.
-
-The Messages API 400s with "messages: text content blocks must be
-non-empty", so `{"type":"text","text":""}` has to be dropped before the
-wire the way the Gemini translator already drops it.
-"""
+"""An image-only user turn must not carry an empty text block to Anthropic."""
 
 import asyncio
 import json
@@ -123,10 +118,7 @@ def test_text_only_empty_block_drops_the_whole_message(monkeypatch):
     assert captured["body"]["messages"] == [{"role": "user", "content": "but THIS one is fine"}]
 
 
-# Anthropic rejects a whitespace-only text block as well as an empty one, with
-# "text content blocks must contain non-whitespace text". Studio reaches that shape
-# on its own: collectTextParts joins with "\n", so a turn carrying two empty caption
-# parts serialises to "\n" rather than "".
+# collectTextParts joins with "\n", so two empty caption parts serialise to "\n".
 
 
 def test_whitespace_only_caption_dropped_from_image_turn(monkeypatch):
@@ -165,9 +157,7 @@ def test_caption_keeps_its_own_surrounding_whitespace(monkeypatch):
 
 
 def test_empty_string_content_message_dropped(monkeypatch):
-    # The string shape of the same defect. The runtime substitutes an empty text
-    # part for a stored message with no content, which serialises to "" -- and
-    # Anthropic reads a plain string as one text block.
+    # Anthropic reads a plain string as one text block, so "" 400s the same way.
     captured = _capture(
         monkeypatch,
         [
@@ -180,10 +170,7 @@ def test_empty_string_content_message_dropped(monkeypatch):
 
 
 def test_dropping_the_last_message_moves_the_cache_breakpoint(monkeypatch):
-    # With caching on, the tail breakpoint lands on the LAST surviving message. If
-    # the empty turn survived, cache_control would sit on an empty text block, which
-    # Anthropic rejects separately ("cache_control cannot be set for empty text
-    # blocks").
+    # cache_control on an empty text block is rejected separately.
     captured = _capture(
         monkeypatch,
         [
@@ -220,8 +207,7 @@ def test_cached_image_only_turn_marks_the_image(monkeypatch):
 
 
 def test_missing_text_key_does_not_raise(monkeypatch):
-    # `part["text"]` used to KeyError here, taking the whole request down rather
-    # than dropping one unusable block.
+    # `part["text"]` used to KeyError, taking down the whole request.
     captured = _capture(
         monkeypatch,
         [

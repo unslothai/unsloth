@@ -183,17 +183,7 @@ _GEMINI3_PRO = re.compile(r"^gemini-3(?:\.\d+)?-pro")
 
 
 def _anthropic_text_is_sendable(value: Any) -> bool:
-    """Whether a text block's ``text`` is something Anthropic will accept.
-
-    ``TextBlockParam.text`` is ``minLength: 1``, and the API additionally rejects a
-    block holding nothing but whitespace ("text content blocks must contain
-    non-whitespace text"). Truthiness alone is not enough: the composer joins its
-    text parts with "\\n", so a turn carrying two empty caption parts arrives here
-    as "\\n", which is truthy and still 400s.
-
-    Non-string values are left to the API to judge rather than silently dropped,
-    so this only ever removes a block that could not have been sent anyway.
-    """
+    """Anthropic rejects empty and whitespace-only text; the composer joins with "\\n"."""
     if isinstance(value, str):
         return bool(value.strip())
     return bool(value)
@@ -2281,13 +2271,7 @@ class ExternalProviderClient:
                     if _blocks:
                         filtered.append({"role": "assistant", "content": _blocks})
                     continue
-                # Same rule as the list form above, for the string shape. A stored
-                # turn whose content was empty reaches us as content:"" (see the
-                # runtime's placeholder), and Anthropic reads a plain string as one
-                # text block -- so forwarding it 400s exactly like the empty block
-                # did. With prompt caching on it is worse: the tail breakpoint wraps
-                # the empty string into a text block carrying cache_control, which
-                # the API rejects a second time.
+                # A plain string is one text block, so an empty one 400s too.
                 if isinstance(content, str) and not content.strip():
                     continue
                 filtered.append(msg)

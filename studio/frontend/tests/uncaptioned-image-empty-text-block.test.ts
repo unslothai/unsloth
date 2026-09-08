@@ -8,8 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-// chat-adapter.ts drags in the stores, so lift the source like
-// tests/search-images.test.ts. Only the user branch runs; assistant is a stub.
+// chat-adapter.ts drags in the stores, so lift the source; assistant is a stub.
 const adapterSource = readFileSync(
   fileURLToPath(
     new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
@@ -76,8 +75,7 @@ test("a captioned image still leads with its text block", () => {
 });
 
 test("a whitespace-only caption sends no text block either", () => {
-  // Two empty text parts join to "\n", which is truthy. Anthropic rejects that
-  // block as well, with "text content blocks must contain non-whitespace text".
+  // Two empty text parts join to "\n", which is truthy but still rejected.
   const [serialized] = toOpenAIMessages({
     role: "user",
     content: [
@@ -108,8 +106,6 @@ test("a real caption keeps its own surrounding whitespace", () => {
 });
 
 test("the serialised content is not the collected image array itself", () => {
-  // buildReplayContent returns a fresh array, so a consumer that mutates the
-  // message content cannot reach back into what was passed in.
   const images = [
     { type: "image_url" as const, image_url: { url: IMAGE_DATA_URL } },
   ];
