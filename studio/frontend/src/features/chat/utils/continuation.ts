@@ -854,6 +854,9 @@ export function createAutoContinueLeaseKeeper({
     threadId: string;
     /** Seen idle since the hold was taken, so the next run to start is this hold's own. */
     idle: boolean;
+    /** The key was free when the hold was taken, so a true reading of it is this hold's own
+     *  run and never somebody else's. Never reassigned, unlike `idle`. */
+    ownsTheKey: boolean;
     /** That run has started. Only an armed hold is ever released. */
     armed: boolean;
     /** That run has ended, per its own promise. Nothing running after it is that run. */
@@ -869,16 +872,26 @@ export function createAutoContinueLeaseKeeper({
   function observe(): void {
     const at = now();
     for (const [id, hold] of [...holds]) {
-      if (hold.settled && !hold.armed) {
+      if (hold.settled && !hold.armed && hold.ownsTheKey) {
         // Its own run is over and the stream never began: Stop during preflight. Discarded as
         // a failed preflight is, so the lease lapses on its own TTL and no `done` marker
         // claims a message that produced not one token.
         //
         // Ahead of the running check so nothing on the thread now can arm it, and only for an
-        // UNARMED hold: the key can carry a second owner (`scheduleGenerationRecovery` follows
-        // a durable run from outside the adapter), which says nothing about whether this
-        // hold's own run streamed. Dropping an armed hold there costs a continuation that did
-        // stream its marker, and the next tab pays for it again.
+        // UNARMED hold: the key can carry a second owner, which says nothing about whether
+        // this hold's own run streamed. Dropping an armed hold there costs a continuation
+        // that did stream its marker, and the next tab pays for it again.
+        //
+        // `ownsTheKey` is the other half of that. Unarmed means "never streamed" only if a
+        // true reading of the key would have belonged to this hold; when the key was ALREADY
+        // busy as the hold was taken, arming cannot happen at all, so a continuation that
+        // streamed the whole way through looks identical to one that was stopped. The bar
+        // reaches that state on its own: its `!isRunning` gate reads the selected branch,
+        // not `runningByThreadId`, so it fires while `scheduleGenerationRecovery` follows a
+        // durable run on the same key, and a continuation keeps the legacy stream rather than
+        // joining that run. Undecidable, so it is left alone and renewed, exactly as before
+        // this signal existed. Never guessed: a wrong `done` here is a continuation charged
+        // for twice.
         holds.delete(id);
         continue;
       }
@@ -917,6 +930,7 @@ export function createAutoContinueLeaseKeeper({
         threadId,
         // Claimed while the thread is between runs, the ordinary case: the bar only fires on a reply that has finished.
         idle: !signal.isRunning(threadId),
+        ownsTheKey: !signal.isRunning(threadId),
         armed: false,
         settled: false,
       });

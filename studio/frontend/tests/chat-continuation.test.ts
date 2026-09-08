@@ -1912,13 +1912,20 @@ test("the run that ends is the one the hold was taken for, not the round before 
   assert.equal(keeper.held(), 0);
 });
 
-test("a hold whose own run is over is not armed by what is on the thread now", async () => {
+test("a hold on a key that was already busy is left alone, not guessed at", async () => {
   // The keeper watches the whole store, so a hold taken while the thread already reads busy
-  // -- `scheduleGenerationRecovery` follows a durable run from outside the adapter, and holds
-  // its own owner on the same key -- has not seen the thread idle and so cannot arm on that
-  // run. If its own preflight is then stopped, the answer is already in: the run it was taken
-  // for produced nothing. Left where the running check reaches it first, it kept renewing the
-  // lease until the other owner cleared, and every other tab refused the message meanwhile.
+  // -- `scheduleGenerationRecovery` follows a durable run from outside the adapter and holds
+  // its own owner on the same key -- has not seen the thread idle and can never arm: the flag
+  // was somebody else's before the hold existed. Unarmed therefore stops meaning "streamed
+  // nothing" here, and the two outcomes are indistinguishable from the flag alone.
+  //
+  // The bar reaches this on its own. Its `!isRunning` gate reads the SELECTED BRANCH, not
+  // `runningByThreadId`, so switching to a truncated sibling while a durable run is followed
+  // on the same thread fires the continuation with the key already true, and a continuation
+  // keeps the legacy stream instead of joining that run.
+  //
+  // So the hold is kept and renewed, exactly as it was before this signal existed. Discarding
+  // it would hand a continuation that may well have streamed to the next tab to pay for again.
   const { storage } = storageFake();
   const tab = createAutoContinueTab({ storage, locks: null });
   const otherTab = createAutoContinueTab({ storage, locks: null });
@@ -1933,10 +1940,8 @@ test("a hold whose own run is over is not armed by what is on the thread now", a
     renew: (messageId: string, holder: string, now: number) => {
       pending.push(tab.renew(messageId, holder, { now }));
     },
-    release: () => {
-      assert.fail(
-        "a run that streamed nothing has continued nothing to record",
-      );
+    release: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.release(messageId, holder, { now }));
     },
     now: () => clock,
   });
@@ -1945,23 +1950,74 @@ test("a hold whose own run is over is not armed by what is on the thread now", a
   keeper.hold("m1", "thread-A");
   keeper.settleOn("m1", "thread-A", issued.issued);
 
-  // The user stops the preflight while the other owner is still going.
+  // Its own run ends while the other owner is still going. Which of the two ways it ended is
+  // not knowable from the flag, so nothing is concluded.
   issued.settle();
-  assert.equal(keeper.held(), 0, "the hold outlived the run it was taken for");
+  assert.equal(keeper.held(), 1, "an undecidable hold was dropped anyway");
 
-  // The other owner finishing reaches nothing.
-  running.delete("thread-A");
-  runs.change();
-  await Promise.all(pending);
-
-  const lapsed = clock + AUTO_CONTINUE_LEASE_TTL_MS + 1;
-  clock = lapsed;
-  keeper.tick();
+  for (let tick = 1; tick <= 12; tick += 1) {
+    clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
   await Promise.all(pending);
   assert.equal(
-    await otherTab.claim("m1", { now: lapsed }),
-    "started",
-    "nothing renews it, so the lease lapses and the message comes back",
+    await otherTab.claim("m1", { now: clock }),
+    "held-elsewhere",
+    "a tab that may have continued this message does not hand it back",
+  );
+});
+
+test("a continuation that streamed under a second owner keeps its marker", async () => {
+  // The regression the guard above exists for. The key is busy when the hold is taken, so the
+  // hold never arms; its own run then streams the whole way through and settles while the
+  // second owner still holds the key. Dropped there, the message reads as never continued:
+  // the lease lapses on its TTL and another tab pays for the same continuation again, with
+  // this tab still open and perfectly healthy.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+  // A durable run followed from storage, holding the key before the continuation begins.
+  const running = new Set<string>(["thread-A"]);
+  const runs = runSignalFake(running);
+  const issued = issuedRunFake();
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  keeper.hold("m1", "thread-A");
+  keeper.settleOn("m1", "thread-A", issued.issued);
+
+  // The continuation streams to the end. The key never reads false, because the other owner
+  // is still on it, so nothing about this run ever reaches the flag.
+  runs.change();
+  for (let tick = 1; tick <= 3; tick += 1) {
+    clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
+  issued.settle();
+  await Promise.all(pending);
+
+  // The tab stays open and keeps renewing, so the message it just continued is still its own.
+  for (let tick = 4; tick <= 16; tick += 1) {
+    clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
+  await Promise.all(pending);
+  assert.equal(
+    await otherTab.claim("m1", { now: clock }),
+    "held-elsewhere",
+    "a second tab was offered a continuation this tab had already streamed",
   );
 });
 
