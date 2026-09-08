@@ -20287,8 +20287,13 @@ async def _proxy_to_external_provider(
     # 1.0) because the local path expects numbers, but the external-provider path treats
     # "field omitted from JSON" as "use provider default" so callers sending only
     # model/messages don't silently get different sampling than before this PR. Pydantic's
-    # `model_fields_set` tracks explicit-vs-default per request. Read before
-    # `_fill_recommended_sampling_openai`, whose setattr would mark every field explicit.
+    # `model_fields_set` tracks explicit-vs-default per request, so these three reads have
+    # to happen before ANY write to `payload`: a `setattr` adds the name to
+    # `model_fields_set`, turning an omission into an explicit request for the default.
+    # `_fill_recommended_sampling_openai` is the one helper that does that, and today it
+    # cannot reach this: the external branch returns long before its call site on the local
+    # path. Nothing enforces that ordering except this comment and the runtime coverage in
+    # tests/test_external_provider_sampling_over_the_wire.py.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
     _min_p_explicit = payload.min_p if "min_p" in payload.model_fields_set else None
     _repetition_penalty_explicit = (

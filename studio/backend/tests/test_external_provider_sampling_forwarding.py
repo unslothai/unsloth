@@ -3,9 +3,10 @@
 
 """Min P / Repetition Penalty / Top K must reach a self-hosted OpenAI-compatible server.
 
-The Chat Settings panel offers all three on vLLM, llama.cpp, OpenRouter and custom
-connections and persists them per model and per thread, but the outbound body carried
-none of them: ``stream_chat_completion`` built ``temperature`` / ``top_p`` /
+The Chat Settings panel offers all three on vLLM, llama.cpp and OpenRouter connections
+(and, before this PR narrowed them to the OpenAI-compatible baseline, on Ollama and custom
+ones too) and persists them per model and per thread, but the outbound body carried none
+of them: ``stream_chat_completion`` built ``temperature`` / ``top_p`` /
 ``presence_penalty`` / ``max_tokens`` and dropped the rest, so moving either slider
 changed nothing.
 
