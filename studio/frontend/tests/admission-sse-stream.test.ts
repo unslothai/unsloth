@@ -108,7 +108,7 @@ test("an admission block is not swallowed by the empty-block fast path", async (
 });
 
 test("the content still arrives alongside the signals", async () => {
-  // The signals must be additive: teaching the reader about comments must not cost a token.
+  // The signals must be additive: reading comments must not cost a token.
   const chunks = await collect([": admission-wait\n\n", CONTENT, DONE]);
   const text = chunks
     .flatMap((c) => (c.choices as { delta?: { content?: string } }[]) ?? [])

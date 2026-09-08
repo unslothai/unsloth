@@ -1983,7 +1983,7 @@ async def stream_with_studio_tools(
             )
             outcome: dict[str, Any] = {}
             # Unbounded on purpose: the pump must never block on a consumer that has not
-            # reached this call yet, or two overlapping tools deadlock on each other.
+            # reached this call yet, or two overlapping tools deadlock.
             events: "asyncio.Queue[Any]" = asyncio.Queue()
             pump = asyncio.create_task(
                 _pump_tool_stream(tool_stream, outcome, events, cancel_event)

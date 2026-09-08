@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seven ways the ledger and the wait drifted from the cache between a pause and its resume.
-
-* A granted resume was DECODING before it had a slot, so a sweep could choose it, count
-  its reservation as freed and set a signal the admission wait never read. It is RESUMING
-  now: it holds its room and is not a victim until it decodes.
-* A refused resume still ran `on_resumed`, so a PAUSED holder became a DECODING one with
-  its whole charge for the rest of a turn that was ending. Only a resume that happened does.
-* The plain (no keepalive) wait starved a durable run's lease: renewed once on the pause,
-  never again, while the wait may last hours. `_await_resume` yields a keepalive every
-  two seconds and the run loop renews on it.
-* Resume tickets are ordered by slot and were unordered by room: a later, smaller resume
-  fitted where an earlier one did not and overtook it. The tickets ahead reserve their
-  room too.
-* The raw holders never reported tokens, so they stayed unmeasured and were counted twice
-  once `/slots` saw them. Their first data line marks them measured.
-* A partial idle-slot erase told every parked holder its cells were gone. Only an erase
-  of every idle slot does.
-* The disarm's reclaim, now on a worker, wrote `old - freed` over residency samples newer
-  than its own. It re-reads after the erases.
-"""
+"""Seven ways the ledger and the wait drifted from the cache between a pause and its resume."""
 
 import asyncio
 import inspect
@@ -225,9 +206,7 @@ async def _lease(
 class TestResumeTicketsKeepTheirOrderForRoomToo:
     @pytest.mark.asyncio
     async def test_a_later_smaller_resume_does_not_overtake_an_earlier_one(self):
-        """60 of 100 committed; the first resume wants 70, the second 40. The second used
-        to be admitted; now it waits behind the first, and the first gets in when the
-        holder leaves."""
+        """60 of 100 committed; the first resume wants 70, the second 40."""
         queue = LlamaAdmissionQueue("k")
         holder = await _lease(queue, tokens = 60)
         started = time.monotonic()

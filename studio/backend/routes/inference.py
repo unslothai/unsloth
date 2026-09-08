@@ -1814,15 +1814,11 @@ def _openai_llama_admission_raw_total(llama_backend) -> Optional[int]:
 def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
     """KV tokens the running llama-server actually allocated, or None if unknown.
 
-    ``_kv_cache_context_total`` is the aggregate, and is preferred where the backend
-    has it. ``context_length`` is NOT that once the server has been read back:
-    ``_reconcile_effective_ctx_with_server`` adopts the PER-SLOT ``n_ctx`` from
-    ``default_generation_settings`` into it, and computes the total alongside as
-    ``n_ctx * slots`` (slots being 1 only under ``--kv-unified``). Unsloth appends
-    that flag only when ``n_parallel > 1`` and the binary supports it, so a build
-    without it, or a user ``--no-kv-unified``, gives N private caches while
-    ``context_length`` names one of them: an N-fold under-budget that collapses
-    concurrency to a single generation.
+    ``_kv_cache_context_total`` is the aggregate and is preferred. ``context_length`` is
+    NOT that once the server has been read back: it holds the PER-SLOT ``n_ctx``, so
+    without ``--kv-unified`` it names one of N private caches, an N-fold under-budget that
+    collapses concurrency to a single generation. None when the backend cannot say, which
+    keeps slot-only admission rather than inventing a budget.
 
     Falls back to ``context_length`` when the total is unset (nothing has been read
     back yet, in which case the two agree), and None when the backend cannot say,
@@ -1926,10 +1922,10 @@ def _openai_llama_admission_output_allowance(
 ) -> int:
     """KV to reserve for what a request may still generate.
 
-    A cap at or above the window is not a cap: `_build_passthrough_payload` sends
-    max_tokens = backend_ctx and "Max" sends the context length, so both mean unstated, and
-    charging the window for either serialises the queue. Measured against the per-request
-    window, since the budget is N times larger under --no-kv-unified.
+    A cap at or above the window is not a cap: both ``max_tokens = backend_ctx`` and "Max"
+    mean unstated, and charging the window for either serialises the queue. Measured
+    against the per-request window, since the budget is N times larger under
+    --no-kv-unified.
 
     Invariant when a ``share`` is known: an unstated request costs at most its fair share of
     the cache, so ``capacity`` of them always fit. A flat allowance breaks that on a small
@@ -2327,9 +2323,8 @@ def _llama_slot_headers(llama_backend) -> dict:
 def _preempt_key(llama_backend) -> str:
     """The key for one model load's admission queue and preemption controller.
 
-    The backend's ``admission_key`` when it has one, which survives a respawn; the
-    URL otherwise, since a respawn moves the port and a key read off it would strand
-    every live participant under the old one.
+    The backend's ``admission_key`` when it has one, which survives a respawn; the URL
+    otherwise, since a respawn moves the port and would strand every live participant.
     """
     key = getattr(llama_backend, "admission_key", None)
     if key:
@@ -2405,11 +2400,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                     max(0, int(occupancy.get("resident") or 0) - freed),
                     max(0, int(occupancy.get("idle_tokens") or 0) - freed),
                 )
-                # ONLY when every idle slot went. `needed` is the overshoot, so the erase
-                # can stop after one slot, and `note_cells_reclaimed` is global: applied
-                # after a partial erase it hands every parked holder's commitment back
-                # while some of their cells are still resident, and a waiter is admitted
-                # into them. The later reclaim path already guards the same way.
+                # ONLY when every idle slot went: the erase can stop after one, and
+                # `note_cells_reclaimed` is global, so after a partial erase it hands back
+                # commitments whose cells are still resident.
                 if freed >= int(occupancy.get("idle_tokens") or 0):
                     controller.note_cells_reclaimed()
                 _gguf_slots_seen["occupancy"] = None
@@ -2500,8 +2493,7 @@ def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None
 def _openai_llama_note_raw_measured(*, llama_backend, gen_id: str) -> None:
     """The raw holder's upstream has produced: its prompt is prefilled and resident.
 
-    Counted holders never report tokens, so they stayed unmeasured and were charged twice
-    once `/slots` saw them. Called at a stream's first data line, once.
+    Counted holders never report tokens, so they were charged twice once `/slots` saw them.
     """
     try:
         get_preemption_controller(_preempt_key(llama_backend)).note_measured(gen_id)
@@ -2533,8 +2525,7 @@ def _openai_llama_preemption_arm(
         return None
     lease = reservation.lease_nowait()
     if lease is None:
-        # Queued, not yet granted. It holds no cache, so there is nothing to preempt and
-        # nothing to preempt FOR.
+        # Queued, not yet granted: it holds no cache, so there is nothing to preempt.
         _llama_preemption_log("not-armed", reason = "no-lease-yet", gen_id = gen_id, level = "debug")
         return None
     key = _preempt_key(llama_backend)
@@ -2660,11 +2651,9 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
                 if freed:
                     _llama_preemption_log("released-cells", gen_id = gen_id, freed = freed)
                     _controller = get_preemption_controller(key)
-                    # Re-read rather than subtract: this runs on a worker and each erase
-                    # can take seconds, during which a live chat publishes newer samples.
-                    # `old - freed` written over them was a stale, lower figure, and a
-                    # waiter was granted against cells that were occupied. A failed
-                    # re-read leaves the newest sample in place.
+                    # Re-read rather than subtract: each erase can take seconds, during
+                    # which a live chat publishes newer samples that `old - freed` would
+                    # overwrite with a stale, lower figure.
                     after = read_slot_occupancy(
                         lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
                     )
@@ -2673,17 +2662,15 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
                             int(after.get("resident") or 0),
                             int(after.get("idle_tokens") or 0),
                         )
-                    # And only when every idle slot went: an erase that returned zero
-                    # leaves cells resident that a global reclaim would hand out.
+                    # And only when every idle slot went, or a global reclaim hands out
+                    # cells that are still resident.
                     if freed >= int(occupancy.get("idle_tokens") or 0):
                         _controller.note_cells_reclaimed()
             except Exception:
                 pass
 
-        # The slots probe and the erase are blocking HTTP calls. Several callers are
-        # ``async def`` route bodies, and a slow server held the whole event loop for the
-        # probe's timeout; the bookkeeping above stays inline, the wire work moves to a
-        # worker when a loop is running here.
+        # The slots probe and the erase are blocking HTTP calls, and a slow server held the
+        # whole event loop for the probe's timeout, so the wire work moves to a worker.
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -30572,7 +30559,7 @@ async def _responses_stream(
             api_monitor.finish(monitor_id, "cancelled")
             raise
         finally:
-            # Before the lease goes back, so the next admission is not granted against a
+            # Before the lease goes back, or the next admission is granted against a
             # ledger that still counts this one.
             _openai_llama_preemption_disarm(llama_backend = llama_backend, gen_id = resp_id)
             if lease is not None:
@@ -35771,8 +35758,8 @@ async def _openai_passthrough_non_streaming(
             request = request,
             cancel_event = cancel_event,
         )
-        # Counted, never chosen: one upstream generation per HTTP call, with no Studio-side
-        # conversation to resume, so it cannot be paused. It still fills cells.
+        # Counted, never chosen: no Studio-side conversation to resume, so it cannot be
+        # paused, but it still fills cells.
         _openai_llama_count_raw_holder(
             llama_backend = llama_backend,
             lease = lease,

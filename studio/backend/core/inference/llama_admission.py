@@ -630,21 +630,13 @@ class LlamaAdmissionLease:
         Call this only between rounds, and only with ``allow_yield`` true where an idle
         slot's cells actually come back. Being between rounds makes the slot IDLE; what
         makes its cells REUSABLE under ``--kv-unified`` is ``prompt_clear()``, which
-        llama-server runs only under ``--cache-idle-slots`` (``server-context.cpp``) --
-        force-disabled by ``--cache-ram 0``, and absent on older servers. Studio emits
-        ``--cache-ram 0`` on Windows under full GPU offload (#5692, WDDM overhead)
-        alongside ``--kv-unified``; there a yielded round's cells stay resident, so
-        yielding would hand the same capacity to a second caller. With yielding off this
-        degrades to plain ``recost``, which declines rather than overcommits. Where
-        clearing IS active the cache changes only the PRICE: reclaiming costs a prefix hit
-        if the cells were spilled to host RAM.
+        llama-server runs only under ``--cache-idle-slots``, force-disabled by
+        ``--cache-ram 0`` (which Studio emits on Windows under full GPU offload, #5692) and
+        absent on older servers. With yielding off this degrades to plain ``recost``.
 
-        False means this lease still holds the figure it came in with: declined,
-        cancelled, released, or waited past ``timeout_s``. The timeout is the blast
-        radius -- a reparker holds the wait line shut for everyone (see
-        ``yield_commitment``), so an endless wait freezes the queue, not one chat. Giving
-        up restores the old commitment and the decline-and-continue behaviour that
-        predates this.
+        False means this lease still holds the figure it came in with. The timeout is the
+        blast radius: a reparker holds the wait line shut for everyone, so an endless wait
+        freezes the queue rather than one chat.
         """
         want = max(0, int(tokens or 0))
         # Cheap path first: growth that already fits never touches the wait line.
@@ -902,8 +894,8 @@ class LlamaAdmissionQueue:
         # FIFO tickets for holders resuming from a park (see acquire_parked_slot). A bare count deadlocked: every
         # approved holder blocked every other one.
         self._unpark_tickets: Deque[int] = deque()
-        # The KV each ticket is coming back for, by ticket. A ticket holds a slot back for itself and, from here, its
-        # room too: the head-of-line rule the waiters already live by.
+        # The KV each ticket is coming back for. A ticket holds back a slot and, from here,
+        # its room too: the head-of-line rule the waiters already live by.
         self._unpark_wants: dict = {}
         self._unpark_seq = 0
         # KV tokens held by live leases, against the cache size the caller reports. 0 budget disables the check, which
@@ -963,9 +955,8 @@ class LlamaAdmissionQueue:
         if not (bool(self._free) and (self._held + reserved) < self._capacity):
             return False
         # A free slot is not enough: with --kv-unified every slot reports the full n_ctx, so the pool can hand out more
-        # slots than the one cache can serve. ``reserved_tokens`` is the room the tickets ahead are coming back for:
-        # a later, smaller resume that fitted where an earlier one did not overtook it, and with room handed out in
-        # that order the earlier one could wait out its deadline while capacity came and went.
+        # slots than the one cache can serve. ``reserved_tokens`` is the room the tickets ahead are coming back for, or
+        # a later, smaller resume overtakes an earlier one that could then wait out its deadline.
         return self._fits_budget_locked(tokens + max(0, int(reserved_tokens or 0)))
 
     def _take_slot_locked(
@@ -1189,9 +1180,8 @@ class LlamaAdmissionQueue:
     ) -> Optional[int]:
         """Wait for a slot for a holder resuming from a park, None if cancelled.
 
-        Ordered by ticket rather than counted, so approvals resume in the order
-        they came back: counting them made every approved holder block every
-        other one, and with nothing decoding that never resolved.
+        Ordered by ticket rather than counted: counting made every approved holder block
+        every other one, and with nothing decoding that never resolved.
 
 
         ``tokens`` is the KV commitment to take back alongside the slot, committed here so a
@@ -1216,8 +1206,7 @@ class LlamaAdmissionQueue:
                         if queued == ticket:
                             break
                         ahead += 1
-                    # Only the approvals ahead of this one hold slots, and their room, back
-                    # from it: ticket order for the room as well as the slot.
+                    # Ticket order for the room as well as the slot.
                     slot = self._take_slot_locked(
                         ahead, want, self._unpark_tokens_locked(before = ticket)
                     )

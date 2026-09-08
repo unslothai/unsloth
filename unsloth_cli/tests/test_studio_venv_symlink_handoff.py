@@ -80,8 +80,8 @@ class TestTheSecondHandOffIsRefused:
 
 class TestTheMarkerIsClearedWhereTheHandOffLanded:
     def test_the_recognised_child_drops_the_marker(self, monkeypatch):
-        """Left in place it reached the server and every subprocess, and a fresh
-        `unsloth studio` from an integrated terminal was refused as a second hand-off."""
+        """Left in place it reaches the server and every subprocess, and a fresh
+        `unsloth studio` is refused as a second hand-off."""
         monkeypatch.setenv(_studio()._REEXEC_DEPTH_ENV, "1")
         _studio()._hand_off_landed()
         assert _studio()._REEXEC_DEPTH_ENV not in os.environ

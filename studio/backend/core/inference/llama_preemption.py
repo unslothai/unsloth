@@ -338,10 +338,8 @@ class ParticipantState:
     # CANCEL and it is never a victim. Registered all the same, or the watermark fires late.
     STREAMING_RAW = "streaming_raw"
     PAUSED = "paused"
-    # Granted room for its resume and waiting for a serving slot to prefill into. It
-    # holds KV (the room is booked) and is not a victim: a sweep that chose it would
-    # count cells as freed that its prefill is about to fill, and the admission wait
-    # cannot see the signal.
+    # Granted room and waiting for a slot to prefill into. Not a victim: a sweep would
+    # count cells as freed that its prefill is about to fill.
     RESUMING = "resuming"
     DONE = "done"
 
@@ -423,8 +421,7 @@ def preemption_buffer_tokens(
     reserve = max(reserve, batch_reserve)
     # Drafts are additional: cells the drafter puts in before acceptance, unseen by admission.
     reserve += max(0, int(draft_tokens or 0)) * slot_count
-    # Still never the whole cache: a large draft window on a small -c must degrade to a
-    # tight buffer, not to a ceiling of zero.
+    # Never the whole cache: a large draft window on a small -c degrades to a tight buffer.
     return min(reserve, max(1, budget // 2))
 
 
@@ -907,15 +904,12 @@ class PreemptionController:
                 self._epoch_winner = None
 
     def note_measured(self, gen_id: str) -> None:
-        """A holder that never reports tokens has prefilled: its cells are in the resident
-        figure now, so its charge stops being a reservation on top of it.
+        """A holder that never reports tokens has prefilled: its charge stops being a
+        reservation on top of the resident figure.
 
-        The raw passthroughs and the Responses surface relay upstream bytes and never call
-        `observe` or `note_tokens`, so they stayed unmeasured for their whole life and
-        `_committed_locked` counted them twice once `/slots` reported them: their residency
-        and their whole lease again as pending, which pushed the watermark over a ceiling
-        the cache was well below and paused every Studio chat for a holder that is never a
-        victim. Idempotent; the state is left alone.
+        The raw passthroughs never call `observe` or `note_tokens`, so `_committed_locked`
+        counted them twice once `/slots` saw them, pausing every Studio chat for a holder
+        that is never a victim. Idempotent; the state is left alone.
         """
         with self._lock:
             participant = self._participants.get(gen_id)
@@ -984,7 +978,7 @@ class PreemptionController:
         one participant so a caller asking "room for ME" can substitute its own figure."""
         now = time.monotonic()
         # See CHARGED_PREFILL_ENV: an unmeasured holder's chunk comes out of cells
-        # `_committed_locked` has already added on top of the resident figure.
+        # `_committed_locked` already adds on top of the resident figure.
         skip_charged = _bool_env(CHARGED_PREFILL_ENV, DEFAULT_PREEMPT_BATCH_ONLY_UNCHARGED)
         return sum(
             p.prefill_pending(now)

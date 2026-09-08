@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Three ways a preempted chat lost its place that had nothing to do with the cache.
-
-1. The admission queue and the preemption controller were keyed on ``base_url``, and a
-   mid-session respawn picks a fresh port. Every chat registered before the crash was
-   then looked up under a key nobody held any more: the resume found an empty ledger
-   and an empty queue, and the replacement server was reconciled against nothing.
-   The key now comes from ``admission_key``, stamped per user load and held across
-   the replay ``_respawn_if_dead`` does.
-
-2. ``acquire_parked_slot`` gave up at a flat deadline. A resume queued behind a long
-   answer waited through perfectly healthy draining and timed out with every slot busy
-   and moving, which the commitment-only path had already learned to tell apart from
-   a stalled pool. Both paths now take the controller's ``progress_signature`` and
-   reset the deadline whenever it moves, under one hard ceiling.
-
-3. ``_openai_llama_preemption_disarm`` probed and erased slots with blocking HTTP, and
-   several of its callers are ``async def`` route bodies, so a slow server held the
-   event loop for the probe's timeout. The bookkeeping stays inline; the wire work goes
-   to a worker when a loop is running.
-"""
+"""Three ways a preempted chat lost its place that had nothing to do with the cache."""
 
 import asyncio
 import inspect

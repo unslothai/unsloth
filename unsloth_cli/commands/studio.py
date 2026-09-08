@@ -1628,22 +1628,19 @@ def _running_inside_studio_venv(studio_venv_dir: Path) -> bool:
 
 
 def _hand_off_landed() -> None:
-    """This process is the venv's launcher: the hand-off worked, and the marker has done
-    its job. Left in place it reached the Studio server and every subprocess it starts, so
-    a fresh `unsloth studio` from an integrated terminal was refused as a second hand-off
-    of a command it was never part of."""
+    """This process is the venv's launcher, so the marker has done its job. Left in place it
+    reaches the server and every subprocess it starts, and a fresh `unsloth studio` from an
+    integrated terminal is refused as a second hand-off of a command it never joined."""
     os.environ.pop(_REEXEC_DEPTH_ENV, None)
 
 
 def _child_launcher_predates_the_guard(studio_venv_dir: Path) -> bool:
-    """Whether handing off would loop anyway: the venv is reached through a symlink, and
-    the `unsloth` installed in it predates the symlink-aware check, so it neither resolves
-    the path nor reads the marker, and re-executes itself forever as before.
+    """Whether handing off would loop anyway: the venv is reached through a symlink and the
+    `unsloth` installed in it predates the symlink-aware check, so it neither resolves the
+    path nor reads the marker.
 
-    The marker only works in a child that carries this code. An old child cannot be
-    guarded from here, so the parent refuses instead of starting the loop. A venv that is
-    not symlinked passes the old check as it always did, and a venv whose launcher cannot
-    be found is given the benefit of the doubt.
+    An old child cannot be guarded from here, so the parent refuses rather than start the
+    loop. A venv whose launcher cannot be found is given the benefit of the doubt.
     """
     try:
         given = Path(studio_venv_dir)
@@ -2421,8 +2418,8 @@ def studio_default(
                     )
                 raise typer.Exit(rc)
             else:
-                # The child here is run.py, the server itself, which never hands off
-                # again; a marker it inherited reached every subprocess it starts.
+                # The child here is run.py, the server itself, which never hands off again;
+                # an inherited marker would reach every subprocess it starts.
                 os.environ.pop(_REEXEC_DEPTH_ENV, None)
                 os.execvp(str(studio_python), args)
         else:

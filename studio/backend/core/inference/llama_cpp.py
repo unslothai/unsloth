@@ -6775,10 +6775,8 @@ class LlamaCppBackend:
         # Bumped by every unload. load_model clears _cancel_event, so a respawn that
         # raced an unload needs a signal that survives the clear (see _respawn_if_dead).
         self._unload_epoch = 0
-        # The admission queue and the preemption controller are keyed per model load. A
-        # mid-session respawn picks a fresh port, so a key read off base_url would strand
-        # every live participant under the old one; this key is stamped by load_model and
-        # held across the replay _respawn_if_dead does (see admission_key).
+        # Keyed per model load: a mid-session respawn picks a fresh port, so a key read off
+        # base_url would strand every live participant under the old one.
         self._admission_key: Optional[str] = None
         self._respawn_replay = False
         # Set by the in-app updater while it swaps prebuilt binaries; load_model()
@@ -6928,10 +6926,9 @@ class LlamaCppBackend:
     def admission_key(self) -> str:
         """Key for the admission queue and the preemption controller.
 
-        One per model load, and held across a respawn: the participants registered
-        before the crash are the ones the replacement server must be reconciled
-        against, and a resume that looked them up under the new port found an empty
-        ledger and an empty queue instead.
+        One per model load, and held across a respawn: the participants registered before
+        the crash are the ones the replacement must be reconciled against, and a resume
+        looking them up under the new port found an empty ledger and queue.
         """
         return getattr(self, "_admission_key", None) or self.base_url
 
@@ -33101,8 +33098,7 @@ class LlamaCppBackend:
                     ):
                         result = RAG_SEARCH_CAP_NUDGE
                         if _parallel_round:
-                            # No tool to start, but its place in the round is still its own:
-                            # settled here it would report before the calls above it.
+                            # No tool to start, but its place in the round is still its own.
                             _pending_calls.append(
                                 (
                                     decision,
@@ -34238,16 +34234,12 @@ class LlamaCppBackend:
              pause has already added its tokens to ``_accumulated_completion_tokens``, and the
              fallback below would charge the allowance twice and hand the resume a cap of zero.
 
-            `finish_reason: "length"` does not say which wall was hit. A caller asking for
-            at most 100 completion tokens gets it at their own cap, and continuing twice
-            more returned roughly 300 -- over the limit the API promised, for latency and
-            tokens nobody asked for. Only the context wall deserves a continuation, and a
-            caller who set a cap gets the remainder of it rather than a fresh one.
+            `finish_reason: "length"` does not say which wall was hit, and a caller asking
+            for 100 tokens got roughly 300 by continuing twice more. Only the context wall
+            deserves a continuation, so a caller who set a cap gets its remainder.
 
-            None means no explicit cap: `max_tokens` unset, or set to the whole window,
-            which is what the backend substitutes for "Max" and is indistinguishable from
-            unset. There the length stop IS the context wall, which is the case this
-            continuation exists for.
+            None means no explicit cap: unset, or set to the whole window, which is what the
+            backend substitutes for "Max". There the length stop IS the context wall.
             """
             if max_tokens is None:
                 return None
