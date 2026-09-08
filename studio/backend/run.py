@@ -2197,9 +2197,7 @@ def _terminal_password_gate(
     # now would move first seeding earlier, open the SQLite file sooner and give a
     # read-only or locked home a new place to fail, none of which a container
     # operator asked for. Tunnel launches are unaffected: they always came here.
-    if not tunnel_will_start and not (
-        _stream_isatty(sys.stdin) and _stream_isatty(sys.stderr)
-    ):
+    if not tunnel_will_start and not (_stream_isatty(sys.stdin) and _stream_isatty(sys.stderr)):
         return True, False
 
     from auth import hashing as _auth_hashing

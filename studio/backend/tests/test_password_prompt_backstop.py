@@ -438,7 +438,7 @@ def test_a_headless_raw_bind_is_byte_for_byte_unchanged(monkeypatch):
 
 
 def test_a_headless_raw_bind_does_not_open_auth_storage(monkeypatch):
-    """"Unchanged" has to mean it does not touch the database either.
+    """ "Unchanged" has to mean it does not touch the database either.
 
     Before this gate learned about non-tunnel exposure, a headless raw bind
     returned at `if not tunnel_will_start` without importing auth storage. If it
@@ -456,12 +456,11 @@ def test_a_headless_raw_bind_does_not_open_auth_storage(monkeypatch):
         )
 
     from auth import storage as _storage
+
     monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
     monkeypatch.setattr(_storage, "requires_password_change", _boom)
 
-    assert run._terminal_password_gate(
-        tunnel_will_start = False, **_RAW_BIND_KWARGS
-    ) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
 
 
 def test_refusing_the_prompt_on_a_raw_bind_still_launches(monkeypatch):
@@ -477,16 +476,16 @@ def test_refusing_the_prompt_on_a_raw_bind_still_launches(monkeypatch):
     _patch_seeded_admin(monkeypatch, requires_change = True)
 
     from auth import terminal_prompt
+
     monkeypatch.setattr(
-        terminal_prompt, "prompt_for_password_change",
-        lambda **_kw: False,          # Ctrl+C / EOF
+        terminal_prompt,
+        "prompt_for_password_change",
+        lambda **_kw: False,  # Ctrl+C / EOF
     )
 
     # proceed = True, and the bootstrap credential keeps being injected exactly
     # as it was before this prompt existed.
-    assert run._terminal_password_gate(
-        tunnel_will_start = False, **_RAW_BIND_KWARGS
-    ) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
 
 
 def test_refusing_the_prompt_on_a_tunnel_still_aborts(monkeypatch):
@@ -495,13 +494,10 @@ def test_refusing_the_prompt_on_a_tunnel_still_aborts(monkeypatch):
     _patch_seeded_admin(monkeypatch, requires_change = True)
 
     from auth import terminal_prompt
-    monkeypatch.setattr(
-        terminal_prompt, "prompt_for_password_change", lambda **_kw: False
-    )
 
-    assert run._terminal_password_gate(
-        tunnel_will_start = True, **_GATE_KWARGS
-    ) == (False, False)
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
 
 
 def test_a_raw_bind_with_a_terminal_reaches_the_prompt(monkeypatch):

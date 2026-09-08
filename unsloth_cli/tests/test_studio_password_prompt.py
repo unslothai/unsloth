@@ -1774,13 +1774,25 @@ def test_studio_default_password_applies_on_headless_wildcard_no_tunnel(monkeypa
 
 _EXPOSURE_HOSTS = [
     # wildcard spellings
-    "0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "0", "::ffff:0.0.0.0",
+    "0.0.0.0",
+    "::",
+    "::0",
+    "0:0:0:0:0:0:0:0",
+    "0",
+    "::ffff:0.0.0.0",
     # loopback aliases
-    "127.0.0.1", "localhost", "::1",
+    "127.0.0.1",
+    "localhost",
+    "::1",
     # concrete external addresses and names
-    "192.168.1.50", "10.0.0.5", "172.16.4.9", "example.com", "myhost.local",
+    "192.168.1.50",
+    "10.0.0.5",
+    "172.16.4.9",
+    "example.com",
+    "myhost.local",
     # odd spellings
-    "[::]", "0.0.0.0.0",
+    "[::]",
+    "0.0.0.0.0",
 ]
 
 

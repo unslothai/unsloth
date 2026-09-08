@@ -54,8 +54,12 @@ def test_the_windows_getch_path_decodes_a_password(monkeypatch):
 
     class _Out:
         encoding = "utf-8"
-        def write(self, s): out.append(s)
-        def flush(self): pass
+
+        def write(self, s):
+            out.append(s)
+
+        def flush(self):
+            pass
 
     assert terminal_prompt._read_password("pw: ", out = _Out()) == "pw1"
     # The arrow key is swallowed, not masked, so exactly one star per character.
@@ -63,8 +67,11 @@ def test_the_windows_getch_path_decodes_a_password(monkeypatch):
 
 
 class _NullCtx:
-    def __enter__(self): return self
-    def __exit__(self, *exc): return False
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
 
 
 def test_a_stream_with_no_fileno_is_not_interactive():
@@ -74,9 +81,13 @@ def test_a_stream_with_no_fileno_is_not_interactive():
     helpers treat a broken stream as non-interactive, so such a launch takes the
     headless path rather than crashing.
     """
+
     class _Broken:
-        def isatty(self): raise ValueError("I/O operation on closed file")
-        def fileno(self): raise OSError("no console")
+        def isatty(self):
+            raise ValueError("I/O operation on closed file")
+
+        def fileno(self):
+            raise OSError("no console")
 
     import run as run_mod
 
@@ -87,10 +98,16 @@ def test_a_stream_with_no_fileno_is_not_interactive():
 @pytest.mark.parametrize("stdin_tty,stderr_tty", [(True, False), (False, True), (False, False)])
 def test_a_split_terminal_never_prompts(stdin_tty, stderr_tty):
     """Masked echo needs stderr; reading needs stdin. Half a terminal is none."""
-    assert terminal_prompt.should_prompt_password_change(
-        tunnel_will_start = False, bind_is_exposed = True, requires_change = True,
-        stdin_isatty = stdin_tty, stderr_isatty = stderr_tty,
-    ) is False
+    assert (
+        terminal_prompt.should_prompt_password_change(
+            tunnel_will_start = False,
+            bind_is_exposed = True,
+            requires_change = True,
+            stdin_isatty = stdin_tty,
+            stderr_isatty = stderr_tty,
+        )
+        is False
+    )
 
 
 # ── old installs ─────────────────────────────────────────────────────
@@ -102,14 +119,24 @@ def test_an_old_caller_that_omits_bind_is_exposed_behaves_as_before():
     A studio venv can hold an older backend than the CLI that launched it, so a
     caller predating this change must keep tunnel-only semantics.
     """
-    assert terminal_prompt.should_prompt_password_change(
-        tunnel_will_start = False, requires_change = True,
-        stdin_isatty = True, stderr_isatty = True,
-    ) is False
-    assert terminal_prompt.should_prompt_password_change(
-        tunnel_will_start = True, requires_change = True,
-        stdin_isatty = True, stderr_isatty = True,
-    ) is True
+    assert (
+        terminal_prompt.should_prompt_password_change(
+            tunnel_will_start = False,
+            requires_change = True,
+            stdin_isatty = True,
+            stderr_isatty = True,
+        )
+        is False
+    )
+    assert (
+        terminal_prompt.should_prompt_password_change(
+            tunnel_will_start = True,
+            requires_change = True,
+            stdin_isatty = True,
+            stderr_isatty = True,
+        )
+        is True
+    )
 
 
 def test_the_prompt_signature_stays_keyword_compatible():
@@ -142,10 +169,13 @@ def test_the_password_gate_imports_no_gpu_or_torch_module():
     )
     out = subprocess.run(
         [sys.executable, "-c", probe],
-        capture_output = True, text = True, timeout = 300,
-        cwd = str(_BACKEND), env = {**os.environ, "PYTHONPATH": str(_BACKEND)},
+        capture_output = True,
+        text = True,
+        timeout = 300,
+        cwd = str(_BACKEND),
+        env = {**os.environ, "PYTHONPATH": str(_BACKEND)},
     )
     assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == "", (
-        f"the password gate pulled in hardware modules: {out.stdout.strip()}"
-    )
+    assert (
+        out.stdout.strip() == ""
+    ), f"the password gate pulled in hardware modules: {out.stdout.strip()}"
