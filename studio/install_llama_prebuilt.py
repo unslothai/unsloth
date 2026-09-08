@@ -4268,9 +4268,10 @@ def blocked_replace_cause(winerror: object) -> str:
 def blocked_replace_hint(winerror: object, path: Path) -> str:
     """``blocked_replace_cause`` plus, for a denied rename, how to repair it.
 
-    Printed once the backoff is spent, never per retry: most of these clear on their
-    own, and a recursive takeown/icacls is not something to put in front of a user
-    whose install is about to succeed. Printed, never run.
+    For the caller that has run out of options, never per retry and never where a
+    fallback still follows: most of these clear on their own, and a recursive
+    takeown/icacls is not something to put in front of a user whose install is about
+    to succeed anyway. Printed, never run.
     """
     cause = blocked_replace_cause(winerror)
     if winerror != 5:
@@ -4300,17 +4301,23 @@ def replace_with_busy_retry(
     dst: Path,
     *,
     attempts: int = 8,
+    repair_hint: bool = False,
 ) -> None:
     """``os.replace``, retried against transient Windows sharing violations.
 
     WinError 5/32/145 blocks the rename and usually clears in a second or two, but
-    the cause differs per code, so the retry line says which and the last line adds
-    the repair (see ``blocked_replace_cause``). Without a backoff that turns an update
+    the cause differs per code, so the retry line says which (``blocked_replace_cause``).
+    Without a backoff that turns an update
     into a failure, and on the aside-move of the *existing* install that is the
     failure this installer most needs to avoid. Mirrors the Node installer's
     ``_replace_with_retry``. Other errors raise at once, and POSIX never
     retries because EACCES/EBUSY there mean a permission or mount problem no
     amount of waiting clears.
+
+    ``repair_hint`` is for the caller with nothing left to try, which is only the
+    aside-move: the rollback restore answers the same OSError with a copytree and
+    then deletes ``src``, so a repair aimed at ``src`` there would name a path that
+    recovery is about to remove.
     """
     if attempts < 1:
         raise ValueError("replace_with_busy_retry needs at least one attempt")
@@ -4324,15 +4331,17 @@ def replace_with_busy_retry(
             if not transient:
                 raise
             if attempt == attempts - 1:
-                # src, not dst: the aside-move's dst is a rollback path that does not
-                # exist yet. log_lines so every line keeps the [llama-prebuilt] prefix.
-                log_lines(
-                    (
-                        f"rename {src.name} -> {dst.name} still blocked ({exc.winerror}) "
-                        f"after {attempts} attempts -- "
-                        f"{blocked_replace_hint(exc.winerror, src)}"
-                    ).splitlines()
-                )
+                if repair_hint:
+                    # src, not dst: the aside-move's dst is a rollback path that does
+                    # not exist yet. log_lines keeps the [llama-prebuilt] prefix on
+                    # every line.
+                    log_lines(
+                        (
+                            f"rename {src.name} -> {dst.name} still blocked "
+                            f"({exc.winerror}) after {attempts} attempts -- "
+                            f"{blocked_replace_hint(exc.winerror, src)}"
+                        ).splitlines()
+                    )
                 raise
             log(
                 f"rename {src.name} -> {dst.name} blocked ({exc.winerror}), retrying in "
@@ -4626,7 +4635,9 @@ def move_install_dir_aside(
     """
     try:
         if busy_retry:
-            replace_with_busy_retry(src, dst)
+            # Only EXDEV is answered below, so a denied rename here is the end of the
+            # line for the live install: this is the call that has earned the repair.
+            replace_with_busy_retry(src, dst, repair_hint = True)
         else:
             os.replace(src, dst)
     except OSError as exc:

@@ -1172,7 +1172,7 @@ def test_replace_with_busy_retry_prints_the_acl_repair_once_when_the_retries_are
     logged, source, destination = _denied_replace_run(tmp_path, monkeypatch, clears_after = None)
 
     with pytest.raises(OSError):
-        replace_with_busy_retry(source, destination, attempts = 4)
+        replace_with_busy_retry(source, destination, attempts = 4, repair_hint = True)
 
     assert [line for line in logged if "takeown" in line] == [
         f'takeown /F "{source}" /R /D Y'
@@ -1185,6 +1185,44 @@ def test_replace_with_busy_retry_prints_the_acl_repair_once_when_the_retries_are
     # log_lines, not one embedded-newline log call, so every line keeps the prefix.
     assert not [line for line in logged if "\n" in line], logged
     assert [line for line in logged if "still blocked (5) after 4 attempts" in line]
+
+
+def test_replace_with_busy_retry_withholds_the_repair_from_a_caller_that_can_recover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The rollback restore answers the same OSError with a copytree, then deletes src.
+
+    Naming that path in a takeown/icacls hint would point the user at a tree the
+    recovery is about to remove, so only the aside-move opts in.
+    """
+    logged, source, destination = _denied_replace_run(tmp_path, monkeypatch, clears_after = None)
+
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 4)
+
+    assert not [line for line in logged if "takeown" in line or "icacls" in line], logged
+
+
+def test_move_install_dir_aside_asks_for_the_repair_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The aside-move is the caller with no fallback for a denied rename."""
+    seen: dict = {}
+
+    def fake_retry(src, dst, **kwargs):
+        seen.update(kwargs)
+        raise OSError(errno.EACCES, "Access is denied")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "replace_with_busy_retry", fake_retry)
+    source = tmp_path / "llama.cpp"
+    source.mkdir()
+
+    with pytest.raises(OSError):
+        INSTALL_LLAMA_PREBUILT.move_install_dir_aside(
+            source, tmp_path / "llama.cpp.rollback", busy_retry = True
+        )
+
+    assert seen.get("repair_hint") is True
 
 
 def test_replace_with_busy_retry_does_not_retry_a_posix_permission_error(
