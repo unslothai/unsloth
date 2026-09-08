@@ -584,12 +584,8 @@ def test_a_sample_quarantined_mid_scan_passes_the_positive_control():
 
 
 def test_cloud_block_level_is_verified_against_highplus():
-    """A refused HighPlus leaves the previous level in place, not zero.
-
-    Policy or a runner image can reject `-CloudBlockLevel HighPlus` and keep
-    High (2), so a check that only rejects 0 records nothing while the requested
-    sensitivity is inactive. 4 is HighPlus per the Defender Policy CSP.
-    """
+    """A refused HighPlus leaves the previous level, not zero, so -eq 0 passes a
+    runner still on High. 4 is HighPlus per the Defender Policy CSP."""
     scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
 
     assert "-CloudBlockLevel HighPlus" in scan
@@ -602,13 +598,8 @@ def test_cloud_block_level_is_verified_against_highplus():
 
 
 def test_asr_verification_checks_the_action_not_just_the_rule_id():
-    """Add-MpPreference is additive: an already-configured rule keeps its action.
-
-    A rule the runner image or a policy set to Disabled or Block stays that way,
-    so an id-membership check reports "applied" for a rule that emits no audit
-    events, or one that blocks. The two Get-MpPreference arrays are index-paired,
-    so verification has to read both.
-    """
+    """Add-MpPreference is additive, so a rule a policy set to Disabled or Block
+    keeps that action and an id-only check calls it applied."""
     scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
 
     verify = scan.split("Add-MpPreference -AttackSurfaceReductionRules_Ids", 1)[1]
@@ -624,12 +615,8 @@ def test_asr_verification_checks_the_action_not_just_the_rule_id():
 
 
 def test_asr_audit_events_are_reported_as_runner_activity_only():
-    """The bundle is scanned, never executed, so ASR cannot evaluate it.
-
-    All four rules fire on process launch. This step only copies the bundle and
-    hands it to MpCmdRun, so any 1121/1122 in the window belongs to other runner
-    activity and must not be presented as a verdict on the release.
-    """
+    """All four rules fire on process launch and this step only copies and scans
+    the bundle, so a 1121/1122 here is runner activity, not a verdict on it."""
     scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
 
     report = scan.split("$asrEvents = @(Get-WinEvent", 1)[1]

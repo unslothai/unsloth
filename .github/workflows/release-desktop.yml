@@ -1198,15 +1198,8 @@ jobs:
             -CloudExtendedTimeout 50 -DisableBlockAtFirstSeen $false `
             -PUAProtection Enabled -ErrorAction Continue
 
-          # Attack surface reduction, in AUDIT mode (state 2), never Block.
-          # 01443614 is "block executable files from running unless they meet a
-          # prevalence, age, or trusted list criterion" -- the closest thing a
-          # runner can get to the cloud-reputation half of a Smart App Control
-          # verdict, which is otherwise untestable in CI because a freshly
-          # published hash has no reputation whether or not it is signed. Audit
-          # reports what would be refused and refuses nothing, so it cannot
-          # block our own installer; a Block state here would fire on the first
-          # run of every build we make, which is the normal case, not a finding.
+          # Audit (2), never Block: 01443614 approximates the cloud-reputation half
+          # of a Smart App Control verdict, and fires on low prevalence, i.e. ours.
           $asrRules = @(
             '01443614-cd74-433a-b99e-2ecdc07bfc25',  # low prevalence / new file
             'be9ba2d9-53ea-4cdc-84e5-9b1eeee46550',  # executable content from mail
@@ -1216,12 +1209,8 @@ jobs:
           $asrActions = @('AuditMode') * $asrRules.Count
           Add-MpPreference -AttackSurfaceReductionRules_Ids $asrRules `
             -AttackSurfaceReductionRules_Actions $asrActions -ErrorAction Continue
-          # Verified, not assumed: a rule that did not apply reports no events,
-          # which reads identically to a rule that found nothing. Check the
-          # action, not just the id - Add-MpPreference is additive, so a rule the
-          # runner image or a policy already configured keeps its own action, and
-          # an id-only check would report Disabled or Block as audit mode. The
-          # two arrays are index-paired; Min guards a truncated read.
+          # A rule that did not apply reports no events, like one that found none.
+          # Add-MpPreference is additive: check the action, not just the id.
           $asrPref = Get-MpPreference
           $asrIds = @($asrPref.AttackSurfaceReductionRules_Ids)
           $asrStates = @($asrPref.AttackSurfaceReductionRules_Actions)
@@ -1236,9 +1225,7 @@ jobs:
           if ($asrBad) { Write-Host "::warning::ASR audit rules not in audit mode: $($asrBad -join '; ')" }
           else { Write-Host "ASR audit rules applied: $($asrRules.Count)" }
 
-          # Bounds the ASR event query below. Windows Defender/Operational is a
-          # shared log, so without this the report would include whatever the
-          # runner image did before this job started.
+          # Bounds the ASR event query below; that log is shared with the runner.
           $scanStart = Get-Date
 
           $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
@@ -1294,12 +1281,9 @@ jobs:
             if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
             if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
             if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
-            # 4 is HighPlus; a policy that refuses it leaves the previous level
-            # (2 = High) in place, which an -eq 0 check would read as applied.
+            # 4 is HighPlus; a refused change leaves the old level, not zero.
             if ([int]$pref.CloudBlockLevel -ne 4)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected 4 (HighPlus)" }
-            # PUA is its own detection class and is off by default, so without
-            # this a bundled installer stub that Defender rates as unwanted
-            # rather than malicious passes the gate unremarked.
+            # PUA is a separate class, off by default: unwanted-not-malicious passes.
             if ([int]$pref.PUAProtection -ne 1)         { $degraded += "PUAProtection=$($pref.PUAProtection), expected 1 (Enabled)" }
             if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
           }
@@ -1461,12 +1445,8 @@ jobs:
             Write-Host "::error::Refusing to publish a Windows bundle Defender flags: $($detected -join '; ')"
             Write-Host 'If this is a false positive, submit it at https://www.microsoft.com/en-us/wdsi/filesubmission (Software developer -> incorrectly detected) and re-run once cleared.'
           }
-          # ASR audit findings for the scan window. These rules evaluate process
-          # launches and this job only copies and scans the bundle, so an event
-          # here is other runner activity, not a verdict on the release: report
-          # it as such, and never fatally. The rules are armed anyway because
-          # audit mode costs nothing and 01443614 is the one reputation-shaped
-          # signal a runner can produce for anything it does execute.
+          # ASR fires on process launch and this job never runs the bundle, so these
+          # are runner activity, not a verdict on it. Fatal would block every release.
           $asrEvents = @(Get-WinEvent -FilterHashtable @{
             LogName = 'Microsoft-Windows-Windows Defender/Operational'; Id = 1121, 1122
           } -ErrorAction SilentlyContinue | Where-Object { $_.TimeCreated -ge $scanStart })
