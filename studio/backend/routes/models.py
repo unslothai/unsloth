@@ -220,9 +220,16 @@ def _resolve_hub_token(header_token: HfTokenArg, query_token: Optional[str]) -> 
     returning ``header_token`` itself would return whatever a caller that bypassed
     FastAPI's injection left in the parameter -- an unresolved ``Depends`` object.
     """
-    explicit = _normalize_hf_token(header_token) or _normalize_hf_token(query_token)
-    if explicit:
-        return explicit
+    header_explicit = _normalize_hf_token(header_token)
+    if header_explicit:
+        return header_explicit
+    query_explicit = _normalize_hf_token(query_token)
+    if query_explicit:
+        # normalize_token can carry a marker through but cannot create one, and the query value
+        # never had it: it arrives as a bare string, not from the dependency. Rebuild it from the
+        # caller class the header already states, so the same UI session is not denied its own
+        # cache for putting its token in the legacy parameter instead of the header.
+        return hf_token_arg(query_explicit, allow_ambient_token = not is_anonymous(header_token))
     return False if is_anonymous(header_token) else None
 
 

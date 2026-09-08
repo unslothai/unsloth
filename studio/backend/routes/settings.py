@@ -22,11 +22,13 @@ from pydantic import (
 )
 
 from auth.authentication import (
+    allow_ambient_hf_token,
     authenticated_via_api_key,
     get_current_credential,
     get_current_subject,
 )
 from auth.storage import rotate_preview_link_secret
+from hub.utils.hf_tokens import hf_token_arg
 
 from routes.provider_credentials import current_credential_write, require_ui_session
 
@@ -2568,6 +2570,7 @@ def resolve_embedding_model(
     model: str,
     # Header, not a query param: keeps a gated-repo token out of URLs and logs.
     hf_token: Optional[str] = Header(None, alias = "X-Unsloth-HF-Token"),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> EmbeddingModelResolveResponse:
     """What saving ``model`` would need fetched, and whether it is already here.
@@ -2585,13 +2588,18 @@ def resolve_embedding_model(
             event = "settings.resolve_embedding_model_failed",
             log = logger,
         ) from exc
-    token = (hf_token or "").strip() or None
+    # Classified, not just trimmed: a bare strip makes a UI session look like an API key, and
+    # the embedding check then refuses it its own cached marker. This endpoint must refuse
+    # exactly what the PUT refuses, so both resolve the token the same way.
+    token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
     return _resolve_embedding_model_plan(resolved, token)
 
 
 @router.put("/embedding-model", response_model = EmbeddingModelResponse)
 def update_embedding_model(
-    payload: EmbeddingModelPayload, current_subject: str = Depends(get_current_subject)
+    payload: EmbeddingModelPayload,
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
+    current_subject: str = Depends(get_current_subject),
 ) -> EmbeddingModelResponse:
     """Set the RAG embedding model. Unless ``force`` is set, the repo is verified
     to be an embedding model via HF metadata; an unverifiable model (wrong type,
@@ -2611,7 +2619,7 @@ def update_embedding_model(
             event = "settings.update_embedding_model_failed",
             log = logger,
         ) from exc
-    hf_token = (payload.hf_token or "").strip() or None
+    hf_token = hf_token_arg(payload.hf_token, allow_ambient_token = allow_ambient_token)
     from utils.utils import hf_env_offline
 
     # Offline, both the Hub malware scan and the is-embedding check are unreachable and degrade

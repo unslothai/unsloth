@@ -3207,7 +3207,10 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
             return False
         return _embedding_marker_in_hf_cache(model_name)
 
-    cache_key = (model_name, hf_token)
+    # Fingerprinted, not the raw token: the ambient marker is a str subclass that hashes and
+    # compares equal to a plain API token of the same value, so a UI-computed classification
+    # was served straight out of this memo to an API caller, above the guard below.
+    cache_key = (model_name, _token_fingerprint(hf_token))
     if cache_key in _embedding_detection_cache:
         return _embedding_detection_cache[cache_key]
 

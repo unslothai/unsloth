@@ -93,6 +93,9 @@ def client(monkeypatch):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    # These endpoints now classify their token by caller, so the app must be able to say
+    # which caller this is. An admin driving the UI is entitled to the ambient credential.
+    app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
     return TestClient(app, raise_server_exceptions = False), saved
 
 
@@ -274,6 +277,9 @@ def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    # These endpoints now classify their token by caller, so the app must be able to say
+    # which caller this is. An admin driving the UI is entitled to the ambient credential.
+    app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
     c = TestClient(app, raise_server_exceptions = False)
     r = c.put(
         "/embedding-model",
@@ -339,6 +345,9 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    # These endpoints now classify their token by caller, so the app must be able to say
+    # which caller this is. An admin driving the UI is entitled to the ambient credential.
+    app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
     c = TestClient(app, raise_server_exceptions = False)
     r = c.put(
         "/embedding-model",
@@ -429,6 +438,9 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    # These endpoints now classify their token by caller, so the app must be able to say
+    # which caller this is. An admin driving the UI is entitled to the ambient credential.
+    app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
     c = TestClient(app, raise_server_exceptions = False)
     r = c.put(
         "/embedding-model", json = {"embedding_model": "acme/embed-with-module-dir", "force": True}

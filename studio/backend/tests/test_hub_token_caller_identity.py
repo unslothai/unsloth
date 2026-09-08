@@ -1967,3 +1967,80 @@ def test_the_gguf_inflight_key_does_not_coalesce_two_caller_classes():
     ui = hf_token_arg("hf_saved", allow_ambient_token = True)
     api = hf_token_arg("hf_saved", allow_ambient_token = False)
     assert _key(ui) != _key(api), "one scan would serve both entitlements"
+
+
+def test_the_legacy_query_token_is_classified_like_the_header(monkeypatch):
+    """normalize_token can carry a marker through but cannot create one, and ?hf_token= never
+    had it: the value arrives as a bare string, not from the dependency. Measured before this,
+    for one UI session sending one token two ways with the Hub unreachable:
+
+        query   type=str                    authorized=False
+        header  type=AmbientAuthorizedToken authorized=True
+    """
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: False)
+
+    ui_header_absent = hf_token_arg(None, allow_ambient_token = True)
+    resolved = models_routes._resolve_hub_token(ui_header_absent, "hf_saved")
+    assert isinstance(resolved, hf_tokens.AmbientAuthorizedToken)
+    assert cache_reads_authorized(resolved, repo_id = "acme/private") is True
+
+    # An API key sending only the query parameter stays an API key: its header is the sentinel.
+    api_no_header = hf_token_arg(None, allow_ambient_token = False)
+    api_resolved = models_routes._resolve_hub_token(api_no_header, "hf_saved")
+    assert not isinstance(api_resolved, hf_tokens.AmbientAuthorizedToken)
+    assert cache_reads_authorized(api_resolved, repo_id = "acme/private") is False
+
+    # The header still wins over a stale query value, and the no-token cases are unchanged.
+    header = hf_token_arg("hf_header", allow_ambient_token = True)
+    assert models_routes._resolve_hub_token(header, "hf_query") == "hf_header"
+    assert models_routes._resolve_hub_token(hf_token_arg(None, allow_ambient_token = False), None) is False
+    assert models_routes._resolve_hub_token(hf_token_arg(None, allow_ambient_token = True), None) is None
+
+
+def test_the_embedding_memo_does_not_cross_caller_classes(monkeypatch):
+    """The memo is read at the top of is_embedding_model, above every authorization check, and
+    was keyed on the raw token. The marker hashes and compares equal to a plain API token of
+    the same value, so a UI-computed classification came straight back to an unverified API
+    caller. Keyed on the fingerprint now, which carries the caller class."""
+    from utils.models import model_config as mc
+
+    ui = hf_token_arg("hf_saved", allow_ambient_token = True)
+    api = hf_token_arg("hf_saved", allow_ambient_token = False)
+
+    monkeypatch.setattr(mc, "_embedding_detection_cache", {})
+    monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+    monkeypatch.setattr(mc, "_embedding_marker_in_hf_cache", lambda *_a, **_k: True)
+    monkeypatch.setattr("utils.utils.hf_env_offline", lambda: False)
+
+    def _no_hub(*_a, **_k):
+        raise RuntimeError("hub unreachable, so the cached marker is the fallback")
+
+    monkeypatch.setattr("huggingface_hub.model_info", _no_hub)
+    # Only the UI session is entitled to the operator's cache here.
+    monkeypatch.setattr(
+        mc, "cache_reads_authorized",
+        lambda token, **_k: isinstance(token, hf_tokens.AmbientAuthorizedToken),
+    )
+
+    # The UI session classifies from its own cached marker and memoizes that.
+    assert mc.is_embedding_model("acme/private-emb", ui) is True
+    # The API caller must be refused, not handed the entry the UI just wrote.
+    assert mc.is_embedding_model("acme/private-emb", api) is False
+
+
+def test_the_embedding_settings_routes_classify_their_payload_token():
+    """Both the PUT and its resolve twin took the token as a bare trimmed str, so a UI session
+    saving an embedding model was treated as an API key and refused its own cached modules.json,
+    returning the forceable 409. The resolve endpoint says it must refuse exactly what the PUT
+    refuses, so fixing only one would have made them disagree."""
+    import inspect
+    from routes import settings as settings_routes
+
+    for endpoint in (settings_routes.update_embedding_model, settings_routes.resolve_embedding_model):
+        params = inspect.signature(endpoint).parameters
+        assert "allow_ambient_token" in params, f"{endpoint.__name__} cannot tell its callers apart"
+
+    source = inspect.getsource(settings_routes.update_embedding_model)
+    assert "hf_token_arg(" in source, "the payload token is not classified"
+    assert '(payload.hf_token or "").strip()' not in source, "still trimming into a plain str"
