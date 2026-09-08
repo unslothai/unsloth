@@ -30393,6 +30393,20 @@ class LlamaCppBackend:
                 "finish_reason": finish_reason,
             }
 
+        def _folded_attempt(usage, timings):
+            """The interrupted attempt's usage and timings with its decode already in the
+            accumulators: only the prompt side is left for `_build_metadata_event`, which
+            adds the accumulators itself. A pause that lands as the cap runs out folds the
+            attempt first and then builds the terminal event, and with both readings of one
+            attempt in the sum its tokens and timings were counted twice."""
+            _u = {k: v for k, v in (usage or {}).items() if k not in ("completion_tokens", "total_tokens")}
+            _t = {
+                k: v
+                for k, v in (timings or {}).items()
+                if k not in ("predicted_ms", "predicted_n", "predicted_per_second")
+            }
+            return (_u or None), (_t or None)
+
         def _flush_reasoning_and_buffer():
             """Close a live-streamed <think> block (or emit the buffered reasoning
             as one block if it never streamed), then append the held
@@ -33583,7 +33597,9 @@ class LlamaCppBackend:
                     # The caller's cap is spent: nothing to wait for, and reopening the
                     # stream for one floored token went past the cap by that token.
                     logger.info("Paused with the caller's output cap spent; ending the turn")
-                    _spent_meta = _build_metadata_event(_iter_usage, _iter_timings, "length")
+                    _spent_meta = _build_metadata_event(
+                        *_folded_attempt(_iter_usage, _iter_timings), "length"
+                    )
                     if _spent_meta is not None:
                         yield _spent_meta
                     return
@@ -34700,7 +34716,7 @@ class LlamaCppBackend:
                     # for one floored token went past the cap by that token.
                     logger.info("Paused final answer with the output cap spent; ending the turn")
                     _spent_meta_f = _build_metadata_event(
-                        _metadata_usage, _metadata_timings, "length"
+                        *_folded_attempt(_metadata_usage, _metadata_timings), "length"
                     )
                     if _spent_meta_f is not None:
                         yield _spent_meta_f

@@ -331,6 +331,43 @@ def test_a_pause_with_the_callers_cap_spent_ends_the_turn(monkeypatch, site):
     assert not any(
         isinstance(e, dict) and e.get("reason") == llama_cpp.PREEMPT_GAVE_UP_REASON for e in events
     ), "nothing was given up: the caller's own cap ended it"
+    # Counted once. The interrupted attempt is folded into the accumulator before the
+    # terminal event is built, and the event used to add the attempt's own usage and
+    # timings on top of that, so a four-token answer reported eight.
+    completion = int((metadata[-1].get("usage") or {}).get("completion_tokens") or 0)
+    assert completion <= 4, f"the interrupted attempt was counted twice: {completion}"
+    predicted_n = int((metadata[-1].get("timings") or {}).get("predicted_n") or 0)
+    assert predicted_n <= 4, f"the attempt's timings were folded twice: {predicted_n}"
+
+
+@pytest.mark.parametrize("site", ["round", "final"])
+def test_a_spent_cap_counts_the_interrupted_attempt_once(monkeypatch, site):
+    # llama-server reports cumulative timings on every chunk, so the attempt's own reading is
+    # in hand when the pause lands. It is folded into the accumulator, and the terminal event
+    # then added the same reading again: four tokens reported as eight.
+    signal = p.PreemptSignal()
+    streams = [
+        [delta("a", timings = {"predicted_n": i + 1, "predicted_ms": 10.0 * (i + 1)}) for i in range(4)]
+        + [finish("length"), done()],
+        [delta("b"), finish("length"), done()],
+    ]
+    rec = PreemptRecorder(monkeypatch, streams, signal = signal, pause_after = {0: 4})
+    events = run_tool_loop(
+        rec.backend,
+        signal = signal,
+        policy = RecordingPolicy(),
+        tools = [web_search_tool()],
+        max_tokens = 4,
+        max_tool_iterations = 0 if site == "final" else 5,
+        permission_mode = "off",
+    )
+    metadata = [e for e in events if isinstance(e, dict) and e.get("type") == "metadata"]
+    assert metadata and metadata[-1]["finish_reason"] == "length"
+    usage = metadata[-1].get("usage") or {}
+    timings = metadata[-1].get("timings") or {}
+    assert int(usage.get("completion_tokens") or 0) == 4, usage
+    assert int(timings.get("predicted_n") or 0) == 4, timings
+    assert abs(float(timings.get("predicted_ms") or 0) - 40.0) < 1e-6, timings
 
 
 def test_a_declined_pause_hands_the_final_pass_the_whole_partial_and_the_whole_charge(monkeypatch):
