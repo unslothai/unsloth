@@ -1013,9 +1013,9 @@ def test_worker_source_never_pins_the_vendored_stack():
         if node.value in _FLA_PROSE_LOG_LINES:
             continue
         for package in _NEVER_PIP_INSTALLED:
-            assert not node.value.startswith(package), (
-                f"worker.py names {package} in a string constant: {node.value!r}"
-            )
+            assert not node.value.startswith(
+                package
+            ), f"worker.py names {package} in a string constant: {node.value!r}"
 
 
 def _stub_fla_modules(monkeypatch):
