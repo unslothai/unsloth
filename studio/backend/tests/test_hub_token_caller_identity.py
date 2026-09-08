@@ -538,12 +538,19 @@ def test_the_local_config_probe_stays_local_for_an_explicit_token(monkeypatch, t
         # is not permission to download: hf_hub_download returns the cached pointer for any
         # failed head call, a 403 as much as an unreachable Hub, before it re-raises.
         ("hf_dummy", False, True, False, True),
+        # The sentinel cannot authorize itself, which is not the same as being unentitled:
+        # a public repo is one it was always allowed to read, and refusing there costs an
+        # ordinary API-key caller the prompt formatting for a public model.
+        (False, True, True, True, True),
+        (False, False, True, False, True),
     ],
     ids = [
         "unverified-denied",
         "ambient-served",
         "uncached-still-fetched",
         "public-metadata-is-not-authorization",
+        "anonymous-keeps-a-public-template",
+        "anonymous-loses-a-private-one",
     ],
 )
 def test_the_chat_template_fallback_follows_the_caller(
@@ -1958,7 +1965,13 @@ def test_an_anonymous_caller_keeps_a_public_cached_dataset_and_loses_a_private_o
     that matters: a Hub merely unreachable is not a Hub declared absent, and `datasets`
     falls back to its prepared cache either way. The sentinel cannot authorize itself, so
     ask the question it can answer, which is whether the repo is public at all."""
-    _counting_probe(monkeypatch, public)
+    # Answers only for the dataset endpoint: asking /api/models/<dataset id>/auth-check
+    # gets a 404 that reads as "private", which would refuse a public cached preview.
+    monkeypatch.setattr(
+        hf_tokens,
+        "_probe_repo_access",
+        lambda _repo, _token, repo_type: public and repo_type == "dataset",
+    )
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(dataset_cache, "dataset_cache_can_answer", lambda *_a, **_k: True)
 

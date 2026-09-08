@@ -245,11 +245,24 @@ def cached_read_refused(
     on disk means no probe, and must fail closed or the guard's own failure opens the path it
     guards. Each reader passes its own predicate: a file at a revision, a dataset in either
     cache, or a repo dir, per site.
+
+    "May not read it" is not the same as "cannot authorize itself", which is where the
+    forced-anonymous sentinel sits: a public repo is one it was always entitled to read, so
+    refusing withholds a public answer and protects nothing. The dataset preview asked that
+    second question and the other readers did not, which is an asymmetry with no reason
+    behind it; asking here gives every reader the same rule.
     """
     if not is_cached():
         return False
-    return not cache_reads_authorized(
+    if cache_reads_authorized(
         hf_token, repo_id = repo_id, repo_type = repo_type, offline = offline
+    ):
+        return False
+    return not (
+        is_anonymous(hf_token)
+        and public_cache_read_authorized(
+            repo_id = repo_id, repo_type = repo_type, offline = offline
+        )
     )
 
 
