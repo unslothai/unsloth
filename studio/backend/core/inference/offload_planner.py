@@ -768,6 +768,12 @@ def _grade_the_boundary_block(
     # The last coarse unit taken IS the boundary: selection appends in the order
     # it closed the gap, so everything before it was still short of the deficit.
     boundary = coarse[-1]
+    if taken[-1] is not boundary:
+        # A LATER rung closed the gap: the coarse rung ran out and dense or
+        # shared-FFN units followed it. Trimming the last coarse block against a
+        # deficit those units already cover keeps cheap expert bytes resident so
+        # that dearer dense bytes can stay spilled, which reverses the ladder.
+        return taken, freed
     block = by_index.get(boundary.index)
     if block is None or not block.graded:
         return taken, freed
@@ -1040,11 +1046,23 @@ def _fit_fallback_placement(
     # latent as a full K+V pair -- the two differ by more than 2x.
     reserved_product = cache_bytes(layout, n_ctx, kv_quantised = quantised)
     floor_scale = (kv_total / reserved_product) if reserved_product > 0 else 1.0
-    kv_live_per_layer = (
-        cache_bytes(layout, live_tokens, kv_quantised = quantised) * floor_scale / len(blocks)
-        if not kv_on_host
-        else 0.0
-    )
+    if kv_on_host:
+        kv_live_per_layer = 0.0
+    elif layout.has_swa and kv_bytes_floor > 0:
+        # The measured floor of a windowed cache is context-FLAT once the window
+        # is saturated (``cache_bytes`` returns it unscaled for that reason), and
+        # the layout does not say how it splits between the windowed layers and
+        # the few full-context ones. Scaling all of it by the live fraction
+        # charged the fitter a fraction of a cache it reads in full -- 4x short
+        # on a gemma-shaped 5.5 GiB cache at a 2K prompt -- and declined spills
+        # the hardware wins. The whole floor as live over-charges only the
+        # full-context share, the direction a gate that has been wrong the other
+        # way can afford.
+        kv_live_per_layer = kv_total / len(blocks)
+    else:
+        kv_live_per_layer = (
+            cache_bytes(layout, live_tokens, kv_quantised = quantised) * floor_scale / len(blocks)
+        )
 
     if layout.is_moe:
         # MEASURED, not assumed. On an MoE model ``--fit on`` keeps EVERY layer
@@ -1075,6 +1093,31 @@ def _fit_fallback_placement(
             host_experts += block.spillable_bytes
             if resident - host_experts <= budget:
                 return Placement(host_groups = [_ffn_group(layout, host_experts)])
+        # Every expert on the host and still short. common/fit.cpp does not fail
+        # here: with the experts gone it lowers n_gpu_layers like the dense fitter
+        # below, moving whole LEADING layers with their attention, dense FFN,
+        # cache share and recurrent state (fit.cpp: the `hp_nex == 0 ||
+        # global_surplus_cpu_moe <= 0` branch sets ngl and returns). Answering
+        # None here let the planner's lm_head rung through with no comparison at
+        # all, and a large vocabulary head can cost more than the few layers the
+        # fitter moves instead.
+        recurrent_per_layer = (
+            0.0 if kv_on_host else layout.recurrent_bytes * max(1, n_seq) / len(blocks)
+        )
+        host_layers = 0
+        for moved, block in enumerate(blocks, start = 1):
+            host_layers += block.resident_bytes
+            host_recurrent = int(recurrent_per_layer * moved)
+            freed = host_experts + host_layers + int(kv_per_layer * moved) + host_recurrent
+            if resident - freed <= budget:
+                groups = [_ffn_group(layout, host_experts)]
+                if host_layers:
+                    groups.append(TensorGroup("layers", host_layers, Access.CONTIGUOUS))
+                if host_recurrent:
+                    groups.append(
+                        TensorGroup("recurrent (moved layers)", host_recurrent, Access.CONTIGUOUS)
+                    )
+                return Placement(host_groups = groups, kv_host_bytes = int(kv_live_per_layer * moved))
         return None
 
     # Dense, where the whole-layer model IS what happens: measured n_part=0 with

@@ -669,6 +669,10 @@ def test_the_measured_moe_veto_still_applies_when_the_fallback_cannot_be_modelle
     long-prompt veto, which is a measurement rather than a comparison, must not
     be skipped with it. It was: this was the only path by which a gated MoE ever
     accepted -ot at a 32K prompt.
+
+    The modelled fitter has since gained that step-3 stage, so the unmodellable
+    case no longer arises here; the veto must still fire FIRST, before any
+    ranking, and with it disabled the plan is ranked rather than waved through.
     """
     layout = graded_moe_layout(n_blocks = 64, ffn_gib = 0.5)
     got = plan_placement(
@@ -676,8 +680,9 @@ def test_the_measured_moe_veto_still_applies_when_the_fallback_cannot_be_modelle
     )
     assert not got.spills_anything and got.declined_by_gate
     assert "tokens per slot" in got.reason, got.reason
-    # ...and with the veto disabled it still falls through to the old answer,
-    # because there is genuinely nothing to rank against.
+    assert got.predicted_fit_request_ms == 0.0, "the veto fires before any ranking"
+    # ...and with the veto disabled the fitter's layer-lowering stage gives the
+    # gate an arm to rank against, so the verdict is a comparison, not a pass.
     ungated = plan_placement(
         layout,
         [4 * GIB],
@@ -685,7 +690,8 @@ def test_the_measured_moe_veto_still_applies_when_the_fallback_cannot_be_modelle
         32768,
         opts = gated(host = HostProfile(threads = 12), moe_long_prompt_ctx = 0),
     )
-    assert ungated.spills_anything and not ungated.declined_by_gate
+    assert "tokens per slot" not in ungated.reason
+    assert ungated.predicted_fit_request_ms > 0, ungated.reason
 
 
 def mixed_quant_layout(n_blocks: int = 64) -> ModelLayout:
@@ -768,3 +774,61 @@ def test_the_fallback_charges_the_recurrent_state_once_per_slot():
         return state.bytes_total / moved
 
     assert abs(per_moved_layer(four) / per_moved_layer(one) - 4) < 0.05
+
+
+def test_the_moe_fallback_lowers_layers_once_every_expert_is_on_the_host():
+    """When the deficit outruns every expert, common/fit.cpp does not fail: it
+    lowers n_gpu_layers and moves whole leading layers with their cache. Modelled
+    as None, the planner's lm_head rung went through with no comparison at all."""
+    layout = moe_layout()
+    tight = int(1.5 * GIB)
+    placement = _fit_fallback_placement(
+        layout, gated(), tight, 8192, quantised = False, kv_bytes_floor = 0, kv_on_host = False
+    )
+    assert placement is not None
+    names = [g.name for g in placement.host_groups]
+    assert "layers" in names, names
+    experts = next(g for g in placement.host_groups if g is placement.host_groups[0])
+    assert experts.bytes_total == layout.spillable_bytes
+    assert placement.kv_host_bytes > 0
+
+    # And the gate now has an arm to rank the lm_head rung against.
+    from core.inference.offload_planner import plan_placement
+
+    ranked = None
+    for tenths in range(15, 40):
+        vram = tenths * GIB // 10
+        plan = plan_placement(layout, [vram], 64 * GIB, 8192, opts = gated(allow_lm_head_spill = True))
+        if any("output" in p for p in plan.ot_patterns) or (
+            plan.declined_by_gate and plan.predicted_fit_request_ms > 0
+        ):
+            ranked = plan
+            break
+    assert ranked is not None, "no budget reached the lm_head rung"
+    assert ranked.predicted_fit_request_ms > 0, ranked.reason
+
+
+def test_a_saturated_windowed_cache_is_charged_flat_when_the_fitter_moves_it():
+    """A windowed model's measured floor is context-flat once its window is
+    saturated; scaling it by the live fraction charged the fitter a fraction of a
+    cache it reads in full, and the gate declined spills the hardware wins."""
+    layout = replace(dense_layout(), arch = "gemma3", has_swa = True)
+    floor = 4 * GIB
+    n_ctx = 32768
+    live_fraction = (2048 + 128) / n_ctx
+    placement = _fit_fallback_placement(
+        layout,
+        gated(workload_prompt_tokens = 2048, workload_generated_tokens = 128),
+        8 * GIB,
+        n_ctx,
+        quantised = False,
+        kv_bytes_floor = floor,
+        kv_on_host = False,
+    )
+    assert placement is not None
+    per_block = layout.blocks[0].spillable_bytes + layout.blocks[0].resident_bytes
+    moved = round(sum(g.bytes_total for g in placement.host_groups) / per_block)
+    assert moved > 0
+    flat = floor * moved / len(layout.blocks)
+    assert placement.kv_host_bytes >= flat * 0.98, (placement.kv_host_bytes, flat)
+    assert placement.kv_host_bytes > flat * live_fraction * 2

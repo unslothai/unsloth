@@ -27909,13 +27909,20 @@ class LlamaCppBackend:
         # number it can give back whole.
         mmproj_bytes = 0
         mmproj_movable = bool(inputs.get("mmproj_movable"))
+        _mm_surcharge = int(inputs.get("mmproj_surcharge_bytes") or 0)
+        # The surcharge is ONE allocation on the main device, whether or not the
+        # projector may move; soft_overhead carries it and the planner charges
+        # that term on every card, which invented a projector per GPU on a
+        # layer split and spilled weights to pay for it. Out of the per-device
+        # term either way; charged once as resident when the projector stays.
+        overhead_per_device -= _mm_surcharge
         if mmproj_movable:
             _mm_file = int(inputs.get("mmproj_file_bytes") or 0)
-            _mm_surcharge = int(inputs.get("mmproj_surcharge_bytes") or 0)
             mmproj_bytes = _mm_file + _mm_surcharge
             extra_gpu_bytes -= _mm_file
-            overhead_per_device -= _mm_surcharge
             mmproj_movable = mmproj_bytes > 0
+        else:
+            extra_gpu_bytes += _mm_surcharge
 
         # The compute buffer, on the same terms as the fit that sent us here:
         # ctx_compute is per device, compute_buffer_flat is one lump charged once

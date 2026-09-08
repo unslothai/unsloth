@@ -2453,3 +2453,20 @@ def test_the_context_ladder_tests_the_minimum_context_before_giving_up(monkeypat
     assert seen[0] == 8960
     assert seen[-1] == 8192
     assert plan.n_ctx == 8192 and not plan.declined_by_gate
+
+
+def test_the_boundary_block_is_left_whole_when_a_later_rung_closed_the_deficit():
+    """Once the expert rung runs out and dense units follow, grading the last
+    expert block against a deficit the dense units already cover keeps cheap
+    routed-expert bytes resident so dearer dense bytes can stay spilled. The
+    rung that closed the gap is the only one that may be graded."""
+    from core.inference.offload_cost_model import HostProfile
+
+    layout = graded_moe_with_shared(0.4)
+    opts = PlanOptions(host = HostProfile(threads = 6))
+    plan = plan_placement(layout, [5 * GIB], 94 * GIB, 8192, opts = opts)
+    assert plan.spills_anything, plan.reason
+    dense = [p for p in plan.ot_patterns if "_shexp" in p]
+    assert dense, plan.ot_patterns
+    graded_expert = [p for p in plan.ot_patterns if "_shexp" not in p and r"\d+" not in p]
+    assert not graded_expert, plan.ot_patterns

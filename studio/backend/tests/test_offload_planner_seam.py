@@ -2557,8 +2557,10 @@ def test_min_parallel_never_exceeds_the_priced_count(monkeypatch):
 def test_a_movable_projector_is_taken_out_of_the_fused_terms(monkeypatch):
     """The projector's file bytes ride in extra_gpu_bytes and its runtime
     surcharge in soft_overhead. When the planner may move it, both leave those
-    terms and arrive as ONE number it can give back whole; otherwise nothing
-    moves and the projector stays charged exactly as before."""
+    terms and arrive as ONE number it can give back whole. When it may not, the
+    file bytes stay where they were and the surcharge, one allocation on the
+    main device, is charged there once: left in the per-device term it was
+    invented on every card of a layer split."""
     common = dict(
         free_mib = 14 * 1024,
         extra_gpu = 3 * GIB,
@@ -2574,8 +2576,8 @@ def test_a_movable_projector_is_taken_out_of_the_fused_terms(monkeypatch):
 
     pinned, _ = _captured_opts(monkeypatch, _Stub(), mmproj_movable = False, **common)
     assert pinned.mmproj_movable is False and pinned.mmproj_bytes == 0
-    assert pinned.extra_resident_bytes == 3 * GIB
-    assert pinned.overhead_bytes_per_device == 700 * MIB
+    assert pinned.extra_resident_bytes == 3 * GIB + 400 * MIB
+    assert pinned.overhead_bytes_per_device == 300 * MIB
 
 
 def test_a_droppable_draft_is_a_separate_term_with_the_excluded_blocks(monkeypatch):
