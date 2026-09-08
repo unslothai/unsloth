@@ -27,6 +27,8 @@ const {
   readContinuationRequest,
   readIncompleteInfo,
   readTextThoughtSignature,
+  resolveIncompleteReason,
+  restoredAssistantStatus,
   claimAutoContinue,
   recordAutoContinue,
   rejectsAssistantPrefill,
@@ -179,6 +181,66 @@ test("every stop reason has a label", () => {
   assert.equal(incompleteLabel("length"), "Response hit the Max Tokens limit");
   assert.equal(incompleteLabel("cancelled"), "Response stopped");
   assert.equal(incompleteLabel("interrupted"), "Response interrupted");
+  // Not the Max Tokens sentence: the caller's cap was never the limit that was hit.
+  assert.equal(
+    incompleteLabel("context_window"),
+    "Response filled the model's context window",
+  );
+});
+
+test("a window-exhausted turn is stamped apart from a Max Tokens cut", () => {
+  resetAutoContinue();
+  // The provider reported `length` either way; only the out-of-band signal separates a
+  // reply that ran out of the caller's budget from one that ran out of window.
+  assert.equal(resolveIncompleteReason("length", false), "length");
+  const reason = resolveIncompleteReason("length", true);
+  assert.equal(reason, "context_window");
+  // The turn still reads as truncated, so the notice renders and survives a reload.
+  assert.deepEqual(readIncompleteInfo({ custom: { incomplete: { reason } } }), {
+    reason: "context_window",
+  });
+  assert.deepEqual(restoredAssistantStatus({ custom: { incomplete: { reason } } }), {
+    type: "incomplete",
+    reason: "length",
+  });
+});
+
+test("a window-exhausted turn is never resumed automatically", () => {
+  resetAutoContinue();
+  // Auto-continue replays the partial as MORE prompt against the window that just
+  // overflowed, so the budget would be spent on rounds that fail identically. The
+  // `fits` guard cannot catch this: it reads truncation metadata only local models emit.
+  assert.equal(
+    shouldAutoContinue(resolveIncompleteReason("length", true), "parent-1"),
+    false,
+  );
+  assert.equal(
+    shouldAutoContinueMessage(
+      "m1",
+      resolveIncompleteReason("length", true),
+      "parent-1",
+    ),
+    false,
+  );
+  assert.equal(autoContinueCount("parent-1"), 0);
+});
+
+test("the adapter latches the backend window-exhaustion event", () => {
+  // The mapping lives in the streaming loop, which cannot be imported here.
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    adapter,
+    /toolEvent\.type === "context_window_exceeded"[\s\S]{0,120}contextWindowExceeded = true/,
+    "the backend event is no longer latched",
+  );
+  assert.match(
+    adapter,
+    /resolveIncompleteReason\(\s*incompleteReason,\s*contextWindowExceeded,\s*\)/,
+    "the latched signal no longer reaches the stamped reason",
+  );
 });
 
 test("a continuation request is read only when it carries text", () => {

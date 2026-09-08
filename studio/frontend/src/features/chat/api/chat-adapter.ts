@@ -257,6 +257,7 @@ import {
   createContinuationMerger,
   type IncompleteReason,
   readIncompleteInfo,
+  resolveIncompleteReason,
   readContinuationRequest,
   rejectsAssistantPrefill,
   resumesExactly,
@@ -5558,6 +5559,9 @@ export function createOpenAIStreamAdapter(
       // Latched on the `anthropic_refusal` tool event and stamped onto final metadata as
       // `custom.anthropicRefusal` to drive the history prune.
       let anthropicRefusalSeen = false;
+      // Latched on the `context_window_exceeded` tool event: a `length` cut with nothing
+      // left to resume into.
+      let contextWindowExceeded = false;
       let serverMetadata: {
         usage?: ServerUsage;
         timings?: ServerTimings;
@@ -6495,6 +6499,10 @@ export function createOpenAIStreamAdapter(
                 if (toolEvent.type === "anthropic_refusal") {
                   // Latch the backend refusal signal so final metadata can drive the prune.
                   anthropicRefusalSeen = true;
+                  continue;
+                }
+                if (toolEvent.type === "context_window_exceeded") {
+                  contextWindowExceeded = true;
                   continue;
                 }
                 if (toolEvent.type === "tool_output") {
@@ -7734,6 +7742,10 @@ export function createOpenAIStreamAdapter(
         );
 
         reasoningDurationTracker.finishGroup();
+        const finalIncompleteReason = resolveIncompleteReason(
+          incompleteReason,
+          contextWindowExceeded,
+        );
         yield {
           content: [
             ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
@@ -7748,8 +7760,8 @@ export function createOpenAIStreamAdapter(
 
               openaiCodexReasoning: codexReasoningLedger,
               contextTruncation,
-              incomplete: incompleteReason
-                ? { reason: incompleteReason }
+              incomplete: finalIncompleteReason
+                ? { reason: finalIncompleteReason }
                 : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,

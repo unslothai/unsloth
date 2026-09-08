@@ -2528,6 +2528,7 @@ class ExternalProviderClient:
         # Anthropic stop_reason -> OpenAI finish_reason. `pause_turn` maps to
         # None so the UI doesn't treat a paused server-tool turn as final.
         # `refusal` -> "content_filter" (closest match).
+        # `model_context_window_exceeded` is a truncation, not a completed answer.
         # https://platform.claude.com/docs/en/api/messages#response-stop-reason
         _finish_reason_map: dict[str, Optional[str]] = {
             "end_turn": "stop",
@@ -2535,6 +2536,7 @@ class ExternalProviderClient:
             "stop_sequence": "stop",
             "tool_use": "tool_calls",
             "refusal": "content_filter",
+            "model_context_window_exceeded": "length",
             "pause_turn": None,
         }
 
@@ -3217,6 +3219,14 @@ class ExternalProviderClient:
                                         "again._"
                                     )
                                     yield _emit_tool_event({"type": "anthropic_refusal"})
+                                if stop_reason == "model_context_window_exceeded":
+                                    logger.warning(
+                                        "Anthropic context window exhausted (model=%s)",
+                                        model,
+                                    )
+                                    yield _emit_tool_event(
+                                        {"type": "context_window_exceeded"}
+                                    )
                                 if mapped is not None:
                                     chunk = {
                                         "id": completion_id,

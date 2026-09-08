@@ -5,8 +5,13 @@
  *  is re-sent with the partial as the final assistant turn plus `continue_final_message`, so
  *  the prompt ends mid-sentence and the new text is appended to the partial. */
 
-/** Why a turn ended before the model was done. */
-export type IncompleteReason = "length" | "cancelled" | "interrupted";
+/** Why a turn ended before the model was done. `context_window` is a `length` cut the same
+ *  request can never fit into, so it is a separate reason rather than a flavour of `length`. */
+export type IncompleteReason =
+  | "length"
+  | "cancelled"
+  | "interrupted"
+  | "context_window";
 
 /** Metadata stamped on an assistant message that stopped early. */
 export type IncompleteInfo = {
@@ -17,6 +22,7 @@ const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
   "length",
   "cancelled",
   "interrupted",
+  "context_window",
 ];
 
 /** Below this a shared boundary is likely coincidence, and trimming would eat output. */
@@ -27,6 +33,18 @@ const MAX_OVERLAP = 400;
 
 /** How much of the partial's opening a restart has to reproduce to be called a restart. */
 const RESTART_PROBE = 48;
+
+/** The reason to stamp on a turn whose provider reported a `length` cut. A provider that says
+ *  the reply filled the model's context window stopped for something no continuation can undo,
+ *  and the distinction is what keeps the automatic resume off it. */
+export function resolveIncompleteReason(
+  reason: IncompleteReason | null,
+  contextWindowExceeded: boolean,
+): IncompleteReason | null {
+  return contextWindowExceeded && reason === "length"
+    ? "context_window"
+    : reason;
+}
 
 /** Read the incomplete marker off an assistant message's metadata. */
 export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
@@ -53,6 +71,7 @@ const STATUS_REASON: Record<
   cancelled: "cancelled",
   length: "length",
   interrupted: "error",
+  context_window: "length",
 };
 
 /** Restore assistant-ui's status without losing the product-specific stop reason. */
@@ -70,6 +89,7 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   length: "Response hit the Max Tokens limit",
   cancelled: "Response stopped",
   interrupted: "Response interrupted",
+  context_window: "Response filled the model's context window",
 };
 
 /** The user-facing explanation of why a turn stopped. */
@@ -284,8 +304,11 @@ export function readContinuationRequest(
 
 /** Resuming a Max Tokens cut WITHOUT asking: hitting the cap is not a decision the user made.
  *  Every other reason is left alone, since `cancelled` would restart what the user just
- *  stopped and `interrupted` can hide a broken link. Bounded, because a model that will not
- *  stop would loop forever and each round drives compaction harder. */
+ *  stopped, `interrupted` can hide a broken link, and `context_window` has no room left to
+ *  resume into -- the partial is replayed as MORE prompt against the window that just
+ *  overflowed, so every round would be a paid request that fails identically. Bounded,
+ *  because a model that will not stop would loop forever and each round drives compaction
+ *  harder. */
 export const AUTO_CONTINUE_LIMIT = 3;
 
 /** Rounds already spent per logical turn, keyed by the parent the continuation hangs off: a
