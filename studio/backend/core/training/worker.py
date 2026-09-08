@@ -3745,6 +3745,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         except Exception as _oom_guard_err:
             logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)
 
+    # ── 2. Now import ML libraries (fresh in this clean process) ──
     try:
         _send_status(event_queue, "Importing Unsloth...")
 
