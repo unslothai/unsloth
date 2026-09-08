@@ -5689,24 +5689,55 @@ def _resolve_model_identifier_for_gpu_estimate(
         return model_name
 
 
+_TORCH_BOOKKEEPING_PREFIXES = (
+    "optimizer.",
+    "optimizer_",
+    "scheduler.",
+    "scaler.",
+    "rng_state",
+    "training_args.",
+    "trainer_state.",
+)
+
+
 def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
     model_path = Path(model_name)
     if not model_path.exists():
         return None
 
-    weight_exts = (".safetensors", ".bin", ".pt", ".pth")
     # Skip intermediate training checkpoints: a run dir can hold several
     # checkpoint-*/global_step* snapshots, but export loads only the model at
     # the root, so counting them would multiply the estimate.
     skip_prefixes = ("checkpoint-", "global_step")
-    total = 0
+    per_directory: dict = {}
     for file in model_path.rglob("*"):
-        if not file.is_file() or file.suffix not in weight_exts:
+        if not file.is_file():
             continue
+        name = file.name.lower()
         rel = file.relative_to(model_path)
         if any(part.startswith(skip_prefixes) for part in rel.parts):
             continue
-        total += file.stat().st_size
+        if name.endswith(".safetensors"):
+            slot = 0
+        elif name.endswith((".bin", ".pt", ".pth")) and not name.startswith(
+            _TORCH_BOOKKEEPING_PREFIXES
+        ):
+            slot = 1
+        else:
+            continue
+        totals = per_directory.setdefault(rel.parent, [0, 0])
+        totals[slot] += file.stat().st_size
+
+    def _sum(directories) -> int:
+        return sum(max(totals) for totals in directories)
+
+    outside_original = _sum(
+        totals for directory, totals in per_directory.items() if directory.parts[:1] != ("original",)
+    )
+    original_copy = _sum(
+        totals for directory, totals in per_directory.items() if directory.parts[:1] == ("original",)
+    )
+    total = max(outside_original, original_copy)
     return total if total > 0 else None
 
 
