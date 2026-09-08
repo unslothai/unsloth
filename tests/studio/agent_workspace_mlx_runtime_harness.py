@@ -53,9 +53,7 @@ def _prepare_workspace(root: Path) -> Path:
         shutil.rmtree(root)
     (root / "src").mkdir(parents = True)
     (root / "AGENTS.md").write_text(ROOT_AGENTS_RULE + "\n", encoding = "utf-8")
-    (root / "src" / "AGENTS.md").write_text(
-        NESTED_AGENTS_RULE + "\n", encoding = "utf-8"
-    )
+    (root / "src" / "AGENTS.md").write_text(NESTED_AGENTS_RULE + "\n", encoding = "utf-8")
     (root / TARGET_PATH).write_text(
         'RUNTIME_SENTINEL = "real-mlx-agent-workspace"\n', encoding = "utf-8"
     )
@@ -229,9 +227,7 @@ def run_certification(
             )
         model_entry = backend.models.get(active_model) or {}
         if model_entry.get("is_mlx") is not True:
-            raise AssertionError(
-                f"The loaded worker did not publish is_mlx=true: {model_entry!r}"
-            )
+            raise AssertionError(f"The loaded worker did not publish is_mlx=true: {model_entry!r}")
 
         register_llama_cpp_backend(None)
         original_generate = backend.generate_chat_completion_with_tools
