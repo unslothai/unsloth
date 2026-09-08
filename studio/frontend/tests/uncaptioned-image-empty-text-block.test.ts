@@ -32,14 +32,19 @@ const serializeJs = ts.transpileModule(
     liftAdapterFunction("function collectImageParts("),
     liftAdapterFunction("function buildReplayContent("),
     liftAdapterFunction("function toOpenAIMessages("),
-    "return toOpenAIMessages;",
+    "return { toOpenAIMessages, buildReplayContent };",
   ].join("\n\n"),
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
 
-const toOpenAIMessages = new Function(serializeJs)() as (
-  message: unknown,
-) => Array<{ role: string; content: unknown }>;
+const { toOpenAIMessages, buildReplayContent } = new Function(
+  serializeJs,
+)() as {
+  toOpenAIMessages: (
+    message: unknown,
+  ) => Array<{ role: string; content: unknown }>;
+  buildReplayContent: (text: string, images: unknown[]) => unknown;
+};
 
 const IMAGE_DATA_URL = "data:image/png;base64,aGVsbG8=";
 
@@ -68,6 +73,48 @@ test("a captioned image still leads with its text block", () => {
     { type: "text", text: "what is this?" },
     { type: "image_url", image_url: { url: IMAGE_DATA_URL } },
   ]);
+});
+
+test("a whitespace-only caption sends no text block either", () => {
+  // Two empty text parts join to "\n", which is truthy. Anthropic rejects that
+  // block as well, with "text content blocks must contain non-whitespace text".
+  const [serialized] = toOpenAIMessages({
+    role: "user",
+    content: [
+      { type: "text", text: "" },
+      { type: "text", text: "" },
+      { type: "image", image: IMAGE_DATA_URL },
+    ],
+  });
+
+  assert.deepEqual(serialized.content, [
+    { type: "image_url", image_url: { url: IMAGE_DATA_URL } },
+  ]);
+});
+
+test("a real caption keeps its own surrounding whitespace", () => {
+  const [serialized] = toOpenAIMessages({
+    role: "user",
+    content: [
+      { type: "text", text: "  what is this?  " },
+      { type: "image", image: IMAGE_DATA_URL },
+    ],
+  });
+
+  assert.deepEqual(serialized.content, [
+    { type: "text", text: "  what is this?  " },
+    { type: "image_url", image_url: { url: IMAGE_DATA_URL } },
+  ]);
+});
+
+test("the serialised content is not the collected image array itself", () => {
+  // buildReplayContent returns a fresh array, so a consumer that mutates the
+  // message content cannot reach back into what was passed in.
+  const images = [
+    { type: "image_url" as const, image_url: { url: IMAGE_DATA_URL } },
+  ];
+  assert.notEqual(buildReplayContent("", images), images);
+  assert.deepEqual(buildReplayContent("", images), images);
 });
 
 test("a text-only turn still serialises to a plain string", () => {

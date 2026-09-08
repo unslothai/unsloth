@@ -1192,9 +1192,15 @@ function buildReplayContent(
   imageParts: Array<{ type: "image_url"; image_url: { url: string } }>,
 ): OpenAIMessageContent {
   if (imageParts.length === 0) return textContent;
-  return textContent
+  // trim() only decides whether the block is worth sending; the block itself keeps
+  // the text verbatim. Anthropic rejects a whitespace-only text block as well as an
+  // empty one, and collectTextParts joins with "\n", so a turn with two empty text
+  // parts and an image arrives here as "\n" -- truthy, and still rejected.
+  // Spread rather than return imageParts itself: the caller's array must not become
+  // the message content it passed in.
+  return textContent.trim()
     ? [{ type: "text", text: textContent }, ...imageParts]
-    : imageParts;
+    : [...imageParts];
 }
 
 function collectAssistantTextThoughtSignature(
