@@ -775,6 +775,7 @@ installed_llama_prebuilt_release() {
     [ -f "$metadata_path" ] || return 0
     python - "$metadata_path" <<'PY' 2>/dev/null || true
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -792,6 +793,10 @@ llama_tag = str(payload.get("tag") or "").strip()
 source = str(payload.get("source") or "").strip()
 binary_repo = str(payload.get("binary_repo") or "").strip()
 binary_tag = str(payload.get("binary_release_tag") or "").strip()
+_backend_raw = payload.get("backend")
+# Absent before #8520, and null when backend_for_install_kind() had no answer. str() on a
+# non-string would diverge from the setup.ps1 twin (Python "[1, 2]" vs PowerShell "1 2").
+backend = _backend_raw.strip() if isinstance(_backend_raw, str) else ""
 if not repo or not release_tag:
     raise SystemExit(0)
 
@@ -804,6 +809,10 @@ else:
     message = f"installed release: {repo}@{release_tag}"
     if llama_tag and llama_tag != release_tag:
         message += f" (tag {llama_tag})"
+# Name the backend: a Vulkan and a ROCm bundle print an identical line without it. The
+# shape check keeps the line single-line and matches the setup.ps1 twin byte for byte.
+if re.fullmatch(r"[A-Za-z0-9._+-]{1,32}", backend):
+    message += f" -- {backend} backend"
 print(message)
 PY
 }
@@ -1877,6 +1886,30 @@ except (PackageNotFoundError, ValueError, IndexError):
 sys.exit(0 if (major, minor) >= (4, 14) else 1)
 " 2>/dev/null; then
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+        # Same shape, same reason: a venv installed before the tokenizers pin can
+        # hold a tokenizers the installed transformers rejects at import, which
+        # takes down every `import transformers` and so the whole MLX stack, while
+        # $_PKG_NAME itself is current. Without this the fast path reports "up to
+        # date" and repairs nothing. Ask the metadata, not an import: the import is
+        # what is broken. Any unreadable half exits 1 and changes nothing.
+        if "$VENV_DIR/bin/python" -c "
+import sys
+from importlib.metadata import PackageNotFoundError, requires, version
+try:
+    from packaging.requirements import Requirement
+    installed = version('tokenizers')
+    windows = [
+        req.specifier
+        for req in (Requirement(raw) for raw in (requires('transformers') or []))
+        if req.name == 'tokenizers' and req.marker is None
+    ]
+except (PackageNotFoundError, ImportError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if windows and installed not in windows[0] else 1)
+" 2>/dev/null; then
+            substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
         # An interrupted install leaves $_PKG_NAME current while studio.txt

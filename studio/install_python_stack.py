@@ -5135,6 +5135,44 @@ if not _TORCH_BACKEND:
         _TORCH_BACKEND = "cuda"
 
 
+# Quoted values only, so the `hip: Optional[str] = None` a non-ROCm build writes is negative.
+_TORCH_VERSION_PY_HIP_RE = re.compile(r"""^hip\s*(?::[^=]*)?=\s*['"]([^'"]*)['"]""", re.MULTILINE)
+
+
+def _torch_hip_version_on_disk() -> str:
+    """torch.version.hip read from torch/version.py, launching no interpreter."""
+    try:
+        importlib.invalidate_caches()
+        spec = importlib.util.find_spec("torch")
+    except (ImportError, ValueError):
+        return ""
+    if spec is None or not spec.origin:
+        return ""
+    try:
+        text = (
+            Path(spec.origin).with_name("version.py").read_text(encoding = "utf-8", errors = "replace")
+        )
+    except OSError:
+        return ""
+    match = _TORCH_VERSION_PY_HIP_RE.search(text)
+    return match.group(1) if match else ""
+
+
+def _installed_torch_is_windows_rocm_cheap() -> bool:
+    """_installed_torch_is_windows_rocm's verdict without ever running `import torch`.
+
+    _torch_step_label runs with the probe memo cold, so the probing form spent up to its
+    90s timeout before _progress() emitted anything, to format a string.
+    """
+    if not IS_WINDOWS:
+        return False
+    if _TORCH_RUNTIME_PROBE is not None:
+        return _installed_torch_is_windows_rocm()
+    if _torch_hip_version_on_disk():
+        return True
+    return "rocm" in _installed_torch_version_label().lower()
+
+
 def _torch_step_label(suffix: str) -> str:
     """Return a progress label like 'torch check (cuda)' using the known backend.
 
@@ -5145,7 +5183,9 @@ def _torch_step_label(suffix: str) -> str:
     if not backend:
         if _has_usable_nvidia_gpu():
             backend = "cuda"
-        elif _has_rocm_gpu():
+        # rocminfo and amd-smi ship with the HIP SDK, not with AMD's bundled-runtime
+        # wheels, so a Windows ROCm host reads as CPU without the second operand.
+        elif _has_rocm_gpu() or _installed_torch_is_windows_rocm_cheap():
             backend = "rocm"
         else:
             backend = "cpu"
@@ -7080,7 +7120,7 @@ def install_python_stack() -> int:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
         else:
             base_total += 1  # torch flavor invariant (step 13w), Windows
-    if IS_MAC_ARM and not skip_base:
+    if IS_MAC_ARM and not skip_base and not NO_TORCH:
         base_total += 1  # MLX stack, same gate as the step itself
     base_requirements = _shared_base_requirements() if skip_base else None
     # Core packages and shared base requirements occupy one progress slot. A
@@ -7160,7 +7200,9 @@ def install_python_stack() -> int:
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).
-    if IS_MAC_ARM and not skip_base:
+    # Not on a --no-torch install: it declined the training stack, and the runtime's
+    # no_torch verdict tells the user an update will not put it back.
+    if IS_MAC_ARM and not skip_base and not NO_TORCH:
         _progress("MLX stack (Apple Silicon)")
         pip_install(
             "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",

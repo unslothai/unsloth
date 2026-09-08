@@ -913,7 +913,8 @@ class InferenceOrchestrator:
                         else:
                             self._mark_worker_started(owner)
                     other.put(resp)
-                    return None
+                # Outside the mailbox check on purpose: a released request's late frames go to nobody.
+                return None
             return resp
 
         def drain(timeout: float = 5.0) -> bool:
@@ -2017,9 +2018,7 @@ class InferenceOrchestrator:
                     if not self._ensure_subprocess_alive():
                         raise RuntimeError(self._subprocess_crash_message("count"))
                     continue
-                # A reply whose own mailbox is gone -- an earlier count that timed out
-                # while the worker still held its command -- is handed back to whoever is
-                # reading, and the type alone cannot tell it from this one's.
+                # _direct_reader already drops a reply whose mailbox is gone; this is the backstop.
                 if (
                     candidate.get("type") == "count_tokens_response"
                     and candidate.get("request_id") == request_id
