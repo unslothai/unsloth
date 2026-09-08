@@ -775,6 +775,14 @@ def _has_an_access_acl(path: str) -> bool:
     )
 
 
+# Groups whose membership reaches far beyond a device node. Not exhaustive and does not
+# need to be: anything here is reported instead of prescribed, and an unlisted group that
+# turns out to be privileged is the status quo rather than a regression.
+_PRIVILEGED_GROUPS = frozenset(
+    {"root", "wheel", "sudo", "admin", "adm", "disk", "kmem", "shadow"}
+)
+
+
 def _groups_that_own(paths: list) -> tuple:
     """How to open ``paths``, read from the nodes: ``(joinable, unnamed, no_group, acl)``.
 
@@ -796,7 +804,7 @@ def _groups_that_own(paths: list) -> tuple:
     Best effort by construction: a node that cannot be stat'd contributes to none of the
     three rather than raising, since this runs where things are already wrong.
     """
-    joinable, unnamed, no_group, acl = [], [], [], []
+    joinable, unnamed, no_group, acl, owned, privileged = [], [], [], [], [], []
     for path in paths:
         try:
             _st = os.stat(path)
@@ -810,6 +818,12 @@ def _groups_that_own(paths: list) -> tuple:
         if _has_an_access_acl(path):
             acl.append(path)
             continue
+        # POSIX resolves the owner class EXCLUSIVELY once the uid matches, so on a node
+        # this account owns the group bits are never consulted and joining the group
+        # cannot open it. os.access() already said it is shut; the repair is the mode.
+        if _st.st_uid == os.getuid():
+            owned.append(path)
+            continue
         # Group read AND write: HIP and the Vulkan loader both open the node read-write,
         # which is the same bar amd_nodes_closed_to_this_user() applied to this account.
         if (_st.st_mode & stat.S_IRGRP) == 0 or (_st.st_mode & stat.S_IWGRP) == 0:
@@ -822,9 +836,38 @@ def _groups_that_own(paths: list) -> tuple:
             if _st.st_gid not in unnamed:
                 unnamed.append(_st.st_gid)
             continue
+        # Joining one of these would open the node and hand over a great deal else with
+        # it, so a device node owned by one is a udev misconfiguration to report rather
+        # than a membership to prescribe. gid 0 as well as the name, since a renamed
+        # root group is still root.
+        if _st.st_gid == 0 or name in _PRIVILEGED_GROUPS:
+            if name and name not in privileged:
+                privileged.append(name)
+            continue
         if name and name not in joinable:
             joinable.append(name)
-    return joinable, unnamed, no_group, acl
+    return joinable, unnamed, no_group, acl, owned, privileged
+
+
+_RENDER_NODE_GLOB = "/dev/dri/renderD*"
+
+
+def _amd_nodes_the_runtime_lacks(*, needs_kfd: bool = True) -> "list[str]":
+    """The AMD device nodes this backend opens that do not exist at all.
+
+    Gated on the KFD topology, which is world-readable sysfs and names the vendor, so this
+    cannot fire on a host with no AMD card -- the trap a bare "no render node" test would
+    fall into, since every vendor's nodes live under the same glob. A host that cannot show
+    the topology either reports nothing rather than guessing.
+    """
+    if not _kfd_topology_has_an_amd_gpu():
+        return []
+    lacks = []
+    if needs_kfd and not os.path.exists(_KFD_NODE):
+        lacks.append(_KFD_NODE)
+    if not _amd_render_node_exists():
+        lacks.append(_RENDER_NODE_GLOB)
+    return lacks
 
 
 def amd_closed_nodes_block_the_runtime(*, needs_kfd: bool = True) -> bool:
@@ -842,6 +885,12 @@ def amd_closed_nodes_block_the_runtime(*, needs_kfd: bool = True) -> bool:
     True on a host this cannot read, which keeps the closed node as the stated reason and
     is what the callers said before this existed.
     """
+    # Missing is not open. A node the runtime needs and that does not exist leaves it with
+    # no way in exactly as a shut one does, and amd_node_permission_hint() names the repair
+    # for it -- so answering only about CLOSED nodes suppressed that hint at every caller,
+    # on the two container shapes where it is the whole diagnosis.
+    if _amd_nodes_the_runtime_lacks(needs_kfd = needs_kfd):
+        return True
     closed = amd_nodes_closed_to_this_user()
     if not closed:
         return False
@@ -866,83 +915,83 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     closed = amd_nodes_closed_to_this_user()
     if not needs_kfd:
         closed = [path for path in closed if path != _KFD_NODE]
-    # A missing render node is not a permission problem and does not need a closed node to
-    # be worth saying: a container given --device /dev/kfd and not --device /dev/dri opens
-    # the one node it has, so the closed set is empty and this returned None with nothing
-    # working. Gated on the KFD topology, which is world-readable sysfs and names the
-    # vendor, so this cannot fire on a host with no AMD card -- the trap a bare
-    # "no render node" test would fall into, since every vendor's nodes live under the
-    # same glob.
-    _render_missing = not _amd_render_node_exists()
-    if not closed:
-        if _render_missing and _kfd_topology_has_an_amd_gpu():
-            return (
-                "This host has an AMD GPU in the KFD topology but no AMD render node "
-                "(/dev/dri/renderD*), and ROCm and Vulkan both open one, so the device "
-                "mapping needs fixing; under Docker that is --device /dev/kfd "
-                "--device /dev/dri."
+    # A node the runtime needs and that does not exist blocks exactly as hard as one it
+    # cannot open, and needs saying whether or not anything is closed: a container given
+    # --device /dev/kfd and not --device /dev/dri opens the one node it has and enumerates
+    # nothing, and the mirror image (only /dev/dri) leaves HIP with no /dev/kfd. Both used
+    # to be reachable only after a closed node had already produced a sentence.
+    missing = _amd_nodes_the_runtime_lacks(needs_kfd = needs_kfd)
+    parts: "list[str]" = []
+    if closed:
+        # Claim only what the closed set actually blocks.
+        blocked = (
+            "no GPU backend can use" if any(p != _KFD_NODE for p in closed)
+            else "ROCm cannot use"
+        )
+        user = os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
+        joinable, unnamed, no_group, acl, owned, privileged = _groups_that_own(closed)
+        parts.append(
+            f"This account cannot open {', '.join(closed)}, so {blocked} the "
+            f"AMD card even though the driver is loaded."
+        )
+        # Prescribed only where joining a group is the repair. A host whose nodes could not
+        # be stat'd at all still gets the documented pair, since some advice beats none; a
+        # host whose nodes were read and offer no joinable group gets the sentences below
+        # instead of a command that would fail.
+        if joinable or not (unnamed or no_group or acl or owned or privileged):
+            groups = joinable or ["render", "video"]
+            joined = ",".join(groups)
+            plural = "group" if len(groups) == 1 else "groups"
+            parts.append(
+                f"Add the account to the {joined} {plural} and then log out and back in: "
+                f"sudo usermod -a -G {joined} {user}"
             )
-        return None
-    # Claim only what the closed set actually blocks.
-    blocked = "no GPU backend can use" if any(p != _KFD_NODE for p in closed) else "ROCm cannot use"
-    user = os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
-    joinable, unnamed, no_group, acl = _groups_that_own(closed)
-    hint = (
-        f"This account cannot open {', '.join(closed)}, so {blocked} the "
-        f"AMD card even though the driver is loaded."
-    )
-    # Prescribed only where joining a group is the repair. A host whose nodes could not be
-    # stat'd at all still gets the documented pair, since some advice beats none; a host
-    # whose nodes were read and offer no joinable group gets the sentences below instead of
-    # a command that would fail.
-    if joinable or not (unnamed or no_group or acl):
-        groups = joinable or ["render", "video"]
-        joined = ",".join(groups)
-        plural = "group" if len(groups) == 1 else "groups"
-        hint += (
-            f" Add the account to the {joined} {plural} and then log out and back in: "
-            f"sudo usermod -a -G {joined} {user}"
+        if unnamed:
+            _gids = ", ".join(str(_g) for _g in unnamed)
+            # One flag per GID: docker's --group-add takes a single value, so naming only
+            # the first leaves every other node shut on a host whose nodes differ in group.
+            _adds = " ".join(f"--group-add {_g}" for _g in unnamed)
+            _noun = "GID" if len(unnamed) == 1 else "GIDs"
+            _verb = "which has" if len(unnamed) == 1 else "which have"
+            parts.append(
+                f"Some of those nodes belong to {_noun} {_gids}, {_verb} no group entry on "
+                f"this system, so usermod cannot name them: create a group with that GID, "
+                f"or recreate the container passing {_adds}."
+            )
+        if no_group:
+            parts.append(
+                f"{', '.join(no_group)} does not grant its own group read and write, so no "
+                f"membership opens it: fix the udev rule or the node's permissions."
+            )
+        if owned:
+            parts.append(
+                f"{', '.join(owned)} is owned by this account, and POSIX stops at the owner "
+                f"bits once the uid matches, so no group membership opens it however its "
+                f"group bits read: fix the mode with chmod, or the udev rule that set it."
+            )
+        if privileged:
+            parts.append(
+                f"Those nodes belong to the {', '.join(privileged)} group, which grants a "
+                f"great deal besides the GPU, so joining it is not the repair: fix the udev "
+                f"rule so the node is owned by render or video instead."
+            )
+        if acl:
+            parts.append(
+                f"{', '.join(acl)} carries a POSIX ACL, so the group permissions cannot be "
+                f"read from its mode: check the real grant with getfacl {acl[0]} before "
+                f"changing group membership."
+            )
+    # Group membership cannot create a device node, so these stand whether or not anything
+    # above was said. install.sh already says both; this is the runtime half.
+    if _KFD_NODE in missing:
+        parts.append(
+            "ROCm needs /dev/kfd, which does not exist on this host, so the ROCm kernel "
+            "stack has to be installed as well; no group membership creates it."
         )
-    if unnamed:
-        _gids = ", ".join(str(_g) for _g in unnamed)
-        # One flag per GID: docker's --group-add takes a single value, so naming only the
-        # first leaves every other node shut on a host whose nodes differ in group.
-        _adds = " ".join(f"--group-add {_g}" for _g in unnamed)
-        _noun = "GID" if len(unnamed) == 1 else "GIDs"
-        _verb = "which has" if len(unnamed) == 1 else "which have"
-        hint += (
-            f" Some of those nodes belong to {_noun} {_gids}, {_verb} no group entry on "
-            f"this system, so usermod cannot name them: create a group with that GID, or "
-            f"recreate the container passing {_adds}."
+    if _RENDER_NODE_GLOB in missing:
+        parts.append(
+            "No AMD render node (/dev/dri/renderD*) is present, and ROCm and Vulkan both "
+            "open one, so the device mapping needs fixing; under Docker that is "
+            "--device /dev/kfd --device /dev/dri."
         )
-    if no_group:
-        hint += (
-            f" {', '.join(no_group)} does not grant its own group read and write, so no "
-            f"membership opens it: fix the udev rule or the node's permissions."
-        )
-    if acl:
-        hint += (
-            f" {', '.join(acl)} carries a POSIX ACL, so the group permissions cannot be "
-            f"read from its mode: check the real grant with getfacl {acl[0]} before "
-            f"changing group membership."
-        )
-    # Group membership cannot create a device node. A caller that needs /dev/kfd on a
-    # host without one has a second, unrelated problem, and the sentence above is then
-    # only true of the render node that was found: the DRM driver is loaded, the ROCm
-    # kernel stack is not. install.sh already says both; this is the runtime half.
-    if needs_kfd and not os.path.exists(_KFD_NODE):
-        hint += (
-            " ROCm also needs /dev/kfd, which does not exist on this host, so the ROCm "
-            "kernel stack has to be installed as well; the groups alone will not create it."
-        )
-    # The other half of the same pair, and the container shape of it: /dev/kfd mapped
-    # without /dev/dri leaves the closed KFD node looking like the whole story while
-    # ROCr has no render node to open. Asked whatever needs_kfd said, since a Vulkan
-    # caller needs one too.
-    if _render_missing:
-        hint += (
-            " No AMD render node (/dev/dri/renderD*) is present either, and ROCm and "
-            "Vulkan both open one, so the device mapping needs fixing too; under Docker "
-            "that is --device /dev/kfd --device /dev/dri."
-        )
-    return hint
+    return " ".join(parts) or None

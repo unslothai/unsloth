@@ -57,7 +57,7 @@ def _nodes(
     # These paths are patched rather than created, so stat cannot name their groups; say
     # so explicitly instead of leaving it to whether the runner happens to have a node at
     # the same path. The derivation itself is exercised in its own tests below.
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], [], []))
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], [], [], [], []))
 
 
 def test_a_node_this_user_cannot_open_is_reported(monkeypatch, linux):
@@ -651,7 +651,7 @@ def test_the_repair_names_the_groups_the_closed_nodes_belong_to(monkeypatch, lin
         present = ["/dev/kfd", "/dev/dri/renderD128"],
         openable = set(),
     )
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["kfd", "gpu"], [], [], []))
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["kfd", "gpu"], [], [], [], [], []))
     monkeypatch.setenv("USER", "ada")
     hint = amd.amd_node_permission_hint()
     assert "usermod -a -G kfd,gpu ada" in hint
@@ -662,7 +662,7 @@ def test_a_single_owning_group_is_not_pluralised(monkeypatch, linux):
     """A host where both nodes belong to one group gets one group named, and the sentence
     has to agree with the command rather than saying "groups" over a single name."""
     _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [], [], []))
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], []))
     monkeypatch.setenv("USER", "ada")
     hint = amd.amd_node_permission_hint()
     assert "usermod -a -G render ada" in hint
@@ -674,7 +674,7 @@ def test_unreadable_nodes_fall_back_to_the_documented_pair(monkeypatch, linux):
     must still get advice rather than an empty -G argument, and that advice is the pair
     the AMD documentation names."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], [], []))
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], [], [], [], []))
     monkeypatch.setenv("USER", "ada")
     assert "usermod -a -G render,video ada" in amd.amd_node_permission_hint()
 
@@ -692,8 +692,12 @@ def _stat_nodes(monkeypatch, modes: dict, names: dict):
     def _stat(path, *, follow_symlinks = True):
         if str(path) not in modes:
             raise OSError("gone")
-        gid, mode = modes[str(path)]
-        return type("st", (), {"st_gid": gid, "st_mode": mode})()
+        _entry = modes[str(path)]
+        gid, mode = _entry[0], _entry[1]
+        # Real device nodes are root-owned, and POSIX consults the owner class first, so a
+        # fake without st_uid would take the owner branch on whatever uid the runner has.
+        uid = _entry[2] if len(_entry) > 2 else 0
+        return type("st", (), {"st_gid": gid, "st_mode": mode, "st_uid": uid})()
 
     def _getgrgid(gid):
         if gid not in names:
@@ -721,6 +725,8 @@ def test_the_group_derivation_reads_the_node(monkeypatch):
         [],
         [],
         [],
+        [],
+        [],
     )
 
 
@@ -732,7 +738,7 @@ def test_a_gid_with_no_group_entry_is_reported_rather_than_prescribed(monkeypatc
     4.13 answers ``group '993' does not exist`` and exits 6 on that command, verified on
     this host, so the number belongs in a sentence rather than in the -G argument."""
     _stat_nodes(monkeypatch, {"/dev/kfd": (993, 0o660)}, {})
-    assert amd._groups_that_own(["/dev/kfd"]) == ([], [993], [], [])
+    assert amd._groups_that_own(["/dev/kfd"]) == ([], [993], [], [], [], [])
 
 
 def test_a_node_whose_own_group_cannot_open_it_is_not_a_membership_problem(monkeypatch):
@@ -742,14 +748,14 @@ def test_a_node_whose_own_group_cannot_open_it_is_not_a_membership_problem(monke
 
     Fails before the fix, which read st_gid alone and would have prescribed render."""
     _stat_nodes(monkeypatch, {"/dev/kfd": (44, 0o600)}, {44: "render"})
-    assert amd._groups_that_own(["/dev/kfd"]) == ([], [], ["/dev/kfd"], [])
+    assert amd._groups_that_own(["/dev/kfd"]) == ([], [], ["/dev/kfd"], [], [], [])
 
 
 def test_group_read_without_write_is_not_enough(monkeypatch):
     """Its boundary: HIP and the Vulkan loader both open the node read-write, which is
     the bar the probe itself applies, so 0640 is still not a joinable group."""
     _stat_nodes(monkeypatch, {"/dev/kfd": (44, 0o640)}, {44: "render"})
-    assert amd._groups_that_own(["/dev/kfd"]) == ([], [], ["/dev/kfd"], [])
+    assert amd._groups_that_own(["/dev/kfd"]) == ([], [], ["/dev/kfd"], [], [], [])
 
 
 def test_a_node_that_cannot_be_stat_contributes_nothing(monkeypatch):
@@ -757,11 +763,17 @@ def test_a_node_that_cannot_be_stat_contributes_nothing(monkeypatch):
     are already wrong, so a node that vanished between the probe and the message drops
     out rather than taking the whole hint down."""
     _stat_nodes(monkeypatch, {"/dev/dri/renderD128": (44, 0o660)}, {44: "video"})
-    assert amd._groups_that_own(["/dev/kfd", "/dev/dri/renderD128"]) == (["video"], [], [], [])
+    assert amd._groups_that_own(["/dev/kfd", "/dev/dri/renderD128"]) == (
+        ["video"], [], [], [], [], [],
+    )
 
 
 def _install_sh_hint(
-    closed_nodes: str, *, render_present: bool = True, amd_present: bool = True
+    closed_nodes: str,
+    *,
+    render_present: bool = True,
+    amd_present: bool = True,
+    self_uid: str = "4242",
 ) -> str:
     """The installer's closed-node message, run for a given closed set.
 
@@ -799,6 +811,10 @@ def _install_sh_hint(
             # Stubbed rather than lifted: the real one reads /sys and /dev, so leaving it
             # live would make every arm depend on the runner's own hardware.
             f"_amd_render_node_present() {{ return {0 if render_present else 1}; }}",
+            # A real device node is root-owned; a tmp_path node standing in for one belongs
+            # to the runner, and the installer stops at the owner class when those match.
+            # Stubbed so the arms below choose which case they are testing.
+            f"id() {{ echo {self_uid}; }}",
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if amd_present else 1}; }}",
             # The route the diagnoses are gated on; the gate has its own tests below.
             "_amd_node_diag_route=true",
@@ -935,7 +951,7 @@ def test_an_unnamed_gid_is_not_handed_to_usermod(monkeypatch, linux):
 
     Fails before the fix, which put the bare number in the -G argument."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993], [], []))
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993], [], [], [], []))
     monkeypatch.setenv("USER", "ada")
     hint = amd.amd_node_permission_hint()
     # The sentence names usermod to say it cannot help, so the assertion is on the
@@ -953,7 +969,7 @@ def test_a_joinable_group_beside_an_unnamed_gid_is_still_prescribed(monkeypatch,
         present = ["/dev/kfd", "/dev/dri/renderD128"],
         openable = set(),
     )
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [993], [], []))
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [993], [], [], [], []))
     monkeypatch.setenv("USER", "ada")
     hint = amd.amd_node_permission_hint()
     assert "usermod -a -G render ada" in hint
@@ -966,7 +982,7 @@ def test_a_node_no_membership_opens_is_not_answered_with_usermod(monkeypatch, li
 
     Fails before the fix, which named the owning group whatever the mode said."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], ["/dev/kfd"], []))
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], ["/dev/kfd"], [], [], []))
     monkeypatch.setenv("USER", "ada")
     hint = amd.amd_node_permission_hint()
     assert "usermod -a -G" not in hint
@@ -978,7 +994,7 @@ def test_a_host_whose_nodes_could_not_be_read_still_gets_the_documented_pair(mon
     not be stat'd at all, which is a detection miss rather than evidence that joining
     cannot work. Some advice beats none there, and it is the pair AMD documents."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], [], []))
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], [], [], [], []))
     monkeypatch.setenv("USER", "ada")
     assert "usermod -a -G render,video ada" in amd.amd_node_permission_hint()
 
@@ -1344,7 +1360,7 @@ def test_a_container_with_an_open_kfd_and_no_render_node_is_still_told(monkeypat
     A missing node is not a permission problem, so it cannot be gated on one."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = {"/dev/kfd"})
     hint = amd.amd_node_permission_hint()
-    assert "no AMD render node" in hint
+    assert "AMD render node" in hint
     assert "--device /dev/dri" in hint
     assert "usermod" not in hint
 
@@ -1397,7 +1413,9 @@ def test_a_node_carrying_an_acl_is_not_answered_with_usermod(monkeypatch, tmp_pa
     node.write_bytes(b"")
     node.chmod(0o660)
     monkeypatch.setattr(amd, "_has_an_access_acl", lambda path: True)
-    joinable, unnamed, no_group, acl = amd._groups_that_own([str(node)])
+    _not_the_owner = os.getuid() + 1
+    monkeypatch.setattr(amd.os, "getuid", lambda: _not_the_owner)
+    joinable, unnamed, no_group, acl, owned, _priv = amd._groups_that_own([str(node)])
     assert acl == [str(node)]
     assert joinable == [] and unnamed == [] and no_group == []
 
@@ -1409,7 +1427,9 @@ def test_the_same_node_without_an_acl_is_still_prescribed_for(monkeypatch, tmp_p
     node.write_bytes(b"")
     node.chmod(0o660)
     monkeypatch.setattr(amd, "_has_an_access_acl", lambda path: False)
-    joinable, unnamed, no_group, acl = amd._groups_that_own([str(node)])
+    _not_the_owner = os.getuid() + 1
+    monkeypatch.setattr(amd.os, "getuid", lambda: _not_the_owner)
+    joinable, unnamed, no_group, acl, owned, _priv = amd._groups_that_own([str(node)])
     assert acl == []
     assert joinable or unnamed
 
@@ -1506,7 +1526,7 @@ def test_every_unnamed_gid_reaches_the_docker_repair(monkeypatch, linux):
 
     Fails before the fix, which interpolated unnamed[0] alone."""
     _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993, 994], [], []))
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993, 994], [], [], [], []))
     monkeypatch.setenv("USER", "ada")
     hint = amd.amd_node_permission_hint()
     assert "--group-add 993 --group-add 994" in hint
@@ -1517,7 +1537,7 @@ def test_a_lone_unnamed_gid_is_still_named_in_the_singular(monkeypatch, linux):
     """The control on the wording: the one-GID host is the common one and must not start
     reading as though it had several."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993], [], []))
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993], [], [], [], []))
     monkeypatch.setenv("USER", "ada")
     hint = amd.amd_node_permission_hint()
     assert "GID 993, which has" in hint
@@ -1700,3 +1720,142 @@ def test_a_closed_kfd_is_still_the_reason_for_a_hip_build(monkeypatch, linux):
     )
     assert "Separately, and not why the probe is empty" not in reason
     assert "/dev/kfd" in reason
+
+
+
+def test_a_missing_render_node_blocks_the_runtime(monkeypatch, linux):
+    """--device /dev/kfd without --device /dev/dri. The one node mapped opens, so nothing
+    is CLOSED, and this answered False -- which made hardware.py suppress the very hint
+    that names the repair, and llama_cpp.py file it as "not why the probe is empty" when
+    the absent render node is exactly why."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = {"/dev/kfd"})
+    assert amd.amd_closed_nodes_block_the_runtime() is True
+
+
+def test_a_complete_open_mapping_still_does_not_block(monkeypatch, linux):
+    """The control. Without it the fix could be "always blocks", which suppresses nothing
+    and labels every empty probe a permission problem."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = {"/dev/kfd", "/dev/dri/renderD128"},
+    )
+    assert amd.amd_closed_nodes_block_the_runtime() is False
+
+
+def test_a_container_given_only_the_render_node_is_told_about_kfd(monkeypatch, linux):
+    """The mirror image of the case above, and the common asymmetric mapping: --device
+    /dev/dri alone. The render node is present and open, so `closed` is empty and
+    `_render_missing` is false, and the hint returned None before reaching its own
+    missing-KFD sentence -- leaving the caller on generic reinstall advice for a host
+    where HIP has no /dev/kfd to open."""
+    _nodes(
+        monkeypatch, present = ["/dev/dri/renderD128"], openable = {"/dev/dri/renderD128"}
+    )
+    hint = amd.amd_node_permission_hint()
+    assert "/dev/kfd" in hint
+    assert "usermod" not in hint
+
+
+def test_the_same_mapping_says_nothing_to_a_vulkan_caller(monkeypatch, linux):
+    """The control, and the reason needs_kfd exists: Vulkan never opens /dev/kfd, so a
+    Vulkan failure with some other cause must not be sent after the ROCm kernel stack."""
+    _nodes(
+        monkeypatch, present = ["/dev/dri/renderD128"], openable = {"/dev/dri/renderD128"}
+    )
+    assert amd.amd_node_permission_hint(needs_kfd = False) is None
+
+
+def test_a_node_this_account_owns_is_not_answered_with_a_group(monkeypatch, tmp_path):
+    """POSIX resolves the owner class exclusively once the uid matches, so a node this
+    account owns whose owner bits deny cannot be opened by joining its group however the
+    group bits read. Prescribing usermod there sends the user after a command that
+    succeeds and changes nothing."""
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    node.chmod(0o060)  # group rw, owner nothing: os.access() says shut, POSIX says owner
+    monkeypatch.setattr(amd, "_has_an_access_acl", lambda path: False)
+    joinable, unnamed, no_group, acl, owned, privileged = amd._groups_that_own([str(node)])
+    assert owned == [str(node)]
+    assert joinable == [] and unnamed == [] and no_group == [] and privileged == []
+
+
+def test_the_same_node_owned_by_someone_else_is_still_a_group(monkeypatch, tmp_path):
+    """The control: identical mode, a different owner. The owner class no longer applies,
+    the group bits are the grant, and membership IS the repair. Without this the rule
+    could be "never prescribe a group", which removes what #10466 asked for."""
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    node.chmod(0o060)
+    monkeypatch.setattr(amd, "_has_an_access_acl", lambda path: False)
+    _not_the_owner = os.getuid() + 1
+    monkeypatch.setattr(amd.os, "getuid", lambda: _not_the_owner)
+    joinable, unnamed, no_group, acl, owned, privileged = amd._groups_that_own([str(node)])
+    assert owned == []
+    assert joinable or unnamed
+
+
+def test_a_root_owned_node_is_not_answered_with_usermod_root(monkeypatch, linux):
+    """root:root 0660 opens for anyone in the root group, so the group derivation would
+    accept the name and print `sudo usermod -a -G root`. That membership grants a
+    great deal besides the GPU, so it is a udev misconfiguration to report rather than a
+    repair to prescribe."""
+    _stat_nodes(monkeypatch, {"/dev/kfd": (0, 0o660, 0)}, {0: "root"})
+    joinable, unnamed, no_group, acl, owned, privileged = amd._groups_that_own(["/dev/kfd"])
+    assert privileged == ["root"]
+    assert joinable == []
+
+
+def test_an_ordinary_owning_group_is_still_prescribed(monkeypatch, linux):
+    """The control: render is not privileged, so the same shape still yields the command.
+    Without it the rule could be "never name a group"."""
+    _stat_nodes(monkeypatch, {"/dev/kfd": (39, 0o660, 0)}, {39: "render"})
+    joinable, unnamed, no_group, acl, owned, privileged = amd._groups_that_own(["/dev/kfd"])
+    assert joinable == ["render"]
+    assert privileged == []
+
+
+def test_the_hint_for_a_privileged_owner_says_it_is_not_the_repair(monkeypatch, linux):
+    """The sentence a user actually reads, since the buckets above only decide it."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda paths: ([], [], [], [], [], ["root"])
+    )
+    hint = amd.amd_node_permission_hint()
+    assert "usermod" not in hint
+    assert "root" in hint and "udev" in hint
+
+
+def test_the_installer_does_not_dangle_the_group_sentence(tmp_path):
+    """When every refused node has an unnamed GID, an ACL, or a mode no group can open,
+    _amd_node_repairs names no group on purpose. The installer printed "Add yourself to
+    the" above that branch regardless, so the message read as an instruction cut off
+    mid-sentence and then contradicted."""
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    node.chmod(0o600)  # owner-only: no membership opens it, so no group is named
+    out = _install_sh_hint(str(node))
+    assert "Add yourself to the" not in out
+    assert "no" in out and "membership opens it" in out
+
+
+def test_the_installer_still_offers_the_group_when_there_is_one(tmp_path):
+    """The control: a node whose group grants read and write still gets the sentence and
+    the command, in one piece."""
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    node.chmod(0o660)
+    out = _install_sh_hint(str(node))
+    assert "Add yourself to the" in out
+    assert "usermod -a -G" in out
+
+
+def test_the_installer_stops_at_the_owner_class_too(tmp_path):
+    """The shell half of the owner-precedence item: with the caller as the owner, the
+    installer must not print a usermod line for a node no membership opens."""
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    node.chmod(0o060)
+    out = _install_sh_hint(str(node), self_uid = str(os.getuid()))
+    assert "usermod" not in out
+    assert "owned by this account" in out

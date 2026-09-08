@@ -3445,15 +3445,27 @@ _amd_node_repairs() {
         case "$(ls -ld "$_anr_node" 2>/dev/null | cut -c11)" in
             +) printf 'acl:%s\n' "$_anr_node"; continue ;;
         esac
-        stat -c '%a|%G|%g|%n' "$_anr_node" 2>/dev/null || true
-    done | awk -F'|' '
+        stat -c '%a|%G|%g|%n|%u' "$_anr_node" 2>/dev/null || true
+    done | awk -F'|' -v self="$(id -u 2>/dev/null || echo -1)" '
         /^acl:/ { print; next }
         {
+            # POSIX resolves the owner class EXCLUSIVELY once the uid matches, so on a node
+            # this account owns the group bits are never consulted and joining the group
+            # cannot open it however they read. The repair there is the mode.
+            if (self != -1 && $5 + 0 == self + 0) { print "owner:" $4; next }
             # Group digit of the octal mode; read AND write, since HIP and the Vulkan
             # loader both open the node read-write.
             g = substr($1, length($1) - 1, 1) + 0
             if (g != 6 && g != 7) { print "mode:" $4; next }
             if ($2 == "" || $2 ~ /^UNKNOWN/) { if (!gseen[$3]++) print "gid:" $3; next }
+            # Joining one of these would open the node and hand over a great deal besides,
+            # so a device node owned by one is a udev misconfiguration to report rather
+            # than a membership to prescribe. gid 0 as well as the name, since a renamed
+            # root group is still root. Mirrors _PRIVILEGED_GROUPS in utils/hardware/amd.py.
+            if ($3 + 0 == 0 || $2 ~ /^(root|wheel|sudo|admin|adm|disk|kmem|shadow)$/) {
+                if (!pseen[$2]++) print "privileged:" $2
+                next
+            }
             if (!nseen[$2]++) print "join:" $2
         }'
 }
@@ -5542,10 +5554,14 @@ if [ "$_amd_node_diag_route" = true ] && [ -n "$_closed_amd_nodes" ]; then
     printf '%s\n' "$_closed_amd_nodes" | while IFS= read -r _n; do
         substep "  $_n"
     done
+    # Which backends the closed set blocks. The membership sentence is NOT here: when
+    # every refused node has an unnamed GID, an ACL, or a mode no group can open,
+    # _amd_node_repairs deliberately names no group, and this used to leave "Add yourself
+    # to the" hanging above a branch explaining that no membership opens the node.
     if printf '%s\n' "$_closed_amd_nodes" | grep -qv '^/dev/kfd$'; then
-        substep "  Every backend needs them, ROCm and Vulkan alike. Add yourself to the"
+        substep "  Every backend needs them, ROCm and Vulkan alike."
     else
-        substep "  ROCm needs it; Vulkan does not. Add yourself to the"
+        substep "  ROCm needs it; Vulkan does not."
     fi
     # Read from the nodes that were refused, so the advice matches those files.
     _closed_amd_repairs=$(_amd_node_repairs "$_closed_amd_nodes")
@@ -5557,18 +5573,24 @@ if [ "$_amd_node_diag_route" = true ] && [ -n "$_closed_amd_nodes" ]; then
         | tr '\n' ',' | sed 's/,*$//')
     _closed_amd_acls=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^acl://p' \
         | tr '\n' ',' | sed 's/,*$//')
+    _closed_amd_owned=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^owner://p' \
+        | tr '\n' ',' | sed 's/,*$//')
+    _closed_amd_priv=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^privileged://p' \
+        | tr '\n' ',' | sed 's/,*$//')
     # The documented pair is the fallback for nodes that could not be stat'd at all, where
     # some advice beats none. A node that WAS read and offers no joinable group gets the
     # sentences below instead of a command that would fail.
     if [ -z "$_closed_amd_groups" ] && [ -z "$_closed_amd_gids" ] && \
-       [ -z "$_closed_amd_modes" ] && [ -z "$_closed_amd_acls" ]; then
+       [ -z "$_closed_amd_modes" ] && [ -z "$_closed_amd_acls" ] && \
+       [ -z "$_closed_amd_owned" ] && [ -z "$_closed_amd_priv" ]; then
         _closed_amd_groups="render,video"
     fi
     if [ -n "$_closed_amd_groups" ]; then
         case "$_closed_amd_groups" in
-            *,*) substep "  $_closed_amd_groups groups, then log out and back in:" ;;
-            *)   substep "  $_closed_amd_groups group, then log out and back in:" ;;
+            *,*) substep "  Add yourself to the $_closed_amd_groups groups, then log out" ;;
+            *)   substep "  Add yourself to the $_closed_amd_groups group, then log out" ;;
         esac
+        substep "  and back in:"
         substep "  sudo usermod -a -G $_closed_amd_groups ${USER:-\$USER}"
     fi
     if [ -n "$_closed_amd_gids" ]; then
@@ -5579,6 +5601,16 @@ if [ "$_amd_node_diag_route" = true ] && [ -n "$_closed_amd_nodes" ]; then
     if [ -n "$_closed_amd_modes" ]; then
         substep "  $_closed_amd_modes does not grant its own group read and write, so no" "$C_WARN"
         substep "  membership opens it: fix the udev rule or the node's permissions."
+    fi
+    if [ -n "$_closed_amd_owned" ]; then
+        substep "  $_closed_amd_owned is owned by this account, and POSIX stops at the" "$C_WARN"
+        substep "  owner bits once the uid matches, so no group membership opens it"
+        substep "  however its group bits read: fix the mode, or the udev rule behind it."
+    fi
+    if [ -n "$_closed_amd_priv" ]; then
+        substep "  Those nodes belong to the $_closed_amd_priv group, which grants a" "$C_WARN"
+        substep "  great deal besides the GPU, so joining it is not the repair: fix the"
+        substep "  udev rule so the node is owned by render or video instead."
     fi
     if [ -n "$_closed_amd_acls" ]; then
         substep "  $_closed_amd_acls carries a POSIX ACL, so the group permissions cannot" "$C_WARN"
