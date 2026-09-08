@@ -1500,11 +1500,14 @@ def test_a_cancel_does_not_repeat_a_reply_that_was_fully_emitted():
     assert texts == ["plain answer"]
 
 
-@pytest.mark.parametrize("text", [
-    'call:terminal{command:<think>quote</think>web_search[ARGS]{}}',
-    'call:terminal{command:"<think>q</think>web_search[ARGS]{}"}',
-    'terminal[ARGS]{"c":"<think>q</think><function=python></function>"}',
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "call:terminal{command:<think>quote</think>web_search[ARGS]{}}",
+        'call:terminal{command:"<think>q</think>web_search[ARGS]{}"}',
+        'terminal[ARGS]{"c":"<think>q</think><function=python></function>"}',
+    ],
+)
 def test_a_reasoning_block_inside_a_blocked_body_does_not_unmask_it(text):
     """The blocked body ENCLOSES the think span. Sorting the two without merging moved the
     masking cursor backward and re-appended the rest of the body unmasked, putting a

@@ -7162,10 +7162,13 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("held", [
-    '{"name":"terminal","arguments":{"command":"id"}}',
-    'call:terminal{command:"id"}',
-])
+@pytest.mark.parametrize(
+    "held",
+    [
+        '{"name":"terminal","arguments":{"command":"id"}}',
+        'call:terminal{command:"id"}',
+    ],
+)
 def test_a_cancel_emits_the_blocked_object_the_gguf_guard_was_holding(monkeypatch, held):
     """A completed blocked markerless call keeps the chain guard true while its suffix is
     empty, so the whole object sits in the buffer as display text the parser never promotes.
@@ -7174,7 +7177,11 @@ def test_a_cancel_emits_the_blocked_object_the_gguf_guard_was_holding(monkeypatc
 
     backend = _make_backend(monkeypatch, [[_sse({"content": held})]], [])
 
-    def _cancel_after_chunks(response, _cancel_event, first_token_deadline = None):
+    def _cancel_after_chunks(
+        response,
+        _cancel_event,
+        first_token_deadline = None,
+    ):
         yield from response.chunks
         raise _LlamaStreamCancelled
 
