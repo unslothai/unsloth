@@ -982,8 +982,15 @@ class TestPrereleasesAreOnlyForTheNightlyChannel:
             text = path.read_text(encoding = "utf-8")
             assert re.search(r"-match 'nightly'", text), f"{path.name} lost the gate"
             for line in text.splitlines():
-                if "--prerelease=allow" in line and "#" not in line.split("--prerelease")[0]:
-                    assert "@(" in line, f"{path.name}: unexpected shape: {line.strip()}"
+                if "--prerelease=allow" not in line or "#" in line.split("--prerelease")[0]:
+                    continue
+                # Producing the flag is what has to stay behind the gate, so only an @(...)
+                # will do. Comparing against it does not produce it: that is
+                # Remove-UvOnlyResolverFlags translating an argument the gate already allowed
+                # into pip's spelling, and it runs after the decision, not instead of it.
+                if "-eq '--prerelease=allow'" in line:
+                    continue
+                assert "@(" in line, f"{path.name}: unexpected shape: {line.strip()}"
 
 
 class TestManifestWriterAndReaderAcceptTheSameSet:
