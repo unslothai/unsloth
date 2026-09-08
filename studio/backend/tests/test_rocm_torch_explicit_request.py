@@ -122,7 +122,7 @@ def _shell_function(name: str) -> str:
     for end in range(start, len(lines)):
         depth += lines[end].count("{") - lines[end].count("}")
         if depth == 0:
-            return "\n".join(lines[start:end + 1])
+            return "\n".join(lines[start : end + 1])
     raise AssertionError(f"unterminated function {name}")
 
 
@@ -136,33 +136,39 @@ def _index_url(env: str, stubs: str) -> str:
     """
     import subprocess
 
-    script = "\n".join([
-        _shell_function("_rocm_torch_explicitly_requested"),
-        stubs,
-        _shell_function("get_torch_index_url"),
-        f"{env} get_torch_index_url",
-    ])
+    script = "\n".join(
+        [
+            _shell_function("_rocm_torch_explicitly_requested"),
+            stubs,
+            _shell_function("get_torch_index_url"),
+            f"{env} get_torch_index_url",
+        ]
+    )
     return subprocess.run(
-        ["bash", "-c", script], capture_output = True, text = True,
+        ["bash", "-c", script],
+        capture_output = True,
+        text = True,
     ).stdout
 
 
 # A bash function definition ends at its closing brace, so these are newline
 # separated: two on one line is a syntax error, which the first version of this
 # harness produced and read as "the flag did nothing".
-_MIXED_HOST = "\n".join([
-    "_has_usable_nvidia_gpu() { return 0; }",
-    "_has_amd_rocm_gpu() { return 0; }",
-    "_probe_amd_gfx_arch() { echo gfx1201; }",
-    "_amd_arch_index_family_for_gfx() { echo gfx120X-all; }",
-    "_kfd_gfx_targets() { echo gfx1201; }",
-    "_infer_linux_amd_gfx_arch() { echo gfx1201; }",
-    "_amd_sole_index_arch() { echo gfx1201; }",
-    "_detect_rocm_version_tag() { echo rocm7.0; }",
-    "_amd_agreed_index_family() { echo gfx120X-all; }",
-    "_rocm_sdk_install_hint() { echo ''; }",
-    "nvidia-smi() { echo 'CUDA Version: 13.0'; }",
-])
+_MIXED_HOST = "\n".join(
+    [
+        "_has_usable_nvidia_gpu() { return 0; }",
+        "_has_amd_rocm_gpu() { return 0; }",
+        "_probe_amd_gfx_arch() { echo gfx1201; }",
+        "_amd_arch_index_family_for_gfx() { echo gfx120X-all; }",
+        "_kfd_gfx_targets() { echo gfx1201; }",
+        "_infer_linux_amd_gfx_arch() { echo gfx1201; }",
+        "_amd_sole_index_arch() { echo gfx1201; }",
+        "_detect_rocm_version_tag() { echo rocm7.0; }",
+        "_amd_agreed_index_family() { echo gfx120X-all; }",
+        "_rocm_sdk_install_hint() { echo ''; }",
+        "nvidia-smi() { echo 'CUDA Version: 13.0'; }",
+    ]
+)
 
 
 def test_the_shell_installer_selects_a_rocm_index_under_the_request(stack):
@@ -183,8 +189,9 @@ def test_the_request_does_not_select_rocm_without_an_amd_card(stack):
     CPU one: the AMD presence test still has to pass."""
     out = _index_url(
         "UNSLOTH_FORCE_ROCM_TORCH=1",
-        _MIXED_HOST.replace("_has_amd_rocm_gpu() { return 0; }",
-                            "_has_amd_rocm_gpu() { return 1; }"),
+        _MIXED_HOST.replace(
+            "_has_amd_rocm_gpu() { return 0; }", "_has_amd_rocm_gpu() { return 1; }"
+        ),
     )
     assert "rocm" not in out and "gfx" not in out, out
 
@@ -202,8 +209,12 @@ def test_the_cuda_repair_stands_down_under_the_request(stack, monkeypatch):
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
     probed = {"ran": False}
     monkeypatch.setattr(
-        stack, "_probe_torch_runtime",
-        lambda *a, **k: (probed.__setitem__("ran", True), (True, True, "2.11.0+rocm7.0", True, False))[1],
+        stack,
+        "_probe_torch_runtime",
+        lambda *a, **k: (
+            probed.__setitem__("ran", True),
+            (True, True, "2.11.0+rocm7.0", True, False),
+        )[1],
     )
     stack._ensure_cuda_torch()
     assert probed["ran"] is False
@@ -221,8 +232,12 @@ def test_the_cuda_repair_still_runs_without_the_request(stack, monkeypatch):
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     probed = {"ran": False}
     monkeypatch.setattr(
-        stack, "_probe_torch_runtime",
-        lambda *a, **k: (probed.__setitem__("ran", True), (True, True, "2.11.0+rocm7.0", True, False))[1],
+        stack,
+        "_probe_torch_runtime",
+        lambda *a, **k: (
+            probed.__setitem__("ran", True),
+            (True, True, "2.11.0+rocm7.0", True, False),
+        )[1],
     )
     monkeypatch.setattr(stack, "pip_install", lambda *a, **k: None)
     stack._ensure_cuda_torch()
@@ -244,7 +259,8 @@ def test_windows_is_not_swapped_by_the_request_alone(stack, monkeypatch):
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
     detected = {"ran": False}
     monkeypatch.setattr(
-        stack, "_detect_windows_gfx_arch",
+        stack,
+        "_detect_windows_gfx_arch",
         lambda *a, **k: (detected.__setitem__("ran", True), "gfx1151")[1],
     )
     stack._ensure_rocm_torch()
