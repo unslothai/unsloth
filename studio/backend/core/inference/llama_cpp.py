@@ -5932,6 +5932,12 @@ _CARVEOUT_ADVICE_MIN_HOST_GB = 8
 # configuration runs, leaving 31.78 GB visible. A quarter would put the cap at
 # 95.83 GB and rule out a setting the hardware itself offers and we measured.
 _CARVEOUT_ADVICE_HOST_FRACTION = 0.20
+# A driver reports the pool it kept, not the number in the firmware menu: 95.83 GB
+# against a 96.00 GB setting on the development machine. Without this slack a model
+# sized between those two values earns the rung the user is ALREADY on, so the advice
+# reads "allocate 96 GB" to someone who allocated 96 GB and following it changes
+# nothing. Half a GB covers the drift and is far below the gap between rungs.
+_CARVEOUT_NOMINAL_SLACK_GB = 0.5
 # Appended to whichever shortfall warning an oversized non-pageable launch produced,
 # after _page_an_oversized_unmapped_load rewrote the mode. One string, so the three
 # call sites cannot describe the same override differently.
@@ -10728,6 +10734,7 @@ class LlamaCppBackend:
         is_igpu: bool,
         min_host_gb: int = _CARVEOUT_ADVICE_MIN_HOST_GB,
         host_fraction: float = _CARVEOUT_ADVICE_HOST_FRACTION,
+        nominal_slack_gb: float = _CARVEOUT_NOMINAL_SLACK_GB,
     ) -> Optional[dict]:
         """Advice payload when an integrated GPU's dedicated memory is too small to
         hold this model's weights, else ``None``.
@@ -10778,7 +10785,10 @@ class LlamaCppBackend:
             (rung for rung in LlamaCppBackend._igpu_carveout_ladder_gb(cap_gb) if rung >= need_gb),
             None,
         )
-        if suggested is None or suggested <= current_gb:
+        # Not `<= current_gb`: the reading is the pool the driver kept, so the rung the
+        # user is already on sits slightly ABOVE it and would otherwise be handed back
+        # as advice. See _CARVEOUT_NOMINAL_SLACK_GB.
+        if suggested is None or suggested <= current_gb + nominal_slack_gb:
             return None
 
         return {
@@ -10789,7 +10799,16 @@ class LlamaCppBackend:
             "host_left_gb": round(machine_gb - suggested, 1),
         }
 
-    def _record_carveout_advice(self, gpu_indices, need_bytes) -> None:
+    def _record_carveout_advice(
+        self,
+        gpu_indices,
+        need_bytes,
+        *,
+        is_vulkan_backend = False,
+        shared_gpu_ids = None,
+        detected_gpus = None,
+        target_unknown = False,
+    ) -> None:
         """Work out whether this load is worth advising about, and stash the result.
 
         Advisory only. It changes nothing about the launch: the decision above is
@@ -10806,10 +10825,31 @@ class LlamaCppBackend:
         query; the integrated-GPU probe behind them imports torch and reads device
         properties. Nearly every load has a model that fits, and those loads now pay
         only the cheap half.
+
+        ``target_unknown`` is the cache tuning's test, borrowed for the same reason:
+        with no ``gpu_ids`` a user ``--device`` (or ``LLAMA_ARG_DEVICE``) survives
+        into the child and wins last-wins over the generated pin, so the placement
+        this would advise about is not the one the child gets. Decline rather than
+        re-derive it from argv.
         """
         self._last_carveout_advice = None
         try:
-            if not need_bytes:
+            if not need_bytes or target_unknown:
+                return
+            # Vulkan is gated HERE rather than beside the ROCm gate below, because on
+            # that backend gpu_indices holds VULKAN ORDINALS: handing them to
+            # _amd_apu_wants_unified_memory reads them as physical HIP ids, which on a
+            # mixed APU/dGPU host either advises about an integrated GPU the model is
+            # not using or hides advice that was valid. The Vulkan branch of this
+            # helper is also free -- a set test against the planner's shared_gpu_ids,
+            # no torch -- so a dGPU-only Vulkan launch now returns before the
+            # allocation reading instead of after it.
+            if is_vulkan_backend and not self._offload_target_shares_system_memory(
+                is_vulkan_backend = True,
+                shared_gpu_ids = shared_gpu_ids,
+                detected_gpus = detected_gpus,
+                gpu_indices = gpu_indices,
+            ):
                 return
             carve_out = self._igpu_dedicated_memory_bytes(gpu_indices)
             if not carve_out or need_bytes <= carve_out:
@@ -10832,7 +10872,10 @@ class LlamaCppBackend:
             # and the registry records are filtered to one vendor -- so carve_out is
             # already None there and we returned. Calling it anyway would create a
             # CUDA primary context per device on machines this can never advise.
-            if not self._amd_apu_wants_unified_memory(gpu_indices):
+            #
+            # Not on Vulkan: that launch was classified above, in the index space it
+            # actually uses, and this helper would re-answer it in the wrong one.
+            if not is_vulkan_backend and not self._amd_apu_wants_unified_memory(gpu_indices):
                 return
             # Asked last, so a dismissed notice still costs only the cheap readings
             # above and never a database round trip on the common path.
@@ -23544,6 +23587,20 @@ class LlamaCppBackend:
                 ):
                     """Drop the variable THIS launch set once a respawn stops needing it."""
                     nonlocal _unified_env_applied
+                    # Before the withdrawal test, and outside it: every caller is a retry
+                    # whose argv differs from the one the advice was priced against, and
+                    # the two that drop a projector or the MTP blocks can take the
+                    # footprint back under the carve-out. Left alone, the toast quotes
+                    # bytes the served child never loads. Re-priced rather than cleared,
+                    # so a spill that still stands is still reported.
+                    self._record_carveout_advice(
+                        _unified_gpu_indices,
+                        _unified_need_now(argv = run_cmd, mtp_engages = mtp_engages),
+                        is_vulkan_backend = is_vulkan_backend,
+                        shared_gpu_ids = _shared_gpu_ids,
+                        detected_gpus = _detected_gpus,
+                        target_unknown = _cache_target_unknown,
+                    )
                     if not _unified_env_applied:
                         return
                     if self._unified_memory_for_launch(
@@ -23583,7 +23640,16 @@ class LlamaCppBackend:
                 # Whether the user could enlarge the allocation so the weights stop
                 # spilling at all. Independent of the managed-memory decision above,
                 # which only chooses how to cope with a spill that is happening.
-                self._record_carveout_advice(gpu_indices, _unified_need)
+                # The placement facts go with it: which index space gpu_indices is in,
+                # and whether a user --device makes the child's target unknowable.
+                self._record_carveout_advice(
+                    gpu_indices,
+                    _unified_need,
+                    is_vulkan_backend = is_vulkan_backend,
+                    shared_gpu_ids = _shared_gpu_ids,
+                    detected_gpus = _detected_gpus,
+                    target_unknown = _cache_target_unknown,
+                )
 
                 # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
                 # See _apply_datacenter_env; opt out with UNSLOTH_DISABLE_DC_TUNING=1.
@@ -24313,6 +24379,12 @@ class LlamaCppBackend:
                         "The auto-selected Vulkan backend hard-crashed during "
                         "startup; retrying once with llama.cpp devices disabled."
                     )
+                    # This replay runs on the CPU, so the carve-out the advice was
+                    # priced against holds none of the weights. Advising a firmware
+                    # change for a device the model no longer touches is worse than
+                    # saying nothing. (The arch-crash retry below clears the same field
+                    # through _begin_load_warnings; this path has no such reset.)
+                    self._last_carveout_advice = None
                     if not _spawn_and_wait(replay, label = "-cpu"):
                         if _finish_cancelled_health_wait(
                             "Load cancelled during the staged CPU replay health wait"

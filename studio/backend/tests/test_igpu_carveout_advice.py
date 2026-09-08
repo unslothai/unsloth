@@ -336,3 +336,108 @@ class TestTheLadderTerminates:
         thread.start()
         thread.join(timeout = 5)
         assert done.is_set(), f"ladder({cap}) did not terminate"
+
+
+class TestTheRungTheUserIsAlreadyOn:
+    """A driver reports the pool it kept, not the number in the firmware menu."""
+
+    def test_a_reading_just_under_its_own_rung_is_not_advised_back_to_it(self):
+        # 95.83 GB is the development machine's 96 GB setting as the driver reports
+        # it. A 95.9 GB model does not fit that reading, and the ladder's next rung
+        # that covers it is 96 -- the setting already in force. Advising it says
+        # "allocate 96 GB" to someone running 96 GB, and following it changes nothing.
+        assert _advice(gb(95.9), gb(95.83), gb(31.78), is_igpu = True) is None
+
+    def test_the_next_real_rung_is_still_advised(self):
+        # The slack must not swallow a genuine step up: same machine, a model that
+        # needs more than the 96 GB rung can hold has nowhere to go (the cap), while
+        # a 32 GB reading still earns 48.
+        assert _advice(gb(42.9), gb(32), gb(95.8), is_igpu = True)["suggested_gb"] == 48
+
+    def test_the_slack_is_narrower_than_the_gap_between_rungs(self):
+        # 0.5 GB of drift, against a ladder whose closest pair is 4 -> 6.
+        assert _advice(gb(5), gb(4.4), gb(27.6), is_igpu = True)["suggested_gb"] == 6
+
+
+class TestThePlacementItAdvisesAbout:
+    """Which device the advice is about, in the index space that device is named in.
+
+    A Vulkan launch numbers its devices with VULKAN ORDINALS; the ROCm gate reads
+    the same integers as physical HIP ids. On a mixed APU/dGPU host that is how a
+    dGPU load earns advice to resize an integrated GPU it never touched.
+    """
+
+    @staticmethod
+    def _backend(monkeypatch, *, probes, rocm_gate = True, carve_bytes = 32 * _GB):
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+
+        def _read(_i = None):
+            probes.append(_i)
+            return carve_bytes
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(_read)
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_amd_apu_wants_unified_memory",
+            staticmethod(lambda _i = None: rocm_gate),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 95 * 1024)
+        )
+        return backend
+
+    def test_a_vulkan_launch_on_a_discrete_device_is_never_even_priced(self, monkeypatch):
+        # Ordinal 1 is not in the planner's shared set, so this load offloads to a
+        # discrete card. No advice -- and no allocation reading either: on Linux that
+        # reading falls through to the ROCm pool, which imports torch and asks every
+        # device for its properties, on a load that could never be advised.
+        probes = []
+        backend = self._backend(monkeypatch, probes = probes)
+        backend._record_carveout_advice(
+            [1], gb(42.90),
+            is_vulkan_backend = True, shared_gpu_ids = {0}, detected_gpus = [(0, 0), (1, 0)],
+        )
+        assert backend.last_carveout_advice is None
+        assert probes == [], "the allocation was read for a device that shares nothing"
+
+    def test_a_vulkan_launch_on_the_shared_device_is_advised(self, monkeypatch):
+        # The ROCm gate answers False here, which is exactly the mismatch: it read
+        # the Vulkan ordinal as a physical id. The Vulkan classification is the one
+        # that applies, and it says this device shares system memory.
+        backend = self._backend(monkeypatch, probes = [], rocm_gate = False)
+        backend._record_carveout_advice(
+            [0], gb(42.90),
+            is_vulkan_backend = True, shared_gpu_ids = {0}, detected_gpus = [(0, 0)],
+        )
+        advice = backend.last_carveout_advice
+        assert advice is not None and advice["suggested_gb"] == 48
+
+    def test_an_unknown_vulkan_inventory_says_nothing(self, monkeypatch):
+        # Fails closed like every other reading here: no shared set, no advice.
+        probes = []
+        backend = self._backend(monkeypatch, probes = probes)
+        backend._record_carveout_advice(
+            [0], gb(42.90), is_vulkan_backend = True, shared_gpu_ids = None, detected_gpus = [],
+        )
+        assert backend.last_carveout_advice is None
+        assert probes == []
+
+    def test_a_user_device_override_declines(self, monkeypatch):
+        # With no gpu_ids a user --device (or LLAMA_ARG_DEVICE) survives into the
+        # child and wins last-wins over the generated pin, so the placement this
+        # would describe is not the one that runs. The cache tuning declines for the
+        # same reason and with the same test.
+        probes = []
+        backend = self._backend(monkeypatch, probes = probes)
+        backend._record_carveout_advice([0], gb(42.90), target_unknown = True)
+        assert backend.last_carveout_advice is None
+        assert probes == []
+
+    def test_a_non_vulkan_launch_still_uses_the_rocm_gate(self, monkeypatch):
+        # The ROCm path is unchanged, including its position: the gate is still asked
+        # last, after the shortfall is confirmed.
+        backend = self._backend(monkeypatch, probes = [], rocm_gate = False)
+        backend._record_carveout_advice([0], gb(42.90))
+        assert backend.last_carveout_advice is None

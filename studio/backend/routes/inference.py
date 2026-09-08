@@ -6502,6 +6502,31 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
     return fields
 
 
+def _live_carveout_advice(llama_backend: LlamaCppBackend) -> Optional[dict]:
+    """The recorded carve-out advice, unless it has been dismissed since the load.
+
+    The launch-time dismissal gate cannot cover the already-resident path: picking a
+    model that is still up answers from ``_reuse_loaded_gguf`` without launching
+    anything, so the response carried whatever the ORIGINAL launch recorded and a
+    dismissal taken in between was ignored -- the notice came straight back. Re-read
+    here rather than cleared on dismissal, since the settings route holds no
+    reference to the backend.
+    """
+    advice = getattr(llama_backend, "last_carveout_advice", None)
+    if not advice:
+        return None
+    try:
+        from utils.igpu_carveout_notice_settings import notice_already_dismissed
+
+        if notice_already_dismissed(advice.get("current_gb")):
+            return None
+    except Exception:
+        # Same rule as the rest of this feature: a failure here must not affect a
+        # load that succeeded, and showing the notice once more is the safe side.
+        pass
+    return advice
+
+
 def _gguf_load_response(
     llama_backend: LlamaCppBackend,
     status: str,
@@ -6529,8 +6554,9 @@ def _gguf_load_response(
         memory_warning = getattr(llama_backend, "last_load_warning", None),
         # Also advisory and also usually None: the integrated GPU's dedicated memory
         # is smaller than this model's weights, which the user can change and we
-        # cannot. getattr for the same reason as above.
-        carveout_advice = getattr(llama_backend, "last_carveout_advice", None),
+        # cannot. Re-checked against the dismissal store, since this response is also
+        # what the already-resident path returns.
+        carveout_advice = _live_carveout_advice(llama_backend),
         **_llama_runtime_fields(llama_backend),
     )
 

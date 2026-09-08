@@ -78,7 +78,12 @@ def notice_already_dismissed(current_gb: Optional[float]) -> bool:
     # count that need not be identical across boots (95.83 against a 96.00 setting
     # on the development machine), and a redisplay caused by rounding would look
     # like the notice ignoring the dismissal.
-    return float(current_gb) <= dismissed_at + 0.1
+    #
+    # Compared in TENTHS, because both sides arrive already rounded to one decimal
+    # and binary floats do not land on that grid: 95.8 + 0.1 is 95.89999999999999,
+    # so a reading of 95.9 -- one tenth away, the case this slack exists for -- read
+    # as not dismissed and the notice came back on an unchanged allocation.
+    return round(float(current_gb) * 10) <= round(dismissed_at * 10) + 1
 
 
 def dismiss_notice(current_gb: Optional[float]) -> Optional[float]:

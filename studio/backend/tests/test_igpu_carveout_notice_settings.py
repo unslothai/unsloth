@@ -118,3 +118,32 @@ class TestAHostileDismissalValue:
         from storage.studio_db import upsert_app_settings
         upsert_app_settings({notice.IGPU_CARVEOUT_NOTICE_KEY: stored})
         assert notice.notice_already_dismissed(32.0) is False, stored
+
+
+class TestTheToleranceBoundary:
+    """The slack is a tenth of a GB, and both sides arrive rounded to a tenth."""
+
+    def test_a_reading_exactly_one_tenth_above_stays_dismissed(self):
+        # The client dismisses at what the advice SHOWED it, which is
+        # round(current_gb, 1) -- so 95.8, not the 95.83 the driver reported. A later
+        # boot reading 95.9 is one tenth away, the case this slack exists for, and
+        # binary floats put 95.8 + 0.1 at 95.89999999999999: the float comparison
+        # called it not-dismissed and the notice came back on an allocation nobody
+        # changed.
+        assert 95.8 + 0.1 == pytest.approx(95.9), "the float is only 1 ulp off"
+        assert (95.9 <= 95.8 + 0.1) is False, "which is what the old comparison read"
+        notice.dismiss_notice(95.8)
+        assert notice.notice_already_dismissed(95.9) is True
+
+    def test_two_tenths_above_still_speaks(self):
+        # The slack is one tenth, not "anything close". A real change must be heard.
+        notice.dismiss_notice(95.8)
+        assert notice.notice_already_dismissed(96.0) is False
+
+    def test_the_boundary_holds_across_the_ladder(self):
+        # Every rung the ladder can suggest, dismissed at its rounded reading.
+        for rung in (4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128):
+            reading = round(rung - 0.2, 1)
+            notice.dismiss_notice(reading)
+            assert notice.notice_already_dismissed(round(reading + 0.1, 1)) is True, rung
+            assert notice.notice_already_dismissed(round(reading + 0.2, 1)) is False, rung
