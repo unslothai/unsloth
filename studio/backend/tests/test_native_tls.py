@@ -197,6 +197,21 @@ def test_activate_spells_the_resolved_decision_into_the_env(monkeypatch):
     assert os.environ["UNSLOTH_STUDIO_NATIVE_TLS"] == "1"
 
 
+@pytest.mark.parametrize("inherited", ["", "on"])
+def test_activate_overwrites_an_unrecognized_inherited_flag(monkeypatch, inherited):
+    import os
+
+    # An unrecognized value resolves to the default here but reads as off in a
+    # child, so setdefault would leave the probes verifying against certifi.
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", inherited)
+    monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "tauri")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    assert os.environ["UNSLOTH_STUDIO_NATIVE_TLS"] == "1"
+
+
 def test_disabled_activation_leaves_the_flag_env_absent(monkeypatch):
     import os
 

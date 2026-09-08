@@ -142,7 +142,9 @@ def activate_native_tls() -> bool:
         return False
     # main.py pops the desktop-owner marker, so children re-resolve from the flag
     # alone: spell the decision back into the env, the way the UV_* pair below is.
-    os.environ.setdefault(_NATIVE_TLS_ENV, "1")
+    # Assign, not setdefault: an opt-out already returned above, so the only value
+    # left to preserve would be an unrecognized one, which reads as off in a child.
+    os.environ[_NATIVE_TLS_ENV] = "1"
     # uv's rustls ignores in-process injection (uv >= 0.11 reads UV_SYSTEM_CERTS, older reads UV_NATIVE_TLS). Mirror one
     # value across both: uv takes either as an opt-in, so an opt-out in one spelling must carry to the other.
     os.environ.setdefault("UV_SYSTEM_CERTS", os.environ.get("UV_NATIVE_TLS", "1"))
