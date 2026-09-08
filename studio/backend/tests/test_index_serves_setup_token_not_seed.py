@@ -179,12 +179,20 @@ def test_nothing_is_injected_once_a_password_is_set():
 
 
 def test_the_unwritable_half_of_the_gate_stays_deleted():
-    """No Host, peer-address or forwarding-header test may come back.
+    """No peer-address or forwarding-header test may come back.
 
-    That question cannot be answered: a same-host reverse proxy with a stock
-    `proxy_pass http://127.0.0.1:PORT;` sends byte-identical bytes to a genuine
-    local browser. The ORIGIN check is a different question and is expected to be
-    present -- see the tests below -- so it is deliberately not in this list.
+    "Is this request from a local browser" cannot be answered: a same-host
+    reverse proxy with a stock `proxy_pass http://127.0.0.1:PORT;` sends
+    byte-identical bytes to a genuine local browser, so a peer address or an
+    X-Forwarded-For cannot separate them.
+
+    Two checks that DO exist are deliberately not in this list, because they ask
+    answerable questions. `_is_same_origin_request` asks which origin is calling,
+    which the browser reports honestly and script cannot forge.
+    `_host_is_safe_from_rebinding` asks whether this Host could have been chosen
+    by someone other than the operator, which is Host ALLOWLISTING, not the
+    loopback test: it never tries to identify a proxy, it only refuses names the
+    operator never configured.
     """
     for gone in (
         "_should_inject_bootstrap",
@@ -313,3 +321,54 @@ def test_a_rotation_racing_the_mint_leaves_no_usable_token(monkeypatch):
         assert conn.execute("SELECT COUNT(*) FROM link_tokens").fetchone()[0] == 0
     finally:
         conn.close()
+
+
+def test_a_rebound_dns_name_is_refused_the_setup_token():
+    """The gap same-origin alone leaves open.
+
+    In a rebinding attack the operator visits attacker.example, which re-resolves
+    to this listener. The browser then sends Host: attacker.example and either no
+    Origin (top-level GET) or an Origin equal to that Host, so the same-origin
+    check PASSES. Host allowlisting is the standard remedy for this, as in
+    webpack allowedHosts, Django ALLOWED_HOSTS and Rails HostAuthorization.
+    """
+
+    class _Req:
+        def __init__(self, host):
+            self.headers = {"host": host}
+            self.url = type("U", (), {"scheme": "http", "netloc": host})()
+
+    class _A:
+        state = type("S", (), {"bind_host": "0.0.0.0"})()
+
+    app = _A()
+    # Hostile names, including one that merely contains a loopback label.
+    for hostile in ("attacker.example", "evil.test:8000", "localhost.attacker.example",
+                    "127.0.0.1.attacker.example"):
+        assert studio_main._host_is_safe_from_rebinding(_Req(hostile), app) is False, hostile
+    # Loopback, however spelled.
+    for ok in ("localhost:8000", "127.0.0.1:8000", "[::1]:8000", "LOCALHOST"):
+        assert studio_main._host_is_safe_from_rebinding(_Req(ok), app) is True, ok
+    # An IP literal is not rebindable: a browser only sends one the operator
+    # typed. This is what keeps `-H 0.0.0.0` usable from another machine.
+    for ok in ("192.168.1.50:8000", "10.0.0.5:8000", "[fe80::1]:8000"):
+        assert studio_main._host_is_safe_from_rebinding(_Req(ok), app) is True, ok
+    # A name is allowed only when it is the host this launch was configured with.
+    class _Named:
+        state = type("S", (), {"bind_host": "studio.internal"})()
+
+    assert studio_main._host_is_safe_from_rebinding(
+        _Req("studio.internal:8000"), _Named()) is True
+    assert studio_main._host_is_safe_from_rebinding(
+        _Req("attacker.example"), _Named()) is False
+
+
+def test_a_missing_host_header_is_refused():
+    class _Req:
+        headers = {}
+        url = type("U", (), {"scheme": "http", "netloc": "127.0.0.1:8000"})()
+
+    class _A:
+        state = type("S", (), {"bind_host": "127.0.0.1"})()
+
+    assert studio_main._host_is_safe_from_rebinding(_Req(), _A()) is False

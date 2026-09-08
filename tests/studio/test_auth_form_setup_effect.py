@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The first-boot setup effect must survive a StrictMode effect replay.
+"""The first-boot setup effect must spend the single-use token exactly once.
 
 ``src/main.tsx`` wraps the app in ``<StrictMode>``, and React runs one extra
 setup/cleanup/setup cycle per effect in development. The setup token the page
@@ -12,9 +12,14 @@ and the submit-time retry re-exchanges the same dead token. First-boot setup
 becomes unusable under ``npm run dev`` and no reload can recover it, because the
 fresh token the reload mints is double-exchanged in exactly the same way.
 
-The rest of this codebase already defends this exact case with a ref claimed
-during setup rather than a local cancelled flag (new-project-dialog.tsx,
-find-bar.tsx, pickers.tsx, model-config-page.tsx, prompt-storage-dialog.tsx).
+A ref claimed during setup covers the StrictMode replay, because a replay keeps
+the same component instance. It does NOT cover a genuine remount: the form's own
+"Back to login" link goes to /login, which bounces straight back while
+must_change_password is set, and the new instance gets a fresh ref, re-exchanges
+the same token out of the same HTML and lands on a 401 that only a full page load
+clears. So the exchange is keyed by the token at module scope instead, which
+covers the replay, the remount and a submit racing the in-flight request with one
+mechanism.
 
 Following tests/studio/_node_harness.py's approach: the real source is sliced
 verbatim and run under node, and only the things it reads through are stubbed.
@@ -63,6 +68,28 @@ def _slice_setup_effect(src: str) -> str:
     return src[start:end]
 
 
+def _slice_setup_exchange_cache(src: str) -> str:
+    """The module-scope `setupExchanges` map and `startSetupExchange` helper.
+
+    Sliced rather than stubbed: this IS the deduplication under test, so a
+    harness that reimplemented it would pass while the shipped code regressed.
+    """
+    start = src.index("const setupExchanges = new Map")
+    end = src.index("\n}", src.index("function startSetupExchange")) + len("\n}")
+    sliced = src[start:end]
+    # The harness runs plain JS (node -e, no --experimental-strip-types), so drop
+    # the TypeScript annotations. Only the shapes this slice actually uses: a
+    # generic on the Map, and the parameter/return types on the one function.
+    sliced = re.sub(r"new Map<[^>]*>+\(\)", "new Map()", sliced)
+    sliced = re.sub(
+        r"function startSetupExchange\([^)]*\)[^{]*\{",
+        "function startSetupExchange(linkToken) {",
+        sliced,
+    )
+    sliced = re.sub(r"\blet inFlight[^=]*=", "let inFlight =", sliced)
+    return sliced
+
+
 def _slice_refs(src: str) -> str:
     """Every `const <name> = useRef(<literal>);` the component declares."""
     return "\n".join(
@@ -71,7 +98,7 @@ def _slice_refs(src: str) -> str:
     )
 
 
-def _run_effect_harness(*, strict_mode: bool) -> dict:
+def _run_effect_harness(*, strict_mode: bool, remount: bool = False) -> dict:
     node = _node_or_skip()
     src = AUTH_FORM.read_text(encoding = "utf-8")
 
@@ -100,19 +127,40 @@ def _run_effect_harness(*, strict_mode: bool) -> dict:
           return { access: "ACCESS", status: 200 };
         }
 
-        __REFS__
+        __CACHE__
 
-        const setup = __EFFECT__;
+        // One "component instance" per call: its refs are created here, so a
+        // guard living in the instance does NOT survive a remount, exactly as in
+        // React. Declaring the refs once at module scope instead would let a
+        // per-instance ref pass the remount test it is supposed to fail.
+        function mount() {
+          __REFS__
+          return __EFFECT__;
+        }
 
         const pending = [];
         const origVoid = (p) => pending.push(p);
 
         async function run() {
+          const setup = mount();
           const cleanup1 = setup();
           if (__STRICT__) {
+            // StrictMode replays setup/cleanup/setup on the SAME instance, so
+            // the same refs are still in scope.
             if (typeof cleanup1 === "function") cleanup1();
             const cleanup2 = setup();
             void cleanup2;
+          }
+          if (__REMOUNT__) {
+            // A route change away and back destroys the instance: fresh refs,
+            // fresh state, same page and same HTML.
+            if (typeof cleanup1 === "function") cleanup1();
+            for (let i = 0; i < 20; i += 1) await Promise.resolve();
+            setupSession = null;
+            setupError = null;
+            const remounted = mount();
+            const cleanup3 = remounted();
+            void cleanup3;
           }
           // Let every scheduled exchange settle.
           for (let i = 0; i < 50; i += 1) await Promise.resolve();
@@ -131,9 +179,11 @@ def _run_effect_harness(*, strict_mode: bool) -> dict:
     arrow = effect_src[len("useEffect(") : effect_src.rindex(", []);")]
 
     script = (
-        harness.replace("__REFS__", _slice_refs(src))
+        harness.replace("__CACHE__", _slice_setup_exchange_cache(src))
+        .replace("__REFS__", _slice_refs(src))
         .replace("__EFFECT__", arrow)
         .replace("__STRICT__", "true" if strict_mode else "false")
+        .replace("__REMOUNT__", "true" if remount else "false")
     )
 
     proc = subprocess.run(
@@ -163,18 +213,44 @@ def test_a_strictmode_replay_does_not_burn_the_single_use_token():
     result = _run_effect_harness(strict_mode = True)
     assert result["exchangeCalls"] == 1, (
         "the setup token was exchanged more than once across a StrictMode "
-        "replay, which burns it; claim a ref during setup like the rest of the "
-        "codebase does rather than relying on a local cancelled flag"
+        "replay, which burns it"
     )
     assert result["setupSession"] == "ACCESS"
     assert result["setupError"] is None
 
 
-def test_the_effect_guards_with_a_ref_not_only_a_local_flag():
-    """Source contract, so the guard cannot be removed without a failure here."""
-    effect = _slice_setup_effect(AUTH_FORM.read_text(encoding = "utf-8"))
-    refs = re.findall(r"const (\w+) = useRef\(", AUTH_FORM.read_text(encoding = "utf-8"))
-    assert any(ref in effect for ref in refs), (
-        "the setup-token effect guards only with a local variable, so a "
-        "StrictMode replay re-runs it and burns the single-use token"
+def test_a_remount_reuses_the_exchange_instead_of_respending_the_token():
+    """The case a per-instance ref cannot cover.
+
+    The setup form renders a "Back to login" link. /login bounces straight back
+    while must_change_password is set, so the component is destroyed and rebuilt
+    with the SAME token still sitting in the page's HTML. A guard living in the
+    instance is gone by then; the exchange has to outlive it.
+    """
+    result = _run_effect_harness(strict_mode = False, remount = True)
+    assert result["exchangeCalls"] == 1, (
+        "the setup token was exchanged again after a remount, so a click on "
+        "'Back to login' leaves first boot stuck on a 401 until a full reload"
+    )
+    assert result["setupSession"] == "ACCESS"
+    assert result["setupError"] is None
+
+
+def test_the_exchange_is_keyed_at_module_scope_not_in_the_component():
+    """Source contract: the guard must outlive the component instance."""
+    src = AUTH_FORM.read_text(encoding = "utf-8")
+    effect = _slice_setup_effect(src)
+    assert "startSetupExchange" in effect, (
+        "the setup effect calls exchangeSetupToken directly again, so every "
+        "mount spends the single-use token afresh"
+    )
+    cache = _slice_setup_exchange_cache(src)
+    assert "new Map" in cache and "setupExchanges.set" in cache, (
+        "startSetupExchange no longer memoises by token, so a remount or a "
+        "racing submit exchanges twice"
+    )
+    # And the submit-time retry must join it rather than start its own.
+    assert src.count("startSetupExchange(") >= 3, (
+        "the submit-time retry still calls exchangeSetupToken directly, so a "
+        "submit during the in-flight mount exchange burns the token"
     )

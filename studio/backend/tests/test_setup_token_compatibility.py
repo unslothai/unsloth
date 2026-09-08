@@ -251,14 +251,31 @@ def test_a_link_session_cannot_reach_the_desktop_route():
     assert _authenticates(admin, _SEED)
 
 
-def test_refreshing_a_link_session_drops_the_privilege():
+def test_a_link_session_has_no_refresh_token_to_extend_it():
+    """Stronger than dropping the privilege on refresh: there is nothing to refresh.
+
+    The route used to mint a refresh token that the setup page threw away, which
+    wrote a seven-day refresh_tokens row on every exchange of an endpoint that is
+    unauthenticated while setup is pending, so a client that merely reloaded could
+    grow that table without bound. The privilege was already deliberately not
+    stamped on the refresh token, so refreshing only ever produced an ordinary
+    session; not issuing one at all keeps that property and removes the row.
+    """
     admin = _seed_admin()
     client = _client()
     token = authentication.create_link_token(admin)
     body = client.post("/api/auth/link-exchange", json = {"link_token": token}).json()
-    refreshed = client.post("/api/auth/refresh", json = {"refresh_token": body["refresh_token"]})
-    assert refreshed.status_code == 200, refreshed.text
-    assert authentication.is_link_access_token(refreshed.json()["access_token"]) is False
+    assert body["access_token"]
+    assert body["refresh_token"] == ""
+    # And nothing was persisted that a later scan or revocation has to walk.
+    conn = storage.get_connection()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM refresh_tokens").fetchone()[0] == 0
+    finally:
+        conn.close()
+    # An empty string is not a credential.
+    refreshed = client.post("/api/auth/refresh", json = {"refresh_token": ""})
+    assert refreshed.status_code != 200, refreshed.text
 
 
 # ── two browsers, one first boot ─────────────────────────────────────

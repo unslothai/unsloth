@@ -150,11 +150,31 @@ def test_link_token_is_not_a_valid_access_bearer_token():
 
 
 def test_link_token_expired_is_rejected(monkeypatch):
+    """An expiry test has to hold an expired token, not a nearly-expired one.
+
+    A negative TTL does not produce one: create_link_token clamps with
+    max(1, int(expires_in)), so the token was valid for one more second and the
+    exchange below normally SUCCEEDED. It only passed on a host slow enough for
+    that second to elapse mid-test, which is a coin toss, not a check. Move the
+    clock instead, so the token is unambiguously stale.
+    """
+    from datetime import datetime, timedelta, timezone
+
     admin = _seed_admin()
-    # Negative TTL mints a token whose exp is already in the past.
-    monkeypatch.setattr(authentication, "LINK_TOKEN_EXPIRE_SECONDS", -1)
     token = authentication.create_link_token(admin)
-    monkeypatch.setattr(authentication, "LINK_TOKEN_EXPIRE_SECONDS", 600)
+    # Sanity: valid right now. Without this the test could pass because the token
+    # was never mintable in the first place.
+    peek = authentication._decode_link_payload(token.split(".", 1)[0])
+    assert peek is not None
+
+    real_now = datetime.now
+
+    class _Later(datetime):
+        @classmethod
+        def now(cls, tz = None):
+            return real_now(tz) + timedelta(seconds = authentication.LINK_TOKEN_EXPIRE_SECONDS + 60)
+
+    monkeypatch.setattr(authentication, "datetime", _Later)
     assert authentication.exchange_link_token(token) is None
 
 
@@ -315,7 +335,10 @@ def test_link_exchange_route_issues_jwt_once():
     body = resp.json()
     assert body["token_type"] == "bearer"
     assert body["access_token"]
-    assert body["refresh_token"]
+    # No refresh token by design: the setup page keeps only the access token, and
+    # minting one wrote a seven-day refresh_tokens row per exchange on a route
+    # that is unauthenticated while setup is pending.
+    assert body["refresh_token"] == ""
     assert body["must_change_password"] is False
 
     # The issued access token authenticates as the admin on the normal JWT path.
@@ -359,24 +382,31 @@ def test_link_exchange_rejects_when_password_rotates_mid_issuance(monkeypatch):
     client = TestClient(app)
 
     minted: list = []
-    _real_create_refresh_token = auth_route.create_refresh_token
+    _real_create_access_token = auth_route.create_access_token
 
-    def _rotating_create_refresh_token(*, subject, **kwargs):
-        tok = _real_create_refresh_token(subject = subject, **kwargs)
+    # The seam is the ACCESS token, because the route no longer mints a refresh
+    # token to hook. Same instant either way: after the single-use consumption,
+    # before the secret recheck.
+    def _rotating_create_access_token(*args, **kwargs):
+        tok = _real_create_access_token(*args, **kwargs)
         minted.append(tok)
         # Simulate the concurrent password change committing after consumption but
         # before the route's secret recheck: this rotates the stored JWT secret.
         assert storage.update_password(admin, "concurrent-new-pw-789") is not None
         return tok
 
-    monkeypatch.setattr(auth_route, "create_refresh_token", _rotating_create_refresh_token)
+    monkeypatch.setattr(auth_route, "create_access_token", _rotating_create_access_token)
 
     resp = client.post("/api/auth/link-exchange", json = {"link_token": token})
     # Rejected rather than issuing a session that outlives the password change.
     assert resp.status_code == 401, resp.text
-    # The refresh token minted mid-race was revoked, so it cannot be redeemed.
     assert len(minted) == 1
-    assert storage.consume_refresh_token(minted[0]) is None
+    # The token minted mid-race is signed with the OLD secret, which
+    # update_password has since replaced, so it authenticates nothing.
+    import jwt as _jwt
+
+    with pytest.raises(_jwt.InvalidTokenError):
+        _jwt.decode(minted[0], storage.get_jwt_secret(admin), algorithms = ["HS256"])
 
 
 # ── rate-limiting failed exchanges ───────────────────────────────────

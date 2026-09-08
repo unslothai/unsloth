@@ -572,7 +572,14 @@ def link_exchange(payload: LinkTokenRequest, request: Request) -> Token:
     # not stamped on the refresh token: the claim must not outlive the exchange, so
     # refreshing drops the privilege and leaves an ordinary session.
     access_token = create_access_token(subject = username, link = True)
-    refresh_token = create_refresh_token(subject = username)
+    # No refresh token. The setup page keeps only the access token, and minting
+    # one wrote a seven-day refresh_tokens row per exchange on a route that is
+    # unauthenticated by design while setup is pending, so a client that simply
+    # reloaded could grow that table without bound and make every later
+    # refresh-token scan and password-time revocation more expensive. Refreshing
+    # was never useful here either: the claim is deliberately not stamped on the
+    # refresh token, so a refresh drops the setup privilege anyway.
+    refresh_token = ""
     # Bind session issuance to the JWT secret the link token validated against. A
     # concurrent password change rotates that secret (and revokes refresh tokens)
     # to invalidate every outstanding session; if it rotated between the single-use
@@ -582,10 +589,9 @@ def link_exchange(payload: LinkTokenRequest, request: Request) -> Token:
     # recheck is caught by that same refresh-token revocation and the JWT signature
     # change, so no issued session outlives the password change.
     if storage.get_jwt_secret(username) != secret_at_exchange:
-        try:
-            storage.consume_refresh_token(refresh_token)
-        except Exception:
-            pass
+        # Nothing to revoke: no refresh token was minted above, and the access
+        # token cannot outlive the rotation because it is signed with the old
+        # secret, which update_password has already replaced.
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid, expired, or already-used link token",
@@ -736,6 +742,17 @@ async def set_link_initial_password(
         raise HTTPException(
             status_code = status.HTTP_400_BAD_REQUEST,
             detail = "New password cannot contain spaces",
+        )
+    # The seeded passphrase is not a password the operator chose: it was printed
+    # to a terminal and written to auth/.bootstrap_password. Accepting it here
+    # would clear must_change_password and delete that file while leaving the
+    # account on exactly the credential setup exists to replace, and it would
+    # report success. /change-password already refuses this; the two routes set
+    # the same flag, so they cannot disagree about what finishing setup means.
+    if hashing.verify_password(payload.new_password, _salt, pwd_hash):
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "New password must be different from the current password",
         )
 
     new_secret = storage.update_password(

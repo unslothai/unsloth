@@ -236,6 +236,7 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 import hashlib
+import ipaddress
 import mimetypes
 import re as _re
 import shutil
@@ -2334,6 +2335,58 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
     return (scheme, host, port)
 
 
+_LOOPBACK_HOST_NAMES = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def _host_is_safe_from_rebinding(request: Request, app: FastAPI) -> bool:
+    """Reject a Host that a hostile DNS name could have produced.
+
+    Same-origin is not enough on its own. In a DNS-rebinding attack the operator
+    visits attacker.example, which re-resolves to this listener; the browser then
+    sends ``Host: attacker.example`` and either no Origin (a top-level GET) or an
+    Origin that MATCHES that Host, so the same-origin check passes and the
+    attacker's script reads the setup token out of the page.
+
+    Host allowlisting is the standard remedy for exactly this, in webpack's
+    ``allowedHosts``, Django's ``ALLOWED_HOSTS``, Rails' HostAuthorization and
+    NCC Group's guidance for loopback services.
+
+    An IP literal is accepted whatever it is: a name is what rebinding needs, and
+    a browser sends the literal only when the operator typed it, so
+    ``http://192.168.1.50:8000`` on a LAN bind keeps working. A NAME is accepted
+    only when it is loopback or the host this launch was told to bind, which is
+    the operator's own configuration rather than an attacker's.
+
+    This is NOT the loopback/proxy test that was deleted. That one tried to tell a
+    reverse proxy from a local browser, which is impossible because they send
+    identical bytes. This asks a different and answerable question: could this
+    Host have been chosen by someone other than the operator.
+    """
+    host_header = request.headers.get("host")
+    if not host_header:
+        # HTTP/1.1 requires Host; something that omits it is not a browser
+        # completing setup.
+        return False
+    hostname = host_header.rsplit(":", 1)[0] if host_header.count(":") == 1 else host_header
+    if hostname.startswith("["):
+        hostname = hostname[1:].split("]", 1)[0]
+    hostname = hostname.strip().lower()
+    if not hostname:
+        return False
+    if hostname in _LOOPBACK_HOST_NAMES:
+        return True
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        # A literal cannot be rebound: the browser only sends one the operator
+        # typed, and a hostile name always arrives as a name.
+        return True
+    configured = str(getattr(app.state, "bind_host", "") or "").strip().lower()
+    return bool(configured) and hostname == configured
+
+
 def _is_same_origin_request(request: Request) -> bool:
     """True when Origin is missing or matches request's scheme://host:port.
 
@@ -2600,7 +2653,7 @@ def setup_frontend(
         # same-host reverse proxy from a local browser, which is impossible because
         # the two send identical bytes. This asks a question the browser answers
         # honestly and cannot be forged from script: which origin is asking.
-        if _is_same_origin_request(request):
+        if _is_same_origin_request(request) and _host_is_safe_from_rebinding(request, app):
             content, nonce = _inject_bootstrap(content, app)
         else:
             nonce = None

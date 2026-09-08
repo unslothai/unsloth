@@ -66,6 +66,26 @@ type SetupExchange = { access: string | null; status: number | null };
  * and the operator can reload to be issued a fresh token. The status comes back
  * with it so a failure can say what actually happened rather than guess.
  */
+// The setup exchange belongs to the PAGE, not to a mount. The token in the
+// served HTML is SINGLE USE, and two things spend it twice if this lives in
+// component state: a genuine remount (the form's own "Back to login" link goes
+// to /login, which bounces straight back while must_change_password is set) and
+// a submit that races the still-in-flight mount exchange. Both then get a 401 on
+// a token the first attempt had already redeemed, and no reload short of a full
+// page load can recover, because a remount reuses the same spent token from the
+// same HTML. Keyed by the token, so a genuine page reload with a freshly minted
+// one starts a new exchange rather than replaying this result.
+const setupExchanges = new Map<string, Promise<SetupExchange>>();
+
+function startSetupExchange(linkToken: string): Promise<SetupExchange> {
+  let inFlight = setupExchanges.get(linkToken);
+  if (!inFlight) {
+    inFlight = exchangeSetupToken(linkToken);
+    setupExchanges.set(linkToken, inFlight);
+  }
+  return inFlight;
+}
+
 async function exchangeSetupToken(linkToken: string): Promise<SetupExchange> {
   try {
     const response = await fetch(apiUrl("/api/auth/link-exchange"), {
@@ -131,7 +151,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const [deadlineAt, setDeadlineAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const reloadReadySent = useRef(false);
-  const setupExchangeStarted = useRef(false);
 
   useEffect(() => {
     if (deadlineAt === null) {
@@ -241,16 +260,11 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   useEffect(() => {
     const token = window.__UNSLOTH_BOOTSTRAP__?.link_token;
     if (!token || isLoginMode) return;
-    // Claimed in setup and never released, which a local flag cannot do:
-    // StrictMode replays setup, cleanup, setup, and this token is SINGLE USE.
-    // Exchanging on the second setup would spend a token the first setup had
-    // already burned, and the first setup's session went out with its own
-    // cleanup, so the operator would be left holding a 401 that no reload can
-    // clear (the reload mints a fresh token and burns that one the same way).
-    if (setupExchangeStarted.current) return;
-    setupExchangeStarted.current = true;
+    // One exchange per token for the life of the page, so StrictMode's
+    // setup/cleanup/setup replay, a remount and a racing submit all await the
+    // same request instead of each spending the single-use token again.
     void (async () => {
-      const { access, status } = await exchangeSetupToken(token);
+      const { access, status } = await startSetupExchange(token);
       // No cancelled check: the session belongs to the page, not to this mount,
       // and dropping it on unmount is what made the replay unrecoverable.
       if (access) setSetupSession(access);
@@ -354,7 +368,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         // current one. Same two fields on screen as before.
         let setupAccess = setupSession;
         if (!setupAccess) {
-          const retry = await exchangeSetupToken(setupToken);
+          // The same promise the mount effect is awaiting, not a second
+          // exchange: submitting before that request settles used to spend the
+          // token again and lose the session the first one was about to deliver.
+          const retry = await startSetupExchange(setupToken);
           setupAccess = retry.access;
           if (!setupAccess) {
             const detail = retry.status ?? setupError;

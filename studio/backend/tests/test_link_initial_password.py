@@ -202,3 +202,33 @@ def test_a_link_token_is_not_a_bearer_token_and_vice_versa():
 
     assert authentication.is_link_access_token(link_token) is False
     assert authentication.exchange_link_token(access) is None
+
+
+def test_the_seeded_passphrase_is_refused_as_the_first_password():
+    """Setup must not "complete" by keeping the credential it exists to replace.
+
+    The seeded passphrase was printed to a terminal and written to
+    auth/.bootstrap_password. Accepting it here would clear must_change_password
+    and delete that file while the account still authenticates with it, and would
+    report success. /change-password already refuses the same thing, and both
+    routes clear the same flag, so they cannot be allowed to disagree about what
+    finishing setup means.
+    """
+    admin = _seed_admin()
+    token = authentication.create_link_token(admin)
+    client = _client()
+
+    exchanged = client.post("/api/auth/link-exchange", json = {"link_token": token})
+    assert exchanged.status_code == 200, exchanged.text
+    access = exchanged.json()["access_token"]
+
+    resp = client.post(
+        "/api/auth/link-initial-password",
+        json = {"new_password": _SEED},
+        headers = {"Authorization": f"Bearer {access}"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "different" in resp.json()["detail"].lower()
+    # And setup is still pending, so the operator is asked again rather than
+    # being left on the seed with the flag cleared.
+    assert storage.requires_password_change(admin) is True
