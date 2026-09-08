@@ -10040,6 +10040,20 @@ class LlamaCppBackend:
                 except Exception:  # noqa: BLE001
                     return True
 
+            def _another_vendor_has_an_open_node() -> bool:
+                # Vulkan enumerates any vendor, so an open Intel or NVIDIA render node is a
+                # complete path for THIS binary and the closed AMD one cannot be the whole
+                # story. Asked only for Vulkan: HIP needs /dev/kfd and an AMD render node,
+                # which no other vendor's node substitutes for. False on a host this cannot
+                # read, which keeps the behaviour it had before the check existed.
+                if not _is_vulkan:
+                    return False
+                try:
+                    from utils.hardware.amd import a_non_amd_render_node_is_open
+                    return a_non_amd_render_node_is_open()
+                except Exception:  # noqa: BLE001
+                    return False
+
             # The closed node when it does NOT explain the empty probe, appended to whatever
             # reason does rather than returned in place of it.
             _second_finding = ""
@@ -10073,7 +10087,7 @@ class LlamaCppBackend:
                 # reason sends the user after a repair that leaves the probe just as empty.
                 # Asked per backend, since HIP also needs /dev/kfd and that node has no
                 # sibling. Still reported either way, because it is still true.
-                if _closed_nodes_block_the_runtime():
+                if _closed_nodes_block_the_runtime() and not _another_vendor_has_an_open_node():
                     return node_hint
                 _second_finding = f" Separately, and not why the probe is empty: {node_hint}"
             if _is_vulkan:

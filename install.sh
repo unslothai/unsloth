@@ -5541,10 +5541,14 @@ esac
 # settles it, since the bundle itself is chosen later, in setup.sh. The three named here
 # are the REQUESTABLE_BACKENDS that are not ROCm (utils/prebuilt/llama_backend.py); "hip"
 # normalises to rocm and "auto" is not a decision, so both correctly fall through.
+# Normalized the way the bundle selector normalizes it (studio/setup.sh, `awk '{$1=$1}'`:
+# trim and collapse, never delete). Deleting internal whitespace made "vul kan" match here
+# and suppress the diagnosis, while setup.sh rejects that value and falls back to automatic
+# selection -- which may install ROCm and need the very nodes this went quiet about.
 _run_may_open_kfd() {
     [ "$SKIP_TORCH" = false ] && return 0
     case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
-            | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+            | awk '{$1=$1; print tolower($0)}')" in
         vulkan|cpu|cuda) return 1 ;;
     esac
     return 0
@@ -5557,7 +5561,7 @@ _run_may_open_kfd() {
 _run_may_open_a_gpu_node() {
     [ "$SKIP_TORCH" = false ] && return 0
     case "$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" \
-            | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+            | awk '{$1=$1; print tolower($0)}')" in
         cpu|cuda) return 1 ;;
     esac
     return 0
@@ -5643,6 +5647,10 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
         | tr '\n' ',' | sed 's/,*$//')
     _closed_amd_priv=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^privileged://p' \
         | tr '\n' ',' | sed 's/,*$//')
+    # Who the mode tests above answered for. $USER is inherited, so a container that changes
+    # its numeric user without resetting it names somebody else, and the usermod below would
+    # then modify an account that is not the one holding the device shut.
+    _amd_repair_user=$(id -un 2>/dev/null || printf '%s' "${USER:-\$USER}")
     # The documented pair is the fallback for nodes that could not be stat'd at all, where
     # some advice beats none. A node that WAS read and offers no joinable group gets the
     # sentences below instead of a command that would fail.
@@ -5657,7 +5665,7 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
             *)   substep "  Add yourself to the $_closed_amd_groups group, then log out" ;;
         esac
         substep "  and back in:"
-        substep "  sudo usermod -a -G $_closed_amd_groups ${USER:-\$USER}"
+        substep "  sudo usermod -a -G $_closed_amd_groups $_amd_repair_user"
     fi
     if [ -n "$_closed_amd_gids" ]; then
         # One flag per GID, as docker/run.sh does and as the Python half already emits:
@@ -5666,9 +5674,9 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
         _closed_amd_gid_adds=$(printf '%s' "$_closed_amd_gids" | tr ',' '\n' \
             | sed 's/^/--group-add /' | tr '\n' ' ' | sed 's/ *$//')
         # groupadd alone only gives the numeric owner a NAME: the account is still
-        # outside the group and the node is still shut, so both halves are printed. The
-        # first GID leads the example, and every GID needs the pair.
-        _closed_amd_gid_first=$(printf '%s' "$_closed_amd_gids" | cut -d, -f1)
+        # outside the group and the node is still shut, so both halves are printed -- and
+        # one pair PER GID, since one groupadd names one owner and the sentence above
+        # already says "create a group for each".
         case "$_closed_amd_gids" in
             *,*) substep "  Some of those nodes belong to GIDs $_closed_amd_gids, which have no" "$C_WARN"
                  substep "  group entry here, so usermod cannot name them: create a group for each" ;;
@@ -5676,8 +5684,16 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
                  substep "  group entry here, so usermod cannot name it: create a group for it" ;;
         esac
         substep "  and add yourself to every one of them:"
-        substep "  sudo groupadd -g $_closed_amd_gid_first <name>"
-        substep "  sudo usermod -a -G <name> ${USER:-\$USER}"
+        _amd_gid_n=0
+        for _amd_gid in $(printf '%s' "$_closed_amd_gids" | tr ',' ' '); do
+            _amd_gid_n=$((_amd_gid_n + 1))
+            case "$_closed_amd_gids" in
+                *,*) _amd_gid_name="<name$_amd_gid_n>" ;;
+                *)   _amd_gid_name="<name>" ;;
+            esac
+            substep "  sudo groupadd -g $_amd_gid $_amd_gid_name"
+            substep "  sudo usermod -a -G $_amd_gid_name $_amd_repair_user"
+        done
         substep "  or recreate the container passing $_closed_amd_gid_adds."
     fi
     if [ -n "$_closed_amd_modes" ]; then
@@ -5703,9 +5719,16 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
     # /dev/dri leaves the closed KFD node looking like the whole story while ROCr
     # has no render node to open, and no group creates one.
     if ! _amd_render_node_present; then
+        # The nodes THIS run opens: a Vulkan bundle beside --no-torch never opens /dev/kfd,
+        # so naming it hands the container another host device for nothing.
+        if _run_may_open_kfd; then
+            _amd_map_devices="--device /dev/kfd --device /dev/dri"
+        else
+            _amd_map_devices="--device /dev/dri"
+        fi
         substep "  No AMD render node (/dev/dri/renderD*) is present either, and ROCm and" "$C_WARN"
         substep "  Vulkan both open one, so the device mapping needs fixing too; under"
-        substep "  Docker that is --device /dev/kfd --device /dev/dri."
+        substep "  Docker that is $_amd_map_devices."
     fi
 # The same missing render node with nothing closed, which is the ordinary container shape
 # of it: --device /dev/kfd and no --device /dev/dri leaves one openable node, so the list
@@ -5714,10 +5737,14 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
 elif [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
      [ "$OS" != "macos" ] && \
      ! _amd_render_node_present && _kfd_topology_has_an_amd_gpu; then
+    if _run_may_open_kfd; then
+        _amd_map_devices="--device /dev/kfd --device /dev/dri"
+    else
+        _amd_map_devices="--device /dev/dri"
+    fi
     substep "An AMD GPU is in the KFD topology but no AMD render node" "$C_WARN"
     substep "  (/dev/dri/renderD*) is present, and ROCm and Vulkan both open one, so the"
-    substep "  device mapping needs fixing; under Docker that is --device /dev/kfd"
-    substep "  --device /dev/dri."
+    substep "  device mapping needs fixing; under Docker that is $_amd_map_devices."
 fi
 
 # ── Install unsloth directly into the venv (no activation needed) ──

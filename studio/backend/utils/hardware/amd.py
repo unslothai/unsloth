@@ -611,6 +611,23 @@ _KFD_NODE = "/dev/kfd"
 _DRI_RENDER_GLOB = "/dev/dri/renderD*"
 
 
+_AMD_PCI_VENDOR_ID = "0x1002"
+
+
+def _render_node_vendor(path: str) -> "str | None":
+    """The PCI vendor id behind a ``/dev/dri/renderD*`` node, or None if it cannot be read.
+
+    None is not "some other vendor": a container can map the node while masking or not
+    mounting the sysfs entry that names it, and the callers answer differently for the two.
+    """
+    vendor_file = f"/sys/class/drm/{os.path.basename(path)}/device/vendor"
+    try:
+        with open(vendor_file, encoding = "utf-8") as fh:
+            return fh.read().strip().lower()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def _render_node_is_amd(path: str) -> bool:
     """Whether a ``/dev/dri/renderD*`` node belongs to an AMD GPU.
 
@@ -621,12 +638,7 @@ def _render_node_is_amd(path: str) -> bool:
     Read from sysfs, which is world-readable, so the answer does not need the access
     this is testing for.
     """
-    vendor_file = f"/sys/class/drm/{os.path.basename(path)}/device/vendor"
-    try:
-        with open(vendor_file, encoding = "utf-8") as fh:
-            return fh.read().strip().lower() == "0x1002"
-    except (OSError, UnicodeDecodeError):
-        return False
+    return _render_node_vendor(path) == _AMD_PCI_VENDOR_ID
 
 
 def _kfd_topology_has_an_amd_gpu() -> bool:
@@ -695,7 +707,17 @@ def _amd_render_node_exists() -> bool:
     for that reason. Group membership cannot create the node, so this is an independent
     blocker rather than part of the permission repair.
     """
-    return any(_render_node_is_amd(path) for path in glob.glob(_DRI_RENDER_GLOB))
+    _unreadable = False
+    for path in glob.glob(_DRI_RENDER_GLOB):
+        _vendor = _render_node_vendor(path)
+        if _vendor == _AMD_PCI_VENDOR_ID:
+            return True
+        _unreadable = _unreadable or _vendor is None
+    # A node whose vendor could not be READ is not evidence that no AMD node exists, and the
+    # caller turns "does not exist" into "recreate the container with --device /dev/dri" --
+    # advice for a device that shape has already mapped. Unknown reads as present, which
+    # withdraws a sentence rather than inventing one.
+    return _unreadable
 
 
 def an_amd_render_node_is_open() -> bool:
@@ -712,6 +734,28 @@ def an_amd_render_node_is_open() -> bool:
         try:
             if not _render_node_is_amd(path):
                 continue
+            if os.access(path, os.R_OK | os.W_OK):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def a_non_amd_render_node_is_open() -> bool:
+    """Whether a render node belonging to some OTHER vendor is open to this user.
+
+    Vulkan enumerates any vendor, so on a mixed host an open Intel or NVIDIA render node is
+    a complete path for a Vulkan-only build: a closed AMD node is then a second finding
+    rather than why the probe came back empty. HIP has no such alternative, which is why
+    the caller asks this only for Vulkan. Only nodes whose vendor was READ count.
+    """
+    if platform.system() != "Linux":
+        return False
+    for path in sorted(glob.glob(_DRI_RENDER_GLOB)):
+        _vendor = _render_node_vendor(path)
+        if _vendor is None or _vendor == _AMD_PCI_VENDOR_ID:
+            continue
+        try:
             if os.access(path, os.R_OK | os.W_OK):
                 return True
         except OSError:
@@ -913,6 +957,21 @@ def amd_closed_nodes_block_the_runtime(*, needs_kfd: bool = True) -> bool:
     return not an_amd_render_node_is_open()
 
 
+def _repair_account() -> str:
+    """The account the usermod commands must name.
+
+    os.getuid() is who os.access answered for above. USER and LOGNAME are inherited, so a
+    container that changes its numeric user without resetting them names somebody else, and
+    following the hint then modifies an account that is not the one holding the device shut.
+    """
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.getuid()).pw_name
+    except (ImportError, KeyError, OSError, AttributeError):
+        return os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
+
+
 def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     """One sentence naming the closed nodes and the command that opens them, or None.
 
@@ -942,7 +1001,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
         # path to that other GPU, so "no GPU backend can use the AMD card" is false there --
         # and _explain_empty_gpu_probe reaches exactly that host, appending this sentence
         # after saying the closed node is not why the probe is empty.
-        user = os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
+        user = _repair_account()
         joinable, unnamed, no_group, acl, owned, privileged = _groups_that_own(closed)
         if not any(_p != _KFD_NODE for _p in closed):
             _claim = "so ROCm cannot use the AMD card even though the driver is loaded"
@@ -978,12 +1037,23 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             # repair, and one per GID: with two unnamed GIDs a singular instruction repairs
             # at most one of the nodes.
             _each = "it" if len(unnamed) == 1 else "each of them"
-            _first = unnamed[0]
+            # A pair per GID, not just the first: the sentence already says "each of them",
+            # and one groupadd names one numeric owner, so a host whose nodes differ in group
+            # had every node after the first left shut by the command it was told to run.
+            _names = (
+                ["<name>"]
+                if len(unnamed) == 1
+                else [f"<name{_i}>" for _i in range(1, len(unnamed) + 1)]
+            )
+            _pairs = "; ".join(
+                f"sudo groupadd -g {_g} {_n} && sudo usermod -a -G {_n} {user}"
+                for _g, _n in zip(unnamed, _names)
+            )
             parts.append(
                 f"Some of those nodes belong to {_noun} {_gids}, {_verb} no group entry on "
                 f"this system, so usermod cannot name them: create a group for {_each} and "
-                f"add the account to it (sudo groupadd -g {_first} <name>, then sudo usermod "
-                f"-a -G <name> {user}), or recreate the container passing {_adds}."
+                f"add the account to it ({_pairs}), or recreate the container passing "
+                f"{_adds}."
             )
         if no_group:
             parts.append(
@@ -1027,9 +1097,12 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             "udev or devtmpfs problem. No group membership creates it."
         )
     if _RENDER_NODE_GLOB in missing:
+        # The mapping this caller needs, not both nodes always: Vulkan never opens /dev/kfd,
+        # so naming it here hands a container another host device for nothing.
+        _devices = "--device /dev/kfd --device /dev/dri" if needs_kfd else "--device /dev/dri"
         parts.append(
-            "No AMD render node (/dev/dri/renderD*) is present, and ROCm and Vulkan both "
-            "open one, so the device mapping needs fixing; under Docker that is "
-            "--device /dev/kfd --device /dev/dri."
+            f"No AMD render node (/dev/dri/renderD*) is present, and ROCm and Vulkan both "
+            f"open one, so the device mapping needs fixing; under Docker that is "
+            f"{_devices}."
         )
     return " ".join(parts) or None

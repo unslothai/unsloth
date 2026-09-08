@@ -33,6 +33,18 @@ import pytest
 from utils.hardware import amd
 
 
+@pytest.fixture(autouse = True)
+def _the_account_this_process_runs_as(monkeypatch):
+    """The repair commands name the account os.access answered for, so fix what that is.
+
+    A stubbed passwd answer rather than the runner's own, which differs per machine. The
+    environment fallback, for a uid with no passwd entry, has its own test.
+    """
+    import pwd
+
+    monkeypatch.setattr(pwd, "getpwuid", lambda _uid: types.SimpleNamespace(pw_name = "ada"))
+
+
 @pytest.fixture
 def linux(monkeypatch):
     monkeypatch.setattr(amd.platform, "system", lambda: "Linux")
@@ -44,18 +56,28 @@ def _nodes(
     present: list[str],
     openable: set[str],
     amd_owned: bool = True,
+    vendor_readable: bool = True,
 ):
     """A host whose ``present`` nodes exist and whose ``openable`` subset can be opened.
 
     ``amd_owned`` is the vendor of the hardware behind those nodes, stubbed here and
-    exercised for real in the two tests below it.
+    exercised for real in the two tests below it. ``vendor_readable`` is whether sysfs will
+    say so: a container can map the node and hide the entry that names its vendor, and the
+    two are different answers.
     """
     monkeypatch.setattr(
         amd.glob, "glob", lambda pattern: [p for p in present if p.startswith("/dev/dri/renderD")]
     )
     monkeypatch.setattr(amd.os.path, "exists", lambda p: p in present)
     monkeypatch.setattr(amd.os, "access", lambda p, mode: p in openable)
-    monkeypatch.setattr(amd, "_render_node_is_amd", lambda p: amd_owned)
+    monkeypatch.setattr(amd, "_render_node_is_amd", lambda p: vendor_readable and amd_owned)
+    # The vendor, not the verdict: _amd_render_node_exists reads it directly, so that an
+    # unreadable entry can be told apart from one that named another vendor.
+    monkeypatch.setattr(
+        amd,
+        "_render_node_vendor",
+        lambda p: None if not vendor_readable else ("0x1002" if amd_owned else "0x10de"),
+    )
     monkeypatch.setattr(amd, "_kfd_topology_has_an_amd_gpu", lambda: amd_owned)
     # These paths are patched rather than created, so stat cannot name their groups; say
     # so explicitly instead of leaving it to whether the runner happens to have a node at
@@ -142,10 +164,21 @@ def test_the_hint_names_the_nodes_the_groups_and_the_account(monkeypatch, linux)
     assert "usermod -a -G render,video ada" in hint
 
 
+def _no_passwd_entry(monkeypatch):
+    """A uid the passwd database does not know, which is where the environment is read."""
+    import pwd
+
+    def _missing(_uid):
+        raise KeyError(_uid)
+
+    monkeypatch.setattr(pwd, "getpwuid", _missing)
+
+
 def test_the_hint_survives_an_environment_with_no_user(monkeypatch, linux):
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.delenv("USER", raising = False)
     monkeypatch.delenv("LOGNAME", raising = False)
+    _no_passwd_entry(monkeypatch)
     assert "$USER" in amd.amd_node_permission_hint()
 
 
@@ -347,6 +380,10 @@ def test_a_hybrid_host_whose_amd_card_raised_it_still_gets_the_permission_hint(m
     # and a venv that asked for ROCm and got a CPU wheel is exactly this verdict.
     monkeypatch.setattr(hardware, "_expected_rocm_flavor_was_chosen", lambda: True)
     monkeypatch.setattr(hardware, "_torch_reports_a_hip_runtime", lambda: False)
+    # And the third of the trio, for the same reason: it reads whatever torch happens to
+    # be installed beside the test, so leaving it live made this pass or fail on the
+    # runner's wheel rather than on the host the test describes.
+    monkeypatch.setattr(hardware, "_torch_reports_another_vendors_runtime", lambda: False)
     monkeypatch.setenv("USER", "ada")
     message = hardware._gpu_present_but_unusable_message(
         "video generation",
@@ -817,6 +854,15 @@ def _shell_fn(lines: "list[str]", name: str) -> str:
     raise AssertionError(f"unterminated {name}() in install.sh")
 
 
+def _install_sh_env(closed_nodes: str, env_user: str, backend: "str | None") -> dict:
+    """The environment install.sh reads: the closed set, the account, and the request."""
+    env = {**os.environ, "_closed_amd_nodes": closed_nodes, "USER": env_user}
+    env.pop("UNSLOTH_LLAMA_CPP_BACKEND", None)
+    if backend is not None:
+        env["UNSLOTH_LLAMA_CPP_BACKEND"] = backend
+    return env
+
+
 def _install_sh_hint(
     closed_nodes: str,
     *,
@@ -824,6 +870,10 @@ def _install_sh_hint(
     amd_present: bool = True,
     self_uid: str = "4242",
     repairs: "str | None" = None,
+    skip_torch: bool = False,
+    backend: "str | None" = None,
+    env_user: str = "ada",
+    id_user: str = "ada",
 ) -> str:
     """The installer's closed-node message, run for a given closed set.
 
@@ -860,15 +910,20 @@ def _install_sh_hint(
             # A real device node is root-owned; a tmp_path node standing in for one belongs
             # to the runner, and the installer stops at the owner class when those match.
             # Stubbed so the arms below choose which case they are testing.
-            f"id() {{ echo {self_uid}; }}",
+            # Both spellings: the owner-class test asks `id -u`, the repair command asks
+            # `id -un`, and a stub answering one for the other names a uid as an account.
+            f'id() {{ case "$1" in -un) echo {id_user} ;; *) echo {self_uid} ;; esac; }}',
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if amd_present else 1}; }}",
             # The route the diagnoses are gated on; the gate has its own tests below.
             "_amd_node_diag_route=true",
             "OS=linux",
             # The run-scope predicate the block now asks. Lifted rather than stubbed, so
             # the default arms below go through the same rule the installer applies.
-            "SKIP_TORCH=false",
+            f"SKIP_TORCH={'true' if skip_torch else 'false'}",
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
+            # The block also asks which nodes THIS run opens, to name the right --device
+            # pair, so the predicate has to exist before the span that calls it.
+            _shell_fn(lines, "_run_may_open_kfd"),
             # The real derivation by default. An override stands in only where the case
             # cannot be built on disk -- a node whose GID has no entry in the group
             # database -- and _amd_node_repairs has its own tests either way.
@@ -880,7 +935,7 @@ def _install_sh_hint(
         ["bash", "-c", script],
         capture_output = True,
         text = True,
-        env = {**os.environ, "_closed_amd_nodes": closed_nodes, "USER": "ada"},
+        env = _install_sh_env(closed_nodes, env_user, backend),
     )
     assert out.returncode == 0, out.stderr
     return out.stdout
@@ -1413,6 +1468,10 @@ def test_a_label_that_names_no_vendor_still_lets_the_intent_speak(monkeypatch, l
     monkeypatch.setattr(hardware, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd", "nvidia"}))
     monkeypatch.setattr(hardware, "_expected_rocm_flavor_was_chosen", lambda: True)
     monkeypatch.setattr(hardware, "_torch_reports_a_hip_runtime", lambda: False)
+    # And the third of the trio, for the same reason: it reads whatever torch happens to
+    # be installed beside the test, so leaving it live made this pass or fail on the
+    # runner's wheel rather than on the host the test describes.
+    monkeypatch.setattr(hardware, "_torch_reports_another_vendors_runtime", lambda: False)
     message = hardware._gpu_present_but_unusable_message(
         "video generation",
         verdict = ("torch_cpu_build", "2.11.0+cpu"),
@@ -2236,7 +2295,10 @@ def test_an_unnamed_gid_hint_also_adds_the_account(monkeypatch, linux):
     hint = amd.amd_node_permission_hint()
     assert "993, 994" in hint
     assert "each of them" in hint
-    assert "sudo groupadd -g 993" in hint and "sudo usermod -a -G <name>" in hint
+    # A pair per GID: one groupadd names one numeric owner, so the second node stays shut
+    # for anyone who runs only the first command.
+    assert "sudo groupadd -g 993 <name1> && sudo usermod -a -G <name1> ada" in hint
+    assert "sudo groupadd -g 994 <name2> && sudo usermod -a -G <name2> ada" in hint
     assert "--group-add 993 --group-add 994" in hint
 
 
@@ -2255,8 +2317,10 @@ def test_the_installer_also_adds_the_account_for_unnamed_gids(tmp_path):
     """The installer twin of the rule above: it printed the container flags per GID after the
     earlier fix, but still said only "create a group" for the bare host."""
     out = _install_sh_hint("/dev/dri/renderD128", repairs = "gid:993\ngid:994")
-    assert "sudo groupadd -g 993" in out
-    assert "sudo usermod -a -G <name> ada" in out
+    assert "sudo groupadd -g 993 <name1>" in out
+    assert "sudo usermod -a -G <name1> ada" in out
+    assert "sudo groupadd -g 994 <name2>" in out
+    assert "sudo usermod -a -G <name2> ada" in out
     assert "--group-add 993 --group-add 994" in out
     assert "create a group for each" in out
 
@@ -2283,7 +2347,7 @@ def _install_sh_kfd_scope(closed_nodes: str, *, skip_torch: bool, backend: "str 
             'substep() { echo "$1"; }',
             'C_WARN=""',
             "_amd_render_node_present() { return 0; }",
-            "id() { echo 4242; }",
+            'id() { case "$1" in -un) echo ada ;; *) echo 4242 ;; esac; }',
             "_amd_node_diag_route=true",
             "OS=linux",
             f"SKIP_TORCH={'true' if skip_torch else 'false'}",
@@ -2534,3 +2598,185 @@ def test_the_real_gfx_route_is_still_read_as_one():
     ROCm route and must stay one, which the parametrized case above covers by URL and this
     one states as the rule."""
     assert _diag_route("https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/gfx1151") is True
+
+
+def test_a_vulkan_caller_is_not_told_to_map_the_kfd_node(monkeypatch, linux):
+    """The mapping advice named both nodes whatever the caller was. Vulkan never opens
+    /dev/kfd -- which is why _amd_nodes_the_runtime_lacks already excludes it under
+    needs_kfd = False -- so this handed a container another host device for nothing."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = {"/dev/kfd"})
+    hint = amd.amd_node_permission_hint(needs_kfd = False)
+    assert "--device /dev/dri." in hint
+    assert "/dev/kfd" not in hint
+
+
+def test_a_rocm_caller_is_still_told_to_map_both(monkeypatch, linux):
+    """The control: HIP opens both, so the pair is right there and the fix must not
+    narrow the advice for the caller it was written for."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = {"/dev/kfd"})
+    hint = amd.amd_node_permission_hint()
+    assert "--device /dev/kfd --device /dev/dri." in hint
+
+
+def test_a_no_torch_vulkan_installer_names_only_the_render_node(tmp_path):
+    """The installer twin, on the run that reaches it: --no-torch with an explicit Vulkan
+    bundle opens no /dev/kfd, so the device pair it prints must not name one."""
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    node.chmod(0o660)
+    out = _install_sh_hint(
+        str(node), render_present = False, skip_torch = True, backend = "vulkan"
+    )
+    assert "Docker that is --device /dev/dri." in out
+    assert "--device /dev/kfd" not in out
+
+
+def test_an_ordinary_installer_run_still_names_both(tmp_path):
+    """The control: a torch install opens /dev/kfd, so the pair stays."""
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    node.chmod(0o660)
+    out = _install_sh_hint(str(node), render_present = False)
+    assert "--device /dev/kfd --device /dev/dri." in out
+
+
+def test_a_render_node_whose_vendor_cannot_be_read_is_not_called_absent(monkeypatch, linux):
+    """A container can map /dev/dri and still mask the sysfs entry that names the vendor.
+    Reading that unknown as "no AMD render node exists" told the user to recreate the
+    container with --device /dev/dri, which that shape has already done."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = {"/dev/kfd", "/dev/dri/renderD128"},
+        vendor_readable = False,
+    )
+    assert amd._amd_render_node_exists() is True
+    assert amd.amd_node_permission_hint() is None
+
+
+def test_a_host_with_no_render_node_at_all_still_says_so(monkeypatch, linux):
+    """The control, and the reason the fix is "unknown reads as present" rather than
+    "always present": a host whose glob finds nothing has nothing unreadable either, and
+    the sentence #10466 needs must still be printed."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = {"/dev/kfd"})
+    assert amd._amd_render_node_exists() is False
+    assert "No AMD render node" in amd.amd_node_permission_hint()
+
+
+def test_another_vendors_open_render_node_is_seen(monkeypatch, linux):
+    """The evidence the Vulkan caller needs: a node that was read, named another vendor,
+    and opens. An unreadable one is not evidence either way and must not count."""
+    monkeypatch.setattr(amd.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        amd.glob, "glob", lambda pattern: ["/dev/dri/renderD128", "/dev/dri/renderD129"]
+    )
+    monkeypatch.setattr(
+        amd,
+        "_render_node_vendor",
+        lambda p: "0x1002" if p.endswith("128") else "0x10de",
+    )
+    monkeypatch.setattr(amd.os, "access", lambda p, mode: p.endswith("129"))
+    assert amd.a_non_amd_render_node_is_open() is True
+    monkeypatch.setattr(amd, "_render_node_vendor", lambda p: None)
+    assert amd.a_non_amd_render_node_is_open() is False
+
+
+def test_a_vulkan_probe_keeps_its_finding_when_another_vendor_is_open(monkeypatch, linux):
+    """A Vulkan-only build enumerates any vendor, so an open Intel or NVIDIA render node is
+    a complete path for it: the closed AMD node cannot then be the whole reason the probe
+    came back empty, and returning it alone dropped the finding that was."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert reason.startswith("the Vulkan probe reported no device")
+    assert "Separately" in reason and "usermod" in reason
+
+
+def test_the_same_host_with_no_other_vendor_still_returns_the_hint_alone(monkeypatch, linux):
+    """The control: with no open node of any vendor the closed AMD one IS the reason, and
+    the hint must still replace the bare probe sentence."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"vulkan"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert "the Vulkan probe reported no device" not in reason
+    assert "usermod" in reason
+
+
+def test_a_rocm_build_is_unaffected_by_another_vendors_node(monkeypatch, linux):
+    """The second control: HIP needs /dev/kfd and an AMD render node, which no other
+    vendor's node substitutes for, so the question is not even asked for it."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = {"/dev/dri/renderD128"},
+    )
+    monkeypatch.setenv("USER", "ada")
+    monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset({"hip"})),
+    )
+    reason = LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+    assert "Separately" not in reason
+    assert "usermod -a -G render,video ada" in reason
+
+
+def test_the_repair_names_the_account_the_access_tests_answered_for(monkeypatch, linux):
+    """USER is inherited, so a container that changes its numeric user without resetting it
+    names somebody else and the command modifies the wrong account, leaving the running one
+    still unable to open the node."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setenv("USER", "root")
+    hint = amd.amd_node_permission_hint()
+    assert hint.rstrip().endswith("render,video ada") or "render,video ada" in hint
+    assert "render,video root" not in hint
+
+
+def test_the_installer_names_the_account_id_reports(tmp_path):
+    """The shell twin: `id -un` is the account the mode tests above answered for."""
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    node.chmod(0o660)
+    out = _install_sh_hint(str(node), env_user = "root", id_user = "ada")
+    # The group is whatever owns a tmp_path file on the runner, so the account is what is
+    # asserted -- naming a group here would be asserting about the runner.
+    assert re.search(r"usermod -a -G \S+ ada", out)
+    assert " root" not in out
+
+
+def test_a_backend_value_with_internal_whitespace_is_not_a_backend():
+    """The bundle selector normalizes with `awk '{$1=$1}'` -- trim and collapse, never
+    delete -- and then REJECTS a value it does not recognise, falling back to automatic
+    selection, which may install ROCm and open /dev/kfd. Deleting internal whitespace here
+    made "vul kan" match instead, so the run went quiet about the very node that selection
+    needs. Asserted through the KFD scope rather than the diagnosis as a whole, because the
+    wider predicate matches cpu|cuda only and lets every Vulkan spelling through either
+    way -- which is what made an earlier version of this test pass on both forms."""
+    out = _install_sh_kfd_scope("/dev/kfd", skip_torch = True, backend = "vul kan")
+    assert "cannot open its device nodes" in out
+    assert "/dev/kfd" in out
+
+
+def test_the_same_value_spelled_properly_is_still_a_backend():
+    """The control, and the whitespace the selector DOES forgive: a padded, upper-case value
+    names Vulkan, so the KFD scoping must still take it. Without this the rule could be
+    "never recognise anything", which silently un-scopes every Vulkan install."""
+    out = _install_sh_kfd_scope("/dev/kfd", skip_torch = True, backend = "  VULKAN  ")
+    assert out.strip() == ""
