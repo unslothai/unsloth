@@ -580,6 +580,12 @@ class _FdStream(_Stream):
         return 0
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
 def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
     """`unsloth studio -H 0.0.0.0 &` must still launch.
 
@@ -602,6 +608,12 @@ def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
     assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
 def test_a_backgrounded_tunnel_launch_still_fails_closed(monkeypatch):
     """A tunnel publishes a public URL: it must not quietly proceed unprompted."""
     monkeypatch.setattr(sys, "stdin", _FdStream())
@@ -617,6 +629,12 @@ def test_a_backgrounded_tunnel_launch_still_fails_closed(monkeypatch):
     assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
 def test_a_foreground_raw_bind_still_reaches_the_prompt(monkeypatch):
     """The ordinary interactive case is untouched."""
     monkeypatch.setattr(sys, "stdin", _FdStream())
@@ -660,6 +678,12 @@ class _PtyStdin:
         return True
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
 def test_an_unattended_pty_does_not_block_a_raw_bind_forever(monkeypatch):
     """`tmux new -d 'unsloth studio -H 0.0.0.0'` must still bind its socket.
 
@@ -691,6 +715,12 @@ def test_an_unattended_pty_does_not_block_a_raw_bind_forever(monkeypatch):
     assert "No response at the terminal" in out.getvalue()
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
 def test_a_pty_someone_types_into_is_not_treated_as_unattended(monkeypatch):
     """The deadline is on the FIRST keystroke only, and a real one clears it."""
     import io
@@ -816,3 +846,17 @@ def test_the_marker_never_silences_a_tunnel_launch(monkeypatch):
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
 
     assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+
+
+def test_windows_has_no_terminal_ownership_to_lose(monkeypatch):
+    """The Windows half of the tests skipped above, and it runs everywhere.
+
+    `_prompt_owns_the_terminal` exists to catch a backgrounded POSIX job, where
+    driving the terminal raises SIGTTOU and stops the process. Windows has no
+    process groups and no `os.tcgetpgrp`, so the call raises AttributeError and
+    the answer must be True: there is nothing there that can stop us, so the
+    isatty verdict stands and an interactive Windows launch still prompts. A
+    False would silently drop the prompt on every Windows terminal.
+    """
+    monkeypatch.delattr(run.os, "tcgetpgrp", raising = False)
+    assert run._prompt_owns_the_terminal() is True

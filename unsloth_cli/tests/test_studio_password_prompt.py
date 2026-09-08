@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import sqlite3
+import os
 import sys
 from pathlib import Path
 
@@ -1921,6 +1922,12 @@ def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
     )
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
 def test_a_foreground_raw_bind_still_prompts(monkeypatch):
     """The ordinary interactive case is untouched."""
     studio = _studio()
@@ -2040,6 +2047,12 @@ def test_a_raw_bind_prompt_carries_the_unattended_deadline(monkeypatch, tmp_path
     assert seen["first_key_timeout"] == studio_mod._UNATTENDED_PROMPT_SECONDS
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
 def test_read_masked_gives_up_on_a_pty_nobody_types_into(monkeypatch):
     """The mechanism itself, against a real pty with no writer."""
     import os
