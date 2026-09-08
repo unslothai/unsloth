@@ -110,7 +110,11 @@ class FakeEngine:
 
     shared_weights = True
 
-    def __init__(self, log, shared_weights = True):
+    def __init__(
+        self,
+        log,
+        shared_weights = True,
+    ):
         self.log = log
         self.shared_weights = shared_weights
         self.woken = 0

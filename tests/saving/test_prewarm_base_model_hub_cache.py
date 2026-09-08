@@ -44,7 +44,12 @@ class _FakePeftModel:
 class _Recorder:
     """Callable that records calls and returns/raises per configuration."""
 
-    def __init__(self, result = None, exc = None, results_fn = None):
+    def __init__(
+        self,
+        result = None,
+        exc = None,
+        results_fn = None,
+    ):
         self.calls = []
         self.result = result
         self.exc = exc

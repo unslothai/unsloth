@@ -33,7 +33,11 @@ def _load_is_vlm():
 
 
 class _Cfg:
-    def __init__(self, architectures, vision_config = False):
+    def __init__(
+        self,
+        architectures,
+        vision_config = False,
+    ):
         self.architectures = architectures
         if vision_config:
             self.vision_config = object()

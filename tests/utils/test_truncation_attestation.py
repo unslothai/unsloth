@@ -66,7 +66,12 @@ class _Lazy:
     `with_transform` without the `datasets` dependency, and can prove the scan
     did not happen."""
 
-    def __init__(self, n, width, attest = None):
+    def __init__(
+        self,
+        n,
+        width,
+        attest = None,
+    ):
         self.n = n
         self.width = width
         self.reads = 0

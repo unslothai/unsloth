@@ -44,7 +44,12 @@ class _FakeTokenizer:
     tokenizers do and what fix_sentencepiece_tokenizer reads back.
     """
 
-    def __init__(self, name, spm_bytes = None, vocab = None):
+    def __init__(
+        self,
+        name,
+        spm_bytes = None,
+        vocab = None,
+    ):
         self.name = name
         self.eos_token = "</s>"
         self.pad_token = "<pad>"
@@ -59,7 +64,11 @@ class _FakeTokenizer:
             with open(os.path.join(location, "tokenizer.model"), "wb") as f:
                 f.write(self._spm_bytes)
 
-    def __call__(self, texts, add_special_tokens = False):
+    def __call__(
+        self,
+        texts,
+        add_special_tokens = False,
+    ):
         class _Encoded:
             pass
 
@@ -217,7 +226,11 @@ class _CopyFromSubdirTokenizer:
             with open(os.path.join(location, "tokenizer.model"), "wb") as dst:
                 dst.write(data)
 
-    def __call__(self, texts, add_special_tokens = False):
+    def __call__(
+        self,
+        texts,
+        add_special_tokens = False,
+    ):
         class _Encoded:
             pass
 
