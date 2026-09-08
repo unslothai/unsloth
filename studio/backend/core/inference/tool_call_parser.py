@@ -911,7 +911,15 @@ _EXTENSION_SAMPLE = 64
 
 def _promotable_gemma_call_pos(text: str, start: int, enabled_tool_names) -> int:
     """Offset of the first bare ``call:NAME{`` the strip would remove, or -1: a name it keeps
-    whole is prose, not markup, for any of the streaming scans."""
+    whole is prose, not markup, for any of the streaming scans.
+
+    The sentinel search is an exact pre-filter, not a heuristic: the regex cannot match
+    without a literal ``call``, and this runs per streamed chunk over the whole cumulative
+    text, where sweeping call-free prose was quadratic. ``find`` walks it in C and hands the
+    regex a start ``(?<!\\w)`` still reads behind."""
+    start = text.find(_GEMMA_BARE_SENTINEL, start)
+    if start < 0:
+        return -1
     for m in _GEMMA_BARE_TC_RE.finditer(text, start):
         if _markerless_promotable(m.group(1), enabled_tool_names):
             return m.start()
@@ -2799,7 +2807,13 @@ def promotable_gemma_call_pos(
     """Offset of the first bare ``call:NAME{`` the parser would promote, or -1. Bare Gemma has
     no ``TOOL_XML_SIGNALS`` entry, so without this the streaming detectors miss a mid-prose
     call and serialize it before it runs. The boundary is the call's own start, so prose ahead
-    of it still streams."""
+    of it still streams.
+
+    Sentinel-gated like ``_promotable_gemma_call_pos``: an exact pre-filter that keeps a
+    per-chunk scan of call-free prose off the regex."""
+    start = text.find(_GEMMA_BARE_SENTINEL, start)
+    if start < 0:
+        return -1
     for m in _GEMMA_BARE_TC_RE.finditer(text, start):
         if _markerless_promotable(m.group(1), enabled_tool_names):
             return m.start()

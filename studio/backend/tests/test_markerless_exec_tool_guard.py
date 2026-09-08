@@ -1103,3 +1103,46 @@ def test_the_gemma_tail_hold_does_not_walk_the_tool_catalog_per_chunk():
         finally:
             module.held_bare_gemma_tail_len = real
         assert seen and all(callable(arg) for arg in seen), module.__name__
+
+
+def test_the_bare_gemma_scan_skips_the_regex_when_there_is_no_call_word(monkeypatch):
+    """The streaming detectors call this per chunk on the whole cumulative text.
+
+    ``_GEMMA_BARE_TC_RE`` cannot match without a literal ``call``, so an answer that never
+    says the word must not pay for a regex sweep per chunk. Counting sweeps rather than
+    timing keeps this honest on a loaded CI box: an 8k answer at 6-char chunks used to run
+    ~1300 of them and now runs none.
+    """
+    from core.inference import tool_call_parser as tcp
+
+    sweeps = []
+
+    class CountingPattern:
+        """``re.Pattern`` attributes are read-only, so wrap it rather than patch it."""
+
+        def __init__(self, pattern):
+            self._pattern = pattern
+
+        def finditer(self, *args, **kwargs):
+            sweeps.append(args[1] if len(args) > 1 else 0)
+            return self._pattern.finditer(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._pattern, name)
+
+    monkeypatch.setattr(tcp, "_GEMMA_BARE_TC_RE", CountingPattern(tcp._GEMMA_BARE_TC_RE))
+
+    prose = "The result you asked about is straightforward. " * 170  # ~8k chars
+    for end in range(6, len(prose) + 6, 6):
+        assert tcp.promotable_gemma_call_pos(prose[:end], {"web_search", "terminal"}) == -1
+    assert sweeps == [], f"regex swept {len(sweeps)} times over call-free prose"
+
+    # And the fast path must not cost a real match: the scan still finds a promotable call,
+    # still refuses an execution-class one, and still respects the ``(?<!\w)`` lookbehind.
+    gate = {"web_search", "terminal"}
+    assert tcp.promotable_gemma_call_pos("ok call:web_search{q:1}", gate) == 3
+    assert tcp.promotable_gemma_call_pos("ok call:terminal{c:1}", gate) == -1
+    assert tcp.promotable_gemma_call_pos("recall:web_search{q:1}", gate) == -1
+    assert sweeps, "a text containing 'call' must still reach the regex"
+    # Resuming from an offset must not lose the lookbehind character before the window.
+    assert tcp.promotable_gemma_call_pos("xrecall:web_search{q:1}", gate, 2) == -1
