@@ -393,7 +393,10 @@ def test_a_marker_turn_merges_into_a_trailing_nudge():
     mcp_images.append_placeholder_turn(conversation, 2, 2)
 
     assert [m["role"] for m in conversation] == ["tool", "user"]
-    assert [p["type"] for p in conversation[-1]["content"]] == ["text", "image", "image"]
+    # The note rides along: merged bare, the markers read as pictures attached to the
+    # nudge rather than as the tool's output.
+    assert [p["type"] for p in conversation[-1]["content"]] == ["text", "image", "image", "text"]
+    assert conversation[-1]["content"][-1]["text"].startswith(mcp_images.IMAGE_TURN_TEXT)
 
 
 def test_a_marker_turn_still_opens_its_own_turn_after_a_tool_result():
@@ -2517,3 +2520,26 @@ def test_the_safetensors_loop_stamps_a_round_id_on_every_decision():
 
     body = inspect.getsource(safetensors_agentic)
     assert 'decision.provenance["round_id"] = iteration' in body
+
+
+def test_a_merge_into_a_trailing_nudge_still_says_where_the_pictures_came_from():
+    """A deferred no-op nudge is a trailing user turn the batch's pictures merge into
+    (two user turns in a row is what a strict template rejects). Merged bare, they read
+    as attachments to the nudge; the note names the tool they came from."""
+    nudge = {"role": "user", "content": "Tool `lookup` is not available; continue."}
+
+    conversation = [dict(nudge)]
+    mcp_images.append_placeholder_turn(conversation, 1, 1)
+    [merged] = conversation
+    kinds = [part["type"] for part in merged["content"]]
+    assert kinds == ["text", "image", "text"], kinds
+    assert merged["content"][-1]["text"].startswith(mcp_images.IMAGE_TURN_TEXT)
+
+    conversation = [dict(nudge)]
+    mcp_images.append_image_turn(
+        conversation, [[_image()]], per_result = True, lead = mcp_images.DETACHED_IMAGE_TURN_TEXT
+    )
+    [merged] = conversation
+    kinds = [part["type"] for part in merged["content"]]
+    assert kinds == ["text", "image_url", "text"], kinds
+    assert merged["content"][-1]["text"].startswith(mcp_images.DETACHED_IMAGE_TURN_TEXT)

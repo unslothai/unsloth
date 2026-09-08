@@ -718,7 +718,11 @@ def append_image_turn(
         # tools returned and never a caller's own attachments, which admission has
         # already charged for and which are not this cap's business.
         owned.extend(parts)
-    if not _merge_into_trailing_user_turn(conversation, parts):
+    # The note rides along on the merge too: merged bare into a deferred no-op nudge,
+    # the pictures read as attachments to that nudge rather than as the tool's output,
+    # and the next turn misattributes them.
+    note = {"type": "text", "text": _turn_text(len(parts), total, lead)}
+    if not _merge_into_trailing_user_turn(conversation, [*parts, note]):
         conversation.append(
             {
                 "role": "user",
@@ -764,24 +768,19 @@ def append_placeholder_turn(
     count: int,
     total: "int | None" = None,
     lead: str = IMAGE_TURN_TEXT,
-    annotate_merge: bool = False,
 ) -> None:
     """The marker-only form of the above, for backends taking pixels alongside.
 
-    *annotate_merge* carries the note into the merge as well. The live loop merges
-    into a deferred no-op nudge, which is synthetic and needs none. The passthrough
-    merges into the user's real latest question, where bare markers read as pictures
-    the USER attached to it -- so the model answers about ones nobody sent.
+    The note rides along on the merge as well. Merged bare into a deferred no-op
+    nudge, the markers read as pictures attached to that nudge rather than as the
+    tool's output, and the next turn misattributes them; merged into a real question
+    they read as ones the user sent.
     """
     markers = [{"type": "image"} for _ in range(count)]
     if not markers:
         return
-    merged = list(markers)
-    if annotate_merge:
-        merged.append(
-            {"type": "text", "text": _turn_text(count, count if total is None else total, lead)}
-        )
-    if not _merge_into_trailing_user_turn(conversation, merged):
+    note = {"type": "text", "text": _turn_text(count, count if total is None else total, lead)}
+    if not _merge_into_trailing_user_turn(conversation, [*markers, note]):
         conversation.append(placeholder_turn(count, total, lead))
 
 
