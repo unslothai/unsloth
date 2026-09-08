@@ -238,6 +238,61 @@ def test_twenty_distinct_cold_keys_leave_no_probe_workers_after_timeout(monkeypa
     assert not [t for t in threading.enumerate() if t.name == "hf-repo-auth-check"]
 
 
+@pytest.mark.parametrize(
+    "exc_name",
+    ["TimeoutException", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout"],
+)
+def test_every_httpx_timeout_reads_as_a_timeout_not_a_denial(monkeypatch, exc_name):
+    """httpx puts its exceptions in ``httpx`` itself, so a ``"httpx."`` prefix matched
+    none of them and only the two whose bare names are listed were classified. On hub
+    1.x the session IS httpx, and a pool timeout is what a burst of concurrent probes
+    produces, so the miss sent the common case to the full TTL."""
+    httpx = pytest.importorskip("httpx")
+    exc_cls = getattr(httpx, exc_name, None)
+    if exc_cls is None:
+        pytest.skip(f"httpx has no {exc_name}")
+
+    assert hf_tokens._is_probe_timeout(exc_cls("stalled")) is True
+
+
+def test_a_denial_is_not_mistaken_for_a_timeout(monkeypatch):
+    """The other half: a real refusal must keep the full TTL, or a revoked token gets
+    re-probed every five seconds forever."""
+    for exc in (_gated_hub_error(), OSError("refused"), ValueError("bad token")):
+        assert hf_tokens._is_probe_timeout(exc) is False
+
+
+def test_a_repo_id_cannot_truncate_the_probe_url(monkeypatch):
+    """The probe builds the URL itself now. A raw "?" ends the path, so the request would
+    land on /api/models/{id}, which answers 200 with public metadata for a gated repo and
+    an invalid token: the repo_info weakness this probe exists to avoid."""
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    session = _patch_auth_check_get(
+        monkeypatch, lambda *_a, **_k: _ok_auth_check_response()
+    )
+
+    cache_reads_authorized("hf_dummy", repo_id = "org/gated?ignored=")
+    url = session.calls[0]["url"]
+    assert url.endswith("/auth-check")
+    assert "?" not in url
+    assert "/api/models/org/gated%3Fignored%3D/auth-check" in url
+
+
+def test_an_ordinary_repo_id_is_not_mangled_by_quoting(monkeypatch):
+    """Valid repo ids are [A-Za-z0-9._-] and "/", so quoting must be invisible."""
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    session = _patch_auth_check_get(
+        monkeypatch, lambda *_a, **_k: _ok_auth_check_response()
+    )
+
+    assert cache_reads_authorized("hf_dummy", repo_id = "unsloth/Llama-3.2-1B") is True
+    assert session.calls[0]["url"].endswith(
+        "/api/models/unsloth/Llama-3.2-1B/auth-check"
+    )
+
+
 @pytest.mark.parametrize("repo_type", ["model", "dataset"])
 def test_a_gated_repo_denies_cache_reads_for_an_invalid_token(monkeypatch, repo_type):
     """auth_check 401s; serving the host cache would bypass the gate."""

@@ -104,7 +104,12 @@ def _is_probe_timeout(exc: BaseException) -> bool:
         if name in {"Timeout", "ReadTimeout", "ConnectTimeout"}:
             return True
         module = getattr(cls, "__module__", "") or ""
-        if module.startswith(("requests.", "httpx.", "urllib3.")) and "Timeout" in name:
+        # Top-level package, not a dotted prefix. httpx's exceptions live in ``httpx``
+        # itself, so ``"httpx."`` matched none of them: PoolTimeout, WriteTimeout and a
+        # bare TimeoutException all read as hard denials and took the full TTL instead of
+        # the short one. That is the branch where the session IS httpx (hub 1.x), and a
+        # pool timeout is what a burst of concurrent probes produces.
+        if module.split(".", 1)[0] in {"requests", "httpx", "urllib3"} and "Timeout" in name:
             return True
     return False
 
@@ -273,7 +278,18 @@ def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:
 
         if repo_type not in constants.REPO_TYPES:
             return False
-        path = f"{HfApi().endpoint}/api/{repo_type}s/{repo_id}/auth-check"
+        # Quoted, because this builds the URL itself rather than handing the repo id to
+        # auth_check. A raw "?" or "#" in the id ends the path early, so the request
+        # would land on /api/models/{id} instead, which answers 200 with public metadata
+        # for a gated repo and an invalid token: exactly the repo_info weakness the probe
+        # moved off. Valid repo ids are [A-Za-z0-9._-] and "/", none of which quote, so
+        # this is invisible to every real caller.
+        from urllib.parse import quote
+
+        path = (
+            f"{HfApi().endpoint}/api/{repo_type}s/"
+            f"{quote(repo_id, safe = '/')}/auth-check"
+        )
         response = get_session().get(
             path,
             headers = build_hf_headers(token = token),
