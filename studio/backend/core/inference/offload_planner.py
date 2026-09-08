@@ -25,7 +25,7 @@ import os
 import struct
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Collection, Iterable, Mapping, Optional, Sequence, Union
+from typing import Collection, Mapping, Optional, Sequence, Union
 
 from core.inference.offload_cost_model import (
     Access,
