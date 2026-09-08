@@ -1135,12 +1135,20 @@ function Invoke-Collect {
                     # whole history into the zip.
                     Invoke-Native $python @('-X', 'utf8', '-I', $redactor, $source, (Join-Path $dir 'studio-logs'), '--since', $start.ToString('o'))
                 } catch {
+                    # Recorded before the partial output is deleted: this branch
+                    # throws away every log redacted so far, so without a marker
+                    # the zip is announced complete with the documented backend,
+                    # startup and scenario logs simply absent.
+                    $collectionProblems += "log redaction failed for ${source}, so studio-logs\ is missing from this zip: $_"
                     Write-Warning "logs under $source were not copied (redaction failed): $_"
                     Remove-Item -LiteralPath (Join-Path $dir 'studio-logs') -Recurse -Force -ErrorAction SilentlyContinue
                     break
                 }
             }
         } else {
+            # Same absence, same marker: raw logs are never archived unredacted,
+            # so no interpreter means no studio-logs\ in the zip either.
+            $collectionProblems += 'Studio logs were not copied: no managed interpreter to run the redactor, so studio-logs\ is missing from this zip'
             Write-Warning 'Studio logs were not copied: no managed interpreter to run the redactor'
         }
     }
@@ -1352,16 +1360,35 @@ function Invoke-Revert {
     # runtime, and revert has no business widening access there. Containment is
     # re-checked here rather than trusted from the file, since baseline.json is
     # editable between stages.
+    # The roots are re-derived from the live environment, not %USERPROFILE%
+    # alone: a custom UNSLOTH_STUDIO_HOME may sit on another volume (D:\Unsloth)
+    # and prepare records the trees the installer created there, so anchoring on
+    # the profile discarded exactly the trees this repair exists for. Two gates
+    # still stand between a recorded path and a grant: prepare must have seen it
+    # come into being during this run, and it must resolve under a root the
+    # environment designates right now.
     $user = "$env:USERDOMAIN\$env:USERNAME"
-    $profileRoot = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') + '\'
+    $override = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $env:STUDIO_HOME }
+    $allowedRoots = @(
+        $env:USERPROFILE, $override, (Get-StudioHome),
+        (Get-LlamaDir), (Split-Path -Parent (Get-LlamaDir))
+    ) | Where-Object { $_ } |
+        ForEach-Object { try { [IO.Path]::GetFullPath($_).TrimEnd('\') } catch { $null } } |
+        Where-Object { $_ } | Select-Object -Unique
     $recorded = @()
     if ($baseline.StudioInstalledByProbe) { $recorded = @($baseline.StudioInstallRoots) }
     $trees = @($recorded |
         Where-Object { $_ -and (Test-Path -LiteralPath $_) } |
         Where-Object {
-            $full = [IO.Path]::GetFullPath($_)
-            if ($full.StartsWith($profileRoot, [StringComparison]::OrdinalIgnoreCase)) { $true }
-            else { Write-Warning "not repairing ACLs on ${full}: outside $profileRoot"; $false }
+            $full = [IO.Path]::GetFullPath($_).TrimEnd('\')
+            $inside = @($allowedRoots | Where-Object {
+                $full -eq $_ -or $full.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase)
+            }).Count -gt 0
+            if ($inside) { $true }
+            else {
+                Write-Warning "not repairing ACLs on ${full}: outside the configured install roots ($($allowedRoots -join ', '))"
+                $false
+            }
         } |
         Select-Object -Unique)
     if ($trees.Count -eq 0) {

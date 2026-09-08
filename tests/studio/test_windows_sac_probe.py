@@ -991,7 +991,14 @@ def test_a_partial_collection_is_marked_inside_the_zip():
     raw evtx or a core artifact read as a complete evidence package."""
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
-    assert collect.count("$collectionProblems += ") == 2, "evtx export and staging both record"
+    # evtx export, staging, redaction failure, and no-interpreter: every path
+    # that leaves a documented artifact out of the archive records it.
+    assert collect.count("$collectionProblems += ") == 4
+    redact = collect[collect.index("$redactor = Join-Path") :]
+    assert redact.index("$collectionProblems += \"log redaction failed") < redact.index(
+        "Remove-Item -LiteralPath (Join-Path $dir 'studio-logs')"
+    ), "recorded before the partial redacted output is deleted"
+    assert "no managed interpreter to run the redactor, so studio-logs" in collect
     # Written into the STAGED tree, after the copy loop, or it never reaches the zip.
     warn = collect.index("Set-Content -LiteralPath (Join-Path $stage 'collection-warnings.txt')")
     assert collect.index("foreach ($item in Get-ChildItem -LiteralPath $dir -Recurse -File)") < warn
@@ -1034,3 +1041,20 @@ def test_the_audit_channel_resize_is_verified_not_assumed():
     step = step[: step.index("- name: Fetch the Smart App Control audit policies")]
     assert 'if ($LASTEXITCODE -ne 0) { throw "wevtutil sl $log exited' in step
     assert "$maxSize -lt 67108864" in step
+
+
+def test_acl_repair_reaches_a_custom_home_outside_the_user_profile():
+    """An UNSLOTH_STUDIO_HOME on another volume (D:\\Unsloth) is exactly where
+    the elevated installer leaves administrator-owned trees, and anchoring
+    containment on %USERPROFILE% discarded every one of them."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    revert = ps1[ps1.index("function Invoke-Revert") :]
+    assert "$profileRoot" not in revert
+    assert "$allowedRoots = @(" in revert
+    roots = revert[revert.index("$allowedRoots = @(") :]
+    roots = roots[: roots.index("$recorded = @()")]
+    for source in ("$env:USERPROFILE", "$override", "(Get-StudioHome)", "(Get-LlamaDir)"):
+        assert source in roots
+    # Still two gates: prepare recorded it, and it resolves under a live root.
+    assert "if ($baseline.StudioInstalledByProbe) { $recorded = @($baseline.StudioInstallRoots) }" in revert
+    assert "$full.StartsWith($_ + '\\', [StringComparison]::OrdinalIgnoreCase)" in revert
