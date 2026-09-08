@@ -415,7 +415,6 @@ def _registered_command_name(command) -> str:
     drift from the name the CLI actually dispatches on.
     """
     from typer.main import get_command_name
-
     return command.name or get_command_name(command.callback.__name__)
 
 
