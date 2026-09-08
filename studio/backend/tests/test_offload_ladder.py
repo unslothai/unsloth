@@ -989,12 +989,12 @@ def test_a_cpu_pinned_projector_is_charged_to_host_ram():
 
     plan = plan_placement(layout, [card], ram, ctx, kv_bytes_floor = floor, opts = o)
     assert plan.mmproj_to_host and not plan.spilled_blocks, plan.reason
-    assert plan.host_bytes == layout.token_embd_bytes + mmproj, (
-        "a CPU-pinned projector is host RAM this plan has to pay for"
-    )
-    assert not plan.load_mode_none, (
-        "the host cannot hold the projector, so mmap has to stay and page it"
-    )
+    assert (
+        plan.host_bytes == layout.token_embd_bytes + mmproj
+    ), "a CPU-pinned projector is host RAM this plan has to pay for"
+    assert (
+        not plan.load_mode_none
+    ), "the host cannot hold the projector, so mmap has to stay and page it"
     assert "--load-mode" not in plan_to_args(plan)
 
     # With the room for it, nothing changes but the answer.
