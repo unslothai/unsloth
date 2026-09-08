@@ -29,12 +29,15 @@ _CRASHING_UNLESS_CPU_SCRIPT = (
     # which the probe reads as a working device. abort() is the real shape there: it is
     # what a ROCm library calls when it dies, and it leaves the CRT exit status 3 the
     # probe already recognises.
-    "    if sys.platform == 'win32':\n"
-    "        os.abort()\n"
+    # Hoisted above the win32 branch so it dominates EVERY crashing path, which is what
+    # tests/test_deliberate_crashes_suppress_cores.py checks. It costs nothing on Windows:
+    # prctl is Linux-only, the call is already guarded, and Windows has no core_pattern.
     "    try:\n"
     "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE = 0\n"
     "    except Exception:\n"
     "        pass\n"
+    "    if sys.platform == 'win32':\n"
+    "        os.abort()\n"
     "    ctypes.string_at(0)\n"
 )
 
