@@ -10653,7 +10653,9 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _igpu_dedicated_memory_bytes(gpu_indices = None) -> Optional[int]:
+    def _igpu_dedicated_memory_bytes(
+        gpu_indices = None, *, ordinals_are_vulkan = False
+    ) -> Optional[int]:
         """Memory dedicated to the selected integrated GPU, in bytes, or ``None``.
 
         Two readings, because no single source covers the platforms this runs on:
@@ -10709,8 +10711,40 @@ class LlamaCppBackend:
             return sizes[0]
         if len(sizes) > 1:
             return None
-        pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
+        if ordinals_are_vulkan:
+            # gpu_indices holds VULKAN ordinals here, and _rocm_selected_pool_mib
+            # compares its argument against PHYSICAL HIP ids. Where the two
+            # enumerations disagree -- a Linux host pairing an APU with a discrete
+            # card is the ordinary case -- handing the ordinals over probes the wrong
+            # device, which either hides advice that was valid or prices the load
+            # against another APU's pool. Nothing in the Vulkan inventory carries the
+            # HIP id to join on, so this answers only where the two cannot disagree.
+            pool_mib = LlamaCppBackend._rocm_single_device_pool_mib()
+        else:
+            pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
         return int(pool_mib) * 1024 * 1024 if pool_mib and pool_mib > 0 else None
+
+    @staticmethod
+    def _rocm_single_device_pool_mib() -> Optional[int]:
+        """The carve-out of the only visible GPU, or ``None`` when there is not one.
+
+        One device means every enumeration names it, so a Vulkan ordinal and a HIP
+        id are the same device whatever the orders would have been. Two or more and
+        this declines: an unjoinable mapping is a reading we do not have, and the
+        callers all treat absence as "say nothing".
+        """
+        try:
+            import torch
+
+            if not LlamaCppBackend._torch_is_rocm(torch):
+                return None
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return None
+            if torch.cuda.device_count() != 1:
+                return None
+        except Exception:
+            return None
+        return LlamaCppBackend._rocm_selected_pool_mib(None)
 
     @staticmethod
     def _igpu_carveout_ladder_gb(cap_gb: float) -> list[int]:
@@ -10871,7 +10905,9 @@ class LlamaCppBackend:
                 gpu_indices = gpu_indices,
             ):
                 return
-            carve_out = self._igpu_dedicated_memory_bytes(gpu_indices)
+            carve_out = self._igpu_dedicated_memory_bytes(
+                gpu_indices, ordinals_are_vulkan = is_vulkan_backend
+            )
             if not carve_out or need_bytes <= carve_out:
                 return  # fits, or nothing to compare it against
             total_mib = self._total_system_memory_mib()

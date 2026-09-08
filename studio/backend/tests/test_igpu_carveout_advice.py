@@ -139,7 +139,7 @@ class TestRecordingItOnALoad:
         monkeypatch.setattr(
             LlamaCppBackend,
             "_igpu_dedicated_memory_bytes",
-            staticmethod(lambda _i = None: carve_bytes),
+            staticmethod(lambda _i = None, **_kwargs: carve_bytes),
         )
         monkeypatch.setattr(
             LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: total_mib)
@@ -378,7 +378,7 @@ class TestThePlacementItAdvisesAbout:
     ):
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
 
-        def _read(_i = None):
+        def _read(_i = None, **_kwargs):
             probes.append(_i)
             return carve_bytes
 
@@ -525,7 +525,7 @@ class TestTheArchitectureGatedCpuLaunch:
         # on the GPU, when this build cannot use that GPU at all.
         probes = []
 
-        def _read(_i = None):
+        def _read(_i = None, **_kwargs):
             probes.append(_i)
             return 32 * _GB
 
@@ -669,7 +669,7 @@ class TestTheRoutingIsDeterministic:
     def _run(self, monkeypatch, **case):
         probes = []
 
-        def _read(_i = None):
+        def _read(_i = None, **_kwargs):
             probes.append(_i)
             return case["carve"]
 
@@ -826,3 +826,62 @@ class TestTheAdvisoryCannotReachTheLaunch:
         assert all(
             id(call) in statements for call in calls
         ), "a call site uses the return value of an advisory"
+
+
+class TestTheIndexSpaceTheAllocationIsReadIn:
+    """The Linux fallback reads HIP ids; a Vulkan launch does not name devices that way.
+
+    The Vulkan gate above classifies the TARGET correctly, but the reading behind it
+    was still handed `gpu_indices`, and `_rocm_selected_pool_mib` compares that
+    argument with physical HIP ids. On a Linux host pairing an APU with a discrete
+    card the two enumerations need not agree, so the reading could land on the wrong
+    device: advice suppressed on a load that deserved it, or priced against another
+    APU's pool.
+    """
+
+    @staticmethod
+    def _readers(
+        monkeypatch,
+        *,
+        device_count,
+        pool_mib = 32 * 1024,
+    ):
+        """Record what the ROCm pool reader is asked for, and how many GPUs exist."""
+        asked = []
+
+        def _pool(indices = None):
+            asked.append(indices)
+            return pool_mib
+
+        monkeypatch.setattr(LlamaCppBackend, "_rocm_selected_pool_mib", staticmethod(_pool))
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_rocm_single_device_pool_mib",
+            staticmethod(lambda: _pool(None) if device_count == 1 else None),
+        )
+        return asked
+
+    def test_a_vulkan_launch_never_asks_the_hip_reader_about_an_ordinal(self, monkeypatch):
+        asked = self._readers(monkeypatch, device_count = 1)
+        LlamaCppBackend._igpu_dedicated_memory_bytes([1], ordinals_are_vulkan = True)
+        assert asked == [None], f"a Vulkan ordinal reached the HIP-id reader: {asked}"
+
+    def test_a_vulkan_launch_on_a_multi_gpu_host_declines(self, monkeypatch):
+        # Two devices, no way to join a Vulkan ordinal to a HIP id, so there is no
+        # reading -- which every caller treats as "say nothing".
+        self._readers(monkeypatch, device_count = 2)
+        assert LlamaCppBackend._igpu_dedicated_memory_bytes([0], ordinals_are_vulkan = True) is None
+
+    def test_a_single_gpu_vulkan_host_still_reads(self, monkeypatch):
+        # One device is named the same by every enumeration, so the ordinal cannot
+        # be the wrong device and the advice this PR exists for still fires.
+        self._readers(monkeypatch, device_count = 1)
+        got = LlamaCppBackend._igpu_dedicated_memory_bytes([0], ordinals_are_vulkan = True)
+        assert got == 32 * 1024 * 1024 * 1024
+
+    def test_a_non_vulkan_launch_still_scopes_by_physical_id(self, monkeypatch):
+        # The ROCm path is unchanged: those integers ARE HIP ids and narrowing the
+        # reading to the selected ones is what keeps a dGPU out of the answer.
+        asked = self._readers(monkeypatch, device_count = 2)
+        LlamaCppBackend._igpu_dedicated_memory_bytes([0])
+        assert asked == [[0]]
