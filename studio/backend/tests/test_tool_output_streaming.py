@@ -34,7 +34,6 @@ def _shared_setup_1(events, gen, release):
         events.append(event)
         if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
             release.set()
-    return e
 
 
 # Shared setup for test_python_exec_hallucinated_absolute_write_is_remapped_into_workdir, test_python_exec_mnt_data_open_is_remapped_into_workdir, test_python_exec_pathlib_write_text_is_remapped_into_workdir.
@@ -154,7 +153,7 @@ def test_heartbeats_emitted_while_tool_blocks():
     events = []
     result = None
     try:
-        e = _shared_setup_1(events, gen, release)
+        _shared_setup_1(events, gen, release)
     except StopIteration as stop:
         result = stop.value
     assert result == "done"
@@ -357,7 +356,7 @@ def test_heartbeats_continue_while_capped_output_flows():
     events = []
     result = None
     try:
-        e = _shared_setup_1(events, gen, release)
+        _shared_setup_1(events, gen, release)
     except StopIteration as stop:
         result = stop.value
     finally:
@@ -1198,7 +1197,7 @@ def test_continuous_over_cap_output_does_not_starve_heartbeats():
     events = []
     result = None
     try:
-        e = _shared_setup_1(events, gen, release)
+        _shared_setup_1(events, gen, release)
     except StopIteration as stop:
         result = stop.value
     finally:
