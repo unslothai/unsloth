@@ -18376,6 +18376,18 @@ class LlamaCppBackend:
             # Under the lock: see _spawn_and_wait.
             self._record_server_pid(_spawned.pid)
 
+        # The stale check above and the process-wide latch are only atomic for the
+        # instance run.py tears down, which sets its own flag under this same lock. A
+        # helper load owns a backend nothing marks, so its check can pass microseconds
+        # before the latch is set and the child then outlives the sweep. Recheck once
+        # the pid is recorded and reap it, as the inference worker spawn does.
+        if self._spawn_is_stale(load_generation):
+            logger.info("shutdown began during the spawn; killing the new llama-server")
+            self._kill_process()
+            self._close_attempt_log()
+            self._health_wait_cancelled = True
+            return False
+
         # Start background thread to drain stdout and prevent pipe deadlock
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "llama-stdout"

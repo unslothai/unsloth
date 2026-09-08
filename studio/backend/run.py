@@ -8,6 +8,7 @@ Self-contained; can be moved to any directory.
 
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import NoReturn, Optional, Sequence, Tuple
@@ -1592,6 +1593,13 @@ def _install_windows_console_handler(shutdown) -> bool:
         return False
 
 
+# Set only when _graceful_shutdown has run to completion, including step 7's sweep.
+# A concurrent embedded restart waits on this: reopening after the llama teardown lock
+# alone still leaves terminate_all() ahead, and that sweep would reap a child the new
+# lifecycle had already adopted, as if it belonged to the previous session.
+_shutdown_complete = threading.Event()
+
+
 def _graceful_shutdown(server = None):
     """Shut down all subprocess backends and the uvicorn server.
 
@@ -1599,6 +1607,7 @@ def _graceful_shutdown(server = None):
     Windows where atexit handlers are unreliable after Ctrl+C.
     """
     logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
+    _shutdown_complete.clear()
 
     # 0a. Latch "quitting" before any subsystem is torn down. Each step below refuses
     # to respawn its OWN child once it has run, but a load still in flight can reach a
@@ -1682,6 +1691,7 @@ def _graceful_shutdown(server = None):
     # early leaves a retried `stop` or a new launch unable to find it.
     _remove_pid_file()
     logger.info("All subprocesses cleaned up")
+    _shutdown_complete.set()
 
 
 # Bound the join so a stuck uvicorn shutdown cannot hang the terminal.
@@ -2919,6 +2929,12 @@ def run_server(
         # 5s timeout as the normal exit path, which logs and proceeds.
         if is_process_shutting_down():
             _wait_for_server_shutdown()
+            # And for the shutdown itself to finish. The join covers the uvicorn
+            # thread; this covers the rest of _graceful_shutdown, whose final sweep
+            # would otherwise terminate a child this session adopts. Same bound, and
+            # it logs rather than hanging a restart behind a stuck teardown.
+            if not _shutdown_complete.wait(timeout = _SERVER_SHUTDOWN_JOIN_TIMEOUT):
+                logger.warning("Previous shutdown still running; reopening the lifecycle anyway")
 
         if _llama_cpp_backend is not None:
             _llama_cpp_backend._begin_server_lifecycle()

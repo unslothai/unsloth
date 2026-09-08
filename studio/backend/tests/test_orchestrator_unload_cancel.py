@@ -2914,6 +2914,13 @@ def test_the_impl_cancel_check_refuses_a_load_once_shutdown_has_latched():
         for n in impl.body
         if isinstance(n, ast.FunctionDef) and n.name == "_raise_if_scoped_load_cancelled"
     )
+    # The closure delegates the stamp check; exec that too rather than stubbing it, or
+    # the test stops covering the branch it exists for.
+    admitted_helper = next(
+        n
+        for n in impl.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_raise_if_admitted_by_a_previous_session"
+    )
 
     from utils import process_lifetime
 
@@ -2929,6 +2936,7 @@ def test_the_impl_cancel_check_refuses_a_load_once_shutdown_has_latched():
         # No stamp: an internal call with no ASGI scope has no session to compare.
         "fastapi_request": _Req({}),
     }
+    exec(textwrap.dedent(ast.get_source_segment(src, admitted_helper) or ""), ns)
     exec(textwrap.dedent(ast.get_source_segment(src, helper) or ""), ns)
     check = ns["_raise_if_scoped_load_cancelled"]
 
@@ -3257,7 +3265,18 @@ def test_a_request_admitted_by_the_previous_session_is_refused():
         if isinstance(n, ast.FunctionDef) and n.name == "_raise_if_scoped_load_cancelled"
     )
     body = textwrap.dedent(ast.get_source_segment(src, helper) or "")
-    assert "unsloth_process_generation" in body, (
+    assert "_raise_if_admitted_by_a_previous_session()" in body, (
+        "the point-of-no-return gate no longer rechecks the admission stamp"
+    )
+
+    admitted = next(
+        n
+        for n in impl.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_raise_if_admitted_by_a_previous_session"
+    )
+    assert "unsloth_process_generation" in textwrap.dedent(
+        ast.get_source_segment(src, admitted) or ""
+    ), (
         "the load never consults the admission stamp, so a request the old server "
         "accepted is released by the lifecycle reset"
     )
@@ -3288,3 +3307,110 @@ def test_every_http_request_is_stamped_at_admission():
         and any(isinstance(a, ast.Name) and a.id == cls.name for a in n.args)
         for n in ast.walk(tree)
     ), "the stamp middleware is defined but never installed"
+
+
+def test_a_llama_server_spawned_as_shutdown_began_is_reaped():
+    """The pre-spawn stale check and the process latch are only atomic for the instance
+    run.py tears down, which sets its own flag under the spawn lock. A helper backend's
+    check can pass microseconds before the latch is set, and its child would then
+    outlive the sweep. The recheck after the pid is recorded is what reaps it.
+    """
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+    ).read_text(encoding = "utf-8")
+    fn = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.name == "_start_llama_process"
+    )
+    body = textwrap.dedent(ast.get_source_segment(src, fn) or "")
+
+    publish = body.index("self._record_server_pid(")
+    recheck = body.index("_spawn_is_stale", publish)
+    kill = body.index("self._kill_process()", publish)
+    assert publish < recheck < kill, (
+        "nothing rechecks after the child is published, so a spawn that raced the "
+        "latch leaves a server the sweep has already passed"
+    )
+
+
+def test_the_admission_check_runs_before_the_gpu_handoff():
+    """acquire_for(CHAT, ...) can evict the restarted session's Diffusion or Video
+    pipeline and leave the CHAT claim behind. A stale request must be refused before
+    that, not only at the points of no return further down.
+    """
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    impl = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "_load_model_impl"
+    )
+
+    # By AST node, not by text: the comment above the check names acquire_for too, and
+    # an earlier version of this test compared against its own explanation.
+    def _first_call_line(name):
+        return min(
+            (
+                n.lineno
+                for n in ast.walk(impl)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name
+            ),
+            default = None,
+        )
+
+    check = _first_call_line("_raise_if_admitted_by_a_previous_session")
+    # acquire_for is handed to asyncio.to_thread, so it appears as an argument rather
+    # than the callee.
+    handoff = min(
+        (
+            n.lineno
+            for n in ast.walk(impl)
+            if isinstance(n, ast.Call)
+            and any(isinstance(a, ast.Name) and a.id == "acquire_for" for a in n.args)
+        ),
+        default = None,
+    )
+    assert check is not None, "the impl never calls the admission check"
+    assert handoff is not None, "acquire_for is no longer dispatched here; retarget this"
+    assert check < handoff, "the GPU handoff runs before a stale request is refused"
+
+
+def test_a_restart_waits_for_the_whole_shutdown_not_just_the_teardown_lock():
+    """_begin_server_lifecycle waits on the llama teardown lock, which is released at
+    step 5. The old _graceful_shutdown then runs to step 7's terminate_all(), which
+    would reap a child this session had already adopted.
+    """
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    tree = ast.parse(run_py)
+
+    shutdown = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "_graceful_shutdown"
+    )
+    sd = textwrap.dedent(ast.get_source_segment(run_py, shutdown) or "")
+    assert sd.index("terminate_all()") < sd.index("_shutdown_complete.set()"), (
+        "the completion flag is set before the final sweep, so waiting on it proves "
+        "nothing about the sweep"
+    )
+
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_server")
+    src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
+    wait = src.index("_shutdown_complete.wait(")
+    backend = src.index("_llama_cpp_backend._begin_server_lifecycle()")
+    assert wait < backend, "the lifecycle reopens before the previous shutdown finished"

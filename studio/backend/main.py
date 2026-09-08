@@ -942,9 +942,6 @@ class ProcessLifecycleStampMiddleware:
         await self.app(scope, receive, send)
 
 
-app.add_middleware(ProcessLifecycleStampMiddleware)
-
-
 # img/media-src allow any https origin so HF model-card assets render (mirrors
 # tauri.conf.json); scripts/frames/connect-src stay same-origin + HF.
 from starlette.datastructures import MutableHeaders  # noqa: E402
@@ -1481,6 +1478,14 @@ app.add_middleware(KeylessToolPolicyMiddleware)
 from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402
 
 app.add_middleware(RemoteAccessStopResponseMiddleware)
+
+# Registered LAST, so it is the OUTERMOST middleware: add_middleware prepends, and the
+# stamp is only as good as how early it is taken. A request the old server accepted but
+# which has not reached this point yet is still stamped with the new session, so this
+# narrows that window to the smallest one available in the ASGI stack rather than
+# closing it; the bounded join and the shutdown-completion wait in run_server are what
+# make it unlikely to be open at all.
+app.add_middleware(ProcessLifecycleStampMiddleware)
 
 
 # ============ Register API Routes ============

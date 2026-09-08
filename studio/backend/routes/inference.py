@@ -13388,18 +13388,33 @@ async def _load_model_impl(
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
+    def _raise_if_admitted_by_a_previous_session() -> None:
+        """Refuse a request the old server accepted.
+
+        The join in run_server is bounded and only logs on timeout, so such a request
+        can still arrive here; the stamp is the one signal that predates the lifecycle
+        reset. Absent (an internal call with no ASGI scope) means there is nothing to
+        compare, so the caller is unaffected.
+        """
+        _admitted = getattr(fastapi_request, "scope", {}).get("unsloth_process_generation")
+        if _admitted is None:
+            return
+        from utils.process_lifetime import process_lifecycle_generation
+
+        if _admitted != process_lifecycle_generation():
+            raise HTTPException(status_code = 409, detail = "Model load cancelled")
+
+    # At entry, not only at the points of no return below: the common path reaches
+    # acquire_for(CHAT, ...) first, and that handoff can evict the restarted session's
+    # Diffusion or Video pipeline and leave the CHAT claim behind before a check further
+    # down would have rejected this request. Nothing here has side effects yet.
+    _raise_if_admitted_by_a_previous_session()
+
     def _raise_if_scoped_load_cancelled() -> None:
         if load_cancel_event is not None and load_cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
-        # Admitted by a previous session. The join in run_server is bounded and only
-        # logs on timeout, so a request the old server accepted can still arrive here;
-        # the stamp is the one signal that predates the lifecycle reset. Absent (an
-        # internal call with no ASGI scope) means there is nothing to compare.
-        _admitted = getattr(fastapi_request, "scope", {}).get("unsloth_process_generation")
-        if _admitted is not None:
-            from utils.process_lifetime import process_lifecycle_generation
-            if _admitted != process_lifecycle_generation():
-                raise HTTPException(status_code = 409, detail = "Model load cancelled")
+        # Rechecked: a restart can land between entry and here.
+        _raise_if_admitted_by_a_previous_session()
 
         # Auto-switch and preview call this impl directly, without a _ScopedLoadAttempt,
         # so the shutdown sweep has no event to set for them. Reading the latch here puts
