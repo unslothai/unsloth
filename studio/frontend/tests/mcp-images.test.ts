@@ -453,3 +453,23 @@ test("both local paths read the model's vision flag, not just multimodal", () =>
     /\? providerModelTakesMcpImages\(\n\s*externalProvider\?\.providerType,\n\s*externalSelection\?\.modelId,\n\s*\)/,
   );
 });
+
+test("the byte budget charges the serialized entry, mimeType included", () => {
+  // A token subtype has no length bound, so a tiny picture can carry megabytes of
+  // mimeType; charging data alone let that envelope through on every turn.
+  const heavy = (n: number) => ({
+    role: "tool",
+    name: "mcp__fs__screenshot",
+    content:
+      "[1 image returned]" +
+      mcpImagesEnvelope([{ data: `A${n}`, mimeType: `image/${"x".repeat(5_000_000)}` }]),
+  });
+  const messages = [0, 1, 2, 3].map(heavy);
+  const bounded = boundMcpImageEnvelopes(messages);
+  const chars = bounded.reduce(
+    (n, m) => n + JSON.stringify(splitMcpImages(m.content).images).length,
+    0,
+  );
+  assert.ok(chars <= MAX_TOTAL_MCP_IMAGE_CHARS, `${chars} characters uploaded`);
+  assert.ok(chars > 0, "the newest entries still fit");
+});

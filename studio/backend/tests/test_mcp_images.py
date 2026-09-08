@@ -2323,3 +2323,54 @@ def test_the_local_loops_detach_the_note_for_a_multi_result_batch():
         body = inspect.getsource(module)
         assert "batch_conversation_start = len(conversation)" in body
         assert "for m in conversation[batch_conversation_start:]" in body
+
+
+def test_the_caller_reservation_is_taken_before_any_replay_decode(monkeypatch):
+    """Eight attachments leave a provider no room for replay; the eligibility budget
+    says so before a single candidate is decoded, instead of decoding eight rasters
+    for the trim at the bottom to drop them all."""
+    decoded: list = []
+    original = mcp_images._png_data_url
+
+    def counting(data):
+        decoded.append(1)
+        return original(data)
+
+    monkeypatch.setattr(mcp_images, "_png_data_url", counting)
+    attachments = [
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_png()}"}}
+        for _ in range(mcp_images.MAX_TOTAL_MODEL_IMAGES)
+    ]
+    history = [
+        {"role": "user", "content": [{"type": "text", "text": "these"}, *attachments]},
+        {"role": "tool", "name": "mcp__s__shot", "content": _envelope("[1]", _image())},
+        {"role": "tool", "name": "mcp__s__shot", "content": _envelope("[1]", _image())},
+        {"role": "user", "content": "and the tool's?"},
+    ]
+    out = promote_history(history, vision = True, reserve_for_caller = True)
+    assert decoded == [], "nothing to promote, so nothing to decode"
+    assert len(mcp_images._all_image_url_parts(out)) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+
+    out = promote_history(history, vision = True)
+    assert len(decoded) == 2, "a GGUF caller keeps the full allowance and decodes both"
+    assert len(mcp_images._all_image_url_parts(out)) == mcp_images.MAX_TOTAL_MODEL_IMAGES + 2
+
+
+def test_every_async_promotion_wrapper_hops_on_the_marker_alone():
+    """Stripping an envelope for a text-only target parses the same 12 MB array as
+    promoting it, so the hop off the loop cannot be gated on vision."""
+    import inspect
+
+    import routes.inference as inference_route
+
+    for wrapper in (
+        inference_route._promote_mcp_history_images_async,
+        inference_route._promote_local_mcp_images_async,
+        inference_route._build_external_messages_async,
+    ):
+        body = inspect.getsource(wrapper)
+        assert "if _messages_mention_mcp_images(messages):" in body, wrapper.__name__
+        assert "vision and _messages_mention" not in body, wrapper.__name__
+        assert "promote and _messages_mention" not in body, wrapper.__name__
+    count = inspect.getsource(inference_route.anthropic_count_tokens)
+    assert "await asyncio.to_thread(_messages_have_promotable_mcp_images, openai_messages)" in count

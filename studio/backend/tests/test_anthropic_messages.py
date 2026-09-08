@@ -5173,14 +5173,20 @@ def test_the_anthropic_count_refuses_a_promoted_image_rather_than_undercount():
     from routes import inference
 
     count = inspect.getsource(inference.anthropic_count_tokens)
-    refusal = count.index("_messages_have_promotable_mcp_images(openai_messages)")
+    refusal = count.index(
+        "asyncio.to_thread(_messages_have_promotable_mcp_images, openai_messages)"
+    )
     promotion = count.index("_promote_mcp_history_images_async(")
     assert refusal < promotion, (
         "the refusal has to come BEFORE promotion, or the envelope is already "
         "image parts by the time it is checked"
     )
     assert "Cannot count tokens for messages containing images." in count
-    assert "llama_backend.is_vision and _messages_have_promotable_mcp_images" in count, (
+    assert (
+        "llama_backend.is_vision\n"
+        "        and _messages_mention_mcp_images(openai_messages)\n"
+        "        and await asyncio.to_thread(_messages_have_promotable_mcp_images, openai_messages)"
+    ) in count, (
         "a text-only model has the envelope stripped and sends no pixels, so it "
         "must still be counted rather than refused"
     )
@@ -5357,7 +5363,7 @@ def test_the_anthropic_count_refusal_is_name_aware():
     from routes.inference import _messages_have_promotable_mcp_images, _named_anthropic_tool_results
 
     src = inspect.getsource(inference.anthropic_count_tokens)
-    assert "_messages_have_promotable_mcp_images(openai_messages)" in src
+    assert "asyncio.to_thread(_messages_have_promotable_mcp_images, openai_messages)" in src
     assert "_messages_have_mcp_image_envelope(openai_messages)" not in src
 
     envelope = json.dumps([{"data": "QUJD", "mimeType": "image/png"}])

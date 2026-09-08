@@ -188,7 +188,12 @@ def _decoded_urls_per_result(results: Sequence[Sequence[dict]]) -> list[str]:
     return [url for urls in reversed(chosen) for url in urls]
 
 
-def eligible_replay_images(messages: Sequence[dict], *, local: bool = False) -> dict:
+def eligible_replay_images(
+    messages: Sequence[dict],
+    *,
+    local: bool = False,
+    budget: int = MAX_TOTAL_MODEL_IMAGES,
+) -> dict:
     """Which envelope entries can still be in the prompt once the cap has run.
 
     The decoders are the expensive part -- a permitted raster is 40 megapixels and
@@ -211,8 +216,11 @@ def eligible_replay_images(messages: Sequence[dict], *, local: bool = False) -> 
     sends and dropped older batches that still had room.
     """
     eligible: dict = {}
-    budget = MAX_TOTAL_MODEL_IMAGES
-    spare = DECODE_FAILURE_ALLOWANCE
+    # Spares are decode fallbacks: this side cannot decode, so a newest result of
+    # formats Pillow rejects charges room that is really free, and the candidates
+    # behind it must still ship into it. With no budget at all -- the caller's own
+    # pictures have taken it -- no failure can free room, so there are no spares.
+    spare = DECODE_FAILURE_ALLOWANCE if budget > 0 else 0
     per_result = LOCAL_MAX_IMAGES_PER_TURN if local else MAX_MODEL_IMAGES
     # Same provenance _promote applies. Reading only the explicit name let unnamed
     # results correlated to non-MCP calls spend the allowance first, so a genuine
@@ -246,7 +254,7 @@ def eligible_replay_images(messages: Sequence[dict], *, local: bool = False) -> 
         batch = [position for position in range(index, start - 1, -1)]
         index = start - 1
         room = min(budget, per_result)
-        allowance = room + spare if (room > 0 or not local) else 0
+        allowance = room + spare
         taken = 0
         for position in batch:
             images = _mcp_images_at(position)
@@ -1045,7 +1053,20 @@ def _promote(
     # Resolved before a single decode runs: the trim at the bottom keeps the newest
     # eight, and decoding a whole replayed history to throw nearly all of it away is
     # work a caller's own message list gets to choose the size of.
-    eligible = eligible_replay_images(messages, local = local) if vision else {}
+    # The caller's room is reserved HERE, ahead of the decodes, not only by the trim
+    # at the bottom: with eight attachments every replay candidate was decoded and
+    # re-encoded -- a permitted raster is 40 megapixels -- to be dropped whole.
+    # Before promotion every image_url part in the list is the caller's own.
+    _reserved = (
+        len(_all_image_url_parts(messages)) if vision and not local and reserve_for_caller else 0
+    )
+    eligible = (
+        eligible_replay_images(
+            messages, local = local, budget = max(0, MAX_TOTAL_MODEL_IMAGES - _reserved)
+        )
+        if vision
+        else {}
+    )
     # One entry per tool result, not flattened: two parallel calls each returning
     # four images would otherwise share a single result's quota and replay only the
     # first call's four.

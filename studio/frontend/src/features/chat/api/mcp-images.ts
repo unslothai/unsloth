@@ -108,7 +108,7 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     for (let j = i; j >= start; j--) batch.push(j);
     i = start - 1;
     const room = Math.min(budget, perResult);
-    let allowance = room > 0 || !localMarkers ? room + spare : 0;
+    let allowance = room + spare;
     let taken = 0;
     for (const index of batch) {
     const message = out[index];
@@ -149,7 +149,10 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     // budget are the oldest ones -- the same ones every other cap here drops.
     const keep: McpImage[] = [];
     for (const image of candidates) {
-      const cost = image.data.length;
+      // The whole serialized entry, not the data alone: the envelope carries the
+      // object, and a token MIME subtype has no length bound, so a tiny picture
+      // with a megabyte of mimeType bypassed the budget and was re-uploaded every turn.
+      const cost = JSON.stringify(image).length;
       // Skip the one that does not fit and keep looking: breaking here threw away
       // three 1MB pictures sitting behind a 5MB one, which the backend could have
       // replayed. The live-result budget already skips rather than stops.

@@ -20501,8 +20501,10 @@ async def _promote_mcp_history_images_async(
     promoted_out = None,
 ):
     """Promotion off the shared loop when there is really an envelope to rebuild.
-    Same hop, and the same reason, as the local and external replay paths take."""
-    if vision and _messages_mention_mcp_images(messages):
+    Same hop, and the same reason, as the local and external replay paths take.
+    On marker presence alone, not on vision: a text-only target still has the
+    envelope stripped, and stripping json-loads the whole 12 MB array."""
+    if _messages_mention_mcp_images(messages):
         return await asyncio.to_thread(
             promote_mcp_history_images, messages, vision = vision, promoted_out = promoted_out
         )
@@ -20517,8 +20519,10 @@ async def _promote_local_mcp_images_async(
 ):
     """Rebuilding a replayed envelope decodes and re-encodes every picture in it.
     A permitted image runs to 40 megapixels, so that belongs off the shared loop --
-    the same hop the GGUF and external replay paths already take."""
-    if vision and _messages_mention_mcp_images(messages):
+    the same hop the GGUF and external replay paths already take. Taken on marker
+    presence alone: a text-only target still has the envelope stripped, which parses
+    the same 12 MB array."""
+    if _messages_mention_mcp_images(messages):
         return await asyncio.to_thread(
             promote_mcp_history_images_local,
             messages,
@@ -20533,10 +20537,9 @@ async def _build_external_messages_async(messages, supports_vision, **kwargs) ->
     """Promoting a replayed envelope decodes and re-encodes every picture in it,
     which is PIL work on the shared loop. Hop to a thread only when there is an
     envelope to promote, so an ordinary text turn keeps its direct call."""
-    promote = kwargs.get("promote_mcp_images")
-    if promote is None:
-        promote = supports_vision
-    if promote and _messages_mention_mcp_images(messages):
+    # On marker presence alone, not on whether promotion is on: a text-only target
+    # still has the envelope stripped, and stripping parses the same 12 MB array.
+    if _messages_mention_mcp_images(messages):
         return await asyncio.to_thread(
             _build_external_messages, messages, supports_vision, **kwargs
         )
@@ -31104,7 +31107,13 @@ async def anthropic_count_tokens(
     # Name-aware, since the names were just stamped: a client tool whose output
     # merely ends in a valid envelope is never promoted, and refusing on it turned
     # away a countable prompt with a 400.
-    if llama_backend.is_vision and _messages_have_promotable_mcp_images(openai_messages):
+    # The exact check parses the envelope, so it runs off the loop, as the sibling
+    # /chat/count_tokens does, and only once the substring form says there is one.
+    if (
+        llama_backend.is_vision
+        and _messages_mention_mcp_images(openai_messages)
+        and await asyncio.to_thread(_messages_have_promotable_mcp_images, openai_messages)
+    ):
         raise HTTPException(
             status_code = 400,
             detail = "Cannot count tokens for messages containing images.",
