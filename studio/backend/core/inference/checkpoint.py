@@ -295,6 +295,7 @@ def _select_items(
     max_items: int,
     min_chars: int,
     reserve_oldest: bool = False,
+    estimate_message: Callable[[dict], int] = estimate_message_tokens,
 ) -> list[str]:
     """The instruction turns out of `evicted`, oldest first, under both caps."""
 
@@ -306,7 +307,15 @@ def _select_items(
         text = _text_of(head).strip()
         if not text:
             return None
-        return _neutralise(text), estimate_message_tokens(head)
+        # Judged AND priced on the BULLET, the only part of the turn that reaches the
+        # block. `is_substantive` passes any turn carrying an attachment, which is right
+        # for a recall query but not here: the attachment is not in the block, so "ok"
+        # sent with a screenshot would be quoted as a standing instruction. Pricing the
+        # whole message used to hide that by making such a turn unaffordable.
+        if not is_substantive({"role": "user", "content": text}, min_chars = min_chars):
+            return None
+        item = _neutralise(text)
+        return item, estimate_message({"role": "user", "content": item})
 
     return _pick(
         [_entry(group) for group in group_turns(evicted)],
@@ -321,6 +330,7 @@ def carried_forward_items(
     *,
     max_tokens: int = MAX_TOKENS,
     max_items: int = MAX_ITEMS,
+    estimate_message: Callable[[dict], int] = estimate_message_tokens,
 ) -> list[str]:
     """The user's standing instructions from the evicted turns, oldest first.
 
@@ -358,6 +368,7 @@ def carried_forward_items(
         max_items = max_items,
         min_chars = 0,
         reserve_oldest = True,
+        estimate_message = estimate_message,
     )
 
 
@@ -420,6 +431,7 @@ def _recap(
     max_tokens: int,
     max_items: int,
     carried: int = 0,
+    estimate_message: Callable[[dict], int] = estimate_message_tokens,
 ) -> list[str]:
     """Re-apply the caps to a merged list. Newest-first selection, oldest-first render.
 
@@ -440,7 +452,7 @@ def _recap(
     or its first bullet is dropped, which needs no bullet to be identified. See `_pick`.
     """
     return _pick(
-        [(item, estimate_message_tokens({"role": "user", "content": item})) for item in items],
+        [(item, estimate_message({"role": "user", "content": item})) for item in items],
         max_tokens = max_tokens,
         max_items = max_items,
         reserve_leading = carried,
@@ -535,7 +547,7 @@ def fit_checkpoint_context(
         """`kept` plus the carried-forward block built from everything it dropped."""
         alive = {id(message) for message in kept}
         evicted = [message for message in messages if id(message) not in alive]
-        items = carried_forward_items(evicted, max_tokens = budget)
+        items = carried_forward_items(evicted, max_tokens = budget, estimate_message = estimate_message)
         # A second reset in one request can arrive with a block already in the system turn. Merged and re-capped into
         # ONE block: appending would cap each block separately, bounding a block instead of the (unevictable) system
         # turn. Merged rather than dropped, since that text is now the only copy of those instructions.
@@ -555,6 +567,7 @@ def fit_checkpoint_context(
                 max_tokens = budget,
                 max_items = MAX_ITEMS,
                 carried = len(prior),
+                estimate_message = estimate_message,
             )
         if not items:
             # Nothing to carry, so nothing to claim: do not pay for the probe. The old block still has to GO, though:

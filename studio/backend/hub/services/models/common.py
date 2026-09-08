@@ -428,7 +428,8 @@ def _base_transformers_can_chat(
             )
         except Exception:
             continue
-        # A non-str is _CACHED_NO_EXIST ("we know it is absent here") or None ("unknown"),
+        # A non-str is _CACHED_NO_EXIST ("we know it is absent here") or None ("unknown"), and neither rules the base
+        # out of a different root.
         if isinstance(found, str):
             config_path = found
             break

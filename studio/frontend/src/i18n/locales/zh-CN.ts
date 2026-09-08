@@ -490,6 +490,12 @@ export const zhCN = {
           "发送到 /v1/audio/transcriptions 的模型名称。",
         sttModelLabel: "语音识别模型",
         sttModelDescription: "选择或搜索要在本地运行的 STT 模型。",
+        sttDeviceLabel: "加载到",
+        sttDeviceAuto: "有 GPU 时使用 GPU",
+        sttDeviceCpu: "CPU 内存",
+        sttDeviceAutoDescription: "有 GPU 时使用 GPU，否则使用 CPU。",
+        sttDeviceCpuDescription:
+          "将模型保留在系统内存中。转写速度较慢，但不占用显存。",
         sttModelSearchPlaceholder: "搜索模型",
         sttModelSearching: "正在搜索 Hugging Face…",
         sttModelValidating: "正在检查 Whisper 兼容性…",
@@ -893,7 +899,11 @@ export const zhCN = {
         currentStreak: "当前连续天数",
         longestStreak: "最长连续天数",
         activityTitle: "Token 活跃度",
-        activityDescription: "过去{weeks}共{total}",
+        activityDescription: {
+          daily: "过去{weeks}共{total}",
+          weekly: "峰值周 {total} · 最近{weeks}",
+          cumulative: "过去{weeks}累计{total}",
+        },
         mode: {
           daily: "按天",
           weekly: "按周",
@@ -2064,6 +2074,7 @@ export const zhCN = {
       memoryEfficient: "节省内存",
       weightDecomposed: "权重分解",
       notSupportedAppleSilicon: "Apple 芯片暂不支持",
+      doraNeedsVisionLayersOff: "关闭视觉层训练以使用 DoRA",
       optimization: "优化",
       schedule: "计划",
       memory: "内存",

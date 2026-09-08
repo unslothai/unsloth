@@ -495,6 +495,13 @@ export const hi = {
           "/v1/audio/transcriptions को भेजा जाने वाला मॉडल नाम।",
         sttModelLabel: "स्पीच रिकग्निशन मॉडल",
         sttModelDescription: "लोकली चलाने के लिए STT मॉडल चुनें या खोजें।",
+        sttDeviceLabel: "इसमें लोड करें",
+        sttDeviceAuto: "उपलब्ध होने पर GPU",
+        sttDeviceCpu: "CPU RAM",
+        sttDeviceAutoDescription:
+          "GPU उपलब्ध हो तो उसका उपयोग करें, अन्यथा CPU का।",
+        sttDeviceCpuDescription:
+          "मॉडल को सिस्टम RAM में रखें। ट्रांसक्रिप्शन धीमा होगा, पर GPU मेमोरी नहीं लगेगी।",
         sttModelSearchPlaceholder: "मॉडल खोजें",
         sttModelSearching: "Hugging Face पर खोजा जा रहा है…",
         sttModelValidating: "Whisper संगतता जाँची जा रही है…",
@@ -917,7 +924,11 @@ export const hi = {
         currentStreak: "मौजूदा स्ट्रीक",
         longestStreak: "सबसे लंबी स्ट्रीक",
         activityTitle: "टोकन गतिविधि",
-        activityDescription: "अवधि: {weeks} · {total}",
+        activityDescription: {
+          daily: "अवधि: {weeks} · {total}",
+          weekly: "सबसे व्यस्त सप्ताह {total} · पिछले {weeks}",
+          cumulative: "पिछले {weeks} में कुल {total}",
+        },
         mode: {
           daily: "दैनिक",
           weekly: "साप्ताहिक",
@@ -2142,6 +2153,7 @@ export const hi = {
       memoryEfficient: "मेमोरी कुशल",
       weightDecomposed: "भार-विघटित",
       notSupportedAppleSilicon: "Apple Silicon पर समर्थित नहीं",
+      doraNeedsVisionLayersOff: "DoRA उपयोग करने के लिए विज़न लेयर्स ट्रेनिंग बंद करें",
       optimization: "ऑप्टिमाइज़ेशन",
       schedule: "शेड्यूल",
       memory: "मेमोरी",

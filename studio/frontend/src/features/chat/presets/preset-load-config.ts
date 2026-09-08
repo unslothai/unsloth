@@ -176,8 +176,8 @@ export function normalizePresetLoadConfig(
       typeof partial.nUbatch === "number" && Number.isFinite(partial.nUbatch)
         ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)))
         : null,
-    // Through the same normalizers the per-model store uses, so a hand-edited or
-    // older preset cannot smuggle in a mode or dtype the panel cannot show.
+    // Through the same normalizers the per-model store uses, so a hand-edited or older preset cannot
+    // smuggle in a mode or dtype the panel cannot show.
     loadMode: canonicalizeLoadMode(partial.loadMode),
     specDraftCacheDtype:
       typeof partial.specDraftCacheDtype === "string" &&
