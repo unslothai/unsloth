@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import time
 from contextlib import closing, contextmanager
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1832,7 +1833,7 @@ def test_project_upload_cleans_saved_file_when_scope_retires_after_save(rag_home
     )
 
     with pytest.raises(Exception) as exc_info:
-        asyncio.run(rag_routes.upload_project_document(project_id, subject = "test"))
+        rag_routes.upload_project_document(project_id, subject = "test")
 
     assert getattr(exc_info.value, "status_code", None) == 409
     assert not saved_path.exists()
@@ -1869,17 +1870,17 @@ def test_upload_rechecks_owner_after_saving_file(rag_home, monkeypatch, scope_ty
             "get_kb",
             lambda conn, value: {"id": value} if owner_exists else None,
         )
-        upload = rag_routes.upload_kb_document(owner_id, subject = "test")
+        upload = partial(rag_routes.upload_kb_document, owner_id, subject = "test")
     else:
         monkeypatch.setattr(
             studio_db,
             "get_chat_project",
             lambda value: {"id": value} if owner_exists else None,
         )
-        upload = rag_routes.upload_project_document(owner_id, subject = "test")
+        upload = partial(rag_routes.upload_project_document, owner_id, subject = "test")
 
     with pytest.raises(Exception) as exc_info:
-        asyncio.run(upload)
+        upload()
 
     assert getattr(exc_info.value, "status_code", None) == 404
     assert not saved_path.exists()
@@ -2113,7 +2114,7 @@ def test_kb_upload_rejects_retired_scope_before_saving(rag_home, monkeypatch):
     )
 
     with pytest.raises(Exception) as exc_info:
-        asyncio.run(rag_routes.upload_kb_document("knowledge", subject = "test"))
+        rag_routes.upload_kb_document("knowledge", subject = "test")
     assert getattr(exc_info.value, "status_code", None) == 409
 
 
