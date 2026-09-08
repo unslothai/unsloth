@@ -2823,7 +2823,6 @@ def test_the_same_value_spelled_properly_is_still_a_backend():
     assert out.strip() == ""
 
 
-
 def test_the_unnamed_gid_repair_is_a_command_a_shell_will_run(monkeypatch, linux):
     """`<name>` is not a placeholder in a shell, it is a redirection: `groupadd -g 993
     <name>` parses as a read from ./name followed by a `>` with no target, which bash, dash
@@ -2846,7 +2845,8 @@ def test_the_installer_unnamed_gid_repair_is_runnable_too(tmp_path):
 
     out = _install_sh_hint("/dev/dri/renderD128", repairs = "gid:993")
     _cmds = [
-        _line.strip() for _line in out.splitlines()
+        _line.strip()
+        for _line in out.splitlines()
         if _line.strip().startswith("sudo group") or _line.strip().startswith("sudo usermod")
     ]
     assert _cmds, out
@@ -2876,8 +2876,13 @@ def test_a_render_node_the_installer_cannot_read_the_vendor_of_is_not_absent(tmp
     # denying the attribute looks like from here.
     (tmp_path / "sys/class/drm/renderD128/device").mkdir(parents = True)
     out = subprocess.run(
-        ["bash", "-c", fn + "\nif _amd_render_node_present; then echo PRESENT; else echo ABSENT; fi"],
-        capture_output = True, text = True,
+        [
+            "bash",
+            "-c",
+            fn + "\nif _amd_render_node_present; then echo PRESENT; else echo ABSENT; fi",
+        ],
+        capture_output = True,
+        text = True,
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "PRESENT"
@@ -2899,8 +2904,13 @@ def test_a_render_node_the_installer_reads_as_another_vendor_is_still_absent(tmp
     (tmp_path / "sys/class/drm/renderD128/device").mkdir(parents = True)
     (tmp_path / "sys/class/drm/renderD128/device/vendor").write_text("0x10de\n")
     out = subprocess.run(
-        ["bash", "-c", fn + "\nif _amd_render_node_present; then echo PRESENT; else echo ABSENT; fi"],
-        capture_output = True, text = True,
+        [
+            "bash",
+            "-c",
+            fn + "\nif _amd_render_node_present; then echo PRESENT; else echo ABSENT; fi",
+        ],
+        capture_output = True,
+        text = True,
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "ABSENT"
