@@ -164,6 +164,49 @@ class TestAPendingResumeLargerThanTheBatch:
         assert c.snapshot().prefilling == 0
         assert c.snapshot().buffer == IDLE_BUFFER
 
+    def test_the_backstop_outlasts_the_longest_prefill_the_stream_waits_for(self):
+        """A 16K prompt on an offloaded GGUF takes minutes to go in, and the stream waits
+        20 minutes for its first token; the old 120 s figure dropped the reserve while the
+        prompt was still being inserted."""
+        from core.inference.llama_cpp import _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+
+        assert PENDING_PREFILL_TTL_S >= _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+        c = _controller()
+        chat = c.register("chat", tokens = 5000, signal = PreemptSignal())
+        chat.pending_prefill_at -= 121.0
+        assert c.snapshot().prefilling == 5000
+        assert c.snapshot().buffer == PREFILL_BUFFER
+
+
+class TestAReclaimedHolderRestatesItsWholePrompt:
+    """The recost at the top of a tool round runs while the holder is still TOOLS_RUNNING,
+    before `note_state` sees DECODING, so the full-prompt branch there never ran and the
+    reserve covered a round's growth while the whole sequence was prefilled again."""
+
+    def test_the_round_after_a_reclaim_announces_the_prompt_not_the_growth(self):
+        c = _controller()
+        chat = c.register("chat", tokens = 6000, signal = PreemptSignal())
+        c.observe("chat", 32)
+        assert c.snapshot().prefilling == 0
+        assert c.note_state("chat", ParticipantState.TOOLS_RUNNING)
+        assert c.note_cells_reclaimed() == 1
+        c.note_tokens("chat", 6200)
+        assert chat.cells_reclaimed is False
+        assert c.snapshot().prefilling == 6200
+        assert c.snapshot().buffer == PREFILL_BUFFER
+        # DECODING afterwards adds nothing: the announcement was already the whole prompt.
+        assert c.note_state("chat", ParticipantState.DECODING)
+        assert c.snapshot().prefilling == 6200
+
+    def test_without_a_reclaim_a_round_still_announces_only_its_growth(self):
+        c = _controller()
+        c.register("chat", tokens = 6000, signal = PreemptSignal())
+        c.observe("chat", 32)
+        assert c.note_state("chat", ParticipantState.TOOLS_RUNNING)
+        # 6032 after the observe: the round boundary restates prompt plus answer.
+        c.note_tokens("chat", 6072)
+        assert c.snapshot().prefilling == 40
+
 
 class TestTheRace:
     """A pending participant must raise the buffer BEFORE its chunk is submitted."""

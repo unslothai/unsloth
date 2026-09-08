@@ -76,8 +76,10 @@ DEFAULT_PREEMPT_STATIC_BATCH = False
 CHARGED_PREFILL_ENV = "UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED"
 DEFAULT_PREEMPT_BATCH_ONLY_UNCHARGED = False
 
-# Backstop for an announced prefill that never happens; long enough never to fire during one.
-PENDING_PREFILL_TTL_S = 120.0
+# Backstop for an announced prefill that never happens. The stream waits this long for a
+# first token (`_DEFAULT_FIRST_TOKEN_TIMEOUT_S`), so a shorter figure dropped the reserve
+# under a prompt that was still going in.
+PENDING_PREFILL_TTL_S = 1200.0
 
 # Bounds churn under contention. _MAX_LENGTH_CONTINUATIONS is a quality cap, not this.
 DEFAULT_MAX_PREEMPT_RESUMES = 32
@@ -831,8 +833,13 @@ class PreemptionController:
                 previous = participant.tokens
                 participant.tokens = max(0, int(tokens or 0))
                 growth = participant.tokens - previous
-                if growth > 0:
+                if participant.cells_reclaimed:
+                    # A reclaim erased every cell: the whole prompt goes in again, not the
+                    # round's growth. This runs before `note_state` sees DECODING.
+                    participant.announce_prefill(participant.tokens)
+                elif growth > 0:
                     participant.announce_prefill(growth)
+                if growth > 0:
                     # Same counter as `observe`: a waiter must be able to see a tool
                     # result land.
                     self._progress_tokens += growth
