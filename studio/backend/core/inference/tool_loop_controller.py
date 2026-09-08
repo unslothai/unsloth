@@ -11,8 +11,11 @@ backend-specific modules.
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
+import math
+import re
 from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
@@ -24,15 +27,14 @@ _CANONICAL_HEAL_ARG = {
     "python": "code",
     "terminal": "command",
     "render_html": "code",
-    # Not derivable: web_search declares no REQUIRED argument, because a call carrying
-    # only `url` fetches that page without searching. A bare string is still a query,
-    # which is what the old catch-all default got right for this tool and only this one.
+    # Not derivable: web_search declares no REQUIRED argument, because a call carrying only `url` fetches that page
+    # without searching. A bare string is still a query, which is what the old catch-all default got right for this tool
+    # and only this one.
     "web_search": "query",
 }
 
-# Where a bare string lands when the tool it was sent to has no argument that could hold
-# it. Read by `execute_tool`, which answers with what actually went wrong instead of
-# letting the tool report a missing key it was never given.
+# Where a bare string lands when the tool it was sent to has no argument that could hold it. Read by `execute_tool`,
+# which answers with what actually went wrong instead of letting the tool report a missing key it was never given.
 UNPARSED_ARGUMENTS_KEY = "__unsloth_unparsed_arguments__"
 
 
@@ -60,17 +62,16 @@ def _looks_like_broken_json(raw: str) -> bool:
     except json.JSONDecodeError as error:
         if error.msg.startswith("Unterminated string") or error.pos >= len(text):
             return True
-        # A value cut mid-token reports at the token's START, not at the end of input, so
-        # the two tests above miss `{"flag":tru` (Expecting value) and `{"n":1e`
-        # (Expecting ',' delimiter). What they share is that everything from the failure
-        # to the end is one unfinished token: no delimiter, no quote, no space.
-        #
-        # Excluded: a bad PROPERTY NAME. After `{` a bare word is malformed rather than
-        # cut off, which is what keeps `{oops` and `{not json at all` healable.
+        # A value cut mid-token reports at the token's START, not at the end of input, so the two tests above miss
+        # `{"flag":tru` (Expecting value) and `{"n":1e` (Expecting ',' delimiter). What they share is that everything
+        # from the failure to the end is one unfinished token: no delimiter, no quote, no space. Excluded: a bad
+        # PROPERTY NAME. After `{` a bare word is malformed rather than cut off, which is what keeps `{oops` and `{not
+        # json at all` healable.
         if error.msg.startswith("Expecting property name"):
             return False
-        # Excluded for the opposite reason: a COMPLETE document with something after it.
-        # `{"a": 1} trailing` decodes fully and then finds junk, so nothing was lost.
+        # excluded for the opposite reason: `{"a": 1} trailing` decodes fully and then finds junk
+        # Excluded for the opposite reason: a COMPLETE document with something after it. `{"a": 1} trailing` decodes
+        # fully and then finds junk, so nothing was lost.
         if error.msg.startswith("Extra data"):
             return False
         remainder = text[error.pos :]
@@ -151,8 +152,9 @@ def _heal_arg_key(tool_name: str, tool_schemas = None) -> "str | None":
     key = _HEAL_ARG_CACHE.get(tool_name)
     if key is not None or not tool_schemas:
         return key
-    # Not cached: the request's tools belong to the request, and caching them by name
-    # would let one chat's MCP server decide another chat's healing.
+    # not cached: caching by name would let one chat's MCP server decide another chat's healing
+    # Not cached: the request's tools belong to the request, and caching them by name would let one chat's MCP server
+    # decide another chat's healing.
     return _healable_keys_from(tool_schemas).get(tool_name)
 
 
@@ -182,6 +184,11 @@ class CoercedArguments:
     healed: bool = False
 
 
+def canonical_arguments_text(arguments: Any) -> str:
+    """The one JSON encoding of an argument mapping, so the card and the replay agree."""
+    return json.dumps(arguments, ensure_ascii = False, sort_keys = True, separators = (",", ":"))
+
+
 @dataclass(frozen = True)
 class ToolCallDecision:
     """Decision made before any visible tool event is emitted."""
@@ -190,6 +197,10 @@ class ToolCallDecision:
     tool_name: str
     arguments: dict[str, Any]
     tool_call_id: str = ""
+    # for an id-less call this is the spelling the client minted
+    # The id the card carries on screen. For an id-less call that is the spelling the client minted, not the id the
+    # conversation replays; otherwise the two are the same.
+    card_call_id: str = ""
     key: str = ""
     provenance: dict[str, Any] = field(default_factory = dict)
     status_text: str = ""
@@ -198,6 +209,11 @@ class ToolCallDecision:
     @property
     def should_execute(self) -> bool:
         return self.action == "execute"
+
+    @property
+    def card_id(self) -> str:
+        """The id every frontend-visible event for this call is addressed to."""
+        return self.card_call_id or self.tool_call_id
 
     @property
     def emit_visible_events(self) -> bool:
@@ -226,14 +242,15 @@ class ToolCallDecision:
     def tool_start_payload(self) -> dict[str, Any]:
         """Build the payload fields for a real tool_start event."""
         fragment = self.unparsed_fragment
-        # `raw` is the shape this module already uses for arguments it could not read into
-        # a schema, so the card shows the model's own text under a name that means
-        # something rather than an internal sentinel.
+        # `raw` is the shape this module already uses for arguments it could not read into a schema, so the card shows
+        # the model's own text under a name that means something rather than an internal sentinel.
         arguments = {"raw": fragment} if fragment is not None else self.arguments
         return {
             "tool_name": self.tool_name,
-            "tool_call_id": self.tool_call_id,
+            "tool_call_id": self.card_id,
             "arguments": arguments,
+            # Re-encoding `arguments` in the browser would round ids past 2**53 (JSON.parse).
+            "arguments_text": canonical_arguments_text(arguments),
             "provenance": self.provenance,
         }
 
@@ -248,20 +265,14 @@ class ToolCallDecision:
             "type": "function",
             "function": {
                 "name": self.tool_name,
-                # Whatever goes here MUST parse as JSON. llama-server parses it while
-                # rendering the template and answers 500 otherwise, which is what replaying
-                # the fragment verbatim caused: it is unparseable by definition, that being
-                # why it is here. So the replay is a short valid object that says the call
-                # was cut off, and the tool result carries the detail. The fragment itself
-                # is not worth resending -- it is the content that overflowed the window.
+                # Whatever goes here MUST parse as JSON. llama-server parses it while rendering the template and answers
+                # 500 otherwise, which is what replaying the fragment verbatim caused: it is unparseable by definition,
+                # that being why it is here. So the replay is a short valid object that says the call was cut off, and
+                # the tool result carries the detail. The fragment itself is not worth resending -- it is the content
+                # that overflowed the window.
                 "arguments": json.dumps(_unreadable_arguments_summary(fragment))
                 if fragment is not None
-                else json.dumps(
-                    self.arguments,
-                    ensure_ascii = False,
-                    sort_keys = True,
-                    separators = (",", ":"),
-                ),
+                else canonical_arguments_text(self.arguments),
             },
         }
         if self.tool_call_id:
@@ -282,7 +293,7 @@ class ToolCallCompletion:
         """Build the payload fields for a real tool_end event."""
         return {
             "tool_name": self.decision.tool_name,
-            "tool_call_id": self.decision.tool_call_id,
+            "tool_call_id": self.decision.card_id,
             "result": self.result,
             "provenance": self.decision.provenance,
         }
@@ -345,6 +356,305 @@ def canonical_tool_call_key(tool_name: str, arguments: Mapping[str, Any]) -> str
     return f"{tool_name}:{canonical_args}"
 
 
+# "0"/"1" are left out: a native `0` arrives already typed, so they would mean two things
+_SCHEMA_TRUE_WORDS = frozenset({"true", "yes"})
+_SCHEMA_FALSE_WORDS = frozenset({"false", "no"})
+# not ValueErrors, so a decode-shaped except would let deep model output escape as a 500
+_DECODE_ERRORS = (ValueError, RecursionError)
+_LITERAL_ERRORS = (*_DECODE_ERRORS, SyntaxError, MemoryError)
+
+
+# group 1 is the closing quote, which `endswith` cannot stand in for because an open string can end on an escaped one;
+# A JSON string, open or closed; group 1 is the closing quote, which `endswith` cannot stand in for because an open
+# string can end on an escaped one. The `\?$` tail stops a started match from ever failing, which would send `finditer`
+# back over every later quote.
+_JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*(?:(")|\\?$)', re.S)
+_JSON_CLOSER = {"[": "]", "{": "}"}
+
+
+def _balanced(segment: str, opened: "list[str]") -> str:
+    kept: list[str] = []
+    for ch in segment:
+        if ch in _JSON_CLOSER:
+            opened.append(_JSON_CLOSER[ch])
+            kept.append(ch)
+        elif ch in "]}":
+            # the commonest slip: a closer of the wrong kind becomes the right one
+            if opened:
+                kept.append(opened.pop())
+        else:
+            kept.append(ch)
+    return "".join(kept)
+
+
+def _repair_json_value(text: str) -> Any:
+    """Parse near-valid JSON whose brackets do not balance, or None if it still will not."""
+    parts: list[str] = []
+    opened: list[str] = []
+    cursor = 0
+    open_string = ""
+    for match in _JSON_STRING_RE.finditer(text):
+        parts += [_balanced(text[cursor : match.start()], opened), match.group()]
+        open_string = "" if match.group(1) else '"'
+        cursor = match.end()
+    parts += [_balanced(text[cursor:], opened), open_string, *reversed(opened)]
+    try:
+        return json.loads("".join(parts), strict = False)
+    except _DECODE_ERRORS:
+        return None
+
+
+# Followed to find a declaration; `nullable` is OpenAPI 3.0's spelling of a type union.
+_READ_KEYWORDS = frozenset(
+    {
+        "type",
+        "nullable",
+        "properties",
+        "items",
+        "prefixItems",
+        "additionalItems",
+        "additionalProperties",
+    }
+)
+# cannot move a declaration out of reach: annotations, and constraints that only reject
+_INERT_KEYWORDS = frozenset(
+    {
+        "title",
+        "description",
+        "default",
+        "examples",
+        "example",
+        "deprecated",
+        "readOnly",
+        "writeOnly",
+        "format",
+        "$comment",
+        "$schema",
+        "$id",
+        "$anchor",
+        "$defs",
+        "definitions",
+        "enum",
+        "const",
+        "required",
+        "dependentRequired",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "minContains",
+        "maxContains",
+        "minProperties",
+        "maxProperties",
+    }
+)
+_UNION_KEYWORDS = frozenset({"anyOf", "oneOf"})
+# Matched exactly: an unknown type name is as unreadable as an unknown keyword.
+_JSON_SCHEMA_TYPES = frozenset(
+    {
+        "array",
+        "boolean",
+        "integer",
+        "null",
+        "number",
+        "object",
+        "string",
+    }
+)
+_KNOWN_KEYWORDS = _READ_KEYWORDS | _INERT_KEYWORDS | _UNION_KEYWORDS
+
+
+def _readable(spec: Any) -> bool:
+    """An allowlist, because composition, reference and a later draft's keywords can all move
+    a declaration out of this walk's reach."""
+    return isinstance(spec, Mapping) and spec.keys() <= _KNOWN_KEYWORDS
+
+
+def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
+    """The subschema to read against, its one declared type, and whether it admits null;
+    ``(None, ...)`` leaves it alone. A union collapses to its single non-null branch, so
+    every branch must name one: reading the integer branch of ``anyOf: [{integer}, {$ref}]``
+    would turn ``"001"`` into 1."""
+    if not _readable(spec):
+        return None, None, False
+    union = _UNION_KEYWORDS & spec.keys()
+    if union and (len(union) > 1 or not _READ_KEYWORDS.isdisjoint(spec)):
+        return None, None, False
+    kind = spec.get("type")
+    chosen = spec
+    if isinstance(kind, str):
+        named = [kind]
+    elif isinstance(kind, list):
+        named = list(kind)
+    elif union:
+        branches = spec.get("anyOf") or spec.get("oneOf")
+        if not isinstance(branches, list) or not branches:
+            return None, None, False
+        named = []
+        for branch in branches:
+            name = branch.get("type") if _readable(branch) else None
+            if not isinstance(name, str) or _UNION_KEYWORDS & branch.keys():
+                return None, None, False
+            named.append(name)
+            if named[-1] != "null":
+                chosen = branch
+    elif kind is None:
+        return spec, None, False
+    else:
+        return None, None, False
+    if not named or not all(isinstance(name, str) and name in _JSON_SCHEMA_TYPES for name in named):
+        return None, None, False
+    if chosen.get("nullable") is True:
+        named.append("null")
+    rest = [k for k in named if k != "null"]
+    if len(rest) > 1 or (not rest and "null" not in named):
+        return None, None, False
+    return chosen, rest[0] if rest else None, "null" in named
+
+
+# A schema is model-facing data, so its nesting is not trusted to be shallow.
+_MAX_SCHEMA_DEPTH = 8
+
+
+def _coerce_declared_value(text: str, declared: str, repair: bool) -> Any:
+    stripped = text.strip()
+    if declared == "boolean":
+        lowered = stripped.lower()
+        if lowered in _SCHEMA_TRUE_WORDS:
+            return True
+        if lowered in _SCHEMA_FALSE_WORDS:
+            return False
+    elif declared in ("integer", "number"):
+        try:
+            # float() would round 9007199254740993, which an already-numeric argument keeps.
+            return int(stripped)
+        except ValueError:
+            pass
+        try:
+            number = float(stripped)
+        except (ValueError, OverflowError):
+            return text
+        # "nan"/"inf" parse, but json.dumps writes them bare and the client rejects that. Exactness is unguarded:
+        # float64 IS JSON's number type, so a JSON call agrees.
+        if math.isfinite(number) and (declared == "number" or number.is_integer()):
+            return number
+    elif declared == "array":
+        return _coerce_container(text, list, repair)
+    elif declared == "object":
+        return _coerce_container(text, dict, repair)
+    return text
+
+
+def _usable_container(value: Any, want: type) -> bool:
+    """A ``want`` that survives the JSON re-encoding of ``arguments``: both decoders admit
+    what ``json.dumps`` will not write back, such as an integer key returning as a STRING."""
+    if not isinstance(value, want):
+        return False
+    try:
+        dumped = json.dumps(value, allow_nan = False, sort_keys = True, ensure_ascii = False)
+        dumped.encode("utf-8")  # a lone surrogate survives dumps and dies encoding the reply
+        return json.loads(dumped) == value
+    except (TypeError, ValueError, RecursionError):
+        return False
+
+
+def _coerce_container(text: str, want: type, repair: bool) -> Any:
+    """``text`` read as the DECLARED container, tolerating a Python literal and, when
+    ``repair``, unbalanced brackets. Rewriting brackets is what auto-heal opts out of."""
+    try:
+        parsed = json.loads(text, strict = False)
+    except _DECODE_ERRORS:
+        parsed = None
+    if _usable_container(parsed, want):
+        return parsed
+    try:
+        literal = ast.literal_eval(text)
+    except _LITERAL_ERRORS:
+        literal = None
+    if isinstance(literal, tuple):
+        literal = list(literal)
+    if _usable_container(literal, want):
+        return literal
+    repaired = _repair_json_value(text) if repair else None
+    return repaired if _usable_container(repaired, want) else text
+
+
+def _coerce_by_property(value: Any, spec: Any, depth: int, repair: bool) -> Any:
+    if depth >= _MAX_SCHEMA_DEPTH:
+        return value
+    spec, declared, nullable = _read_schema(spec)
+    if spec is None:
+        return value
+    if isinstance(value, str):
+        if declared == "string":
+            return value
+        if nullable and value.strip().lower() == "null":
+            return None
+        if declared is None:
+            return value
+        value = _coerce_declared_value(value, declared, repair)
+    # Descent needs the SAME declaration the conversion needs: without one a text value is not decoded, so descending
+    # into an already-decoded one would make the syntaxes disagree.
+    if declared == "object" and isinstance(value, Mapping):
+        nested = spec.get("properties")
+        nested = nested if isinstance(nested, Mapping) else {}
+        extra = spec.get("additionalProperties")
+        extra = extra if isinstance(extra, Mapping) else None
+        if nested or extra:
+            return {
+                k: _coerce_by_property(v, nested.get(k, extra), depth + 1, repair)
+                for k, v in value.items()
+            }
+    elif declared == "array" and isinstance(value, list):
+        items = spec.get("items")
+        prefix = items if isinstance(items, list) else spec.get("prefixItems")
+        if isinstance(prefix, list):
+            # A schema per position: draft-07 tuple `items`, 2020-12 `prefixItems`.
+            rest = spec.get("additionalItems") if isinstance(items, list) else items
+            return [
+                _coerce_by_property(v, prefix[i] if i < len(prefix) else rest, depth + 1, repair)
+                for i, v in enumerate(value)
+            ]
+        if isinstance(items, Mapping):
+            return [_coerce_by_property(v, items, depth + 1, repair) for v in value]
+    return value
+
+
+def coerce_arguments_by_schema(
+    arguments: Mapping[str, Any],
+    properties: Any,
+    *,
+    repair: bool = False,
+) -> dict:
+    """Arguments with each string value that declares a non-string type read as that type.
+
+    A tool-call parser is given tool NAMES, never schemas, so an XML-form parameter is stored
+    as raw text: ``replace_all`` reaches the tool as ``"false"``, and ``bool("false")`` is
+    True. A container's text IS its JSON; a scalar's carries no type, so it is read only
+    where its spelling names the declared type. Anything else keeps its text.
+    """
+    if not isinstance(properties, Mapping) or not properties:
+        return dict(arguments)
+    return {k: _coerce_by_property(v, properties.get(k), 0, repair) for k, v in arguments.items()}
+
+
+def _declared_properties(tool_name: str, tool_schemas) -> Any:
+    for tool in tool_schemas or []:
+        function = tool.get("function") if isinstance(tool, Mapping) else None
+        if not isinstance(function, Mapping) or function.get("name") != tool_name:
+            continue
+        parameters = function.get("parameters")
+        return parameters.get("properties") if isinstance(parameters, Mapping) else None
+    return None
+
+
 def coerce_tool_arguments(
     raw_args: Any,
     *,
@@ -352,26 +662,33 @@ def coerce_tool_arguments(
     tool_name: str = "",
     tool_schemas = None,
 ) -> CoercedArguments:
-    """Normalize model-emitted ``function.arguments`` to a dictionary."""
+    """Normalize model-emitted ``function.arguments`` to a dictionary.
+
+    Typing against ``tool_schemas`` is not gated on ``heal``: healing invents structure the
+    model never sent, while reading a value as its schema declares it is the tool's contract.
+    """
+    properties = _declared_properties(tool_name, tool_schemas) if tool_name else None
     if isinstance(raw_args, Mapping):
-        return CoercedArguments(dict(raw_args), False)
+        return CoercedArguments(
+            coerce_arguments_by_schema(raw_args, properties, repair = heal), False
+        )
     if isinstance(raw_args, str):
         try:
             parsed = json.loads(raw_args)
             if isinstance(parsed, Mapping):
-                return CoercedArguments(dict(parsed), False)
+                return CoercedArguments(
+                    coerce_arguments_by_schema(parsed, properties, repair = heal), False
+                )
         except (json.JSONDecodeError, ValueError):
             pass
         if heal:
-            # Healing exists for a model that sends its ONE argument as a bare string
-            # instead of an object. Text that opens like JSON and fails to parse is not
-            # that -- it is a broken object, usually one cut off mid-stream, and wrapping
-            # it whole becomes the argument's value. Observed on `python`, which has a
-            # single `code` argument and so was healable: a truncated call arrived as
-            # `{"code":"html = ...`, the entire fragment was passed as the PROGRAM, and the
-            # model read its own file back as `{"code":"html = ...` and spent the rest of
-            # the turn convinced the sandbox had mangled it. Same defect `edit_file` had;
-            # having a single string argument only hid it.
+            # Healing exists for a model that sends its ONE argument as a bare string instead of an object. Text that
+            # opens like JSON and fails to parse is not that -- it is a broken object, usually one cut off mid-stream,
+            # and wrapping it whole becomes the argument's value. Observed on `python`, which has a single `code`
+            # argument and so was healable: a truncated call arrived as `{"code":"html = ...`, the entire fragment was
+            # passed as the PROGRAM, and the model read its own file back as `{"code":"html = ...` and spent the rest of
+            # the turn convinced the sandbox had mangled it. Same defect `edit_file` had; having a single string
+            # argument only hid it.
             key = (
                 None
                 if _looks_like_broken_json(raw_args)
@@ -379,11 +696,10 @@ def coerce_tool_arguments(
             )
             if key is not None:
                 return CoercedArguments({key: raw_args}, True)
-            # No single argument this text could be. Inventing one used to default to
-            # "query", which edit_file -- three required arguments, none of them a
-            # query -- then reported as "'old_string' and 'new_string' must both be
-            # strings": a type error blaming the model for a key it never sent, on a
-            # call whose real problem was that its JSON never finished arriving.
+            # No single argument this text could be. Inventing one used to default to "query", which edit_file -- three
+            # required arguments, none of them a query -- then reported as "'old_string' and 'new_string' must both be
+            # strings": a type error blaming the model for a key it never sent, on a call whose real problem was that
+            # its JSON never finished arriving.
             return CoercedArguments({UNPARSED_ARGUMENTS_KEY: raw_args}, False)
         return CoercedArguments({"raw": raw_args}, False)
     return CoercedArguments({}, False)
@@ -429,15 +745,15 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "web_search":
         url = str(arguments.get("url") or "").strip()
         if url:
-            # Bare hosts are fetched as https, so normalize first or the badge
-            # stays generic for exactly the URLs the fetch layer accepts.
+            # bare hosts are fetched as https, so normalize first or the badge stays generic for exactly the URLs the
+            # fetch layer accepts
             from core.inference.tools import _normalize_url_scheme
 
             try:
                 parsed = urlparse(_normalize_url_scheme(url))
             except ValueError:
-                # Runs in prepare_call, outside the fetch's exception handler:
-                # raising here kills the turn instead of returning "Blocked:".
+                # Runs in prepare_call, outside the fetch's exception handler: raising here kills the turn instead of
+                # returning "Blocked:".
                 return "Reading page..."
             if parsed.scheme in ("http", "https") and parsed.hostname:
                 host = parsed.hostname
@@ -537,8 +853,8 @@ def _strip_files_sentinel(result: str) -> str:
         entries = json.loads(result[payload_start:end])
     except (ValueError, TypeError, RecursionError):
         return result
-    # Every entry, not just the list: the executor emits {"name": str, "size":
-    # int | None}, and anything else is a tool that happened to print the marker.
+    # Every entry, not just the list: the executor emits {"name": str, "size": int | None}, and anything else is a tool
+    # that happened to print the marker.
     if not isinstance(entries, list) or not all(_is_file_entry(e) for e in entries):
         return result
     return result[:start] + result[end:]
@@ -553,9 +869,8 @@ def _is_file_entry(entry: object) -> bool:
     )
 
 
-# Only these emit the file envelope, and only their output is defused first. An
-# MCP tool or a fetched page ending in a well-formed __FILES__ line is content,
-# not an envelope, and stripping it would take that line away from the model.
+# Only these emit the file envelope, and only their output is defused first. An MCP tool or a fetched page ending in a
+# well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 
 
@@ -723,6 +1038,7 @@ class ToolLoopController:
             tool_name = tool_name,
             arguments = coerced.arguments,
             tool_call_id = str(tool_call.get("id") or ""),
+            card_call_id = str(tool_call.get("card_id") or ""),
             key = key,
             provenance = provenance,
             status_text = status_for_tool(tool_name, coerced.arguments),

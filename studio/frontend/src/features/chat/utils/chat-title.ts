@@ -3,19 +3,17 @@
 
 import type { MessageRecord, ThreadRecord } from "../types";
 
-/** Store the whole first line and let the sidebar clip it with CSS, so a wider
- *  one shows more. Matches the rename input's maxLength: UTF-16 units, ellipsis
- *  included. */
+/** Store the whole first line and let the sidebar clip it with CSS, so a wider one shows more.
+ *  Matches the rename input's maxLength: UTF-16 units, ellipsis included. */
 export const FALLBACK_TITLE_MAX = 120;
 
-/** Older titles were stored pre-cut at 48 chars with a literal "...". Kept to
- *  find and rewrite those rows. */
+/** Older titles were stored pre-cut at 48 chars with a literal "...". Kept to find and rewrite those rows. */
 export const LEGACY_FALLBACK_TITLE_MAX = 48;
 const LEGACY_FALLBACK_SUFFIX = "...";
 
-/** Drop unpaired surrogates: they render as nothing, and one reaching the
- *  backend fails its SQLite bind and 500s the title write. Iteration yields a
- *  valid pair whole, so a length-1 unit in the range is a lone surrogate. */
+/** Drop unpaired surrogates: they render as nothing, and one reaching the backend fails its
+ *  SQLite bind and 500s the title write. Iteration yields a valid pair whole, so a length-1
+ *  unit in the range is a lone surrogate. */
 function dropLoneSurrogates(text: string): string {
   let out = "";
   for (const character of text) {
@@ -32,8 +30,8 @@ function firstLineOf(text: string): string {
   return dropLoneSurrogates(firstLine).replace(/\s+/g, " ").trim();
 }
 
-/** Cut to at most `maxUnits` UTF-16 units without splitting an astral character:
- *  a lone surrogate parses fine and then fails the backend's SQLite bind. */
+/** Cut to at most `maxUnits` UTF-16 units without splitting an astral character: a lone surrogate
+ *  parses fine and then fails the backend's SQLite bind. */
 function cutToUnits(text: string, maxUnits: number): string {
   let out = "";
   for (const character of text) {
@@ -93,16 +91,14 @@ export interface LegacyTitleRepair {
   threadId: string;
   /** The clipped title the rewrite is based on, guarding the write. */
   previousTitle: string;
-  /** The message the title came from, guarded too: deleting it must not leave
-   *  its text expanded into the title. */
+  /** The message the title came from, guarded too: deleting it must not leave its text expanded into the title. */
   openingMessageId: string;
   title: string;
 }
 
 export interface LegacyRepairPage {
   candidates: ThreadRecord[];
-  /** What this page skipped. The next page reads it, so a row this page failed
-   *  on is not redrawn by the same drain. */
+  /** What this page skipped. The next page reads it, so a row this page failed on is not redrawn by the same drain. */
   rest: ThreadRecord[];
   hasMore: boolean;
 }
@@ -134,10 +130,9 @@ export function threadsMissingMessages(
   return ids.filter((id) => (messagesByThreadId.get(id) ?? []).length === 0);
 }
 
-/** Of those, the ones still worth retrying: no record of their import
- *  finishing, so their messages may yet land. One the ledger knows is simply
- *  empty, and retrying it would re-read it on every refresh for the session,
- *  since its title stays clipped and keeps matching the pre-filter. */
+/** Of those, the ones still worth retrying: no record of their import finishing, so their
+ *  messages may yet land. One the ledger knows is simply empty, and retrying it would re-read it
+ *  on every refresh for the session, since its title stays clipped. */
 export function threadsAwaitingImport(
   ids: readonly string[],
   messagesByThreadId: ReadonlyMap<string, MessageRecord[]>,
@@ -148,8 +143,8 @@ export function threadsAwaitingImport(
   );
 }
 
-/** Rows to rewrite. A title must be the exact old cut of its own first
- *  message, so a rename ending in "..." is left alone. */
+/** Rows to rewrite. A title must be the exact old cut of its own first message, so a rename
+ *  ending in "..." is left alone. */
 export function planLegacyTitleRepairs(
   threads: ThreadRecord[],
   messagesByThreadId: Map<string, MessageRecord[]>,

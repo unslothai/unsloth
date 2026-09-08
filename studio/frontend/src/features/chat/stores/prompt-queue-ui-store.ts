@@ -10,13 +10,15 @@ export type PromptQueueUIEntry = {
   local: boolean;
   temporary: boolean;
   dispatched: boolean;
+  paused: boolean;
 };
 
 export type PromptQueueUIItemStatus =
   | "queued"
   | "next"
   | "waiting"
-  | "running";
+  | "running"
+  | "paused";
 
 export type PromptQueueUIItem = {
   id: string;

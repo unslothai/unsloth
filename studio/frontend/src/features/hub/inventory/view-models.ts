@@ -9,7 +9,6 @@ import type {
   BackendModelCapabilities,
   LocalModelInfo,
   ModelInventoryFormat,
-  ModelInventoryRuntime,
 } from "./api";
 import type {
   ModelInventoryCapabilities,
@@ -88,26 +87,6 @@ export function normalizeModelFormat(
   return fallback;
 }
 
-export function normalizeRuntime(
-  value: string | null | undefined,
-  modelFormat: ModelInventoryFormat,
-): ModelInventoryRuntime {
-  if (
-    value === "llama_cpp" ||
-    value === "transformers" ||
-    value === "adapter" ||
-    value === "unknown"
-  ) {
-    return value;
-  }
-  if (modelFormat === "gguf") return "llama_cpp";
-  if (modelFormat === "adapter") return "adapter";
-  if (modelFormat === "safetensors" || modelFormat === "checkpoint") {
-    return "transformers";
-  }
-  return "unknown";
-}
-
 export function defaultCapabilities(
   modelFormat: ModelInventoryFormat,
   partial = false,
@@ -153,6 +132,20 @@ export function normalizeCapabilities(
   };
 }
 
+export function cachedInventoryId(
+  modelFormat: ModelInventoryFormat,
+  repoId: string,
+): string {
+  return `cache:${modelFormat}:${encodeURIComponent(repoId)}`;
+}
+
+export function optimisticInventoryId(
+  modelFormat: ModelInventoryFormat,
+  repoId: string,
+): string {
+  return `download:${modelFormat}:${encodeURIComponent(repoId)}`;
+}
+
 export function buildCachedInventoryRow(
   row: {
     repo_id: string;
@@ -174,7 +167,6 @@ export function buildCachedInventoryRow(
     inventory_id?: string | null;
     load_id?: string | null;
     model_format?: ModelInventoryFormat | null;
-    runtime?: string | null;
     format_variant?: string | null;
     capabilities?: BackendModelCapabilities | null;
     last_modified?: number | null;
@@ -200,19 +192,17 @@ export function buildCachedInventoryRow(
   return {
     kind: "cache",
     id:
-      !inferredFromEndpoint && row.inventory_id
-        ? row.inventory_id
-        : `cache:${modelFormat}:${row.repo_id}`,
+      row.optimistic
+        ? optimisticInventoryId(modelFormat, row.repo_id)
+        : !inferredFromEndpoint && row.inventory_id
+          ? row.inventory_id
+          : cachedInventoryId(modelFormat, row.repo_id),
     loadId: row.load_id ?? row.repo_id,
     repoId: row.repo_id,
     owner: row.repo_id.includes("/") ? ownerOf(row.repo_id) : "Hub",
     repo: row.repo_id.includes("/") ? repoOf(row.repo_id) : row.repo_id,
     isGguf: modelFormat === "gguf",
     modelFormat,
-    runtime: normalizeRuntime(
-      inferredFromEndpoint ? null : row.runtime,
-      modelFormat,
-    ),
     formatVariant: row.format_variant ?? null,
     capabilities,
     bytes: row.size_bytes,
@@ -293,7 +283,6 @@ export function buildLocalInventoryRows(
         path: model.path,
         isGguf: modelFormat === "gguf",
         modelFormat,
-        runtime: normalizeRuntime(model.runtime, modelFormat),
         formatVariant: model.format_variant ?? null,
         capabilities,
         baseModel,

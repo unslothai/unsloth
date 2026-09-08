@@ -74,10 +74,9 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
         ):
             return attn_bias
 
-        # Move the device-bearing metadata instead of the top-level mask. Older
-        # xFormers versions demote causal masks in their inherited ``to`` method.
-        # Copies also keep later model shards from rewriting masks retained for
-        # backward by earlier shards.
+        # Move the device-bearing metadata instead of the top-level mask: older xFormers versions demote
+        # causal masks in their inherited `to` method, and copies also keep later model shards from
+        # rewriting masks retained for backward.
         moved_bias = copy.copy(attn_bias)
         moved_seqinfos = {}
         for name, seqinfo in seqinfos:
@@ -214,21 +213,19 @@ def enable_sample_packing(
                 lengths = example.get(sequence_lengths_key)
                 if isinstance(lengths, Iterable):
                     seq_lengths.extend(int(length) for length in lengths)
-            # Fallback: infer lengths from tokenized inputs when metadata is absent
+            # Fallback: infer lengths from tokenized inputs when metadata is absent.
             if not seq_lengths:
                 for example in examples:
                     ids = example.get("input_ids")
                     if isinstance(ids, Iterable):
                         seq_lengths.append(len(ids))
             if seq_lengths:
-                # Boundary labels are NOT masked here. unsloth_zoo's
-                # _unsloth_get_batch_samples counts num_items_in_batch off this batch and
-                # discounts the N-1 boundary targets itself, idempotently: it zeroes those
-                # slots rather than subtracting a constant, so the count is unaffected by
-                # upstream masking (TRL >= 0.24's labels[position_ids == 0] = -100,
-                # completion-only masking, assistant_masks). Masking here would be harmless
-                # to the count; labels are left alone because the guard that needs these
-                # positions runs in the forward, off packed_seq_lengths.
+                # Boundary labels are NOT masked here: unsloth_zoo's _unsloth_get_batch_samples counts
+                # num_items_in_batch off this batch and discounts the N-1 boundary targets itself, idempotently,
+                # zeroing those slots rather than subtracting a constant, so the count is unaffected by upstream
+                # masking (TRL >= 0.24's labels[position_ids == 0] = -100, completion-only masking,
+                # assistant_masks). Labels are left alone because the guard that needs these positions runs in the
+                # forward, off packed_seq_lengths.
                 batch["packed_seq_lengths"] = torch.tensor(seq_lengths, dtype = torch.int32)
                 if "attention_mask" in batch:
                     batch.pop("attention_mask")
@@ -271,9 +268,8 @@ def enable_padding_free_metadata(model, trainer):
 
         batch = original_torch_call(examples)
         if seq_lengths:
-            # Labels left alone for the same reason as enable_sample_packing:
-            # num_items_in_batch is counted off this batch, and the zoo's discount of the
-            # boundary targets is idempotent, so masked slots do not change the count.
+            # Labels left alone for the same reason as enable_sample_packing: num_items_in_batch is counted off
+            # this batch and the zoo's discount of the boundary targets is idempotent.
             batch["packed_seq_lengths"] = torch.tensor(
                 seq_lengths,
                 dtype = torch.int32,
@@ -284,17 +280,12 @@ def enable_padding_free_metadata(model, trainer):
     collator._unsloth_padding_free_lengths_wrapped = True
 
 
-# --- Experimental: correct packing / padding-free for hybrid linear-attention ---
-# Qwen3.5 / Qwen3-Next mix a gated-delta recurrence with a causal conv1d. Packing
-# flattens the batch, and both ops leak state across sequence boundaries unless we
-# pass seq_idx (conv) and cu_seqlens (scan). Only the accelerated kernels accept
-# these, so we fail closed on the pure-torch fallbacks. Gated behind an env flag.
-#
-# Overrides only the per-module prefill kernels (causal_conv1d_fn /
-# chunk_gated_delta_rule), leaving decode untouched so generation is unaffected.
-# Recompute-safe under gradient checkpointing; never fires for cached forwards.
-# Feature-detect (never version-detect), fail closed, idempotent, one deduped
-# diagnostic when it declines to activate.
+# Experimental correct packing / padding-free for hybrid linear-attention: Qwen3.5 / Qwen3-Next
+# mix a gated-delta recurrence with a causal conv1d, and packing flattens the batch so both leak
+# state across sequence boundaries unless seq_idx (conv) and cu_seqlens (scan) are passed. Only
+# the accelerated kernels accept these, so it fails closed on the pure-torch fallbacks, behind an
+# env flag, and overrides only the per-module prefill kernels (causal_conv1d_fn /
+# chunk_gated_delta_rule), leaving decode untouched.
 _HYBRID_PACKING_ENV_VAR = "UNSLOTH_EXPERIMENTAL_HYBRID_PACKING"
 _HYBRID_LOGGER = logging.getLogger("unsloth.hybrid_packing")
 _HYBRID_WARNED: set = set()
@@ -447,7 +438,7 @@ def _hybrid_varlen_metadata(kwargs):
     if total is None:
         return None
     psl = kwargs.get("packed_seq_lengths")
-    if psl is not None and getattr(psl, "numel", lambda: 1)() > 0:  # skip empty (no max())
+    if psl is not None and getattr(psl, "numel", lambda: 1)() > 0:
         info = get_packed_info_from_kwargs(kwargs, device)
         if info is not None:
             _, cu_seqlens, _ = info
@@ -520,9 +511,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
 
-    # Refresh the boundary stash on the outermost forward (once per step, outside
-    # gradient-checkpoint recompute, so it stays valid for recomputed inner
-    # forwards). Read from both positional and keyword args via the bound signature.
+    # Refresh the boundary stash on the outermost forward, once per step and outside gradient-checkpoint
+    # recompute so it stays valid for recomputed inner forwards.
     if not getattr(model, "_unsloth_varlen_forward_wrapped", False):
         forward_orig = model.forward
         try:
@@ -550,12 +540,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_conv_hit = False
                     module._unsloth_varlen_scan_hit = False
             out = forward_orig(*args, **kwargs)
-            # Runtime dispatch handshake: on the first packed forward, confirm BOTH
-            # boundary kernels ran for EVERY module. seq_idx (conv) and cu_seqlens
-            # (scan) are both load-bearing, so a partial/absent dispatch (a future
-            # version no longer routing through self.<kernel>) leaves cross-sequence
-            # contamination. The batch is already flattened with no padded recovery,
-            # so abort before loss/backward rather than train on corrupted data.
+            # Runtime dispatch handshake: on the first packed forward, confirm BOTH boundary kernels ran for
+            # EVERY module.
             if first_pack:
                 model._unsloth_varlen_handshake_done = True
                 missing = [

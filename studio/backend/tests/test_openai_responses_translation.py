@@ -62,6 +62,39 @@ def _responses_sse(events: list[dict]) -> bytes:
     return ("\n".join(chunks) + "\n").encode("utf-8")
 
 
+def _capture_responses_body(monkeypatch, model: str) -> dict:
+    """The outbound /v1/responses body for one model, with the sampling
+    defaults ChatCompletionRequest fills in when the caller sets nothing."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _responses_sse([{"type": "response.completed", "response": {}}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_openai_responses(
+            messages = [{"role": "user", "content": "Hi"}],
+            model = model,
+            temperature = 0.6,
+            top_p = 0.95,
+            max_tokens = 32,
+            enable_thinking = None,
+            reasoning_effort = None,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    return captured["body"]
+
+
 def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     captured: dict = {}
 
@@ -102,8 +135,7 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     assert body["input"] == [{"role": "user", "content": "Hi"}]
     assert body["max_output_tokens"] == 512
     assert body["stream"] is True
-    # Responses API on reasoning-class models (gpt-5.x / o3 / gpt-4.5 — the only
-    # OpenAI ids the registry allowlist exposes) rejects these as `Unsupported
+    # Responses API on reasoning-class models rejects these as `Unsupported
     # parameter`. Never silently forward them.
     assert "temperature" not in body
     assert "top_p" not in body
@@ -111,6 +143,54 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     assert "frequency_penalty" not in body
     assert "top_k" not in body
     assert "messages" not in body
+
+
+def test_responses_never_forwards_sampling_for_any_openai_family(monkeypatch):
+    # ChatCompletionRequest defaults these to 0.6 / 0.95 and the UI hides both
+    # sliders for OpenAI, so anything forwarded is a value the user never
+    # chose -- and reasoning ids no prefix catches, like codex-mini-latest,
+    # reject them outright.
+    for model in (
+        "gpt-5.6-sol",
+        "gpt-5.5",
+        "gpt-5",
+        "gpt-4.5-preview",
+        "gpt-4o",
+        "gpt-4.1",
+        "gpt-3.5-turbo",
+        "o1",
+        "o3-mini",
+        "o4-mini",
+        "codex-mini-latest",
+        "chatgpt-4o-latest",
+    ):
+        body = _capture_responses_body(monkeypatch, model)
+        assert "temperature" not in body, (model, body)
+        assert "top_p" not in body, (model, body)
+
+
+def test_responses_sends_extended_cache_retention_only_where_supported(monkeypatch):
+    # Documented for the gpt-5 line and gpt-4.1 only; every other model 400s
+    # the turn with "prompt_cache_retention is not supported on this model".
+    for model in ("gpt-5", "gpt-5.1", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-4.1"):
+        body = _capture_responses_body(monkeypatch, model)
+        assert body.get("prompt_cache_retention") == "24h", (model, body)
+
+    for model in (
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4.1-mini",
+        "gpt-4",
+        "gpt-3.5-turbo",
+        "o1",
+        "o3",
+        "o3-mini",
+        "o4-mini",
+        "chatgpt-4o-latest",
+        "codex-mini-latest",
+    ):
+        body = _capture_responses_body(monkeypatch, model)
+        assert "prompt_cache_retention" not in body, (model, body)
 
 
 def test_responses_failed_without_details_has_actionable_fallback(monkeypatch):
