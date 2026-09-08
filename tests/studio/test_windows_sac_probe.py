@@ -1537,3 +1537,19 @@ def test_the_readme_pins_the_runtime_before_the_window_opens():
     assert "restart Studio, then:" not in pin
     # And the upstream row carries the same ordering.
     assert "again\nbefore `prepare`" in pin
+
+
+def test_a_spent_baseline_is_never_written_back_over_the_machine():
+    """revert reloaded a baseline carrying RevertCompletedAt and reapplied every
+    Defender and channel value in it, silently undoing anything changed since
+    the revert that spent it - which for Defender means lowering protections
+    nobody asked to lower. prepare already refuses to reuse one."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    revert = ps1[ps1.index("function Invoke-Revert") :]
+    assert "if ($baseline.RevertCompletedAt) {" in revert
+    guard = revert.index("if ($baseline.RevertCompletedAt) {")
+    # Nothing is restored past the guard, but the EFI reclaim still runs before
+    # it: an unstamped baseline is an incomplete revert and is still retried.
+    assert revert.index("Clear-EfiOwnership") < guard
+    assert guard < revert.index("Write-Section 'Restore CodeIntegrity log'")
+    assert guard < revert.index("if ($baseline.AuditPolicyApplied) {")

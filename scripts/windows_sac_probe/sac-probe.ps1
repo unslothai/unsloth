@@ -1705,6 +1705,22 @@ function Invoke-Revert {
     # revert, so the retry the operator is told to make actually retries.
     Clear-EfiOwnership
 
+    # A baseline this script already considers spent. Writing it back would put
+    # the Defender preferences and channel settings the machine had before the
+    # FIRST run over anything legitimately changed since the revert that spent
+    # it, which for Defender means lowering protections nobody asked to lower.
+    # That is the reason prepare captures a fresh baseline rather than reusing a
+    # stamped one; revert has to refuse for the same reason. An UNSTAMPED
+    # baseline is an incomplete revert and is still retried, which is what the
+    # reclaim above and the operator instructions depend on.
+    if ($baseline.RevertCompletedAt) {
+        if ($script:EfiStillMounted) {
+            throw "the EFI system partition is still mounted as S: and could not be unmounted; run 'mountvol S: /D' by hand"
+        }
+        Write-Host "label '$Label' was already reverted at $($baseline.RevertCompletedAt); this baseline is spent and nothing was changed. Run prepare again for a new run on this label."
+        return
+    }
+
     # The policy block may throw (mount, copy or CiTool). The log and Defender
     # restorations below do not depend on it and must still run; the failure
     # is re-raised at the end, with AuditPolicyApplied left set for a retry.
