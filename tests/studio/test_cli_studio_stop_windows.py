@@ -49,8 +49,8 @@ def _load_pid_alive(platform: str, fake_run = None):
 # ── AST: stop() must not use the broken bare liveness probe ──────────────────
 
 
-# `stop` delegates signalling to `_signal_stop`, so guarding only `stop` would
-# let os.kill(pid, 0) come back one function along and still pass.
+# `stop` delegates signalling to `_signal_stop`, so guarding only `stop` would let os.kill(pid, 0) come back one
+# function along and still pass.
 @pytest.mark.parametrize("func", ["stop", "_signal_stop"])
 def test_stop_does_not_use_bare_oskill_liveness_probe(func):
     """The signalling path must not call os.kill(pid, 0) -- WinError 87 on Windows."""

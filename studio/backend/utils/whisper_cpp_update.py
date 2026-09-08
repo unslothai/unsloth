@@ -232,7 +232,8 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     force_refresh bypasses the 24h release cache for an explicit "check now".
     """
     binary = _find_binary()
-    # A locally-linked whisper.cpp dir is the user's own tree; never offer
+    # A locally-linked whisper.cpp dir is the user's own tree; never offer to replace it. Bail before any
+    # network/freshness work.
     if _active_install_is_local_link(binary):
         return _local_link_status()
     marker = read_install_marker(binary)
@@ -588,6 +589,28 @@ def chained_phase_plan(
     return plan
 
 
+def _phase_repaired_to_installed_llama(phase: dict) -> dict:
+    """Point a slim phase at the backend the llama phase actually installed.
+
+    The plan is built before that phase runs, so on a backend migration it still names
+    the outgoing runtime: installing it would fetch a whisper build for a ggml that is no
+    longer there, and pass the old asset's arch flags with it. A self-contained install
+    carries its own ggml, so llama's backend is not its backend and it keeps its own.
+    """
+    backend, asset = _installed_llama_bundle()
+    if not backend or backend == phase.get("backend"):
+        return phase
+    marker = read_install_marker(_find_binary())
+    if not marker or marker.get("install_kind") != "slim":
+        return phase
+    logger.info(
+        "whisper update: re-pairing the chained phase with the installed llama backend",
+        was = phase.get("backend"),
+        now = backend,
+    )
+    return {**phase, "backend": backend, "asset": asset}
+
+
 def run_chained_phase_after_llama(phase: dict, set_progress) -> dict:
     """Make the pairing check chained_phase_plan deferred, now that llama is installed.
 
@@ -598,6 +621,7 @@ def run_chained_phase_after_llama(phase: dict, set_progress) -> dict:
     An attempt that goes ahead still surfaces exit 2, which is what keeps an
     incompatible release actionable rather than a false success.
     """
+    phase = _phase_repaired_to_installed_llama(phase)
     try:
         backend = phase.get("backend")
         repo = phase.get("repo")

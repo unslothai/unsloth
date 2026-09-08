@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Per-thread composer drafts persisted in localStorage. New (unsaved) chats
-// share the NEW_CHAT_DRAFT_ID slot; callers clear it when a fresh chat starts
-// so one new chat's draft never bleeds into the next.
+// Per-thread composer drafts persisted in localStorage. New (unsaved) chats share the
+// NEW_CHAT_DRAFT_ID slot; callers clear it when a fresh chat starts so one new chat's draft
+// never bleeds into the next.
 const DRAFT_PREFIX = "chat-draft:";
 const PASTE_DRAFT_PREFIX = "chat-draft-pastes:";
 const NEW_CHAT_DRAFT_ID = "__new__";
@@ -12,16 +12,15 @@ export function composerDraftKey(threadId: string | null | undefined): string {
   return `${DRAFT_PREFIX}${threadId ?? NEW_CHAT_DRAFT_ID}`;
 }
 
-// Pasted attachments live in their own slot rather than inside the text draft,
-// so typing never rewrites a paste that can run to megabytes.
+// Pasted attachments live in their own slot rather than inside the text draft, so typing never
+// rewrites a paste that can run to megabytes.
 export function composerPasteDraftKey(
   threadId: string | null | undefined,
 ): string {
   return `${PASTE_DRAFT_PREFIX}${threadId ?? NEW_CHAT_DRAFT_ID}`;
 }
 
-// The names are not stored: a pasted file is named from its own text, so
-// recreating it reproduces the name it had.
+// The names are not stored: a pasted file is named from its own text, so recreating it reproduces the name it had.
 export function readPasteDraft(key: string): string[] {
   let raw: string | null = null;
   try {
@@ -39,8 +38,8 @@ export function readPasteDraft(key: string): string[] {
   }
 }
 
-// A paste large enough to blow the storage quota throws here, leaving the text
-// draft untouched, which is why the two slots are written separately.
+// A paste large enough to blow the storage quota throws here, leaving the text draft untouched,
+// which is why the two slots are written separately.
 export function writePasteDraft(key: string, pastes: readonly string[]): void {
   try {
     if (pastes.length > 0) {
@@ -53,8 +52,8 @@ export function writePasteDraft(key: string, pastes: readonly string[]): void {
   }
 }
 
-// All storage access is best-effort: localStorage throws when unavailable
-// (private mode, blocked storage) or full (quota), so swallow failures.
+// All storage access is best-effort: localStorage throws when unavailable (private mode, blocked
+// storage) or full, so swallow failures.
 export function readComposerDraft(key: string): string | null {
   try {
     return window.localStorage.getItem(key);

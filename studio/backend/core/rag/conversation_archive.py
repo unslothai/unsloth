@@ -899,6 +899,17 @@ _SERVER_BUILTIN_NAMES = frozenset({"web_search", "web_fetch", "code_execution", 
 # `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._SANDBOX_TOOLS`. Only these two wrap.
 _SANDBOX_TOOL_NAMES = frozenset({"python", "terminal"})
 
+# `search-images.ts`. `re.ASCII` on the scheme because Python's IGNORECASE folds Unicode,
+# so `httpſ://` (U+017F) would match where JavaScript's `/i` does not.
+_SEARCH_IMAGE_ID = re.compile(r"[0-9a-f]{12}")
+_SEARCH_IMAGE_SOURCE = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
+_SEARCH_IMAGE_TOKEN = re.compile(
+    r"\n\n[ \t]*\[\[img:[0-9a-f]{12}\]\][ \t]*(?=\n\n|\n?\Z)|\[\[img:[0-9a-f]{12}\]\]"
+)
+# `sanitizeAssistantReplayText`. An audio model answers with an `<audio-player src=...>`
+# tag holding the whole wav inline, and the serializer sends `[audio]` in its place.
+_REPLAY_AUDIO_DATA_URI = re.compile(r"data:audio/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
+
 
 def _server_builtin(part: dict) -> tuple[bool, bool]:
     """Whether a persisted call is a provider-side builtin, and whether it has a native part.
@@ -918,43 +929,128 @@ def _server_builtin(part: dict) -> tuple[bool, bool]:
     return bool(args.get("_server_tool") is True or native), native
 
 
-def _unwrapped(result, tool_name: str):
-    """A sandbox or MCP-image wrapper reduced to the text the model actually saw.
-
-    `python` and `terminal` results are wrapped in `{text, images, sessionId, files}` on
-    EVERY call, and the replay adapter sends `result.text` alone rather than feeding the
-    model a session id and file metadata. Serialising the whole wrapper reconstructed a
-    tool message that can never equal the archived one.
-
-    Both gates are the frontend's: the name, because a third-party tool answering with
-    `{text, sessionId, images}` is someone else's and unwrapping it would drop every other
-    field, and the shape.
-    """
+# One predicate per frontend predicate of the same name. `sessionId` and `subject` are
+# tested for ABSENCE, not null, because the frontend tests them against `undefined`.
+def _mcp_image_result(result) -> bool:
     if not isinstance(result, dict) or not isinstance(result.get("text"), str):
-        return None
+        return False
     images = result.get("images")
-    if not isinstance(images, list):
-        return None
-    if tool_name in _SANDBOX_TOOL_NAMES and isinstance(result.get("sessionId"), str):
-        files = result.get("files")
-        if files is None or (
-            isinstance(files, list)
-            and all(isinstance(f, dict) and isinstance(f.get("name"), str) for f in files)
-        ):
-            return result["text"]
-    # The MCP image shape carries no session and always has at least one image.
-    if (
-        result.get("sessionId") is None
-        and images
+    return (
+        "sessionId" not in result
+        and isinstance(images, list)
+        and bool(images)
         and all(
             isinstance(image, dict)
             and isinstance(image.get("data"), str)
             and isinstance(image.get("mimeType"), str)
             for image in images
         )
+    )
+
+
+def _search_image_entry(entry) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return (
+        isinstance(entry.get("id"), str)
+        and _SEARCH_IMAGE_ID.fullmatch(entry["id"]) is not None
+        and isinstance(entry.get("title"), str)
+        and isinstance(entry.get("domain"), str)
+        and isinstance(entry.get("source"), str)
+        and _SEARCH_IMAGE_SOURCE.match(entry["source"]) is not None
+        and ("subject" not in entry or isinstance(entry["subject"], str))
+    )
+
+
+def _search_images_result(result) -> bool:
+    if not isinstance(result, dict) or not isinstance(result.get("text"), str):
+        return False
+    entries = result.get("webImages")
+    return (
+        isinstance(entries, list)
+        and bool(entries)
+        and all(_search_image_entry(entry) for entry in entries)
+    )
+
+
+def _sandbox_wrapper(result, tool_name: str) -> bool:
+    # The name gates it as well as the shape: another tool answering with
+    # `{text, sessionId, images}` is someone else's, and unwrapping it drops its rest.
+    if not isinstance(result, dict) or not isinstance(result.get("text"), str):
+        return False
+    if tool_name not in _SANDBOX_TOOL_NAMES or not isinstance(result.get("sessionId"), str):
+        return False
+    if not isinstance(result.get("images"), list):
+        return False
+    files = result.get("files")
+    return files is None or (
+        isinstance(files, list)
+        and all(isinstance(f, dict) and isinstance(f.get("name"), str) for f in files)
+    )
+
+
+def _strip_search_image_tokens(text: str) -> str:
+    """`stripSearchImageTokens`. A token resolves only against the message that produced
+    it, so the frontend drops them rather than replay an unresolvable id.
+
+    Its code-block carve-out is NOT mirrored: deciding it takes the frontend's whole
+    markdown scanner, and nothing that reaches this writes a token into code. The tool
+    cannot open a region (`_web_search` collapses every title and snippet behind a label,
+    and the url branch returns before an envelope is appended); a reply that fences one
+    reconstructs exactly as it did before anything here stripped.
+    """
+    if "[[img:" not in text:
+        return text
+    return _SEARCH_IMAGE_TOKEN.sub("", text)
+
+
+def _sanitised_assistant_text(text: str) -> str:
+    """`sanitizeAssistantReplayText`: an assistant reply as the serializer replays it.
+
+    The same two substitutions the tool result gets, for the same reason. A reply that
+    shows a picture carries the token that placed it, and an audio turn carries its whole
+    wav, so a stored reply reconstructed verbatim described a message the request never
+    sent and the turn matched no transcript seat.
+    """
+    return _REPLAY_AUDIO_DATA_URI.sub("[audio]", _strip_search_image_tokens(text))
+
+
+def _sanitised_assistant_content(content):
+    """`content` with every part `_probe_text` reads as text sanitised, others untouched.
+
+    Keyed on the `text` field rather than on the type, as `_probe_text` is, so a part
+    shape it renders cannot slip past this one.
+    """
+    if isinstance(content, str):
+        return _sanitised_assistant_text(content)
+    if not isinstance(content, list):
+        return content
+    return [
+        {**part, "text": _sanitised_assistant_text(part["text"])}
+        if isinstance(part, dict)
+        and part.get("type") not in ("reasoning", "tool-call")
+        and isinstance(part.get("text"), str)
+        else part
+        for part in content
+    ]
+
+
+def _unwrapped(result, tool_name: str):
+    """A wrapper this app put around a result, reduced to the text the model actually saw.
+
+    The adapter replays that text alone, so serialising the wrapper reconstructed a tool
+    message that can never equal the archived one. Being a wrapper and losing the tokens
+    are two questions, as they are in the serializer: a result carrying both `images` and
+    `webImages` is unwrapped by the first and stripped by the second.
+    """
+    if not (
+        _mcp_image_result(result)
+        or _search_images_result(result)
+        or _sandbox_wrapper(result, tool_name)
     ):
-        return result["text"]
-    return None
+        return None
+    text = result["text"]
+    return _strip_search_image_tokens(text) if _search_images_result(result) else text
 
 
 def _tool_result_content(result, tool_name: str = "") -> str:
@@ -1023,7 +1119,7 @@ def _flushes_local_pair(part: dict) -> bool:
     return part.get("result") is not None
 
 
-def _as_wire(messages: list[dict]) -> list[dict]:
+def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict]:
     """Persisted chat rows in the shape the inference layer sends them.
 
     The store keeps a tool call as a ``tool-call`` CONTENT PART carrying its own result,
@@ -1043,6 +1139,11 @@ def _as_wire(messages: list[dict]) -> list[dict]:
     it. Only the id goes into `tool_calls`: the arguments stay on the content part, where
     `_probe_text` already offers both JSON spellings, and `_is_injected` still sees the id
     it filters our own injections by.
+
+    `sanitise_assistant` is the STORED side of that comparison. A caller projecting the
+    request's own messages against something written WITHOUT this projection must pass
+    False: `_branch_boundary_anchor` records an anchor straight off the request, so
+    `_archive_as_wire` has to hand the same bytes back or the rebase stops matching.
     """
     wire: list[dict] = []
     for message in messages:
@@ -1061,6 +1162,9 @@ def _as_wire(messages: list[dict]) -> list[dict]:
                 if not (isinstance(part, dict) and part.get("type") == "reasoning")
             ]
             content = parts
+        if sanitise_assistant and str(message.get("role") or "") == "assistant":
+            content = _sanitised_assistant_content(content)
+            parts = content if isinstance(content, list) else None
         # A provider-side builtin with no native part is not replayed, so it is not a call
         # here either: counting it invented an exchange the request never carried. Any
         # other tool-call part takes the replay loop even when the serializer drops it,

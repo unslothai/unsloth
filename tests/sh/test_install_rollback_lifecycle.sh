@@ -14,6 +14,22 @@ ok()  { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 ROLLBACK_BLOCK=$(sed -n '/^_VENV_ROLLBACK_DIR=""/,/^trap '\''_on_install_signal 143'\'' TERM$/p' "$INSTALL_SH")
+# Both are defined above the block, with the rest of the cache selector, and both are
+# called from it. Splicing without them makes the cases exit 127 on a command the real
+# installer has, which satisfies any expectation about a marker that must not change.
+# printf, not $'\n': the workflow runs this file with `sh`, whatever the shebang says.
+MARKER_HELPER=$(awk '
+    /^(_restore_uv_cache_marker|_record_uv_cache_choice|_absolutize_uv_cache_dir)\(\) \{/ { grab = 1 }
+    grab { print }
+    grab && /^}/ { grab = 0 }
+' "$INSTALL_SH")
+if ! printf '%s\n' "$MARKER_HELPER" | grep -q '^_restore_uv_cache_marker() {' \
+   || ! printf '%s\n' "$MARKER_HELPER" | grep -q '^_record_uv_cache_choice() {' \
+   || ! printf '%s\n' "$MARKER_HELPER" | grep -q '^_absolutize_uv_cache_dir() {'; then
+    echo "  FAIL: could not extract the uv cache marker helpers from install.sh"
+    exit 1
+fi
+ROLLBACK_BLOCK=$(printf '%s\n%s\n' "$MARKER_HELPER" "$ROLLBACK_BLOCK")
 if ! printf '%s\n' "$ROLLBACK_BLOCK" | grep -q '^_on_install_signal() {'; then
     echo "  FAIL: could not extract rollback lifecycle block from install.sh"
     exit 1
@@ -392,6 +408,94 @@ if grep -A18 '^    function Remove-StudioVenvTreeWithRetry {' "$INSTALL_PS1" \
 else
     bad "Windows rollback deletion still hides failures"
 fi
+
+# The marker must not outlive the attempt that wrote it, even when no venv replacement
+# was ever in flight: a first install has none, and the ownership guard can refuse early.
+marker_case() {  # label, pre-existing marker value or empty, expect, [commit]
+    _label="$1"; _pre="$2"; _expect="$3"; _commit="${4:-}"
+    _dir="$WORK/marker-$_label"
+    mkdir -p "$_dir/cache"
+    [ -n "$_pre" ] && printf '%s\n' "$_pre" > "$_dir/cache/uv-cache-dir"
+    _h="$_dir/harness.sh"
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'rollback_substep() { substep "$@"; }'
+        printf '%s\n' 'C_WARN=""'
+        printf "STUDIO_HOME='%s'\n" "$_dir"
+        printf "VENV_DIR='%s/unsloth_studio'\n" "$_dir"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        printf '%s\n' 'UV_CACHE_DIR="/tmp/this-attempt-cache"'
+        printf '%s\n' '_record_uv_cache_choice'
+        [ -n "$_commit" ] && printf '%s\n' '_commit_studio_venv_replacement'
+        printf '%s\n' 'exit 1'
+    } > "$_h"
+    ( cd "$_dir" && sh "$_h" >/dev/null 2>"$_dir/err" ) || _rc=$?
+    if [ "${_rc:-0}" = 127 ] || [ -s "$_dir/err" ]; then
+        bad "$_label (harness did not run: $(cat "$_dir/err"))"
+        return 0
+    fi
+    if [ -f "$_dir/cache/uv-cache-dir" ]; then _got=$(cat "$_dir/cache/uv-cache-dir"); else _got="<gone>"; fi
+    if [ "$_got" = "$_expect" ]; then
+        ok "$_label"
+    else
+        bad "$_label (expected [$_expect], got [$_got])"
+    fi
+}
+
+# A signal can land between any two statements, so the commit sets one flag that both
+# restores consult. With two flags, a signal mid-commit put the previous environment back
+# and kept the marker of the attempt that replaced it, or the reverse.
+commit_flag_case() {
+    _dir="$WORK/marker-commit-window"
+    mkdir -p "$_dir/cache"
+    printf '%s\n' "/previous/install/cache" > "$_dir/cache/uv-cache-dir"
+    _h="$_dir/harness.sh"
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'rollback_substep() { substep "$@"; }'
+        printf '%s\n' 'C_WARN=""'
+        printf "STUDIO_HOME='%s'\n" "$_dir"
+        printf "VENV_DIR='%s/unsloth_studio'\n" "$_dir"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        printf '%s\n' 'UV_CACHE_DIR="/tmp/this-attempt-cache"'
+        printf '%s\n' '_record_uv_cache_choice'
+        # The state a signal would find between the two flag assignments: committed, but
+        # with the venv rollback still armed.
+        printf '%s\n' 'mkdir -p "$VENV_DIR" "$STUDIO_HOME/backup"'
+        printf '%s\n' 'printf "new\n" > "$VENV_DIR/generation"'
+        printf '%s\n' 'printf "old\n" > "$STUDIO_HOME/backup/generation"'
+        printf '%s\n' '_STUDIO_INSTALL_COMMITTED=true'
+        printf '%s\n' '_VENV_ROLLBACK_ACTIVE=true'
+        printf '%s\n' '_VENV_ROLLBACK_DIR="$STUDIO_HOME/backup"'
+        printf '%s\n' '_VENV_ROLLBACK_TARGET="$VENV_DIR"'
+        printf '%s\n' '_restore_studio_venv_replacement'
+        printf '%s\n' '_restore_uv_cache_marker'
+    } > "$_h"
+    ( cd "$_dir" && sh "$_h" >/dev/null 2>"$_dir/err" ) || _rc=$?
+    if [ "${_rc:-0}" = 127 ] || [ -s "$_dir/err" ]; then
+        bad "a committed install is not half rolled back (harness: $(cat "$_dir/err"))"
+        return 0
+    fi
+    _got=$(cat "$_dir/cache/uv-cache-dir" 2>/dev/null)
+    _gen=$(cat "$_dir/unsloth_studio/generation" 2>/dev/null)
+    if [ "$_got" = "/tmp/this-attempt-cache" ] && [ "$_gen" = new ]; then
+        ok "a committed install is not half rolled back by a signal mid-commit"
+    else
+        bad "a signal mid-commit undid half the commit (marker [$_got], venv [$_gen])"
+    fi
+}
+
+echo "=== uv cache marker survives only a successful install ==="
+marker_case "a failed install with no venv replacement restores the previous marker" \
+    "/previous/install/cache" "/previous/install/cache"
+marker_case "a failed first install leaves no marker behind" "" "<gone>"
+# A first install takes no rollback branch and must still commit the marker: what follows
+# can fail, and the environment it installed stays.
+marker_case "a committed first install keeps its marker when a later step fails" \
+    "/previous/install/cache" "/tmp/this-attempt-cache" commit
+commit_flag_case
 
 echo ""
 echo "  PASS: $PASS"
