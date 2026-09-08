@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastA
 
 from auth.authentication import allow_ambient_hf_token
 from core.data_recipe.jsonable import to_preview_jsonable
+from hub.utils.dataset_cache import dataset_cache_can_answer
 from hub.utils.hf_tokens import HfTokenArg, cache_reads_authorized, hf_token_arg
 from utils.utils import hf_env_offline
 from loggers import get_logger
@@ -338,8 +339,10 @@ def inspect_seed_dataset(
         allow_ambient_token = allow_ambient_token,
     )
     preview_size = int(payload.preview_size)
-    if not cache_reads_authorized(token, repo_id = dataset_name, repo_type = "dataset") and (
-        hf_env_offline() or isinstance(token, str)
+    if (
+        dataset_cache_can_answer(dataset_name)
+        and not cache_reads_authorized(token, repo_id = dataset_name, repo_type = "dataset")
+        and (hf_env_offline() or isinstance(token, str))
     ):
         # Offline, `datasets` satisfies a streaming load from its own cache and the sentinel
         # never reaches an authorization check. A token that cannot reach the repo is the

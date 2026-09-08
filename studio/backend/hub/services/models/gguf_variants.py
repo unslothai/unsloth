@@ -1663,6 +1663,16 @@ async def get_gguf_variants_answer(
 
     def _compute_response() -> GgufVariantsResponse:
         skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
+        # The enrichment below reads this repo's cache dir, so it answers to the same
+        # authorization the scan does. _compute raises for a denied caller, and the except
+        # branch would otherwise return 200 carrying an empty quant folder's label, which is
+        # the existence of a cached private repo. Asked only for a remote, valid id, so a
+        # malformed one never reaches the wire; cache_reads_authorized memoizes, so this
+        # rides the decision _compute already made rather than adding a probe.
+        if not skip and not hub_cache_reads_authorized(
+            hf_token, repo_id = repo_id, offline = bool(offline)
+        ):
+            skip = True
         try:
             response = _compute()
         except Exception:

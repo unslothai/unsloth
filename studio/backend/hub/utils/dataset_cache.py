@@ -599,3 +599,27 @@ def cached_dataset_candidates(
         )
 
     return sorted(files, key = score)
+
+
+def dataset_cache_can_answer(repo_id: str) -> bool:
+    """True if some cached copy of *repo_id* could satisfy a preview without the Hub.
+
+    Authorization gates exist to stop an unverified caller reading the operator's disk.
+    A dataset with nothing cached has nothing to leak, so denying it buys no protection
+    and costs a legitimate caller its preview whenever the access probe is unavailable
+    rather than merely negative: an HF_ENDPOINT mirror without the undocumented
+    /auth-check route, or one transient failure.
+
+    Both caches count. ``datasets`` answers a streaming load from its own PREPARED cache,
+    which is where the measured leak was, while the hub snapshot backs the file-level
+    readers.
+    """
+    if not repo_id:
+        return False
+    try:
+        if latest_processed_dataset_cache_path(repo_id) is not None:
+            return True
+        return latest_cached_dataset_snapshot(repo_id) is not None
+    except Exception:
+        # Never let the guard's own failure open the path it guards.
+        return True

@@ -28,7 +28,7 @@ from auth.authentication import (
     get_current_subject,
 )
 from auth.storage import rotate_preview_link_secret
-from hub.utils.hf_tokens import hf_token_arg
+from hub.utils.hf_tokens import cache_reads_authorized, hf_token_arg
 
 from routes.provider_credentials import current_credential_write, require_ui_session
 
@@ -2422,7 +2422,12 @@ def _resolve_embedding_model_plan(
 
     The PUT must not persist a client assertion that the GET never validated,
     so both routes use this exact resolver.
+
+    The cache lookups below read the operator's disk without consulting the credential,
+    so a caller who cannot reach the repo must not learn its cached state from them. A
+    local path the caller named itself is not the Hub cache and stays available.
     """
+    cache_ok = cache_reads_authorized(token, repo_id = resolved)
     # Resolve for the model being selected.
     on_llama = _llama_backend_active(resolved)
     backend: Literal["llama", "sentence-transformers"] = (
@@ -2438,7 +2443,7 @@ def _resolve_embedding_model_plan(
             )
         # The alias-aware predicate alone, which already pairs the ST file family with the loadable check per candidate;
         # the repo the cache hit came from is what the PUT verifies and scans.
-        cached_source = _cached_st_source(resolved)
+        cached_source = _cached_st_source(resolved) if cache_ok else None
         cached = cached_source is not None
         source = None if cached else _st_weight_source(resolved, token)
         if not cached and source is None:
@@ -2503,7 +2508,9 @@ def _resolve_embedding_model_plan(
     candidates = _embedding_gguf_candidates(resolved)
     # Match the loader's online fast path exactly: only the preferred repo and
     # only the configured variant can suppress the download offer.
-    cached_repo = _cached_embedding_gguf(candidates[:1], require_variant = True)
+    cached_repo = (
+        _cached_embedding_gguf(candidates[:1], require_variant = True) if cache_ok else None
+    )
     if cached_repo:
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
@@ -2515,7 +2522,9 @@ def _resolve_embedding_model_plan(
     if plan is None:
         # The loader's offline fallback accepts any complete cached quant from
         # any candidate only after its bounded online listing fails.
-        cached_repo = _cached_embedding_gguf(candidates, require_variant = False)
+        cached_repo = (
+            _cached_embedding_gguf(candidates, require_variant = False) if cache_ok else None
+        )
         if cached_repo:
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved,
@@ -2715,7 +2724,13 @@ def update_embedding_model(
 
             # Require a genuinely loadable cache (config + weights), not just a resolved refs/main,
             # so a metadata-only partial cache still gets the forceable 409.
-            offline_cached = local_only_load and hf_cache_snapshot_is_loadable(verify_target)
+            # Same rule: an unauthorized caller must not have a cached private repo accepted
+            # on its behalf, which would let it be saved as this deployment's embedder.
+            offline_cached = (
+                local_only_load
+                and cache_reads_authorized(hf_token, repo_id = verify_target)
+                and hf_cache_snapshot_is_loadable(verify_target)
+            )
             if not offline_cached:
                 raise HTTPException(
                     status_code = 409,

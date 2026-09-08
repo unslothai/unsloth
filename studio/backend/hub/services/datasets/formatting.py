@@ -35,6 +35,7 @@ from hub.utils.dataset_cache import (
     load_cached_hf_dataset as _shared_load_cached_hf_dataset,
     split_label_matches as _split_label_matches,
 )
+from hub.utils.dataset_cache import dataset_cache_can_answer
 from hub.utils import download_registry
 from hub.utils.dataset_format import check_dataset_format, format_dataset_preview
 from hub.utils.hf_errors import hf_error_status
@@ -370,6 +371,7 @@ def check_format_response(
         # that cannot reach the repo is the same leak, so this mirrors the seed-inspect gate.
         if (
             not dataset_exists
+            and dataset_cache_can_answer(request.dataset_name)
             and not cache_reads_authorized(
                 hf_token,
                 repo_id = request.dataset_name,

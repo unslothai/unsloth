@@ -1462,6 +1462,10 @@ def test_an_anonymous_seed_preview_is_refused_while_offline(monkeypatch):
     from routes.data_recipe import seed as seed_routes
 
     monkeypatch.setattr(seed_routes, "hf_env_offline", lambda: True)
+    # The dataset IS cached here, which is the premise the denial rests on and what these
+    # docstrings already describe. An uncached one has nothing to serve, so it is allowed
+    # through to the loader and covered by its own test.
+    monkeypatch.setattr(seed_routes, "dataset_cache_can_answer", lambda *_a, **_k: True)
 
     def _never(*_a, **_k):
         raise AssertionError("the anonymous caller reached the dataset load")
@@ -1493,6 +1497,9 @@ def test_an_unverified_seed_preview_is_refused(monkeypatch):
     monkeypatch.setattr("hub.utils.hf_tokens._probe_repo_access", lambda *_a, **_k: False)
     reset_repo_access_cache()
     monkeypatch.setattr(seed_routes, "hf_env_offline", lambda: False)
+    # Cached, which is the premise the denial rests on: the gate exists to stop a read off
+    # the operator's disk. An uncached dataset has its own test.
+    monkeypatch.setattr(seed_routes, "dataset_cache_can_answer", lambda *_a, **_k: True)
 
     def _never(*_a, **_k):
         raise AssertionError("an unverified token reached the dataset load")
@@ -1736,6 +1743,9 @@ def test_the_format_check_authorizes_before_the_streaming_tiers(monkeypatch):
 
     reset_repo_access_cache()
     monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: False)
+    # Cached, which is the premise the denial rests on: the gate exists to stop a read off
+    # the operator's disk. An uncached dataset has its own test.
+    monkeypatch.setattr(formatting, "dataset_cache_can_answer", lambda *_a, **_k: True)
 
     loads = {"n": 0}
 
@@ -2132,3 +2142,99 @@ def test_an_offline_request_still_honours_a_memoized_authorization(monkeypatch):
     # Now the caller asks for cache-only service: the memoized yes still stands.
     assert cache_reads_authorized("hf_explicit", repo_id = "acme/private", offline = True) is True
     assert probes["n"] == 1
+
+
+def test_an_uncached_dataset_is_not_denied_for_an_unavailable_probe(monkeypatch):
+    """Same rule as the config reader: authorize only where a cached read could be served.
+    An uncached dataset has nothing to leak, so denying it just costs a legitimate caller its
+    preview whenever the probe is unavailable rather than negative, which is what an
+    HF_ENDPOINT mirror without the undocumented /auth-check route looks like."""
+    from hub.services.datasets import formatting
+    from hub.schemas.datasets import CheckFormatRequest
+
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: False)
+    monkeypatch.setattr(formatting, "dataset_cache_can_answer", lambda *_a, **_k: False)
+
+    reached = {"n": 0}
+
+    def _reached(*_a, **_k):
+        reached["n"] += 1
+        raise RuntimeError("reached the loader, which is all this asserts")
+
+    monkeypatch.setattr("datasets.load_dataset", _reached)
+
+    api_key = hf_token_arg("hf_explicit", allow_ambient_token = False)
+    with pytest.raises(Exception):
+        formatting.check_format_response(
+            CheckFormatRequest(dataset_name = "acme/not-cached"), api_key
+        )
+    assert reached["n"] > 0, "an uncached dataset was refused for nothing"
+
+    # Cached: the operator's disk can answer, so authorization is required again.
+    monkeypatch.setattr(formatting, "dataset_cache_can_answer", lambda *_a, **_k: True)
+    reached["n"] = 0
+    with pytest.raises(HTTPException) as excinfo:
+        formatting.check_format_response(
+            CheckFormatRequest(dataset_name = "acme/cached-private"), api_key
+        )
+    assert excinfo.value.status_code == 404
+    assert reached["n"] == 0
+
+
+def test_the_dataset_cache_predicate_counts_both_caches(monkeypatch):
+    """`datasets` answers a streaming load from its own PREPARED cache, which is where the
+    measured leak was; the hub snapshot backs the file-level readers. Either can answer."""
+    from hub.utils import dataset_cache as dc
+
+    monkeypatch.setattr(dc, "latest_processed_dataset_cache_path", lambda *_a, **_k: None)
+    monkeypatch.setattr(dc, "latest_cached_dataset_snapshot", lambda *_a, **_k: None)
+    assert dc.dataset_cache_can_answer("acme/ds") is False
+
+    monkeypatch.setattr(dc, "latest_processed_dataset_cache_path", lambda *_a, **_k: Path("/x"))
+    assert dc.dataset_cache_can_answer("acme/ds") is True
+
+    monkeypatch.setattr(dc, "latest_processed_dataset_cache_path", lambda *_a, **_k: None)
+    monkeypatch.setattr(dc, "latest_cached_dataset_snapshot", lambda *_a, **_k: Path("/y"))
+    assert dc.dataset_cache_can_answer("acme/ds") is True
+
+    def _boom(*_a, **_k):
+        raise OSError("cache unreadable")
+
+    monkeypatch.setattr(dc, "latest_processed_dataset_cache_path", _boom)
+    assert dc.dataset_cache_can_answer("acme/ds") is True, "a failed check must not open the gate"
+
+
+def test_the_remote_code_scan_is_gated_before_any_scanner_runs():
+    """The authorization check only guarded the prefer_local snapshot optimization, so a
+    denied caller left scan_target as the repo id and the scan ran anyway. Downstream
+    _load_remote_code_configs uses hf_hub_download, which resolves a cached private repo's
+    configs without consulting the credential and can answer a definitive has_remote_code."""
+    import inspect
+
+    source = inspect.getsource(models_routes.scan_model_remote_code)
+    gate = source.find("_repo_in_any_hf_cache(model_name)")
+    optimization = source.find("prefer_local_cache is True")
+
+    assert gate != -1, "the scan is not gated on the repo being cached"
+    assert 0 < gate < optimization, "the gate must precede the prefer_local optimization"
+
+
+def test_the_embedding_planner_gates_every_disk_backed_branch():
+    """_resolve_embedding_model_plan called _cached_st_source and _cached_embedding_gguf with
+    no notion of the caller, so the resolve endpoint reported cached private-repo state to an
+    unauthorized caller, and the PUT accepted the same model through hf_cache_snapshot_is_loadable."""
+    import inspect
+    from routes import settings as settings_routes
+
+    plan_src = inspect.getsource(settings_routes._resolve_embedding_model_plan)
+    assert "cache_reads_authorized(token, repo_id = resolved)" in plan_src
+    for helper in ("_cached_st_source(resolved)", "_cached_embedding_gguf("):
+        idx = plan_src.find(helper)
+        assert idx != -1, f"{helper} vanished; this test no longer guards anything"
+    assert plan_src.count("if cache_ok else None") == 3, "a disk-backed branch is still ungated"
+
+    put_src = inspect.getsource(settings_routes.update_embedding_model)
+    loadable = put_src.find("hf_cache_snapshot_is_loadable(verify_target)")
+    authorized = put_src.find("cache_reads_authorized(hf_token, repo_id = verify_target)")
+    assert authorized != -1 and authorized < loadable, "the offline fallback is still ungated"

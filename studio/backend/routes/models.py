@@ -2591,6 +2591,20 @@ async def scan_model_remote_code(
         local_model = is_local_path(model_name)
         if not local_model:
             model_name = resolve_cached_repo_id_case(model_name)
+        # The scanner's hf_hub_download resolves a cached repo's configs without consulting
+        # the credential, so a definitive has_remote_code can be answered off the operator's
+        # disk. Gating only the prefer_local snapshot optimization below left scan_target as
+        # the repo id and let the scan run anyway. Only a repo already in a cache can be
+        # served that way; an uncached one goes to the Hub, which enforces its own access.
+        if (
+            not local_model
+            and _repo_in_any_hf_cache(model_name)
+            and not cache_reads_authorized(hf_token, repo_id = model_name)
+        ):
+            raise HTTPException(
+                status_code = 404,
+                detail = "This model is not available to an unauthorized caller.",
+            )
         scan_target = model_name
         exact_snapshot_path = (
             model_snapshot_path.strip()
