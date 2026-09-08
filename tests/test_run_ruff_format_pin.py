@@ -136,11 +136,7 @@ class TestRefusing:
 
 
 class TestTheScriptStaysRunnable:
-    """It has a shebang and is invoked as a program, so the mode bit is part of it.
-
-    Rewriting the file wholesale is how the bit gets dropped -- an editor writes 0644
-    and the change is invisible in the content diff.
-    """
+    """It is invoked as a program, so the mode bit matters, and a wholesale rewrite drops it invisibly."""
 
     @pytest.mark.skipif(sys.platform.startswith("win"), reason = "no POSIX mode bits")
     def test_the_formatter_is_executable(self):
