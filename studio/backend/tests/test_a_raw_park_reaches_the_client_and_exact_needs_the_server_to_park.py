@@ -28,12 +28,14 @@ import asyncio
 import inspect
 import time
 
+import httpx
 import pytest
 
 import core.inference.chat_generation_runs as runs
 import core.inference.llama_cpp as llama_mod
 import routes.inference as inference
 from core.inference import llama_exact as exact
+from core.inference import llama_preemption as preemption_mod
 from core.inference.llama_cpp import LlamaCppBackend
 
 
@@ -235,3 +237,139 @@ class TestASilentParkStillRenewsTheLease:
         assert "elif await asyncio.to_thread(_server_park_excused_recently):" in source
         branch = source.index("elif await asyncio.to_thread(_server_park_excused_recently):")
         assert "await self._try_touch_progress(run_id)" in source[branch : branch + 400]
+
+
+class TestAutoDoesNotStartAModeItWillReportUnavailable:
+    _ARGV = ["llama-server", "--kv-unified"]
+
+    def test_studio_side_pausing_blocks_an_auto_launch(self, monkeypatch):
+        monkeypatch.setenv(preemption_mod.PREEMPT_MODE_ENV, "studio")
+        why = llama_mod._exact_auto_blocker(exact.EXACT_AUTO, self._ARGV, {})
+        assert why and "UNSLOTH_LLAMA_PREEMPT_MODE=studio" in why
+
+    def test_parking_switched_off_blocks_an_auto_launch(self, monkeypatch):
+        monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
+        assert llama_mod._exact_auto_blocker(
+            exact.EXACT_AUTO, self._ARGV + ["--preempt-ram", "0"], {}
+        )
+        assert llama_mod._exact_auto_blocker(
+            exact.EXACT_AUTO, self._ARGV, {"LLAMA_ARG_PREEMPT_RAM": "0"}
+        )
+        # Studio's own budget after an inherited zero wins, as the child applies argv last.
+        assert (
+            llama_mod._exact_auto_blocker(
+                exact.EXACT_AUTO,
+                self._ARGV + ["--preempt-ram", "4096"],
+                {"LLAMA_ARG_PREEMPT_RAM": "0"},
+            )
+            is None
+        )
+
+    def test_a_clean_auto_launch_and_every_on_launch_go_ahead(self, monkeypatch):
+        monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
+        assert llama_mod._exact_auto_blocker(exact.EXACT_AUTO, self._ARGV, {}) is None
+        monkeypatch.setenv(preemption_mod.PREEMPT_MODE_ENV, "studio")
+        # `on` is the post-launch check's to fail, naming the reason.
+        assert llama_mod._exact_auto_blocker(exact.EXACT_ON, self._ARGV, {}) is None
+
+    def test_the_launch_consults_it_before_the_child_env_is_written(self):
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        blocker = source.index("_exact_blocker = _exact_auto_blocker(")
+        short_drop = source.index("if _exact_setting == _exact.EXACT_AUTO:\n")
+        child_env = source.index("_exact.apply_child_env(env, on = _exact_wanted)")
+        assert blocker < child_env and short_drop < child_env
+        # An unknown pool with nothing named parks without a limit rather than on a default
+        # the pool may exceed.
+        assert 'cmd.extend(["--preempt-ram", "-1"])' in source
+
+
+class _Request:
+    async def is_disconnected(self):
+        return False
+
+
+class TestARawRelayWaitsThroughAServerPark:
+    @staticmethod
+    async def _stream(timeouts_before_second: int):
+        yield "data: a"
+        for _ in range(timeouts_before_second):
+            await asyncio.sleep(0.03)
+            raise httpx.ReadTimeout("read timed out")
+        yield "data: b"
+
+    @staticmethod
+    async def _resumable(timeouts: int):
+        """An iterator whose ReadTimeouts do not end it, like a live httpx line stream."""
+        state = {"left": timeouts, "sent_a": False}
+
+        class _It:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not state["sent_a"]:
+                    state["sent_a"] = True
+                    return "data: a"
+                if state["left"] > 0:
+                    state["left"] -= 1
+                    await asyncio.sleep(0.03)
+                    raise httpx.ReadTimeout("read timed out")
+                if state.get("done"):
+                    raise StopAsyncIteration
+                state["done"] = True
+                return "data: b"
+
+        return _It()
+
+    def test_a_parked_relay_keeps_waiting(self):
+        async def run():
+            it = await self._resumable(3)
+            seen = []
+            async for item in inference._aiter_llama_stream_items(
+                it,
+                request = _Request(),
+                post_first_item_read_timeout_s = 0.01,
+                stall_grace = lambda: True,
+            ):
+                seen.append(item)
+            return seen
+
+        assert asyncio.run(run()) == ["data: a", "data: b"]
+
+    def test_without_a_park_the_stall_still_ends_the_relay(self):
+        async def run():
+            it = await self._resumable(3)
+            seen = []
+            async for item in inference._aiter_llama_stream_items(
+                it,
+                request = _Request(),
+                post_first_item_read_timeout_s = 0.01,
+                stall_grace = lambda: False,
+            ):
+                seen.append(item)
+            return seen
+
+        with pytest.raises(httpx.ReadTimeout):
+            asyncio.run(run())
+
+    def test_the_probe_is_the_backends_and_only_when_the_server_parks(self):
+        class _Parks:
+            server_preempts_kv = True
+
+            def _server_park_grace(self):
+                return True
+
+        class _DoesNot:
+            server_preempts_kv = False
+
+            def _server_park_grace(self):
+                return True
+
+        assert inference._raw_park_grace(_Parks())() is True
+        assert inference._raw_park_grace(_DoesNot()) is None
+        assert inference._raw_park_grace(object()) is None
+
+    def test_every_raw_relay_hands_it_over(self):
+        source = inspect.getsource(inference)
+        assert source.count("stall_grace = _raw_park_grace(llama_backend),") == 4
+        assert inference._RAW_PARK_STALL_CAP_S == llama_mod._SERVER_PARK_STALL_CAP_S

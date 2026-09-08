@@ -2127,6 +2127,27 @@ def _exact_parking_shortfall_mib(
     return (named, pool, need) if named < need else None
 
 
+def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[str]:
+    """Why an ``auto`` exact launch should not start the mode at all, else None.
+
+    Both are knowable before launch and neither is the child's to refuse: with
+    ``UNSLOTH_LLAMA_PREEMPT_MODE=studio`` Studio is the one pausing chats, and with the
+    server's parking off (``--preempt-ram 0``) it is too. Judged only after launch, the child
+    ran the mode's slower kernels for a guarantee the state then reported as unavailable.
+    ``on`` is left to the post-launch check, which fails the load naming the reason.
+    """
+    if setting != _exact.EXACT_AUTO:
+        return None
+    if _preemption.preempt_mode_setting() == _preemption.PREEMPT_MODE_STUDIO:
+        return (
+            "UNSLOTH_LLAMA_PREEMPT_MODE=studio makes Studio the one pausing chats, and a "
+            "chat Studio resumes is re-prefilled rather than restored"
+        )
+    if _preempt_ram_disabled_in(args, env = env):
+        return "the server's parking is switched off (--preempt-ram 0)"
+    return None
+
+
 def _stand_down_child_parking(env: dict, args) -> bool:
     """One switch means no preemption anywhere: with Studio's off, the child would still park
     on its own default budget. Puts ``LLAMA_ARG_PREEMPT_RAM=0`` in ``env`` and returns True,
@@ -23552,6 +23573,22 @@ class LlamaCppBackend:
                     # V is left transposed without flash attention and the paged pool refuses
                     # that. Under `on` the child still gets the variable and refuses it itself.
                     _exact_wanted = False
+                if _exact_wanted:
+                    # Known before launch, so `auto` does not start the mode only to report it
+                    # unavailable while the child pays for it.
+                    _exact_blocker = _exact_auto_blocker(
+                        _exact_setting,
+                        list(cmd) + [str(a) for a in (extra_args or ())],
+                        os.environ,
+                    )
+                    if _exact_blocker is not None:
+                        _exact_wanted = False
+                        self._record_load_warning(
+                            "Exact concurrency is set to 'auto' and is not started: "
+                            + _exact_blocker
+                            + ". A chat's output can differ depending on which other chats "
+                            "share the KV cache. Set it to 'on' to fail the load instead."
+                        )
                 self._exact_parking_short = None
                 self._exact_pool_unknown = False
                 if _exact_wanted:
@@ -23586,9 +23623,25 @@ class LlamaCppBackend:
                                 _exact_kv_bytes // (1024 * 1024),
                             )
                         # An auto-fit context leaves the pool unknown here (the child picks
-                        # the context), so neither the budget nor the shortfall can be sized;
-                        # it is judged after launch off the context the server chose.
+                        # the context), so the budget cannot be sized. With nothing named,
+                        # the child parks without a limit: a park is at most the pool, so
+                        # this is the sized budget the launch would have emitted. A named
+                        # budget is judged after launch off the context the server chose.
                         self._exact_pool_unknown = _exact_kv_bytes <= 0
+                        if (
+                            self._exact_pool_unknown
+                            and _named_preempt_ram_mib(
+                                list(cmd) + [str(a) for a in (extra_args or ())], os.environ
+                            )
+                            is None
+                        ):
+                            cmd.extend(["--preempt-ram", "-1"])
+                            self._exact_pool_unknown = False
+                            logger.info(
+                                "Exact concurrency: the context is auto-fitted, so the KV pool "
+                                "cannot be sized before launch; --preempt-ram -1 lets every "
+                                "park fit."
+                            )
                         # A budget somebody named is kept, and judged: below the pool it takes
                         # the guarantee away, and the state reported after launch says so.
                         self._exact_parking_short = _exact_parking_shortfall_mib(
@@ -23605,6 +23658,9 @@ class LlamaCppBackend:
                                 f"byte-identical. Raise it to at least {_need} MiB. The load will "
                                 "run without exact concurrency, or fail, depending on the setting."
                             )
+                            if _exact_setting == _exact.EXACT_AUTO:
+                                # Known now, so the child does not start the mode for it.
+                                _exact_wanted = False
                     # The user's extras are appended last and win by last-arg. Name the flag
                     # rather than letting the child answer about a line the user did not compose.
                     _exact_conflicts = _exact.contradicting_args(extra_args)

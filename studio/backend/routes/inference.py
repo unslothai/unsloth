@@ -3588,10 +3588,18 @@ async def _aiter_llama_stream_items(
     post_first_item_read_timeout_s: Optional[
         Union[float, Callable[[], Optional[float]]]
     ] = _DEFAULT_STREAM_STALL_TIMEOUT_S,
+    stall_grace: Optional[Callable[[], bool]] = None,
 ):
+    """``stall_grace`` is asked once each time the stall timeout would fire after the first
+    item: True excuses the silence for another stall window, up to ``_RAW_PARK_STALL_CAP_S``
+    of it. It is the backend's `/metrics` park probe (`_raw_park_grace`): a swap build that
+    predates the stream notices is silent while it holds a request parked, and the raw
+    relays read through this rather than the backend's own read wrapper, so a parked raw
+    request was cut off as a stall and its healthy answer lost."""
     if first_token_deadline is None:
         first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
     last_item_at: Optional[float] = None
+    park_since: Optional[float] = None
 
     def _post_first_timeout_s() -> Optional[float]:
         if callable(post_first_item_read_timeout_s):
@@ -3645,6 +3653,17 @@ async def _aiter_llama_stream_items(
             timeout_s = _post_first_timeout_s()
             if request is not None and timeout_s is not None and now - last_item_at < timeout_s:
                 continue
+            if stall_grace is not None and timeout_s is not None:
+                if park_since is None:
+                    park_since = last_item_at
+                if now - park_since < _RAW_PARK_STALL_CAP_S:
+                    try:
+                        parked = bool(stall_grace())
+                    except Exception:
+                        parked = False
+                    if parked:
+                        last_item_at = now
+                        continue
             raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
         if last_item_at is None and response is not None:
             # The first-token read deadline no longer applies once a chunk has
@@ -3653,7 +3672,21 @@ async def _aiter_llama_stream_items(
             # so a long gap can't trip the stale first-token deadline.
             _set_stream_response_read_timeout(response, _post_first_timeout_s())
         last_item_at = time.monotonic()
+        park_since = None
         yield item
+
+
+# How long a raw relay may sit silent while llama-server reports a parked slot: the backend's
+# own read wrapper uses the same bound (`_SERVER_PARK_STALL_CAP_S`).
+_RAW_PARK_STALL_CAP_S = 1800.0
+
+
+def _raw_park_grace(llama_backend) -> Optional[Callable[[], bool]]:
+    """The `/metrics` park probe for a raw relay, or None when the server does not park."""
+    if not getattr(llama_backend, "server_preempts_kv", False):
+        return None
+    probe = getattr(llama_backend, "_server_park_grace", None)
+    return probe if callable(probe) else None
 
 
 from models.inference import (
@@ -27534,6 +27567,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 buffer = b""
                 async for chunk in _aiter_llama_stream_items(
                     bytes_iter,
+                    stall_grace = _raw_park_grace(llama_backend),
                     cancel_event = disconnect_event,
                     request = request,
                     first_token_deadline = first_token_deadline,
@@ -29762,6 +29796,7 @@ async def _responses_stream(
             _raw_measured = False
             async for raw_line in _aiter_llama_stream_items(
                 lines_iter,
+                stall_grace = _raw_park_grace(llama_backend),
                 cancel_event = disconnect_event,
                 request = request,
                 first_token_deadline = first_token_deadline,
@@ -33416,6 +33451,7 @@ async def _anthropic_passthrough_stream(
             _raw_measured = False
             async for raw_line in _aiter_llama_stream_items(
                 lines_iter,
+                stall_grace = _raw_park_grace(llama_backend),
                 cancel_event = cancel_event,
                 request = request,
                 first_token_deadline = first_token_deadline,
@@ -35076,6 +35112,7 @@ async def _openai_passthrough_stream_admitted(
                 _raw_measured = False
                 async for raw_line in _aiter_llama_stream_items(
                     lines_iter,
+                    stall_grace = _raw_park_grace(llama_backend),
                     cancel_event = cancel_event,
                     request = request,
                     first_token_deadline = first_token_deadline,
