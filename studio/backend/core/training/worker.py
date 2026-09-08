@@ -14,6 +14,7 @@ from __future__ import annotations
 from loggers import get_logger
 import importlib
 import importlib.metadata
+import importlib.util
 import math
 import os
 import shutil
@@ -1770,6 +1771,42 @@ def _rebind_in_already_imported_modules(*, attr_name: str, old_obj: Any, new_obj
     return count
 
 
+_TVM_FFI_BROKEN_VERSIONS = ("0.1.10", "0.1.11")
+
+
+def _guard_fla_tilelang() -> None:
+    """Steer a user-supplied pip fla away from TileLang where TileLang cannot work.
+
+    Two cases, both `setdefault` so an explicit FLA_TILELANG always wins: a ROCm
+    torch (TileLang has no HIP GEMM; AMD SDK / Radeon wheels can leave
+    `torch.version.hip` unset but still tag `torch.__version__`), and an
+    apache-tvm-ffi known to fault with "CUDA: misaligned address" on sm_100.
+    """
+    try:
+        import torch as _torch_for_fla
+        if (
+            getattr(_torch_for_fla.version, "hip", None)
+            or "rocm" in getattr(_torch_for_fla, "__version__", "").lower()
+        ):
+            os.environ.setdefault("FLA_TILELANG", "0")
+    except Exception:
+        pass
+
+    # A leftover TileLang plus a broken tvm-ffi crashes the run; steer off it instead of installing.
+    try:
+        if importlib.util.find_spec("tilelang") is not None:
+            tvm_ffi_version = importlib.metadata.version("apache-tvm-ffi")
+            if tvm_ffi_version in _TVM_FFI_BROKEN_VERSIONS:
+                os.environ.setdefault("FLA_TILELANG", "0")
+                logger.info(
+                    "Disabling TileLang: apache-tvm-ffi %s faults under it; FLA_TILELANG is now %s",
+                    tvm_ffi_version,
+                    os.environ.get("FLA_TILELANG"),
+                )
+    except Exception:
+        pass
+
+
 def _install_fast_path_hooks(
     event_queue: Any,
     model_name: str,
@@ -1784,13 +1821,7 @@ def _install_fast_path_hooks(
         logger.info("Fast-path hooks disabled via env; using substring fallback")
         return
 
-    # tilelang has no HIP GEMM, so a pip fla must not dispatch to it on ROCm; setdefault keeps a user override.
-    try:
-        import torch as _torch_for_fla
-        if getattr(_torch_for_fla.version, "hip", None):
-            os.environ.setdefault("FLA_TILELANG", "0")
-    except Exception:
-        pass
+    _guard_fla_tilelang()
 
     try:
         from transformers.utils import import_utils as _iu

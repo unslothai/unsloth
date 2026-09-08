@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import importlib.metadata
 import inspect
 import os
 import subprocess
@@ -911,9 +912,9 @@ def test_rebind_does_not_trigger_module_getattr(monkeypatch):
             old_obj = original,
             new_obj = replacement,
         )
-        assert (
-            not _GetattrTripwire.getattr_called
-        ), "Rebind sweep invoked __getattr__ - should use __dict__ probe"
+        assert not _GetattrTripwire.getattr_called, (
+            "Rebind sweep invoked __getattr__ - should use __dict__ probe"
+        )
     finally:
         sys.modules.pop("_lazy_test_module", None)
 
@@ -998,10 +999,14 @@ def test_no_install_path_pips_flash_linear_attention_or_tilelang(monkeypatch, uv
         assert package not in flat, f"{package} must never be pip installed: {calls}"
 
 
-# The only two worker.py strings allowed to name the stack: prose log lines, never pip specs.
+# The only worker.py strings allowed to name the stack: prose log lines and the two
+# import-probe arguments in _guard_fla_tilelang (find_spec / metadata.version take a
+# bare package name, never a pip spec).
 _FLA_PROSE_LOG_LINES = (
     "flash-linear-attention fast path importable: %s",
     "flash-linear-attention is not importable; continuing on the pure-torch path: %s",
+    "tilelang",
+    "apache-tvm-ffi",
 )
 
 
@@ -1013,9 +1018,9 @@ def test_worker_source_never_pins_the_vendored_stack():
         if node.value in _FLA_PROSE_LOG_LINES:
             continue
         for package in _NEVER_PIP_INSTALLED:
-            assert not node.value.startswith(
-                package
-            ), f"worker.py names {package} in a string constant: {node.value!r}"
+            assert not node.value.startswith(package), (
+                f"worker.py names {package} in a string constant: {node.value!r}"
+            )
 
 
 def _stub_fla_modules(monkeypatch):
@@ -1064,6 +1069,78 @@ def test_install_fast_path_hooks_sets_fla_tilelang_zero_on_hip(monkeypatch):
     assert os.environ.get("FLA_TILELANG") == "0"
 
 
+def test_install_fast_path_hooks_sets_fla_tilelang_zero_on_rocm_tagged_torch(monkeypatch):
+    """AMD SDK / Radeon wheels can leave torch.version.hip unset and only tag __version__."""
+    monkeypatch.delenv("FLA_TILELANG", raising = False)
+    monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
+    _force_torch_hip(monkeypatch, None)
+    import torch
+
+    monkeypatch.setattr(torch, "__version__", "2.11.0+rocm7.1", raising = False)
+    _patch_iu_gate(monkeypatch, _make_fake_gate(initial_return = True))
+    monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **kw: True)
+
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
+
+    assert os.environ.get("FLA_TILELANG") == "0"
+
+
+def _force_tvm_ffi(monkeypatch, *, tilelang_present: bool, tvm_ffi_version: str | None):
+    """Fake the two probes _guard_fla_tilelang uses to spot a leftover TileLang stack."""
+    real_find_spec = worker.importlib.util.find_spec
+    real_version = worker.importlib.metadata.version
+
+    def fake_find_spec(name, *a, **kw):
+        if name == "tilelang":
+            return object() if tilelang_present else None
+        return real_find_spec(name, *a, **kw)
+
+    def fake_version(name, *a, **kw):
+        if name == "apache-tvm-ffi":
+            if tvm_ffi_version is None:
+                raise importlib.metadata.PackageNotFoundError(name)
+            return tvm_ffi_version
+        return real_version(name, *a, **kw)
+
+    monkeypatch.setattr(worker.importlib.util, "find_spec", fake_find_spec)
+    monkeypatch.setattr(worker.importlib.metadata, "version", fake_version)
+
+
+@pytest.mark.parametrize(
+    "tilelang_present, tvm_ffi_version, expected",
+    [
+        (True, "0.1.10", "0"),
+        (True, "0.1.11", "0"),
+        (False, "0.1.10", None),
+        (True, "0.1.9", None),
+        (True, None, None),
+    ],
+    ids = ["broken-0.1.10", "broken-0.1.11", "no-tilelang", "healthy", "tvm-ffi-missing"],
+)
+def test_guard_fla_tilelang_disables_only_for_a_broken_tvm_ffi_with_tilelang(
+    monkeypatch, tilelang_present, tvm_ffi_version, expected
+):
+    """apache-tvm-ffi 0.1.10/0.1.11 fault under TileLang; only that pair may flip the env."""
+    monkeypatch.delenv("FLA_TILELANG", raising = False)
+    _force_torch_hip(monkeypatch, None)
+    _force_tvm_ffi(monkeypatch, tilelang_present = tilelang_present, tvm_ffi_version = tvm_ffi_version)
+
+    worker._guard_fla_tilelang()
+
+    assert os.environ.get("FLA_TILELANG") == expected
+
+
+def test_guard_fla_tilelang_respects_user_override_on_a_broken_tvm_ffi(monkeypatch):
+    """A user who set FLA_TILELANG=1 keeps it even with the faulting tvm-ffi installed."""
+    monkeypatch.setenv("FLA_TILELANG", "1")
+    _force_torch_hip(monkeypatch, None)
+    _force_tvm_ffi(monkeypatch, tilelang_present = True, tvm_ffi_version = "0.1.10")
+
+    worker._guard_fla_tilelang()
+
+    assert os.environ["FLA_TILELANG"] == "1"
+
+
 def test_install_fast_path_hooks_respects_user_fla_tilelang_override(monkeypatch):
     """If the user set FLA_TILELANG (even on HIP), don't overwrite; they may have a HIP-aware fork."""
     monkeypatch.setenv("FLA_TILELANG", "1")
@@ -1082,6 +1159,8 @@ def test_install_fast_path_hooks_does_not_set_fla_tilelang_on_cuda(monkeypatch):
     monkeypatch.delenv("FLA_TILELANG", raising = False)
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
     _force_torch_hip(monkeypatch, None)
+    # Pin the second probe too, so a tilelang that happens to be in the test venv can't flip it.
+    _force_tvm_ffi(monkeypatch, tilelang_present = False, tvm_ffi_version = None)
     _patch_iu_gate(monkeypatch, _make_fake_gate(initial_return = True))
     monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **kw: True)
 
