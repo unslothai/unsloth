@@ -1940,6 +1940,11 @@ _LAST_AMD_GFX_PROBE: "str | None" = None
 # stack need to tell them apart.
 _LAST_HIP_MASK_RESOLVED = True
 
+# The same question one layer down. ROCr filters BENEATH HIP and is not covered by the flag
+# above: _rocr_visible_subset keeps the whole list for an ordinal past the last device, so a
+# mask exposing nothing to ROCr still reaches the HIP layer as a full list and resolves.
+_LAST_ROCR_MASK_RESOLVED = True
+
 
 def _detect_amd_gfx_codes(
     dedup: bool = True,
@@ -2148,15 +2153,42 @@ def _forced_rocm_route_is_viable() -> bool:
     # have no kernels for -- leaving neither AMD nor NVIDIA usable. _runtime_gfx_target
     # composes both mask layers and returns the whole machine beside the target, which is
     # the shape _gfx_route_on_host needs for the gfx906 mixed-host rule.
-    _target, _, _, _host_codes = _runtime_gfx_target(_infer_linux_amd_gfx_arch())
+    _inferred = _infer_linux_amd_gfx_arch()
+    _target, _, _, _host_codes = _runtime_gfx_target(_inferred)
     # A mask HIP cannot resolve exposes no device to it, so there is nothing to swap to --
     # and the target above is the first card only because _pick_visible_index guesses one.
     # Above the target test, since the fallback below would otherwise approve the same host
     # off its inventory. Silent by design: _pick_visible_index has already warned, naming
     # the variable and its value, and this predicate is asked from three call sites.
-    if not _LAST_HIP_MASK_RESOLVED:
+    if not _LAST_HIP_MASK_RESOLVED or not _LAST_ROCR_MASK_RESOLVED:
         return False
     if _target is not None:
+        # An arch _ensure_rocm_torch refuses outright is not something to swap TO. Keyed on
+        # the SELECTED target, where _miscomputing_arch_host above asks about the whole host
+        # and deliberately requires EVERY arch to be bad -- so a mask selecting the gfx1033
+        # of a [gfx1033, gfx1100] pair passed it, and the install then declined the target.
+        if _target in _ROCM_MISCOMPUTING_GFX:
+            return False
+        # And a route in the arch tables is not a route this host can install. Below ROCm 6.0
+        # -- which is what an unreadable version reads as -- no generic rocmX.Y tag resolves,
+        # and _ensure_rocm_torch prints "No PyTorch wheel for ROCm x.y" and returns without
+        # installing anything, leaving the venv on whatever it had while _ensure_cuda_torch
+        # stood down for it (gfx908 on ROCm 5.7). Its three version-independent arms are the
+        # exceptions, so ask exactly what they ask: an explicit pin, the missing-kernel
+        # reroute (which the Strix one is a floor on), and the inferred-arch install.
+        _ver = _detect_rocm_version() or (0, 0)
+        _declared = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip()
+        if (
+            _explicit_rocm_torch_index_url() is None
+            and _generic_pytorch_rocm_tag(_ver) is None
+            and not _generic_rocm_wheel_lacks_kernels(_target, _ver)
+            and not (
+                _inferred
+                and (_declared or not _has_rocm_gpu())
+                and _amd_arch_index_url(_inferred) is not None
+            )
+        ):
+            return False
         return _gfx_route_on_host(_target, _host_codes or [_target])
     # No target resolved. A mask exposing no GPU is a deliberate selection, so there is
     # nothing to swap to; anything else is a detection miss, where the inventory is still
@@ -2262,8 +2294,9 @@ def _runtime_gfx_target(
     # Reset on entry rather than only where it is decided, so a caller can never read the
     # answer a previous host-shape gave: every early return below leaves a mask that resolved
     # (an explicit arch outranks it; a no-GPU mask has its own rule) or no list to index.
-    global _LAST_HIP_MASK_RESOLVED
+    global _LAST_HIP_MASK_RESOLVED, _LAST_ROCR_MASK_RESOLVED
     _LAST_HIP_MASK_RESOLVED = True
+    _LAST_ROCR_MASK_RESOLVED = True
     # An empty (or "-1") mask selects NO GPU, deliberately, per _visible_devices_pinned.
     # Decided before any probe runs, because no probe is filtered the way the reroutes need:
     # only ROCR_VISIBLE_DEVICES reaches rocminfo, and amd-smi and KFD sysfs are filtered by
@@ -2286,6 +2319,21 @@ def _runtime_gfx_target(
         # handing torch a gfx1100 agent the gfx1151 wheels have no code for). Only when the
         # override names a DIFFERENT arch: naming the arch you spoofed TO is deliberate.
         _spoofed = _explicit_gfx if _hsa_spoof_contradicts(_explicit_gfx) else None
+        # The arch names what to BUILD for; whether the runtime exposes a device to build it
+        # for is a separate question, and this return is above every place that asks it. A
+        # declared arch beside HIP_VISIBLE_DEVICES=7 approved the swap on a mixed host where
+        # HIP hands torch nothing. Resolved only when a mask is set, so the ordinary declared
+        # -arch host still costs no probe, and only against a device list this can know: an
+        # unknowable one leaves the flags alone rather than declining on no evidence.
+        if _visible_devices_pinned():
+            # The kernel's topology first: KFD node order IS the order HIP and ROCr index,
+            # and it answers on the runtime-less hosts a declared arch exists for.
+            _mask_devices = _kfd_gfx_targets() or _detect_amd_gfx_codes(dedup = False)
+            if _mask_devices:
+                _LAST_ROCR_MASK_RESOLVED = _rocr_layer_mask_names_a_device(len(_mask_devices))
+                _LAST_HIP_MASK_RESOLVED = _hip_layer_mask_names_a_device(
+                    len(_rocr_visible_subset(_mask_devices)[0])
+                )
         return _explicit_gfx, [_explicit_gfx], _spoofed, [_explicit_gfx]
     gfx_devices = _detect_amd_gfx_codes(dedup = False)
     # Keyed to the userland probe: ROCr spoofs that reading and no other.
@@ -2367,6 +2415,8 @@ def _runtime_gfx_target(
                 gfx_devices = _kfd_ordered
                 _unlike_adapters = len(set(gfx_devices)) > 1
                 _discovery_ordered = False
+        # Against the list BEFORE the subset, which is what the ROCr ordinals index.
+        _LAST_ROCR_MASK_RESOLVED = _rocr_layer_mask_names_a_device(len(gfx_devices))
         gfx_devices, _rocr_unresolved = _rocr_visible_subset(gfx_devices)
         # A UUID names a device this cannot place. Judged against the list BEFORE the mask
         # was applied: dropping the tokens that did resolve can leave one arch standing and
@@ -2688,6 +2738,37 @@ def _hip_layer_mask_names_a_device(device_count: int) -> bool:
             # different layer and is resolved by _rocr_visible_subset.
             return False
     return True
+
+
+def _rocr_layer_mask_names_a_device(device_count: int) -> bool:
+    """Whether ROCR_VISIBLE_DEVICES, if set, leaves the runtime at least one device.
+
+    ROCr's own filter (ROCR-Runtime, core/inc/amd_filter_device.h) surfaces the tokens that
+    are "Legal and NOT Terminating", and an enumeration index terminates when it "lies
+    outside the interval [0 - (numGpuDevices - 1)]" or "maps to a device that has been
+    previously selected". So every ending is a PREFIX: ROCR_VISIBLE_DEVICES=7 on a two-GPU
+    box surfaces nothing at all, and the HIP layer above it then indexes an empty list.
+
+    _rocr_visible_subset keeps the whole list for that value instead, deliberately, so arch
+    SELECTION still answers with a first-GPU guess. This is the other question -- whether to
+    REPLACE a working CUDA stack -- and it fails closed, exactly as _hip_layer_mask_names_a_device
+    does one layer up. A UUID names a device no probe here can place, so it resolves to no
+    position and counts as no device. install.sh composes the same rule in _amd_mask_survivors.
+    """
+    _raw = (os.environ.get("ROCR_VISIBLE_DEVICES") or "").strip()
+    if not _raw:
+        return True
+    _selected: "set[int]" = set()
+    for _tok in _raw.split(","):
+        _tok = _tok.strip()
+        try:
+            _idx = int(_tok)
+        except ValueError:
+            break
+        if not (0 <= _idx < device_count) or _idx in _selected:
+            break
+        _selected.add(_idx)
+    return bool(_selected)
 
 
 def _rocr_visible_subset(gfx_devices: "list[str]") -> "tuple[list[str], bool]":

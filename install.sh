@@ -3531,6 +3531,10 @@ _amd_runtime_gfx_target() {
 }
 
 _amd_request_has_a_wheel_route() {
+    # The one card this run hands torch, published for get_torch_index_url's
+    # miscomputing-arch gate, which has only the unmasked inventory to judge on. Cleared
+    # here so a previous call can never answer for this one.
+    _AMD_REQUEST_TARGET_GFX=""
     # A mask exposing no device is a deliberate no-GPU selection rather than a detection
     # miss, so there is nothing for the request to swap TO and CUDA stays.
     _amd_visible_masks_select_no_gpu && return 1
@@ -3546,7 +3550,26 @@ _amd_request_has_a_wheel_route() {
         | tr '[:upper:]' '[:lower:]' | sed 's/:.*$//' | tr -d '[:space:]')
     if [ -n "$_arwr_decl" ]; then
         _amd_hardware_corroborated || _kfd_gfx_targets 2>/dev/null | grep -q . || return 1
-        _amd_gfx_has_wheel_route "$_arwr_decl" && return 0
+        # The arch names what to BUILD for; whether the runtime exposes a device to build it
+        # for is the other question, and this return sits above the mask resolution below.
+        # A declared arch beside HIP_VISIBLE_DEVICES=7 approved the swap on a host where HIP
+        # hands torch nothing. Only when a mask is set AND a device list is knowable: an
+        # unknowable one leaves the declared arch alone rather than declining on no evidence.
+        # _runtime_gfx_target does the same in install_python_stack.py.
+        if [ -n "${HIP_VISIBLE_DEVICES+x}" ] || [ -n "${ROCR_VISIBLE_DEVICES+x}" ] || \
+           [ -n "${CUDA_VISIBLE_DEVICES+x}" ]; then
+            _arwr_dd=$(_amd_ordered_gfx_devices 2>/dev/null | sed 's/:.*$//' \
+                | tr '[:upper:]' '[:lower:]' | awk 'NF')
+            [ -n "$_arwr_dd" ] || _arwr_dd=$(_kfd_gfx_targets 2>/dev/null | sed 's/:.*$//' \
+                | tr '[:upper:]' '[:lower:]' | awk 'NF')
+            if [ -n "$_arwr_dd" ] && [ -z "$(_amd_runtime_gfx_target "$_arwr_dd")" ]; then
+                return 1
+            fi
+        fi
+        if _amd_gfx_has_wheel_route "$_arwr_decl"; then
+            _AMD_REQUEST_TARGET_GFX="$_arwr_decl"
+            return 0
+        fi
         return 1
     fi
     _arwr_all=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
@@ -3575,15 +3598,32 @@ _amd_request_has_a_wheel_route() {
     # exactly where they were.
     _arwr_devs=$(_amd_ordered_gfx_devices 2>/dev/null | sed 's/:.*$//' \
         | tr '[:upper:]' '[:lower:]' | awk 'NF')
+    if [ -z "$_arwr_devs" ]; then
+        # rocminfo is the only per-device source whose order the masks index, so an empty
+        # answer here means the flat inventory came from amd-smi, KFD or inference. amd-smi
+        # enumerates in KFD DISCOVERY order -- the whole reason _amd_smi_hip_order exists --
+        # and its first row can name a different GPU from runtime device zero. The kernel's
+        # topology IS the order HIP and ROCr index, so take it when it describes the same
+        # machine, exactly as _runtime_gfx_target does in install_python_stack.py.
+        _arwr_kfd=$(_kfd_gfx_targets 2>/dev/null | sed 's/:.*$//' \
+            | tr '[:upper:]' '[:lower:]' | awk 'NF')
+        if [ -n "$_arwr_kfd" ] && \
+           [ "$(printf '%s\n' "$_arwr_kfd" | awk 'NF' | wc -l | tr -d ' ')" \
+             = "$(printf '%s\n' "$_arwr_archs" | awk 'NF' | wc -l | tr -d ' ')" ]; then
+            _arwr_devs="$_arwr_kfd"
+        fi
+    fi
     if [ -n "$_arwr_devs" ]; then
         _arwr_sel=$(_amd_runtime_gfx_target "$_arwr_devs")
-    elif _amd_masks_lead_with_the_first_device; then
-        # The target is the first device, which the flat inventory still names correctly.
+    elif [ "$_arwr_count" -eq 1 ]; then
+        # One arch on the whole host: every ordinal names it, so no ordering can change the
+        # answer and the flat inventory is enough however it was produced. A mask past the
+        # last row still resolves to nothing and fails closed below.
         _arwr_sel=$(_amd_runtime_gfx_target "$_arwr_archs")
     else
-        # A mask reaches past the first device and the flat inventory cannot be indexed by
-        # an ordinal, so which card the runtime hands torch is unanswerable here. Same
-        # asymmetry as below: a wrong yes replaces a working CUDA stack, a wrong no does not.
+        # Unlike adapters with no order the ordinals fit, so which card the runtime hands
+        # torch is unanswerable here. Same asymmetry as below: a wrong yes replaces a working
+        # CUDA stack with wheels for the other card, a wrong no leaves the user where he was.
         return 1
     fi
     [ -n "$_arwr_sel" ] || return 1
@@ -3592,7 +3632,9 @@ _amd_request_has_a_wheel_route() {
     # masks select. Counted on the physical inventory for that reason, since the reroute
     # granting the tag inspects the unmasked machine.
     [ "$_arwr_sel" = gfx906 ] && [ "$_arwr_count" -gt 1 ] && return 1
-    _amd_gfx_has_wheel_route "$_arwr_sel"
+    _amd_gfx_has_wheel_route "$_arwr_sel" || return 1
+    _AMD_REQUEST_TARGET_GFX="$_arwr_sel"
+    return 0
 }
 
 # One place answers "does the NVIDIA card still win here", so the index selection and
@@ -4023,25 +4065,6 @@ _amd_ordered_gfx_devices() {
         | _rocminfo_gpu_records | sed 's/|.*$//' | awk 'NF'
 }
 
-# Whether every mask layer this run applies leads with ordinal 0. When they all do, the
-# device the runtime hands torch is the first one, and the first row of the flat inventory
-# names that same device however many duplicate rows follow it -- so the per-device list is
-# not needed to answer. Any other ordinal indexes past a row the probe duplicated, which is
-# the defect. CUDA_VISIBLE_DEVICES counts only where clr reads it: as the HIP alias, and
-# only when HIP_VISIBLE_DEVICES is unset.
-_amd_masks_lead_with_the_first_device() {
-    _amlf_hip="${HIP_VISIBLE_DEVICES:-}"
-    if [ -z "${HIP_VISIBLE_DEVICES+x}" ]; then
-        _amlf_hip="${CUDA_VISIBLE_DEVICES:-}"
-    fi
-    for _amlf_v in "${ROCR_VISIBLE_DEVICES:-}" "$_amlf_hip"; do
-        [ -n "$_amlf_v" ] || continue
-        _amlf_head=$(printf '%s' "$_amlf_v" | cut -d, -f1 | tr -d '[:space:]')
-        [ "$_amlf_head" = 0 ] || return 1
-    done
-    return 0
-}
-
 # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
 # every GPU, "uncovered" for an incompatible mix, empty when no fallback is needed or the
 # inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because the wheel must support
@@ -4370,13 +4393,25 @@ get_torch_index_url() {
         [ -n "$_amd_gfx_gate_probe" ] || _amd_gfx_gate_probe="$_amd_gfx_probe"
         _amd_gfx_tokens=" $(printf '%s\n' "$_amd_gfx_gate_probe" | sed 's/:.*$//' \
             | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"
+        _amd_gfx_bad_arch=false
         case "$_amd_gfx_tokens" in
-            *" gfx1033 "*)
-                echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- installing CPU-only PyTorch." >&2
-                echo "[WARN] ROCm wheels install on it but training diverges to NaN and gradcheck fails; forward math is fine." >&2
-                echo "[WARN] Details: studio/ROCM_RDNA2_APU.md. Override with UNSLOTH_TORCH_INDEX_URL if you want ROCm anyway." >&2
-                echo "$_base/cpu"; return ;;
+            *" gfx1033 "*) _amd_gfx_bad_arch=true ;;
         esac
+        # PRESENCE is the rule while the selected card is unknown, and it stays the rule for
+        # every host that has not asked for ROCm. An honoured UNSLOTH_FORCE_ROCM_TORCH has
+        # already resolved the one card this run hands torch, composing both mask layers
+        # (_amd_request_has_a_wheel_route), so answering on a sibling it hid took the cpu
+        # index for a routable gfx1100 and the CUDA fallback then undid the request entirely.
+        case "${_AMD_REQUEST_TARGET_GFX:-}" in
+            ""|gfx1033) : ;;
+            *) _amd_gfx_bad_arch=false ;;
+        esac
+        if [ "$_amd_gfx_bad_arch" = true ]; then
+            echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- installing CPU-only PyTorch." >&2
+            echo "[WARN] ROCm wheels install on it but training diverges to NaN and gradcheck fails; forward math is fine." >&2
+            echo "[WARN] Details: studio/ROCM_RDNA2_APU.md. Override with UNSLOTH_TORCH_INDEX_URL if you want ROCm anyway." >&2
+            echo "$_base/cpu"; return
+        fi
         # end of the miscomputing-arch gate -- tests/sh/test_rocm_bad_arch_gate.sh lifts
         # the block between the header comment above and this line, so keep both exact.
         # detect ROCm version
