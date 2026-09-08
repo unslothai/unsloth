@@ -193,8 +193,10 @@ _CLAUDE_ENV_UNSET = (
     "CLAUDE_CODE_USE_MANTLE",
 )
 _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
-# OpenClaw tries CODEX_API_KEY first, so dropping only OPENAI_API_KEY still embeds via OpenAI.
-_OPENCLAW_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY")
+# OpenClaw tries CODEX_API_KEY before OPENAI_API_KEY, so dropping only the latter still embeds
+# via OpenAI. CODEX_ACCESS_TOKEN is not a provider candidate but its host exec tool inherits it
+# (it is absent from host-env-security-policy.json), and the codex CLI on PATH logs in with it.
+_OPENCLAW_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
 # Help is grouped into rich panels so `--help` reads as Model / Server / Session
