@@ -12,7 +12,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-import torchaudio
 
 from core.inference.native_audio import (
     HIGGS_TTS2_CODEC_REPO,
@@ -42,6 +41,15 @@ def _backend(audio_type: str, **entry):
         }
     }
     return backend
+
+
+def test_anonymous_worker_token_cannot_fall_back_to_the_host_login():
+    from core.inference.inference import _hf_token_for_loader
+    from core.inference.worker import _config_hf_token
+
+    assert _config_hf_token({"hf_token": "", "anonymous_hf_access": True}) is False
+    assert _hf_token_for_loader(False) is False
+    assert NativeAudioBackend._token_kwargs(False) == {"token": False}
 
 
 @pytest.mark.parametrize(
@@ -506,13 +514,20 @@ def test_moss_local_generation_contract():
     assert seen["mode"] == "generation" and seen["generate"]["audio_top_k"] == 50
 
 
-def test_moss_nano_generation_contract():
+def test_moss_nano_generation_contract(monkeypatch):
     seen = {}
+
+    original_torchaudio = SimpleNamespace(
+        save = lambda *_args, **_kwargs: pytest.fail("the save proxy was not installed")
+    )
+    monkeypatch.setattr(sys.modules[__name__], "torchaudio", original_torchaudio, raising = False)
 
     class Model:
         def inference(self, **kwargs):
             seen.update(kwargs)
-            torchaudio.save(kwargs["output_audio_path"], torch.zeros((2, 480)), 48000)
+            sys.modules[__name__].torchaudio.save(
+                kwargs["output_audio_path"], torch.zeros((2, 480)), 48000
+            )
             return {"sample_rate": 48000}
 
     codec, tokenizer = object(), object()
@@ -523,7 +538,6 @@ def test_moss_nano_generation_contract():
         audio_codec = codec,
         sample_rate = 48000,
     )
-    original_torchaudio = sys.modules[__name__].torchaudio
     wav, rate = backend.generate_audio_response("Portable <|im_start|>speech", max_new_tokens = 375)
     assert wav[:4] == b"RIFF" and rate == 48000
     assert sys.modules[__name__].torchaudio is original_torchaudio
@@ -615,8 +629,9 @@ def test_minimax_loader_resolves_components_from_the_selected_checkpoint(monkeyp
 
     pipeline = Pipeline()
 
-    def from_pretrained(source, **_kwargs):
+    def from_pretrained(source, **kwargs):
         seen["source"] = source
+        seen["from_pretrained"] = kwargs
         return pipeline
 
     monkeypatch.setitem(
@@ -630,6 +645,7 @@ def test_minimax_loader_resolves_components_from_the_selected_checkpoint(monkeyp
 
     entry = {}
     backend._load_minimax_music3(entry, "/models/minimax-custom", None)
+    assert seen["from_pretrained"]["trust_remote_code"] is False
     assert seen["components"]["pretrained_model_name_or_path"] == "/models/minimax-custom"
     assert seen["device"] == "cuda"
     assert entry["pipeline"] is pipeline

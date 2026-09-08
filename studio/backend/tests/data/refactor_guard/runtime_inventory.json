@@ -227,7 +227,7 @@
       "strip_leading_bare_json_call": "core.inference.tool_call_parser.strip_leading_bare_json_call(text: 'str', enabled_tool_names: 'Optional[set]' = None) -> 'str'",
       "strip_llama3_leading_sentinels": "core.inference.tool_call_parser.strip_llama3_leading_sentinels(content: 'str') -> 'str'",
       "strip_segment": "core.inference.tool_call_parser.strip_segment(segment: 'str', *, seg_final: 'bool', enabled_tool_names: 'Optional[set]' = None) -> 'str'",
-      "strip_tool_markup": "core.inference.tool_call_parser.strip_tool_markup(text: 'str', *, final: 'bool' = False, trim: 'bool' = True, enabled_tool_names: 'Optional[set]' = None) -> 'str'",
+      "strip_tool_markup": "core.inference.tool_call_parser.strip_tool_markup(text: 'str', *, final: 'bool' = False, enabled_tool_names: 'Optional[set]' = None) -> 'str'",
       "thinking_exhausted_message": "core.inference.tool_call_parser.thinking_exhausted_message(context_length: 'Optional[int]' = None) -> 'str'",
       "unfinished_thought_progress": "core.inference.tool_call_parser.unfinished_thought_progress(reasoning: 'str') -> 'str'"
     }

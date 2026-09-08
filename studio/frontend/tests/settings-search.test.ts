@@ -76,6 +76,18 @@ test("desktop startup entries are absent from browser search", () => {
   }
 });
 
+test("the repair row is searchable on the desktop, where it exists", () => {
+  // The capability message for a host whose PyTorch cannot use its GPUs sends the user to
+  // "Repair installation in Settings", so searching Settings for it has to find it. Only
+  // on the desktop: DesktopRepairControl renders nothing in a browser, and an index entry
+  // there would scroll to a row that is not on the page.
+  const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true });
+  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+
+  assert.ok(desktop.general.includes("settings.general.repairInstall.label"));
+  assert.ok(!browser.general.includes("settings.general.repairInstall.label"));
+});
+
 test("close to tray is searchable only on supported desktops", () => {
   const supported = createSettingsSearchIndex({ desktop: true, closeToTray: true });
   const mac = createSettingsSearchIndex({ desktop: true, closeToTray: false });

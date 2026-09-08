@@ -102,6 +102,14 @@ def remove_prior_test_servers(token: str) -> None:
         )
 
 
+def unload_loaded_model(token: str) -> None:
+    status = api("/api/inference/status", token = token, method = "GET")
+    assert isinstance(status, dict)
+    loaded = status.get("model_identifier") or (status.get("loaded") or [None])[0]
+    if loaded:
+        api("/api/inference/unload", {"model_path": loaded}, token = token)
+
+
 def open_dialog(page):
     page.get_by_role("button", name = "MCP servers").click()
     page.get_by_role("menuitem", name = "Manage MCP servers").press("Enter")
@@ -449,6 +457,7 @@ def main() -> int:
     wait_for_health(BASE, timeout = 60, info = info)
     session = authenticate()
     remove_prior_test_servers(session["access_token"])
+    unload_loaded_model(session["access_token"])
     seed_js = (
         "(() => {"
         f"localStorage.setItem('unsloth_auth_token', {json.dumps(session['access_token'])});"

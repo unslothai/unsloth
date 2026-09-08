@@ -113,8 +113,8 @@ def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
     a new endpoint with the previous key (or the inverse) while a provider edit
     is in progress.
     """
-    # Ensure both tables exist before opening the transaction.  The credential
-    # module commits schema initialization on its own connection.
+    # Ensure both tables exist before opening the transaction. The credential module commits schema
+    # initialization on its own connection.
     from storage import credential_secrets
 
     credential_secrets.ensure_schema()

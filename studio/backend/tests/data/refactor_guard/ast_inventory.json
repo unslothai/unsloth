@@ -1739,7 +1739,7 @@
       "strip_tool_markup": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, *, final: bool=False, trim: bool=True, enabled_tool_names: Optional[set]=None"
+        "signature": "text: str, *, final: bool=False, enabled_tool_names: Optional[set]=None"
       },
       "thinking_exhausted_message": {
         "decorators": [],

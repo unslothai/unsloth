@@ -58,8 +58,8 @@ def retrieve_dense(
 ) -> list[Hit]:
     k = k or config.TOP_K_DENSE
     effective = model_name or config.effective_embedding_model()
-    # The identity comes from the encode, so it names the backend that actually served
-    # this query even if a concurrent ST failure swapped the process meanwhile.
+    # The identity comes from the encode, so it names the backend that served this query even if a
+    # concurrent ST failure swapped the process meanwhile.
     vectors, identity = embeddings.encode_with_identity(
         [query], model_name = effective, normalize = True
     )

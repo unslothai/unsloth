@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-# stages parsed from data-designer logs
 STAGE_CREATE = "create"
 STAGE_PREVIEW = "preview"
 STAGE_DAG = "dag"
@@ -25,7 +24,6 @@ USAGE_RESET_STAGES = {
     STAGE_PROFILING,
 }
 
-# job event types emitted by worker/manager
 EVENT_JOB_ENQUEUED = "job.enqueued"
 EVENT_JOB_STARTED = "job.started"
 EVENT_JOB_CANCELLING = "job.cancelling"

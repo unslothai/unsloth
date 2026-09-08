@@ -22,11 +22,7 @@ logger = get_logger(__name__)
 
 _installed = False
 _ORIGINAL_ENCODE = None
-# The read-and-patch below must happen once. Two first-time callers (two dataset
-# format checks land on the threadpool together) can both pass the _installed
-# check, and the second then captures the already-installed shim as
-# _ORIGINAL_ENCODE, so its fallback branch recurses into itself until
-# RecursionError.
+# The read-and-patch below must happen once.
 _install_lock = threading.Lock()
 
 
@@ -161,9 +157,9 @@ def ensure_audio_decoding() -> bool:
         return True
     if config.TORCHCODEC_AVAILABLE and not _installed:
         try:
-            # config only ran find_spec, and an installed torchcodec whose native libraries
-            # cannot dlopen still passes that. The API process never imports unsloth, so
-            # disable_torchcodec_if_broken has not corrected the flag here.
+            # config only ran find_spec, and an installed torchcodec whose native libraries cannot dlopen still passes
+            # that. The API process never imports unsloth, so disable_torchcodec_if_broken has not corrected the flag
+            # here.
             from datasets.features._torchcodec import AudioDecoder  # noqa: F401
         except (ImportError, OSError, RuntimeError) as exc:
             logger.info("torchcodec is installed but unusable (%s)", exc)
