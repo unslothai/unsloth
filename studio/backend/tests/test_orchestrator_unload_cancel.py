@@ -2226,9 +2226,9 @@ def test_start_dispatcher_resumes_after_unload_clears():
     o._unload_pending = False
 
     try:
-        assert o._start_dispatcher() is True, (
-            "a fresh dispatcher must start once no unload is pending"
-        )
+        assert (
+            o._start_dispatcher() is True
+        ), "a fresh dispatcher must start once no unload is pending"
         assert o._dispatcher_thread is not None and o._dispatcher_thread.is_alive()
     finally:
         o._stop_dispatcher()
@@ -2788,9 +2788,9 @@ def test_the_latch_is_scoped_to_a_lifecycle_not_the_process():
 
         inf.begin_load_lifecycle()
         with inf._scoped_load_attempts_lock:
-            assert inf._loads_shutting_down is False, (
-                "the second session would cancel every load it admitted"
-            )
+            assert (
+                inf._loads_shutting_down is False
+            ), "the second session would cancel every load it admitted"
     finally:
         inf.begin_load_lifecycle()
 
@@ -2986,15 +2986,15 @@ def test_a_second_backend_instance_is_covered_by_the_shutdown_latch():
         torn_down._shutting_down = True
         process_lifetime.mark_process_shutting_down()
 
-        assert helper._spawn_is_stale(None) is True, (
-            "a backend the shutdown never touched still thinks it may spawn"
-        )
+        assert (
+            helper._spawn_is_stale(None) is True
+        ), "a backend the shutdown never touched still thinks it may spawn"
     finally:
         process_lifetime.begin_process_lifecycle()
 
-    assert helper._spawn_is_stale(None) is False, (
-        "the latch outlived the lifecycle, so an embedded second session cannot spawn"
-    )
+    assert (
+        helper._spawn_is_stale(None) is False
+    ), "the latch outlived the lifecycle, so an embedded second session cannot spawn"
 
 
 def test_the_worker_spawn_refuses_once_shutdown_has_latched():
@@ -3126,12 +3126,12 @@ def test_a_load_from_the_previous_session_cannot_spawn_into_the_new_one():
         process_lifetime.mark_process_shutting_down()
         process_lifetime.begin_process_lifecycle()
 
-        assert process_lifetime.is_process_shutting_down() is False, (
-            "the new session cannot spawn at all"
-        )
-        assert process_lifetime.is_process_shutting_down(admitted) is True, (
-            "a load admitted by the previous session was released by the restart"
-        )
+        assert (
+            process_lifetime.is_process_shutting_down() is False
+        ), "the new session cannot spawn at all"
+        assert (
+            process_lifetime.is_process_shutting_down(admitted) is True
+        ), "a load admitted by the previous session was released by the restart"
         assert (
             process_lifetime.is_process_shutting_down(
                 process_lifetime.process_lifecycle_generation()
@@ -3186,9 +3186,9 @@ def test_the_previous_uvicorn_thread_is_joined_before_the_latches_clear():
     process = src.index("\n        begin_process_lifecycle()")
     route = src.index("\n        begin_load_lifecycle()")
 
-    assert join < backend < process < route, (
-        "the old server's requests are still in flight when the latches clear"
-    )
+    assert (
+        join < backend < process < route
+    ), "the old server's requests are still in flight when the latches clear"
 
 
 def test_the_drain_is_skipped_when_no_shutdown_ever_happened():
@@ -3265,9 +3265,9 @@ def test_a_request_admitted_by_the_previous_session_is_refused():
         if isinstance(n, ast.FunctionDef) and n.name == "_raise_if_scoped_load_cancelled"
     )
     body = textwrap.dedent(ast.get_source_segment(src, helper) or "")
-    assert "_raise_if_admitted_by_a_previous_session()" in body, (
-        "the point-of-no-return gate no longer rechecks the admission stamp"
-    )
+    assert (
+        "_raise_if_admitted_by_a_previous_session()" in body
+    ), "the point-of-no-return gate no longer rechecks the admission stamp"
 
     admitted = next(
         n
@@ -3297,9 +3297,9 @@ def test_every_http_request_is_stamped_at_admission():
         for n in tree.body
         if isinstance(n, ast.ClassDef) and n.name == "ProcessLifecycleStampMiddleware"
     )
-    assert any(isinstance(n, ast.AsyncFunctionDef) and n.name == "__call__" for n in cls.body), (
-        "the stamp middleware has no ASGI entry point"
-    )
+    assert any(
+        isinstance(n, ast.AsyncFunctionDef) and n.name == "__call__" for n in cls.body
+    ), "the stamp middleware has no ASGI entry point"
     assert any(
         isinstance(n, ast.Call)
         and isinstance(n.func, ast.Attribute)
@@ -3443,9 +3443,9 @@ def test_an_old_sweep_does_not_terminate_the_new_lifecycles_children():
         # The old shutdown finally reaches its sweep.
         pl.terminate_all(timeout = 0.5)
 
-        assert child.poll() is None, (
-            "the previous session's sweep killed a child this session adopted"
-        )
+        assert (
+            child.poll() is None
+        ), "the previous session's sweep killed a child this session adopted"
         with pl._record_lock:
             assert child.pid in pl._tracked_pids, (
                 "the child was dropped from the record, so its own session has no "

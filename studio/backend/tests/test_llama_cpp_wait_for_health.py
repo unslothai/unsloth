@@ -389,9 +389,9 @@ class TestWaitForHealthResilience:
         b._process.poll.return_value = -15
         b._kill_process(teardown = teardown)
         assert seen["process_still_set"] is True, "the window this guards would not exist"
-        assert seen["flag_at_signal"] is teardown, (
-            "teardown published late, or a reap marked terminal"
-        )
+        assert (
+            seen["flag_at_signal"] is teardown
+        ), "teardown published late, or a reap marked terminal"
 
     def test_a_crash_still_reports_the_exit_code(self, monkeypatch):
         """The teardown guard must not swallow the crash branch: an exited
@@ -1158,9 +1158,9 @@ def test_the_lifecycle_reset_stays_below_the_argument_checks():
     """A rejected invocation must not touch the backend at all."""
     body = _run_server_body()
 
-    assert body.index("choose an explicit port.") < body.index("_begin_server_lifecycle()"), (
-        "the reset runs before run_server has finished rejecting bad arguments"
-    )
+    assert body.index("choose an explicit port.") < body.index(
+        "_begin_server_lifecycle()"
+    ), "the reset runs before run_server has finished rejecting bad arguments"
 
 
 def test_the_lifecycle_reset_is_the_last_thing_before_the_serve():
@@ -1340,9 +1340,9 @@ class TestHealthPublicationIsAtomicWithTeardown:
 
         b._kill_process(teardown = True)
 
-        assert b._healthy is False, (
-            "teardown left _healthy set, so a publication that won the race is never undone"
-        )
+        assert (
+            b._healthy is False
+        ), "teardown left _healthy set, so a publication that won the race is never undone"
         assert b._publish_healthy() is False, "a later publication slipped past the teardown"
 
 
@@ -1594,9 +1594,9 @@ def test_the_shutdown_cancels_loads_before_it_kills_the_server():
     src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
 
     assert "cancel_pending_loads()" in src, "shutdown does not cancel in-flight loads"
-    assert src.index("cancel_pending_loads()") < src.index("_kill_process(teardown = True)"), (
-        "the loads are cancelled after the kill, so one can still spawn into the teardown"
-    )
+    assert src.index("cancel_pending_loads()") < src.index(
+        "_kill_process(teardown = True)"
+    ), "the loads are cancelled after the kill, so one can still spawn into the teardown"
 
 
 class TestATeardownDoesNotBlockASpawnItWillRefuse:
