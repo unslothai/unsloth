@@ -6217,6 +6217,11 @@ class LlamaCppBackend:
     # health wait. On the class: doubles built with __new__ never run __init__.
     _spawn_lock = threading.Lock()
 
+    # Held across a whole teardown, so a lifecycle cannot reopen mid-kill. Separate
+    # from _spawn_lock so that long hold does not also block a spawn, which only
+    # needs to read the flag. Order is always _teardown_lock then _spawn_lock.
+    _teardown_lock = threading.Lock()
+
     # Bumped per _begin_server_lifecycle; a load captures it and is refused if it no
     # longer matches, keeping a previous embedded lifecycle's load out.
     _lifecycle_generation = 0
@@ -26408,10 +26413,13 @@ class LlamaCppBackend:
         flag for a new lifecycle necessarily clears it for the old one, so a load
         compares the generation it captured instead.
         """
-        with self._spawn_lock:
-            self._shutting_down = False
-            self._torn_down_process = None
-            self._lifecycle_generation = getattr(self, "_lifecycle_generation", 0) + 1
+        # _teardown_lock first, so this waits for an in-progress kill rather than
+        # clearing the flag underneath it. Same order as _kill_process.
+        with self._teardown_lock:
+            with self._spawn_lock:
+                self._shutting_down = False
+                self._torn_down_process = None
+                self._lifecycle_generation = getattr(self, "_lifecycle_generation", 0) + 1
 
     def _spawn_is_stale(self, load_generation: Optional[int]) -> bool:
         """Whether this load may no longer spawn. Caller holds _spawn_lock.
@@ -26433,20 +26441,28 @@ class LlamaCppBackend:
         retry ladder reaping a child it is about to replace: only the former may
         end an in-flight health wait.
 
-        A teardown holds the spawn lock for the WHOLE kill: the terminate/wait below
-        keeps reading self._process and finally clears it, so a lifecycle reopened
-        mid-kill would have its new child dropped or terminated here. Marked above
-        the early return, since a quit during a download still has to be recorded.
+        A teardown holds _teardown_lock for the WHOLE kill, because the terminate and
+        wait below keep reading self._process and finally clear it: a lifecycle
+        reopened mid-kill would have its new child dropped or terminated here, so
+        _begin_server_lifecycle takes the same lock and waits.
+
+        _spawn_lock is taken only long enough to set the flag, NOT across the kill.
+        A spawn arriving mid-teardown then reads the flag and refuses in microseconds
+        instead of queuing behind a SIGTERM/SIGKILL escalation that can run for
+        seconds; the load thread it belongs to is one shutdown is already waiting on.
+        Marked above the early return, since a quit during a download still has to be
+        recorded.
         """
         if teardown:
-            with self._spawn_lock:
-                self._shutting_down = True
+            with self._teardown_lock:
+                with self._spawn_lock:
+                    self._shutting_down = True
                 self._kill_process_body(teardown = True)
             return
         self._kill_process_body(teardown = False)
 
     def _kill_process_body(self, *, teardown: bool):
-        """The kill itself. Caller holds _spawn_lock when ``teardown``."""
+        """The kill itself. Caller holds _teardown_lock when ``teardown``."""
         # Stop the watchdog before a deliberate kill so a planned reload/unload
         # isn't seen as a crash; a real crash never routes through here.
         self._stop_mtp_crash_watchdog()

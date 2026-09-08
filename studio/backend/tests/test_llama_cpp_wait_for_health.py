@@ -1555,11 +1555,12 @@ def test_a_lifecycle_cannot_reopen_while_a_teardown_is_still_killing():
 
     def restarter():
         in_kill.wait(2.0)
-        # Non-blocking: if the teardown still holds the lock this cannot succeed,
-        # which is the property under test.
-        got = b._spawn_lock.acquire(blocking = False)
+        # _teardown_lock, not _spawn_lock: the kill holds the former for its whole
+        # duration and the latter only long enough to set the flag, so a spawn can
+        # be refused promptly. This probes the lock that carries the property.
+        got = b._teardown_lock.acquire(blocking = False)
         if got:
-            b._spawn_lock.release()
+            b._teardown_lock.release()
         reopened_during_kill.append(got)
         release.set()
 
@@ -1572,7 +1573,7 @@ def test_a_lifecycle_cannot_reopen_while_a_teardown_is_still_killing():
         t.join(5.0)
 
     assert reopened_during_kill == [False], (
-        "the spawn lock was free while the teardown was still killing, so "
+        "the teardown lock was free while the kill was still running, so "
         "_begin_server_lifecycle could reopen the lifecycle mid-kill"
     )
 
@@ -1594,3 +1595,113 @@ def test_the_shutdown_cancels_loads_before_it_kills_the_server():
     assert src.index("cancel_pending_loads()") < src.index(
         "_kill_process(teardown = True)"
     ), "the loads are cancelled after the kill, so one can still spawn into the teardown"
+
+
+class TestATeardownDoesNotBlockASpawnItWillRefuse:
+    """The kill needs a long hold so a lifecycle cannot reopen mid-terminate, but a
+    spawn only needs to read the flag. Holding one lock for both made a spawn queue
+    behind a SIGTERM/SIGKILL escalation for seconds before being told no, on a
+    thread shutdown is already waiting for."""
+
+    def _backend(self, on_terminate):
+        b = _make_backend()
+        b._stop_mtp_crash_watchdog = lambda: None
+        b._reset_effective_parallel_slots = lambda: None
+        b._diffusion_requested_ngl = None
+        b._leading_process_group = lambda _p: None
+        b._collect_descendants = lambda _p: []
+
+        class _Stubborn:
+            pid = 4242
+
+            def __init__(self):
+                self.killed = False
+
+            def terminate(self):
+                on_terminate()
+
+            def wait(self, timeout = None):
+                if not self.killed:
+                    raise subprocess.TimeoutExpired("llama-server", timeout)
+
+            def kill(self):
+                self.killed = True
+
+        b._process = _Stubborn()
+        return b
+
+    def test_a_spawn_is_refused_without_waiting_for_the_kill(self):
+        in_kill = threading.Event()
+        release = threading.Event()
+        b = self._backend(lambda: (in_kill.set(), release.wait(5.0)))
+        seen = []
+
+        def spawner():
+            in_kill.wait(5.0)
+            start = time.monotonic()
+            with b._spawn_lock:
+                stale = b._spawn_is_stale(0)
+            seen.append((time.monotonic() - start, stale))
+            release.set()
+
+        t = threading.Thread(target = spawner)
+        t.start()
+        try:
+            b._kill_process(teardown = True)
+        finally:
+            release.set()
+            t.join(10)
+
+        waited, refused = seen[0]
+        assert refused is True, "the spawn was allowed through during a teardown"
+        assert waited < 1.0, (
+            f"the spawn waited {waited:.2f}s for the kill before being refused; the "
+            "teardown hold and the flag read must not share one lock"
+        )
+
+    def test_a_lifecycle_reset_still_waits_for_the_kill(self):
+        """The other half, and the reason the long hold exists at all: clearing the
+        flag mid-kill would let a new load spawn a child this teardown then drops."""
+        in_kill = threading.Event()
+        release = threading.Event()
+        b = self._backend(lambda: (in_kill.set(), release.wait(2.0)))
+        order = []
+
+        def resetter():
+            in_kill.wait(5.0)
+            b._begin_server_lifecycle()
+            order.append("reset")
+
+        t = threading.Thread(target = resetter)
+        t.start()
+        try:
+            b._kill_process(teardown = True)
+            order.append("kill_done")
+        finally:
+            release.set()
+            t.join(10)
+
+        assert order == ["kill_done", "reset"], (
+            f"the lifecycle reopened before the kill finished: {order}"
+        )
+
+
+def test_the_lock_order_is_teardown_then_spawn():
+    """Two locks means an order, and taking them the other way round deadlocks."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(LlamaCppBackend))
+    inversions = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.With) and any(
+            "_spawn_lock" in ast.unparse(i.context_expr) for i in node.items
+        ):
+            for inner in ast.walk(node):
+                if inner is node:
+                    continue
+                if isinstance(inner, ast.With) and any(
+                    "_teardown_lock" in ast.unparse(i.context_expr) for i in inner.items
+                ):
+                    inversions.append(inner.lineno)
+    assert not inversions, f"_teardown_lock taken inside _spawn_lock at {inversions}"
