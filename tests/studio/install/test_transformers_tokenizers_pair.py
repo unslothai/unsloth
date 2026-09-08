@@ -195,11 +195,18 @@ def test_the_darwin_override_admits_only_the_pinned_transformers():
             f"the override ({req.specifier}) excludes the version constraints.txt pins "
             f"({version})"
         )
-        excess = [
+        # Derived from the pin rather than listed, so this keeps asking the question after
+        # the pin moves. A fixed pair of releases goes vacuous the moment the pin passes
+        # them: with 5.16.1 pinned, neither 5.16.1 nor 5.15.1 is above it and nothing is
+        # tested. The two named releases are still probed, since they are the ones that
+        # actually shipped the tokenizers window change.
+        pin = Version(version)
+        higher = {f"{pin.major}.{pin.minor + 1}.0", f"{pin.major + 1}.0.0", "5.16.1", "5.15.1"}
+        excess = sorted(
             candidate
-            for candidate in ("5.16.1", "5.15.1")
-            if Version(candidate) > Version(version) and candidate in req.specifier
-        ]
+            for candidate in higher
+            if Version(candidate) > pin and candidate in req.specifier
+        )
         assert not excess, (
             f"the override admits transformers {excess}, above the pinned {version}. On "
             f"macOS arm64 that is what install.sh's core phase installs, and a later "
