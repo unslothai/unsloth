@@ -211,3 +211,49 @@ def test_numeric_string_eval_steps_is_normalised(audio_trainer):
     )
     assert eval_dataset is not None
     assert isinstance(args["eval_steps"], float) and args["eval_steps"] == 0.1
+
+
+def test_a_length_less_eval_split_still_enables_evaluation(audio_trainer):
+    """The empty-split guard reads a row count; a streaming split has none and must not be
+    mistaken for an empty one."""
+
+    class _NoLen:
+        pass
+
+    args, eval_dataset = audio_trainer._audio_eval_config(
+        {"eval_dataset": _NoLen(), "eval_steps": 0.1, "batch_size": 2}
+    )
+    assert eval_dataset is not None
+    assert args["eval_strategy"] == "steps"
+
+
+@pytest.mark.parametrize("batch_size", [1, 2, 8])
+def test_explicit_batch_sizes_are_preserved(audio_trainer, batch_size):
+    args, _ = audio_trainer._audio_eval_config(
+        {"eval_dataset": ["a"], "eval_steps": 0.1, "batch_size": batch_size}
+    )
+    assert args["per_device_eval_batch_size"] == batch_size
+
+
+@pytest.mark.parametrize("eval_steps,expected", [(0.1, 0.1), (0.25, 0.25), (1, 1), (2, 2)])
+def test_transformers_accepts_the_produced_config(audio_trainer, tmp_path, eval_steps, expected):
+    """Normalising eval_steps to float must not change the cadence transformers ends up with."""
+    transformers = pytest.importorskip("transformers")
+
+    training_args = {
+        "eval_dataset": ["a", "b"],
+        "eval_steps": eval_steps,
+        "batch_size": 2,
+        "max_steps": 8,
+        "optim": "adamw_torch",
+    }
+    eval_args, eval_dataset = audio_trainer._audio_eval_config(training_args)
+    assert eval_dataset is not None
+    config = audio_trainer._build_audio_training_args(
+        training_args, str(tmp_path), extra_args = {"remove_unused_columns": False, **eval_args}
+    )
+    config.update(bf16 = False, fp16 = False, use_cpu = True, report_to = [])
+    args = transformers.TrainingArguments(**config)
+    assert args.eval_strategy == "steps"
+    assert args.eval_steps == expected
+    assert args.per_device_eval_batch_size == 2
