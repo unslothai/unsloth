@@ -982,11 +982,19 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
                 f"changing group membership."
             )
     # Group membership cannot create a device node, so these stand whether or not anything
-    # above was said. install.sh already says both; this is the runtime half.
+    # above was said. install.sh says the same two things; this is the runtime half.
     if _KFD_NODE in missing:
+        # NOT "install the ROCm kernel stack". _amd_nodes_the_runtime_lacks only reports a
+        # missing node once the KFD topology names an AMD GPU, and that topology is the
+        # amdkfd driver's own sysfs -- so on every host this branch can reach, the kernel
+        # stack is already loaded and installing it again changes nothing. What is missing
+        # is the node in THIS mount namespace, which is the container shape of the problem.
         parts.append(
-            "ROCm needs /dev/kfd, which does not exist on this host, so the ROCm kernel "
-            "stack has to be installed as well; no group membership creates it."
+            "ROCm needs /dev/kfd, which is not present here, but the KFD topology already "
+            "names an AMD GPU, so the kernel driver is loaded and reinstalling ROCm "
+            "changes nothing: the node itself is missing. Under Docker, recreate the "
+            "container with --device /dev/kfd --device /dev/dri; on a bare host it is a "
+            "udev or devtmpfs problem. No group membership creates it."
         )
     if _RENDER_NODE_GLOB in missing:
         parts.append(

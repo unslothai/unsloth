@@ -5541,9 +5541,21 @@ if [ "$_amd_node_diag_route" = true ] && \
    [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ] && \
    ! printf '%s\n' "$_closed_amd_nodes" | grep -qx /dev/kfd && \
    ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
-    substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
-    substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
-    substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
+    # The KFD topology is the amdkfd driver's own sysfs, so a host that has it does NOT
+    # need the kernel stack installed -- the node is simply not in this mount namespace,
+    # which is what a container created with --device /dev/dri and no --device /dev/kfd
+    # looks like from inside (/sys comes from the host, /dev does not). Telling that user
+    # to install ROCm leaves HIP exactly as unavailable as before.
+    if _kfd_topology_has_an_amd_gpu; then
+        substep "An AMD GPU is in the KFD topology but /dev/kfd is not present, so the" "$C_WARN"
+        substep "  driver is loaded and reinstalling ROCm changes nothing: the node itself"
+        substep "  is missing. Under Docker, recreate the container with --device /dev/kfd"
+        substep "  --device /dev/dri; on a bare host it is a udev or devtmpfs problem."
+    else
+        substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
+        substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
+        substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
+    fi
 fi
 # The driver is loaded and the nodes exist, so neither a wheel nor a kernel stack
 # repairs this; only group membership does. Nothing else in this installer asks

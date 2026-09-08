@@ -613,15 +613,20 @@ def test_no_mask_leaves_the_hint_alone(monkeypatch, linux):
 
 
 def test_the_hint_says_so_when_kfd_does_not_exist_at_all(monkeypatch, linux):
-    """install.sh keeps the missing-kernel-stack diagnosis for this host; the runtime
-    message has to as well. A closed render node is real and the groups open it, but
-    they cannot create /dev/kfd, so a ROCm caller is not repaired by them alone."""
+    """A closed render node is real and the groups open it, but no membership creates
+    /dev/kfd, so a ROCm caller is not repaired by them alone and both sentences print.
+
+    The kernel-stack wording this used to assert was wrong, and asserting it is what
+    kept it: the sentence is reachable only once the KFD topology names an AMD GPU, and
+    that topology is the amdkfd driver's own sysfs, so the stack is already loaded on
+    every host that can reach it. install.sh's kernel-stack branch is gated the other
+    way round, on the topology being ABSENT."""
     _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = set())
     monkeypatch.setenv("USER", "ada")
     hint = amd.amd_node_permission_hint()
     assert "usermod -a -G render,video ada" in hint
     assert "/dev/kfd" in hint
-    assert "kernel stack" in hint
+    assert "kernel stack" not in hint
 
 
 def test_a_closed_but_present_kfd_node_says_nothing_about_the_kernel_stack(monkeypatch, linux):
@@ -1859,3 +1864,82 @@ def test_the_installer_stops_at_the_owner_class_too(tmp_path):
     out = _install_sh_hint(str(node), self_uid = str(os.getuid()))
     assert "usermod" not in out
     assert "owned by this account" in out
+
+
+
+def _kernel_stack_hint_text(*, topology: bool) -> str:
+    """What install.sh actually PRINTS in the missing-/dev/kfd branch.
+
+    `_kernel_stack_hint_runs` above lifts only the guard, so it answers whether the
+    branch fires and nothing about which repair it names -- which is exactly where the
+    branch was wrong. This lifts the guard AND its body, through the closing `fi`, so a
+    revert changes the text this returns.
+    """
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    lines = install_sh.read_text(encoding = "utf-8").splitlines()
+    end = next(
+        i
+        for i, line in enumerate(lines)
+        if line.rstrip().endswith("! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then")
+    )
+    start = end
+    while not lines[start].lstrip().startswith("if "):
+        start -= 1
+    close = next(i for i in range(end + 1, len(lines)) if lines[i] == "fi")
+    block = "\n".join(lines[start : close + 1])
+    script = "\n".join(
+        [
+            'substep() { echo "$1"; }',
+            "_has_amd_rocm_gpu() { return 1; }",
+            "_amd_gpu_present_via_pci() { return 0; }",
+            f"_kfd_topology_has_an_amd_gpu() {{ return {0 if topology else 1}; }}",
+            "SKIP_TORCH=false",
+            "OS=linux",
+            "C_WARN=",
+            "_amd_node_diag_route=true",
+            block,
+        ]
+    )
+    out = subprocess.run(
+        ["bash", "-c", script],
+        capture_output = True,
+        text = True,
+        check = True,
+        env = {**os.environ, "_closed_amd_nodes": ""},
+    )
+    return out.stdout
+
+
+def test_the_installer_does_not_prescribe_a_reinstall_when_the_topology_is_there():
+    """A container created with --device /dev/dri and no --device /dev/kfd sees the
+    host's /sys and not its /dev, so the KFD topology names an AMD GPU while the node
+    is absent. The driver is therefore already loaded, and "install the ROCm kernel
+    stack" is a repair that leaves HIP exactly as unavailable as before."""
+    out = _kernel_stack_hint_text(topology = True)
+    assert "Install the ROCm kernel stack" not in out
+    assert "--device /dev/kfd" in out
+    assert "the node itself" in out
+
+
+def test_the_installer_keeps_the_kernel_stack_advice_without_a_topology():
+    """The control, and the case the branch was written for: no KFD topology at all, so
+    the driver really is missing and the reinstall is the repair. Without this the fix
+    could be "never mention the kernel stack", which removes a correct diagnosis."""
+    out = _kernel_stack_hint_text(topology = False)
+    assert "Install the ROCm kernel stack" in out
+    assert "--device /dev/kfd" not in out
+
+
+def test_a_container_missing_kfd_is_told_to_map_it_rather_than_reinstall(monkeypatch, linux):
+    """The runtime half of the same item. `_amd_nodes_the_runtime_lacks` reports a
+    missing node only once the KFD topology names an AMD GPU, and that topology is the
+    amdkfd driver's own sysfs -- so on every host this sentence can reach, the kernel
+    stack is already loaded and the advice to install it is unreachable-by-construction
+    wrong."""
+    _nodes(
+        monkeypatch, present = ["/dev/dri/renderD128"], openable = {"/dev/dri/renderD128"}
+    )
+    hint = amd.amd_node_permission_hint()
+    assert "--device /dev/kfd" in hint
+    assert "kernel stack" not in hint
+    assert "the kernel driver is loaded" in hint
