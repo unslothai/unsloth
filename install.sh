@@ -3402,6 +3402,23 @@ _amd_nodes_closed_to_this_user() {
     done
 }
 
+# The groups the given nodes belong to, one per line, GID when stat cannot name the group.
+# "render,video" is not universally the right pair: a container is passed the host's numeric
+# gids by --group-add and has no matching group NAMES inside it (docker/run.sh passes numbers
+# for exactly this reason), a minimal distribution can ship no render group, and a node left
+# root:root by a udev rule is not fixed by joining anything. usermod -a -G takes a GID as
+# happily as a name, so reading the node answers all three.
+_amd_node_groups() {
+    for _ang_node in $1; do
+        _ang_g=$(stat -c '%G' "$_ang_node" 2>/dev/null) || continue
+        # stat prints UNKNOWN for a gid with no group entry, which is the container case.
+        case "$_ang_g" in
+            ""|UNKNOWN*) _ang_g=$(stat -c '%g' "$_ang_node" 2>/dev/null) || continue ;;
+        esac
+        [ -n "$_ang_g" ] && printf '%s\n' "$_ang_g"
+    done | awk 'NF && !seen[$0]++'
+}
+
 # rocminfo names each agent twice, so "gfx1201\ngfx1201" is one device, not two.
 _amd_probe_arches() {
     printf '%s\n' "$1" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' | awk 'NF' | sort -u
@@ -5479,8 +5496,15 @@ if [ -n "$_closed_amd_nodes" ]; then
     else
         substep "  ROCm needs it; Vulkan does not. Add yourself to the"
     fi
-    substep "  render and video groups, then log out and back in:"
-    substep "  sudo usermod -a -G render,video ${USER:-\$USER}"
+    # Named from the nodes that were refused, so the command grants access to those files.
+    # The documented pair is the fallback for a host whose nodes could not be stat'd.
+    _closed_amd_groups=$(_amd_node_groups "$_closed_amd_nodes" | tr '\n' ',' | sed 's/,*$//')
+    [ -n "$_closed_amd_groups" ] || _closed_amd_groups="render,video"
+    case "$_closed_amd_groups" in
+        *,*) substep "  $_closed_amd_groups groups, then log out and back in:" ;;
+        *)   substep "  $_closed_amd_groups group, then log out and back in:" ;;
+    esac
+    substep "  sudo usermod -a -G $_closed_amd_groups ${USER:-\$USER}"
 fi
 
 # ── Install unsloth directly into the venv (no activation needed) ──

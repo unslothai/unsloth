@@ -685,6 +685,36 @@ def amd_nodes_closed_to_this_user() -> list[str]:
     return closed
 
 
+def _groups_that_own(paths: list) -> list:
+    """Group names owning ``paths``, in first-seen order, GID when the name is unknown.
+
+    The command is only as good as the group it names, and "render,video" is not always
+    the right pair. A container gets the host's numeric gids passed through by
+    ``--group-add`` and has no matching group NAMES inside it (docker/run.sh says so and
+    passes numbers for exactly this reason), a minimal distribution can ship no render
+    group at all, and a node left ``root:root`` by a udev rule is not fixed by joining
+    anything. Reading the node answers all three, and a GID is as valid an argument to
+    ``usermod -a -G`` as a name is.
+
+    Best effort by construction: a node that cannot be stat'd contributes nothing rather
+    than raising, and a caller with no answer at all falls back to the documented pair.
+    """
+    names = []
+    for path in paths:
+        try:
+            gid = os.stat(path).st_gid
+        except OSError:
+            continue
+        try:
+            import grp
+            name = grp.getgrgid(gid).gr_name
+        except Exception:  # noqa: BLE001 -- no passwd/group database, or no such gid
+            name = str(gid)
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     """One sentence naming the closed nodes and the command that opens them, or None.
 
@@ -706,11 +736,17 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     # Claim only what the closed set actually blocks.
     blocked = "no GPU backend can use" if any(p != _KFD_NODE for p in closed) else "ROCm cannot use"
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
+    # Named from the nodes themselves, so the command grants access to the files that
+    # were actually refused. "render,video" is the fallback for a host whose nodes could
+    # not be stat'd, not the answer.
+    groups = _groups_that_own(closed) or ["render", "video"]
+    joined = ",".join(groups)
+    plural = "group" if len(groups) == 1 else "groups"
     hint = (
         f"This account cannot open {', '.join(closed)}, so {blocked} the "
-        f"AMD card even though the driver is loaded. Add the account to the render and "
-        f"video groups and then log out and back in: "
-        f"sudo usermod -a -G render,video {user}"
+        f"AMD card even though the driver is loaded. Add the account to the "
+        f"{joined} {plural} and then log out and back in: "
+        f"sudo usermod -a -G {joined} {user}"
     )
     # Group membership cannot create a device node. A caller that needs /dev/kfd on a
     # host without one has a second, unrelated problem, and the sentence above is then

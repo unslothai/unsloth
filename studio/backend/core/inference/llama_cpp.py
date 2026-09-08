@@ -9865,6 +9865,7 @@ class LlamaCppBackend:
             )
 
             masks = []
+            blocking = []
             for var in (
                 "CUDA_VISIBLE_DEVICES",
                 "HIP_VISIBLE_DEVICES",
@@ -9872,8 +9873,18 @@ class LlamaCppBackend:
                 "GPU_DEVICE_ORDINAL",
             ):
                 raw = os.environ.get(var)
-                if raw is not None:
-                    masks.append(f"{var}={raw!r}" if raw.strip() else f"{var} is empty")
+                if raw is None:
+                    continue
+                phrase = f"{var}={raw!r}" if raw.strip() else f"{var} is empty"
+                masks.append(phrase)
+                # Which of these can actually explain an empty probe. CUDA and HIP read
+                # the list left to right and stop at the first entry that names no
+                # device, so a value that is empty, or whose FIRST entry is empty or
+                # negative, exposes nothing; HIP_VISIBLE_DEVICES=0 still exposes GPU 0.
+                # A Vulkan build reads none of the four, so none of them blocks it.
+                first = raw.split(",")[0].strip()
+                if not _is_vulkan and (first == "" or first.startswith("-")):
+                    blocking.append(phrase)
             mask_note = f" ({', '.join(masks)})" if masks else ""
 
             node_hint = None
@@ -9886,10 +9897,15 @@ class LlamaCppBackend:
             if node_hint:
                 # A mask hides devices whatever the node permissions are, so a host with
                 # both needs both fixes and the early return was hiding the second one.
-                if masks:
+                # Only a mask that can hide EVERY device is a second blocker, though: a
+                # valid selector beside a closed node is not why the probe came back
+                # empty, and naming it sends the user after a change that fixes nothing.
+                # mask_note below is deliberately left listing all four -- there it
+                # annotates what torch was looking at rather than claiming a repair.
+                if blocking:
                     return (
                         f"{node_hint} A device visibility mask is also in force "
-                        f"({', '.join(masks)}), which the groups do not clear."
+                        f"({', '.join(blocking)}), which the groups do not clear."
                     )
                 return node_hint
             if _is_vulkan:

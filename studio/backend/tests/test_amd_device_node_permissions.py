@@ -54,6 +54,10 @@ def _nodes(
     monkeypatch.setattr(amd.os, "access", lambda p, mode: p in openable)
     monkeypatch.setattr(amd, "_render_node_is_amd", lambda p: amd_owned)
     monkeypatch.setattr(amd, "_kfd_topology_has_an_amd_gpu", lambda: amd_owned)
+    # These paths are patched rather than created, so stat cannot name their groups; say
+    # so explicitly instead of leaving it to whether the runner happens to have a node at
+    # the same path. The derivation itself is exercised in its own tests below.
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: [])
 
 
 def test_a_node_this_user_cannot_open_is_reported(monkeypatch, linux):
@@ -609,3 +613,241 @@ def test_a_vulkan_caller_is_not_told_about_a_kernel_stack_it_does_not_need(monke
     """Vulkan never opens /dev/kfd, so its absence is not that caller's problem."""
     _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = set())
     assert "kernel stack" not in amd.amd_node_permission_hint(needs_kfd = False)
+
+
+def test_the_repair_names_the_groups_the_closed_nodes_belong_to(monkeypatch, linux):
+    """render and video are the usual pair, not a universal truth. A container is passed
+    the host's numeric gids by --group-add and has no matching group NAMES inside it, a
+    minimal distribution can ship no render group, and a node left root:root by a udev
+    rule is not fixed by joining either. The command has to name the groups that own the
+    files that were refused, or it is a repair that cannot work.
+
+    Fails before the fix, which hard-coded render,video whatever the nodes said."""
+    _nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128"],
+        openable = set(),
+    )
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ["kfd", "gpu"])
+    monkeypatch.setenv("USER", "ada")
+    hint = amd.amd_node_permission_hint()
+    assert "usermod -a -G kfd,gpu ada" in hint
+    assert "render,video" not in hint
+
+
+def test_a_single_owning_group_is_not_pluralised(monkeypatch, linux):
+    """A host where both nodes belong to one group gets one group named, and the sentence
+    has to agree with the command rather than saying "groups" over a single name."""
+    _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = set())
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ["render"])
+    monkeypatch.setenv("USER", "ada")
+    hint = amd.amd_node_permission_hint()
+    assert "usermod -a -G render ada" in hint
+    assert "render group and then log out" in hint
+
+
+def test_unreadable_nodes_fall_back_to_the_documented_pair(monkeypatch, linux):
+    """The control: the derivation is best effort, so a host whose nodes cannot be stat'd
+    must still get advice rather than an empty -G argument, and that advice is the pair
+    the AMD documentation names."""
+    _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
+    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: [])
+    monkeypatch.setenv("USER", "ada")
+    assert "usermod -a -G render,video ada" in amd.amd_node_permission_hint()
+
+
+def test_the_group_derivation_reads_the_node(monkeypatch):
+    """The helper itself, since every test above stubs it. Two nodes owned by one group
+    name it once, and order is first-seen so the command reads like the node list."""
+    import grp as _grp
+
+    gids = {"/dev/kfd": 44, "/dev/dri/renderD128": 44, "/dev/dri/renderD129": 39}
+    monkeypatch.setattr(
+        amd.os, "stat", lambda p: type("st", (), {"st_gid": gids[p]})(),
+    )
+    monkeypatch.setattr(
+        _grp, "getgrgid", lambda gid: type("gr", (), {"gr_name": {44: "video", 39: "render"}[gid]})(),
+    )
+    assert amd._groups_that_own(
+        ["/dev/dri/renderD129", "/dev/kfd", "/dev/dri/renderD128"]
+    ) == ["render", "video"]
+
+
+def test_a_gid_with_no_group_entry_is_named_by_number(monkeypatch):
+    """The container case docker/run.sh documents: --group-add passes the host's numeric
+    gids, and inside the container no group entry matches them. usermod -a -G takes a GID
+    as happily as a name, so the number is the answer rather than a reason to give up."""
+    import grp as _grp
+
+    monkeypatch.setattr(amd.os, "stat", lambda p: type("st", (), {"st_gid": 993})())
+    monkeypatch.setattr(
+        _grp, "getgrgid", lambda gid: (_ for _ in ()).throw(KeyError(gid)),
+    )
+    assert amd._groups_that_own(["/dev/kfd"]) == ["993"]
+
+
+def test_a_node_that_cannot_be_stat_contributes_nothing(monkeypatch):
+    """And the failure mode that must not raise: diagnostics run on the path where things
+    are already wrong, so a node that vanished between the probe and the message drops
+    out rather than taking the whole hint down."""
+    def _stat(path):
+        if path == "/dev/kfd":
+            raise OSError("gone")
+        return type("st", (), {"st_gid": 44})()
+
+    import grp as _grp
+
+    monkeypatch.setattr(amd.os, "stat", _stat)
+    monkeypatch.setattr(
+        _grp, "getgrgid", lambda gid: type("gr", (), {"gr_name": "video"})(),
+    )
+    assert amd._groups_that_own(["/dev/kfd", "/dev/dri/renderD128"]) == ["video"]
+
+
+def _install_sh_hint(closed_nodes: str) -> str:
+    """The installer's closed-node message, run for a given closed set.
+
+    Lifted from install.sh rather than restated, and the whole block rather than a
+    condition, because the thing under test is the sentence it prints. substep is stubbed
+    to plain echo; the node list comes in through the environment, since embedding it in
+    the script would put a literal backslash-n inside shell quotes and turn two nodes into
+    one unmatched line.
+    """
+    import subprocess
+
+    install_sh = Path(__file__).resolve().parents[3] / "install.sh"
+    text = install_sh.read_text(encoding = "utf-8")
+    lines = text.splitlines()
+    start = next(
+        i for i, line in enumerate(lines)
+        if line == 'if [ -n "$_closed_amd_nodes" ]; then'
+    )
+    end = next(i for i in range(start, len(lines)) if lines[i] == "fi")
+    block = "\n".join(lines[start : end + 1])
+
+    fn_start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_groups() {"))
+    depth = 0
+    for fn_end in range(fn_start, len(lines)):
+        depth += lines[fn_end].count("{") - lines[fn_end].count("}")
+        if depth == 0:
+            break
+    helper = "\n".join(lines[fn_start : fn_end + 1])
+
+    script = "\n".join([
+        "substep() { echo \"$1\"; }",
+        'C_WARN=""',
+        helper,
+        block,
+    ])
+    out = subprocess.run(
+        ["bash", "-c", script], capture_output = True, text = True,
+        env = {**os.environ, "_closed_amd_nodes": closed_nodes, "USER": "ada"},
+    )
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+def test_the_installer_names_the_group_the_node_actually_has(tmp_path):
+    """The shell half of the same item, and the only arm of it that reads a real file:
+    the message must name the group that owns the node it just refused. Fails before the
+    fix, which printed render,video for every host.
+
+    The expected group is read with the same stat the installer uses rather than assumed,
+    since a test runner's primary group is not knowable in advance -- but asserting it is
+    NOT render,video is what makes that comparison mean something."""
+    import subprocess
+
+    node = tmp_path / "renderD128"
+    node.write_bytes(b"")
+    owner = subprocess.run(
+        ["stat", "-c", "%G", str(node)], capture_output = True, text = True,
+    ).stdout.strip()
+    out = _install_sh_hint(str(node))
+    assert f"usermod -a -G {owner} ada" in out
+    if owner not in ("render", "video"):
+        assert "render,video" not in out
+
+
+def test_the_installer_falls_back_when_the_node_is_gone(tmp_path):
+    """The control: a path that cannot be stat'd still has to produce advice, and a
+    fallback that produced an empty -G argument would be worse than the hard-coded pair
+    it replaced."""
+    out = _install_sh_hint(str(tmp_path / "renderD128"))
+    assert "usermod -a -G render,video ada" in out
+
+
+def _reason_with_mask(monkeypatch, var: str, value: str, backends: set) -> str:
+    """The empty-probe reason on a closed-node host carrying one visibility mask."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
+    monkeypatch.setenv("USER", "ada")
+    for other in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
+        monkeypatch.delenv(other, raising = False)
+    monkeypatch.setenv(var, value)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda _b: frozenset(backends)),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_is_vulkan_backend",
+        staticmethod(lambda _b: backends == {"vulkan"}),
+    )
+    return LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+
+
+def test_a_selector_that_still_exposes_a_device_is_not_a_second_blocker(monkeypatch, linux):
+    """HIP_VISIBLE_DEVICES=0 names a device rather than hiding one, so it is not why the
+    probe came back empty and clearing it changes nothing. Reported as a second blocker
+    it sends the user after a fix that cannot help, on top of the one that can.
+
+    Fails before the fix, which listed every variable that was merely SET."""
+    reason = _reason_with_mask(monkeypatch, "HIP_VISIBLE_DEVICES", "0", {"hip"})
+    assert "usermod -a -G render,video ada" in reason
+    assert "visibility mask" not in reason
+
+
+def test_a_mask_that_hides_everything_is_still_reported(monkeypatch, linux):
+    """The control that keeps the test above honest: an empty value exposes no device at
+    all, so that host really does need both fixes and must still be told both."""
+    reason = _reason_with_mask(monkeypatch, "HIP_VISIBLE_DEVICES", "", {"hip"})
+    assert "usermod -a -G render,video ada" in reason
+    assert "HIP_VISIBLE_DEVICES is empty" in reason
+
+
+def test_a_negative_first_entry_hides_everything(monkeypatch, linux):
+    """CUDA and HIP parse the list left to right and stop at the first entry that names
+    no device, so -1 leading the list leaves nothing enumerated."""
+    reason = _reason_with_mask(monkeypatch, "CUDA_VISIBLE_DEVICES", "-1", {"hip"})
+    assert "CUDA_VISIBLE_DEVICES='-1'" in reason
+    assert "visibility mask is also in force" in reason
+
+
+def test_a_leading_valid_entry_survives_a_later_invalid_one(monkeypatch, linux):
+    """And its control: 0,-1 stops at the -1 but has already exposed GPU 0, so the mask
+    is not the blocker. Without this the fix could be "any minus sign anywhere hides
+    everything", which passes the test above and is wrong."""
+    reason = _reason_with_mask(monkeypatch, "CUDA_VISIBLE_DEVICES", "0,-1", {"hip"})
+    assert "visibility mask" not in reason
+
+
+def test_a_vulkan_build_is_not_told_about_a_mask_it_never_reads(monkeypatch, linux):
+    """A Vulkan-only install reads none of these four, so an inherited HIP or CUDA mask
+    is not a blocker for it at any value -- the render node it cannot open is."""
+    reason = _reason_with_mask(monkeypatch, "HIP_VISIBLE_DEVICES", "", {"vulkan"})
+    assert "usermod -a -G render,video ada" in reason
+    assert "visibility mask" not in reason
+
+
+def test_the_same_empty_mask_still_counts_for_a_hip_build(monkeypatch, linux):
+    """The control for the arm above, one backend apart: the identical environment must
+    still report the mask when the install is one that actually reads it."""
+    reason = _reason_with_mask(monkeypatch, "HIP_VISIBLE_DEVICES", "", {"hip"})
+    assert "visibility mask is also in force" in reason
