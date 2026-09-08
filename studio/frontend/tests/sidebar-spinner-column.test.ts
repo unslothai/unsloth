@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -64,8 +63,8 @@ test("nav and Recents spinners land on one trailing column", async () => {
 // The kebab overlays the row's right edge, so a spinner row must pad past it.
 test("a working Recents row clears the kebab on hover", async () => {
   const [source, css] = await Promise.all([
-    readFile(new URL("../src/components/app-sidebar.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/index.css", import.meta.url), "utf8"),
+    readSrc("components/app-sidebar.tsx"),
+    readSrc("index.css"),
   ]);
 
   const kebabInset =
@@ -153,8 +152,8 @@ test("a pending row is marked so both renderers can show its tooltip", async () 
 
 test("the expanded row and the flyout both show a pending tooltip", async () => {
   const [sidebar, appSidebar] = await Promise.all([
-    readFile(new URL("../src/components/ui/sidebar.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/components/app-sidebar.tsx", import.meta.url), "utf8"),
+    readSrc("components/ui/sidebar.tsx"),
+    readSrc("components/app-sidebar.tsx"),
   ]);
 
   // The rail-only rule has to make an exception, or an enabled row is silent while expanded.
