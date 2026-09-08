@@ -618,9 +618,9 @@ def test_asr_verification_checks_the_action_not_just_the_rule_id():
         "or Disabled still reports as applied in audit mode"
     )
     assert "-ne 2" in verify, "the ASR verification no longer requires AuditMode (2)"
-    assert "[Math]::Min(" in verify, (
-        "the ASR arrays are zipped without guarding a truncated Actions read"
-    )
+    assert (
+        "[Math]::Min(" in verify
+    ), "the ASR arrays are zipped without guarding a truncated Actions read"
 
 
 def test_asr_audit_events_are_reported_as_runner_activity_only():
@@ -633,13 +633,13 @@ def test_asr_audit_events_are_reported_as_runner_activity_only():
     scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
 
     report = scan.split("$asrEvents = @(Get-WinEvent", 1)[1]
-    assert "$_.TimeCreated -ge $scanStart" in report, (
-        "the ASR event query is no longer bounded to this step's own window"
-    )
+    assert (
+        "$_.TimeCreated -ge $scanStart" in report
+    ), "the ASR event query is no longer bounded to this step's own window"
     assert "::error::" not in report.split("if ($detected -or $unscanned)", 1)[0], (
         "ASR audit events became fatal; 01443614 fires on low prevalence, which "
         "every freshly built binary has, so this would block every release"
     )
-    assert "not attributable" in report or "not a finding against it" in report, (
-        "the ASR warning reads as a verdict on the bundle, which is never executed"
-    )
+    assert (
+        "not attributable" in report or "not a finding against it" in report
+    ), "the ASR warning reads as a verdict on the bundle, which is never executed"
