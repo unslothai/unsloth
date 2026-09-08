@@ -6591,6 +6591,19 @@ sys.exit(2 if conflict else (0 if installed else 1))
     $hadPreviousStudioLocalInstall = ($null -ne $previousStudioLocalInstall)
     $previousStudioLocalRepo = $env:STUDIO_LOCAL_REPO
     $hadPreviousStudioLocalRepo = ($null -ne $previousStudioLocalRepo)
+    # These three were CLEARED unconditionally by the finally rather than restored, which was
+    # survivable only while the finally could not be reached without having set them. The try
+    # now opens above the first mutation, so the --with-llama-cpp-dir bail reaches the finally
+    # having assigned none of them, and cleared whatever the caller had. UNSLOTH_LOCAL_LLAMA_CPP_DIR
+    # is not an internal handoff either: install.ps1 reads it itself as a user-facing input, so a
+    # caller having it set is the ordinary case, and a mistyped --with-llama-cpp-dir silently
+    # destroyed it. Saved like the rest, which also stops a successful install clearing it.
+    $previousLocalLlamaCppDir = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR
+    $hadPreviousLocalLlamaCppDir = ($null -ne $previousLocalLlamaCppDir)
+    $previousInstallRollbackManaged = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED
+    $hadPreviousInstallRollbackManaged = ($null -ne $previousInstallRollbackManaged)
+    $previousSetupPython = $env:UNSLOTH_SETUP_PYTHON
+    $hadPreviousSetupPython = ($null -ne $previousSetupPython)
     try {
         $env:SKIP_STUDIO_BASE = "1"
         $env:STUDIO_PACKAGE_NAME = $PackageName
@@ -6732,9 +6745,21 @@ sys.exit(2 if conflict else (0 if installed else 1))
         # ...and the copy this function holds goes with it, rather than sitting in the frame for
         # the rest of a long install.
         $UnslothProxyHandoffJson = $null
-        Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
-        Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
-        Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
+        if ($hadPreviousLocalLlamaCppDir) {
+            $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = $previousLocalLlamaCppDir
+        } else {
+            Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousInstallRollbackManaged) {
+            $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED = $previousInstallRollbackManaged
+        } else {
+            Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousSetupPython) {
+            $env:UNSLOTH_SETUP_PYTHON = $previousSetupPython
+        } else {
+            Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
+        }
     }
     # $null, not a code: Application Control refused to create the process, so there is
     # no exit code to report. Checked first because in PowerShell $null -ne 0 is true,

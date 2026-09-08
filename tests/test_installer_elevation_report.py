@@ -244,6 +244,14 @@ def test_every_handoff_variable_is_restored_not_just_skip_studio_base():
         ("SKIP_STUDIO_FRONTEND", "$previousSkipStudioFrontend"),
         ("STUDIO_LOCAL_INSTALL", "$previousStudioLocalInstall"),
         ("STUDIO_LOCAL_REPO", "$previousStudioLocalRepo"),
+        # These three used to be cleared unconditionally instead of restored. That was
+        # survivable only while the finally could not be reached without having set them;
+        # once the try opens above the first mutation, the --with-llama-cpp-dir bail reaches
+        # it having assigned none of them. UNSLOTH_LOCAL_LLAMA_CPP_DIR is a user-facing input
+        # install.ps1 reads itself, so clearing it destroys the caller's own setting.
+        ("UNSLOTH_LOCAL_LLAMA_CPP_DIR", "$previousLocalLlamaCppDir"),
+        ("UNSLOTH_INSTALL_ROLLBACK_MANAGED", "$previousInstallRollbackManaged"),
+        ("UNSLOTH_SETUP_PYTHON", "$previousSetupPython"),
     ):
         save = f"{saved} = $env:{var}"
         assert save in src, f"{var} is mutated for the child but never captured"
