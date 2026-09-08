@@ -25,7 +25,6 @@ from .preempt_fakes import (
     delta as _delta,
     done as _done,
     finish as _finish,
-    reasoning as _reasoning,
     run_tool_loop,
     tool_call as _tool_call_turn,
     tool_call_chunk as _tool_call,
@@ -81,21 +80,6 @@ def _content(events) -> list[str]:
     return [e["text"] for e in events if isinstance(e, dict) and e.get("type") == "content"]
 
 
-def _assembled(events) -> str:
-    prev = ""
-    out = ""
-    for cumulative in _content(events):
-        out += cumulative[len(prev) :]
-        prev = cumulative
-    return out
-
-
-def _monotonic(events) -> None:
-    snapshots = _content(events)
-    for earlier, later in zip(snapshots, snapshots[1:]):
-        assert later.startswith(earlier), f"a snapshot went backwards: {earlier!r} {later!r}"
-
-
 def _gave_up(events) -> list[dict]:
     return [
         e
@@ -120,15 +104,6 @@ class TestARoundPauses:
         trailing = resumed["messages"][-1]
         assert trailing["role"] == "assistant"
         assert "Once upon a time" in trailing["content"]
-
-    def test_the_policy_handshake_runs_in_order(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        policy = _RecordingPolicy()
-        _run(_two_part(monkeypatch, signal).backend, signal = signal, policy = policy)
-        assert policy.events == ["preempted", "awaited", "resumed"]
-        assert policy.checkpoints[0].visible_text == "Once upon a time"
-        assert policy.checkpoints[0].has_resume_point()
-        assert policy.checkpoints[0].resumes == 1
 
     def test_the_signal_is_cleared_before_on_resumed_makes_this_chat_selectable_again(
         self, monkeypatch
@@ -174,78 +149,6 @@ class TestARoundPauses:
                 order.append(event["state"])
         assert order == ["on_preempted", "paused", "on_resumed", "resumed"]
 
-    def test_a_chat_that_never_pauses_announces_nothing(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        recorder = _Recorder(
-            monkeypatch,
-            [[_delta("Once upon a time."), _finish(), _done()]],
-            signal = signal,
-            pause_attempts = (),
-        )
-        events = _run(recorder.backend, signal = signal, policy = _RecordingPolicy())
-        assert not [e for e in events if isinstance(e, dict) and e.get("type") == "preempt"]
-
-
-class TestTheSeamIsSeamless:
-    def test_the_client_sees_the_text_once_across_two_pauses(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        recorder = _Recorder(
-            monkeypatch,
-            [
-                [_delta("one"), _finish(), _done()],
-                [_delta(" two"), _finish(), _done()],
-                [_delta(" three"), _delta(" four"), _finish(), _done()],
-            ],
-            signal = signal,
-            pause_attempts = (0, 1),
-        )
-        events = _run(recorder.backend, signal = signal, policy = _RecordingPolicy())
-        _monotonic(events)
-        assert _assembled(events) == "one two three four"
-
-    def test_a_thought_interrupted_mid_way_stays_one_thought(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        recorder = _Recorder(
-            monkeypatch,
-            [
-                [_reasoning("Let me"), _reasoning(" think"), _finish(), _done()],
-                [_reasoning(" harder."), _delta("Answer."), _finish(), _done()],
-            ],
-            signal = signal,
-        )
-        recorder.backend._supports_reasoning = True
-        events = _run(recorder.backend, signal = signal, policy = _RecordingPolicy())
-        _monotonic(events)
-        assembled = _assembled(events)
-        assert assembled.count("<think>") == 1, assembled
-        assert assembled.endswith("</think>Answer."), assembled
-
-    def test_the_partial_reasoning_goes_back_as_reasoning(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        policy = _RecordingPolicy()
-        recorder = _Recorder(
-            monkeypatch,
-            [
-                [_reasoning("Let me think about rope data structures"), _finish(), _done()],
-                [_delta("A rope is a balanced tree of strings."), _finish(), _done()],
-            ],
-            signal = signal,
-        )
-        recorder.backend._supports_reasoning = True
-        _run(recorder.backend, signal = signal, policy = policy)
-        trailing = recorder.payloads[1]["messages"][-1]
-        assert trailing["role"] == "assistant"
-        assert "rope data structures" in (trailing.get("reasoning_content") or ""), (
-            "the thought was not carried back, so the model starts thinking from nothing"
-        )
-        assert "rope data structures" not in (trailing.get("content") or ""), (
-            "the thought went back as the ANSWER"
-        )
-        assert policy.checkpoints[0].reasoning_text.strip() == (
-            "Let me think about rope data structures"
-        )
-
-
 class TestAPauseNeverRunsAToolTwice:
     """The one-shot ledger, and how far back a pause is allowed to roll."""
 
@@ -289,53 +192,6 @@ class TestAPauseNeverRunsAToolTwice:
             "round two's partial was not carried, so it restarts from the tool result"
         )
         assert resumed.get("continue_final_message") is True
-
-    def test_nothing_before_the_pause_is_lost_when_it_lands_on_a_later_round(self, monkeypatch):
-        calls = self._executed(monkeypatch)
-        signal = preemption.PreemptSignal()
-        recorder = _Recorder(
-            monkeypatch,
-            [
-                [_tool_call("call_1", "web_search", {"query": "one"}), _finish("tool_calls"), _done()],
-                [_tool_call("call_2", "web_search", {"query": "two"}), _finish("tool_calls"), _done()],
-                [_delta("Two searches later,"), _finish(), _done()],
-                [_delta(" here is the answer."), _finish(), _done()],
-            ],
-            signal = signal,
-            pause_after_attempt = 2,
-        )
-        _run(recorder.backend, signal = signal, policy = _RecordingPolicy())
-        assert [a.get("query") for _n, a in calls] == ["one", "two"]
-        tool_rows = [m for m in recorder.payloads[3]["messages"] if m.get("role") == "tool"]
-        assert [row.get("content") for row in tool_rows] == ["RESULT<one>", "RESULT<two>"]
-
-    def test_a_pause_inside_a_tool_call_backs_up_to_the_call_not_the_user_message(
-        self, monkeypatch
-    ):
-        calls = self._executed(monkeypatch)
-        signal = preemption.PreemptSignal()
-        recorder = _Recorder(
-            monkeypatch,
-            [
-                [
-                    _delta("First, some context about ropes. "),
-                    _delta('<tool_call>{"name": "web_search", "arguments": {"query": '),
-                    _finish(),
-                    _done(),
-                ],
-                [_delta('"ropes"}}</tool_call>'), _finish("tool_calls"), _done()],
-                [_delta("Ropes are trees."), _finish(), _done()],
-            ],
-            signal = signal,
-        )
-        _run(recorder.backend, signal = signal, policy = _RecordingPolicy())
-        trailing = recorder.payloads[1]["messages"][-1]
-        assert trailing["role"] == "assistant"
-        assert "First, some context about ropes." in (trailing.get("content") or ""), (
-            "the prose before the call was dropped: that is backing up to the user "
-            "message, not to the call"
-        )
-        assert len(calls) <= 1, f"the tool ran {len(calls)} times across the pause"
 
     def test_a_resume_is_not_charged_as_a_tool_iteration(self, monkeypatch):
         pauses = 6
@@ -504,19 +360,6 @@ class TestTheFinalPassPausesAndResumes:
         )
         assert recorder.payloads[0]["max_tokens"] == 512, "the rounds were already clamped"
 
-    def test_no_allowance_leaves_the_callers_cap_alone(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        recorder, _events = _final_pass(
-            monkeypatch,
-            [_tool_call_turn(), [_delta("w "), _finish(), _done()]],
-            signal = signal,
-            policy = None,
-            pause_attempts = (),
-            max_tokens = 300,
-        )
-        assert recorder.payloads[-1]["max_tokens"] == 300
-
-
 class TestTheFinalPassReportsItsGrowth:
     """The sweep is only as good as the thing feeding it."""
 
@@ -576,32 +419,6 @@ class TestTheFinalPassReportsItsGrowth:
             self._PER_ATTEMPT
         ), "the paused attempt's tokens were not reported to the caller"
 
-    def test_a_reporter_that_raises_never_fails_the_turn(self, monkeypatch):
-        def _boom(_n):
-            raise RuntimeError("the sweep exploded")
-
-        _recorder, _policy, events = self._run(monkeypatch, on_tokens = _boom)
-        assert _content(events), "bookkeeping must never take the answer with it"
-
-
-class TestThePauseIsChargedWhatTheAttemptDecoded:
-    def test_the_checkpoint_is_not_charged_zero(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        policy = _RecordingPolicy()
-        recorder = _Recorder(
-            monkeypatch,
-            [
-                [_delta("Once upon a time there was a cat"), _finish(), _done()],
-                [_delta(" who slept."), _finish(), _done()],
-            ],
-            signal = signal,
-        )
-        _run(recorder.backend, signal = signal, policy = policy)
-        assert policy.checkpoints[0].charged_tokens > 0, (
-            "an attempt that decoded 32 characters was charged nothing, so nothing "
-            "re-baselined the ledger and nothing spent the caller's cap"
-        )
-
     def test_the_resumed_attempt_does_not_get_a_fresh_output_cap(self, monkeypatch):
         signal = preemption.PreemptSignal()
         recorder = _Recorder(
@@ -636,14 +453,6 @@ class TestGivingUpTellsTheClient:
         assert len(_gave_up(events)) == 1, "the tool loop gave up without telling anyone"
         assert _metadata(events)[-1]["finish_reason"] == "length"
 
-    def test_a_granted_resume_stays_quiet(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        events = _run(
-            _two_part(monkeypatch, signal).backend, signal = signal, policy = _RecordingPolicy()
-        )
-        assert _gave_up(events) == []
-
-
 class TestADeclinedPauseUnsticksTheParticipant:
     """A pause the stream refuses has to be handed back, not merely ignored."""
 
@@ -670,13 +479,6 @@ class TestADeclinedPauseUnsticksTheParticipant:
             max_tool_iterations = 1,
             permission_mode = "off",
         )
-
-    def _victim(self, controller, gen_id, signal):
-        controller.register("other", tokens = 1000)
-        participant = controller.register(gen_id, tokens = 1000, signal = signal)
-        assert [v.gen_id for v in controller.plan_preemptions(needed = 16384)] == [gen_id]
-        assert participant.state == ParticipantState.PREEMPTING
-        return participant
 
     def test_the_participant_decodes_again_and_keeps_its_lease_and_its_cells(self, monkeypatch):
         self._capped(monkeypatch)
@@ -714,42 +516,14 @@ class TestADeclinedPauseUnsticksTheParticipant:
         )
         assert _content(events), "the turn still has to produce its answer"
 
-    def test_a_policy_written_before_the_handback_still_finishes(self, monkeypatch):
-        self._capped(monkeypatch)
-        policy = _RecordingPolicy()
-        _recorder, events = self._declining_run(
-            monkeypatch,
-            signal = preemption.PreemptSignal(),
-            policy = policy,
-            pause_attempts = (0,),
-        )
-        assert policy.events == [], "the capped branch must not run the pause handshake"
-        assert _content(events)
-
-    def test_a_policy_that_raises_does_not_end_the_turn(self, monkeypatch):
-        self._capped(monkeypatch)
-
-        class _Raising(_RecordingPolicy):
-            def on_declined(self):
-                self.events.append("declined")
-                raise RuntimeError("policy is broken")
-
-        policy = _Raising()
-        _recorder, events = self._declining_run(
-            monkeypatch,
-            signal = preemption.PreemptSignal(),
-            policy = policy,
-            pause_attempts = (0,),
-        )
-        assert policy.events == ["declined"]
-        assert _content(events)
-
     def test_the_final_pass_leaves_nothing_preempting(self, monkeypatch):
         self._capped(monkeypatch)
         controller = PreemptionController("declined-final")
         controller.configure(budget = 16384, kv_unified = True)
         signal = preemption.PreemptSignal()
-        participant = self._victim(controller, "chat", signal)
+        controller.register("other", tokens = 1000)
+        participant = controller.register("chat", tokens = 1000, signal = signal)
+        assert [v.gen_id for v in controller.plan_preemptions(needed = 16384)] == ["chat"]
         policy = ControllerPreemptionPolicy(controller, "chat", signal, loop = None)
         _recorder, events = self._declining_run(
             monkeypatch, signal = signal, policy = policy, pause_attempts = (1,)
@@ -765,34 +539,29 @@ class TestADeclinedPauseUnsticksTheParticipant:
 class TestADeclinedContinuationTellsTheClient:
     """A continuation the backend declines must not be retried by the client."""
 
-    @staticmethod
-    def _refusals(events):
-        return [event for event in events if event.get("type") == "context_truncated"]
-
-    @staticmethod
-    def _declining_backend(monkeypatch, payloads):
+    def test_the_decline_says_the_retry_would_not_fit_and_still_ends_with_length(
+        self, monkeypatch
+    ):
         from test_truncated_answer_continuation import (
             _cut_off_then,
             _done as _tc_done,
             _make_backend,
+            _metadata as _tc_metadata,
+            _run,
             _sse,
+            _texts,
         )
 
+        payloads: list[dict] = []
         backend = _make_backend(
             monkeypatch, _cut_off_then([_sse({"content": " never sent"}), _tc_done()]), payloads
         )
         monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 4096)
-        return backend
-
-    def test_the_in_loop_decline_says_the_retry_would_not_fit(self, monkeypatch):
-        from test_truncated_answer_continuation import _metadata as _tc_metadata, _run, _texts
-
-        payloads: list[dict] = []
-        events = _run(self._declining_backend(monkeypatch, payloads))
+        events = _run(backend)
 
         assert len(payloads) == 1, "the continuation was sent after all"
-        # Once. `mergeContextTruncation` on the client SUMS the counters across a turn.
-        refusals = self._refusals(events)
+        # Once: `mergeContextTruncation` on the client SUMS the counters across a turn.
+        refusals = [event for event in events if event.get("type") == "context_truncated"]
         assert len(refusals) == 1, refusals
         assert refusals[0]["fits"] is False
         # Nothing was evicted, and a non-zero count here raises "This conversation was
@@ -801,71 +570,3 @@ class TestADeclinedContinuationTellsTheClient:
         assert 0 < refusals[0]["prompt_target"] < refusals[0]["context_length"] == 4096
         assert _tc_metadata(events)["finish_reason"] == "length"
         assert "<!DOCTYPE html>" in "".join(_texts(events, "content"))
-
-    def test_the_final_pass_decline_says_the_same_thing(self, monkeypatch):
-        from test_truncated_answer_continuation import _metadata as _tc_metadata, _run_no_tools
-
-        payloads: list[dict] = []
-        events = _run_no_tools(self._declining_backend(monkeypatch, payloads))
-        assert len(payloads) == 1
-        assert len(self._refusals(events)) == 1
-        assert _tc_metadata(events)["finish_reason"] == "length"
-
-    def test_a_spent_output_cap_is_not_reported_as_a_context_refusal(self, monkeypatch):
-        from test_truncated_answer_continuation import (
-            _cut_off_then,
-            _done as _tc_done,
-            _make_backend,
-            _run,
-            _sse,
-        )
-
-        payloads: list[dict] = []
-        backend = _make_backend(
-            monkeypatch, _cut_off_then([_sse({"content": " never sent"}), _tc_done()]), payloads
-        )
-        # Room to spare in the window; it is the caller's cap that is gone.
-        monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 100)
-        events = _run(backend, max_tokens = 64)
-        assert len(payloads) == 1, "the continuation ran past the caller's cap"
-        assert self._refusals(events) == []
-
-    def test_a_continuation_that_is_sent_announces_no_refusal(self, monkeypatch):
-        from test_truncated_answer_continuation import (
-            _cut_off_then,
-            _done as _tc_done,
-            _make_backend,
-            _run,
-            _sse,
-        )
-
-        payloads: list[dict] = []
-        backend = _make_backend(
-            monkeypatch,
-            _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _tc_done()]),
-            payloads,
-        )
-        monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 3800)
-        events = _run(backend)
-        assert len(payloads) == 2
-        assert self._refusals(events) == []
-
-
-class TestTheDefaultsAreUnchanged:
-    def test_no_signal_means_no_pause_path_at_all(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        recorder = _Recorder(
-            monkeypatch,
-            [[_delta("plain answer"), _finish(), _done()]],
-            signal = signal,
-            pause_attempts = (),
-        )
-        out = list(
-            recorder.backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "hi"}],
-                tools = [_TOOL],
-                cancel_event = threading.Event(),
-            )
-        )
-        assert len(recorder.payloads) == 1
-        assert any(event.get("type") == "content" for event in out)

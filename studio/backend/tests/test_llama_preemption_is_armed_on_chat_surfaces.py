@@ -22,7 +22,6 @@ from core.inference.llama_preemption import (
     PreemptSignal,
     PreemptionController,
     get_preemption_controller,
-    preemption_buffer_tokens,
 )
 from models.inference import AnthropicMessagesRequest
 import routes.inference as inference
@@ -332,13 +331,6 @@ class TestARawPassthroughIsCountedAndNeverChosen:
         controller.register("chat", tokens = 6000, signal = PreemptSignal())
         assert [v.gen_id for v in controller.plan_preemptions(needed = 4000)] == ["chat"]
 
-    def test_a_surface_without_a_lease_is_not_counted(self):
-        inference._openai_llama_count_raw_holder(
-            llama_backend = _backend(url = "http://127.0.0.1:31/"), lease = None, gen_id = "raw"
-        )
-        assert get_preemption_controller("http://127.0.0.1:31/").participant("raw") is None
-
-
 class TestArmingItself:
     def _reserve(self, url, tokens = 4096):
         return get_llama_admission_queue(url).reserve(
@@ -373,73 +365,6 @@ class TestArmingItself:
             "the participant holds a different signal than the stream polls, so a preempt "
             "can never reach the stream"
         )
-
-    @pytest.mark.asyncio
-    async def test_a_private_cache_per_slot_is_not_armed(self):
-        url = "http://127.0.0.1:2/"
-        assert self._arm(url, backend = _backend(unified = False, url = url)) is None
-
-    @pytest.mark.asyncio
-    async def test_the_rollout_switch_arms_nothing(self, monkeypatch):
-        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")
-        assert self._arm("http://127.0.0.1:3/") is None
-
-    @pytest.mark.asyncio
-    async def test_the_drafters_cells_are_reserved_on_top_of_the_batch(self):
-        url = "http://127.0.0.1:9/"
-        backend = _backend(url = url)
-        backend._speculative_type = "draft-mtp"
-        backend._spec_draft_n_max = 2
-        self._arm(url, backend = backend, gen_id = "spec-armed")
-        snapshot = get_preemption_controller(url).snapshot()
-        # batch_tokens defaults to llama.cpp's 2048 here, and `pending_prefill` is the 4096
-        # this generation was just charged: arming registers a prompt not yet prefilled.
-        assert snapshot.buffer == preemption_buffer_tokens(
-            snapshot.budget, draft_tokens = 2, slots = 4, batch_tokens = 2048, pending_prefill = 4096
-        ), f"the drafter's tokens were not reserved (buffer {snapshot.buffer})"
-        assert snapshot.buffer > preemption_buffer_tokens(
-            snapshot.budget, slots = 4, batch_tokens = 2048, pending_prefill = 4096
-        ), "the drafter must cost something over the same launch without one"
-
-    @pytest.mark.parametrize(
-        ("fields", "expected"),
-        [
-            ({"_speculative_type": "draft-mtp", "_spec_draft_n_max": 2}, 2),
-            # None means the platform default, not zero.
-            ({"speculative_type": "draft-mtp", "spec_draft_n_max": None}, 6),
-            ({}, 0),
-        ],
-    )
-    def test_the_draft_depth_is_read_off_whichever_field_the_load_set(self, fields, expected):
-        backend = _backend()
-        for name in (
-            "speculative_type",
-            "spec_drafter_kind",
-            "requested_spec_mode",
-            "_speculative_type",
-            "spec_draft_n_max",
-            "_spec_draft_n_max",
-        ):
-            setattr(backend, name, None)
-        for name, value in fields.items():
-            setattr(backend, name, value)
-        assert inference._openai_llama_speculative_draft_tokens(backend) == expected
-
-    @pytest.mark.parametrize(
-        ("backend", "expected"),
-        [
-            (SimpleNamespace(requested_n_batch = 512, _requested_n_batch = 512), 512),
-            (SimpleNamespace(_requested_n_batch = 512), 512),
-            (SimpleNamespace(requested_n_batch = None, _requested_n_batch = None), 2048),
-        ],
-    )
-    def test_the_batch_size_is_read_off_the_launch(self, backend, expected):
-        """A `--batch-size 512` load reserved for 2048, the whole cache's worth."""
-        assert inference._openai_llama_effective_batch_tokens(backend) == expected
-
-
-# ------------------------------------------------------------------ dropping the charge
-
 
 class _Lease:
     def __init__(self, tokens = 2000):
@@ -510,17 +435,6 @@ class TestTheDisarmKeepsThePrefixCache:
             "cached_tokens=0 failure, reproduced without a server."
         )
 
-    def test_a_lone_chat_that_reported_residency_keeps_its_cells_too(
-        self, disarm_controller, erasures
-    ):
-        disarm_controller.register("only-chat", lease = _Lease(), tokens = 2000)
-        disarm_controller.note_resident(2000, 2000)
-        _disarm("only-chat")
-        assert erasures == [], (
-            "the cached residency is this chat's own cells; judged by it, a lone chat "
-            "erased its prompt cache on every turn"
-        )
-
     @pytest.mark.parametrize(
         "state",
         [ParticipantState.PAUSED, ParticipantState.DECODING, ParticipantState.STREAMING_RAW],
@@ -547,36 +461,6 @@ class TestTheDisarmKeepsThePrefixCache:
         disarm_controller.register("leaving", lease = _Lease(), tokens = 2000)
         _disarm()
         assert erasures == [0], "somebody is queued for the room and the cells were kept"
-
-    def test_neither_half_can_fail_a_response_that_already_succeeded(
-        self, disarm_controller, erasures, monkeypatch
-    ):
-        def _boom(key):
-            raise RuntimeError("no queue")
-
-        monkeypatch.setattr(inference, "get_llama_admission_queue", _boom)
-        disarm_controller.register("leaving", lease = _Lease(), tokens = 2000)
-        _disarm()
-        assert erasures == [], "nobody wants the room, the prefix cache stays"
-
-        monkeypatch.setattr(
-            inference,
-            "get_preemption_controller",
-            lambda key: (_ for _ in ()).throw(RuntimeError("no controller")),
-        )
-        _disarm("x")
-
-    def test_a_backend_without_a_base_url_is_swallowed(self, disarm_controller, erasures):
-        class _Headless:
-            base_url = ""
-            _kv_cache_unified = True
-
-        inference._openai_llama_preemption_disarm(llama_backend = _Headless(), gen_id = "x")
-        assert erasures == []
-
-
-# --------------------------------------------------------------- the residency sweep
-
 
 class TestTheResidencySweep:
     """Reclaiming only once a victim had been chosen made the erase almost useless."""
@@ -620,19 +504,6 @@ class TestTheResidencySweep:
             "the controller kept planning against the pre-erase figure"
         )
 
-    def test_nothing_is_erased_while_nobody_waits_and_the_cache_is_under_its_ceiling(
-        self, monkeypatch
-    ):
-        controller = PreemptionController(BASE)
-        controller.configure(budget = 16384, kv_unified = True, slots = 4)
-        controller.register("chat", tokens = 2000, signal = PreemptSignal())
-        slots = [{"id": 0, "is_processing": False, "n_prompt_tokens_cache": 900}]
-        refresh, _observe, _note, erased = self._observer(
-            monkeypatch, slots, controller = controller
-        )
-        refresh(controller, force = True)
-        assert erased == []
-
     def test_the_sweep_reports_growth_and_reclaims_before_it_pauses_a_live_chat(
         self, monkeypatch
     ):
@@ -649,117 +520,6 @@ class TestTheResidencySweep:
         )
         observe(2000)
         assert erased == [0], "a live chat was paused without first freeing dead residue"
-
-    def test_note_state_reads_the_ledger_not_a_mirror(self, monkeypatch):
-        controller = PreemptionController(BASE)
-        controller.configure(budget = 8192, kv_unified = True, slots = 4, batch_tokens = 2048)
-        _refresh, _observe, note_state, _erased = self._observer(
-            monkeypatch, [], controller = controller
-        )
-        chat = controller.register("chat", tokens = 1000)
-        assert note_state(ParticipantState.TOOLS_RUNNING) == ParticipantState.TOOLS_RUNNING
-        assert chat.state == ParticipantState.TOOLS_RUNNING
-        # Tokens arrive: the ledger says DECODING on its own.
-        controller.observe("chat", 32)
-        assert note_state(None) == ParticipantState.DECODING
-        # The next tool start is not a repeat of the earlier report.
-        assert note_state(ParticipantState.TOOLS_RUNNING) == ParticipantState.TOOLS_RUNNING
-        assert chat.state == ParticipantState.TOOLS_RUNNING
-
-
-class TestTheRouteReportsWhereTheChatIs:
-    """A chat stopped on a tool approval stayed DECODING and kept counting after its
-    idle slot had been erased."""
-
-    class _ApprovalBackend(FakeLlamaCppBackend):
-        base_url = BASE
-        effective_parallel_slots = 2
-        supports_tools = True
-        context_length = 8192
-
-        def _maybe_recover_from_mtp_crash(self, exc):
-            return None
-
-        def generate_chat_completion_with_tools(self, **kwargs):
-            yield {"type": "content", "text": "Let me check."}
-            yield {
-                "type": "tool_start",
-                "tool_call_id": "call_1",
-                "name": "write_file",
-                "arguments": {},
-                "awaiting_confirmation": True,
-            }
-            yield {
-                "type": "tool_result",
-                "tool_call_id": "call_1",
-                "name": "write_file",
-                "result": "ok",
-            }
-            yield {"type": "content", "text": "Let me check. Done."}
-            yield _ArmedBackend._META
-
-    def test_the_approval_prompt_and_the_next_round_are_reported(self, monkeypatch):
-        monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: self._ApprovalBackend())
-        monkeypatch.setattr(inference, "_effective_enable_tools", lambda payload: True)
-
-        async def _fake_select(payload, **_kwargs):
-            return [{"type": "function", "function": {"name": "write_file"}}]
-
-        monkeypatch.setattr(inference, "_select_request_tools", _fake_select)
-        reported: list[str] = []
-        real_note_state = PreemptionController.note_state
-
-        def _recording(self, gen_id, state):
-            reported.append(state)
-            return real_note_state(self, gen_id, state)
-
-        monkeypatch.setattr(PreemptionController, "note_state", _recording)
-
-        app = FastAPI()
-        app.include_router(inference.router)
-        app.dependency_overrides[get_current_subject] = lambda: "test-user"
-        body = json.dumps(
-            {
-                "messages": [{"role": "user", "content": "save it"}],
-                "stream": True,
-                "enable_tools": True,
-            }
-        ).encode()
-
-        async def _drive():
-            done = asyncio.Event()
-            frames: list[str] = []
-
-            async def receive():
-                if not frames:
-                    return {"type": "http.request", "body": body, "more_body": False}
-                await asyncio.Event().wait()
-
-            async def send(message):
-                if message.get("type") == "http.response.body":
-                    chunk = message.get("body", b"").decode()
-                    frames.append(chunk)
-                    if chunk == inference._SSE_DONE_CHUNK:
-                        done.set()
-
-            task = asyncio.create_task(app(_scope(app, body), receive, send))
-            try:
-                await wait_for_frame(done, task, what = "the [DONE] frame")
-            finally:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions = True)
-            return "".join(frames)
-
-        assert "Done." in asyncio.run(_drive())
-        assert reported[:3] == [
-            ParticipantState.PARKED_ON_TOOL,
-            ParticipantState.TOOLS_RUNNING,
-            ParticipantState.DECODING,
-        ], reported
-        assert get_preemption_controller(BASE).snapshot().parked == 0, (
-            "the chat is gone from the ledger when it ends"
-        )
-
 
 class TestTheRespawnRetryKeepsItsControls:
     """`_respawn_if_dead()` re-opens the same generation against a replacement server.

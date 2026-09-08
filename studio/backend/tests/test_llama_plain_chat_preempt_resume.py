@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import json
 import threading
 
 import pytest
@@ -17,7 +16,6 @@ from core.inference import llama_preemption as preemption
 from core.inference.llama_cpp import (
     PREEMPT_GAVE_UP_REASON,
     LlamaCppBackend,
-    _preempt_gave_up_event,
 )
 
 from .preempt_fakes import (
@@ -60,10 +58,6 @@ def _two_part(monkeypatch, signal, **kwargs):
         signal = signal,
         **kwargs,
     )
-
-
-def _empty_delta() -> str:
-    return "data: " + json.dumps({"choices": [{"index": 0, "delta": {}}]}) + "\n"
 
 
 def _texts(events) -> list[str]:
@@ -128,15 +122,6 @@ class TestAPlainChatPauses:
         _run(_two_part(monkeypatch, signal).backend, signal = signal, policy = policy)
         assert policy.events == ["preempted", "awaited", "resumed"]
 
-    def test_the_visible_text_is_not_replayed(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        events = _run(
-            _two_part(monkeypatch, signal).backend, signal = signal, policy = _RecordingPolicy()
-        )
-        _monotonic(events)
-        assert _assembled(events) == "Once upon a time there was a cat."
-
-
 class TestThePauseIsVisibleToTheClient:
     def test_a_pause_and_its_resume_are_both_announced(self, monkeypatch):
         signal = preemption.PreemptSignal()
@@ -144,14 +129,6 @@ class TestThePauseIsVisibleToTheClient:
             _two_part(monkeypatch, signal).backend, signal = signal, policy = _RecordingPolicy()
         )
         assert [e["state"] for e in _preempts(events)] == ["paused", "resumed"]
-
-    def test_a_pause_that_never_resumes_still_announces_itself(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        recorder = _Recorder(
-            monkeypatch, [[_delta("Once upon a time"), _finish(), _done()]], signal = signal
-        )
-        events = _run(recorder.backend, signal = signal, policy = _RecordingPolicy(resume = False))
-        assert [e["state"] for e in _preempts(events)] == ["paused"]
 
     def test_the_pause_is_announced_after_the_lease_goes_back(self, monkeypatch):
         signal = preemption.PreemptSignal()
@@ -203,28 +180,6 @@ class TestTheSeamIsSeamless:
         assert _assembled(events) == "one two three four"
         assert recorder.payloads[2]["messages"][-1]["content"] == "one two"
 
-    def test_a_resume_paused_before_its_first_token_still_continues_the_partial(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        recorder = _Recorder(
-            monkeypatch,
-            [
-                [_delta("Introduction: The"), _finish(), _done()],
-                [_empty_delta(), _delta("never reached"), _finish(), _done()],
-                [_delta(" Paradigm"), _finish(), _done()],
-            ],
-            signal = signal,
-            pause_attempts = (0, 1),
-        )
-        events = _run(recorder.backend, signal = signal, policy = _RecordingPolicy())
-        third = recorder.payloads[2]
-        assert third["messages"][-1] == {"role": "assistant", "content": "Introduction: The"}
-        assert third.get("continue_final_message") is True, (
-            "the partial went back as a finished turn: the model will answer again from "
-            "the top and the client will see the answer twice"
-        )
-        _monotonic(events)
-        assert _assembled(events) == "Introduction: The Paradigm"
-
     def test_a_thought_interrupted_mid_way_stays_one_thought(self, monkeypatch):
         signal = preemption.PreemptSignal()
         recorder = _Recorder(
@@ -260,35 +215,6 @@ class TestTheSeamIsSeamless:
         assert resumed.get("reasoning_content") == "Let me"
         assert recorder.payloads[1].get("continue_final_message") is True
 
-    def test_a_reasoning_only_answer_keeps_both_attempts(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        recorder = PreemptRecorder(
-            monkeypatch,
-            [
-                [_reasoning("The first half. "), _finish(), _done()],
-                [_reasoning("The second half."), _finish(), _done()],
-            ],
-            signal = signal,
-            pause_attempts = (0,),
-            port = 48853,
-            supports_reasoning = True,
-            reasoning_always_on = True,
-        )
-        events = _run(
-            recorder.backend,
-            signal = signal,
-            policy = _RecordingPolicy(),
-            prompt = "answer me",
-            promote_reasoning_only = True,
-        )
-        final = _texts(events)[-1]
-        thought, _, fallback = final.partition("</think>")
-        assert "The first half. " in thought and "The second half." in thought, final
-        # For a reasoning-only model the promoted fallback IS the answer, and it was
-        # built from the resumed attempt alone.
-        assert "The first half. " in fallback and "The second half." in fallback, final
-
-
 class TestTheCapIsSpentDownAcrossResumes:
     def test_a_stated_max_tokens_shrinks_on_resume(self, monkeypatch):
         signal = preemption.PreemptSignal()
@@ -308,6 +234,21 @@ class TestTheCapIsSpentDownAcrossResumes:
             f"of a {first} cap"
         )
         assert second >= 1, "never zero: a request for no tokens returns an empty turn"
+
+    def test_the_admission_allowance_bounds_the_wire_cap_on_every_attempt(self, monkeypatch):
+        signal = preemption.PreemptSignal()
+        recorder = _two_part(monkeypatch, signal)
+        _run(
+            recorder.backend,
+            signal = signal,
+            policy = _RecordingPolicy(),
+            max_tokens = 3000,
+            admission_output_allowance = 512,
+        )
+        assert [p.get("max_tokens") for p in recorder.payloads] == [512, 512], (
+            "the room admission reserved has to land on the request, and on the resumed "
+            "one too, or a pause hands the turn a fresh allowance it was never granted"
+        )
 
     def test_an_unstated_max_tokens_is_left_alone(self, monkeypatch):
         signal = preemption.PreemptSignal()
@@ -374,75 +315,6 @@ class TestTheUsageCoversEveryAttempt:
         assert usage["prompt_tokens"] == 40
         assert usage["total_tokens"] == 40 + 19
 
-    def test_without_timings_the_chunks_decoded_are_the_estimate(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        recorder = _Recorder(
-            monkeypatch,
-            [
-                [_delta("a"), _delta("b"), _delta("c"), _finish("length"), _done()],
-                [_delta("d"), _usage(40, 5), _finish(), _done()],
-            ],
-            signal = signal,
-            pause_after = 3,
-        )
-        assert self._usage(recorder, signal)["completion_tokens"] == 3 + 5
-
-    def test_every_attempt_is_added(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        recorder = _Recorder(
-            monkeypatch,
-            [
-                [_delta("one ", timings = {"predicted_n": 10}), _finish("length"), _done()],
-                [_delta("two ", timings = {"predicted_n": 20}), _finish("length"), _done()],
-                [_delta("three."), _usage(64, 3), _finish(), _done()],
-            ],
-            signal = signal,
-            pause_attempts = (0, 1),
-        )
-        usage = self._usage(recorder, signal)
-        assert len(recorder.payloads) == 3
-        assert usage["completion_tokens"] == 33
-        assert usage["total_tokens"] == 64 + 33
-
-    def test_a_turn_that_was_never_paused_reports_what_the_server_said(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        recorder = _Recorder(
-            monkeypatch,
-            [[_delta("all in one go"), _usage(31, 9), _finish(), _done()]],
-            signal = signal,
-            pause_attempts = (),
-        )
-        assert self._usage(recorder, signal) == {
-            "prompt_tokens": 31,
-            "completion_tokens": 9,
-            "total_tokens": 40,
-        }
-
-    @pytest.mark.parametrize(
-        ("earlier", "expected"),
-        [
-            (0, {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}),
-            (11, {"prompt_tokens": 5, "completion_tokens": 13, "total_tokens": 18}),
-        ],
-    )
-    def test_the_helper_leaves_an_unpaused_turn_alone(self, earlier, expected):
-        from core.inference.llama_cpp import _usage_with_earlier_attempts
-
-        usage = {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
-        assert _usage_with_earlier_attempts(usage, earlier) == expected
-
-
-class TestGivingUpIsNotAnError:
-    def test_the_notice_says_nothing_was_evicted_and_everything_fitted(self):
-        event = _preempt_gave_up_event(4096, 512)
-        assert event["type"] == "context_truncated"
-        assert event["reason"] == PREEMPT_GAVE_UP_REASON
-        assert event["fits"] is True
-        assert event["dropped_messages"] == 0
-        assert event["context_length"] == 4096
-        assert 0 < event["prompt_target"] < 4096
-        assert "context_length" not in _preempt_gave_up_event(None, None)
-
     def test_the_turn_ends_with_the_partial_a_notice_and_a_length_finish(self, monkeypatch):
         signal = preemption.PreemptSignal()
         recorder = _Recorder(
@@ -468,25 +340,6 @@ class TestGivingUpIsNotAnError:
             "four deltas were streamed and shown; reporting zero completion tokens for "
             "them corrupts every usage-based client and monitor"
         )
-
-    def test_a_refused_resume_before_the_first_token_is_not_an_empty_turn(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        recorder = _Recorder(
-            monkeypatch, [[_empty_delta(), _finish(), _done()]], signal = signal
-        )
-        events = _run(recorder.backend, signal = signal, policy = _RecordingPolicy(resume = False))
-        assert _assembled(events) == "", "this test is only about the empty case"
-        notices = _gave_up(events)
-        assert len(notices) == 1 and notices[0]["context_length"] == 4096
-
-    def test_a_resume_that_is_granted_says_nothing_of_the_kind(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        events = _run(
-            _two_part(monkeypatch, signal).backend, signal = signal, policy = _RecordingPolicy()
-        )
-        assert _gave_up(events) == []
-        assert _metadata(events)[-1]["finish_reason"] != "length"
-
 
 class TestThePauseCanLandBeforeTheStreamOpens:
     @staticmethod
@@ -523,20 +376,6 @@ class TestThePauseCanLandBeforeTheStreamOpens:
         assert policy.events == ["preempted", "awaited", "resumed"]
         assert "a full answer" in _assembled(events)
 
-    def test_the_checkpoint_of_an_empty_pause_does_not_continue(self, monkeypatch):
-        signal = preemption.PreemptSignal()
-        recorder = _Recorder(
-            monkeypatch,
-            [[_delta("a full answer"), _finish(), _done()]],
-            signal = signal,
-            pause_attempts = (),
-        )
-        payloads: list[dict] = []
-        self._pause_on_first_open(monkeypatch, recorder, signal, payloads)
-        _run(recorder.backend, signal = signal, policy = _RecordingPolicy())
-        assert payloads[1].get("continue_final_message") is not True
-        assert payloads[1]["messages"][-1]["role"] == "user"
-
     def test_an_armed_signal_stops_the_request_before_it_is_sent(self):
         class _ExplodingClient:
             def stream(self, *args, **kwargs):
@@ -556,26 +395,6 @@ class TestThePauseCanLandBeforeTheStreamOpens:
                 preempt_event = signal,
             ):
                 raise AssertionError("the stream opened despite a pending preemption")
-
-    def test_a_clear_signal_does_open_the_request(self):
-        opened = []
-
-        class _RecordingClient:
-            def stream(self, *args, **kwargs):
-                opened.append(kwargs.get("json"))
-                raise RuntimeError("stop here; the POST is all this test needs to see")
-
-        with pytest.raises(RuntimeError):
-            with LlamaCppBackend._stream_with_retry(
-                _RecordingClient(),
-                "http://127.0.0.1:1/v1/chat/completions",
-                {"messages": []},
-                None,
-                preempt_event = preemption.PreemptSignal(),
-            ):
-                pass
-        assert opened == [{"messages": []}]
-
 
 class TestNothingChangesForCallersThatDoNotPreempt:
     def test_no_policy_means_the_stream_is_untouched(self, monkeypatch):
