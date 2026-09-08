@@ -3413,6 +3413,12 @@ def _count_route(
     )
 
 
+def _count_hi(*args, messages = [{"role": "user", "content": "hi"}], **kwargs):
+    """_count_route over the one-message chat every case counts."""
+    return _count_route(*args, messages = messages, **kwargs)
+
+
+
 def test_an_mlx_count_is_served_where_llama_cpp_would_have_refused(monkeypatch):
     """llama.cpp not being loaded used to be the whole answer, for vision models too."""
     hello = [{"role": "user", "content": "hello"}]
@@ -3828,13 +3834,7 @@ def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatc
     # No API key, which is what makes the prompt Studio's to compose.
     interactive = SimpleNamespace(headers = Headers({}), query_params = {}, cookies = {})
     backend = _RenderRecordingBackend()
-    _count_route(
-        monkeypatch,
-        backend,
-        template = _PLAIN_TEMPLATE,
-        request = interactive,
-        messages = [{"role": "user", "content": "hi"}],
-    )
+    _count_hi(monkeypatch, backend, template = _PLAIN_TEMPLATE, request = interactive)
     from routes.inference import current_date_prompt_line
 
     line = current_date_prompt_line(request = interactive)
@@ -3850,11 +3850,10 @@ def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypat
     monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
     monkeypatch.setattr(route, "_thread_has_conversation_archive", lambda tid: bool(tid))
     backend = _RenderRecordingBackend()
-    _count_route(
+    _count_hi(
         monkeypatch,
         backend,
         template = _TOOL_TEMPLATE,
-        messages = [{"role": "user", "content": "hi"}],
         enabled_tools = ["web_search"],
         thread_id = "thread-with-an-archive",
     )
@@ -3882,13 +3881,12 @@ def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatc
         cookies = {},
     )
     backend = _RenderRecordingBackend()
-    _count_route(
+    _count_hi(
         monkeypatch,
         backend,
         template = _TOOL_TEMPLATE,
         request = keyed,
         enabled_tools = ["web_search"],
-        messages = [{"role": "user", "content": "hi"}],
     )
     from routes.inference import current_date_prompt_line
 
@@ -3934,12 +3932,7 @@ def test_an_mlx_count_yields_to_a_generation_that_started_while_it_prepared(monk
     backend = _RenderRecordingBackend()
     counts = iter([0, 1])  # admitted at the entry check, busy by the last checkpoint
     with pytest.raises(HTTPException) as excinfo:
-        _count_route(
-            monkeypatch,
-            backend,
-            generations = lambda: next(counts, 1),
-            messages = [{"role": "user", "content": "hi"}],
-        )
+        _count_hi(monkeypatch, backend, generations = lambda: next(counts, 1))
     assert excinfo.value.status_code == 503
     assert "generation is in progress" in str(excinfo.value.detail)
 

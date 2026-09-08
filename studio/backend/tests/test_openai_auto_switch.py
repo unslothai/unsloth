@@ -3937,14 +3937,18 @@ def _chat_request(**kw):
     return ChatCompletionRequest(**kw)
 
 
+def _chat_request_b(*args, model = "org/B-GGUF", **kwargs):
+    """_chat_request for the org/B-GGUF model these cases switch to."""
+    return _chat_request(*args, model = model, **kwargs)
+
+
+
 def test_chat_confirm_without_stream_rejected_before_switch(monkeypatch):
     # Codex P2: confirm_tool_calls=true + stream=false + local tools is an invalid
     # shape; it must 400 before the switch hook so it can't evict the resident model.
 
     backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", "Q8_0", "org/B-GGUF"))
-    payload = _chat_request(
-        model = "org/B-GGUF", enable_tools = True, confirm_tool_calls = True, stream = False
-    )
+    payload = _chat_request_b(enable_tools = True, confirm_tool_calls = True, stream = False)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
     assert exc.value.status_code == 400
@@ -3962,13 +3966,12 @@ def test_chat_confirm_with_bypass_permissions_reaches_hook(monkeypatch):
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _boom)
-    payload = _chat_request(
-        model = "org/B-GGUF",
-        enable_tools = True,
-        confirm_tool_calls = True,
-        stream = False,
-        bypass_permissions = True,
-    )
+    payload = _chat_request_b(
+                  enable_tools = True,
+                  confirm_tool_calls = True,
+                  stream = False,
+                  bypass_permissions = True,
+              )
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
 
@@ -4031,11 +4034,10 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
 
     # An image in the same request does need the vision tower.
     img = ImageContentPart(type = "image_url", image_url = ImageUrl(url = "data:image/png;base64,AAAA"))
-    payload = _chat_request(
-        model = "org/B-GGUF",
-        audio_base64 = "AAAA",
-        messages = [ChatMessage(role = "user", content = [img])],
-    )
+    payload = _chat_request_b(
+                  audio_base64 = "AAAA",
+                  messages = [ChatMessage(role = "user", content = [img])],
+              )
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
     assert captured == {
@@ -4114,9 +4116,7 @@ def test_chat_confirm_without_stream_mcp_rejected_before_switch(monkeypatch):
 
     monkeypatch.setattr(_tp, "get_tool_policy", lambda: None)  # no CLI --disable-tools
     backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", "Q8_0", "org/B-GGUF"))
-    payload = _chat_request(
-        model = "org/B-GGUF", mcp_enabled = True, confirm_tool_calls = True, stream = False
-    )
+    payload = _chat_request_b(mcp_enabled = True, confirm_tool_calls = True, stream = False)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
     assert exc.value.status_code == 400
@@ -5557,9 +5557,7 @@ def test_chat_valid_tool_choice_reaches_hook(monkeypatch):
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _boom)
-    payload = _chat_request(
-        model = "org/B-GGUF", tool_choice = {"type": "function", "function": {"name": "ok"}}
-    )
+    payload = _chat_request_b(tool_choice = {"type": "function", "function": {"name": "ok"}})
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
 
@@ -5782,10 +5780,7 @@ def test_chat_mistyped_gguf_repo_404s_before_vision_guard(monkeypatch):
         "describe_local_miss",
         lambda _m: (resolver.MISS_MODEL_NOT_FOUND, ()),
     )
-    payload = _chat_request(
-        model = "unsloth/typo-vision-GGUF",
-        image_base64 = "aGVsbG8=",
-    )
+    payload = _chat_request_b(model = "unsloth/typo-vision-GGUF", image_base64 = "aGVsbG8=")
     request = type("_R", (), {"url": type("_U", (), {"path": "/v1/chat/completions"})()})()
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, request, "tester"))

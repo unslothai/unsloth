@@ -99,6 +99,12 @@ def _info(
     )
 
 
+def _gguf_image_info(*args, model_format = "gguf", source = "hf_cache", task = mas.IMAGE_TASK, **kwargs):
+    """_info for a cached GGUF image model."""
+    return _info(*args, model_format = model_format, source = source, task = task, **kwargs)
+
+
+
 def _hf_cache_repo(root, repo_id, *, files):
     """A minimal HF cache repo: ``models--org--name/snapshots/<sha>/<file> -> ../../blobs/<sha>``.
 
@@ -194,13 +200,7 @@ def test_a_cached_gguf_repo_resolves_to_its_repo_id(catalog, tmp_path):
         tmp_path, "unsloth/Z-Image-Turbo-GGUF", files = ["z-image-turbo-Q4_K_S.gguf"]
     )
     catalog.append(
-        _info(
-            "unsloth/Z-Image-Turbo-GGUF",
-            repo_dir,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
+        _gguf_image_info("unsloth/Z-Image-Turbo-GGUF", repo_dir)
     )
 
     pick = mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK)
@@ -372,13 +372,7 @@ def cached_gguf(catalog, tmp_path):
     """A GGUF repo in the HF cache, whose snapshot entries are symlinks into blobs/."""
     repo, _snapshot = _hf_cache_repo(tmp_path, "city96/FLUX.1-dev-gguf", files = ["f-Q4_K_M.gguf"])
     catalog.append(
-        _info(
-            "city96/FLUX.1-dev-gguf",
-            repo,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
+        _gguf_image_info("city96/FLUX.1-dev-gguf", repo)
     )
     return repo
 
@@ -795,13 +789,7 @@ def test_an_unverifiable_download_plan_refuses_rather_than_loading(
     # caller falls back to an inline pull. Zero there is "unknown", not "nothing to fetch".
     repo, _snapshot = _hf_cache_repo(tmp_path, "unsloth/Wan2.2-GGUF", files = ["wan-Q4_K_M.gguf"])
     catalog.append(
-        _info(
-            "unsloth/Wan2.2-GGUF",
-            repo,
-            task = mas.VIDEO_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
+        _gguf_image_info("unsloth/Wan2.2-GGUF", repo, task = mas.VIDEO_TASK)
     )
     monkeypatch.setattr(
         backend, "download_plan", lambda model_path, **kw: {"total_bytes": 0, "plan_failed": True}
@@ -953,13 +941,7 @@ def test_a_cache_tree_inside_a_scan_folder_still_loads_by_repo_id(catalog, tmp_p
         tmp_path, "unsloth/Z-Image-Turbo-GGUF", files = ["z-Q4_K_S.gguf"]
     )
     catalog.append(
-        _info(
-            "unsloth/Z-Image-Turbo-GGUF",
-            repo,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "custom",
-        )
+        _gguf_image_info("unsloth/Z-Image-Turbo-GGUF", repo, source = "custom")
     )
 
     pick = mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK)
@@ -1687,13 +1669,7 @@ def test_a_gguf_the_loader_cannot_open_is_not_advertised(catalog, tmp_path):
         tmp_path, "unsloth/Z-Image-Turbo-GGUF", files = ["z-image-turbo-Q4_K_S.gguf"]
     )
     catalog.append(
-        _info(
-            "unsloth/Z-Image-Turbo-GGUF",
-            snapshot,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
+        _gguf_image_info("unsloth/Z-Image-Turbo-GGUF", snapshot)
     )
 
     assert mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK) is None
@@ -2381,13 +2357,7 @@ def test_a_cached_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path
     )
     monkeypatch.setattr(diffusion_module, "hub_cache_dir", lambda: str(tmp_path))
     catalog.append(
-        _info(
-            "unsloth/Z-Image-Turbo-GGUF",
-            repo_dir,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
+        _gguf_image_info("unsloth/Z-Image-Turbo-GGUF", repo_dir)
     )
 
     assert mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK) is None

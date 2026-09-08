@@ -156,19 +156,24 @@ def _call_route(
     )
 
 
+def _call_std_route(*args, repo_id = "org/repo", speculative_type = None, weights_bytes = 4096, **kwargs):
+    """_call_route with the fixed repo and weight size shared by every case below."""
+    return _call_route(*args, repo_id = repo_id, speculative_type = speculative_type, weights_bytes = weights_bytes, **kwargs)
+
+
+
 class TestMtpReserveFollowsTheLoader:
     """The reserve is charged only when the loader could run MTP."""
 
     @pytest.mark.parametrize("mode", ["mtp", "auto", "mtp+ngram"])
     def test_headless_mla_is_not_charged_a_duplicate_kv(self, monkeypatch, tmp_path, mode):
         gguf = _write_gguf(tmp_path / "plain-model-Q4_K_M.gguf", _MLA_NO_HEAD)
-        out = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/plain-model",
-            speculative_type = mode,
-        )
+        out = _call_std_route(
+                  monkeypatch,
+                  path = gguf,
+                  repo_id = "org/plain-model",
+                  speculative_type = mode,
+              )
         # The KV itself must still be reported; only the reserve goes away.
         assert out["kv_bytes"] and out["kv_bytes"] > 0
         assert out["spec_bytes"] is None, (
@@ -181,39 +186,36 @@ class TestMtpReserveFollowsTheLoader:
         fields = dict(_MLA_NO_HEAD)
         fields["nextn_predict_layers"] = 1
         gguf = _write_gguf(tmp_path / "headed-Q4_K_M.gguf", fields)
-        out = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/headed",
-            speculative_type = "mtp",
-        )
+        out = _call_std_route(
+                  monkeypatch,
+                  path = gguf,
+                  repo_id = "org/headed",
+                  speculative_type = "mtp",
+              )
         assert out["spec_bytes"] and out["spec_bytes"] > 0
 
     def test_ngram_costs_nothing(self, monkeypatch, tmp_path):
         """ngram drafts from generated text, so it holds no VRAM."""
         gguf = _write_gguf(tmp_path / "plain-Q4_K_M.gguf", _MLA_NO_HEAD)
-        out = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/plain",
-            speculative_type = "ngram",
-        )
+        out = _call_std_route(
+                  monkeypatch,
+                  path = gguf,
+                  repo_id = "org/plain",
+                  speculative_type = "ngram",
+              )
         assert out["spec_bytes"] is None
 
     def test_binary_without_mtp_support_reserves_nothing(self, monkeypatch, tmp_path):
         fields = dict(_MLA_NO_HEAD)
         fields["nextn_predict_layers"] = 1
         gguf = _write_gguf(tmp_path / "headed-Q4_K_M.gguf", fields)
-        out = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/headed",
-            speculative_type = "mtp",
-            mtp_token = False,
-        )
+        out = _call_std_route(
+                  monkeypatch,
+                  path = gguf,
+                  repo_id = "org/headed",
+                  speculative_type = "mtp",
+                  mtp_token = False,
+              )
         assert out["spec_bytes"] is None
 
 
@@ -509,23 +511,14 @@ class TestTheEstimateMatchesTheConfiguredLoad:
             "attention.sliding_window_pattern": [True, True, True, False],
         }
         gguf = _write_gguf(tmp_path / "swa-Q4_K_M.gguf", fields)
-        none = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/swa",
-            speculative_type = None,
-            n_parallel = 4,
-        )
-        many = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/swa",
-            speculative_type = None,
-            n_parallel = 4,
-            ctx_checkpoints = 32,
-        )
+        none = _call_std_route(monkeypatch, path = gguf, repo_id = "org/swa", n_parallel = 4)
+        many = _call_std_route(
+                   monkeypatch,
+                   path = gguf,
+                   repo_id = "org/swa",
+                   n_parallel = 4,
+                   ctx_checkpoints = 32,
+               )
         assert (
             many["kv_bytes"] > none["kv_bytes"]
         ), "saved ctx_checkpoints did not reach the KV estimator"
@@ -550,15 +543,14 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         gguf = _write_gguf(tmp_path / "mamba-Q4_K_M.gguf", fields)
 
         def at(depth):
-            return _call_route(
-                monkeypatch,
-                path = gguf,
-                weights_bytes = 4096,
-                repo_id = "org/mamba",
-                speculative_type = "mtp",
-                n_parallel = 4,
-                spec_draft_n_max = depth,
-            )
+            return _call_std_route(
+                       monkeypatch,
+                       path = gguf,
+                       repo_id = "org/mamba",
+                       speculative_type = "mtp",
+                       n_parallel = 4,
+                       spec_draft_n_max = depth,
+                   )
 
         none = at(None)
         zero = at(0)
@@ -597,26 +589,24 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         """Rather than a fit that omits the launch's largest allocation."""
         gguf = _write_gguf(tmp_path / "plain-Q4_K_M.gguf", _MLA_NO_HEAD)
         for mode in ("dspark", "dflash"):
-            out = _call_route(
-                monkeypatch,
-                path = gguf,
-                weights_bytes = 4096,
-                repo_id = "org/plain",
-                speculative_type = mode,
-            )
+            out = _call_std_route(
+                      monkeypatch,
+                      path = gguf,
+                      repo_id = "org/plain",
+                      speculative_type = mode,
+                  )
             assert out["spec_unpriced"] is True, f"{mode} claimed to be priced"
             assert out["spec_bytes"] is None
 
     def test_a_priceable_mode_is_not_marked_unpriced(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "plain-Q4_K_M.gguf", _MLA_NO_HEAD)
         for mode in (None, "ngram", "mtp", "auto"):
-            out = _call_route(
-                monkeypatch,
-                path = gguf,
-                weights_bytes = 4096,
-                repo_id = "org/plain",
-                speculative_type = mode,
-            )
+            out = _call_std_route(
+                      monkeypatch,
+                      path = gguf,
+                      repo_id = "org/plain",
+                      speculative_type = mode,
+                  )
             assert out["spec_unpriced"] is False, f"{mode} wrongly marked unpriced"
 
     def test_the_vision_projector_is_charged_unless_vision_is_off(self, monkeypatch, tmp_path):
@@ -624,39 +614,23 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         mmproj = tmp_path / "mmproj-F16.gguf"
         mmproj.write_bytes(b"\x00" * 800_000)
 
-        on = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = str(tmp_path),
-            speculative_type = None,
-            is_local = True,
-        )
+        on = _call_std_route(monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True)
         assert (
             on["projector_bytes"] and on["projector_bytes"] > mmproj.stat().st_size
         ), "the projector is charged above its file size (_MMPROJ_VRAM_SAFETY)"
 
-        off = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = str(tmp_path),
-            speculative_type = None,
-            is_local = True,
-            disable_vision = True,
-        )
+        off = _call_std_route(
+                  monkeypatch,
+                  path = gguf,
+                  repo_id = str(tmp_path),
+                  is_local = True,
+                  disable_vision = True,
+              )
         assert off["projector_bytes"] is None, "vision off must free the projector"
 
     def test_a_model_with_no_projector_reports_none(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "text-Q4_K_M.gguf", _MLA_NO_HEAD)
-        out = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = str(tmp_path),
-            speculative_type = None,
-            is_local = True,
-        )
+        out = _call_std_route(monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True)
         assert out["projector_bytes"] is None
 
 
@@ -668,22 +642,18 @@ class TestHostMemoryIsNotChargedToTheCard:
 
     def test_checkpoints_are_reported_as_their_own_share(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "swa-model-Q4_K_M.gguf", _SWA_MODEL)
-        with_checkpoints = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/swa",
-            speculative_type = None,
-            ctx_checkpoints = 8,
-        )
-        without = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/swa",
-            speculative_type = None,
-            ctx_checkpoints = 0,
-        )
+        with_checkpoints = _call_std_route(
+                               monkeypatch,
+                               path = gguf,
+                               repo_id = "org/swa",
+                               ctx_checkpoints = 8,
+                           )
+        without = _call_std_route(
+                      monkeypatch,
+                      path = gguf,
+                      repo_id = "org/swa",
+                      ctx_checkpoints = 0,
+                  )
         share = with_checkpoints["kv_checkpoint_bytes"]
         assert share, "checkpoints were requested but no host share was reported"
         # By difference against the same call with none, which is how the load
@@ -696,14 +666,7 @@ class TestHostMemoryIsNotChargedToTheCard:
 
     def test_no_checkpoints_means_no_host_share(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "swa-model-Q4_K_M.gguf", _SWA_MODEL)
-        out = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/swa",
-            speculative_type = None,
-            ctx_checkpoints = None,
-        )
+        out = _call_std_route(monkeypatch, path = gguf, repo_id = "org/swa", ctx_checkpoints = None)
         assert out["kv_checkpoint_bytes"] is None
 
 
@@ -880,14 +843,7 @@ class TestTheInheritedEnvironmentIsPriced:
         # to native priced a 4k load at the header's length.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
-        out = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/repo",
-            speculative_type = None,
-            n_ctx = None,
-        )
+        out = _call_std_route(monkeypatch, path = gguf, n_ctx = None)
         assert out["n_ctx"] == 4096, (
             "the estimate used the header's native window for a launch the "
             "environment pins to 4096"
@@ -897,14 +853,7 @@ class TestTheInheritedEnvironmentIsPriced:
     def test_no_inherited_context_still_uses_native(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
-        out = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/repo",
-            speculative_type = None,
-            n_ctx = None,
-        )
+        out = _call_std_route(monkeypatch, path = gguf, n_ctx = None)
         assert out["n_ctx"] == _PLAIN_GQA["context_length"]
 
     def test_an_inherited_cache_type_sizes_the_cache(self, monkeypatch, tmp_path):
@@ -914,22 +863,10 @@ class TestTheInheritedEnvironmentIsPriced:
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_K", raising = False)
         monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_V", raising = False)
-        default = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/repo",
-            speculative_type = None,
-        )
+        default = _call_std_route(monkeypatch, path = gguf)
         monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_K", "q8_0")
         monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_V", "q8_0")
-        inherited = _call_route(
-            monkeypatch,
-            path = gguf,
-            weights_bytes = 4096,
-            repo_id = "org/repo",
-            speculative_type = None,
-        )
+        inherited = _call_std_route(monkeypatch, path = gguf)
         assert inherited["kv_bytes"] < default["kv_bytes"], (
             "an inherited q8_0 cache was priced as f16, so the KV segment was "
             "about twice the size the launch reserves"
@@ -943,14 +880,7 @@ class TestTheInheritedEnvironmentIsPriced:
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
         assert (
-            _call_route(
-                monkeypatch,
-                path = gguf,
-                weights_bytes = 4096,
-                repo_id = "org/repo",
-                speculative_type = None,
-                n_ctx = None,
-            )["context_is_pinned"]
+            _call_std_route(monkeypatch, path = gguf, n_ctx = None)["context_is_pinned"]
             is True
         )
 
@@ -958,14 +888,7 @@ class TestTheInheritedEnvironmentIsPriced:
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
         assert (
-            _call_route(
-                monkeypatch,
-                path = gguf,
-                weights_bytes = 4096,
-                repo_id = "org/repo",
-                speculative_type = None,
-                n_ctx = None,
-            )["context_is_pinned"]
+            _call_std_route(monkeypatch, path = gguf, n_ctx = None)["context_is_pinned"]
             is False
         )
 
@@ -973,14 +896,7 @@ class TestTheInheritedEnvironmentIsPriced:
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
         assert (
-            _call_route(
-                monkeypatch,
-                path = gguf,
-                weights_bytes = 4096,
-                repo_id = "org/repo",
-                speculative_type = None,
-                n_ctx = 8192,
-            )["context_is_pinned"]
+            _call_std_route(monkeypatch, path = gguf, n_ctx = 8192)["context_is_pinned"]
             is True
         )
 
@@ -992,13 +908,7 @@ class TestTheInheritedEnvironmentIsPriced:
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
         assert (
-            _call_route(
-                monkeypatch,
-                path = gguf,
-                weights_bytes = 4096,
-                repo_id = "org/repo",
-                speculative_type = None,
-            )["inherited_device_pin"]
+            _call_std_route(monkeypatch, path = gguf)["inherited_device_pin"]
             is True
         )
 
@@ -1010,12 +920,6 @@ class TestTheInheritedEnvironmentIsPriced:
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_DEVICE", value)
         assert (
-            _call_route(
-                monkeypatch,
-                path = gguf,
-                weights_bytes = 4096,
-                repo_id = "org/repo",
-                speculative_type = None,
-            )["inherited_device_pin"]
+            _call_std_route(monkeypatch, path = gguf)["inherited_device_pin"]
             is False
         )
