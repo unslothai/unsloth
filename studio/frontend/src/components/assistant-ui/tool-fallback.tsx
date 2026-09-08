@@ -168,7 +168,11 @@ function ToolFallbackTrigger({
     status?.type === "incomplete" && status.reason === "cancelled";
 
   const StatusIcon = statusIconMap[statusType];
-  const label = isCancelled ? "Cancelled tool" : "Used tool";
+  const label = isCancelled
+    ? "Cancelled tool"
+    : isRunning
+      ? "Using tool"
+      : "Used tool";
   const name = toolArgText(toolName);
   const displayName = formatMcpToolName(name, mcpServer) ?? name;
 
