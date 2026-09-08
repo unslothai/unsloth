@@ -41,9 +41,7 @@ def _guards_of_calls_mentioning(source: str, needle: str) -> list[str]:
             if not isinstance(call, ast.Call):
                 continue
             if any(
-                isinstance(arg, ast.Constant)
-                and isinstance(arg.value, str)
-                and needle in arg.value
+                isinstance(arg, ast.Constant) and isinstance(arg.value, str) and needle in arg.value
                 for arg in call.args
             ):
                 guards.append(ast.get_source_segment(source, node.test) or "")
