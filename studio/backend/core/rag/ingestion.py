@@ -554,6 +554,12 @@ def start_ingestion(
             _workers.pop(job_id, None)
         job_leases.release(job_leases.INGESTION, job_id)
         fail_stalled_job(job_id, "Ingestion worker could not start")
+        # _run never entered, so its finally cannot retire the orphan this retry replaced.
+        conn = rag_db.get_connection()
+        try:
+            _retire_orphan_after_failure(conn, replaces, stored_path)
+        finally:
+            conn.close()
         raise
     return document_id, job_id
 

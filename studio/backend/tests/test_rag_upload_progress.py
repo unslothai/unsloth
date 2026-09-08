@@ -337,3 +337,38 @@ def test_failed_reindex_keeps_the_completed_document_it_replaced(
     finally:
         conn.close()
     assert path.exists()
+
+
+def test_orphan_retry_that_cannot_start_a_worker_retires_the_orphan(
+    rag_home, stub_embeddings, monkeypatch, tmp_path
+):
+    """``_run`` never runs when the worker cannot start, so its finally cannot retire."""
+    path = tmp_path / "unstartable.txt"
+    path.write_text("Revenue doubled this quarter.")
+    scope = store.thread_scope("orphan-unstartable")
+    conn = rag_db.get_connection()
+    try:
+        original = store.create_document(
+            conn,
+            scope = scope,
+            filename = path.name,
+            sha256 = ingestion._sha256_file(str(path)),
+            status = "pending",
+            stored_path = str(path),
+        )
+    finally:
+        conn.close()
+
+    def no_threads(*_args, **_kwargs):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(ingestion.threading, "Thread", no_threads)
+    with pytest.raises(RuntimeError):
+        ingestion.start_ingestion(scope, None, "orphan-unstartable", path.name, str(path))
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, original) is None
+        rows = conn.execute("SELECT status FROM documents WHERE scope=?", (scope,)).fetchall()
+    finally:
+        conn.close()
+    assert not any(row["status"] in {"pending", "running"} for row in rows)
