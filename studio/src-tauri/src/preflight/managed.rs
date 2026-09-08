@@ -299,7 +299,7 @@ fn managed_bin_fingerprint(bin: &Path) -> Option<ManagedBinFingerprint> {
         marker_path,
         marker_size,
         marker_mtime_ms,
-        llama_runtime: llama_runtime_fingerprint(),
+        llama_runtime: llama_runtime_fingerprint(bin),
     })
 }
 
@@ -396,20 +396,44 @@ fn named_user_home(value: &str, _home: Option<&Path>) -> Option<PathBuf> {
         return None;
     }
     let c_name = std::ffi::CString::new(name).ok()?;
-    // getpwnam returns a pointer into a static buffer, so the directory is copied
-    // out before anything else can call into libc and overwrite it.
-    let home = unsafe {
-        let entry = libc::getpwnam(c_name.as_ptr());
-        if entry.is_null() {
+    // getpwnam_r, not getpwnam: this runs on a Tauri worker thread, and getpwnam
+    // hands back a pointer into storage shared by the whole process, so a
+    // concurrent passwd lookup anywhere else could overwrite pw_dir while it was
+    // being copied. Copying promptly narrows that window, it does not close it,
+    // and a torn read here fingerprints an unrelated tree. The _r form writes
+    // into a buffer this call owns.
+    let mut buffer = vec![0i8; 1024];
+    let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let home = loop {
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+        let code = unsafe {
+            libc::getpwnam_r(
+                c_name.as_ptr(),
+                &mut passwd,
+                buffer.as_mut_ptr() as *mut libc::c_char,
+                buffer.len(),
+                &mut found,
+            )
+        };
+        if code == libc::ERANGE && buffer.len() < 1 << 20 {
+            // The name resolves, the buffer was too small for its record. Only
+            // grow so far, so a hostile or broken passwd source cannot make this
+            // allocate without end.
+            buffer.resize(buffer.len() * 2, 0);
+            continue;
+        }
+        // A nonzero code is a lookup error and a null found is "no such user".
+        // Both leave the value to be anchored like any other relative path.
+        if code != 0 || found.is_null() {
             return None;
         }
-        let dir = (*entry).pw_dir;
+        let dir = passwd.pw_dir;
         if dir.is_null() {
             return None;
         }
-        PathBuf::from(std::ffi::OsStr::from_bytes(
-            std::ffi::CStr::from_ptr(dir).to_bytes(),
-        ))
+        break PathBuf::from(std::ffi::OsStr::from_bytes(unsafe {
+            std::ffi::CStr::from_ptr(dir).to_bytes()
+        }));
     };
     Some(if tail.is_empty() { home } else { home.join(tail) })
 }
@@ -460,14 +484,128 @@ fn named_windows_user_home(value: &str, home: &Path, username: Option<&str>) -> 
     Some(PathBuf::from(format!("{base}{tail}")))
 }
 
+/// The markers install.ps1 writes into its generated `unsloth.cmd`, and the size
+/// past which the file is not that shim. Same pair `_is_managed_cmd_shim` reads,
+/// so a hand rolled wrapper that happens to call the CLI is not mistaken for one.
+#[cfg(any(windows, test))]
+const CMD_SHIM_MARKERS: [&[u8]; 2] = [b"unsloth-studio-managed-launcher", b"from unsloth_cli import app"];
+#[cfg(any(windows, test))]
+const CMD_SHIM_MAX_BYTES: u64 = 8192;
+
+/// Whether a directory carries the sentinel an installer-managed Studio root has,
+/// mirroring `_looks_like_installer_managed_studio_home` in the CLI.
+///
+/// Compiled on every platform so the rule is testable off Windows; the runtime
+/// answer follows the platform this is built for, as it does in Python.
+fn looks_like_installer_managed_studio_home(candidate: &Path) -> bool {
+    if candidate.join("share").join("studio.conf").is_file() {
+        return true;
+    }
+    #[cfg(not(windows))]
+    {
+        candidate.join("bin").join("unsloth").is_file()
+    }
+    #[cfg(windows)]
+    {
+        if candidate.join("bin").join("unsloth.exe").is_file() {
+            return true;
+        }
+        is_managed_cmd_shim(&candidate.join("bin").join("unsloth.cmd"))
+    }
+}
+
+/// Whether a path is the `.cmd` shim this installer generates.
+#[cfg(any(windows, test))]
+fn is_managed_cmd_shim(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() > CMD_SHIM_MAX_BYTES {
+        return false;
+    }
+    let Ok(body) = fs::read(path) else {
+        return false;
+    };
+    CMD_SHIM_MARKERS
+        .iter()
+        .all(|marker| body.windows(marker.len()).any(|window| window == *marker))
+}
+
+/// The llama.cpp root an installer-managed venv implies, with no ambient
+/// override to say so.
+///
+/// The desktop strips UNSLOTH_STUDIO_HOME before spawning the CLI, but the CLI
+/// puts it back: `_resolve_studio_home` re-infers the root from `sys.prefix` when
+/// the venv is named `unsloth_studio` and the root carries an installer sentinel,
+/// and `_ensure_studio_env_exported` then points UNSLOTH_LLAMA_CPP_PATH at that
+/// root's llama.cpp. Reading only the ambient environment here fingerprinted the
+/// legacy ~/.unsloth/llama.cpp instead, so quarantine inside the custom runtime
+/// never moved the fingerprint and a cached Ready kept being served for a tree
+/// the new health check never got to grade.
+///
+/// `bin` is the launcher file inside the venv, so its grandparent is `sys.prefix`.
+fn inferred_studio_llama_root(bin: &Path) -> Option<PathBuf> {
+    let prefix = bin.parent()?.parent()?;
+    if prefix.file_name()? != "unsloth_studio" {
+        return None;
+    }
+    let root = prefix.parent()?;
+    // Python resolves both sides before comparing, so a symlinked or relative
+    // path to the legacy root is still the legacy root, and the answer there is
+    // the legacy llama.cpp rather than <root>/llama.cpp.
+    let legacy = dirs::home_dir()?.join(".unsloth").join("studio");
+    let same = match (root.canonicalize(), legacy.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => root == legacy,
+    };
+    if same {
+        return None;
+    }
+    if !looks_like_installer_managed_studio_home(root) {
+        return None;
+    }
+    Some(root.join("llama.cpp"))
+}
+
+/// Whether a folder holds a llama-server in one of the layouts the backend
+/// accepts, which is the question that decides whether discovery stops there.
+///
+/// Presence, not usability, and the CLI half agrees: `_scan_pinned` returns a hit
+/// for an executable candidate and an unavailable path for one that is merely
+/// present, and both end the search. Only a layout holding no server at all is
+/// walked past, so asking for the execute bit here would fingerprint a different
+/// tree than the CLI grades in exactly the case where the pinned one is damaged.
+fn holds_a_llama_server(root: &Path) -> bool {
+    let name = if cfg!(windows) {
+        "llama-server.exe"
+    } else {
+        "llama-server"
+    };
+    let mut candidates = vec![root.join(name), root.join("build").join("bin").join(name)];
+    if cfg!(windows) {
+        candidates.push(root.join("build").join("bin").join("Release").join(name));
+    }
+    candidates.iter().any(|candidate| {
+        let Ok(metadata) = fs::metadata(candidate) else {
+            return false;
+        };
+        // Presence, not usability. _scan_pinned answers "non_executable" for a
+        // candidate without the bit and the caller turns that into _unavailable,
+        // which ends the search rather than falling through, so a server the
+        // loader could not run still stops discovery at this folder.
+        metadata.is_file()
+    })
+}
+
 /// The managed llama.cpp install root, the same one default_managed_llama_dir
 /// picks in Python.
-fn llama_runtime_root() -> Option<PathBuf> {
+fn llama_runtime_root(bin: &Path) -> Option<PathBuf> {
     // Hermetic under test: this walks a real directory, so otherwise a developer
     // with a runtime installed and a CI runner without one run different tests.
     // Unset means no runtime at all. Mirrors capability_cache_path()'s hook.
     #[cfg(test)]
     {
+        let _ = bin;
         return std::env::var_os("UNSLOTH_TEST_LLAMA_RUNTIME_ROOT").map(PathBuf::from);
     }
     // The override is asked first and its answer is final: falling back to the
@@ -482,7 +620,28 @@ fn llama_runtime_root() -> Option<PathBuf> {
     if std::env::var("UNSLOTH_LLAMA_CPP_PATH")
         .is_ok_and(|value| !value.trim().is_empty())
     {
-        return llama_runtime_override();
+        // An override the desktop wrote points at the managed tree and the CLI
+        // grades it whatever it holds, so it is taken as given. A user-written one
+        // only stops _scan_pinned when it actually holds a server; when it does
+        // not, the CLI walks past it and grades the tree behind it, so stopping
+        // here would fingerprint a folder nobody loads.
+        let desktop_wrote_it =
+            std::env::var("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH").as_deref() == Ok("1");
+        let override_root = llama_runtime_override();
+        if desktop_wrote_it {
+            return override_root;
+        }
+        if let Some(root) = override_root {
+            if holds_a_llama_server(&root) {
+                return Some(root);
+            }
+        }
+    }
+    // No ambient override, so ask the venv the same question the CLI asks itself
+    // before falling back to the legacy tree.
+    #[cfg(not(test))]
+    if let Some(inferred) = inferred_studio_llama_root(bin) {
+        return Some(inferred);
     }
     #[cfg(not(test))]
     return Some(dirs::home_dir()?.join(".unsloth").join("llama.cpp"));
@@ -495,8 +654,8 @@ fn llama_runtime_root() -> Option<PathBuf> {
 /// runtime file left it identical and preflight answered Ready from the cache
 /// without ever asking the CLI. None when no runtime is installed, which is
 /// NotInstalled rather than broken.
-fn llama_runtime_fingerprint() -> Option<String> {
-    llama_runtime_fingerprint_at(&llama_runtime_root()?)
+fn llama_runtime_fingerprint(bin: &Path) -> Option<String> {
+    llama_runtime_fingerprint_at(&llama_runtime_root(bin)?)
 }
 
 /// The walk itself, against a given root, so the tests need no shared state.
@@ -518,20 +677,48 @@ fn llama_runtime_fingerprint_at(root: &Path) -> Option<String> {
     }
 }
 
-/// How many files a directory holds and how many bytes they total. A subdirectory
-/// is not a file, so it cannot read as a binary.
+/// How many files a directory holds, how many bytes they total, how many links
+/// sit beside them and how many of the files can be executed. A subdirectory is
+/// not a file, so it cannot read as a binary.
+///
+/// The last two counters are here because the first two answered the same for
+/// trees the CLI grades differently. DirEntry::metadata does not follow a link,
+/// so a link is not a file and neither its presence nor its loss moved a count
+/// or a byte total, yet losing the install-name link (libggml.0.dylib, and the
+/// SONAME link on Linux) is exactly what installed_runtime_health calls a broken
+/// payload. Clearing the execute bit on llama-server moves neither the count nor
+/// the length either, and that is the other thing health rejects. Either state
+/// used to leave a cached Ready matching, so the repair was never offered and
+/// the launch failed instead.
 fn counted(entries: fs::ReadDir) -> String {
     let mut count: u64 = 0;
     let mut bytes: u64 = 0;
+    let mut links: u64 = 0;
+    let mut executable: u64 = 0;
     for entry in entries.flatten() {
-        if let Ok(meta) = entry.metadata() {
-            if meta.is_file() {
-                count += 1;
-                bytes += meta.len();
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_symlink() {
+            links += 1;
+            continue;
+        }
+        if meta.is_file() {
+            count += 1;
+            bytes += meta.len();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                // Any execute bit, the same question os.access(X_OK) asks for the
+                // owner that will run it. Windows has no bit to read, so the
+                // counter stays zero there and the other three carry the tree.
+                if meta.permissions().mode() & 0o111 != 0 {
+                    executable += 1;
+                }
             }
         }
     }
-    format!("{count}:{bytes}")
+    format!("{count}:{bytes}:{links}:{executable}")
 }
 
 fn capability_cache_path() -> Option<PathBuf> {
@@ -1255,7 +1442,7 @@ mod tests {
         fs::create_dir_all(&bin).unwrap();
         assert_eq!(
             llama_runtime_fingerprint_at(&root).as_deref(),
-            Some("bin:0:0")
+            Some("bin:0:0:0:0")
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -1625,7 +1812,17 @@ mod tests {
     fn install_fake_runtime(root: &Path) -> PathBuf {
         let bin = runtime_bin_dir(root);
         fs::create_dir_all(&bin).unwrap();
-        fs::write(bin.join("llama-server"), vec![0u8; 4096]).unwrap();
+        let server = bin.join("llama-server");
+        fs::write(&server, vec![0u8; 4096]).unwrap();
+        // Executable, as the installer leaves it, so the counter that watches the
+        // bit starts where a real install starts.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut mode = fs::metadata(&server).unwrap().permissions();
+            mode.set_mode(0o755);
+            fs::set_permissions(&server, mode).unwrap();
+        }
         fs::write(bin.join("libggml-base.so"), vec![0u8; 2048]).unwrap();
         bin
     }
@@ -2063,7 +2260,7 @@ mod tests {
         install_fake_runtime(&root);
         assert_eq!(
             llama_runtime_fingerprint_at(&root).as_deref(),
-            Some("bin:2:6144")
+            Some(if cfg!(unix) { "bin:2:6144:0:1" } else { "bin:2:6144:0:0" })
         );
         let _ = fs::remove_dir_all(&parent);
     }
@@ -2113,7 +2310,7 @@ mod tests {
         let started = Instant::now();
         let fingerprint = llama_runtime_fingerprint_at(&root);
         let elapsed = started.elapsed();
-        assert_eq!(fingerprint.as_deref(), Some("bin:5000:5000"));
+        assert_eq!(fingerprint.as_deref(), Some("bin:5000:5000:0:0"));
         assert!(
             elapsed < Duration::from_secs(2),
             "5000 files took {elapsed:?}, which is too much to spend before the window opens"
@@ -2143,7 +2340,7 @@ mod tests {
         fs::remove_file(bin.join("libggml-base.so")).unwrap();
         assert_eq!(
             llama_runtime_fingerprint_at(&linked).as_deref(),
-            Some("bin:1:4096")
+            Some("bin:1:4096:0:1")
         );
 
         let _ = fs::remove_dir_all(&parent);
@@ -2151,22 +2348,202 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_symlinked_file_inside_the_runtime_is_not_counted() {
-        // DirEntry::metadata does not follow the link, so a symlinked binary counts
-        // as nothing. This bounds the promise: a tree whose binaries are symlinks
-        // into a store is covered only by the real files beside them. The managed
-        // installer writes real files, so the shipped layout is unaffected.
+    fn a_symlinked_file_inside_the_runtime_is_counted_and_its_loss_is_seen() {
+        // Codex 3960069958, P1. DirEntry::metadata does not follow a link, so a link
+        // was neither a file nor a byte and no count could move when one appeared or
+        // went. That is not a bound worth keeping: on macOS the install name
+        // llama-server loads is the middle link of libggml.dylib -> libggml.0.dylib
+        // -> libggml.0.23.0.dylib, and on Linux the SONAME can be a link too, so
+        // losing exactly the entry installed_runtime_health calls fatal left a
+        // cached Ready matching.
         let parent = scratch_dir("runtime-symlinked-file");
         let root = parent.join("llama.cpp");
         let bin = install_fake_runtime(&root);
         let before = llama_runtime_fingerprint_at(&root).unwrap();
 
         std::os::unix::fs::symlink(bin.join("llama-server"), bin.join("llama-cli")).unwrap();
+        let with_link = llama_runtime_fingerprint_at(&root).unwrap();
+        assert_ne!(
+            before, with_link,
+            "a link beside the binaries has to move the fingerprint"
+        );
+        // And losing it again is seen, which is the case that matters.
+        fs::remove_file(bin.join("llama-cli")).unwrap();
+        assert_eq!(before, llama_runtime_fingerprint_at(&root).unwrap());
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn an_installer_managed_venv_names_its_own_runtime() {
+        // Codex 3960069972, P1. The desktop strips UNSLOTH_STUDIO_HOME before
+        // spawning the CLI, but the CLI puts it back: _resolve_studio_home re-infers
+        // the root from sys.prefix and _ensure_studio_env_exported points
+        // UNSLOTH_LLAMA_CPP_PATH at that root's llama.cpp. Reading only the ambient
+        // environment fingerprinted the legacy tree, so quarantine inside the custom
+        // runtime never moved it and a cached Ready outlived the damage.
+        let root = scratch_dir("inferred-studio-home");
+        let bin = root.join("unsloth_studio").join("bin").join("unsloth");
+        fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        fs::write(&bin, b"launcher").unwrap();
+
+        // No sentinel yet, so this is a developer venv that happens to be named
+        // unsloth_studio and the legacy tree is still the answer.
+        assert_eq!(inferred_studio_llama_root(&bin), None);
+
+        fs::create_dir_all(root.join("share")).unwrap();
+        fs::write(root.join("share").join("studio.conf"), b"managed").unwrap();
         assert_eq!(
+            inferred_studio_llama_root(&bin),
+            Some(root.join("llama.cpp")),
+            "an installer-managed root names the runtime beside it"
+        );
+
+        // A venv that is not the one the installer builds says nothing either.
+        let loose = root.join("some_venv").join("bin").join("unsloth");
+        fs::create_dir_all(loose.parent().unwrap()).unwrap();
+        fs::write(&loose, b"launcher").unwrap();
+        assert_eq!(inferred_studio_llama_root(&loose), None);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_unix_sentinel_is_the_launcher_the_installer_writes() {
+        let root = scratch_dir("studio-sentinel");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        assert!(!looks_like_installer_managed_studio_home(&root));
+        fs::write(root.join("bin").join("unsloth"), b"launcher").unwrap();
+        assert!(looks_like_installer_managed_studio_home(&root));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_cmd_shim_has_to_be_the_one_the_installer_generated() {
+        // The directory is on PATH, so any file of that name would otherwise be
+        // enough to point a custom root at itself. Same markers Python reads.
+        let root = scratch_dir("cmd-shim");
+        let shim = root.join("unsloth.cmd");
+        fs::create_dir_all(&root).unwrap();
+        assert!(!is_managed_cmd_shim(&shim));
+
+        fs::write(&shim, b"@echo off\r\npython -m unsloth_cli %*\r\n").unwrap();
+        assert!(
+            !is_managed_cmd_shim(&shim),
+            "a hand rolled wrapper that calls the CLI is not this shim"
+        );
+
+        fs::write(
+            &shim,
+            b"@rem unsloth-studio-managed-launcher\r\n@python -c \"from unsloth_cli import app; app()\" %*\r\n",
+        )
+        .unwrap();
+        assert!(is_managed_cmd_shim(&shim));
+
+        // Too big to be the generated shim, whatever it contains.
+        let mut oversized = b"unsloth-studio-managed-launcher from unsloth_cli import app".to_vec();
+        oversized.resize((CMD_SHIM_MAX_BYTES + 1) as usize, b' ');
+        fs::write(&shim, &oversized).unwrap();
+        assert!(!is_managed_cmd_shim(&shim));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_override_with_no_server_in_it_does_not_stop_the_search() {
+        // Codex 3960069962, P2. _scan_pinned finds no candidate under an empty or
+        // missing UNSLOTH_LLAMA_CPP_PATH and walks on to the tree behind it, so
+        // treating the override as final fingerprinted a folder nobody loads while
+        // the runtime the backend really opens went unwatched.
+        let root = scratch_dir("override-empty");
+        fs::create_dir_all(&root).unwrap();
+        assert!(!holds_a_llama_server(&root));
+        assert!(!holds_a_llama_server(&root.join("not-there")));
+
+        let bin = install_fake_runtime(&root);
+        assert!(
+            holds_a_llama_server(&root),
+            "build/bin/llama-server is one of the layouts the backend accepts"
+        );
+
+        // The flat layout counts too, and so does a server without the execute
+        // bit: _scan_pinned calls that one non_executable and the caller turns it
+        // into _unavailable, which ends the search here rather than walking on.
+        let flat = scratch_dir("override-flat");
+        fs::create_dir_all(&flat).unwrap();
+        let server = flat.join(if cfg!(windows) {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        });
+        fs::write(&server, b"binary").unwrap();
+        assert!(holds_a_llama_server(&flat));
+
+        // A directory of that name is not a server, and neither is an empty tree.
+        let decoy = scratch_dir("override-decoy");
+        fs::create_dir_all(decoy.join(if cfg!(windows) {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        }))
+        .unwrap();
+        assert!(!holds_a_llama_server(&decoy));
+        let _ = fs::remove_dir_all(&decoy);
+
+        let _ = bin;
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&flat);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_named_user_resolves_through_the_reentrant_lookup() {
+        // Codex 3960069965, P2. getpwnam hands back process-global storage and this
+        // runs on a Tauri worker thread, so the lookup is the _r form now. root is
+        // the one account every unix box has, which makes this checkable anywhere.
+        let home = Path::new("/home/whoever");
+        let resolved = named_user_home("~root/llama.cpp", Some(home));
+        assert!(
+            resolved.is_some(),
+            "root must resolve, or the reentrant lookup is not answering at all"
+        );
+        assert!(resolved.unwrap().ends_with("llama.cpp"));
+        assert_eq!(
+            named_user_home("~no-such-account-anywhere/x", Some(home)),
+            None,
+            "an unknown name leaves the value to be anchored like any relative path"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clearing_the_execute_bit_moves_the_fingerprint() {
+        // The other half of the same catch: taking the execute bit off llama-server
+        // changes neither the count nor the byte total, and it is the state
+        // installed_runtime_health answers llama_runtime_binaries_missing for, so a
+        // cached Ready went on matching a tree that could no longer launch.
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = scratch_dir("runtime-exec-bit");
+        let root = parent.join("llama.cpp");
+        let bin = install_fake_runtime(&root);
+        let before = llama_runtime_fingerprint_at(&root).unwrap();
+
+        let server = bin.join("llama-server");
+        let mut mode = fs::metadata(&server).unwrap().permissions();
+        mode.set_mode(0o644);
+        fs::set_permissions(&server, mode).unwrap();
+        assert_ne!(
             before,
             llama_runtime_fingerprint_at(&root).unwrap(),
-            "a symlink to a file inside the directory is invisible to this walk"
+            "a binary that can no longer be executed is a different tree"
         );
+
+        let mut restored = fs::metadata(&server).unwrap().permissions();
+        restored.set_mode(0o755);
+        fs::set_permissions(&server, restored).unwrap();
+        assert_eq!(before, llama_runtime_fingerprint_at(&root).unwrap());
 
         let _ = fs::remove_dir_all(&parent);
     }
@@ -2182,11 +2559,16 @@ mod tests {
         let before = llama_runtime_fingerprint_at(&root).unwrap();
 
         std::os::unix::fs::symlink(bin.join("gone.so"), bin.join("libggml.so")).unwrap();
-        assert_eq!(
-            before,
-            llama_runtime_fingerprint_at(&root).unwrap(),
-            "a broken link must be skipped, not counted and not fatal"
+        let dangling = llama_runtime_fingerprint_at(&root);
+        assert!(
+            dangling.is_some(),
+            "a broken link must not make the walk fail or report the runtime missing"
         );
+        // It counts as a link rather than as a file, so the real files behind it are
+        // still reported unchanged and only the link counter moves.
+        assert_ne!(before, dangling.clone().unwrap());
+        fs::remove_file(bin.join("libggml.so")).unwrap();
+        assert_eq!(before, llama_runtime_fingerprint_at(&root).unwrap());
 
         let _ = fs::remove_dir_all(&parent);
     }

@@ -541,16 +541,20 @@ def test_a_dangling_symlink_pin_falls_through_like_any_absent_pin(tmp_path, monk
     assert active() is False
 
 
-def test_an_explicit_runtime_override_outranks_a_stale_stored_folder(monkeypatch):
+def test_an_explicit_runtime_override_outranks_a_stale_stored_folder(tmp_path, monkeypatch):
     """Codex 3959620607, P2. The finder reads UNSLOTH_LLAMA_CPP_PATH at step 1b and the
     stored folder only at step 2, so an override with an older selection still in the
     settings database is the tree the backend opens. Reading the setting first returned
     False, nothing graded that tree, and preflight stayed Ready over a runtime missing files.
     default_managed_llama_dir points at exactly the override, so it is ours to grade."""
     active = _active_helper()
+    override = tmp_path / "relocated" / "llama.cpp"
+    server = override / "build" / "bin" / ("llama-server.exe" if os.name == "nt" else "llama-server")
+    server.parent.mkdir(parents = True)
+    server.write_text("", encoding = "utf-8")
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
-    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", "/opt/relocated/llama.cpp")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(override))
     _stub_stored_selection(monkeypatch, "/home/someone/older-build")
     assert active() is True
 
@@ -558,6 +562,26 @@ def test_an_explicit_runtime_override_outranks_a_stale_stored_folder(monkeypatch
     # it set it, so the stored folder wins again and the managed tree is not ours.
     monkeypatch.setenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", "1")
     assert active() is False
+
+
+def test_an_override_that_holds_no_server_does_not_outrank_the_stored_folder(
+    tmp_path, monkeypatch
+):
+    """Codex 3960069962, P2. _scan_pinned finds no candidate under an empty or missing
+    UNSLOTH_LLAMA_CPP_PATH and walks on to the stored folder, so treating the override as
+    final graded a directory nobody loads, answered "not installed", and left the runtime the
+    backend really opens ungraded."""
+    active = _active_helper()
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "never-installed"))
+    _stub_stored_selection(monkeypatch, "/home/someone/older-build")
+    assert active() is False, "the finder walks past an empty override to the stored folder"
+
+    # With no stored folder either, the finder reaches the managed tree, so there is
+    # something to grade again.
+    _stub_stored_selection(monkeypatch, None)
+    assert active() is True
 
 
 def _stub_stored_selection(monkeypatch, selected):
@@ -574,7 +598,28 @@ def _stub_stored_selection(monkeypatch, selected):
         monkeypatch.setitem(sys.modules, name, module)
     settings = types.ModuleType("studio.backend.utils.llama_cpp_path_settings")
     settings.get_stored_custom_llama_cpp_path = lambda: selected
+    # The real layout contract, so the helper and the finder cannot disagree about
+    # which folders hold a server.
+    settings.llama_server_candidates = _real_llama_server_candidates
     monkeypatch.setitem(sys.modules, "studio.backend.utils.llama_cpp_path_settings", settings)
+    # The helper asks install_llama_prebuilt for the managed root, and the stub
+    # package above hides the real module, so it is stubbed to the same rule.
+    prebuilt = types.ModuleType("studio.install_llama_prebuilt")
+    prebuilt.default_managed_llama_dir = lambda: pathlib.Path(
+        (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
+        or (pathlib.Path.home() / ".unsloth" / "llama.cpp")
+    ).expanduser()
+    monkeypatch.setitem(sys.modules, "studio.install_llama_prebuilt", prebuilt)
+
+
+def _real_llama_server_candidates(directory):
+    """The shipped layouts, read off llama_cpp_path_settings rather than retyped."""
+    root = pathlib.Path(directory)
+    name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
+    candidates = [root / name, root / "build" / "bin" / name]
+    if sys.platform == "win32":
+        candidates.append(root / "build" / "bin" / "Release" / name)
+    return tuple(candidates)
 
 
 def test_a_skipped_runtime_verdict_says_so_in_its_reason(monkeypatch):

@@ -4966,7 +4966,17 @@ class _WindowsLauncherUpdateTransaction:
 
 
 def _managed_llama_runtime_is_the_active_one() -> bool:
-    """Whether the managed tree is the runtime the backend would actually load.
+    """Whether preflight has a managed tree to grade at all.
+
+    Kept as the yes/no question the name asks; ``_llama_runtime_to_grade`` answers
+    which tree, and the two cannot disagree.
+    """
+    return _llama_runtime_to_grade() is not None
+
+
+def _llama_runtime_to_grade() -> Path | None:
+    """The llama.cpp tree preflight should grade, or None when the runtime the
+    backend would load is one the user chose and this PR does not grade.
 
     ``_find_llama_server_binary`` prefers ``LLAMA_SERVER_PATH``, then
     ``UNSLOTH_LLAMA_CPP_PATH``, then Studio's settings folder, and only then the
@@ -4997,17 +5007,7 @@ def _managed_llama_runtime_is_the_active_one() -> bool:
         except OSError:
             stops_the_finder = False
         if stops_the_finder:
-            return False
-    # UNSLOTH_LLAMA_CPP_PATH outranks the stored folder in the finder (1b before
-    # 2), and default_managed_llama_dir points at exactly that tree, so it is ours
-    # to grade even when an older selection is still in the settings database.
-    # Reading the setting first left the tree the backend actually opens ungraded.
-    # The managed marker is the exception: the finder skips the override when the
-    # desktop set it, so the stored folder wins again.
-    if (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip() and os.environ.get(
-        "UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH"
-    ) != "1":
-        return True
+            return None
     # studio/backend on sys.path first. llama_cpp_path_settings imports
     # storage.studio_db as a top level package and swallows the failure, so
     # without this the stored selection always reads as absent and a user whose
@@ -5019,11 +5019,75 @@ def _managed_llama_runtime_is_the_active_one() -> bool:
     try:
         from studio.backend.utils.llama_cpp_path_settings import (
             get_stored_custom_llama_cpp_path,
+            llama_server_candidates,
         )
+        from studio.install_llama_prebuilt import default_managed_llama_dir
     except Exception:
-        # No settings module means no stored selection to honour.
-        return True
-    return get_stored_custom_llama_cpp_path() is None
+        # No settings module means no stored selection to honour, and no way to
+        # ask whether a folder holds a server, so the managed root stands.
+        from studio.install_llama_prebuilt import default_managed_llama_dir
+
+        return default_managed_llama_dir()
+    # UNSLOTH_LLAMA_CPP_PATH outranks the stored folder in the finder (1b before
+    # 2), and default_managed_llama_dir points at exactly that tree, so it is ours
+    # to grade even when an older selection is still in the settings database.
+    # Reading the setting first left the tree the backend actually opens ungraded.
+    # The managed marker is the exception: the finder skips the override when the
+    # desktop set it, so the stored folder wins again.
+    override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
+    desktop_set_the_override = (
+        os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
+    )
+    if override and not desktop_set_the_override:
+        # Only a folder that holds a server stops discovery. _scan_pinned finds no
+        # candidate under an empty or missing override and walks on, so returning
+        # that tree here graded a directory nobody loads, answered "not installed",
+        # and left the runtime the backend really opens ungraded.
+        if _layout_stops_discovery(llama_server_candidates(Path(override).expanduser())):
+            return default_managed_llama_dir()
+    if get_stored_custom_llama_cpp_path() is not None:
+        return None
+    if desktop_set_the_override:
+        # The finder skips an override the desktop wrote, and the desktop only
+        # ever points it at the managed tree, so that tree is still the answer.
+        return default_managed_llama_dir()
+    # The finder has walked past the override, so the tree it reaches is the one
+    # the managed root names with that override out of the way. Reading it with
+    # the variable still set would name the folder just ruled out.
+    return _managed_llama_dir_ignoring_the_override()
+
+
+def _layout_stops_discovery(candidates) -> bool:
+    """Whether a pinned folder ends ``_find_llama_server_binary``'s search.
+
+    Presence, not usability: ``_scan_pinned`` returns a hit for an executable
+    candidate, and for one that is merely present it returns the path as
+    ``non_executable`` or ``denied``, which the caller turns into ``_unavailable``
+    and a refusal to fall back. Only a layout holding no server at all is walked
+    past. Asking for the execute bit here would send preflight off to grade a
+    different tree in exactly the case where the pinned one needs repair.
+    """
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return True
+        except PermissionError:
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def _managed_llama_dir_ignoring_the_override() -> Path:
+    """default_managed_llama_dir with UNSLOTH_LLAMA_CPP_PATH out of the way."""
+    from studio.install_llama_prebuilt import default_managed_llama_dir
+
+    saved = os.environ.pop("UNSLOTH_LLAMA_CPP_PATH", None)
+    try:
+        return default_managed_llama_dir()
+    finally:
+        if saved is not None:
+            os.environ["UNSLOTH_LLAMA_CPP_PATH"] = saved
 
 
 @studio_app.command("desktop-capabilities", hidden = True)
@@ -5057,8 +5121,9 @@ def desktop_capabilities(
     # a stale one, so a failure here leaves llama_runtime_ok null.
     try:
         from studio.install_llama_prebuilt import installed_runtime_health
-        if _managed_llama_runtime_is_the_active_one():
-            health = installed_runtime_health()
+        runtime_root = _llama_runtime_to_grade()
+        if runtime_root is not None:
+            health = installed_runtime_health(runtime_root)
             if health is not None:
                 payload["llama_runtime_ok"], payload["llama_runtime_reason"] = health
         else:
