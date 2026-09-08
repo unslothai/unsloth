@@ -8,6 +8,8 @@ SQLite-backed handlers are sync defs unless they also perform asynchronous clean
 mixed handlers explicitly send their database transaction through Starlette's threadpool.
 """
 
+from __future__ import annotations
+
 import asyncio
 import sqlite3
 import time
