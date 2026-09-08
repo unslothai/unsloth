@@ -3,26 +3,13 @@
 
 """The "installed release: ..." line, in both setup twins, against real markers.
 
-setup.ps1's Get-InstalledLlamaPrebuiltRelease and setup.sh's
-installed_llama_prebuilt_release print the same line from the same
-UNSLOTH_PREBUILT_INFO.json, so they are tested together and every case asserts they
-agree. They have drifted apart before precisely because nothing compared them.
+Two things this holds. `backend` is absent from every marker written before #8520
+(2026-08-13), and reading a missing property is a terminating error under a caller's
+Set-StrictMode 2.0+, so an unguarded read aborts setup on those installs. And the twins
+must render identical bytes: PowerShell prints @(1, 2) as "1 2", Python as "[1, 2]".
 
-Two things this file exists to hold:
-
-1. ``backend`` has only been written since #8520 (2026-08-13); markers go back to #4562
-   (2026-03-25). Reading a property that a legacy marker does not have is a TERMINATING
-   error under a caller's ``Set-StrictMode -Version 2.0`` or higher, so an unguarded read
-   would abort setup on every install older than that. The whole historical key-set
-   sequence is replayed here under every strict mode.
-
-2. The two printers must render the same bytes for the same marker. A non-string value
-   does not survive that on its own: PowerShell renders @(1, 2) as "1 2" and Python
-   renders [1, 2] as "[1, 2]".
-
-Both functions are sliced out of their scripts rather than sourced whole, because both
-scripts run install steps at load. That is the same technique as
-tests/studio_setup_ps1/Get-FunctionSource.ps1 and tests/sh/test_node_decision.sh.
+Both functions are sliced out rather than sourced whole, because both scripts run install
+steps at load (as tests/studio_setup_ps1/Get-FunctionSource.ps1 and tests/sh/ do).
 """
 
 from __future__ import annotations
@@ -47,8 +34,7 @@ requires_bash = pytest.mark.skipif(
     shutil.which("bash") is None, reason = "bash is required to run the setup.sh printer"
 )
 
-# Every strict mode a caller can impose. 2.0 is where non-existent property reads become
-# terminating errors; 3.0 and Latest keep that rule and add array-index rules on top.
+# 2.0 is where missing-property reads turn fatal; 3.0 and Latest keep that rule.
 STRICT_MODES = ["off", "1.0", "2.0", "3.0", "Latest"]
 
 _BASE_MARKER = {
@@ -75,18 +61,16 @@ def _drop_backend_key():
     return json.dumps(dict(_BASE_MARKER))
 
 
-# -- the corpus ----------------------------------------------------------------------
-# (id, raw file text or None for "no file at all", expected printed line)
+# (id, raw file text or None for "no file", expected printed line)
 _CASES = [
-    # --- the legacy shape, which is the whole point of the guard --------------------
+    # the legacy shape, which is the whole point of the guard
     ("legacy_no_backend_key", _drop_backend_key(), _BASE_LINE),
-    # --- every backend the vocabulary can produce ----------------------------------
     ("cuda", _with_backend("cuda"), _BASE_LINE + " -- cuda backend"),
     ("rocm", _with_backend("rocm"), _BASE_LINE + " -- rocm backend"),
     ("vulkan", _with_backend("vulkan"), _BASE_LINE + " -- vulkan backend"),
     ("cpu", _with_backend("cpu"), _BASE_LINE + " -- cpu backend"),
     ("metal", _with_backend("metal"), _BASE_LINE + " -- metal backend"),
-    # a name this build has never heard of still prints: no allowlist
+    # an unknown name still prints: no allowlist
     ("unknown_future_backend", _with_backend("sycl2"), _BASE_LINE + " -- sycl2 backend"),
     (
         "backend_with_punctuation",
@@ -95,7 +79,6 @@ _CASES = [
     ),
     ("backend_padded", _with_backend("  vulkan  "), _BASE_LINE + " -- vulkan backend"),
     ("backend_max_length", _with_backend("a" * 32), _BASE_LINE + " -- " + "a" * 32 + " backend"),
-    # --- values that must be ignored, identically, by both printers -----------------
     ("backend_null", _with_backend(None), _BASE_LINE),
     ("backend_empty", _with_backend(""), _BASE_LINE),
     ("backend_whitespace", _with_backend("   "), _BASE_LINE),
@@ -116,7 +99,6 @@ _CASES = [
     ("backend_64kib", _with_backend("v" * 65536), _BASE_LINE),
     ("backend_with_space", _with_backend("vulkan gpu"), _BASE_LINE),
     ("backend_underscore", _with_backend("windows_rocm"), _BASE_LINE + " -- windows_rocm backend"),
-    # --- text that must be treated as data, never as code --------------------------
     ("backend_double_quote", _with_backend('vul"kan'), _BASE_LINE),
     ("backend_single_quote", _with_backend("vul'kan"), _BASE_LINE),
     ("backend_backtick", _with_backend("vul`kan"), _BASE_LINE),
@@ -130,12 +112,9 @@ _CASES = [
     ("backend_tab", _with_backend("vul\tkan"), _BASE_LINE),
     ("backend_ansi", _with_backend("\x1b[31mrocm\x1b[0m"), _BASE_LINE),
     ("backend_nul", _with_backend("rocm\x00x"), _BASE_LINE),
-    # --- key-name handling ----------------------------------------------------------
-    # PowerShell property access is case-insensitive and Python's is not; the guard is
-    # -ccontains so both printers ignore a case-folded key rather than disagreeing.
+    # -ccontains, so a case-folded key is ignored by both rather than only by Python.
     ("backend_key_uppercase", _marker(BACKEND = "vulkan"), _BASE_LINE),
     ("backend_key_mixed_case", _marker(Backend = "vulkan"), _BASE_LINE),
-    # --- the rest of the line, unchanged by this PR ---------------------------------
     (
         "no_tag_key",
         json.dumps({"published_repo": "unslothai/llama.cpp", "release_tag": "b10715-mix"}),
@@ -168,7 +147,6 @@ _CASES = [
         _marker(backend = "rocm", future_key = {"a": [1, 2]}),
         _BASE_LINE + " -- rocm backend",
     ),
-    # --- unreadable inputs: both printers stay silent -------------------------------
     ("malformed_json", "{not json at all", ""),
     ("truncated_json", '{"published_repo": "r/l", "release_ta', ""),
     ("empty_file", "", ""),
@@ -178,12 +156,7 @@ _CASES = [
 
 _IDS = [case[0] for case in _CASES]
 
-# setup.sh has a "+ <source>@<binary_tag>" branch for non-fork binary sources that
-# setup.ps1 has never had (there is no `source` / `binary_repo` read anywhere in
-# Get-InstalledLlamaPrebuiltRelease). That divergence predates this change and is left
-# alone rather than silently dropped: these are the ids where the twins legitimately
-# differ, and the difference itself is asserted by
-# test_the_upstream_source_branch_is_a_known_pre_existing_divergence below.
+# setup.sh has a "+ <source>@<binary_tag>" branch setup.ps1 never has. Pre-existing.
 _PS1_EXPECTED_OVERRIDES = {
     "upstream_binary_source": "installed release: unslothai/unsloth@b10715-mix (tag b10715) -- cpu backend",
 }
@@ -205,15 +178,13 @@ def marker_dir(tmp_path):
     return _write
 
 
-# -- the PowerShell twin -------------------------------------------------------------
 
 _PS_HARNESS = """
 param([string]$InstallDir, [string]$StrictMode)
 
 if ($StrictMode -ne 'off') {{ Set-StrictMode -Version $StrictMode }}
 
-# The real function's only dependency, stubbed the way tests/studio/install's PowerShell
-# harnesses do: Get-PathState pulls in half the installer and answers nothing this needs.
+# Stubbed: the real Get-PathState pulls in half the installer.
 function Test-PathQuiet {{
     param([string]$Path, [string]$PathType = "Any")
     return (Test-Path -LiteralPath $Path)
@@ -234,9 +205,8 @@ def _run_ps1_printer(install_dir, strict_mode):
         get_function_source = f"'{GET_FUNCTION_SOURCE}'",
         setup_ps1 = f"'{SETUP_PS1}'",
     )
-    # -File, not -Command: a param() block only binds named arguments when the script is
-    # run as a file, and the strict mode has to be set in the CALLER's scope to reproduce
-    # what an embedding script does to setup.ps1.
+    # -File, not -Command: param() only binds named args from a file, and strict mode has
+    # to sit in the CALLER's scope.
     script_path = Path(install_dir).parent / f"drive_{strict_mode.replace('.', '_')}.ps1"
     script_path.write_text(script, encoding = "utf-8")
     proc = subprocess.run(
@@ -262,7 +232,6 @@ def _run_ps1_printer(install_dir, strict_mode):
     return proc
 
 
-# -- the bash twin -------------------------------------------------------------------
 
 _SH_HARNESS = """
 set -u
@@ -275,7 +244,6 @@ installed_llama_prebuilt_release "$_INSTALL_DIR"
 
 
 def _sliced_sh_function(tmp_path):
-    """The real installed_llama_prebuilt_release, sliced out of setup.sh."""
     text = SETUP_SH.read_text(encoding = "utf-8")
     start = text.index("installed_llama_prebuilt_release() {")
     end = text.index("\n}\n", start) + len("\n}\n")
@@ -291,8 +259,7 @@ def _run_sh_printer(install_dir, tmp_path):
     func_file = _sliced_sh_function(tmp_path)
     script = tmp_path / "drive.sh"
     script.write_text(_SH_HARNESS, encoding = "utf-8")
-    # The sliced function shells out to `python`; point it at the interpreter running
-    # the tests so this does not depend on what happens to be on PATH.
+    # The sliced function shells out to `python`; pin it to the test interpreter.
     shim_dir = tmp_path / "shim"
     shim_dir.mkdir(exist_ok = True)
     shim = shim_dir / "python"
@@ -315,7 +282,6 @@ def _run_sh_printer(install_dir, tmp_path):
     return proc
 
 
-# ==== setup.ps1, under every strict mode ============================================
 
 
 @requires_pwsh
@@ -335,12 +301,8 @@ def test_ps1_printer(marker_dir, strict_mode, case_id, raw, expected):
 @requires_pwsh
 @pytest.mark.parametrize("strict_mode", ["2.0", "3.0", "Latest"])
 def test_a_legacy_marker_does_not_abort_under_strict_mode(marker_dir, strict_mode):
-    """The discriminating case for the guard.
-
-    Markers written between #4562 (2026-03-25) and #8520 (2026-08-13) have
-    published_repo and release_tag but no backend at all. Reading that missing property
-    raises PropertyNotFoundException from StrictMode 2.0 up, and the function's only
-    try/catch wraps ConvertFrom-Json, so it escapes and takes setup down.
+    """The discriminating case: markers between #4562 and #8520 have no backend key, and
+    the function's only try/catch wraps ConvertFrom-Json, so the read escapes it.
     """
     install_dir = marker_dir(_drop_backend_key())
     proc = _run_ps1_printer(install_dir, strict_mode)
@@ -361,7 +323,6 @@ def test_a_legacy_marker_does_not_abort_under_strict_mode(marker_dir, strict_mod
     ],
 )
 def test_ps1_printer_never_evaluates_the_marker(marker_dir, payload):
-    """A marker is data. Nothing in it may reach the PowerShell parser."""
     install_dir = marker_dir(_with_backend(payload))
     proc = _run_ps1_printer(install_dir, "Latest")
     assert proc.returncode == 0, proc.stderr
@@ -369,7 +330,6 @@ def test_ps1_printer_never_evaluates_the_marker(marker_dir, payload):
     assert proc.stdout == _BASE_LINE
 
 
-# ==== setup.sh ======================================================================
 
 
 @requires_bash
@@ -393,7 +353,6 @@ def test_sh_printer_never_evaluates_the_marker(marker_dir, tmp_path, payload):
     assert proc.stdout.rstrip("\n") == _BASE_LINE
 
 
-# ==== the twins must agree ==========================================================
 
 
 @requires_pwsh
@@ -413,14 +372,11 @@ def test_the_two_printers_agree(marker_dir, tmp_path, case_id, raw, expected):
     ), f"{case_id}: setup.ps1 printed {ps1.stdout!r}, setup.sh printed {sh.stdout!r}"
 
 
-# ==== every historical marker shape =================================================
-# Reconstructed from git history of studio/install_llama_prebuilt.py's
-# write_prebuilt_metadata. The point of each row is its KEY SET: markers from the
-# 2026-04-01 to 2026-08-13 era are on disk today and carry no backend key at all.
+# Every key set write_prebuilt_metadata has emitted; the 2026-04-01 to 2026-08-13 era is
+# on disk today with no backend key.
 
 _HISTORICAL_MARKERS = {
-    # f4d8a246b, 2026-03-25 (#4562): no published_repo / release_tag yet, so both
-    # printers correctly print nothing.
+    # no published_repo / release_tag yet, so both printers print nothing.
     "2026_03_25_f4d8a246b": (
         {
             "requested_tag": "b4000",
@@ -435,7 +391,6 @@ _HISTORICAL_MARKERS = {
         },
         "",
     ),
-    # 428efc7d9, 2026-04-01: published_repo + release_tag arrive. No backend.
     "2026_04_01_428efc7d9": (
         {
             "requested_tag": "b4100",
@@ -456,7 +411,6 @@ _HISTORICAL_MARKERS = {
         },
         "installed release: unslothai/llama.cpp@b4100-mix (tag b4100)",
     ),
-    # 1ce8a8e7c, 2026-04-02: the source_* block.
     "2026_04_02_1ce8a8e7c": (
         {
             "requested_tag": "b4200",
@@ -475,7 +429,6 @@ _HISTORICAL_MARKERS = {
         },
         "installed release: unslothai/llama.cpp@b4200-mix (tag b4200)",
     ),
-    # 61df3aaef, 2026-05-30: binary_repo / binary_release_tag.
     "2026_05_30_61df3aaef": (
         {
             "tag": "b5300",
@@ -488,7 +441,6 @@ _HISTORICAL_MARKERS = {
         },
         "installed release: unslothai/llama.cpp@b5300-mix + ggml-org@b5300",
     ),
-    # cf912cbd8, 2026-07-20: force_cpu.
     "2026_07_20_cf912cbd8": (
         {
             "tag": "b6900",
@@ -500,8 +452,7 @@ _HISTORICAL_MARKERS = {
         },
         "installed release: unslothai/llama.cpp@b6900-mix (tag b6900)",
     ),
-    # 7917c7828, 2026-07-27: llama_backend, the pre-#8520 backend field. It is NOT the
-    # key the printer reads, so this marker still prints no suffix.
+    # llama_backend is the pre-#8520 field, not the key the printer reads.
     "2026_07_27_7917c7828": (
         {
             "tag": "b7100",
@@ -512,7 +463,6 @@ _HISTORICAL_MARKERS = {
         },
         "installed release: unslothai/llama.cpp@b7100-mix (tag b7100)",
     ),
-    # 9b452cb3b, 2026-08-04: ggml_tree.
     "2026_08_04_9b452cb3b": (
         {
             "tag": "b7400",
@@ -523,7 +473,6 @@ _HISTORICAL_MARKERS = {
         },
         "installed release: unslothai/llama.cpp@b7400-mix (tag b7400)",
     ),
-    # 738413ab0, 2026-08-08: rocm_gfx, conditional. Last shape before backend existed.
     "2026_08_08_738413ab0": (
         {
             "tag": "b7600",
@@ -535,7 +484,6 @@ _HISTORICAL_MARKERS = {
         },
         "installed release: unslothai/llama.cpp@b7600-mix (tag b7600)",
     ),
-    # 5426a78c3, 2026-08-13 (#8520): backend + backend_request arrive.
     "2026_08_13_5426a78c3": (
         {
             "tag": "b7900",
@@ -547,8 +495,7 @@ _HISTORICAL_MARKERS = {
         },
         "installed release: unslothai/llama.cpp@b7900-mix (tag b7900) -- vulkan backend",
     ),
-    # backend_for_install_kind() returns None for an install kind it does not know, and
-    # that lands in the marker as a JSON null.
+    # backend_for_install_kind() returns None for an unknown kind, landing as JSON null.
     "backend_written_as_null": (
         {
             "tag": "b7900",
@@ -560,7 +507,6 @@ _HISTORICAL_MARKERS = {
         },
         "installed release: unslothai/llama.cpp@b7900-mix (tag b7900)",
     ),
-    # 5a3e9fc7a, 2026-08-13: gfx_target / mapped_targets.
     "2026_08_13_5a3e9fc7a": (
         {
             "tag": "b8000",
@@ -573,7 +519,6 @@ _HISTORICAL_MARKERS = {
         },
         "installed release: unslothai/llama.cpp@b8000-mix (tag b8000) -- rocm backend",
     ),
-    # 9d1dcfe58, 2026-08-18: supported_sms.
     "2026_08_18_9d1dcfe58": (
         {
             "tag": "b8300",
@@ -585,7 +530,7 @@ _HISTORICAL_MARKERS = {
         },
         "installed release: unslothai/llama.cpp@b8300-mix (tag b8300) -- cuda backend",
     ),
-    # 1400031e2, 2026-08-31: runtime_asset. The current 34-key shape.
+    # the current shape.
     "2026_08_31_1400031e2_current": (
         {
             "requested_tag": "b10715",
@@ -663,7 +608,6 @@ def test_every_historical_marker_shape_agrees(marker_dir, tmp_path, shape_id):
     assert ps1.stdout == sh.stdout.rstrip("\n"), shape_id
 
 
-# ==== the source text, so a future edit cannot quietly unguard it ====================
 
 
 def test_the_ps1_guard_checks_property_existence():
@@ -677,7 +621,6 @@ def test_the_ps1_guard_checks_property_existence():
 
 
 def test_both_printers_share_one_backend_shape_rule():
-    """The one rule that keeps the twins in lockstep, asserted in both sources."""
     shape = "[A-Za-z0-9._+-]{1,32}"
     assert shape in SETUP_PS1.read_text(encoding = "utf-8")
     assert shape in SETUP_SH.read_text(encoding = "utf-8")
@@ -693,12 +636,8 @@ def test_the_sh_printer_only_accepts_a_string():
 @requires_pwsh
 @requires_bash
 def test_the_upstream_source_branch_is_a_known_pre_existing_divergence(marker_dir, tmp_path):
-    """setup.sh names a non-fork binary source; setup.ps1 never has.
-
-    Recorded rather than fixed: teaching setup.ps1 the branch changes what Windows
-    installs print for upstream ggml-org bundles, which is a separate change from
-    naming the backend. Asserted here so it stays a known quantity instead of turning
-    up as a surprise the next time somebody compares the two logs.
+    """Recorded, not fixed: teaching setup.ps1 this branch changes what Windows prints
+    for upstream bundles, which is a separate change from naming the backend.
     """
     raw = json.dumps(
         {
@@ -720,6 +659,5 @@ def test_the_upstream_source_branch_is_a_known_pre_existing_divergence(marker_di
     assert sh.stdout.rstrip("\n") == (
         "installed release: unslothai/unsloth@b10715-mix + ggml-org@b10715 -- cpu backend"
     )
-    # The part this change owns -- the backend suffix -- is identical on both sides.
     assert ps1.stdout.endswith(" -- cpu backend")
     assert sh.stdout.rstrip("\n").endswith(" -- cpu backend")

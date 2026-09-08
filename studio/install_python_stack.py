@@ -5017,18 +5017,12 @@ if not _TORCH_BACKEND:
         _TORCH_BACKEND = "cuda"
 
 
-# torch/version.py writes `hip = '6.4...'` on a ROCm build and `hip: Optional[str] = None`
-# elsewhere. Only a QUOTED value matches, so the None form is correctly negative, and the
-# optional annotation between the name and the `=` is skipped.
+# Quoted values only, so the `hip: Optional[str] = None` a non-ROCm build writes is negative.
 _TORCH_VERSION_PY_HIP_RE = re.compile(r"""^hip\s*(?::[^=]*)?=\s*['"]([^'"]*)['"]""", re.MULTILINE)
 
 
 def _torch_hip_version_on_disk() -> str:
-    """torch.version.hip read from torch/version.py, launching no interpreter.
-
-    The read half of _installed_torch_version_label, against the same file: find_spec
-    locates the package without executing it, so a wedged GPU driver cannot stall this.
-    """
+    """torch.version.hip read from torch/version.py, launching no interpreter."""
     try:
         importlib.invalidate_caches()
         spec = importlib.util.find_spec("torch")
@@ -5049,13 +5043,8 @@ def _torch_hip_version_on_disk() -> str:
 def _installed_torch_is_windows_rocm_cheap() -> bool:
     """_installed_torch_is_windows_rocm's verdict without ever running `import torch`.
 
-    _torch_step_label runs BEFORE the first pip step of its block, where the memoized
-    _TORCH_RUNTIME_PROBE is cold and none of the _ensure_* calls that follow reach the probe
-    on the very host this label exists for (Windows, no NVIDIA, no rocminfo/amd-smi). Calling
-    the probing form there spent up to its 90s timeout, before _progress() had emitted
-    anything, purely to format a string -- and on a wedged driver that is exactly the host the
-    timeout exists to rescue. Read the same facts off disk instead, and reuse the probe only
-    when something else has already paid for it.
+    _torch_step_label runs with the probe memo cold, so the probing form spent up to its
+    90s timeout before _progress() emitted anything, to format a string.
     """
     if not IS_WINDOWS:
         return False
@@ -5076,11 +5065,8 @@ def _torch_step_label(suffix: str) -> str:
     if not backend:
         if _has_usable_nvidia_gpu():
             backend = "cuda"
-        # _has_rocm_gpu() probes rocminfo and amd-smi, which ship with the HIP SDK
-        # and not with AMD's bundled-runtime wheels, so a Windows ROCm host without
-        # the SDK reads as CPU here while the very next step correctly detects it.
-        # torch.version.hip is the installed build's own answer, read off disk so a
-        # label never costs an interpreter start.
+        # rocminfo and amd-smi ship with the HIP SDK, not with AMD's bundled-runtime
+        # wheels, so a Windows ROCm host reads as CPU without the second operand.
         elif _has_rocm_gpu() or _installed_torch_is_windows_rocm_cheap():
             backend = "rocm"
         else:
