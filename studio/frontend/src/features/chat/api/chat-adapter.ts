@@ -2085,9 +2085,11 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
 // A refused preflight costs no load attempt, so without its own cap a device holding many blocked
 // repos (trust-remote-code, security review) POSTs /validate once per cached repo and never stops.
-// Wider than the load cap on purpose: every load spends one validate first, so a smaller budget
-// would cut the happy path short.
-const MAX_AUTO_VALIDATE_ATTEMPTS = 8;
+// Counted are the preflights that do NOT go on to spend a load attempt: a refusal, and a rejection
+// (dead backend, dismissed token dialog). A preflight that PASSES is deliberately not counted, since
+// it reaches loadAttempts on the very next statement and MAX_AUTO_LOAD_ATTEMPTS already bounds it;
+// charging it here would only cut the sweep short before it reached a model it can actually load.
+const MAX_AUTO_VALIDATE_FAILURES = 12;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
   /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
@@ -2957,7 +2959,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   let loadAttempts = 0;
   // Per cascade, like loadAttempts: a module-level counter would leave the second auto-load of the
   // session with a spent budget.
-  let validateAttempts = 0;
+  let validateFailures = 0;
   const skippedAutoLoadCandidates = new Set<string>();
   // Why the last load attempt failed. Boxed: a `let` set only in a nested fn narrows to `null`.
   const loadFailure: {
@@ -3010,15 +3012,19 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     speculative_type?: string | null;
     spec_draft_n_max?: number | null;
   }): Promise<boolean> {
+    // Before the POST, so an abort costs nothing: no request was sent.
     options?.abortSignal?.throwIfAborted();
-    // Counted here rather than at the call sites: this is the only place that POSTs /validate, so a
-    // rejected preflight spends its budget too.
-    validateAttempts += 1;
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
+    }).catch((error: unknown) => {
+      // A rejection is a spent /validate that never reaches loadAttempts, so nothing else bounds it.
+      // The sweep keeps going after a transport failure on purpose, so without this a dead backend
+      // POSTs /validate once per cached repo, which is the runaway this budget exists to stop.
+      validateFailures += 1;
+      throw error;
     });
     options?.abortSignal?.throwIfAborted();
     // A background auto-load never runs custom code or Hub-flagged unsafe files; both need the
@@ -3028,11 +3034,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       validation.requires_security_review
     ) {
       blockedByTrustRemoteCode = true;
+      validateFailures += 1;
       return false;
     }
     // Never install packages from a background load; explicit loads raise the upgrade dialog.
     if (validation.requires_transformers_upgrade) {
       hadNonTrustFailure = true;
+      validateFailures += 1;
       return false;
     }
     return true;
@@ -3070,7 +3078,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     if (
       autoLoadCancelled ||
       loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS ||
-      validateAttempts >= MAX_AUTO_VALIDATE_ATTEMPTS
+      validateFailures >= MAX_AUTO_VALIDATE_FAILURES
     ) {
       return false;
     }
@@ -3543,7 +3551,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       if (
         autoLoadCancelled ||
         loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS ||
-        validateAttempts >= MAX_AUTO_VALIDATE_ATTEMPTS
+        validateFailures >= MAX_AUTO_VALIDATE_FAILURES
       ) {
         break;
       }
@@ -3566,7 +3574,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         while (
           !autoLoadCancelled &&
           loadAttempts < MAX_AUTO_LOAD_ATTEMPTS &&
-          validateAttempts < MAX_AUTO_VALIDATE_ATTEMPTS
+          validateFailures < MAX_AUTO_VALIDATE_FAILURES
         ) {
           const candidate = await resolveAutoLoadCandidate(
             source,
