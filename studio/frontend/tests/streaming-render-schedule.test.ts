@@ -206,12 +206,13 @@ test("link references and definitions stay in one rendered document", () => {
 // Everything Marked stores about a definition has to move the render key as it
 // arrives, or the reference that was rendered before it keeps the stale link.
 // The labels sweep the shapes this probe used to miss, the separators sweep both
-// places Marked accepts a destination, and each is run with LF and with CRLF,
-// because the key is built from text the cache has not normalised.
+// places Marked accepts a destination, and each is run with every line ending
+// `normalizeLineEndings` accepts, because the key is built from text the cache
+// has not normalised.
 test("a definition that spans lines still moves the render key", () => {
   const labels = ["foo", "x".repeat(250), "foo\nbar", "foo\\\nbar"];
 
-  for (const newline of ["\n", "\r\n"]) {
+  for (const newline of ["\n", "\r\n", "\r"]) {
     const eol = (text: string) => text.replaceAll("\n", newline);
     const usage = eol(`Before [reference][foo bar].\n\n${paragraphs(20)}`);
 

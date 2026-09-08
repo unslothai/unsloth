@@ -119,13 +119,14 @@ const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
 // lines, and the key collapsed to a constant that no resolved definition moved.
 // The suffix is everything Marked stores about a definition after the label,
 // because that is what has to move the key: `\]: *(?:\n[ \t]*)?` before the
-// destination, then an optional title that may sit on the line after it. Line
-// breaks are `\r?\n` -- the cache normalises its own input, but the key is built
-// from `processedText`, which is still whatever the reply used. Text that is not
-// a destination gets read in too and costs a remount; missing one leaves a
-// rendered reference literal, so this is the direction to be wrong in.
+// destination, then an optional title that may sit on the line after it. Text
+// that is not a destination gets read in too and costs a remount; missing one
+// leaves a rendered reference literal, so this is the direction to be wrong in.
+// Only `\n` appears here because `markdownRenderKey` normalises first, the same
+// way the cache does -- spelling every line break out three ways is how the key
+// drifts from the parser again.
 const LINK_DEFINITION_KEY_RE = new RegExp(
-  `${LINK_DEFINITION_RE.source}[ \\t]*(?:\\r?\\n[ \\t]*)?[^\\r\\n]*(?:\\r?\\n[ \\t]*["'(][^\\r\\n]*)?`,
+  `${LINK_DEFINITION_RE.source}[ \\t]*(?:\\n[ \\t]*)?[^\\n]*(?:\\n[ \\t]*["'(][^\\n]*)?`,
   `g${LINK_DEFINITION_RE.flags}`,
 );
 const LINK_REFERENCE_RE =
@@ -146,7 +147,12 @@ export function markdownRenderKey(markdown: string): string {
   if (markdownRenderScope(markdown) === "blocks") {
     return "blocks";
   }
-  return `document:${(markdown.match(LINK_DEFINITION_KEY_RE) ?? []).join("\n")}`;
+  // The cache normalises its own input, but this runs on `processedText`, which
+  // still holds whatever line ending the reply used, and Marked reads all three.
+  // Normalising costs an `includes` on the LF replies that are nearly all of
+  // them, and it is only reached once a reference and a definition are both here.
+  const normalized = normalizeLineEndings(markdown);
+  return `document:${(normalized.match(LINK_DEFINITION_KEY_RE) ?? []).join("\n")}`;
 }
 
 export function parseMarkdownIntoRenderableBlocks(markdown: string): string[] {
