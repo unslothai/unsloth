@@ -1305,6 +1305,31 @@ def _bootstrap_deadline_active() -> bool:
         return True
 
 
+# Set by the parent when it has already put the prompt in front of this terminal
+# and got nothing, so the re-exec'd child does not repeat the wait.
+_UNATTENDED_PROMPT_DONE_ENV = "UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE"
+
+
+def _deadline_sentence() -> str:
+    """Say what will actually happen, not what usually happens.
+
+    UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables the shutdown entirely, and this
+    is the sentence an operator acts on, so promising a deadline that will never
+    arm is worse than saying nothing.
+    """
+    if _bootstrap_deadline_active():
+        return (
+            "Unsloth shuts down after the bootstrap deadline "
+            "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) unless the password "
+            "is changed."
+        )
+    return (
+        "The bootstrap shutdown deadline is DISABLED for this launch "
+        "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0), so nothing will stop it serving "
+        "that credential."
+    )
+
+
 def _generate_reset_password() -> str:
     """Readable 4-word passphrase; the user has to type this one back in."""
     try:
@@ -1818,21 +1843,43 @@ def _enforce_password_change_before_exposure(
             typer.echo(
                 "Warning: no response at the terminal, so Unsloth is starting with "
                 "the auto-generated admin password on a bind that is reachable from "
-                "the network. Unsloth shuts down after the bootstrap deadline "
-                "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) unless the password "
-                "is changed. Change it by logging in, or with `unsloth studio "
-                "reset-password`.",
+                f"the network. {_deadline_sentence()} Change it by logging in, or "
+                "with `unsloth studio reset-password`.",
                 err = True,
             )
+            # The child gate sees the SAME unattended terminal and would wait its
+            # own deadline over again, so a 30s fallback becomes 60s, or 90 on the
+            # `studio run` path that re-enters this gate after re-exec. That is
+            # long enough to trip a startup watchdog, which is the restart loop
+            # the deadline exists to avoid. Tell the child the terminal has
+            # already been tried. A direct `python run.py` sets nothing, so it
+            # keeps its own backstop.
+            os.environ[_UNATTENDED_PROMPT_DONE_ENV] = "1"
             return
         except (KeyboardInterrupt, EOFError):
+            if tunnel_will_start:
+                typer.echo(
+                    "\nError: password change aborted; refusing to publish Unsloth "
+                    "on a public URL with the default admin password. Re-run and "
+                    "set a password, or launch without --secure/--cloudflare.",
+                    err = True,
+                )
+                raise typer.Exit(1)
+            # A raw bind is not a publication. This launch worked before the
+            # prompt existed, so Ctrl+C returns it to what it did then rather
+            # than refusing to start; run.py's gate makes the same choice, and
+            # this mirror is the one that actually runs for `unsloth studio
+            # -H 0.0.0.0`, so disagreeing here would make that unreachable.
             typer.echo(
-                "\nError: password change aborted; refusing to expose Unsloth "
-                "with the default admin password. Re-run and set a password, "
-                "or launch without --secure/--cloudflare.",
+                "\nWarning: password change aborted, so Unsloth is starting with "
+                "the auto-generated admin password on a bind that is reachable "
+                f"from the network. {_deadline_sentence()} Change it by logging "
+                "in, with `unsloth studio reset-password`, or by passing "
+                "--password / UNSLOTH_STUDIO_PASSWORD.",
                 err = True,
             )
-            raise typer.Exit(1)
+            os.environ[_UNATTENDED_PROMPT_DONE_ENV] = "1"
+            return
         _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, new_password)
         typer.echo(f"Password updated for '{DEFAULT_ADMIN_USERNAME}'.", err = True)
     finally:

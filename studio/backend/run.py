@@ -2225,6 +2225,14 @@ def _terminal_password_gate(
     if not tunnel_will_start and not bind_is_exposed:
         return True, False
 
+    # The parent already held this terminal open and got nothing. Repeating the
+    # wait would double the fallback (and triple it on the `studio run` path,
+    # which re-enters the CLI gate after re-exec), which is exactly the startup
+    # stall the deadline was chosen to stay under. Consumed, not just read, so it
+    # cannot leak into a later launch from the same environment.
+    if os.environ.pop("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE", "") and not tunnel_will_start:
+        return True, False
+
     # A raw-bind-only launch decides promptability BEFORE opening auth storage.
     # Before this gate learned about non-tunnel exposure it returned above, so a
     # headless container never reached ensure_default_admin() from here. Doing so

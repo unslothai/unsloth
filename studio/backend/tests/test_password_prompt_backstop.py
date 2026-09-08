@@ -783,3 +783,44 @@ def test_a_refusal_still_names_the_deadline_when_one_will_arm(monkeypatch):
     err = stderr.getvalue()
     assert "shuts down after the bootstrap deadline" in err, err
     assert "DISABLED" not in err, err
+
+
+def test_the_child_does_not_repeat_a_prompt_the_parent_already_gave_up_on(monkeypatch):
+    """A 30s fallback must not become 60s across the re-exec.
+
+    The CLI parent holds the terminal for its deadline, gets nothing, warns and
+    launches. The child gate then sees the SAME unattended pty. Without a handoff
+    it waits the whole deadline again, and on the `studio run` path a third time,
+    which is exactly the startup stall the 30s value was chosen to stay under.
+    """
+    monkeypatch.setenv("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE", "1")
+    _patch_streams(monkeypatch, tty = True)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("the child prompted again after the parent gave up")
+
+    from auth import storage as _storage
+    monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
+
+    assert run._terminal_password_gate(
+        tunnel_will_start = False, **_RAW_BIND_KWARGS
+    ) == (True, False)
+    # Consumed, so a later launch from the same environment is not silently
+    # stripped of its own prompt.
+    import os as _os
+    assert _os.environ.get("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE") is None
+
+
+def test_the_marker_never_silences_a_tunnel_launch(monkeypatch):
+    """A public URL fails closed regardless of what the parent did."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE", "1")
+    _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    from auth import terminal_prompt
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change",
+                        lambda **_kw: False)
+
+    assert run._terminal_password_gate(
+        tunnel_will_start = True, **_GATE_KWARGS
+    ) == (False, False)

@@ -2053,3 +2053,57 @@ def test_the_exposure_wording_matches_what_will_actually_happen(
         cloudflare = cloudflare, host = host, secure = secure, api_only = False
     )
     assert tunnel is expect_tunnel_wording
+
+
+def test_the_cli_deadline_sentence_tracks_the_configured_timeout(monkeypatch):
+    """The CLI fallback must not promise a shutdown that will never arm."""
+    studio_mod = _studio()
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    assert "shuts down after the bootstrap deadline" in studio_mod._deadline_sentence()
+    for disabled in ("0", "-1"):
+        monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", disabled)
+        sentence = studio_mod._deadline_sentence()
+        assert "DISABLED for this launch" in sentence, disabled
+        assert "shuts down after" not in sentence, disabled
+
+
+def test_a_raw_bind_ctrl_c_does_not_abort_the_launch(monkeypatch, tmp_path):
+    """Ctrl+C on `unsloth studio -H 0.0.0.0` must leave it starting.
+
+    The CLI mirror is the gate that actually runs for that command, so if it
+    exits here the warn-and-proceed in run.py is unreachable and the docker
+    run -it case the two of them exist to protect is not protected at all.
+    """
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    _seed_auth(studio_mod)
+
+    def _abort(*_a, **_kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _abort)
+
+    # Returns rather than raising typer.Exit: the launch continues.
+    studio_mod._enforce_password_change_before_exposure(
+        cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
+    )
+    assert _auth_state(studio_mod)["must_change_password"] == 1
+    del events
+
+
+def test_a_tunnel_ctrl_c_still_aborts(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    _seed_auth(studio_mod)
+
+    def _abort(*_a, **_kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _abort)
+
+    import typer
+
+    with pytest.raises(typer.Exit):
+        studio_mod._enforce_password_change_before_exposure(
+            cloudflare = None, host = "127.0.0.1", secure = True, api_only = False
+        )
