@@ -647,6 +647,11 @@ function resolveAnthropicReasoningEffortCapabilities(modelId: string): Reasoning
 
 const OPENAI_REASONING_MODELS = [
   {
+    prefixes: ["gpt-6-astra"],
+    supportsOff: false,
+    levels: ["low", "medium", "high", "xhigh", "max"],
+  },
+  {
     prefixes: ["gpt-5.5-pro", "gpt-5.4-pro"],
     supportsOff: false,
     levels: ["medium", "high", "xhigh"],
