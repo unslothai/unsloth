@@ -82,7 +82,7 @@ def _finish_reasons(lines: list[str]) -> list[str]:
     for line in lines:
         if not line.startswith("data: ") or line == "data: [DONE]":
             continue
-        payload = json.loads(line[len("data: "):])
+        payload = json.loads(line[len("data: ") :])
         for choice in payload.get("choices") or []:
             reason = choice.get("finish_reason")
             if reason:

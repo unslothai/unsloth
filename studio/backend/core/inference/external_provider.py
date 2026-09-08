@@ -3224,9 +3224,7 @@ class ExternalProviderClient:
                                         "Anthropic context window exhausted (model=%s)",
                                         model,
                                     )
-                                    yield _emit_tool_event(
-                                        {"type": "context_window_exceeded"}
-                                    )
+                                    yield _emit_tool_event({"type": "context_window_exceeded"})
                                 if mapped is not None:
                                     chunk = {
                                         "id": completion_id,
