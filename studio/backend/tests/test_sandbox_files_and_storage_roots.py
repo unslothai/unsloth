@@ -151,10 +151,22 @@ def test_images_stay_inline_and_everything_else_downloads():
 
     The allowlist is deliberately NOT just widened: the model picks these
     filenames, so an inline text/html would be same-origin script execution.
+
+    `.avif` joined because it is a raster codec, not a document type -- `nosniff`
+    pins the type either way, and a model that writes `photo.avif` should get an
+    image rather than an attachment it cannot see. `.svg` stays out for exactly
+    that document-type reason: inline SVG is same-origin script execution.
     """
+    from core.inference import tools as _t
     from routes.inference import _SANDBOX_MEDIA_TYPES
 
-    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+    # One set, two jobs: what the route serves inline and what a tool call reports inline must not
+    # drift apart, or a model's photo previews in chat but hides on the tool card (or vice versa).
+    assert (
+        set(_SANDBOX_MEDIA_TYPES) == _t._IMAGE_EXTS
+    ), "the route's inline map and the tool-result classifier drifted apart"
+
+    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"):
         assert ext in _SANDBOX_MEDIA_TYPES
     for ext in (".csv", ".txt", ".py", ".json", ".pdf", ".zip", ".html", ".svg"):
         assert ext not in _SANDBOX_MEDIA_TYPES, ext
@@ -4363,7 +4375,7 @@ def test_a_workspace_is_kept_when_the_wait_ran_out():
         "if delete_files and idle and not referenced and not recreated:"
     ) < route.index("run_in_threadpool(delete_project_workspace, project)")
     # And a wait that ran out queues the finish rather than dropping it.
-    assert "finish_workspace_delete_when_idle(project_id)" in route
+    assert "finish_workspace_delete_when_idle(project_id, session_id = shared)" in route
 
 
 def test_a_kept_workspace_the_user_moved_still_resolves(tmp_path, monkeypatch):

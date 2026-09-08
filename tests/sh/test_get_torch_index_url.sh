@@ -46,6 +46,12 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     sed -n '/^_infer_linux_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_amd_arch_index_family_for_gfx()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_probe_arches()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_agreed_index_family()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_sole_index_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
@@ -73,6 +79,15 @@ _FAKE_ROCM_DIR=$(mktemp -d)
 } | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
       -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
   > "$_FUNC_FILE"
+
+for _fn in _rocm_tag_from_amd_smi _rocm_tag_from_version_file _rocm_tag_from_hipconfig \
+           _rocm_tag_from_dpkg _rocm_tag_from_rpm _highest_rocm_tag \
+           _detect_rocm_version_tag get_torch_index_url; do
+    if ! grep -q "^$_fn()" "$_FUNC_FILE"; then
+        echo "FAIL: install.sh no longer defines $_fn() at column 0"
+        exit 1
+    fi
+done
 
 # Save system PATH so we always have basic tools (uname, grep, head, etc.)
 _SYS_PATH="/usr/local/bin:/usr/bin:/bin"

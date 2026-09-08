@@ -32,6 +32,11 @@ if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
 }
 
+// index.css keys off this to restore ::-webkit-scrollbar styling on Windows.
+if (uaLower.includes("windows")) {
+  document.documentElement.classList.add("client-windows");
+}
+
 // Whether off-screen maths takes containment. ON by default, subject to a feature detect for the
 // engine's find-in-page, so on a recent engine this normally SETS the attribute and arms the rule;
 // on an older one it removes an attribute that was never there. Before the first render, because

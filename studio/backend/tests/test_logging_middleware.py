@@ -461,46 +461,48 @@ def test_legacy_download_progress_heartbeats_not_suppressed(logs, monkeypatch):
     assert _paths_logged(logs) == ["/api/models/download-progress"]
 
 
-def test_generation_progress_polls_heartbeat(logs, monkeypatch):
-    # The 300ms poll timer always landed just outside the 300ms base dedup window.
+def test_media_progress_success_polls_are_suppressed(logs, monkeypatch):
+    # Their route handlers emit phase and 10% milestone events instead.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
     for path in (
+        "/api/inference/images/load-progress",
+        "/api/inference/video/load-progress",
         "/api/inference/images/generate-progress",
         "/api/inference/video/generate-progress",
-        "/api/train/diffusion/status",
     ):
         mw = LoggingMiddleware(_status_app(200))
         for _ in range(5):
             _run(mw(_http_scope(path), _noop_receive, _drop))
-        assert _paths_logged(logs) == [path]
+        assert _paths_logged(logs) == []
         logs.events.clear()
 
 
-def test_generation_progress_errors_still_log(logs, monkeypatch):
-    # Heartbeat dedup is GET/2xx only, so a failing poll stays visible.
+def test_diffusion_training_progress_still_heartbeats(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
-    mw = LoggingMiddleware(_status_app(500))
-    for _ in range(3):
-        _run(mw(_http_scope("/api/inference/images/generate-progress"), _noop_receive, _drop))
-    assert _paths_logged(logs) == ["/api/inference/images/generate-progress"] * 3
+    path = "/api/train/diffusion/status"
+    mw = LoggingMiddleware(_status_app(200))
+    for _ in range(5):
+        _run(mw(_http_scope(path), _noop_receive, _drop))
+    assert _paths_logged(logs) == [path]
 
 
-def test_image_video_load_progress_heartbeats(logs, monkeypatch):
-    # These handlers log nothing themselves, so keep a pulse for a multi-minute load.
+def test_media_progress_errors_still_log(logs, monkeypatch):
+    # Success suppression is GET/2xx only, so a failing poll stays visible.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
-    for path in ("/api/inference/images/load-progress", "/api/inference/video/load-progress"):
-        mw = LoggingMiddleware(_status_app(200))
-        for _ in range(5):
+    for path in (
+        "/api/inference/images/load-progress",
+        "/api/inference/video/load-progress",
+        "/api/inference/images/generate-progress",
+        "/api/inference/video/generate-progress",
+    ):
+        mw = LoggingMiddleware(_status_app(500))
+        for _ in range(3):
             _run(mw(_http_scope(path), _noop_receive, _drop))
-        assert _paths_logged(logs) == [path]
+        assert _paths_logged(logs) == [path] * 3
         logs.events.clear()
-    mw = LoggingMiddleware(_status_app(503))
-    for _ in range(3):
-        _run(mw(_http_scope("/api/inference/images/load-progress"), _noop_receive, _drop))
-    assert _paths_logged(logs) == ["/api/inference/images/load-progress"] * 3
 
 
 def test_unrelated_image_routes_still_log(logs, monkeypatch):
@@ -672,6 +674,10 @@ def test_verbose_restores_the_dropped_success_polls(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_VERBOSE_ACCESS_LOG", True)
     for path in (
         "/api/inference/load-progress",
+        "/api/inference/images/load-progress",
+        "/api/inference/video/load-progress",
+        "/api/inference/images/generate-progress",
+        "/api/inference/video/generate-progress",
         "/api/hub/download-progress",
         "/api/export/status",
         "/api/chat/threads",
@@ -741,3 +747,93 @@ def test_verbose_off_by_default_keeps_the_polls_quiet(logs):
     for path in ("/api/inference/load-progress", "/api/hub/download-progress"):
         _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
     assert logs.events == []
+
+
+# ── templated chat detail polls ──
+def test_chat_thread_detail_polls_heartbeat_instead_of_one_line_each(logs, monkeypatch):
+    """Streaming drives these on a loop: 25 thread and 21 fork reads in 20s over one
+    four-tab session, 34% of the access log."""
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    for _ in range(12):
+        _run(mw(_http_scope("/api/chat/threads/abc123"), _noop_receive, _drop))
+        _run(mw(_http_scope("/api/chat/threads/abc123/forks"), _noop_receive, _drop))
+
+    paths = _paths_logged(logs)
+    assert paths == ["/api/chat/threads/abc123", "/api/chat/threads/abc123/forks"], paths
+
+
+def test_four_tabs_share_one_bucket_per_template(logs, monkeypatch):
+    """Four tabs polling four different threads ask one question. Keying the bucket on the
+    real path would emit four lines per window."""
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    for tab in ("t1", "t2", "t3", "t4"):
+        for _ in range(5):
+            _run(mw(_http_scope(f"/api/chat/threads/{tab}"), _noop_receive, _drop))
+
+    # One line, and it names a real thread rather than the template.
+    assert _paths_logged(logs) == ["/api/chat/threads/t1"], _paths_logged(logs)
+
+
+def test_message_reads_are_not_collapsed_into_the_detail_bucket(logs, monkeypatch):
+    """A message read is a different question from "is it still streaming", so the
+    normaliser must not reach it (#7087)."""
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
+
+    deeper = (
+        "/api/chat/threads/abc/messages",
+        "/api/chat/threads/abc/messages/m1",
+        "/api/chat/threads/abc/messages/m1/forks",
+    )
+    mw = LoggingMiddleware(_status_app(200))
+    for path in deeper:
+        for _ in range(3):
+            _run(mw(_http_scope(path), _noop_receive, _drop))
+
+    for path in deeper:
+        assert hmod.normalize_poll_path(path) == path
+        assert _paths_logged(logs).count(path) == 3, _paths_logged(logs)
+
+
+def test_the_thread_list_is_untouched_by_the_normaliser():
+    """The list path is handled by _CHAT_LIST_PATHS and must not be dragged into the
+    heartbeat class by a trailing-segment rule."""
+    assert hmod.normalize_poll_path("/api/chat/threads") == "/api/chat/threads"
+    assert hmod.normalize_poll_path("/api/chat/threads/") == "/api/chat/threads/"
+
+
+def test_a_failing_thread_poll_still_logs(logs, monkeypatch):
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
+
+    bad = LoggingMiddleware(_status_app(404))
+    for _ in range(3):
+        _run(bad(_http_scope("/api/chat/threads/gone"), _noop_receive, _drop))
+    assert len(_paths_logged(logs)) == 3
+
+
+def test_thread_mutations_still_log(logs, monkeypatch):
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    for _ in range(3):
+        _run(mw(_http_scope("/api/chat/threads/abc", method = "PATCH"), _noop_receive, _drop))
+    assert len(_paths_logged(logs)) == 3
+
+
+def test_verbose_restores_every_thread_poll_line(logs, monkeypatch):
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_VERBOSE_ACCESS_LOG", True)
+
+    mw = LoggingMiddleware(_status_app(200))
+    for _ in range(3):
+        _run(mw(_http_scope("/api/chat/threads/abc"), _noop_receive, _drop))
+    assert len(_paths_logged(logs)) == 3

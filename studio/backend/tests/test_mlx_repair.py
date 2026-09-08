@@ -29,6 +29,12 @@ def _reset_attempt_guard(monkeypatch):
     # latch an earlier test left set and re-detects for real against the next test.
     monkeypatch.setattr(mr, "_environment_mutated", False)
     monkeypatch.delenv(mr.DISABLE_ENV_VAR, raising = False)
+    # The self-heal now declines on a --no-torch install, and the answer comes from the
+    # manifest of whatever venv these tests happen to run in. Left ambient, four tests below
+    # fail inside a GGUF-only Studio venv, which is a real place to run them. Pin it here and
+    # let the file that owns the opt-out drive the True case:
+    # test_mlx_autorepair_no_torch_optout.py.
+    monkeypatch.setattr(mr, "_installed_without_torch", lambda: False)
     yield
     # Join inside the test's stubs: an outliving worker would run the real detect_hardware()
     # against the next test's globals.

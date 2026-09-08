@@ -26,8 +26,8 @@ INSTALL_KIND_BACKENDS: dict[str, str] = {
     "macos-x64": "metal",
 }
 
-# Backends a user may ask for. "metal" is absent on purpose: it is the only macOS
-# build, so there is nothing to choose.
+# Backends a user may ask for. "metal" is absent on purpose: it is the only macOS build, so
+# there is nothing to choose.
 REQUESTABLE_BACKENDS = ("auto", "cpu", "cuda", "rocm", "vulkan")
 
 # Longest-token-first, so "cuda13-older" cannot read as something else.

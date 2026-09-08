@@ -14,11 +14,12 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from auth.authentication import get_current_subject
-from hub.dependencies import get_hf_token
+from hub.dependencies import get_request_hf_token
 from hub.schemas.datasets import (
     AiAssistMappingRequest as HubAiAssistMappingRequest,
     CheckFormatRequest as HubCheckFormatRequest,
 )
+from hub.utils.hf_tokens import HfTokenArg
 from hub.services.datasets import downloads, formatting, local
 from models.datasets import (
     AiAssistMappingRequest,
@@ -60,7 +61,7 @@ def list_local_datasets(
 @router.get("/download-progress", deprecated = True)
 async def get_dataset_download_progress(
     repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_dataset_download_progress_response(
@@ -72,7 +73,7 @@ async def get_dataset_download_progress(
 @router.post("/check-format", response_model = CheckFormatResponse, deprecated = True)
 def check_format(
     request: CheckFormatRequest,
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> CheckFormatResponse:
     hub_request = HubCheckFormatRequest.model_validate(request.model_dump(exclude = {"hf_token"}))
@@ -90,7 +91,7 @@ def check_format(
 )
 def ai_assist_mapping(
     request: AiAssistMappingRequest,
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> AiAssistMappingResponse:
     hub_request = HubAiAssistMappingRequest.model_validate(request.model_dump(exclude = {"hf_token"}))

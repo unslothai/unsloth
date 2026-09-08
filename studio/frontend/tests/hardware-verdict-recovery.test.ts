@@ -137,10 +137,17 @@ test("the recovery poll runs while the verdict is unknown, on every platform", a
     /capabilitiesUnknown/,
     "the effect does not re-run when the verdict lands, so the interval outlives it",
   );
+  // The cleanup now also cancels the follow-up read, so it went through stopPolling.
+  // What this pins is unchanged: the effect tears the interval down.
   assert.match(
     effect,
-    /return \(\) => window\.clearInterval\(id\);/,
+    /return \(\) => stopPolling\(\);/,
     "the interval is left running once the verdict is known",
+  );
+  assert.match(
+    effect,
+    /const stopPolling = \(\) => \{\s*\n\s*window\.clearInterval\(id\);/,
+    "stopPolling no longer clears the interval",
   );
 });
 

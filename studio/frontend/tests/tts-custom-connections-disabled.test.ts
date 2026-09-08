@@ -80,7 +80,8 @@ function load(
           posted.push(init.body);
           return {
             ok: true,
-            blob: async () => "audio-blob",
+            headers: { get: () => "audio/wav" },
+            arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
           };
         },
       },
