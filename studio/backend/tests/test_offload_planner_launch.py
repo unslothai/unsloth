@@ -52,6 +52,7 @@ def _launch_with(
     n_parallel = 4,
     caps = None,
     avail_mib = 64 * 1024,
+    **load_kwargs,
 ):
     """Launch a load the planner is consulted on, returning (cmd, backend, seen inputs)."""
     if owns:
@@ -89,7 +90,14 @@ def _launch_with(
         return plan
 
     backend._planned_tensor_spill = fake_plan
-    launched = _launch(backend, gguf, speculative_type = "off", n_ctx = n_ctx, n_parallel = n_parallel)
+    launched = _launch(
+        backend,
+        gguf,
+        speculative_type = "off",
+        n_ctx = n_ctx,
+        n_parallel = n_parallel,
+        **load_kwargs,
+    )
     return launched["cmd"], backend, seen
 
 
@@ -293,3 +301,111 @@ def test_a_planner_owned_launch_on_windows_carries_the_clamp_and_not_the_tuning_
     assert cmd.count("--cache-ram") == 1, cmd
     assert _flag(cmd, "--cache-ram") == "2048"
     assert "--ctx-checkpoints" not in cmd
+
+
+def _launch_crash_then_ok(tmp_path, monkeypatch, plan):
+    """The planned launch crashes at startup; the revocation retry comes up healthy.
+
+    Mirrors the real recovery in _spawn_and_wait: the first child exits on a signal,
+    _revoke_spill_plan hands placement back to llama.cpp, and the second child is the
+    one the session serves.
+    """
+    import subprocess
+    from unittest.mock import patch
+
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    monkeypatch.setenv("UNSLOTH_SMART_OFFLOAD", "1")
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, CARD_MIB, CARD_MIB)])
+
+    def read(_path):
+        for key, value in DENSE.items():
+            setattr(backend, key, value)
+
+    backend._read_gguf_metadata = read
+    backend._get_gguf_size_bytes = lambda _path: 30 * 1024 * MIB
+    del backend._can_estimate_kv
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_kv_unified": True,
+        "supports_fit_ctx": True,
+        "supports_cache_ram": True,
+    }
+    backend._available_system_memory_mib = lambda: 64 * 1024
+    backend._planned_tensor_spill = lambda inputs, **_kw: plan
+
+    real_popen = subprocess.Popen
+    cmds = []
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return real_popen(cmd, **kwargs)
+        cmds.append(list(cmd))
+        crashed = "off" == (cmd[cmd.index("--fit") + 1] if "--fit" in cmd else "")
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "returncode": -11 if crashed else None,
+                "poll": lambda self: -11 if crashed else None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None, **_kw):
+        launched = cmds[-1] if cmds else []
+        backend._stdout_lines = []
+        return not ("--fit" in launched and launched[launched.index("--fit") + 1] == "off")
+
+    backend._wait_for_health = fake_health
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                speculative_type = "off",
+                n_parallel = 4,
+            )
+        )
+    return cmds, backend
+
+
+def test_a_revoked_plan_commits_the_slots_the_child_that_answered_launched_with(
+    tmp_path, monkeypatch
+):
+    """The revocation puts the fitter's --parallel back in the argv, so the state
+    committed after the retry has to follow it.
+
+    _commit_effective_parallel_slots drives request admission, the slot-save loop
+    and the micro-batch recorded beside it, and nothing re-reads the slot count from
+    the server the way _reconcile_effective_ctx_with_server re-reads the context.
+    Left at the plan's reduced value, a four-slot child is served as a one-slot one.
+    """
+    plan = Plan(changed = True, n_ctx = 8192, n_parallel = 1)
+    cmds, backend = _launch_crash_then_ok(tmp_path, monkeypatch, plan)
+
+    assert len(cmds) == 2, cmds
+    assert cmds[0][cmds[0].index("--parallel") + 1] == "1"
+    assert cmds[1][cmds[1].index("--parallel") + 1] == "4"
+    assert backend.effective_parallel_slots == 4
+
+
+def test_the_planner_admits_against_ram_the_launch_has_already_spent(tmp_path, monkeypatch):
+    """Plan.host_bytes is the embeddings plus the spilled weights and nothing else,
+    yet the seam replaces the fit-derived load mode with the plan's. Host RAM this
+    launch spends outside that figure has to reach the planner, or --load-mode none
+    is decided against RAM that is not free -- an OOM kill where mmap would only
+    have paged (llama.cpp #22629 is the same overcommit for --cache-ram alone).
+
+    A --cache-ram the USER typed is the sharpest of the three: the rewrite below
+    refuses to clamp it, so the plan's own clamp cannot pay for it."""
+    plan = Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,))
+    _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan)
+    # Nothing unusual: the clamp owns the prompt cache and there is no drafter.
+    assert seen["inputs"]["host_ram_unpriced_bytes"] == 0
+
+    _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan, cache_ram = 20000)
+    assert seen["inputs"]["host_ram_unpriced_bytes"] >= 20000 * MIB

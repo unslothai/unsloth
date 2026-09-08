@@ -21894,6 +21894,40 @@ class LlamaCppBackend:
                         else _fit_env_mmproj_bytes
                         + self._inherited_mmproj_soft_overhead(_fit_env_mmproj_bytes, on_host = False)
                     )
+                    # Host RAM this launch spends that the PLAN's own host side
+                    # cannot see. Plan.host_bytes is the token embeddings plus the
+                    # spilled weights (offload_planner.py:_finish), and the seam
+                    # replaces the fit-derived load mode with the plan's, so any
+                    # host term missing here is a --load-mode none decided against
+                    # RAM that is not free -- an OOM kill where mmap would only
+                    # have paged. Three of them, all priced right here for the fit:
+                    #   * a drafter pinned to the CPU with -ngld 0, whose GGUF and
+                    #     KV are host resident (_cpu_resident_draft_bytes);
+                    #   * the SWA/recurrent snapshots --ctx-checkpoints allocates,
+                    #     which llama-server keeps in host byte buffers per slot;
+                    #   * a --cache-ram the USER set, which the rewrite below
+                    #     refuses to clamp, so the plan's own clamp cannot pay for
+                    #     it (an unset one is clamped and needs no term).
+                    # Subtracted from the host RAM the planner admits against, so
+                    # both its load-mode rule and its prompt-cache clamp see them.
+                    _spill_inputs["host_ram_unpriced_bytes"] = max(
+                        0,
+                        int(_cpu_draft_fit_bytes or 0)
+                        + (
+                            max(
+                                0,
+                                _kv_bytes(_spill_ctx, _effective_ctx_checkpoints)
+                                - _kv_bytes(_spill_ctx),
+                            )
+                            if _effective_ctx_checkpoints
+                            else 0
+                        )
+                        + (
+                            self._effective_prompt_cache_bytes(cache_ram, server_caps)
+                            if cache_ram is not None
+                            else 0
+                        ),
+                    )
                     _fit_load_mode = self._fit_derived_load_mode(
                         model_size = _fit_model_size,
                         mmproj_pinned_bytes = _mmproj_pinned_bytes
@@ -23948,6 +23982,31 @@ class LlamaCppBackend:
                         )
                     return stripped
 
+                def _revoke_spill_plan(run_cmd, why):
+                    """``_drop_tensor_spill``, plus the locals the plan rewrote.
+
+                    The plan lowered ``--parallel`` IN PLACE and rebound this
+                    launch's own ``n_parallel`` beside it; the revocation puts the
+                    fitter's value back in the argv, so the local has to follow or
+                    the post-launch commit records fewer slots than the child that
+                    answered actually serves. ``_commit_effective_parallel_slots``
+                    drives request admission, the slot-save loop and the micro-batch
+                    recorded next to it, and unlike the context (re-read from
+                    /props by ``_reconcile_effective_ctx_with_server``) nothing else
+                    corrects the slot count afterwards.
+                    """
+                    nonlocal n_parallel
+                    reverted = self._drop_tensor_spill(run_cmd, why)
+                    if reverted is run_cmd:
+                        return run_cmd
+                    _restored = (getattr(self, "_spill_plan_restore", None) or {}).get("--parallel")
+                    if _restored is not None:
+                        try:
+                            n_parallel = max(1, int(_restored))
+                        except (TypeError, ValueError):
+                            pass
+                    return reverted
+
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
@@ -23966,7 +24025,7 @@ class LlamaCppBackend:
                     # plan's arithmetic assumed this launch's devices, cache dtype
                     # and projector placement, and each retry changes one of them.
                     if label:
-                        run_cmd = self._drop_tensor_spill(run_cmd, label.lstrip("-") or "retry")
+                        run_cmd = _revoke_spill_plan(run_cmd, label.lstrip("-") or "retry")
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     _did_fit_retry = False
                     for _spawn_attempt in (0, 1, 2):
@@ -24101,7 +24160,7 @@ class LlamaCppBackend:
                             # so hand placement back to llama.cpp. Self-gating:
                             # _drop_tensor_spill returns run_cmd unchanged when no
                             # plan is present.
-                            _reverted = self._drop_tensor_spill(run_cmd, "startup failure")
+                            _reverted = _revoke_spill_plan(run_cmd, "startup failure")
                             if _reverted != run_cmd:
                                 logger.warning(
                                     "llama-server crashed during startup (exit code %s) "
@@ -27393,6 +27452,15 @@ class LlamaCppBackend:
         avail_mib = self._available_system_memory_mib()
         if avail_mib is None:
             return None
+        # Host RAM the child spends on allocations no term of this plan carries:
+        # a CPU-pinned drafter, the --ctx-checkpoints snapshots, and a user-set
+        # --cache-ram the seam may not clamp. Taken off the pool the planner
+        # admits against rather than modelled, so the load-mode rule and the
+        # prompt-cache clamp in _finish both answer against RAM that is free.
+        host_ram_bytes = max(
+            0,
+            avail_mib * 1024 * 1024 - int(inputs.get("host_ram_unpriced_bytes") or 0),
+        )
 
         # A separate drafter is a second MODEL, and an UNPINNED one is placed like
         # any other: common_base_params_to_speculative copies the draft device list
@@ -27517,7 +27585,7 @@ class LlamaCppBackend:
         return plan_placement(
             layout,
             vram_per_device,
-            avail_mib * 1024 * 1024,
+            host_ram_bytes,
             int(inputs.get("n_ctx") or 0),
             split_weights_per_device = split_weights,
             kv_layer_weights = list(inputs.get("kv_layer_weights") or ()),

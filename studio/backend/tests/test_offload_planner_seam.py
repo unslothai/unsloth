@@ -200,6 +200,7 @@ def _inputs(
     n_ctx = 32768,
     n_ubatch = None,
     reserve_floor = 0,
+    host_unpriced = 0,
 ):
     return {
         "model_size": model_size,
@@ -220,6 +221,7 @@ def _inputs(
         "n_parallel": n_parallel,
         "n_threads": n_threads,
         "shared_gpu_ids": set() if shared is None else set(shared),
+        "host_ram_unpriced_bytes": host_unpriced,
         "separate_draft_on_gpu": separate_draft,
         **({} if mtp is None else {"mtp_will_engage": mtp}),
     }
@@ -657,9 +659,13 @@ def test_a_spill_plan_startup_failure_can_revoke_the_plan():
     crash path, not just from the `label` guard at the top of the spawn."""
     import inspect
 
-    body = inspect.getsource(LlamaCppBackend.load_model)
-    body = body[body.index("def _spawn_and_wait") :]
-    assert body.count("_drop_tensor_spill") >= 2
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    # The revocation goes through _revoke_spill_plan, which drops the plan AND
+    # puts back the locals its in-place rewrites moved.
+    helper = src[src.index("def _revoke_spill_plan") : src.index("def _spawn_and_wait")]
+    assert "_drop_tensor_spill" in helper
+    body = src[src.index("def _spawn_and_wait") :]
+    assert body.count("_revoke_spill_plan") >= 2
 
 
 def test_the_revocation_runs_only_on_retries():
@@ -672,7 +678,7 @@ def test_the_revocation_runs_only_on_retries():
     idx = src.index("def _spawn_and_wait")
     head = src[idx : idx + 1600]
     assert "if label:" in head
-    assert "_drop_tensor_spill" in head
+    assert "_revoke_spill_plan" in head
 
 
 # ------------------------------------------------- unified memory APUs (ROCm)
@@ -2746,3 +2752,21 @@ def test_a_sharded_gguf_is_read_whole_before_the_planner_sees_it():
     plan = _plan(stub, free_mib = 14 * 1024)
     assert stub._layout_all_shards is True
     assert plan is not None and plan.spills_anything, plan
+
+
+def test_host_ram_the_launch_has_already_spent_is_taken_off_the_planner_pool():
+    """The seam names the host RAM this launch spends that no term of the plan
+    carries -- a -ngld 0 drafter, the --ctx-checkpoints snapshots, a user --cache-ram
+    the seam may not clamp -- and the planner admits against what is left.
+
+    Without it the plan answers --load-mode none on RAM that is already committed,
+    and the seam then replaces the fit-derived mode with that answer, so the child
+    runs with no mmap and nothing to page out."""
+    roomy = _plan(_Stub(), free_mib = 14 * 1024)
+    assert roomy is not None and roomy.spills_anything
+    assert roomy.load_mode_none
+
+    # The same load on the same host, with 60 GiB of the 64 already promised.
+    tight = _plan(_Stub(), free_mib = 14 * 1024, host_unpriced = 60 * GIB)
+    assert tight is not None
+    assert not tight.load_mode_none, tight.reason
