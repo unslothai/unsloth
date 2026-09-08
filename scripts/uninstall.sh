@@ -405,7 +405,10 @@ _is_studio_root() {
     [ -n "$_r" ] || return 1
     # install.sh writes this the moment it creates the root, before the uv cache and long before
     # the venv, so a partial install identifies itself rather than being guessed at from leftovers.
-    [ -f "$_r/.unsloth-studio-owned" ] && return 0
+    # Never through a link: install.sh guarantees a regular file here, so one planted in a foreign
+    # workspace is not ours. The older sentinels below keep -f on purpose, since bin/unsloth is
+    # legitimately a symlink into the venv.
+    if [ -f "$_r/.unsloth-studio-owned" ] && [ ! -L "$_r/.unsloth-studio-owned" ]; then return 0; fi
     [ -f "$_r/share/studio.conf" ] && return 0
     [ -f "$_r/unsloth_studio/.unsloth-studio-owned" ] && return 0
     # Legacy venv name. Only install.sh writes this marker, so it is proof at any root.

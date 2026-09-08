@@ -1282,10 +1282,13 @@ public static class UnslothStudioFinalPathV2
                 # .NET API: New-Item -Path treats brackets as wildcards.
                 [System.IO.Directory]::CreateDirectory($Root) | Out-Null
             }
-            # Delete first. WriteAllText follows a file symlink and truncates its TARGET, which
-            # on a user-chosen root is somebody's file. Matches the uv marker's handling.
+            # Delete first, then confirm it. WriteAllText follows a file link and truncates its
+            # TARGET, which on a user-chosen root is somebody's file, and the delete can fail on
+            # a root we cannot write while that target stays perfectly writable. No marker is
+            # fine; the venv writes its own later.
             $marker = Join-Path $Root ".unsloth-studio-owned"
             Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $marker) { return }
             [System.IO.File]::WriteAllText($marker, "")
         } catch { }
     }
@@ -4463,6 +4466,7 @@ exit 0
         # ours. Content-checked, never by name -- this guard gates a recursive delete.
         if (
             $StudioRedirectMode -eq 'env' -and
+            -not (Test-Path -LiteralPath (Join-Path $StudioHome ".unsloth-studio-owned") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf) -and

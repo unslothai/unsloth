@@ -53,6 +53,23 @@ check() {
 
 echo "Layouts Unsloth created at the managed root, which must stay removable:"
 check "partial install: the root marker alone" own managed ".unsloth-studio-owned"
+# install.sh guarantees a regular file there, so a link planted in somebody's workspace is not
+# proof: -f follows it, and the custom-root loop deletes what it accepts.
+_linkmark="$_TMP_ROOT/linked_root_marker"
+mkdir -p "$_linkmark"
+: > "$_TMP_ROOT/linked_root_marker_target"
+: > "$_linkmark/keepme.txt"
+ln -s "$_TMP_ROOT/linked_root_marker_target" "$_linkmark/.unsloth-studio-owned"
+if _is_studio_root "$_linkmark" managed; then
+    echo "  FAIL: a symlinked root marker was claimed"; FAIL=$((FAIL+1))
+else
+    echo "  PASS: a symlinked root marker is refused"; PASS=$((PASS+1))
+fi
+if _is_studio_root "$_linkmark"; then
+    echo "  FAIL: ... and at a custom root too"; FAIL=$((FAIL+1))
+else
+    echo "  PASS: and at a custom root too"; PASS=$((PASS+1))
+fi
 check "current: share/studio.conf" own managed "share/studio.conf"
 check "current: unsloth_studio owner marker" own managed "unsloth_studio/.unsloth-studio-owned"
 check "legacy .venv carrying the owner marker" own managed ".venv/.unsloth-studio-owned"
@@ -184,6 +201,24 @@ else
     claim_check "somebody's workspace" left env "pyproject.toml" "src/main.py"
     claim_check "somebody's workspace with a venv of their own" left env "unsloth_studio/pyvenv.cfg"
 
+    # A root we cannot write, holding a link to a target we can: rm fails, and writing anyway
+    # would truncate the target. No marker is the correct outcome, not a truncated file.
+    STUDIO_HOME="$_TMP_ROOT/claim_ro_root"
+    # shellcheck disable=SC2034  # read by the extracted _claim_studio_root
+    VENV_DIR="$STUDIO_HOME/unsloth_studio"
+    _STUDIO_HOME_REDIRECT=default
+    mkdir -p "$STUDIO_HOME"
+    printf 'precious' > "$_TMP_ROOT/claim_ro_target"
+    ln -s "$_TMP_ROOT/claim_ro_target" "$STUDIO_HOME/.unsloth-studio-owned"
+    chmod 500 "$STUDIO_HOME"
+    _claim_studio_root
+    chmod 700 "$STUDIO_HOME"
+    if [ "$(cat "$_TMP_ROOT/claim_ro_target")" = "precious" ]; then
+        echo "  PASS: an unremovable link is not written through"; PASS=$((PASS+1))
+    else
+        echo "  FAIL: an unremovable link had its target truncated"; FAIL=$((FAIL+1))
+    fi
+
     # A symlink at the marker path: the redirection would follow it and truncate the target.
     STUDIO_HOME="$_TMP_ROOT/claim_symlink"
     # shellcheck disable=SC2034  # read by the extracted _claim_studio_root
@@ -203,6 +238,22 @@ else
     else
         echo "  FAIL: the marker is still a link"; FAIL=$((FAIL+1))
     fi
+fi
+
+# The claim's other consequence: a first install that dies after creating unsloth_studio leaves
+# an occupied venv with no in-venv marker, and the retry guard would refuse to replace it unless
+# it reads the root marker the same run wrote. Structural, because the guard is a condition in
+# the middle of the install and running one here is not practical.
+_guard=$(sed -n '/why: matching guard to the .venv branch below/,/Move it aside or choose an empty/p' "$INSTALL_SH")
+# Built, not written literally, so the dollar stays a character rather than reading as an
+# expansion here: the guard's SOURCE text is what is being searched.
+_guard_pat="[\$]STUDIO_HOME/[.]unsloth-studio-owned"
+if [ -z "$_guard" ]; then
+    echo "  FAIL: could not find install.sh's env-mode replacement guard"; FAIL=$((FAIL+1))
+elif printf '%s' "$_guard" | grep -q "$_guard_pat"; then
+    echo "  PASS: the retry guard reads the root marker"; PASS=$((PASS+1))
+else
+    echo "  FAIL: the retry guard ignores the root marker install.sh just wrote"; FAIL=$((FAIL+1))
 fi
 
 echo

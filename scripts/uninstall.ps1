@@ -459,7 +459,11 @@ Environment:
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
         # install.ps1 writes this the moment it creates the root, before the uv cache and long
         # before the venv, so a partial install identifies itself rather than being guessed at.
-        if (Test-Path -LiteralPath (Join-Path $Path ".unsloth-studio-owned") -PathType Leaf) { return $true }
+        # Never through a link: install.ps1 guarantees a regular file here, so one planted in a
+        # foreign workspace is not ours. The older sentinels below keep Test-Path on purpose.
+        $rootMarker = Get-Item -LiteralPath (Join-Path $Path ".unsloth-studio-owned") -Force -ErrorAction SilentlyContinue
+        if ($rootMarker -and -not $rootMarker.PSIsContainer -and
+            (($rootMarker.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "share\studio.conf") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "unsloth_studio\.unsloth-studio-owned") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path ".venv\.unsloth-studio-owned") -PathType Leaf) { return $true }

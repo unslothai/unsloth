@@ -802,10 +802,14 @@ _claim_studio_root() {
         done
     fi
     mkdir -p "$STUDIO_HOME" 2>/dev/null || true
-    # Unlink first. The redirection follows a symlink at that path and truncates its TARGET,
-    # which on a user-chosen root is somebody's file. Matches the uv marker's handling.
-    rm -f "$STUDIO_HOME/.unsloth-studio-owned" 2>/dev/null || true
-    printf '' > "$STUDIO_HOME/.unsloth-studio-owned" 2>/dev/null || true
+    # Unlink first, then confirm it. The redirection follows a symlink at that path and
+    # truncates its TARGET, which on a user-chosen root is somebody's file, and rm can fail on
+    # a root we cannot write while that target stays perfectly writable. No marker is fine; the
+    # venv writes its own later, and the install fails on its own if the root is unusable.
+    _claim_marker="$STUDIO_HOME/.unsloth-studio-owned"
+    rm -f "$_claim_marker" 2>/dev/null || true
+    if [ -e "$_claim_marker" ] || [ -L "$_claim_marker" ]; then return 0; fi
+    printf '' > "$_claim_marker" 2>/dev/null || true
 }
 _claim_studio_root
 
@@ -2980,6 +2984,7 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
     # to files (the legitimate ln -s shim shape) but rejects directories
     # and broken/dir-targeted symlinks.
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
+       && [ ! -f "$STUDIO_HOME/.unsloth-studio-owned" ] \
        && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
        && [ ! -f "$STUDIO_HOME/share/studio.conf" ] \
        && [ ! -f "$STUDIO_HOME/bin/unsloth" ]; then

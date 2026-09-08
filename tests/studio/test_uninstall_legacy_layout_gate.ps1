@@ -63,6 +63,21 @@ try {
         (_IsStudioRoot (Make "root-marker" @(".unsloth-studio-owned")) -ManagedDefaultRoot)
     Check "the root marker proves a custom root too" `
         (_IsStudioRoot (Make "custom-root-marker" @(".unsloth-studio-owned")))
+    # install.ps1 guarantees a regular file there, so a link planted in somebody's workspace is
+    # not proof, and the custom-root loop deletes what it accepts.
+    $markLink = Make "linked-root-marker" @("keepme.txt")
+    $markTarget = Join-Path $tmp "linked-root-marker-target.txt"
+    Set-Content -LiteralPath $markTarget -Value "x"
+    $mk = $null
+    try {
+        $mk = New-Item -ItemType SymbolicLink -Path (Join-Path $markLink ".unsloth-studio-owned") -Target $markTarget -ErrorAction Stop
+    } catch { $mk = $null }
+    if ($mk) {
+        Check "a linked root marker is refused" (-not (_IsStudioRoot $markLink -ManagedDefaultRoot))
+        Check "and at a custom root too" (-not (_IsStudioRoot $markLink))
+    } else {
+        Write-Host "  SKIP  no symlink could be created here"
+    }
     Check "current layout (venv owner marker)" `
         (_IsStudioRoot (Make "cur-marker" @("unsloth_studio\.unsloth-studio-owned")) -ManagedDefaultRoot)
     Check "shim .exe" `
@@ -219,6 +234,13 @@ try {
     } else {
         Write-Host "  SKIP  no symlink could be created here"
     }
+
+    # Same for install.ps1's replacement guard, and structural for the same reason.
+    $installText = Get-Content -LiteralPath $installPs1 -Raw
+    $guard = [regex]::Match($installText, "(?s)why: matching guard to the \.venv branch below.*?Move it aside or choose an empty").Value
+    Check "install.ps1 has an env-mode replacement guard" ($guard.Length -gt 0)
+    Check "and it reads the root marker" `
+        ($guard -match [regex]::Escape('Join-Path $StudioHome ".unsloth-studio-owned"'))
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
