@@ -1,0 +1,62 @@
+name: Temporary fast apply MLX trainer API fix v2
+
+on:
+  push:
+    branches:
+      - feat/agent-workspace-mlx-runtime
+    paths:
+      - .github/workflows/tmp-apply-mlx-trainer-api-fix-linux-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/agent-workspace-mlx-runtime
+          fetch-depth: 0
+
+      - name: Update MLX CI to the current public trainer API
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/unslothai/unsloth-zoo /tmp/unsloth-zoo
+          grep -R -F 'MLXTrainer' /tmp/unsloth-zoo/unsloth_zoo/mlx_trainer
+          grep -R -F 'MLXTrainingConfig' /tmp/unsloth-zoo/unsloth_zoo/mlx_trainer
+          ! grep -R -F 'UnslothMLXTrainer' /tmp/unsloth-zoo/unsloth_zoo/mlx_trainer
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/mlx-ci.yml')
+          source = path.read_text(encoding='utf-8')
+          source = source.replace(
+              'from unsloth_zoo.mlx_trainer import UnslothMLXTrainer',
+              'from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig',
+          ).replace(
+              "print('OK: UnslothMLXTrainer =', UnslothMLXTrainer)",
+              "print('OK: MLXTrainer =', MLXTrainer)\n"
+              "          print('OK: MLXTrainingConfig =', MLXTrainingConfig)",
+          )
+          if source.count('from unsloth_zoo.mlx_trainer import MLXTrainer, MLXTrainingConfig') != 1:
+              raise SystemExit('MLX trainer import did not converge')
+          if 'UnslothMLXTrainer' in source:
+              raise SystemExit('legacy MLX trainer alias remains')
+          path.write_text(source, encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- .github/workflows/mlx-ci.yml; then
+            exit 0
+          fi
+          git config user.name "Philip John Basile"
+          git config user.email "PBasile@Basilecom.com"
+          git add .github/workflows/mlx-ci.yml
+          git commit -m "ci(mlx): use the current trainer public API"
+          git push origin HEAD:feat/agent-workspace-mlx-runtime
