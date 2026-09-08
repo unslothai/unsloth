@@ -604,7 +604,7 @@ def _page_text(monkeypatch, url, body, content_type):
             "text/plain",
             ["    indented code"],
             [],
-            id = "non_html_returned_raw",
+            id = "fetch_page_text_non_html_returned_raw",
         ),
         pytest.param(
             "https://github.com/unslothai/unsloth/tree/main",
@@ -612,7 +612,7 @@ def _page_text(monkeypatch, url, body, content_type):
             "text/html",
             ["Unsloth Studio"],
             ["Uh oh!"],
-            id = "html_conversion",
+            id = "fetch_page_text_html_conversion",
         ),
         # A header-less server returning a bare HTML fragment (no <html>/doctype) must still be
         # sniffed as HTML and converted, not served as raw markup.
@@ -622,7 +622,7 @@ def _page_text(monkeypatch, url, body, content_type):
             "",
             ["Doc Title", "Readable fragment body."],
             ["<article"],
-            id = "missing_content_type_fragment_converted",
+            id = "fetch_page_text_missing_content_type_fragment_converted",
         ),
         # A header-less server returning plain text stays raw (whitespace kept).
         pytest.param(
@@ -631,7 +631,7 @@ def _page_text(monkeypatch, url, body, content_type):
             "",
             ["    indented code"],
             [],
-            id = "missing_content_type_plain_text_raw",
+            id = "fetch_page_text_missing_content_type_plain_text_raw",
         ),
         # An explicit text/plain header on an HTML body is sniffed and converted, like the
         # pre-extraction behavior of always converting HTML pages.
@@ -641,7 +641,7 @@ def _page_text(monkeypatch, url, body, content_type):
             "text/plain",
             ["Unsloth Studio"],
             ["<html"],
-            id = "mislabeled_text_plain_html_converted",
+            id = "fetch_page_text_mislabeled_text_plain_html_converted",
         ),
     ],
 )

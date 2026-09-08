@@ -145,31 +145,31 @@ class TestParser:
                 '<|tool_call>call:web_search{query:<|"|>openai news<|"|>}<tool_call|>',
                 "web_search",
                 {"query": "openai news"},
-                id = "gemma_native_template_quotes",
+                id = "gemma_native_tool_call_template_quotes",
             ),
             pytest.param(
                 r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>',
                 "ls",
                 {"path": r"C:\Users\wasim\repo"},
-                id = "gemma_native_template_quotes_escape_backslashes",
+                id = "gemma_native_tool_call_template_quotes_escape_backslashes",
             ),
             pytest.param(
                 '<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>',
                 "mcp__srv__create-issue",
                 {"issue-title": "Bug report"},
-                id = "gemma_native_hyphenated_argument_name",
+                id = "gemma_native_tool_call_hyphenated_argument_name",
             ),
             pytest.param(
                 '<|tool_call>call:terminal{command:"echo {foo:bar}"}<tool_call|>',
                 "terminal",
                 {"command": "echo {foo:bar}"},
-                id = "gemma_native_keeps_braces_inside_string_value",
+                id = "gemma_native_tool_call_keeps_braces_inside_string_value",
             ),
             pytest.param(
                 "<|tool_call>call:get_weather{location:Tokyo,unit:celsius}<tool_call|>",
                 "get_weather",
                 {"location": "Tokyo", "unit": "celsius"},
-                id = "gemma_native_bare_string_values",
+                id = "gemma_native_tool_call_bare_string_values",
             ),
             # Only the wrapping newline is trimmed, so code-argument indentation survives
             # (str.strip() destroyed it).
@@ -183,7 +183,7 @@ class TestParser:
                 '[TOOL_CALLS]search{"q":"explain [THINK] blocks"}',
                 "search",
                 {"q": "explain [THINK] blocks"},
-                id = "bracket_tag_argument_with_think_literal",
+                id = "bracket_tag_argument_with_think_literal_is_preserved",
             ),
             # A rehearsal inside <think> is skipped, but the real call after the close tag parses.
             pytest.param(
@@ -197,7 +197,7 @@ class TestParser:
                 '<tool_call>{"name":"write","arguments":{"text":"compare <think> and </think> tags"}}</tool_call>',
                 "write",
                 {"text": "compare <think> and </think> tags"},
-                id = "think_literal_inside_real_tool_argument",
+                id = "think_literal_inside_real_tool_argument_is_preserved",
             ),
         ],
     )
@@ -919,25 +919,25 @@ class TestParserMultiFormat:
         "text",
         [
             # Defensive: must NOT fire on plain assistant prose.
-            pytest.param("Hello world, how are you today?", id = "llama3_2_bare_json_plain_prose"),
+            pytest.param("Hello world, how are you today?", id = "llama3_2_bare_json_plain_prose_does_not_fire"),
             # JSON embedded in prose must NOT fire (the parser is strict about content
             # STARTING with `{`).
             pytest.param(
-                'The tool result was: {"name":"foo"}', id = "llama3_2_bare_json_embedded_in_prose"
+                'The tool result was: {"name":"foo"}', id = "llama3_2_bare_json_embedded_in_prose_does_not_fire"
             ),
-            pytest.param('{"result":"ok","data":[1,2,3]}', id = "llama3_2_bare_json_missing_name"),
-            pytest.param('{"name":"x"}', id = "llama3_2_bare_json_missing_args"),
-            pytest.param('{"name":"x","parameters":42}', id = "llama3_2_bare_json_args_not_dict"),
+            pytest.param('{"result":"ok","data":[1,2,3]}', id = "llama3_2_bare_json_missing_name_does_not_fire"),
+            pytest.param('{"name":"x"}', id = "llama3_2_bare_json_missing_args_does_not_fire"),
+            pytest.param('{"name":"x","parameters":42}', id = "llama3_2_bare_json_args_not_dict_does_not_fire"),
             # Llama-3 spec: parameters must be a dict, so prose in it must NOT trigger.
             pytest.param(
                 '{"name":"foo","parameters":"this is a sentence"}',
-                id = "llama3_2_bare_json_string_parameters",
+                id = "llama3_2_bare_json_string_parameters_does_not_fire",
             ),
             # OpenAI ``arguments`` may be a JSON-string of a dict, but a plain non-JSON string
             # must not pass the guard.
             pytest.param(
                 '{"name":"foo","arguments":"not json"}',
-                id = "llama3_2_bare_json_string_arguments_not_json",
+                id = "llama3_2_bare_json_string_arguments_not_json_does_not_fire",
             ),
             # Reasoning that merely mentions a tool call but does not emit one after
             # ``[/THINK]`` yields no calls.
@@ -958,13 +958,13 @@ class TestParserMultiFormat:
     @pytest.mark.parametrize(
         "text",
         [
-            pytest.param('<|python_tag|>brave_search.call(query="x")', id = "llama3"),
-            pytest.param('[TOOL_CALLS]add{"a":1}', id = "mistral_v11"),
+            pytest.param('<|python_tag|>brave_search.call(query="x")', id = "llama3_strip_markup_final"),
+            pytest.param('[TOOL_CALLS]add{"a":1}', id = "mistral_strip_markup_v11"),
             pytest.param(
                 '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}',
-                id = "mistral_call_id_form",
+                id = "mistral_call_id_form_stripped",
             ),
-            pytest.param("<|tool_call>call:foo{x:1}<tool_call|>", id = "gemma4"),
+            pytest.param("<|tool_call>call:foo{x:1}<tool_call|>", id = "gemma4_strip_markup_final"),
         ],
     )
     def test_family_call_strips_to_nothing(self, text):
