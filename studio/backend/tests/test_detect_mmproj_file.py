@@ -379,6 +379,7 @@ def test_trusted_companion_snapshot_finds_nested_projector(tmp_path: Path):
         str(weight), search_root = str(sibling), allow_disjoint_search_root = True
     ) == str(projector.resolve())
 
+
 def test_finds_the_projector_hermes_stages_under_assets(tmp_path: Path):
     """Hermes keeps a download's mmproj in models/assets/ so its router never lists it as a
     model; the weight sits one level up. A sibling-only walk loads Qwen3.8-27B text-only."""
