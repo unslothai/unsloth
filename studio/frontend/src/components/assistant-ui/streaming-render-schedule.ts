@@ -125,6 +125,16 @@ const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
 // Only `\n` appears here because `markdownRenderKey` normalises first, the same
 // way the cache does -- spelling every line break out three ways is how the key
 // drifts from the parser again.
+//
+// A title that wraps is the documented residual. Marked keeps the continuation
+// (`[foo]: /url\n  "first\nsecond"` stores `first\nsecond`) and this stops at
+// the opening line, so the key does not move on the closing quote and the link
+// keeps the title it had until the message settles. Following the title further
+// means modelling its grammar -- three delimiter pairs, either opening line,
+// escapes -- and the only construct that avoids that is capturing to the end of
+// the definition's paragraph, which churns the key on every character of any
+// prose that follows a definition and remounts the tree once a frame. A stale
+// tooltip is the cheaper of the two.
 const LINK_DEFINITION_KEY_RE = new RegExp(
   `${LINK_DEFINITION_RE.source}[ \\t]*(?:\\n[ \\t]*)?[^\\n]*(?:\\n[ \\t]*["'(][^\\n]*)?`,
   `g${LINK_DEFINITION_RE.flags}`,
