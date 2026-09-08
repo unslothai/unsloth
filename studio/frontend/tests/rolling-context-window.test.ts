@@ -303,7 +303,7 @@ test("the notice is a NOTICE, never part of the conversation", () => {
     );
   }
 
-  // 3. Nor may the user-facing export, which is the other way text leaves a THREAD.
+  // 3. Nor may the user-facing export, which is the other way text leaves a thread.
   assert.ok(!exporter.includes("contextTruncation"));
   assert.ok(!exporter.includes("compacted"));
 

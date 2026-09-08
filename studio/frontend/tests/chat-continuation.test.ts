@@ -1395,10 +1395,10 @@ test("a hold whose run never starts holds its lease for the life of the tab", as
 
 test("a claim whose run was never issued is left to lapse, not held", async () => {
   // The bar claims under a Web Lock, so the answer lands a tick or more after the render
-  // that asked for it, and `aui.thread()` follows the SELECTION rather than the THREAD the
+  // that asked for it, and `aui.thread()` follows the SELECTION rather than the thread the
   // bar belongs to (`runningByThreadId` exists precisely because "detection survives
   // navigation" and `aui.thread()` does not). Switch chats or branches inside that window
-  // and `startContinuation` searches a different THREAD's messages, finds nothing, and
+  // and `startContinuation` searches a different thread's messages, finds nothing, and
   // returns without calling `startRun`.
   //
   // Taking the hold anyway is the case above: renewed forever, and every other tab refused
@@ -1646,7 +1646,7 @@ test("a failure on a thread leaves a hold whose run is already streaming alone",
 
 test("the keeper is wired to the failure the adapter already reports", () => {
   // There is exactly one signal for a run that failed on its way out, and it is not a
-  // deadline: the CHAT_ADAPTER wrapper catches everything `adapter.run` throws and announces it
+  // deadline: the adapter wrapper catches everything `adapter.run` throws and announces it
   // per thread. Pinned at both ends, since neither side is exercised by a unit test.
   const wrapper = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("yield* adapter.run(args)"));
   assert.match(
@@ -1858,7 +1858,7 @@ test("only the gate's own tokens are read as a refusal", () => {
 });
 
 test("the gate's pulse is tagged where it is fired and read where it matters", () => {
-  // Neither end is exercised by a unit test: the CHAT_ADAPTER's gate is deep inside a run, and
+  // Neither end is exercised by a unit test: the adapter's gate is deep inside a run, and
   // the keeper's real signal reads a zustand store. Pinned at both ends instead.
   const gate = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const imageGateReason ="));
   assert.match(

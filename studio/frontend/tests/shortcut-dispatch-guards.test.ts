@@ -242,7 +242,7 @@ test("signing out drops the previous account's navigation state", async () => {
   assert.match(store, /resetAccountState: \(\) =>/);
   // A fresh Set, or every account after the first shares one.
   assert.match(store, /set\(\{ \.\.\.ACCOUNT_STATE, unreadThreadIds: new Set\(\), unreadRowIds: \{\} \}\)/);
-  // On unmount, which is what the auth routes do to the APP_SIDEBAR.
+  // On unmount, which is what the auth routes do to the sidebar.
   assert.match(
     APP_SIDEBAR,
     /useEffect\(\n\s*\(\) => \(\) => useChatNavigationStore\.getState\(\)\.resetAccountState\(\),\n\s*\[\],\n\s*\);/,
@@ -364,7 +364,7 @@ test("the sidebar's mutating chords refuse to fire under a dialog", async () => 
   }
   // Covered, not "not in the foreground", or the mobile drawer kills them all.
   assert.match(APP_SIDEBAR, /isSurfaceBackgrounded\(SIDEBAR_SELECTOR\)/);
-  // And with the drawer closed the APP_SIDEBAR is unmounted, so the app root is
+  // And with the drawer closed the sidebar is unmounted, so the app root is
   // what carries the modal signal there.
   assert.match(
     APP_SIDEBAR,

@@ -1034,7 +1034,7 @@ test("compare mode takes the same audio files the chat composer does", () => {
     true,
   );
   assert.equal(isAudioAttachmentFile(new File([], "notes.txt", { type: "" })), false);
-  // The compare SHARED_COMPOSER classifies through the shared helper, not file.type.
+  // The compare composer classifies through the shared helper, not file.type.
   assert.equal(/file\.type\.match\(\/\^audio/.test(SHARED_COMPOSER), false);
   assert.match(SHARED_COMPOSER, /isAudioAttachmentFile\(file\)/);
   assert.match(SHARED_COMPOSER, /accept=\{AUDIO_PICKER_ACCEPT\}/);
@@ -1069,7 +1069,7 @@ test("a declaration past the first pages is not missed", async () => {
       return true;
     },
   );
-  // The TEXT_ATTACHMENT_ACCEPT_2 carries no byte ceiling on the scan for a cutoff to creep back in.
+  // The source carries no byte ceiling on the scan for a cutoff to creep back in.
   assert.equal(TEXT_ATTACHMENT_ACCEPT_2.includes("DECLARATION_SCAN_BYTES"), false);
 });
 
@@ -2026,7 +2026,7 @@ test("the audio reference picker reads a 3GP recording's tracks", async () => {
     referenceFileRejection("audio", await classifiedAttachmentFile(clip)),
     "Please choose an audio file",
   );
-  // The video REFERENCE_PICKER does not take the recording either, extension or not.
+  // The video picker does not take the recording either, extension or not.
   assert.equal(isVideoFile(classifiedRecording), false);
   assert.equal(
     referenceFileRejection("video", classifiedRecording),

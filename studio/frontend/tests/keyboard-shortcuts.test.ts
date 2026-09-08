@@ -618,7 +618,7 @@ test("bare Escape is the recorder's own exit, so only a prompt-gated row takes i
     /event\.code === "Escape" &&\n(?:\s*![a-zA-Z.]+ &&\n)+\s*!def\?\.allowBareKey\n\s*\) \{\n\s*setRecording\(null\);/,
   );
 
-  // Which leaves no shipped bare Escape that its own KEYBOARD_SHORTCUTS_TAB could not record.
+  // Which leaves no shipped bare Escape that its own tab could not record.
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {
       for (const mac of [true, false]) {
@@ -1089,7 +1089,7 @@ test("the fork chord is registered where it mounts, not from an action bar", asy
 
   // Two instances of the action now exist on the last message, the chord's and
   // the button's, so the in-flight flag cannot be either one's own state: the
-  // chord followed by a click would post two forks with two THREAD ids.
+  // chord followed by a click would post two forks with two thread ids.
   assert.match(
     THREAD,
     /const useForkInFlight = create<\{\n\s*forking: boolean;/,
@@ -1365,16 +1365,16 @@ test("effort chords only run for a model whose effort is read", async () => {
 
 test("New chat inherits the project on screen, inferred or not", async () => {
   // On Chat the runtime's project is the visible one, inferred ones included:
-  // the CHAT_PAGE resolves it from the thread or the compare pair when the URL
+  // the page resolves it from the thread or the compare pair when the URL
   // carries no ?project=, so a chat in a project stays in it.
   assert.match(SRC__ROOT, /isChatRoute \? chatRuntime\.activeProjectId : null/);
   assert.match(CHAT_PAGE, /const projectId = thread\?\.projectId \?\? null;/);
   assert.match(CHAT_PAGE, /const projectId = threads\[0\]\?\.projectId \?\? null;/);
   assert.match(CHAT_PAGE, /setCurrentProjectId\(projectId\);\n\s*useChatRuntimeStore\.getState\(\)\.setActiveProjectId\(projectId\);/);
-  // The CHAT_PAGE's own New chat button starts from the same value, so the chord
+  // The page's own New chat button starts from the same value, so the chord
   // and the button cannot disagree about which project a new chat is in.
   assert.match(CHAT_PAGE, /runtime\.setActiveProjectId\(currentProjectId\);/);
-  // Off Chat the CHAT_PAGE is hidden rather than unmounted, so the runtime still
+  // Off Chat the page is hidden rather than unmounted, so the runtime still
   // names a project the user is not looking at. That one stays excluded.
   assert.match(SRC__ROOT, /isChatRoute \? chatRuntime\.activeProjectId : null/);
   // Leaving the project is its own action, so this one must not also do it.
@@ -1595,7 +1595,7 @@ test("the published chat lists stop where the sidebar stops", async () => {
 // no presence outside the rows, so one carried off screen is invisible and
 // still live.
 test("a selection does not outlive the rows it was made on", async () => {
-  // The whole APP_SIDEBAR going takes the whole selection with it.
+  // The whole sidebar going takes the whole selection with it.
   assert.match(
     APP_SIDEBAR,
     /if \(!chatRowsOnScreen\) \{\n\s*clearSelection\(\);\n\s*return;\n\s*\}/,
@@ -1642,7 +1642,7 @@ test("a selection does not outlive the rows it was made on", async () => {
     APP_SIDEBAR,
     /if \(projectAnchor && !renderedProjectIds\.has\(projectAnchor\)\) \{\n\s*projectAnchorRef\.current = null;/,
   );
-  // The three ways a folder row leaves without the APP_SIDEBAR going with it.
+  // The three ways a folder row leaves without the sidebar going with it.
   assert.match(
     APP_SIDEBAR,
     /const renderedProjectIds = useMemo\(\(\) => \{\n\s*if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !projectsOpen\) \{\n\s*return new Set<string>\(\);\n\s*\}\n\s*return new Set\(visibleProjectRecords\.map\(\(project\) => project\.id\)\);/,

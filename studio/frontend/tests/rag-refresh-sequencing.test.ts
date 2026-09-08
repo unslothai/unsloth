@@ -658,7 +658,7 @@ test("a folder job watcher stops on an answered 4xx", () => {
 // A queued prompt outlives the bar that watched it, and isIndexing() answers only
 // while that bar is mounted, so the queue has to ask for the project itself.
 test("a background prompt queue checks the project it will send to", () => {
-  // The THREAD-scope check no longer returns early past the project one.
+  // The thread-scope check no longer returns early past the project one.
   assert.doesNotMatch(
     THREAD,
     /if \(!item\.target\.usesThreadDocuments\) \{\s*return false;/,
@@ -755,13 +755,13 @@ test("a knowledge-base queue does not wait on project sources", () => {
     /const usesKnowledgeBaseAtQueueStart =\s*chatStateAtQueueStart\.ragEnabled &&\s*chatStateAtQueueStart\.ragSource\.type === "kb";/,
   );
   assert.match(THREAD, /usesKnowledgeBase: usesKnowledgeBaseAtQueueStart,/);
-  // Ahead of the project lookup, and after the THREAD one, which a KB queue
+  // Ahead of the project lookup, and after the thread one, which a KB queue
   // never takes anyway.
   assert.match(
     THREAD,
     /if \(item\.target\.usesKnowledgeBase\) \{\s*return false;\s*\}[\s\S]{0,900}?const projectId = threadId/,
   );
-  // The exclusivity this relies on, in the CHAT_ADAPTER that builds the scope.
+  // The exclusivity this relies on, in the adapter that builds the scope.
   assert.match(
     CHAT_ADAPTER,
     /ragEnabled && ragSource\.type === "kb"\s*\? \{ kb_id: ragSource\.kbId \}/,

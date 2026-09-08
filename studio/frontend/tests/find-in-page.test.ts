@@ -1470,7 +1470,7 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
     FIND_BAR,
     /isSurfaceBackgrounded\(`\[\$\{FIND_SCOPE_ATTRIBUTE\}\]`\)/,
   );
-  // Fixed, not absolute: on a route whose outer container scrolls, an absolute FIND_BAR scrolls away.
+  // Fixed, not absolute: on a route whose outer container scrolls, an absolute bar scrolls away.
   const surface = /className="(find-bar-surface[^"]*)"/.exec(FIND_BAR);
   assert.ok(surface);
   assert.match(surface[1], /\bfixed\b/);
@@ -2413,7 +2413,7 @@ test("the bar has no border, and its buttons have a hover that shows", async () 
 });
 
 test("a long query rewinds to its first character when focus leaves", async () => {
-  // Typing past the width of the field scrolls it, and a FIND_BAR left showing the tail of a word says
+  // Typing past the width of the field scrolls it, and a bar left showing the tail of a word says
   // nothing about what was searched for.
   assert.match(FIND_BAR, /onBlur=\{rewindToStart\}/);
   assert.match(FIND_BAR, /input\.setSelectionRange\(0, 0\);/);
@@ -2540,11 +2540,11 @@ test("the rows progressive completion adds are re-anchored, not renumbered", asy
 });
 
 test("Escape closes the bar from the walk buttons, not just the field", async () => {
-  // On the WINDOW, in the capture phase, for the lifetime of the open FIND_BAR. A handler on the FIND_BAR
-  // only reaches presses that started inside it, so clicking a message to read it left a FIND_BAR
+  // On the WINDOW, in the capture phase, for the lifetime of the open bar. A handler on the bar
+  // only reaches presses that started inside it, so clicking a message to read it left a bar
   // Escape would not close -- and with a tool request waiting, that same unprevented Escape went
   // on to `declineToolRequest`, which is bare Escape and is not shielded by `isTextEntryFocused`
-  // on a message body. Closing a find FIND_BAR must not be able to answer a tool request.
+  // on a message body. Closing a find bar must not be able to answer a tool request.
   const effect = FIND_BAR.slice(FIND_BAR.indexOf("const onEscape ="));
   const body = effect.slice(0, effect.indexOf("window.addEventListener"));
   assert.match(body, /event\.key !== "Escape"/);
@@ -2556,7 +2556,7 @@ test("Escape closes the bar from the walk buttons, not just the field", async ()
     effect,
     /window\.removeEventListener\("keydown", onEscape, true\)/,
   );
-  // A modal above the FIND_BAR owns Escape, and an open popover is dismissed by its own first.
+  // A modal above the bar owns Escape, and an open popover is dismissed by its own first.
   assert.match(body, /isSurfaceBackgrounded\(/);
   assert.match(body, /resolveDismissiblePortalSurfaces\(/);
   // And nothing left on the landmark, which would take the inside presses before the window does.
@@ -2606,7 +2606,7 @@ test("closing the bar hands focus back to where it came from", async () => {
   assert.match(FIND_BAR, /origin\.focus\(\);/);
   // First answer only: StrictMode replays the effect, and by the second run the field has focus.
   assert.match(FIND_BAR, /originRef\.current === null &&/);
-  // Against the FIND_BAR's element, not `data-find-skip`, which the composer carries.
+  // Against the bar's element, not `data-find-skip`, which the composer carries.
   assert.match(FIND_BAR, /barRef\.current\?\.contains\(active\) !== true/);
   assert.equal(FIND_BAR.includes("closest(`[${FIND_SKIP_ATTRIBUTE}]`)"), false);
   assert.match(
@@ -3006,7 +3006,7 @@ test("the cap flag is what the bar renders, not the count", async () => {
 });
 
 test("Escape is left to the IME while it is composing", async () => {
-  // Escape dismisses a candidate. Consumed here, it closes the FIND_BAR out from under a word still
+  // Escape dismisses a candidate. Consumed here, it closes the bar out from under a word still
   // being typed, and the candidate window never sees the key it was aimed at.
   const escapeHandler = FIND_BAR.slice(FIND_BAR.indexOf("const onEscape ="));
   const guard = escapeHandler.indexOf("isImeComposing(event)");

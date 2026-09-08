@@ -226,13 +226,13 @@ test("the project composer's choice survives the swap to a thread", () => {
     /if \(captured\?\.nonce === newThreadNonce && captured\.claim === claim\) \{\s*return;/,
   );
 
-  // The claim the CHAT_RUNTIME_STORE hands out changes on every pending write, value or not.
+  // The claim the store hands out changes on every pending write, value or not.
   assert.match(
     CHAT_RUNTIME_STORE,
     /if \(threadId === null\) \{\s*pendingAttachmentTargetClaim \+= 1;/,
   );
 
-  // Why the THREAD_DOCUMENTS_BAR cannot cover it: the Thread's THREAD_DOCUMENTS_BAR starts with an id, so the
+  // Why the bar cannot cover it: the Thread's bar starts with an id, so the
   // first-id branch never fires for it.
   assert.match(THREAD_DOCUMENTS_BAR, /const hadThreadIdRef = useRef\(threadId !== null\);/);
 });
