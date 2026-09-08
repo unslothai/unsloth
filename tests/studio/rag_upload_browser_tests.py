@@ -173,9 +173,9 @@ def overlapping_uploads(page):
     wait_state(lambda s: s["waiting"] == 2)
     request("/__release-one", {})
     page.evaluate("window.first")
-    assert page.evaluate("window.sim.uploading"), (
-        "The first upload released the second upload's guard"
-    )
+    assert page.evaluate(
+        "window.sim.uploading"
+    ), "The first upload released the second upload's guard"
     request("/__release", {})
     page.evaluate("window.second")
     complete(page)
@@ -189,9 +189,9 @@ def concurrent_same_content(page):
     request("/__release", {})
     page.evaluate("Promise.all([window.first,window.second])")
     complete(page)
-    assert page.evaluate("window.sim.documents.length") == 1, (
-        "Concurrent deduplication left duplicate chips"
-    )
+    assert (
+        page.evaluate("window.sim.documents.length") == 1
+    ), "Concurrent deduplication left duplicate chips"
 
 
 def materialize(page):
