@@ -37,6 +37,23 @@ from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as s
 import httpx
 
 
+def _tool_call_sse(tool_name: str, arguments: dict, call_id: str, index: int = 0) -> str:
+    """One tool-call delta frame: the twelve-line literal the streams below repeat."""
+    return _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": index,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": json.dumps(arguments)},
+                }
+            ]
+        }
+    )
+
+
+
 def _run_tool_loop(backend, messages, tools, *, max_tool_iterations = 1, **kwargs):
     """Drain the tool loop into a list, the seven-line call nearly every test below repeats."""
     return list(
@@ -315,21 +332,7 @@ def _patch_monotonic(monkeypatch, values: list[float]) -> None:
 
 def _structured_tool_call(tool_name: str, arguments: dict, call_id: str) -> list[str]:
     return [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "arguments": json.dumps(arguments),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse(tool_name, arguments, call_id),
         _done(),
     ]
 
@@ -501,26 +504,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     tool_call_id = "call_render_late"
     first_stream = [
         _sse({"content": "Here is the canvas.\n\n"}),
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": tool_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": "render_html",
-                            "arguments": json.dumps(
-                                {
-                                    "code": "<html><body><div>red</div></body></html>",
-                                    "title": "Simple Red Square",
-                                }
-                            ),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('render_html', {'code': '<html><body><div>red</div></body></html>', 'title': 'Simple Red Square'}, tool_call_id),
         _done(),
     ]
     second_stream = [
@@ -1079,21 +1063,7 @@ def test_blank_reasoning_noop_turn_adds_no_empty_assistant_message(monkeypatch):
     """A blank trace on a suppressed call must not open an empty model turn."""
     tool_stream = [
         _sse({"reasoning_content": "\n\n"}),
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_blank_noop",
-                        "type": "function",
-                        "function": {
-                            "name": "python",
-                            "arguments": json.dumps({"code": "print(1)"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('python', {'code': 'print(1)'}, 'call_blank_noop'),
         _done(),
     ]
     final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
@@ -1461,49 +1431,11 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
     """A repeated render_html call is an internal no-op, not a visible card."""
 
     first_stream = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_first",
-                        "type": "function",
-                        "function": {
-                            "name": "render_html",
-                            "arguments": json.dumps(
-                                {
-                                    "code": "<html><body>first</body></html>",
-                                    "title": "First",
-                                }
-                            ),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('render_html', {'code': '<html><body>first</body></html>', 'title': 'First'}, 'call_first'),
         _done(),
     ]
     repeat_stream = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_repeat",
-                        "type": "function",
-                        "function": {
-                            "name": "render_html",
-                            "arguments": json.dumps(
-                                {
-                                    "code": "<html><body>repeat</body></html>",
-                                    "title": "Repeat",
-                                }
-                            ),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('render_html', {'code': '<html><body>repeat</body></html>', 'title': 'Repeat'}, 'call_repeat'),
         _done(),
     ]
     final_stream = [_sse({"content": "Short note."}), _done()]
@@ -1577,21 +1509,7 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
 
 def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
     first_stream = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_first",
-                        "type": "function",
-                        "function": {
-                            "name": "render_html",
-                            "arguments": json.dumps({"code": "<html>ok</html>"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('render_html', {'code': '<html>ok</html>'}, 'call_first'),
         _done(),
     ]
     final_stream = [_sse({"content": "Done."}), _done()]
@@ -1618,57 +1536,15 @@ def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
 
 def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
     first_search = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_1",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('web_search', {'query': 'gpu prices 2026'}, 'call_search_1'),
         _done(),
     ]
     python_call = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_python",
-                        "type": "function",
-                        "function": {
-                            "name": "python",
-                            "arguments": json.dumps({"code": "print('ok')"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('python', {'code': "print('ok')"}, 'call_python'),
         _done(),
     ]
     duplicate_search = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_2",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('web_search', {'query': 'gpu prices 2026'}, 'call_search_2'),
         _done(),
     ]
     final_stream = [_sse({"content": "Final answer from gathered data."}), _done()]
@@ -1729,57 +1605,15 @@ def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
 
 def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
     first_search = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_1",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('web_search', {'query': 'gpu prices 2026'}, 'call_search_1'),
         _done(),
     ]
     duplicate_search = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_2",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('web_search', {'query': 'gpu prices 2026'}, 'call_search_2'),
         _done(),
     ]
     python_call = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_python",
-                        "type": "function",
-                        "function": {
-                            "name": "python",
-                            "arguments": json.dumps({"code": "print('ok')"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('python', {'code': "print('ok')"}, 'call_python'),
         _done(),
     ]
     final_stream = [_sse({"content": "Final answer from gathered data."}), _done()]
@@ -1840,57 +1674,15 @@ def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
 
 def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
     first_search = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_1",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('web_search', {'query': 'gpu prices 2026'}, 'call_search_1'),
         _done(),
     ]
     duplicate_one = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_2",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('web_search', {'query': 'gpu prices 2026'}, 'call_search_2'),
         _done(),
     ]
     duplicate_two = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search_3",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "gpu prices 2026"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('web_search', {'query': 'gpu prices 2026'}, 'call_search_3'),
         _done(),
     ]
     final_stream = [_sse({"content": "Final answer from first search."}), _done()]
@@ -2126,21 +1918,7 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
                 )
             }
         ),
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_python_disabled",
-                        "type": "function",
-                        "function": {
-                            "name": "python",
-                            "arguments": json.dumps({"code": "print(1)"}),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('python', {'code': 'print(1)'}, 'call_python_disabled'),
         _done(),
     ]
     final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
@@ -2194,26 +1972,7 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
     """
 
     first_stream = [
-        _sse(
-            {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_first",
-                        "type": "function",
-                        "function": {
-                            "name": "render_html",
-                            "arguments": json.dumps(
-                                {
-                                    "code": "<html><body>first</body></html>",
-                                    "title": "First",
-                                }
-                            ),
-                        },
-                    }
-                ]
-            }
-        ),
+        _tool_call_sse('render_html', {'code': '<html><body>first</body></html>', 'title': 'First'}, 'call_first'),
         _done(),
     ]
     post_tool_stream = [
@@ -2304,21 +2063,7 @@ def test_post_tool_stall_still_nudged_after_a_pre_tool_reprompt(monkeypatch):
     streams = [
         [_sse({"content": "I will search the web now."}), _done()],
         [
-            _sse(
-                {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": "call_first",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"query": "red square"}),
-                            },
-                        }
-                    ]
-                }
-            ),
+            _tool_call_sse('web_search', {'query': 'red square'}, 'call_first'),
             _done(),
         ],
         [_sse({"content": "Let me summarize the results."}), _done()],
@@ -2371,21 +2116,7 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
 
     streams = [
         [
-            _sse(
-                {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": "call_first",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"query": "red square"}),
-                            },
-                        }
-                    ]
-                }
-            ),
+            _tool_call_sse('web_search', {'query': 'red square'}, 'call_first'),
             _done(),
         ],
         [_sse({"content": "Let me summarize the results."}), _done()],
@@ -2437,21 +2168,7 @@ def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
     streams = [
         [_sse({"content": stall}), _done()],
         [
-            _sse(
-                {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": "call_first",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"query": "red square"}),
-                            },
-                        }
-                    ]
-                }
-            ),
+            _tool_call_sse('web_search', {'query': 'red square'}, 'call_first'),
             _done(),
         ],
         [_sse({"content": stall}), _done()],
@@ -2591,21 +2308,7 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_after_a_tool(monkeyp
     answer = "Now I have the results. The capital of Japan is Tokyo."
     streams = [
         [
-            _sse(
-                {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": "call_first",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"query": "capital of Japan"}),
-                            },
-                        }
-                    ]
-                }
-            ),
+            _tool_call_sse('web_search', {'query': 'capital of Japan'}, 'call_first'),
             _done(),
         ],
         [_sse({"content": "Let me summarize what I found."}), _done()],
@@ -3034,21 +2737,7 @@ def _nudge_then_search_streams() -> list[list[str]]:
     return [
         [_sse({"content": "I will search the web now."}), _done()],
         [
-            _sse(
-                {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": "call_search",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"query": "red square"}),
-                            },
-                        }
-                    ]
-                }
-            ),
+            _tool_call_sse('web_search', {'query': 'red square'}, 'call_search'),
             _done(),
         ],
         [_sse({"content": "Final answer: the square is red."}), _done()],
