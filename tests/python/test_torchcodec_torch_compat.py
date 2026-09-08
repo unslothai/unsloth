@@ -179,6 +179,22 @@ def _load_install_python_stack():
     return install_python_stack
 
 
+def _reload_install_python_stack():
+    """A PRIVATE module instance, for the constants read once at import.
+
+    _PYTORCH_WHL_BASE is computed from UNSLOTH_PYTORCH_MIRROR at import time, so the cached
+    module in sys.modules answers with whatever the environment was on first import. Loading
+    a fresh instance is the only way to exercise a mirror."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_install_python_stack_probe", REPO_ROOT / "studio" / "install_python_stack.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_pyproject_declares_torch211_audio_extra_with_python_gate():
     text = PYPROJECT.read_text(encoding = "utf-8")
     match = re.search(r"^audio-torch211 = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL)
@@ -1364,3 +1380,38 @@ def test_the_remedy_spells_the_variable_for_the_shell_it_will_be_pasted_into(mon
     for platform in ("linux", "darwin"):
         monkeypatch.setattr(fixes.sys, "platform", platform)
         assert fixes._shell_env_ref("UNSLOTH_TORCH_INDEX_URL") == '"$UNSLOTH_TORCH_INDEX_URL"'
+
+
+def test_a_mirror_carrying_a_token_gets_the_leaf_in_its_path(monkeypatch):
+    """UNSLOTH_PYTORCH_MIRROR may authenticate through a query token. Concatenating the leaf
+    put it INSIDE the token -- "https://m/whl?token=abc/cu130" -- so the index resolved
+    nothing. For torchcodec that silently costs audio; for torchao, whose step is fatal, the
+    unpinned retry also drops the mirror, so a mirror-only host cannot install it at all.
+
+    _index_url_join already existed for the ROCm mirrors and its docstring names this exact
+    failure, so this is about using it rather than about new logic."""
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl?token=abc")
+    mod = _reload_install_python_stack()
+    assert mod._torch_accelerator_index_url("2.13.0+cu130") == (
+        "https://mirror.example/whl/cu130/?token=abc"
+    )
+    assert mod._torchcodec_index_url("2.13.0+cu130") == (
+        "https://mirror.example/whl/cu130/?token=abc"
+    )
+    # The FAMILY override takes the same path, substitution included.
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "xpu")
+    assert mod._torchcodec_index_url("2.13.0+xpu") == (
+        "https://mirror.example/whl/cpu/?token=abc"
+    )
+
+
+def test_a_plain_mirror_is_still_joined_the_obvious_way(monkeypatch):
+    """The join must not disturb the ordinary case, which is every host without a token."""
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl")
+    mod = _reload_install_python_stack()
+    assert mod._torch_accelerator_index_url("2.13.0+cu130") == "https://mirror.example/whl/cu130"
+    monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR")
+    mod = _reload_install_python_stack()
+    assert mod._torch_accelerator_index_url("2.13.0+cu130") == (
+        "https://download.pytorch.org/whl/cu130"
+    )

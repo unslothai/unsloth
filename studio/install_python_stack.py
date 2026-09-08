@@ -519,6 +519,24 @@ _CUDA_RUNTIME_MARKER_RE = re.compile(
 )
 
 
+def _pytorch_whl_leaf_url(leaf: str) -> str:
+    """_PYTORCH_WHL_BASE plus an accelerator leaf, keeping a mirror's query out of the way.
+
+    UNSLOTH_PYTORCH_MIRROR may authenticate through a query token, and plain concatenation
+    buries the leaf inside it -- "https://m/whl?token=abc" + "/cu130" asks for /whl with
+    "abc/cu130" as the token, which resolves nothing. torchcodec would silently lose audio;
+    torchao's step is fatal AND its unpinned retry drops the mirror too, so a mirror-only
+    host could not install it at all.
+
+    _index_url_join is the existing fix for exactly this, written for the ROCm mirrors, but
+    it also appends a trailing slash. That is harmless to pip and wrong to spread: without a
+    query there is nothing to work around, so the plain form is kept byte for byte.
+    """
+    if "?" in _PYTORCH_WHL_BASE or "#" in _PYTORCH_WHL_BASE:
+        return _index_url_join(_PYTORCH_WHL_BASE, leaf)
+    return f"{_PYTORCH_WHL_BASE}/{leaf}"
+
+
 def _torchcodec_distribution_for_probe():
     """The installed torchcodec distribution, or None when it cannot be read."""
     try:
@@ -618,10 +636,10 @@ def _torch_accelerator_index_url(
     # xpu leaf, which publishes no codec below 0.13.
     family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip().strip("/")
     if family:
-        return f"{_PYTORCH_WHL_BASE}/{substitutions.get(family.lower(), family)}"
+        return _pytorch_whl_leaf_url(substitutions.get(family.lower(), family))
     # _PYTORCH_WHL_BASE rather than a literal, since UNSLOTH_PYTORCH_MIRROR redirects every
     # other index this module builds.
-    return f"{_PYTORCH_WHL_BASE}/{substitutions.get(local, local)}"
+    return _pytorch_whl_leaf_url(substitutions.get(local, local))
 
 
 def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str | None":
