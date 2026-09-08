@@ -12,7 +12,10 @@ import {
 import { isAdapterMethod } from "@/types/training";
 import type { TrainingMethod } from "@/types/training";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
-import type { TrainingConfigState } from "../types/config";
+import type {
+  TrainingConfigState,
+  TrainingMethodProvenance,
+} from "../types/config";
 
 type TrainingMethodStatePatch = Partial<
   Pick<
@@ -52,13 +55,14 @@ export function getCptModelDefaultsPatch(
 }
 
 function getRestoreFromCptPatch(
-  targetModulesBeforeCpt: string[] | null,
+  provenance: TrainingMethodProvenance,
 ): TrainingMethodStatePatch {
   return {
-    loraRank: DEFAULT_HYPERPARAMS.loraRank,
-    loraAlpha: DEFAULT_HYPERPARAMS.loraAlpha,
-    loraVariant: DEFAULT_HYPERPARAMS.loraVariant,
-    targetModules: targetModulesBeforeCpt ?? TARGET_MODULES,
+    loraRank: provenance.loraRankBeforeCpt ?? DEFAULT_HYPERPARAMS.loraRank,
+    loraAlpha: provenance.loraAlphaBeforeCpt ?? DEFAULT_HYPERPARAMS.loraAlpha,
+    loraVariant:
+      provenance.loraVariantBeforeCpt ?? DEFAULT_HYPERPARAMS.loraVariant,
+    targetModules: provenance.targetModulesBeforeCpt ?? TARGET_MODULES,
   };
 }
 
@@ -97,6 +101,9 @@ export function buildTrainingMethodPatch(
     | "trainingMethodProvenance"
     | "datasetFormat"
     | "targetModules"
+    | "loraRank"
+    | "loraAlpha"
+    | "loraVariant"
   >,
   nextMethod: TrainingMethod,
 ): TrainingMethodStatePatch {
@@ -111,18 +118,21 @@ export function buildTrainingMethodPatch(
       ? null
       : state.datasetFormat;
     provenance.targetModulesBeforeCpt = [...state.targetModules];
+    provenance.loraRankBeforeCpt = state.loraRank;
+    provenance.loraAlphaBeforeCpt = state.loraAlpha;
+    provenance.loraVariantBeforeCpt = state.loraVariant;
     Object.assign(patch, getCptTrainingPatch(state.targetModules));
   }
   if (prevMethod === "cpt" && nextMethod !== "cpt") {
-    Object.assign(
-      patch,
-      getRestoreFromCptPatch(provenance.targetModulesBeforeCpt),
-    );
+    Object.assign(patch, getRestoreFromCptPatch(provenance));
     if (provenance.datasetFormatBeforeCpt !== null) {
       patch.datasetFormat = provenance.datasetFormatBeforeCpt;
     }
     provenance.datasetFormatBeforeCpt = null;
     provenance.targetModulesBeforeCpt = null;
+    provenance.loraRankBeforeCpt = null;
+    provenance.loraAlphaBeforeCpt = null;
+    provenance.loraVariantBeforeCpt = null;
   }
 
   const learningRate = resolveTrainingMethodLearningRate(

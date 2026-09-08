@@ -327,6 +327,28 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   }
                 : {};
 
+            const cptProvenanceRefresh =
+              get().trainingMethod === "cpt"
+                ? {
+                    ...(modelDefaultsPatch.targetModules !== undefined
+                      ? {
+                          targetModulesBeforeCpt: [
+                            ...modelDefaultsPatch.targetModules,
+                          ],
+                        }
+                      : {}),
+                    ...(modelDefaultsPatch.loraRank !== undefined
+                      ? { loraRankBeforeCpt: modelDefaultsPatch.loraRank }
+                      : {}),
+                    ...(modelDefaultsPatch.loraAlpha !== undefined
+                      ? { loraAlphaBeforeCpt: modelDefaultsPatch.loraAlpha }
+                      : {}),
+                    ...(modelDefaultsPatch.loraVariant !== undefined
+                      ? { loraVariantBeforeCpt: modelDefaultsPatch.loraVariant }
+                      : {}),
+                  }
+                : {};
+
             set({
               ...patch,
               ...cptOverrides,
@@ -338,14 +360,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                       ...get().trainingMethodProvenance,
                       learningRateManuallySet: false,
                       modelAdapterLearningRate,
-                      ...(get().trainingMethod === "cpt" &&
-                      modelDefaultsPatch.targetModules !== undefined
-                        ? {
-                            targetModulesBeforeCpt: [
-                              ...modelDefaultsPatch.targetModules,
-                            ],
-                          }
-                        : {}),
+                      ...cptProvenanceRefresh,
                     },
                   }
                 : shouldApplyCptTargetDefaults &&

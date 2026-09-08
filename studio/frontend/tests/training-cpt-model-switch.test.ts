@@ -80,6 +80,9 @@ test("leaving CPT after a model switch restores the new model targets", async ()
       modelAdapterLearningRate: null,
       datasetFormatBeforeCpt: "chatml",
       targetModulesBeforeCpt: [...LLAMA_TARGETS],
+      loraRankBeforeCpt: null,
+      loraAlphaBeforeCpt: null,
+      loraVariantBeforeCpt: null,
     },
   });
 
@@ -240,4 +243,65 @@ test("targets imported during the defaults request still win", async () => {
   assert.deepEqual(useTrainingConfigStore.getState().targetModules, [
     "q_proj",
   ]);
+});
+
+test("leaving CPT after a model switch restores the new model adapter params", async () => {
+  useTrainingConfigStore.getState().reset();
+  setAuthFetchHandler(() =>
+    Promise.resolve(
+      Response.json({
+        id: "old/llama",
+        config: { lora: { lora_r: 8, lora_alpha: 8, target_modules: [...LLAMA_TARGETS] } },
+        is_vision: false,
+        is_embedding: false,
+        is_audio: false,
+        audio_type_known: true,
+        is_lora: false,
+        model_type: "text",
+        model_size_bytes: null,
+        max_position_embeddings: 32768,
+      }),
+    ),
+  );
+  useTrainingConfigStore.getState().selectTrainingModel("old/llama", "text");
+  await waitForModelDefaults("old/llama");
+  assert.equal(useTrainingConfigStore.getState().loraRank, 8);
+
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+
+  setAuthFetchHandler(() =>
+    Promise.resolve(
+      Response.json({
+        id: "LiquidAI/LFM2-1.2B",
+        config: {
+          lora: {
+            lora_r: 64,
+            lora_alpha: 128,
+            use_dora: true,
+            target_modules: ["all-linear"],
+          },
+        },
+        is_vision: false,
+        is_embedding: false,
+        is_audio: false,
+        audio_type_known: true,
+        is_lora: false,
+        model_type: "text",
+        model_size_bytes: null,
+        max_position_embeddings: 32768,
+      }),
+    ),
+  );
+  useTrainingConfigStore
+    .getState()
+    .selectTrainingModel("LiquidAI/LFM2-1.2B", "text");
+  await waitForModelDefaults("LiquidAI/LFM2-1.2B");
+  assert.equal(useTrainingConfigStore.getState().loraRank, 128);
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  const state = useTrainingConfigStore.getState();
+  assert.equal(state.loraRank, 64);
+  assert.equal(state.loraAlpha, 128);
+  assert.equal(state.loraVariant, "dora");
+  assert.deepEqual(state.targetModules, ["all-linear"]);
 });

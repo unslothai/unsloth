@@ -13,6 +13,7 @@ import { stageLegacyHfTokenForMigration } from "@/features/hub/stores/hf-token-s
 import { isTrainingMethod } from "@/types/training";
 import type { DatasetFormat } from "@/types/training";
 import type {
+  LoraVariant,
   TrainingConfigState,
   TrainingConfigStore,
   TrainingMethodProvenance,
@@ -223,6 +224,9 @@ function migrateThroughVersion19(
       modelAdapterLearningRate: null,
       datasetFormatBeforeCpt: null,
       targetModulesBeforeCpt: null,
+      loraRankBeforeCpt: null,
+      loraAlphaBeforeCpt: null,
+      loraVariantBeforeCpt: null,
     } satisfies TrainingMethodProvenance;
   }
 }
@@ -248,6 +252,21 @@ function isDatasetFormat(value: unknown): value is DatasetFormat {
   );
 }
 
+function isLoraVariant(value: unknown): value is LoraVariant {
+  return (
+    value === "lora" ||
+    value === "rslora" ||
+    value === "loftq" ||
+    value === "dora"
+  );
+}
+
+function positiveIntOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : null;
+}
+
 function normalizeTrainingMethodProvenance(
   value: unknown,
   persistedState: PersistedTrainingConfig,
@@ -259,6 +278,7 @@ function normalizeTrainingMethodProvenance(
   const modelAdapterLearningRate = provenance.modelAdapterLearningRate;
   const datasetFormatBeforeCpt = provenance.datasetFormatBeforeCpt;
   const targetModulesBeforeCpt = provenance.targetModulesBeforeCpt;
+  const wasCpt = persistedState.trainingMethod === "cpt";
   return {
     learningRateManuallySet:
       typeof provenance.learningRateManuallySet === "boolean"
@@ -271,16 +291,26 @@ function normalizeTrainingMethodProvenance(
         ? modelAdapterLearningRate
         : null,
     datasetFormatBeforeCpt:
-      persistedState.trainingMethod === "cpt" &&
+      wasCpt &&
       isDatasetFormat(datasetFormatBeforeCpt) &&
       datasetFormatBeforeCpt !== "raw"
         ? datasetFormatBeforeCpt
         : null,
     targetModulesBeforeCpt:
-      persistedState.trainingMethod === "cpt" &&
+      wasCpt &&
       Array.isArray(targetModulesBeforeCpt) &&
       targetModulesBeforeCpt.length > 0
         ? [...targetModulesBeforeCpt]
+        : null,
+    loraRankBeforeCpt: wasCpt
+      ? positiveIntOrNull(provenance.loraRankBeforeCpt)
+      : null,
+    loraAlphaBeforeCpt: wasCpt
+      ? positiveIntOrNull(provenance.loraAlphaBeforeCpt)
+      : null,
+    loraVariantBeforeCpt:
+      wasCpt && isLoraVariant(provenance.loraVariantBeforeCpt)
+        ? provenance.loraVariantBeforeCpt
         : null,
   };
 }
