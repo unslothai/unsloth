@@ -1420,11 +1420,10 @@ public static class UnslothStudioFinalPathV2
         }
     }
 
-    # ── BEGIN SHARED WITH studio/setup.ps1 ──
     # Managed llama.cpp access check. This script cannot dot-source setup.ps1, so it holds byte-identical copies; test_denied_llama_cpp_preflight.py enforces that.
+    # ── BEGIN SHARED WITH studio/setup.ps1 ──
 
     # Recognize ERROR_ACCESS_DENIED through PowerShell's wrapper exceptions.
-    # ── BEGIN SHARED WITH studio/setup.ps1 ──
     function Test-AccessDeniedError {
         param($ErrorRecord)
 

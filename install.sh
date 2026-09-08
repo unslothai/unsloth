@@ -3112,7 +3112,7 @@ EOF
     return 1
 }
 
-# Best-effort gfx inference when ROCm tools cannot see the GPU (#7301). Mirrors install.ps1 arch resolution on Windows ($HasROCm false, $ROCmGfxArch set).
+# Best-effort gfx inference when ROCm tools cannot see the GPU (unslothai#7301). Mirrors install.ps1 arch resolution on Windows ($HasROCm false, $ROCmGfxArch set).
 _infer_linux_amd_gfx_arch() {
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
         printf '%s\n' "$(printf '%s' "$UNSLOTH_ROCM_GFX_ARCH" | tr '[:upper:]' '[:lower:]')"
@@ -4074,7 +4074,7 @@ _ROCM_TAG_MEMO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-rocm.XXXXXX" 2>/dev/null
 
 TORCH_INDEX_URL=$(get_torch_index_url)
 
-# Linux: ROCm runtime missing but a supported AMD gfx arch is inferable (Strix Halo in /proc/cpuinfo, lspci marketing name, UNSLOTH_ROCM_GFX_ARCH). Route to AMD's per-arch wheels like install.ps1 does on Windows (#7301). Gated on the runtime probes NOT naming a gfx: either no AMD GPU is detected at all, or the GPU is visible only through the env-independent KFD topology while rocminfo/amd-smi cannot read its arch (#7314; before the KFD detection fix these hosts reached this reroute via the false branch, so the empty-probe condition preserves that routing). A */cpu index chosen WITH a readable gfx and a readable but UNSUPPORTED ROCm version is a deliberate fallback and stays excluded, since the shared probe returns its gfx; an UNREADABLE version is only a detection miss, so it gets its own way in below (#8731). UNSLOTH_ROCM_GFX_ARCH stays authoritative either way.
+# Linux: ROCm runtime missing but a supported AMD gfx arch is inferable (Strix Halo in /proc/cpuinfo, lspci marketing name, UNSLOTH_ROCM_GFX_ARCH). Route to AMD's per-arch wheels like install.ps1 does on Windows (unslothai#7301). Gated on the runtime probes NOT naming a gfx: either no AMD GPU is detected at all, or the GPU is visible only through the env-independent KFD topology while rocminfo/amd-smi cannot read its arch (#7314; before the KFD detection fix these hosts reached this reroute via the false branch, so the empty-probe condition preserves that routing). A */cpu index chosen WITH a readable gfx and a readable but UNSUPPORTED ROCm version is a deliberate fallback and stays excluded, since the shared probe returns its gfx; an UNREADABLE version is only a detection miss, so it gets its own way in below (#8731). UNSLOTH_ROCM_GFX_ARCH stays authoritative either way.
 
 _amd_no_rocm_version_reroute=false
 _amd_probed_gfx_first=""
