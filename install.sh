@@ -781,6 +781,14 @@ _resolve_studio_destinations
 _UNSLOTH_LOGIN_PATH="$PATH"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 
+# Claim the root before anything of ours goes into it. Everything below lands inside
+# $STUDIO_HOME -- the uv cache, the venv, the venv's own marker -- so an install that dies in
+# between used to leave a directory the uninstaller could only identify by guessing from
+# leftovers, and every guess is a chance to delete somebody else's files. One breadcrumb,
+# written first, is what it reads instead. Never fatal: an unwritable root fails below anyway.
+mkdir -p "$STUDIO_HOME" 2>/dev/null || true
+printf '' > "$STUDIO_HOME/.unsloth-studio-owned" 2>/dev/null || true
+
 # Keep uv's cache on the same filesystem as the venv it fills.
 # uv hardlinks wheels within one filesystem and copies across a boundary, so a moved
 # STUDIO_HOME paid double the disk and stranded the cache. An explicit UV_CACHE_DIR wins.

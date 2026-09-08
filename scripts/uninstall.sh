@@ -403,6 +403,9 @@ _is_studio_root() {
     # $2 = "managed": $_r is the default root install.sh manages, $HOME/.unsloth/studio.
     _managed="${2:-}"
     [ -n "$_r" ] || return 1
+    # install.sh writes this the moment it creates the root, before the uv cache and long before
+    # the venv, so a partial install identifies itself rather than being guessed at from leftovers.
+    [ -f "$_r/.unsloth-studio-owned" ] && return 0
     [ -f "$_r/share/studio.conf" ] && return 0
     [ -f "$_r/unsloth_studio/.unsloth-studio-owned" ] && return 0
     # Legacy venv name. Only install.sh writes this marker, so it is proof at any root.
@@ -427,10 +430,6 @@ _is_studio_root() {
         _is_installer_leftover_name "$_p" || continue
         _is_venv_dir "$_p" && return 0
     done
-    # Earlier still: install.sh:791 points UV_CACHE_DIR at $STUDIO_HOME/cache/uv and creates it
-    # long before the venv exists, so an install that dies in between leaves only this, and it
-    # can be gigabytes. The "uv" leaf is required; a bare "cache" is too ordinary a name.
-    [ -d "$_r/cache/uv" ] && return 0
     return 1
 }
 

@@ -49,6 +49,10 @@ Check "the stop scan is given the managed paths under the target" `
     ($ps1Text -match '_StopProcessesLockingRoots -Roots \(\$stopRoots \+ @\(_ManagedPathsUnderReparseTargets \$ownedRoots\)\)')
 Check "and that list is filtered by the ownership gate" `
     ($ps1Text -match '(?s)\$ownedRoots = @\(\).*?_IsStudioRoot \$defaultStudioHome -ManagedDefaultRoot.*?foreach \(\$r in \$customRoots\) \{ if \(_IsStudioRoot \$r\)')
+# The legacy <parent>\stable-diffusion.cpp sibling is derived from the same corrected
+# Split-Path, and the scan that receives it also runs before the gates.
+Check "the legacy sd.cpp stop root is gated the same way" `
+    ($ps1Text -match '(?s)\$customSdCppToStop = @\(\)\s*\r?\n\s*foreach \(\$r in \$customRoots\) \{\s*\r?\n\s*if \(-not \(_IsStudioRoot \$r\)\) \{ continue \}')
 
 # Both kinds: the helper reads only .Target; a symlink needs elevation, a junction never does.
 # $IsWindows exists only on PowerShell 6+.

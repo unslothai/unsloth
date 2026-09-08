@@ -75,17 +75,28 @@ Environment:
         # Escalating: torch inductor holds DATA handles under TORCHINDUCTOR_CACHE_DIR for
         # seconds, and _StopProcessesLockingRoots cannot attribute those to a process.
         $delays = @(250, 500, 1000, 2000, 4000, 4000, 4000, 4000)
-        # The two cheap waits are always free; the long ones come out of the run's budget, and
-        # $false means it is spent, so stop rather than retry with no wait in between.
-        $wait = {
-            param([int]$Index)
-            $ms = $delays[$Index]
-            if ($Index -ge 2) {
-                if ($script:RemoveWaitBudgetMs -le 0) { return $false }
-                $ms = [Math]::Min($ms, $script:RemoveWaitBudgetMs)
-                $script:RemoveWaitBudgetMs -= $ms
+        # Every path gets 2100ms of waiting for itself, which is exactly the flat 700ms x3 this
+        # replaced, so no path is ever retried less than it used to be -- a lock that only this
+        # one hits, an antivirus opening this file, is unaffected by what an earlier path spent.
+        # Only the escalation BEYOND that draws on the run's budget, because what the escalation
+        # waits out is wall clock and shared. $false means both are spent, so stop rather than
+        # retry with no pause in between.
+        $freeLeft = 2100
+        function _Wait {
+            param([int]$Ms, [ref]$FreeLeft)
+            $free = [Math]::Min($Ms, [Math]::Max(0, $FreeLeft.Value))
+            $paid = $Ms - $free
+            if ($paid -gt 0) {
+                if ($script:RemoveWaitBudgetMs -le 0) {
+                    if ($free -le 0) { return $false }
+                    $paid = 0
+                } else {
+                    $paid = [Math]::Min($paid, $script:RemoveWaitBudgetMs)
+                    $script:RemoveWaitBudgetMs -= $paid
+                }
             }
-            Start-Sleep -Milliseconds $ms
+            $FreeLeft.Value -= $free
+            Start-Sleep -Milliseconds ($free + $paid)
             return $true
         }
         for ($attempt = 0; $attempt -le $delays.Count; $attempt++) {
@@ -95,7 +106,7 @@ Environment:
             } catch {
                 # Read before $wait runs, so nothing can shadow the error record.
                 $failure = $_.Exception.Message
-                if (-not $lastTry -and (& $wait $attempt)) { continue }
+                if (-not $lastTry -and (_Wait $delays[$attempt] ([ref]$freeLeft))) { continue }
                 _Substep "could not remove: $Path ($failure)" "Yellow"
                 # The closing summary must not promise the data is gone.
                 $script:RemoveFailed = $true
@@ -108,7 +119,7 @@ Environment:
                 _Substep "removed: $Path" "Green"
                 return
             }
-            if (-not $lastTry -and (& $wait $attempt)) { continue }
+            if (-not $lastTry -and (_Wait $delays[$attempt] ([ref]$freeLeft))) { continue }
             _Substep "still present (files held open): $Path" "Yellow"
             $script:RemoveFailed = $true
             return
@@ -444,6 +455,9 @@ Environment:
     function _IsStudioRoot {
         param([string]$Path, [switch]$ManagedDefaultRoot)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        # install.ps1 writes this the moment it creates the root, before the uv cache and long
+        # before the venv, so a partial install identifies itself rather than being guessed at.
+        if (Test-Path -LiteralPath (Join-Path $Path ".unsloth-studio-owned") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "share\studio.conf") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "unsloth_studio\.unsloth-studio-owned") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path ".venv\.unsloth-studio-owned") -PathType Leaf) { return $true }
@@ -473,10 +487,6 @@ Environment:
                 if (_IsVenvDir $dir.FullName) { return $true }
             }
         }
-        # Earlier still: install.ps1:1427 points UV_CACHE_DIR at <root>\cache\uv, which exists
-        # long before the venv does, so an install that dies in between leaves only this, and it
-        # can be gigabytes. The "uv" leaf is required; a bare "cache" is too ordinary a name.
-        if (Test-Path -LiteralPath (Join-Path $Path "cache\uv") -PathType Container) { return $true }
         return $false
     }
 
@@ -896,8 +906,18 @@ Environment:
     # the $knownRoots prefix match below already covers. Older builds put it BESIDE the root at
     # <parent>\stable-diffusion.cpp, outside $knownRoots. We delete those marker-owned dirs below,
     # so add them to the handle scan too, gated on the same owner marker.
+    # Only roots this run would actually delete. _StopProcessesLockingRoots force-stops every
+    # process running from under what it is given, and it runs BEFORE the ownership gates below,
+    # so a stale UNSLOTH_STUDIO_HOME whose parent holds ANOTHER install's marked sd.cpp would
+    # have its diffusion job killed and then be refused, removing nothing.
+    $ownedRoots = @()
+    if ($defaultStudioHome -and (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot)) {
+        $ownedRoots += $defaultStudioHome
+    }
+    foreach ($r in $customRoots) { if (_IsStudioRoot $r) { $ownedRoots += $r } }
     $customSdCppToStop = @()
     foreach ($r in $customRoots) {
+        if (-not (_IsStudioRoot $r)) { continue }
         $sdc = Join-Path (Split-Path -LiteralPath $r) "stable-diffusion.cpp"
         if ((Test-Path -LiteralPath $sdc) -and (Test-Path -LiteralPath (Join-Path $sdc ".unsloth-studio-owned") -PathType Leaf)) {
             $customSdCppToStop += $sdc
@@ -906,16 +926,10 @@ Environment:
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
     $stopRoots = @($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
-    # Reparse expansion is gated on ownership, and the plain roots are not. Following a link
+    # Reparse expansion is gated on ownership too, and for the same reason: following a link
     # turns one path into generic subdirectories of wherever it points -- node, bin,
-    # unsloth_studio -- and _StopProcessesLockingRoots force-stops every process running from
-    # under them, before the gates below have refused anything. On a stale UNSLOTH_STUDIO_HOME
-    # that is a relative symlink, that is somebody's training run.
-    $ownedRoots = @()
-    if ($defaultStudioHome -and (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot)) {
-        $ownedRoots += $defaultStudioHome
-    }
-    foreach ($r in $customRoots) { if (_IsStudioRoot $r) { $ownedRoots += $r } }
+    # unsloth_studio -- and on a stale root that is a relative symlink, that is somebody's
+    # training run. The plain roots are NOT gated; that scan predates this and is left alone.
     _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $ownedRoots))
 
     # ── Remove custom-root install trees ──

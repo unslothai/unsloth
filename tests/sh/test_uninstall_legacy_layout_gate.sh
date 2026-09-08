@@ -51,6 +51,7 @@ check() {
 }
 
 echo "Layouts Unsloth created at the managed root, which must stay removable:"
+check "partial install: the root marker alone" own managed ".unsloth-studio-owned"
 check "current: share/studio.conf" own managed "share/studio.conf"
 check "current: unsloth_studio owner marker" own managed "unsloth_studio/.unsloth-studio-owned"
 check "legacy .venv carrying the owner marker" own managed ".venv/.unsloth-studio-owned"
@@ -63,6 +64,7 @@ check "partial install: invalid legacy venv only" own managed ".venv.invalid.202
 
 echo
 echo "A custom root proves itself with a marker, wherever the user put it:"
+check "custom: the root marker alone" own custom ".unsloth-studio-owned"
 check "custom: share/studio.conf" own custom "share/studio.conf"
 check "custom: unsloth_studio owner marker" own custom "unsloth_studio/.unsloth-studio-owned"
 check "custom: legacy .venv owner marker" own custom ".venv/.unsloth-studio-owned"
@@ -107,10 +109,10 @@ check "partial install: rollback with a numeric suffix" own managed \
     "unsloth_studio.rollback.20260908120000.4242.2/pyvenv.cfg"
 check "partial install: install.sh's 'time' date fallback" own managed \
     ".venv.invalid.time.4242/pyvenv.cfg"
-# install.sh:791 creates the uv cache before anything else in the root exists.
-check "partial install: the uv cache alone" own managed "cache/uv/"
-check "a cache directory without the uv leaf" foreign managed "cache/notes.txt"
-check "the uv cache at a custom root" foreign custom "cache/uv/"
+# install.sh claims the root before it creates the uv cache, so the cache is not a sentinel:
+# a hand-made ~/.unsloth/studio/cache/uv must not authorize deleting the rest of the root.
+check "a uv cache with no root marker" foreign managed "cache/uv/" "notes.txt"
+check "the same at a custom root" foreign custom "cache/uv/"
 
 echo
 echo "Edge cases:"

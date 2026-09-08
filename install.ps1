@@ -1256,6 +1256,22 @@ public static class UnslothStudioFinalPathV2
         } catch { return $Cache }
     }
 
+    # Claim the root before anything of ours goes into it. Everything else lands inside it --
+    # the uv cache, the venv, the venv's own marker -- so an install that dies in between used
+    # to leave a directory the uninstaller could only identify by guessing from leftovers, and
+    # every guess is a chance to delete somebody else's files. Never fatal: an unwritable root
+    # fails the install on its own.
+    function Write-StudioRootOwnerMarker {
+        param([Parameter(Mandatory = $true)][string]$Root)
+        try {
+            if (-not (Test-Path -LiteralPath $Root)) {
+                # .NET API: New-Item -Path treats brackets as wildcards.
+                [System.IO.Directory]::CreateDirectory($Root) | Out-Null
+            }
+            [System.IO.File]::WriteAllText((Join-Path $Root ".unsloth-studio-owned"), "")
+        } catch { }
+    }
+
     function Write-StudioUvCacheMarker {
         param(
             [Parameter(Mandatory = $true)][string]$StudioRoot,
@@ -1400,6 +1416,7 @@ public static class UnslothStudioFinalPathV2
             }
         }
         Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $selectedCache
+        Write-StudioRootOwnerMarker -Root $StudioRoot
         Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $selectedCache
 
         switch ($script:StudioUvCacheMode) {
@@ -4052,10 +4069,7 @@ exit 0
 
     # ── Create the venv; hand uv the resolved exe path so it does not re-resolve back to conda. ──
     Write-TauriLog "STEP" "Creating virtual environment"
-    if (-not (Test-Path -LiteralPath $StudioHome)) {
-        # .NET API: New-Item -Path treats brackets as wildcards.
-        [System.IO.Directory]::CreateDirectory($StudioHome) | Out-Null
-    }
+    Write-StudioRootOwnerMarker -Root $StudioHome
 
     $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
     $_Migrated = $false
