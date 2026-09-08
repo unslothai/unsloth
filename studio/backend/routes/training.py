@@ -267,6 +267,11 @@ def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset"
     validated = []
     missing = []
     for dataset_path in paths:
+        if not dataset_path.strip():
+            raise HTTPException(
+                status_code = 400,
+                detail = f"{label} path must not be blank",
+            )
         dataset_file = resolve_dataset_path(dataset_path)
         if not dataset_file.exists():
             missing.append(f"{dataset_path} (resolved: {dataset_file})")

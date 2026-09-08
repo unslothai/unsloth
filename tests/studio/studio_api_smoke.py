@@ -100,6 +100,23 @@ def http(
             return exc.code, json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError):
             return exc.code, raw
+    except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+        # A transport failure is a failed check, not a crashed run. Only
+        # HTTPError was caught here, so a socket timeout propagated out of
+        # http() and killed the script at module level: the traceback named
+        # urlopen and the line number, and nothing about which endpoint had
+        # been slow or what the rest of the suite would have said. Observed on
+        # three unrelated PRs whose /v1/embeddings call hit the 30s ceiling.
+        # Returned as status 0 so every existing `if code == 200 ... else
+        # fail(...)` site reports it with its own diagnosis and the run
+        # continues to the remaining sections.
+        #
+        # Emitted here as well as returned: the call sites report the status
+        # code and not the body, so status 0 on its own would say a request
+        # failed without saying that it timed out or after how long.
+        detail = f"{type(exc).__name__}: {exc}"
+        _emit("  NET   ", f"{method} {path} failed after {timeout}s -- {detail}")
+        return 0, {"error": detail, "timeout": timeout}
 
 
 def login(password: str) -> tuple[int, str | None]:
@@ -449,7 +466,14 @@ code, body = http(
     "/v1/embeddings",
     body = {"model": GGUF_REPO, "input": "hello"},
     headers = AUTH_HEADER,
-    timeout = 30,
+    # This is the first request in the section that forces a model load, so it
+    # pays the load on top of the embedding. Measured at 23.8s on a healthy
+    # macOS runner against a 30s ceiling, i.e. 79% of budget, which is not a
+    # margin: three unrelated PRs timed out here at exactly 30.0s on the same
+    # base while main passed. Raised to leave room for a loaded runner rather
+    # than to hide a slow endpoint -- if this starts taking 90s that is a real
+    # regression and it will still be reported, now as a failed check.
+    timeout = 90,
 )
 if code == 200 and isinstance(body, dict) and body.get("data"):
     ok("/v1/embeddings -> 200 with data")
