@@ -468,6 +468,45 @@ case "$_out" in
         echo "  FAIL: linux: relocated install not reported as incomplete"; FAIL=$((FAIL+1)) ;;
 esac
 
+# ── 3j3b. The same relocation one level up: a NESTED master root whose studio/ child is the
+# symlink. The database probe here follows the link to find <master>/studio/studio.db but
+# recorded the LEXICAL path, so after `rm -rf <master>` unlinked only the link that path read
+# as absent and the run announced that the chat history was gone -- over a studio.db still
+# sitting on the other volume. 3j3 above pins the default root; this pins the master root. ──
+H=$(new_home)
+R=$(mktemp -d "$_TMP_ROOT/master.XXXXXX")
+_ELSEWHERE2=$(mktemp -d "$_TMP_ROOT/otherdisk2.XXXXXX")
+mkdir -p "$_ELSEWHERE2/unsloth_studio/bin" "$R/share"
+: > "$_ELSEWHERE2/unsloth_studio/.unsloth-studio-owned"
+: > "$_ELSEWHERE2/studio.db"
+ln -s "$_ELSEWHERE2" "$R/studio"
+printf '%s\n' "$R" > "$R/.unsloth-portable-root"
+{
+    printf "UNSLOTH_EXE='%s'\n" "$R/studio/unsloth_studio/bin/unsloth"
+    printf "export UNSLOTH_HOME='%s'\n" "$R"
+} > "$R/share/studio.conf"
+_out=$(printf '#!/bin/sh\necho Linux\n' > "$STUB_BIN/uname"; chmod +x "$STUB_BIN/uname"
+    env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME \
+        -u XDG_CACHE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+        UNSLOTH_APPLICATIONS_DIR="$APPS_DIR" UNSLOTH_HOME="$R" \
+        HOME="$H" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" 2>/dev/null)
+assert_present "linux: relocated nested studio.db survived the symlink removal" \
+    "$_ELSEWHERE2/studio.db"
+case "$_out" in
+    *"studio.db it found"*)
+        echo "  FAIL: linux: master root claimed the database is gone but it is on the other disk"
+        FAIL=$((FAIL+1)) ;;
+    *)
+        echo "  PASS: linux: relocated master root -> no claim that the database is gone"
+        PASS=$((PASS+1)) ;;
+esac
+case "$_out" in
+    *"may"*"still be on disk"*)
+        echo "  PASS: linux: relocated master root reported as incomplete"; PASS=$((PASS+1)) ;;
+    *)
+        echo "  FAIL: linux: relocated master root not reported as incomplete"; FAIL=$((FAIL+1)) ;;
+esac
+
 # ── 3j4. Marker storage that vanishes mid-run: the pathname still looks fine, so an
 # emptiness-only predicate reports success while every failure is silently dropped. ──
 H=$(new_home)

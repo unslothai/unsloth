@@ -181,7 +181,43 @@ if [ "$_PORTABLE_OFF_ASKED" = true ] && [ -n "$_UNSLOTH_ROOT" ]; then
     # Its Studio root is the nested child when there is one, and the root itself when flat.
     if [ -z "$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")" ] \
         && [ -z "$(_trim_ws "${STUDIO_HOME:-}")" ]; then
-        if [ -d "$_UNSLOTH_ROOT/studio/unsloth_studio" ] || [ -d "$_UNSLOTH_ROOT/studio" ]; then
+        # Ownership, not bare existence. `[ -d "$_UNSLOTH_ROOT/studio" ]` called any root
+        # holding a `studio` directory nested, including a FLAT install that merely has one
+        # beside it -- and a flat root with a `studio` neighbour is a shape this installer
+        # documents and guards elsewhere (see the parent-ownership block further down: a
+        # parent can be a flat portable install in its own right, with a separate normal
+        # install pointed at <parent>/studio through UNSLOTH_STUDIO_HOME). The conversion then
+        # aimed at the neighbour: the parent-marker guard recognised the real flat install and
+        # kept it portable, so the documented way back did nothing while the run built a
+        # second environment at the wrong path and still reported the conversion.
+        #
+        # The same four sentinels, in the same order, as the flat-layout selector in
+        # _resolve_studio_destinations and that guard, so all three agree on what "flat"
+        # means. Each of the three that live outside the venv must NAME this venv rather than
+        # merely exist: `unsloth` is an ordinary word and a reused root can hold somebody
+        # else's `bin/unsloth` beside their own `unsloth_studio`. A root that is already
+        # nested is excluded first. Inline, not a helper: tests lift this block out and run
+        # it alone, where a helper defined elsewhere would go silently inert.
+        _pob_flat_venv="$_UNSLOTH_ROOT/unsloth_studio"
+        _pob_flat_owned=false
+        if [ ! -d "$_UNSLOTH_ROOT/studio/unsloth_studio" ]; then
+            _pob_flat_exe=$(printf '%s' "$_pob_flat_venv/bin/unsloth" | sed "s/'/'\\\\''/g")
+            if [ -f "$_pob_flat_venv/.unsloth-studio-owned" ]; then
+                _pob_flat_owned=true
+            elif grep -qxF "UNSLOTH_EXE='$_pob_flat_exe'" \
+                    "$_UNSLOTH_ROOT/share/studio.conf" 2>/dev/null; then
+                _pob_flat_owned=true
+            elif [ -L "$_UNSLOTH_ROOT/bin/unsloth" ] \
+                 && [ "$_UNSLOTH_ROOT/bin/unsloth" -ef "$_pob_flat_venv/bin/unsloth" ] 2>/dev/null; then
+                _pob_flat_owned=true
+            elif grep -qxF "exec '$_pob_flat_exe' \"\$@\"" \
+                    "$_UNSLOTH_ROOT/bin/unsloth" 2>/dev/null; then
+                _pob_flat_owned=true
+            fi
+        fi
+        if [ "$_pob_flat_owned" = true ]; then
+            UNSLOTH_STUDIO_HOME="$_UNSLOTH_ROOT"
+        elif [ -d "$_UNSLOTH_ROOT/studio" ]; then
             UNSLOTH_STUDIO_HOME="$_UNSLOTH_ROOT/studio"
         else
             UNSLOTH_STUDIO_HOME="$_UNSLOTH_ROOT"
@@ -189,6 +225,18 @@ if [ "$_PORTABLE_OFF_ASKED" = true ] && [ -n "$_UNSLOTH_ROOT" ]; then
         export UNSLOTH_STUDIO_HOME
         substep "converting the portable install at $_UNSLOTH_ROOT back to a normal one"
     fi
+    # Out of the ENVIRONMENT, not only out of the local. This root arrives exported (the
+    # generated bin/unsloth shim, share/studio.conf and the CLI all set it), and studio/setup.sh
+    # takes UNSLOTH_HOME ahead of a custom Studio root for all three native runtimes -- node,
+    # llama.cpp and whisper.cpp. Clearing only the private copy left setup.sh building them at
+    # <master>/*, while the NORMAL share/studio.conf this run writes, the CLI and the backend
+    # all resolve them under <studio-home>/*: a conversion that reported success and then came
+    # up with no llama-server and no managed Node, with the multi-gigabyte trees it had just
+    # updated orphaned at the old root. Note this leak did not need the branch above -- a shell
+    # carrying both UNSLOTH_HOME and UNSLOTH_STUDIO_HOME skips it, and that is the common case.
+    # unset, not blanked: there is nothing here for an empty value to mean, and the readers do
+    # not all treat one as absent.
+    unset UNSLOTH_HOME
     _UNSLOTH_ROOT=""
 fi
 [ -n "$_UNSLOTH_ROOT" ] && _PORTABLE_MODE=true
@@ -1224,6 +1272,15 @@ _export_portable_roots() {
     # _epr_default VAR VALUE
     _epr_default() {
         eval "_epr_cur=\${$1:-}"
+        # A value that already IS the default this would set is not a caller's choice, so it
+        # must not be reported as one. The uv-cache block further down seeds UV_CACHE_DIR
+        # itself before this function ever runs, and counting that as "kept" told a user who
+        # set nothing that their install was not contained. Re-exported rather than skipped:
+        # the seed may have been assigned in a context that did not export it.
+        if [ "$_epr_cur" = "$2" ]; then
+            eval "export $1"
+            return 0
+        fi
         case "$_epr_cur" in
             *[![:space:]]*) _epr_kept="$_epr_kept $1" ;;
             *) eval "export $1=\"\$2\"" ;;
@@ -1760,7 +1817,21 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 # an existing unwritable directory and -w reads the mode rather than the filesystem, so probe
 # with a real create.
 if [ -z "${UV_CACHE_DIR:-}" ]; then
-    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    # A portable install's uv cache is <root>/cache/uv, NOT <root>/studio/cache/uv. That is
+    # what _export_portable_roots defaults, what the generated bin/unsloth shim and
+    # share/studio.conf restate, and what storage_roots' portable cache defaults resolve.
+    # Seeding the Studio path here instead was wrong twice over, because this block runs
+    # BEFORE the _export_portable_roots call: a nested install filled <root>/studio/cache/uv
+    # and every later launch read the empty <root>/cache/uv, re-downloading the wheels it had
+    # just fetched into a duplicate tree; and _epr_default then read the installer's own seed
+    # back as a caller's explicit choice and told a user who had set nothing that their cache
+    # locations were being kept and might sit outside the root. Still co-located with the venv
+    # either way -- both paths are inside the same root.
+    if [ "${_PORTABLE_MODE:-false}" = true ]; then
+        UV_CACHE_DIR="$UNSLOTH_ROOT/cache/uv"
+    else
+        UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    fi
     export UV_CACHE_DIR
     # mktemp, not a $$ name: a predictable path in another account's directory can be
     # pre-created as a symlink for `: >` to follow and truncate as root.
@@ -4323,9 +4394,13 @@ mkdir -p "$STUDIO_HOME"
 # path carries an escaped quote: the exact-match test above already handles those, and
 # unescaping here in POSIX sh would be the only place in this file that parses one.
 _venv_guard_conf_names_venv() {
-    [ -f "$STUDIO_HOME/share/studio.conf" ] || return 1
+    # The in-root config by default. The pre-#5190 arm further down passes its own path
+    # instead: that config lives at the fixed ~/.local/share/unsloth and needs exactly the
+    # same canonicalized comparison, for exactly the same reason.
+    _vgc_conf="${1:-$STUDIO_HOME/share/studio.conf}"
+    [ -f "$_vgc_conf" ] || return 1
     _vgc_rec=$(sed -n "s/^UNSLOTH_EXE='\(.*\)'\$/\1/p" \
-        "$STUDIO_HOME/share/studio.conf" 2>/dev/null | head -n 1)
+        "$_vgc_conf" 2>/dev/null | head -n 1)
     [ -n "$_vgc_rec" ] || return 1
     case "$_vgc_rec" in
         *"'"*) return 1 ;;
@@ -4419,9 +4494,17 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
                 _venv_guard_legacy=$(CDPATH= cd -P -- "$_venv_guard_legacy" 2>/dev/null && pwd -P) \
                     || _venv_guard_legacy="$HOME/.unsloth/studio"
             fi
+            # Byte-exact first, then the same filesystem proof the in-root config gets three
+            # arms up. This arm exists FOR installs made before #5190, and those recorded
+            # UNSLOTH_EXE with the lexical "$HOME/..." spelling, while env-mode STUDIO_HOME is
+            # canonicalized -- so under a symlinked HOME (a managed or NFS home) the exact
+            # grep never matched, and since such a tree carries none of the newer ownership
+            # sentinels the installer refused its own valid environment outright. The equality
+            # above was already canonicalized on both sides; the record was not.
             if [ "$STUDIO_HOME" = "$_venv_guard_legacy" ] \
-                && grep -qxF "UNSLOTH_EXE='$_venv_guard_exe'" \
-                    "$HOME/.local/share/unsloth/studio.conf" 2>/dev/null; then
+                && { grep -qxF "UNSLOTH_EXE='$_venv_guard_exe'" \
+                        "$HOME/.local/share/unsloth/studio.conf" 2>/dev/null \
+                     || _venv_guard_conf_names_venv "$HOME/.local/share/unsloth/studio.conf"; }; then
                 _venv_guard_owned=true
             fi
         fi

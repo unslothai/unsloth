@@ -42,7 +42,8 @@ T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 SNIP="$T/snip.sh"
 printf '%s\n' 'substep() { :; }' "$blockA" \
-    'printf "PORTABLE=%s ROOT=%s STUDIO=%s\n" "$_PORTABLE_MODE" "$_UNSLOTH_ROOT" "${UNSLOTH_STUDIO_HOME:-}"' > "$SNIP"
+    'printf "PORTABLE=%s ROOT=%s STUDIO=%s\n" "$_PORTABLE_MODE" "$_UNSLOTH_ROOT" "${UNSLOTH_STUDIO_HOME:-}"' \
+    'printf "CHILDHOME=%s\n" "$(sh -c '"'"'printf %s "${UNSLOTH_HOME:-}"'"'"')"' > "$SNIP"
 
 parse() { # home [env assignments...] -- passed through env
     _h="$1"; shift
@@ -51,6 +52,7 @@ parse() { # home [env assignments...] -- passed through env
 mode() { printf '%s' "$1" | sed -n 's/^PORTABLE=\([^ ]*\).*/\1/p'; }
 root() { printf '%s' "$1" | sed -n 's/.* ROOT=\(.*\) STUDIO=.*/\1/p'; }
 studio_of() { printf '%s' "$1" | sed -n 's/.* STUDIO=//p'; }
+childhome() { printf '%s' "$1" | sed -n 's/^CHILDHOME=//p'; }
 
 # 1. A nested portable install at the default location, recorded by a previous run.
 H1="$T/h1"; mkdir -p "$H1/.unsloth/studio"
@@ -124,6 +126,63 @@ H7b="$T/h7b"; R7b="$T/escflat"
 mkdir -p "$H7b" "$R7b/unsloth_studio"
 check "a flat root converts in place" "$R7b" \
     "$(studio_of "$(parse "$H7b" UNSLOTH_HOME="$R7b" UNSLOTH_PORTABLE=0)")"
+
+# A flat root that merely HAS a `studio` directory beside its venv still converts itself. A
+# bare `[ -d <root>/studio ]` called that nested and aimed the conversion one level down -- the
+# parent-marker guard then recognised the real flat install and kept it portable, so the
+# documented way back did nothing while the run built a second environment at the wrong path
+# and still reported the conversion. Ownership decides, using the same four sentinels as
+# _resolve_studio_destinations and that guard, so all three agree on what "flat" means.
+# An empty or leftover <root>/studio is the reachable shape: install.sh's own nested branch
+# mkdir -p's it, so a nested run that was interrupted leaves one behind.
+H7c="$T/h7c"; R7c="$T/escflat-neighbour"
+mkdir -p "$H7c" "$R7c/unsloth_studio/bin" "$R7c/studio"
+: > "$R7c/unsloth_studio/.unsloth-studio-owned"
+check "a flat root with a leftover studio dir still converts itself" "$R7c" \
+    "$(studio_of "$(parse "$H7c" UNSLOTH_HOME="$R7c" UNSLOTH_PORTABLE=0)")"
+
+# But a root that is genuinely NESTED is excluded first, even when the parent also owns a venv:
+# that is the documented two-install shape (a flat parent with a separate normal install at
+# <parent>/studio), and the layout selector resolves it the same way.
+H7cc="$T/h7cc"; R7cc="$T/escflat-real-neighbour"
+mkdir -p "$H7cc" "$R7cc/unsloth_studio/bin" "$R7cc/studio/unsloth_studio"
+: > "$R7cc/unsloth_studio/.unsloth-studio-owned"
+check "a real nested install beside a flat parent still wins" "$R7cc/studio" \
+    "$(studio_of "$(parse "$H7cc" UNSLOTH_HOME="$R7cc" UNSLOTH_PORTABLE=0)")"
+
+# Each of the three sentinels that live outside the venv proves it on its own.
+for _s in conf shim link; do
+    _d="$T/escflat-$_s"; mkdir -p "$_d/unsloth_studio/bin" "$_d/studio" "$_d/share" "$_d/bin"
+    case "$_s" in
+        conf) printf "UNSLOTH_EXE='%s'\n" "$_d/unsloth_studio/bin/unsloth" > "$_d/share/studio.conf" ;;
+        shim) printf "exec '%s' \"\$@\"\n" "$_d/unsloth_studio/bin/unsloth" > "$_d/bin/unsloth" ;;
+        link) : > "$_d/unsloth_studio/bin/unsloth"; ln -s "$_d/unsloth_studio/bin/unsloth" "$_d/bin/unsloth" ;;
+    esac
+    check "the $_s sentinel alone proves the flat layout" "$_d" \
+        "$(studio_of "$(parse "$H7c" UNSLOTH_HOME="$_d" UNSLOTH_PORTABLE=0)")"
+done
+
+# The negative that keeps it honest: an UNOWNED unsloth_studio directory beside a real nested
+# install must not promote the root to flat. `unsloth_studio` is an ordinary directory name.
+H7d="$T/h7d"; R7d="$T/escnested"
+mkdir -p "$H7d" "$R7d/unsloth_studio" "$R7d/studio/unsloth_studio"
+check "an unowned venv directory does not flatten a nested root" "$R7d/studio" \
+    "$(studio_of "$(parse "$H7d" UNSLOTH_HOME="$R7d" UNSLOTH_PORTABLE=0)")"
+
+# The conversion also has to stop handing the OLD master root to studio/setup.sh. Clearing the
+# private copy left UNSLOTH_HOME exported, and setup.sh takes it ahead of a custom Studio root
+# for node, llama.cpp and whisper.cpp: the run updated those three at <master>/* while the
+# normal share/studio.conf it wrote resolves them under <studio-home>/*, so the conversion
+# reported success and came up with no llama-server and no managed Node.
+check "the conversion does not pass the old root to its children" "" \
+    "$(childhome "$(parse "$H7" UNSLOTH_HOME="$R7" UNSLOTH_PORTABLE=0)")"
+# Including from the shell a user actually converts in, which carries BOTH variables and so
+# skips the branch above entirely.
+check "and not when a studio home was inherited too" "" \
+    "$(childhome "$(parse "$H7" UNSLOTH_HOME="$R7" UNSLOTH_STUDIO_HOME="$R7/studio" UNSLOTH_PORTABLE=0)")"
+# A portable run must still export it, or the unset has leaked into the path that needs it.
+check "a portable run still hands the root down" "$R7" \
+    "$(childhome "$(parse "$H7" UNSLOTH_HOME="$R7")")"
 
 # An inherited root with no off value is still portable: this must not become a way to lose it.
 check "an inherited root alone is still portable" "true" \

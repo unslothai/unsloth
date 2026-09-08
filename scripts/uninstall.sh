@@ -346,7 +346,17 @@ _remove_root_recording_db() {
     # after removing it. Flat test first, matching storage_roots.studio_root().
     if [ ! -f "$_rrd_db" ] && [ ! -d "$_rrd_real/unsloth_studio" ] \
         && [ -f "$_rrd_real/studio/studio.db" ]; then
-        _rrd_db="$_rrd_real/studio/studio.db"
+        # Resolved, not lexical, for the same reason the master root above is. The relocated
+        # layout this function already documents can put the link one level in as well:
+        # <master>/studio a symlink to another volume. `-f` reads the database through it, but
+        # `rm -rf "$_rrd_root"` unlinks only the link, and the lexical path then reads as
+        # absent -- setting the db-removed marker and telling the user their chat history is
+        # gone while studio.db is untouched on the other disk. Chasing the link is only for
+        # the report; the removal below still never follows it.
+        # shellcheck disable=SC1007
+        _rrd_studio=$(CDPATH= cd -P -- "$_rrd_real/studio" 2>/dev/null && pwd -P) || _rrd_studio=""
+        [ -n "$_rrd_studio" ] || _rrd_studio="$_rrd_real/studio"
+        _rrd_db="$_rrd_studio/studio.db"
     fi
     if [ -f "$_rrd_db" ]; then
         _rrd_had_db=1
@@ -539,6 +549,20 @@ _custom_studio_roots() {
     fi
     # Default-mode conf.
     _from_conf "$HOME/.local/share/unsloth/studio.conf"
+    # The default PORTABLE root, which neither conf above can name. `--portable` without
+    # `--root` selects $HOME/.unsloth and puts DATA_DIR at <root>/share, so nothing is ever
+    # written to $HOME/.local/share/unsloth and a fresh shell carries no UNSLOTH_HOME: the
+    # advertised no-argument uninstall enumerated nothing, removed only studio/ and the native
+    # runtimes by name, and reported success while bin/, share/ and the multi-gigabyte cache/
+    # stayed on disk -- along with the .unsloth-portable-root that makes a later plain
+    # `curl | sh` silently reinstall portable into a root the user believes is gone.
+    # Marker files only, never a bare directory, and the same two install.sh adopts a flagless
+    # update from, so the two agree about what is still installed here.
+    if [ -f "$HOME/.unsloth/.unsloth-portable-root" ] \
+        || [ -f "$HOME/.unsloth/studio/.unsloth-master-root" ]; then
+        _emit "$HOME/.unsloth"
+        _from_conf "$HOME/.unsloth/share/studio.conf"
+    fi
 }
 
 # Remove $HOME/.local/bin/unsloth only if it's an Unsloth-managed symlink.
@@ -697,7 +721,24 @@ _unsloth_uninstall_main() {
             # in the closing chat-history notice the same way every other root is.
             if [ -f "$_custom_root/unsloth_studio/.unsloth-studio-owned" ]; then
                 _remove_root_recording_db "$_custom_root/unsloth_studio"
-                _remove_path "$_custom_root/studio.db"
+                # ...except that a FLAT root's database is not inside the venv. storage_roots
+                # makes the root itself the Studio root here, so studio.db sits BESIDE the venv
+                # at <root>/studio.db, and the call above -- handed the venv -- probed
+                # <root>/unsloth_studio/studio.db and found nothing. The plain _remove_path that
+                # used to follow then deleted the real database while recording nothing, so a
+                # run that had just destroyed the chat history closed with "No studio.db was
+                # found" and sent the user looking for it elsewhere. Same before/after pair the
+                # helper uses, so a failed removal still reports as a failure rather than a loss.
+                _custom_flat_db="$_custom_root/studio.db"
+                if [ -f "$_custom_flat_db" ]; then _custom_had_db=1; else _custom_had_db=0; fi
+                _remove_path "$_custom_flat_db"
+                if [ "$_custom_had_db" = 1 ]; then
+                    if [ -f "$_custom_flat_db" ]; then
+                        _set_marker "$_REMOVE_FAILED_FLAG"
+                    else
+                        _set_marker "$_DB_REMOVED_FLAG"
+                    fi
+                fi
             fi
             # Portable-only children; the shared ones belong to the default block.
             _remove_path "$_custom_root/bin"

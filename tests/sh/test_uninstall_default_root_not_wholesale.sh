@@ -77,10 +77,18 @@ mkdir -p "$H4/.unsloth/unsloth_studio/bin" "$H4/.unsloth/share" "$H4/.unsloth/ca
 printf '%s\n' "$H4/.unsloth" > "$H4/.unsloth/.unsloth-portable-root"
 printf "UNSLOTH_EXE='%s'\n" "$H4/.unsloth/unsloth_studio/bin/unsloth" > "$H4/.unsloth/share/studio.conf"
 printf 'notes\n' > "$H4/.unsloth/my-notes.txt"
-env -i HOME="$H4" PATH="$PATH" UNSLOTH_HOME="$H4/.unsloth" sh "$UNINSTALL" >/dev/null 2>&1 || true
+out4="$(env -i HOME="$H4" PATH="$PATH" UNSLOTH_HOME="$H4/.unsloth" sh "$UNINSTALL" 2>/dev/null || true)"
 check "a flat install's owned venv is removed"  gone    "$(state "$H4/.unsloth/unsloth_studio")"
 check "and its database goes with it"           gone    "$(state "$H4/.unsloth/studio.db")"
 check "while the user's own file still stays"   present "$(state "$H4/.unsloth/my-notes.txt")"
+# ...and the run has to SAY it took the chat history. A flat root's studio.db sits beside the
+# venv, not inside it, so the recording helper -- which is handed the venv -- probed the wrong
+# path and found nothing; the database was then deleted by a plain removal that records
+# nothing, and the run closed by telling the user no studio.db was found and that their
+# history must be somewhere else. Deleting the data and denying it is worse than either alone.
+says() { case "$out4" in *"$1"*) printf yes ;; *) printf no ;; esac; }
+check "the flat database is reported as removed"     yes "$(says 'studio.db it found')"
+check "and not reported as never having been found"  no  "$(says 'No studio.db was found')"
 
 # The owner marker is what licences that removal. Without it the directory is the user's.
 H5="$T/home5"
@@ -89,6 +97,51 @@ printf 'mine\n' > "$H5/.unsloth/unsloth_studio/mine.txt"
 printf '%s\n' "$H5/.unsloth" > "$H5/.unsloth/.unsloth-portable-root"
 env -i HOME="$H5" PATH="$PATH" UNSLOTH_HOME="$H5/.unsloth" sh "$UNINSTALL" >/dev/null 2>&1 || true
 check "an unowned unsloth_studio dir is left alone" present "$(state "$H5/.unsloth/unsloth_studio/mine.txt")"
+
+# The advertised no-argument uninstall, from a fresh shell, on the default portable root.
+# `--portable` without `--root` selects $HOME/.unsloth and puts DATA_DIR at <root>/share, so
+# nothing is ever written to $HOME/.local/share/unsloth and a fresh shell carries no
+# UNSLOTH_HOME: the enumerator emitted nothing at all, the default block removed studio/ by
+# name, and bin/, share/ and the multi-gigabyte cache/ stayed on disk under a closing
+# "Unsloth Studio uninstalled." The surviving .unsloth-portable-root is also what a later
+# plain `curl | sh` adopts, so the root the user believed was gone quietly came back portable.
+# NO root variables here on purpose -- passing one is what hid this.
+H6="$T/home6"
+mkdir -p "$H6/.unsloth/studio/unsloth_studio/bin" "$H6/.unsloth/share" "$H6/.unsloth/cache/uv" \
+         "$H6/.unsloth/bin" "$H6/.unsloth/personal" "$H6/.local/bin" "$H6/.local/share"
+: > "$H6/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
+: > "$H6/.unsloth/studio/studio.db"
+printf 'wheel bytes\n' > "$H6/.unsloth/cache/uv/big.bin"
+printf '%s\n' "$H6/.unsloth" > "$H6/.unsloth/.unsloth-portable-root"
+printf "UNSLOTH_EXE='%s'\n" "$H6/.unsloth/studio/unsloth_studio/bin/unsloth" \
+    > "$H6/.unsloth/share/studio.conf"
+printf 'my notes\n' > "$H6/.unsloth/personal/keep.txt"
+env -i HOME="$H6" PATH="$PATH" sh "$UNINSTALL" >/dev/null 2>&1 || true
+check "flagless: the Studio root is removed"          gone    "$(state "$H6/.unsloth/studio")"
+check "flagless: the cache is removed"                gone    "$(state "$H6/.unsloth/cache")"
+check "flagless: bin/ is removed"                     gone    "$(state "$H6/.unsloth/bin")"
+check "flagless: share/ is removed"                   gone    "$(state "$H6/.unsloth/share")"
+check "flagless: the portable marker is removed"      gone    "$(state "$H6/.unsloth/.unsloth-portable-root")"
+check "flagless: the user's own file survives"        present "$(state "$H6/.unsloth/personal/keep.txt")"
+
+# Same run, nothing of the user's: the root itself should go.
+H7="$T/home7"
+mkdir -p "$H7/.unsloth/studio/unsloth_studio/bin" "$H7/.unsloth/share" "$H7/.unsloth/cache" \
+         "$H7/.unsloth/bin" "$H7/.local/bin" "$H7/.local/share"
+: > "$H7/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
+printf '%s\n' "$H7/.unsloth" > "$H7/.unsloth/.unsloth-portable-root"
+printf "UNSLOTH_EXE='%s'\n" "$H7/.unsloth/studio/unsloth_studio/bin/unsloth" \
+    > "$H7/.unsloth/share/studio.conf"
+env -i HOME="$H7" PATH="$PATH" sh "$UNINSTALL" >/dev/null 2>&1 || true
+check "flagless: an Unsloth-only default root goes entirely" gone "$(state "$H7/.unsloth")"
+
+# A plain ~/.unsloth with no portable marker must NOT be adopted by the new discovery: it is a
+# normal install, and the default block owns it.
+H8="$T/home8"
+mkdir -p "$H8/.unsloth/personal" "$H8/.local/bin" "$H8/.local/share"
+printf 'mine\n' > "$H8/.unsloth/personal/keep.txt"
+env -i HOME="$H8" PATH="$PATH" sh "$UNINSTALL" >/dev/null 2>&1 || true
+check "flagless: an unmarked ~/.unsloth is left alone" present "$(state "$H8/.unsloth/personal/keep.txt")"
 
 # A root the user named keeps the old, promised behaviour: it goes in one piece.
 H3="$T/home3"; R3="$T/dedicated"

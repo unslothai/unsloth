@@ -539,6 +539,31 @@ for needle in '--portable' '--root' 'UNSLOTH_PORTABLE=1' 'UNSLOTH_HOME=/abs/path
         printf '  FAIL  %s\n' "README documents $needle"; fails=$((fails+1))
     fi
 done
+# A root the user NAMED leaves no breadcrumb outside itself -- that is the whole promise -- so
+# the flagless updater cannot find it and installs a second, normal Studio under $HOME instead,
+# re-downloading the environment and the model cache. The README used to promise the flagless
+# update for every portable install, without that qualification.
+if grep -qF -e 'UNSLOTH_HOME=DIR sh' "$README"; then
+    printf '  PASS  %s\n' "README gives the custom-root update command"
+else
+    printf '  FAIL  %s\n' "README gives the custom-root update command"; fails=$((fails+1))
+fi
+if grep -qF -e 'Updating it needs no flags' "$README"; then
+    printf '  FAIL  %s\n' "README still promises a flagless update for every portable install"
+    fails=$((fails+1))
+else
+    printf '  PASS  %s\n' "README no longer promises a flagless update for every portable install"
+fi
+# ...and the code is pinned to the same fact, so the two cannot drift apart: a fresh shell with
+# a portable install at a custom root gets a NORMAL install under $HOME.
+H="$(new_home)"
+CUSTOM="$T/named-root"
+mkdir -p "$CUSTOM/studio/unsloth_studio"
+printf '%s\n' "$CUSTOM" > "$CUSTOM/.unsloth-portable-root"
+printf '%s\n' "$CUSTOM" > "$CUSTOM/studio/.unsloth-master-root"
+out="$(resolve "$H")"
+check "a flagless run does not discover a named root" "" "$(field "$out" 1)"
+check "and installs a normal Studio under HOME instead" "$H/.unsloth/studio" "$(field "$out" 2)"
 
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed"; exit 1; fi
 echo "All checks passed"

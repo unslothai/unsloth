@@ -999,36 +999,6 @@ STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
 RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
 VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
 
-# Same uv cache install.sh chose, for the same reasons -- kept byte-identical to the
-# block there, including the write probe and the unwind on failure.
-#
-# This script is also the standalone entry point: `unsloth studio update` runs it
-# directly, without install.sh, so an export made only there covers the first install and
-# nothing after it. A redirected STUDIO_HOME would then download a SECOND cache to
-# $HOME/.cache/uv on the very first update and copy every wheel across the filesystem
-# boundary, which is exactly the disk cost the co-location exists to avoid -- deferred by
-# one run rather than fixed. Pointing at the same path also means the update reuses the
-# cache the install filled instead of refetching it.
-#
-# STUDIO_HOME, not RUNTIME_ROOT: the cache has to be the one install.sh created, and the
-# two agree whenever UNSLOTH_STUDIO_STAGE_ROOT is unset, which is every non-staged run.
-if [ -z "${UV_CACHE_DIR:-}" ]; then
-    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
-    export UV_CACHE_DIR
-    # mktemp, not a $$-derived name: this branch exists for a cache directory another
-    # account can write, and there a predictable path can be pre-created as a symlink,
-    # which `: >` would follow and truncate -- as root, any file on the box. mktemp
-    # creates O_EXCL with an unpredictable suffix, so it cannot follow one, and failing
-    # to create IS the writability answer this probe wanted.
-    _uv_cache_probe=""
-    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
-       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
-        echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
-        unset UV_CACHE_DIR
-    fi
-    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
-    unset _uv_cache_probe
-fi
 VENV_T5_530_DIR="$RUNTIME_ROOT/.venv_t5_530"
 VENV_T5_550_DIR="$RUNTIME_ROOT/.venv_t5_550"
 VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"
@@ -1179,6 +1149,71 @@ if [ -z "$UNSLOTH_HOME" ] && [ -f "$STUDIO_HOME/.unsloth-master-root" ]; then
         /*) [ -d "$_srr_record" ] && UNSLOTH_HOME=$(_setup_abs_path "$_srr_record") ;;
     esac
     unset _srr_record
+fi
+
+# Same uv cache install.sh chose, for the same reasons -- kept byte-identical to the
+# block there, including the write probe and the unwind on failure.
+#
+# This script is also the standalone entry point: `unsloth studio update` runs it
+# directly, without install.sh, so an export made only there covers the first install and
+# nothing after it. A redirected STUDIO_HOME would then download a SECOND cache to
+# $HOME/.cache/uv on the very first update and copy every wheel across the filesystem
+# boundary, which is exactly the disk cost the co-location exists to avoid -- deferred by
+# one run rather than fixed. Pointing at the same path also means the update reuses the
+# cache the install filled instead of refetching it.
+#
+# STUDIO_HOME, not RUNTIME_ROOT: the cache has to be the one install.sh created, and the
+# two agree whenever UNSLOTH_STUDIO_STAGE_ROOT is unset, which is every non-staged run.
+#
+# Placed AFTER the master-root recovery above, and reading UNSLOTH_HOME first, because a
+# portable install's uv cache is <master>/cache/uv rather than <studio>/cache/uv: that is
+# what install.sh's _export_portable_roots defaults, what the generated bin/unsloth shim and
+# share/studio.conf restate, and what storage_roots resolves. Selecting it before the root was
+# recovered pointed a bare `bash studio/setup.sh` on a NESTED portable install at a second,
+# empty cache one level down, so the update re-downloaded every Torch and CUDA wheel that
+# <master>/cache/uv already held. A plain install has no UNSLOTH_HOME here and is unchanged.
+if [ -z "${UV_CACHE_DIR:-}" ]; then
+    UV_CACHE_DIR="${UNSLOTH_HOME:-$STUDIO_HOME}/cache/uv"
+    export UV_CACHE_DIR
+    # mktemp, not a $$-derived name: this branch exists for a cache directory another
+    # account can write, and there a predictable path can be pre-created as a symlink,
+    # which `: >` would follow and truncate -- as root, any file on the box. mktemp
+    # creates O_EXCL with an unpredictable suffix, so it cannot follow one, and failing
+    # to create IS the writability answer this probe wanted.
+    _uv_cache_probe=""
+    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
+       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+        echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
+        unset UV_CACHE_DIR
+    fi
+    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
+    unset _uv_cache_probe
+fi
+
+# The rest of the portable environment a bare `bash studio/setup.sh` did not inherit. Every
+# other entry point restores all of it -- install.sh's _export_portable_roots, the
+# share/studio.conf it writes, the generated bin/unsloth shim and the CLI's
+# _portable_root_env -- and this script, which is the standalone entry point the recovery
+# above exists to serve, restored only the bun cache. Defaulted, never forced, exactly as
+# those four treat them: a caller who named one of these meant it, and blank counts as unset.
+if [ -n "${UNSLOTH_HOME:-}" ]; then
+    # uv reinstalls itself here whenever `command -v uv` misses, which on a portable install
+    # is every run: uv lives at <root>/bin and nothing ever put that on PATH. Without these,
+    # astral's cascade (UV_INSTALL_DIR, UV_UNMANAGED_INSTALL, XDG_BIN_HOME) ends at
+    # $HOME/.local/bin and _setup_persist_uv_path then appends a PATH line to ~/.profile,
+    # ~/.bashrc, ~/.zshrc and ~/.config/fish/conf.d/unsloth.fish -- a binary and a permanent
+    # shell edit outside the root, both surviving the `rm -rf <root>` a portable install
+    # advertises. UV_NO_MODIFY_PATH is not a location but that promise itself.
+    [ -n "$(_setup_trim_ws "${UV_INSTALL_DIR:-}")" ] || export UV_INSTALL_DIR="$UNSLOTH_HOME/bin"
+    [ -n "$(_setup_trim_ws "${UV_NO_MODIFY_PATH:-}")" ] || export UV_NO_MODIFY_PATH=1
+    # npm's cache is a setting bun does not read, and npm runs on paths bun never covers:
+    # `npm install -g bun` runs BEFORE bun exists on the managed-Node path, the frontend
+    # `npm install` is the fallback whenever bun is absent or its install fails, and the
+    # oxc-validator `npm install` sits outside the frontend guard entirely. npm's POSIX
+    # default is $HOME/.npm, so a standalone portable update left its package downloads
+    # outside the root. Pinned here rather than beside the bun cache further down so it is
+    # already set for all three of those call sites.
+    [ -n "$(_setup_trim_ws "${NPM_CONFIG_CACHE:-}")" ] || export NPM_CONFIG_CACHE="$UNSLOTH_HOME/cache/npm"
 fi
 _STUDIO_ROOT_IS_MASTER_ROOT=false
 if [ -n "$UNSLOTH_HOME" ]; then
