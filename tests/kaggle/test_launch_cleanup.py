@@ -40,6 +40,7 @@ def _shared_setup_1(proc, tmp_path):
         if proc.poll() is None:
             proc.kill()
 
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_DIR = REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci"
 sys.path.insert(0, str(CI_DIR))

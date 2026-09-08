@@ -44,6 +44,7 @@ def _shared_setup_1(bin_dir, manifest_digest_step, tmp_path):
     )
     return out, res
 
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 

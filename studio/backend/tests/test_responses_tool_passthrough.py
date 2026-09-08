@@ -81,6 +81,7 @@ def _shared_setup_6():
     tool = TestResponsesStreamHealing._TOOL
     return api_monitor, tool, xml
 
+
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
@@ -2021,7 +2022,12 @@ class TestResponsesStreamAdapter:
             chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
         return chunks
 
-    def _stream_lines(self, payload, messages, monitor_id = None):
+    def _stream_lines(
+        self,
+        payload,
+        messages,
+        monitor_id = None,
+    ):
         """Drive _responses_stream to completion and return the SSE lines it wrote."""
 
         async def run():
@@ -3027,28 +3033,75 @@ class TestReasoningPrefilledExtractor:
         "text, parse_think_markers, reasoning_prefilled, expected, expected_visible",
         [
             # T1: reasoning...</think>answer with a prefilled (unseen) open tag.
-            pytest.param("plan</think>answer", True, True, "plan", "answer", id = "prefilled_single_feed_splits_lone_close"),
+            pytest.param(
+                "plan</think>answer",
+                True,
+                True,
+                "plan",
+                "answer",
+                id = "prefilled_single_feed_splits_lone_close",
+            ),
             # T2: truncated mid-thought (no </think>) -> all reasoning (GGUF parity).
-            pytest.param("still thinking with no close", True, True, "still thinking with no close", "", id = "prefilled_never_closed_is_all_reasoning"),
+            pytest.param(
+                "still thinking with no close",
+                True,
+                True,
+                "still thinking with no close",
+                "",
+                id = "prefilled_never_closed_is_all_reasoning",
+            ),
             # T5: nothing generated.
             pytest.param("", True, True, "", "", id = "prefilled_empty_generation"),
             # T6: Qwen commonly emits </think>\n\n before the answer.
-            pytest.param("plan</think>\n\nanswer", True, True, "plan", "\n\nanswer", id = "prefilled_whitespace_after_close_is_visible"),
+            pytest.param(
+                "plan</think>\n\nanswer",
+                True,
+                True,
+                "plan",
+                "\n\nanswer",
+                id = "prefilled_whitespace_after_close_is_visible",
+            ),
             # T8: model closed immediately (empty reasoning) then answered.
-            pytest.param("</think>hi", True, True, "", "hi", id = "prefilled_close_at_start_empty_reasoning"),
+            pytest.param(
+                "</think>hi", True, True, "", "hi", id = "prefilled_close_at_start_empty_reasoning"
+            ),
             # T9: without prefilled, a lone close tag keeps the pre-fix behavior (parity guard).
-            pytest.param("reasoning</think>ans", True, False, "", "reasoningans", id = "not_prefilled_lone_close_preserves_current_behavior"),
+            pytest.param(
+                "reasoning</think>ans",
+                True,
+                False,
+                "",
+                "reasoningans",
+                id = "not_prefilled_lone_close_preserves_current_behavior",
+            ),
             # T10: normal explicit <think>..</think> (GGUF / Harmony) unchanged.
-            pytest.param("<think>r</think>v", True, False, "r", "v", id = "not_prefilled_full_pair_still_splits"),
+            pytest.param(
+                "<think>r</think>v",
+                True,
+                False,
+                "r",
+                "v",
+                id = "not_prefilled_full_pair_still_splits",
+            ),
             # T11: a non-reasoning model passes text through even with reasoning_prefilled False.
-            pytest.param("just an answer", False, False, "", "just an answer", id = "prefilled_ignored_when_markers_not_parsed"),
+            pytest.param(
+                "just an answer",
+                False,
+                False,
+                "",
+                "just an answer",
+                id = "prefilled_ignored_when_markers_not_parsed",
+            ),
         ],
     )
-    def test_reasoning_prefilled_extractor_cases(self, text, parse_think_markers, reasoning_prefilled, expected, expected_visible):
-        reasoning, visible = _extract_responses_reasoning(text, parse_think_markers = parse_think_markers, reasoning_prefilled = reasoning_prefilled)
+    def test_reasoning_prefilled_extractor_cases(
+        self, text, parse_think_markers, reasoning_prefilled, expected, expected_visible
+    ):
+        reasoning, visible = _extract_responses_reasoning(
+            text, parse_think_markers = parse_think_markers, reasoning_prefilled = reasoning_prefilled
+        )
         assert reasoning == expected
         assert visible == expected_visible
-
 
     def test_prefilled_close_split_across_feeds(self):
         # T3: </think> straddles two feed() calls; holdback resolves it.
@@ -3070,7 +3123,6 @@ class TestReasoningPrefilledExtractor:
         fr, fv = ex.finish()
         assert (reasoning + fr) == "plan"
         assert (visible + fv) == "x"
-
 
     def test_prefilled_stray_open_tag_is_suppressed(self):
         # T7: a re-emitted literal <think> inside prefilled reasoning is dropped,

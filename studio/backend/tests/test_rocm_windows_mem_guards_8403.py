@@ -46,6 +46,7 @@ def _shared_setup_1(monkeypatch):
         _fake_torch(24 * GiB, free_bytes = 24 * GiB, reserved_bytes = 20 * GiB),
     )
 
+
 MiB = 1024**2
 GiB = 1024**3
 

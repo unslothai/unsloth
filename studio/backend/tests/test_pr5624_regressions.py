@@ -308,26 +308,35 @@ def test_deepseek_v3_1_truncated_after_end_marker_still_yields_call():
 @pytest.mark.parametrize(
     "text",
     [
-        pytest.param("before "
+        pytest.param(
+            "before "
             "<｜tool▁calls▁begin｜>"
             "<｜tool▁call▁begin｜>get_time"
             '<｜tool▁sep｜>{"city":"Tokyo"}'
             "<｜tool▁call▁end｜>"
             "<｜tool▁calls▁end｜>"
-            " after", id = "routes_layer_strip_removes_deepseek_envelope"),
-        pytest.param("before "
+            " after",
+            id = "routes_layer_strip_removes_deepseek_envelope",
+        ),
+        pytest.param(
+            "before "
             "<|tool_calls_section_begin|>"
             "<|tool_call_begin|>functions.web_search:0"
             '<|tool_call_argument_begin|>{"q":"x"}'
             "<|tool_call_end|>"
             "<|tool_calls_section_end|>"
-            " after", id = "routes_layer_strip_removes_kimi_section"),
+            " after",
+            id = "routes_layer_strip_removes_kimi_section",
+        ),
         # ``<tool_call>.*?</tool_call>`` covers GLM via the Qwen pattern.
-        pytest.param("before "
+        pytest.param(
+            "before "
             "<tool_call>web_search\n"
             "<arg_key>q</arg_key>\n<arg_value>x</arg_value>\n"
             "</tool_call>"
-            " after", id = "routes_layer_strip_removes_glm_block"),
+            " after",
+            id = "routes_layer_strip_removes_glm_block",
+        ),
     ],
 )
 def test_routes_layer_strip_removes_tool_envelopes(text):

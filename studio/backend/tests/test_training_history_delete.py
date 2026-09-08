@@ -58,6 +58,7 @@ def _shared_setup_4(tmp_path):
     (run_dir / "adapter_model.safetensors").write_bytes(b"x")
     return outputs, run_dir
 
+
 _BACKEND = Path(__file__).resolve().parents[1]
 
 
@@ -468,7 +469,6 @@ def test_delete_without_flag_leaves_artifacts(monkeypatch, tmp_path):
 
 def test_delete_rejects_running_run(monkeypatch):
     from fastapi import HTTPException
-
     monkeypatch.setattr(training_history, "get_run", lambda run_id: _run_row(status = "running"))
 
     exc_info = _shared_setup_1(HTTPException)

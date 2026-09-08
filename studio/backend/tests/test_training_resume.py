@@ -413,6 +413,7 @@ def test_stop_save_checkpoint_failure_keeps_error_status(monkeypatch, tmp_path):
     # A stop-and-save whose checkpoint write failed must finalize as an error so
     # history explains the missing resume state (keep_error_status flag).
     from core.training.training import TrainingBackend
+
     studio_db = _shared_setup_2(monkeypatch, tmp_path)
 
     studio_db.create_run(
@@ -450,6 +451,7 @@ def test_stop_save_checkpoint_failure_with_stale_checkpoint_is_not_resumable(mon
     # A failed stop-and-save must not offer Resume from an older periodic checkpoint;
     # that would roll back past the recorded final step.
     from core.training.training import TrainingBackend
+
     studio_db = _shared_setup_2(monkeypatch, tmp_path)
 
     out = tmp_path / "outputs" / "run_x"
@@ -487,6 +489,7 @@ def test_stop_save_checkpoint_failure_with_stale_checkpoint_is_not_resumable(mon
 
 def test_user_stop_error_without_checkpoint_ack_is_blocked(monkeypatch, tmp_path):
     from core.training.training import TrainingBackend
+
     studio_db = _shared_setup_2(monkeypatch, tmp_path)
 
     studio_db.create_run(

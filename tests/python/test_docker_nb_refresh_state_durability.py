@@ -33,6 +33,7 @@ def _shared_setup_1(tmp_path):
     _run(tpl, dest, up, refresh = True)
     return dest, tpl, up
 
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SYNC = REPO_ROOT / "docker" / "unsloth_sync_notebooks.sh"
 

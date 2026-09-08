@@ -271,10 +271,25 @@ def test_snapshot_options_offer_nothing_when_the_splits_disagree_on_a_format(tmp
     "train_text, sibling_name, sibling_text",
     [
         # tsv carries a tab separator, so datasets sees two different builders.
-        pytest.param("text\nrow\n", "test.tsv", "text\trow\n", id = "snapshot_options_treat_tsv_as_its_own_builder"),
-        pytest.param("", "train2.csv", "text\nrow\n", id = "snapshot_options_reject_a_csv_split_holding_one_empty_file"),
+        pytest.param(
+            "text\nrow\n",
+            "test.tsv",
+            "text\trow\n",
+            id = "snapshot_options_treat_tsv_as_its_own_builder",
+        ),
+        pytest.param(
+            "",
+            "train2.csv",
+            "text\nrow\n",
+            id = "snapshot_options_reject_a_csv_split_holding_one_empty_file",
+        ),
         # datasets prepares both splits, so the empty test file fails train as well.
-        pytest.param("text\nrow\n", "test.csv", "", id = "snapshot_options_reject_every_split_when_a_sibling_is_empty"),
+        pytest.param(
+            "text\nrow\n",
+            "test.csv",
+            "",
+            id = "snapshot_options_reject_every_split_when_a_sibling_is_empty",
+        ),
     ],
 )
 def test_snapshot_options_rejects_unusable_splits(tmp_path, train_text, sibling_name, sibling_text):
@@ -288,10 +303,20 @@ def test_snapshot_options_rejects_unusable_splits(tmp_path, train_text, sibling_
     "filename, contents",
     [
         # FILES_TO_IGNORE drops these by basename, so the cache holds no data at all.
-        pytest.param("dataset_infos.json", "{}", id = "snapshot_options_ignore_the_metadata_filenames_the_loader_drops"),
-        pytest.param("README.md", "# Alpaca\n", id = "snapshot_options_stay_empty_for_a_readme_only_cache"),
-        pytest.param("train.jsonl", "", id = "snapshot_options_reject_a_split_whose_only_file_is_empty"),
-        pytest.param("train.csv", "text\n", id = "snapshot_options_offer_nothing_when_every_csv_is_header_only"),
+        pytest.param(
+            "dataset_infos.json",
+            "{}",
+            id = "snapshot_options_ignore_the_metadata_filenames_the_loader_drops",
+        ),
+        pytest.param(
+            "README.md", "# Alpaca\n", id = "snapshot_options_stay_empty_for_a_readme_only_cache"
+        ),
+        pytest.param(
+            "train.jsonl", "", id = "snapshot_options_reject_a_split_whose_only_file_is_empty"
+        ),
+        pytest.param(
+            "train.csv", "text\n", id = "snapshot_options_offer_nothing_when_every_csv_is_header_only"
+        ),
     ],
 )
 def test_snapshot_options_stay_empty_for_a_dataless_cache(tmp_path, filename, contents):
@@ -411,18 +436,50 @@ def test_snapshot_options_leave_a_declared_card_to_its_own_configs(tmp_path):
 @pytest.mark.parametrize(
     "card_name, card_text, data_file",
     [
-        pytest.param(".huggingface.yaml", "configs:\n- config_name: foo\n", "records.jsonl", id = "snapshot_options_leave_a_standalone_yaml_card_alone"),
+        pytest.param(
+            ".huggingface.yaml",
+            "configs:\n- config_name: foo\n",
+            "records.jsonl",
+            id = "snapshot_options_leave_a_standalone_yaml_card_alone",
+        ),
         # DatasetCard.load raises on it, so nothing in the snapshot is loadable.
-        pytest.param("README.md", "---\nconfigs: [\n---\n", "train.jsonl", id = "snapshot_options_offer_nothing_for_a_card_the_loader_cannot_parse"),
-        pytest.param(".huggingface.yaml", "configs: [\n", "train.jsonl", id = "snapshot_options_stand_down_beside_an_unreadable_standalone_yaml"),
+        pytest.param(
+            "README.md",
+            "---\nconfigs: [\n---\n",
+            "train.jsonl",
+            id = "snapshot_options_offer_nothing_for_a_card_the_loader_cannot_parse",
+        ),
+        pytest.param(
+            ".huggingface.yaml",
+            "configs: [\n",
+            "train.jsonl",
+            id = "snapshot_options_stand_down_beside_an_unreadable_standalone_yaml",
+        ),
         # datasets json.loads it while resolving configs and raises before any split exists.
-        pytest.param("dataset_infos.json", "{not json", "train.jsonl", id = "snapshot_options_stand_down_beside_unparsable_legacy_metadata"),
+        pytest.param(
+            "dataset_infos.json",
+            "{not json",
+            "train.jsonl",
+            id = "snapshot_options_stand_down_beside_unparsable_legacy_metadata",
+        ),
         # DatasetCardData updates a dict from it and raises on a scalar.
-        pytest.param(".huggingface.yaml", "hello\n", "train.jsonl", id = "snapshot_options_stand_down_beside_a_non_mapping_standalone_yaml"),
-        pytest.param("dataset_infos.json", "", "train.jsonl", id = "snapshot_options_stand_down_beside_an_empty_legacy_metadata_file"),
+        pytest.param(
+            ".huggingface.yaml",
+            "hello\n",
+            "train.jsonl",
+            id = "snapshot_options_stand_down_beside_a_non_mapping_standalone_yaml",
+        ),
+        pytest.param(
+            "dataset_infos.json",
+            "",
+            "train.jsonl",
+            id = "snapshot_options_stand_down_beside_an_empty_legacy_metadata_file",
+        ),
     ],
 )
-def test_snapshot_options_stand_down_when_the_card_cannot_be_read(tmp_path, card_name, card_text, data_file):
+def test_snapshot_options_stand_down_when_the_card_cannot_be_read(
+    tmp_path, card_name, card_text, data_file
+):
     snapshot = _snapshot(tmp_path)
     (snapshot / card_name).write_text(card_text, encoding = "utf-8")
     _rows(snapshot, data_file)
@@ -432,19 +489,48 @@ def test_snapshot_options_stand_down_when_the_card_cannot_be_read(tmp_path, card
 @pytest.mark.parametrize(
     "card_name, card_text, data_file",
     [
-        pytest.param("README.md", "# Just prose\n", "records.jsonl", id = "snapshot_options_still_infer_beside_a_plain_readme"),
+        pytest.param(
+            "README.md",
+            "# Just prose\n",
+            "records.jsonl",
+            id = "snapshot_options_still_infer_beside_a_plain_readme",
+        ),
         # The json builder skips an empty file as long as another still holds rows.
-        pytest.param("train.jsonl", "", "train2.jsonl", id = "snapshot_options_keep_a_json_split_holding_one_empty_file"),
+        pytest.param(
+            "train.jsonl",
+            "",
+            "train2.jsonl",
+            id = "snapshot_options_keep_a_json_split_holding_one_empty_file",
+        ),
         # The loader finds no config there either, so it resolves the files by pattern.
-        pytest.param(".huggingface.yaml", "viewer: false\n", "train.jsonl", id = "snapshot_options_infer_beside_a_standalone_yaml_declaring_nothing"),
+        pytest.param(
+            ".huggingface.yaml",
+            "viewer: false\n",
+            "train.jsonl",
+            id = "snapshot_options_infer_beside_a_standalone_yaml_declaring_nothing",
+        ),
         # 4.3.0 builds no config from dataset_info declared there, so it infers the files.
-        pytest.param(".huggingface.yaml", "dataset_info:\n  features:\n  - name: text\n    dtype: string\n", "train.jsonl", id = "snapshot_options_infer_beside_standalone_yaml_dataset_info"),
+        pytest.param(
+            ".huggingface.yaml",
+            "dataset_info:\n  features:\n  - name: text\n    dtype: string\n",
+            "train.jsonl",
+            id = "snapshot_options_infer_beside_standalone_yaml_dataset_info",
+        ),
         # A card with no bytes declares nothing, so it blocks nothing.
-        pytest.param("README.md", "", "train.jsonl", id = "snapshot_options_infer_beside_an_empty_readme"),
-        pytest.param(".huggingface.yaml", "", "train.jsonl", id = "snapshot_options_infer_beside_an_empty_standalone_yaml"),
+        pytest.param(
+            "README.md", "", "train.jsonl", id = "snapshot_options_infer_beside_an_empty_readme"
+        ),
+        pytest.param(
+            ".huggingface.yaml",
+            "",
+            "train.jsonl",
+            id = "snapshot_options_infer_beside_an_empty_standalone_yaml",
+        ),
     ],
 )
-def test_snapshot_options_still_infer_when_the_card_declares_nothing(tmp_path, card_name, card_text, data_file):
+def test_snapshot_options_still_infer_when_the_card_declares_nothing(
+    tmp_path, card_name, card_text, data_file
+):
     snapshot = _snapshot(tmp_path)
     (snapshot / card_name).write_text(card_text, encoding = "utf-8")
     _rows(snapshot, data_file)

@@ -39,6 +39,7 @@ def _shared_setup_2(monkeypatch):
         lambda **kw: (_ for _ in ()).throw(AssertionError("retrieval should not run")),
     )
 
+
 # A vector per chunk just to satisfy add_chunks (the whole-doc path never reads
 # vectors); dimension is arbitrary but must be consistent within a connection.
 _VEC = [0.1, 0.2, 0.3, 0.4]

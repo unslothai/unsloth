@@ -34,6 +34,7 @@ def _shared_setup_1(clearing_lookup, monkeypatch):
         tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
     )
 
+
 RAW_IMAGES = [
     {
         "title": "Golden  Retriever\nportrait",

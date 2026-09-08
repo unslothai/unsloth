@@ -27,6 +27,7 @@ def _shared_setup_1(monkeypatch, tmp_path):
     monkeypatch.chdir(here)
     return there
 
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHIM_PATH = REPO_ROOT / "docker" / "unsloth_pip_shim.py"
 
@@ -201,12 +202,35 @@ def test_index_url_value_flag_kept_verbatim(shim):
 @pytest.mark.parametrize(
     "requirements, tool, flag, expected_program, absent",
     [
-        pytest.param("-e git+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n", "pip", "-r", "-r", "unsloth", id = "editable_protected_in_requirements_file_dropped"),
-        pytest.param("-egit+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n", "pip", "-r", "-r", "unsloth", id = "editable_attached_protected_in_requirements_file_dropped"),
-        pytest.param("torch==2.11.0\nsnac==1.2.0\n", "uv", "--requirements", "--requirements", "torch", id = "uv_plural_requirements_filtered"),
+        pytest.param(
+            "-e git+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n",
+            "pip",
+            "-r",
+            "-r",
+            "unsloth",
+            id = "editable_protected_in_requirements_file_dropped",
+        ),
+        pytest.param(
+            "-egit+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n",
+            "pip",
+            "-r",
+            "-r",
+            "unsloth",
+            id = "editable_attached_protected_in_requirements_file_dropped",
+        ),
+        pytest.param(
+            "torch==2.11.0\nsnac==1.2.0\n",
+            "uv",
+            "--requirements",
+            "--requirements",
+            "torch",
+            id = "uv_plural_requirements_filtered",
+        ),
     ],
 )
-def test_requirements_file_drops_the_protected_package(shim, tmp_path, requirements, tool, flag, expected_program, absent):
+def test_requirements_file_drops_the_protected_package(
+    shim, tmp_path, requirements, tool, flag, expected_program, absent
+):
     req = tmp_path / "reqs.txt"
     req.write_text(requirements, encoding = "utf-8")
     execd, _ = _run(shim, tool, [flag, str(req)])
@@ -293,8 +317,16 @@ def test_bare_wheel_filename_forms(shim, args, expected):
 @pytest.mark.parametrize(
     "tool, argument",
     [
-        pytest.param("pip", "git+https://github.com/huggingface/transformers.git", id = "vcs_url_without_egg_protected_dropped"),
-        pytest.param("pip", "git+https://github.com/unslothai/unsloth-zoo.git@main", id = "vcs_url_without_egg_with_ref_dropped"),
+        pytest.param(
+            "pip",
+            "git+https://github.com/huggingface/transformers.git",
+            id = "vcs_url_without_egg_protected_dropped",
+        ),
+        pytest.param(
+            "pip",
+            "git+https://github.com/unslothai/unsloth-zoo.git@main",
+            id = "vcs_url_without_egg_with_ref_dropped",
+        ),
         pytest.param("pip", "--force-reinstall", id = "force_reinstall_flag_stripped"),
         pytest.param("pip", "-I", id = "ignore_installed_short_flag_stripped"),
         pytest.param("uv", "--reinstall", id = "uv_reinstall_flag_stripped"),

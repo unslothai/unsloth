@@ -55,7 +55,6 @@ def _shared_setup_3(rag_home):
 # Shared setup for test_kb_deletion_retries_retired_scope_cleanup_after_failure, test_kb_deletion_rolls_back_scope_before_any_folder_cleanup_on_failure, test_kb_upload_rejects_retired_scope_before_saving and 1 more.
 def _shared_setup_4():
     from routes import rag as rag_routes
-
     with _connection() as conn:
         store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
     return conn, rag_routes
@@ -76,6 +75,7 @@ def _shared_setup_6(payload, snapshot):
         assert Path(snapshot).read_bytes() == payload
     finally:
         folder_sync._remove_snapshot(snapshot)
+
 
 requires_sqlite_vec = pytest.mark.skipif(
     not rag_db.RAG_AVAILABLE, reason = "sqlite-vec is not installed"

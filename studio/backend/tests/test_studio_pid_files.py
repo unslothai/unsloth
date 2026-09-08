@@ -29,6 +29,7 @@ def _shared_setup_1(monkeypatch):
     )
     return events
 
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -645,10 +646,16 @@ def test_the_legacy_file_is_taken_over_from_a_dead_server(tmp_path, monkeypatch)
     [
         # The compiled cache is install-tree relative, so a second backend of this
         # install must not wipe it out from under the first.
-        pytest.param("studio-8888-8550.pid", "8550\n\n127.0.0.1", id = "a_live_sibling_is_found_so_the_shared_cache_survives"),
+        pytest.param(
+            "studio-8888-8550.pid",
+            "8550\n\n127.0.0.1",
+            id = "a_live_sibling_is_found_so_the_shared_cache_survives",
+        ),
         # The window Codex flagged: lifespan startup runs, and would clear the
         # cache, long before uvicorn reports a port for _write_pid_file to record.
-        pytest.param("studio-starting-8550.marker", "8550\n", id = "a_sibling_that_is_still_binding_is_found"),
+        pytest.param(
+            "studio-starting-8550.marker", "8550\n", id = "a_sibling_that_is_still_binding_is_found"
+        ),
         # A pre-upgrade server is recorded here and nowhere else, and so is one
         # whose best-effort per-port write failed.
         pytest.param("studio.pid", "8550", id = "a_legacy_only_sibling_is_found"),

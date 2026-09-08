@@ -179,12 +179,35 @@ def test_loop_success_applies_once(monkeypatch):
 @pytest.mark.parametrize(
     "first, second, third, expected_applied, expected_message",
     [
-        pytest.param("short", "long-enough-pw", "long-enough-pw", "long-enough-pw", "at least 8 characters", id = "loop_short_password_reprompts"),
-        pytest.param("has space pw", "long-enough-pw", "long-enough-pw", "long-enough-pw", "contain spaces", id = "loop_password_with_inner_space_reprompts"),
-        pytest.param("bootstrap-pw", "fresh-password", "fresh-password", "fresh-password", "must differ", id = "loop_rejects_current_password"),
+        pytest.param(
+            "short",
+            "long-enough-pw",
+            "long-enough-pw",
+            "long-enough-pw",
+            "at least 8 characters",
+            id = "loop_short_password_reprompts",
+        ),
+        pytest.param(
+            "has space pw",
+            "long-enough-pw",
+            "long-enough-pw",
+            "long-enough-pw",
+            "contain spaces",
+            id = "loop_password_with_inner_space_reprompts",
+        ),
+        pytest.param(
+            "bootstrap-pw",
+            "fresh-password",
+            "fresh-password",
+            "fresh-password",
+            "must differ",
+            id = "loop_rejects_current_password",
+        ),
     ],
 )
-def test_prompt_loop_reprompts_until_the_password_is_acceptable(monkeypatch, first, second, third, expected_applied, expected_message):
+def test_prompt_loop_reprompts_until_the_password_is_acceptable(
+    monkeypatch, first, second, third, expected_applied, expected_message
+):
     ok, applied, out = _run_loop(monkeypatch, _keys(first, second, third))
     assert ok is True
     assert applied == [expected_applied]

@@ -142,6 +142,7 @@ def _shared_setup_13(archive, target):
             _safe_extractall(zf, target)
     assert not any(target.iterdir())
 
+
 _STUDIO = Path(__file__).resolve().parents[2]
 if str(_STUDIO) not in sys.path:
     sys.path.insert(0, str(_STUDIO))

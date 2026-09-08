@@ -72,8 +72,12 @@ def _nightly_legs():
 @pytest.mark.parametrize(
     "leg, why",
     [
-        pytest.param("grpo", "the schedule must select the leg; a nightly that runs the wired set "
-            "is just another copy of the per-PR run", id = "the_schedule_runs_the_grpo_leg"),
+        pytest.param(
+            "grpo",
+            "the schedule must select the leg; a nightly that runs the wired set "
+            "is just another copy of the per-PR run",
+            id = "the_schedule_runs_the_grpo_leg",
+        ),
         # multi_gpu is here for a different reason from grpo and the distinction
         # is worth keeping: grpo is nightly because it CRASHES 44% of the time,
         # multi_gpu because it costs makespan. It passes on hardware -- the ab3 A/B
@@ -83,8 +87,12 @@ def _nightly_legs():
         # Nightly is where that coverage is free. Without this the DEVICE_COUNT > 1
         # bindings in unsloth's kernels go back to being tested nowhere at all, which
         # is the state this leg was written to end.
-        pytest.param("multi_gpu", "the nightly no longer runs multi_gpu, so unsloth's DEVICE_COUNT > 1 "
-            "code path is covered by nothing: every other leg is pinned to one card", id = "the_schedule_also_runs_the_multi_gpu_leg"),
+        pytest.param(
+            "multi_gpu",
+            "the nightly no longer runs multi_gpu, so unsloth's DEVICE_COUNT > 1 "
+            "code path is covered by nothing: every other leg is pinned to one card",
+            id = "the_schedule_also_runs_the_multi_gpu_leg",
+        ),
         # Third reason again, and the distinction is the point: grpo is nightly
         # because it crashes 44% of sessions, multi_gpu because it costs makespan at
         # the margin, latest_compile because it does not FIT.
@@ -96,9 +104,13 @@ def _nightly_legs():
         # transformers and trl -- the only thing that caught zoo #1103 -- is tested
         # by nothing. That is the state it was built to end, and the reason the leg
         # is nightly rather than deleted.
-        pytest.param("latest_compile", "the nightly no longer runs latest_compile, so nothing anywhere loads "
+        pytest.param(
+            "latest_compile",
+            "the nightly no longer runs latest_compile, so nothing anywhere loads "
             "gemma-4-E2B-it on the newest transformers and trl, which is the "
-            "pairing that found unsloth-zoo #1103", id = "the_schedule_also_runs_the_latest_compile_leg"),
+            "pairing that found unsloth-zoo #1103",
+            id = "the_schedule_also_runs_the_latest_compile_leg",
+        ),
     ],
 )
 def test_the_schedule_runs_the_nightly_only_legs(leg, why):

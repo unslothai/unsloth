@@ -35,24 +35,55 @@ class TestFunctionStyleTrailingText:
     @pytest.mark.parametrize(
         "text, expected_name, expected_key, expected_value",
         [
-            pytest.param("<function=web_search><parameter=query>weather london</parameter></function>"
-                " Let me check that for you.", "web_search", "query", "weather london", id = "closed_function_with_trailing_prose_is_accepted"),
-            pytest.param("<function=web_search><parameter=query>cats</parameter></function>   \n\n", "web_search", "query", "cats", id = "closed_function_with_trailing_whitespace_is_accepted"),
-            pytest.param("<function=web_search><parameter=query>cats</parameter></function>", "web_search", "query", "cats", id = "closed_function_without_trailing_text_still_parses"),
+            pytest.param(
+                "<function=web_search><parameter=query>weather london</parameter></function>"
+                " Let me check that for you.",
+                "web_search",
+                "query",
+                "weather london",
+                id = "closed_function_with_trailing_prose_is_accepted",
+            ),
+            pytest.param(
+                "<function=web_search><parameter=query>cats</parameter></function>   \n\n",
+                "web_search",
+                "query",
+                "cats",
+                id = "closed_function_with_trailing_whitespace_is_accepted",
+            ),
+            pytest.param(
+                "<function=web_search><parameter=query>cats</parameter></function>",
+                "web_search",
+                "query",
+                "cats",
+                id = "closed_function_without_trailing_text_still_parses",
+            ),
             # The real closing </function> is the last one; the literal inside
             # the code argument must survive (rfind, not the first match).
-            pytest.param('<function=python><parameter=code>print("</function>")</parameter></function> all done', "python", "code", 'print("</function>")', id = "code_value_containing_literal_close_tag_is_preserved"),
+            pytest.param(
+                '<function=python><parameter=code>print("</function>")</parameter></function> all done',
+                "python",
+                "code",
+                'print("</function>")',
+                id = "code_value_containing_literal_close_tag_is_preserved",
+            ),
             # The attribute form <function name="..."> (MiniCPM-5 / MiniMax-M2) also ends at the
             # LAST </function>, so a literal close tag inside a code argument survives.
-            pytest.param('<function name="python"><param name="code">'
+            pytest.param(
+                '<function name="python"><param name="code">'
                 'print("</function>")'
-                "</param></function> all done", "python", "code", 'print("</function>")', id = "attribute_form_literal_close_tag_is_preserved"),
+                "</param></function> all done",
+                "python",
+                "code",
+                'print("</function>")',
+                id = "attribute_form_literal_close_tag_is_preserved",
+            ),
         ],
     )
-    def test_function_style_trailing_text_cases(self, text, expected_name, expected_key, expected_value):
+    def test_function_style_trailing_text_cases(
+        self, text, expected_name, expected_key, expected_value
+    ):
         call = _only(text)
         assert call == {"name": expected_name, "arguments": {expected_key: expected_value}}
-
 
     def test_multi_param_with_trailing_prose(self):
         text = (
@@ -64,7 +95,6 @@ class TestFunctionStyleTrailingText:
             "name": "terminal",
             "arguments": {"command": "ls -la", "workdir": "home"},
         }
-
 
     def test_closed_function_with_trailing_prose_heal_path(self):
         # Regression: the heal path (allow_incomplete=True) must match the strict path --
@@ -94,7 +124,6 @@ class TestFunctionStyleTrailingText:
         # Closing </function> present, but the single parameter never closes.
         text = "<function=web_search><parameter=query>weather london</function>"
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
-
 
     def test_closed_zero_param_attribute_call_is_accepted_in_strict_mode(self):
         # A closed call with no parameters is a valid zero-argument call; strict
@@ -427,15 +456,20 @@ class TestParserLinearity:
         "prefix, filler",
         [
             # No closing quote or paren.
-            pytest.param('<|python_tag|>upload.call(data="', "A", id = "llama3_unterminated_call_arg_is_linear"),
+            pytest.param(
+                '<|python_tag|>upload.call(data="', "A", id = "llama3_unterminated_call_arg_is_linear"
+            ),
             # Giant word run, no '='.
-            pytest.param("<|python_tag|>upload.call(", "a", id = "llama3_huge_wordrun_call_arg_is_linear"),
+            pytest.param(
+                "<|python_tag|>upload.call(", "a", id = "llama3_huge_wordrun_call_arg_is_linear"
+            ),
             # Unclosed array, all open braces.
             pytest.param("[TOOL_CALLS] [", "{", id = "mistral_unclosed_array_open_braces_is_linear"),
         ],
     )
     def test_parser_linearity_cases(self, prefix, filler):
         import time
+
         text = prefix + filler * 200000
         t0 = time.perf_counter()
         parse_tool_calls_from_text(text, allow_incomplete = True)
@@ -983,34 +1017,69 @@ class TestPythonTagOuterOverXmlLiteral:
         "text, expected_name, expected_key, expected",
         [
             # A closed <function=...> in a .call() code arg must not beat the leading python_tag call.
-            pytest.param('<|python_tag|>python.call(code="<function=render_html>'
-                '<parameter=x>1</parameter></function>")', "python", "code", "<function=render_html><parameter=x>1</parameter></function>", id = "call_arg_quoting_complete_function_xml"),
+            pytest.param(
+                '<|python_tag|>python.call(code="<function=render_html>'
+                '<parameter=x>1</parameter></function>")',
+                "python",
+                "code",
+                "<function=render_html><parameter=x>1</parameter></function>",
+                id = "call_arg_quoting_complete_function_xml",
+            ),
             # A query mentioning <function=...> must search, not execute a phantom tool.
-            pytest.param('<|python_tag|>web_search.call(query="how do I use <function=foo> in llama")', "web_search", "query", "how do I use <function=foo> in llama", id = "call_arg_quoting_bare_function_tag_in_query"),
+            pytest.param(
+                '<|python_tag|>web_search.call(query="how do I use <function=foo> in llama")',
+                "web_search",
+                "query",
+                "how do I use <function=foo> in llama",
+                id = "call_arg_quoting_bare_function_tag_in_query",
+            ),
             # JSON emission: a <function=...> in the code arg is data; the outer "python" call runs.
-            pytest.param('<|python_tag|>{"name":"python","parameters":'
-                '{"code":"<function=terminal>ls</function>"}}', "python", "code", "<function=terminal>ls</function>", id = "json_form_code_arg_quoting_function_xml"),
+            pytest.param(
+                '<|python_tag|>{"name":"python","parameters":'
+                '{"code":"<function=terminal>ls</function>"}}',
+                "python",
+                "code",
+                "<function=terminal>ls</function>",
+                id = "json_form_code_arg_quoting_function_xml",
+            ),
         ],
     )
-    def test_python_tag_outer_over_xml_literal_cases(self, text, expected_name, expected_key, expected):
+    def test_python_tag_outer_over_xml_literal_cases(
+        self, text, expected_name, expected_key, expected
+    ):
         calls = parse_tool_calls_from_text(text)
         assert [c["function"]["name"] for c in calls] == [expected_name]
         args = json.loads(calls[0]["function"]["arguments"])
         assert args[expected_key] == expected
 
-
     @pytest.mark.parametrize(
         "text, expected_name",
         [
-            pytest.param("<|python_tag|>save_file.call(content="
-                '"<tool_call>{\\"name\\": \\"delete\\", \\"arguments\\": {}}</tool_call>")', "save_file", id = "call_arg_quoting_tool_call_json"),
-            pytest.param('<|python_tag|>web_search.call(query="see [TOOL_CALLS]evil[ARGS]{}")', "web_search", id = "call_arg_quoting_mistral_trigger"),
+            pytest.param(
+                "<|python_tag|>save_file.call(content="
+                '"<tool_call>{\\"name\\": \\"delete\\", \\"arguments\\": {}}</tool_call>")',
+                "save_file",
+                id = "call_arg_quoting_tool_call_json",
+            ),
+            pytest.param(
+                '<|python_tag|>web_search.call(query="see [TOOL_CALLS]evil[ARGS]{}")',
+                "web_search",
+                id = "call_arg_quoting_mistral_trigger",
+            ),
             # A leading python_tag call owns the turn even when a real XML literal follows.
-            pytest.param('<|python_tag|>web_search.call(query="cats") '
-                "<function=evil><parameter=x>1</parameter></function>", "web_search", id = "leading_call_wins_over_trailing_xml"),
+            pytest.param(
+                '<|python_tag|>web_search.call(query="cats") '
+                "<function=evil><parameter=x>1</parameter></function>",
+                "web_search",
+                id = "leading_call_wins_over_trailing_xml",
+            ),
             # A foreign signal BEFORE the tag keeps normal document order (XML wins).
-            pytest.param("<function=web_search><parameter=q>x</parameter></function> "
-                '<|python_tag|>python.call(code="y")', "web_search", id = "xml_before_python_tag_keeps_xml_order"),
+            pytest.param(
+                "<function=web_search><parameter=q>x</parameter></function> "
+                '<|python_tag|>python.call(code="y")',
+                "web_search",
+                id = "xml_before_python_tag_keeps_xml_order",
+            ),
         ],
     )
     def test_python_tag_outer_over_xml_literal_cases_2(self, text, expected_name):
@@ -1550,20 +1619,42 @@ class TestProseCloseTagAfterClosedFunctionCall:
     @pytest.mark.parametrize(
         "text, enabled_name, expected_name, expected_key, expected_value",
         [
-            pytest.param("<function=web_search><parameter=query>cats</parameter></function>"
-                " Done. The tag </function> closes a call.", "web_search", "web_search", "query", "cats", id = "arguments_do_not_swallow_prose"),
-            pytest.param('<function=python><parameter=code>print("</function>")</parameter></function>', "python", "python", "code", 'print("</function>")', id = "literal_close_inside_open_parameter_stays_data"),
+            pytest.param(
+                "<function=web_search><parameter=query>cats</parameter></function>"
+                " Done. The tag </function> closes a call.",
+                "web_search",
+                "web_search",
+                "query",
+                "cats",
+                id = "arguments_do_not_swallow_prose",
+            ),
+            pytest.param(
+                '<function=python><parameter=code>print("</function>")</parameter></function>',
+                "python",
+                "python",
+                "code",
+                'print("</function>")',
+                id = "literal_close_inside_open_parameter_stays_data",
+            ),
             # The <function name="..."> attribute form shares the first-balanced-close
             # rule: prose mentioning a literal close tag never folds into arguments.
-            pytest.param('<function name="web_search"><parameter name="query">cats</parameter></function>'
-                " Done. The tag </function> closes a call.", "web_search", "web_search", "query", "cats", id = "attribute_form_arguments_do_not_swallow_prose"),
+            pytest.param(
+                '<function name="web_search"><parameter name="query">cats</parameter></function>'
+                " Done. The tag </function> closes a call.",
+                "web_search",
+                "web_search",
+                "query",
+                "cats",
+                id = "attribute_form_arguments_do_not_swallow_prose",
+            ),
         ],
     )
-    def test_prose_close_tag_after_closed_function_call_cases(self, text, enabled_name, expected_name, expected_key, expected_value):
+    def test_prose_close_tag_after_closed_function_call_cases(
+        self, text, enabled_name, expected_name, expected_key, expected_value
+    ):
         calls = parse_tool_calls_from_text(text, enabled_tool_names = {enabled_name})
         assert [c["function"]["name"] for c in calls] == [expected_name], calls
         assert json.loads(calls[0]["function"]["arguments"]) == {expected_key: expected_value}
-
 
     def test_attribute_form_literal_close_in_open_parameter_stays_data(self):
         text = '<function name="python"><parameter name="code">print("</function>")</parameter></function>'
@@ -1737,12 +1828,24 @@ class TestGemmaAwareClosedBlockPrePass:
     @pytest.mark.parametrize(
         "text, expected",
         [
-            pytest.param('before <|tool_call>call:python{code:<|"|>print("<function=x>")<|"|>}'
+            pytest.param(
+                'before <|tool_call>call:python{code:<|"|>print("<function=x>")<|"|>}'
                 "<tool_call|> <function=terminal><parameter=cmd>ls</parameter>"
-                "</function> after", "before   after", id = "literal_function_in_gemma_arg_with_later_real_call"),
-            pytest.param('<tool_call>{"name":"t","arguments":{"code":"<|tool_call>call:x{"}}</tool_call> after', "after", id = "gemma_opener_inside_json_arg_still_strips_block"),
-            pytest.param('<function=python><parameter=code>x = "<|tool_call>call:t{"</parameter>'
-                "</function> after", "after", id = "gemma_opener_inside_function_param_still_strips_block"),
+                "</function> after",
+                "before   after",
+                id = "literal_function_in_gemma_arg_with_later_real_call",
+            ),
+            pytest.param(
+                '<tool_call>{"name":"t","arguments":{"code":"<|tool_call>call:x{"}}</tool_call> after',
+                "after",
+                id = "gemma_opener_inside_json_arg_still_strips_block",
+            ),
+            pytest.param(
+                '<function=python><parameter=code>x = "<|tool_call>call:t{"</parameter>'
+                "</function> after",
+                "after",
+                id = "gemma_opener_inside_function_param_still_strips_block",
+            ),
         ],
     )
     def test_gemma_aware_closed_block_pre_pass_cases(self, text, expected):
@@ -1760,4 +1863,3 @@ class TestGemmaAwareClosedBlockPrePass:
         assert out.startswith("before")
         assert out.endswith("after")
         assert "call:python" not in out
-

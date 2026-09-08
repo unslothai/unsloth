@@ -34,6 +34,7 @@ def _shared_setup_1(saved):
     else:
         sys.modules["huggingface_hub"] = saved
 
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_DIR = REPO_ROOT / "tests" / "kaggle" / "t4_smoke"
 CI_DIR = REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci"

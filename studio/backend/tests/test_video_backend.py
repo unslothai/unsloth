@@ -43,6 +43,7 @@ def _shared_setup_2():
     import base64
 
     from core.inference.video_minimax_h3 import decode_h3_reference_video
+
     return base64, decode_h3_reference_video
 
 
@@ -3286,6 +3287,7 @@ def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypa
     # is not revoked by claiming the repos later.
     from core.inference import video as video_mod
     from core.inference import sd_cpp_backend, sd_cpp_engine
+
     H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO = _shared_setup_3()
 
     class _Api:
@@ -3898,6 +3900,7 @@ def test_h3_native_load_publishes_the_companion_repos_while_downloading(monkeypa
     another mirror as here, the GGUF companion) out from under the running download."""
     from core.inference import video as video_mod
     from core.inference import sd_cpp_backend, sd_cpp_engine
+
     H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO = _shared_setup_3()
 
     class _Api:
@@ -4182,6 +4185,7 @@ def test_h3_native_loaded_repo_ids_cover_the_companion_repos():
     # mirror (Qwen encoder) and the component repo (both VAEs) and re-reads them every generation,
     # so deleting either On Device while H3 is loaded must be refused.
     from core.inference.video import _VideoLoadState
+
     H3_COMPONENT_REPO, H3_GGUF_REPO, H3_LEGACY_COMPONENT_REPO = _shared_setup_3()
 
     backend = VideoBackend()
@@ -7788,6 +7792,7 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
     # scaled encoder, or it re-introduces the over-estimate the first plan just dropped.
     import core.inference.video as video_mod
     from core.inference.diffusion_auto_policy import _QUANT_STEADY_FACTOR
+
     scale, text_encoder_gb, transformer_gb, vae_gb = _shared_setup_9(monkeypatch)
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(

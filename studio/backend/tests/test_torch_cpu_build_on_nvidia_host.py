@@ -72,6 +72,7 @@ def _shared_setup_3(monkeypatch):
 
     monkeypatch.setattr(nvidia.subprocess, "run", _hang)
 
+
 # nvidia-smi rows for User A's box: two A4000s, the second carrying a comma in its name.
 _TWO_A4000_ROWS = "\n".join(
     [

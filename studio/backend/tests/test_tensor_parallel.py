@@ -49,6 +49,7 @@ def _shared_setup_2(b, monkeypatch):
     assert b._respawn_if_dead() is False
     return loads
 
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)

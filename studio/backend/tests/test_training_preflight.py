@@ -30,6 +30,7 @@ def _shared_setup_1(monkeypatch):
     trainer = _dataset_loader_self()
     return dataset_cache, trainer
 
+
 torch = pytest.importorskip("torch")
 
 

@@ -21,6 +21,7 @@ def _shared_setup_1(monkeypatch):
     _rag_is_available(monkeypatch, rag_db)
     return tools
 
+
 VOCAB = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"]
 
 

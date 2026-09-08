@@ -20,6 +20,7 @@ def _shared_setup_1(backend, inline, monkeypatch):
     status = asyncio.run(rt.get_training_status(current_subject = "tester"))
     return status
 
+
 if "structlog" not in sys.modules:
 
     class _DummyLogger:

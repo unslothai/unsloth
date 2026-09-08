@@ -35,6 +35,7 @@ def _shared_setup_1(request, training_route):
             asyncio.run(training_route.start_training(request, current_subject = "test-user"))
     return exc_info
 
+
 datasets = pytest.importorskip("datasets")
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent

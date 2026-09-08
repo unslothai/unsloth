@@ -98,7 +98,9 @@ def _shared_setup_3(monkeypatch, verified):
 # Shared setup for test_gguf_progress_unknown_hashes_does_not_count_foreign_blobs, test_gguf_progress_unknown_hashes_drops_unscoped_incomplete_blob, test_gguf_progress_unknown_hashes_no_backward_dip_when_variant_finalizes.
 def _shared_setup_4(_run_inline, entry, monkeypatch):
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_k: None
+    )
     monkeypatch.setattr(
         downloads.gguf_variants,
         "gguf_variant_blob_hashes",
@@ -359,9 +361,7 @@ def _running_registry(completed_baseline_bytes):
 
 def _gguf_progress(**kwargs):
     return asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF", variant = "Q4_K_M", **kwargs
-        )
+        downloads.get_gguf_download_progress_response("Org/Model-GGUF", variant = "Q4_K_M", **kwargs)
     )
 
 
@@ -3108,7 +3108,9 @@ def test_gguf_download_progress_fallback_logs_warning(monkeypatch):
 
     monkeypatch.setattr(snapshot_progress, "logger", logger)
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_k: None
+    )
     monkeypatch.setattr(
         downloads.gguf_variants,
         "gguf_variant_blob_hashes",
@@ -3366,7 +3368,9 @@ def _unresolvable_variant_metadata(
         return fn(*args, **kwargs)
 
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_k: None
+    )
     monkeypatch.setattr(
         downloads.gguf_variants,
         "gguf_variant_blob_hashes",

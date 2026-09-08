@@ -33,6 +33,7 @@ def _shared_setup_1(threads):
     for thread in threads:
         thread.join()
 
+
 FULL, NORMAL = 2, 1
 
 

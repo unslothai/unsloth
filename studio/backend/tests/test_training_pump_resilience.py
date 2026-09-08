@@ -37,6 +37,7 @@ def _shared_setup_1(monkeypatch):
     b._progress.is_training = True
     return b, finalized
 
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)

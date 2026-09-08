@@ -27,6 +27,7 @@ def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
     monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
 
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)

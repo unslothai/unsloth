@@ -25,7 +25,6 @@ import pytest
 # Shared setup for test_a_corrupt_pid_file_does_not_abort_shutdown, test_a_torn_cache_ref_reads_as_not_cached, test_an_undecodable_bootstrap_password_does_not_stop_startup and 2 more.
 def _shared_setup_1(__file__):
     import sys
-
     backend = str(Path(__file__).resolve().parent.parent)
     if backend not in sys.path:
         sys.path.insert(0, backend)

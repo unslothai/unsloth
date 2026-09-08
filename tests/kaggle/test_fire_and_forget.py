@@ -59,6 +59,7 @@ def _shared_setup_3(deleted, monkeypatch):
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
     return api
 
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_DIR = REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"

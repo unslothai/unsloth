@@ -43,6 +43,7 @@ def _shared_setup_2(baseline, code, target):
     assert streamed == baseline
     assert _os.path.isfile(target)
 
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)

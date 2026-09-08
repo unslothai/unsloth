@@ -237,13 +237,38 @@ def test_strips_orphan_function_no_close():
 @pytest.mark.parametrize(
     "text, removed, kept",
     [
-        pytest.param("Search starting.\n<tool_call>", "<tool_call>", "Search starting.", id = "strips_orphan_only_opening_tag"),
+        pytest.param(
+            "Search starting.\n<tool_call>",
+            "<tool_call>",
+            "Search starting.",
+            id = "strips_orphan_only_opening_tag",
+        ),
         # Outer </function></tool_call> truncated by EOS, inner <parameter=...> DRAINED.
-        pytest.param("and the text is not readable.\n</parameter>\n\n", "</parameter>", "and the text is not readable.", id = "strips_tail_only_parameter_orphan"),
-        pytest.param("Global Economic Prospects\n</parameter>\n", "</parameter>", "Global Economic Prospects", id = "strips_tail_only_parameter_orphan_single_newline"),
-        pytest.param("Final answer.</parameter>", "</parameter>", "Final answer.", id = "strips_tail_only_parameter_orphan_no_trailing_ws"),
+        pytest.param(
+            "and the text is not readable.\n</parameter>\n\n",
+            "</parameter>",
+            "and the text is not readable.",
+            id = "strips_tail_only_parameter_orphan",
+        ),
+        pytest.param(
+            "Global Economic Prospects\n</parameter>\n",
+            "</parameter>",
+            "Global Economic Prospects",
+            id = "strips_tail_only_parameter_orphan_single_newline",
+        ),
+        pytest.param(
+            "Final answer.</parameter>",
+            "</parameter>",
+            "Final answer.",
+            id = "strips_tail_only_parameter_orphan_no_trailing_ws",
+        ),
         # A complete Mistral call strips only its balanced JSON, leaving following prose intact.
-        pytest.param('[TOOL_CALLS]web_search{"q":"x"} and then prose', "[TOOL_CALLS]", "and then prose", id = "strips_complete_bracket_tag_keeps_trailing_prose"),
+        pytest.param(
+            '[TOOL_CALLS]web_search{"q":"x"} and then prose',
+            "[TOOL_CALLS]",
+            "and then prose",
+            id = "strips_complete_bracket_tag_keeps_trailing_prose",
+        ),
     ],
 )
 def test_tool_xml_strip_drops_markup_and_keeps_prose(text, removed, kept):
@@ -289,9 +314,24 @@ def test_strips_gemma_native_orphan_closing_tag():
     "text, removed, expected",
     [
         # Close brace lost to EOS: the truncated tail strips to the end instead of leaking.
-        pytest.param('here [TOOL_CALLS]web_search{"query":"weather"', "[TOOL_CALLS]", "here", id = "strips_unclosed_bracket_tail"),
-        pytest.param('text python[ARGS]{"code":"print(1)"', "[ARGS]", "text", id = "strips_unclosed_rehearsal_tail"),
-        pytest.param('x [TOOL_CALLS]mcp__srv__list-issues{"q":"x"}', "list-issues", "x", id = "strips_hyphenated_mcp_bracket_name"),
+        pytest.param(
+            'here [TOOL_CALLS]web_search{"query":"weather"',
+            "[TOOL_CALLS]",
+            "here",
+            id = "strips_unclosed_bracket_tail",
+        ),
+        pytest.param(
+            'text python[ARGS]{"code":"print(1)"',
+            "[ARGS]",
+            "text",
+            id = "strips_unclosed_rehearsal_tail",
+        ),
+        pytest.param(
+            'x [TOOL_CALLS]mcp__srv__list-issues{"q":"x"}',
+            "list-issues",
+            "x",
+            id = "strips_hyphenated_mcp_bracket_name",
+        ),
     ],
 )
 def test_tool_xml_strip_trims_truncated_bracket_tails(text, removed, expected):

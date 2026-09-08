@@ -333,7 +333,6 @@ class TestNoTorchConstant:
         with mock.patch.dict(os.environ, {"UNSLOTH_NO_TORCH": expected_UNSLOTH_NO_TORCH}):
             assert self._reimport_no_torch() is expected
 
-
     def test_not_set(self):
         env = os.environ.copy()
         env.pop("UNSLOTH_NO_TORCH", None)
@@ -488,21 +487,57 @@ class TestInstallPythonStackSubprocessMock:
         "no_torch, is_macos, is_windows, filename, message",
         [
             # With NO_TORCH=True, overrides.txt pip_install must NOT be called.
-            pytest.param(True, True, False, "overrides.txt", "overrides.txt should be skipped when NO_TORCH=True", id = "no_torch_macos_skips_overrides"),
+            pytest.param(
+                True,
+                True,
+                False,
+                "overrides.txt",
+                "overrides.txt should be skipped when NO_TORCH=True",
+                id = "no_torch_macos_skips_overrides",
+            ),
             # With IS_MACOS=True, triton-kernels.txt must NOT be called.
-            pytest.param(True, True, False, "triton-kernels.txt", "triton-kernels.txt should be skipped on macOS", id = "no_torch_macos_skips_triton"),
+            pytest.param(
+                True,
+                True,
+                False,
+                "triton-kernels.txt",
+                "triton-kernels.txt should be skipped on macOS",
+                id = "no_torch_macos_skips_triton",
+            ),
             # Windows+NO_TORCH: overrides.txt must be skipped.
-            pytest.param(True, False, True, "overrides.txt", "overrides.txt should be skipped with NO_TORCH=True on Windows", id = "windows_no_torch_skips_overrides"),
+            pytest.param(
+                True,
+                False,
+                True,
+                "overrides.txt",
+                "overrides.txt should be skipped with NO_TORCH=True on Windows",
+                id = "windows_no_torch_skips_overrides",
+            ),
             # Windows: triton-kernels.txt must be skipped (IS_WINDOWS guard).
-            pytest.param(True, False, True, "triton-kernels.txt", "triton-kernels.txt should be skipped on Windows", id = "windows_no_torch_skips_triton"),
+            pytest.param(
+                True,
+                False,
+                True,
+                "triton-kernels.txt",
+                "triton-kernels.txt should be skipped on Windows",
+                id = "windows_no_torch_skips_triton",
+            ),
             # Windows (without NO_TORCH): triton still skipped.
-            pytest.param(False, False, True, "triton-kernels.txt", "triton-kernels.txt should be skipped on Windows even without NO_TORCH", id = "windows_only_skips_triton"),
+            pytest.param(
+                False,
+                False,
+                True,
+                "triton-kernels.txt",
+                "triton-kernels.txt should be skipped on Windows even without NO_TORCH",
+                id = "windows_only_skips_triton",
+            ),
         ],
     )
-    def test_install_python_stack_subprocess_mock_cases(self, no_torch, is_macos, is_windows, filename, message):
+    def test_install_python_stack_subprocess_mock_cases(
+        self, no_torch, is_macos, is_windows, filename, message
+    ):
         cmds = self._capture_install(no_torch = no_torch, is_macos = is_macos, is_windows = is_windows)
         assert not self._cmds_contain_file(cmds, filename), message
-
 
     def test_no_torch_macos_extras_called(self):
         """With NO_TORCH=True, extras.txt is still called (but filtered)."""
@@ -520,7 +555,6 @@ class TestInstallPythonStackSubprocessMock:
         ) or self._cmds_contain_filtered_file(cmds, "extras-no-deps.txt")
         assert has_extras_nd, "extras-no-deps.txt (or its filtered temp) should be called"
 
-
     def test_normal_linux_includes_overrides(self):
         """Normal Linux: torchao override step runs (via --reinstall, not overrides.txt)."""
         cmds = self._capture_install(no_torch = False, is_macos = False, is_windows = False)
@@ -532,17 +566,28 @@ class TestInstallPythonStackSubprocessMock:
         "filename, message",
         [
             # Normal Linux: triton-kernels.txt IS called.
-            pytest.param("triton-kernels.txt", "triton-kernels.txt should be called on normal Linux", id = "normal_linux_includes_triton"),
+            pytest.param(
+                "triton-kernels.txt",
+                "triton-kernels.txt should be called on normal Linux",
+                id = "normal_linux_includes_triton",
+            ),
             # Normal Linux: extras.txt IS called (no filtering).
-            pytest.param("extras.txt", "extras.txt should be called on normal Linux", id = "normal_linux_includes_extras"),
+            pytest.param(
+                "extras.txt",
+                "extras.txt should be called on normal Linux",
+                id = "normal_linux_includes_extras",
+            ),
             # Normal Linux: extras-no-deps.txt IS called (no filtering).
-            pytest.param("extras-no-deps.txt", "extras-no-deps.txt should be called on normal Linux", id = "normal_linux_includes_extras_no_deps"),
+            pytest.param(
+                "extras-no-deps.txt",
+                "extras-no-deps.txt should be called on normal Linux",
+                id = "normal_linux_includes_extras_no_deps",
+            ),
         ],
     )
     def test_install_python_stack_keeps_the_requirements_file(self, filename, message):
         cmds = self._capture_install(no_torch = False, is_macos = False, is_windows = False)
         assert self._cmds_contain_file(cmds, filename), message
-
 
     def test_windows_only_includes_overrides(self):
         """Windows (no NO_TORCH): overrides runs via filtered temp file (check --reinstall)."""

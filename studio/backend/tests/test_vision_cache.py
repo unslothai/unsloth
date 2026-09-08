@@ -31,6 +31,7 @@ def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
     return mc
 
+
 # sys.path + logger stub — same pattern as the rest of the test suite
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:

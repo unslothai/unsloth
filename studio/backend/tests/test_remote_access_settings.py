@@ -21,6 +21,7 @@ def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
     monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
 
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))

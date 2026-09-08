@@ -30,6 +30,7 @@ def _shared_setup_1():
     from safetensors.torch import save_file
 
     from run_t4_smoke import saved_adapter_failures, verify_saved_adapter
+
     return save_file, saved_adapter_failures, torch, verify_saved_adapter
 
 
@@ -49,6 +50,7 @@ def _shared_setup_3(tmp_path):
     ref = tmp_path / "ref.json"
     _write_reference(ref, config = REFERENCE_CONFIG)
     return check_reference, ref
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_DIR = REPO_ROOT / "tests" / "kaggle" / "t4_smoke"

@@ -18,6 +18,7 @@ def _shared_setup_1():
     document = docx.Document()
     return document, docx, parsers
 
+
 pytest.importorskip("pymupdf")
 
 

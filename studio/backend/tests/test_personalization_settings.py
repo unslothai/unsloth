@@ -21,6 +21,7 @@ def _shared_setup_1(monkeypatch, store):
     client = TestClient(app)
     return client
 
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -59,8 +60,18 @@ def test_unknown_keys_are_ignored():
     [
         pytest.param("appearance", "theme", "neon", id = "invalid_theme_rejected"),
         pytest.param("appearance", "palette", "neon", id = "invalid_palette_rejected"),
-        pytest.param("profile", "avatarDataUrl", "http://example.com/a.png", id = "avatar_must_be_image_data_url"),
-        pytest.param("profile", "avatarDataUrl", "/Sloth%20emojis/../secret.png", id = "bundled_avatar_traversal_rejected"),
+        pytest.param(
+            "profile",
+            "avatarDataUrl",
+            "http://example.com/a.png",
+            id = "avatar_must_be_image_data_url",
+        ),
+        pytest.param(
+            "profile",
+            "avatarDataUrl",
+            "/Sloth%20emojis/../secret.png",
+            id = "bundled_avatar_traversal_rejected",
+        ),
     ],
 )
 def test_invalid_personalization_values_are_rejected(section, field, value):

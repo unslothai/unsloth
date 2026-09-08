@@ -104,6 +104,7 @@ def _shared_setup_6(_respawned, backend, monkeypatch):
     calls = {"n": 0}
     return calls, healthy
 
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)

@@ -100,6 +100,7 @@ def _shared_setup_7(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
     return amd
 
+
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))

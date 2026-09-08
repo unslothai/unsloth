@@ -18,6 +18,7 @@ def _shared_setup_1(controller):
         "python",
     ]
 
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)

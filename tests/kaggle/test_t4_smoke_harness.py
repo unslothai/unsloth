@@ -50,6 +50,7 @@ def _shared_setup_3():
     report = _grpo_ok()
     return failures_for, report
 
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_DIR = REPO_ROOT / "tests" / "kaggle" / "t4_smoke"
 CI_DIR = REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci"

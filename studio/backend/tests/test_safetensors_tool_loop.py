@@ -102,10 +102,7 @@ def _shared_setup_6(args, name, text):
 
 # Shared setup for test_duplicate_noop_does_not_consume_budget_at_small_cap, test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool, test_same_turn_duplicate_does_not_drop_later_parallel_call.
 def _shared_setup_7(exec_fn):
-    assert exec_fn.calls == [
-        ("web_search", {"query": "x"}),
-        ("python", {"code": "print(1)"}),
-    ]
+    assert exec_fn.calls == [("web_search", {"query": "x"}), ("python", {"code": "print(1)"})]
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -138,30 +135,70 @@ class TestParser:
     @pytest.mark.parametrize(
         "text, name, args",
         [
-            pytest.param('<|tool_call>call:terminal{command:"ls -la",workdir:"."}<tool_call|>',
-                "terminal", {"command": "ls -la", "workdir": "."}, id = "gemma_native_tool_call"),
-            pytest.param('<|tool_call>call:web_search{query:<|"|>openai news<|"|>}<tool_call|>',
-                "web_search", {"query": "openai news"}, id = "gemma_native_template_quotes"),
-            pytest.param(r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>',
-                "ls", {"path": r"C:\Users\wasim\repo"}, id = "gemma_native_template_quotes_escape_backslashes"),
-            pytest.param('<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>',
-                "mcp__srv__create-issue", {"issue-title": "Bug report"}, id = "gemma_native_hyphenated_argument_name"),
-            pytest.param('<|tool_call>call:terminal{command:"echo {foo:bar}"}<tool_call|>',
-                "terminal", {"command": "echo {foo:bar}"}, id = "gemma_native_keeps_braces_inside_string_value"),
-            pytest.param("<|tool_call>call:get_weather{location:Tokyo,unit:celsius}<tool_call|>",
-                "get_weather", {"location": "Tokyo", "unit": "celsius"}, id = "gemma_native_bare_string_values"),
+            pytest.param(
+                '<|tool_call>call:terminal{command:"ls -la",workdir:"."}<tool_call|>',
+                "terminal",
+                {"command": "ls -la", "workdir": "."},
+                id = "gemma_native_tool_call",
+            ),
+            pytest.param(
+                '<|tool_call>call:web_search{query:<|"|>openai news<|"|>}<tool_call|>',
+                "web_search",
+                {"query": "openai news"},
+                id = "gemma_native_template_quotes",
+            ),
+            pytest.param(
+                r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>',
+                "ls",
+                {"path": r"C:\Users\wasim\repo"},
+                id = "gemma_native_template_quotes_escape_backslashes",
+            ),
+            pytest.param(
+                '<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>',
+                "mcp__srv__create-issue",
+                {"issue-title": "Bug report"},
+                id = "gemma_native_hyphenated_argument_name",
+            ),
+            pytest.param(
+                '<|tool_call>call:terminal{command:"echo {foo:bar}"}<tool_call|>',
+                "terminal",
+                {"command": "echo {foo:bar}"},
+                id = "gemma_native_keeps_braces_inside_string_value",
+            ),
+            pytest.param(
+                "<|tool_call>call:get_weather{location:Tokyo,unit:celsius}<tool_call|>",
+                "get_weather",
+                {"location": "Tokyo", "unit": "celsius"},
+                id = "gemma_native_bare_string_values",
+            ),
             # Only the wrapping newline is trimmed, so code-argument indentation survives
             # (str.strip() destroyed it).
-            pytest.param("<function=python><parameter=code>\n    indented = 1\n    more\n</parameter></function>",
-                "python", {"code": "    indented = 1\n    more"}, id = "xml_param_preserves_leading_indentation"),
-            pytest.param('[TOOL_CALLS]search{"q":"explain [THINK] blocks"}',
-                "search", {"q": "explain [THINK] blocks"}, id = "bracket_tag_argument_with_think_literal"),
+            pytest.param(
+                "<function=python><parameter=code>\n    indented = 1\n    more\n</parameter></function>",
+                "python",
+                {"code": "    indented = 1\n    more"},
+                id = "xml_param_preserves_leading_indentation",
+            ),
+            pytest.param(
+                '[TOOL_CALLS]search{"q":"explain [THINK] blocks"}',
+                "search",
+                {"q": "explain [THINK] blocks"},
+                id = "bracket_tag_argument_with_think_literal",
+            ),
             # A rehearsal inside <think> is skipped, but the real call after the close tag parses.
-            pytest.param('<think>plan: search[ARGS]{"q":"x"}</think>search[ARGS]{"q":"real"}',
-                "search", {"q": "real"}, id = "real_call_after_think_with_rehearsal_inside"),
+            pytest.param(
+                '<think>plan: search[ARGS]{"q":"x"}</think>search[ARGS]{"q":"real"}',
+                "search",
+                {"q": "real"},
+                id = "real_call_after_think_with_rehearsal_inside",
+            ),
             # A real call whose argument contains a literal think tag must not be corrupted.
-            pytest.param('<tool_call>{"name":"write","arguments":{"text":"compare <think> and </think> tags"}}</tool_call>',
-                "write", {"text": "compare <think> and </think> tags"}, id = "think_literal_inside_real_tool_argument"),
+            pytest.param(
+                '<tool_call>{"name":"write","arguments":{"text":"compare <think> and </think> tags"}}</tool_call>',
+                "write",
+                {"text": "compare <think> and </think> tags"},
+                id = "think_literal_inside_real_tool_argument",
+            ),
         ],
     )
     def test_call_parses_to_name_and_args(self, text, name, args):
@@ -174,24 +211,50 @@ class TestParser:
     @pytest.mark.parametrize(
         "text, name, fragment",
         [
-            pytest.param("<function=python><parameter=code>print('hi')</parameter></function>",
-                "python", "print('hi')", id = "xml_function_call"),
+            pytest.param(
+                "<function=python><parameter=code>print('hi')</parameter></function>",
+                "python",
+                "print('hi')",
+                id = "xml_function_call",
+            ),
             # Closing tags omitted; parser must still extract the value.
-            pytest.param("<function=terminal><parameter=command>ls -la",
-                "terminal", "ls -la", id = "xml_unclosed"),
+            pytest.param(
+                "<function=terminal><parameter=command>ls -la",
+                "terminal",
+                "ls -la",
+                id = "xml_unclosed",
+            ),
             # A code parameter with a literal </parameter> must not truncate: the parser uses
             # end-of-body as the only boundary for single-param calls.
-            pytest.param("<function=python><parameter=code>html = '<a></a>'\nprint('hi')</parameter></function>",
-                "python", "print('hi')", id = "code_with_embedded_xml"),
-            pytest.param("<function=python><parameter=code>print('<function=render_html>')</parameter></function>",
-                "python", "<function=render_html>", id = "function_signal_inside_parameter_is_literal"),
+            pytest.param(
+                "<function=python><parameter=code>html = '<a></a>'\nprint('hi')</parameter></function>",
+                "python",
+                "print('hi')",
+                id = "code_with_embedded_xml",
+            ),
+            pytest.param(
+                "<function=python><parameter=code>print('<function=render_html>')</parameter></function>",
+                "python",
+                "<function=render_html>",
+                id = "function_signal_inside_parameter_is_literal",
+            ),
             # Devstral / Mistral-Small fallback when bypassing native FC.
-            pytest.param('[TOOL_CALLS]web_search{"query":"weather"}',
-                "web_search", "weather", id = "mistral_bracket_basic"),
+            pytest.param(
+                '[TOOL_CALLS]web_search{"query":"weather"}',
+                "web_search",
+                "weather",
+                id = "mistral_bracket_basic",
+            ),
             # Optional whitespace (incl. newlines) between the name and the opening brace.
-            pytest.param('[TOOL_CALLS]python  \n  {"code":"print(1)"}',
-                "python", "print(1)", id = "mistral_bracket_with_whitespace"),
-            pytest.param('python[ARGS]{"code":"print(1)"}', "python", "print(1)", id = "rehearsal_basic"),
+            pytest.param(
+                '[TOOL_CALLS]python  \n  {"code":"print(1)"}',
+                "python",
+                "print(1)",
+                id = "mistral_bracket_with_whitespace",
+            ),
+            pytest.param(
+                'python[ARGS]{"code":"print(1)"}', "python", "print(1)", id = "rehearsal_basic"
+            ),
         ],
     )
     def test_call_parses_to_name_and_argument_fragment(self, text, name, fragment):
@@ -205,50 +268,92 @@ class TestParser:
         "text, name",
         [
             # No </tool_call>; balanced-brace extractor must still close it.
-            pytest.param('<tool_call>{"name":"python","arguments":{"code":"print(1)"}}',
-                "python", id = "json_tool_call_unclosed"),
+            pytest.param(
+                '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}',
+                "python",
+                id = "json_tool_call_unclosed",
+            ),
             # Bracket-tag surrounded by prose is still recognised.
-            pytest.param('Sure, I will look that up.\n[TOOL_CALLS]web_search{"query":"weather"}\nCalling now.',
-                "web_search", id = "mistral_bracket_with_prose"),
+            pytest.param(
+                'Sure, I will look that up.\n[TOOL_CALLS]web_search{"query":"weather"}\nCalling now.',
+                "web_search",
+                id = "mistral_bracket_with_prose",
+            ),
             # Args must be a JSON object; a dict wrapping an array value is accepted.
-            pytest.param('[TOOL_CALLS]web_search{"opts":[1,2,3]}',
-                "web_search", id = "mistral_bracket_object_with_array_value"),
-            pytest.param('I should call the python tool. Like this: python[ARGS]{"code":"x = 1"}',
-                "python", id = "rehearsal_with_prose"),
+            pytest.param(
+                '[TOOL_CALLS]web_search{"opts":[1,2,3]}',
+                "web_search",
+                id = "mistral_bracket_object_with_array_value",
+            ),
+            pytest.param(
+                'I should call the python tool. Like this: python[ARGS]{"code":"x = 1"}',
+                "python",
+                id = "rehearsal_with_prose",
+            ),
             # Dashed MCP names must be captured whole, not truncated at the first dash.
-            pytest.param('[TOOL_CALLS]mcp__srv__list-issues{"q":"x"}',
-                "mcp__srv__list-issues", id = "mistral_bracket_hyphenated_mcp_name"),
-            pytest.param('mcp__srv__list-issues[ARGS]{"q":"x"}',
-                "mcp__srv__list-issues", id = "rehearsal_hyphenated_mcp_name"),
-            pytest.param('<think>planning</think>python[ARGS]{"code":"print(1)"}',
-                "python", id = "rehearsal_after_closed_think_still_parsed"),
+            pytest.param(
+                '[TOOL_CALLS]mcp__srv__list-issues{"q":"x"}',
+                "mcp__srv__list-issues",
+                id = "mistral_bracket_hyphenated_mcp_name",
+            ),
+            pytest.param(
+                'mcp__srv__list-issues[ARGS]{"q":"x"}',
+                "mcp__srv__list-issues",
+                id = "rehearsal_hyphenated_mcp_name",
+            ),
+            pytest.param(
+                '<think>planning</think>python[ARGS]{"code":"print(1)"}',
+                "python",
+                id = "rehearsal_after_closed_think_still_parsed",
+            ),
             # Reasoning models (Qwen3.5 enable_thinking) open <think> in the PROMPT, so generated
             # content starts inside the thought and carries only a closing </think>. A call
             # rehearsed in that leading thought must be skipped, while a real call after the close
             # still fires.
-            pytest.param('planning web_search[ARGS]{"query":"draft"}</think>python[ARGS]{"code":"print(1)"}',
-                "python", id = "rehearsal_inside_prefilled_think_is_ignored"),
+            pytest.param(
+                'planning web_search[ARGS]{"query":"draft"}</think>python[ARGS]{"code":"print(1)"}',
+                "python",
+                id = "rehearsal_inside_prefilled_think_is_ignored",
+            ),
             # A </think> literal inside a real leading call's arguments must not be read as a
             # prefilled-reasoning close (which would skip the call).
-            pytest.param('web_search[ARGS]{"query":"what is </think>"}',
-                "web_search", id = "literal_close_think_in_leading_argument_not_prefill"),
+            pytest.param(
+                'web_search[ARGS]{"query":"what is </think>"}',
+                "web_search",
+                id = "literal_close_think_in_leading_argument_not_prefill",
+            ),
             # A real leading call followed by a stray </think> and no further call is a normal
             # answer, not prefilled reasoning; the call must still fire (the virtual span only
             # applies when a real call follows the close).
-            pytest.param('Now web_search[ARGS]{"query":"x"}</think> answer',
-                "web_search", id = "stray_close_after_real_call_not_treated_as_prefill"),
+            pytest.param(
+                'Now web_search[ARGS]{"query":"x"}</think> answer',
+                "web_search",
+                id = "stray_close_after_real_call_not_treated_as_prefill",
+            ),
             # The think block is stripped before matching so the post-thinking call is recognised.
-            pytest.param("<think>I will use web_search to find the weather.</think>"
+            pytest.param(
+                "<think>I will use web_search to find the weather.</think>"
                 '<tool_call>{"name":"web_search","arguments":{"query":"sf"}}</tool_call>',
-                "web_search", id = "think_block_stripped_before_xml"),
-            pytest.param('<think>Let me search for that.</think>\n[TOOL_CALLS]web_search{"query":"weather"}',
-                "web_search", id = "think_block_stripped_before_bracket_tag"),
+                "web_search",
+                id = "think_block_stripped_before_xml",
+            ),
+            pytest.param(
+                '<think>Let me search for that.</think>\n[TOOL_CALLS]web_search{"query":"weather"}',
+                "web_search",
+                id = "think_block_stripped_before_bracket_tag",
+            ),
             # Some templates use [THINK]...[/THINK] instead of <think>.
-            pytest.param('[THINK]planning my next call[/THINK][TOOL_CALLS]python{"code":"print(1)"}',
-                "python", id = "uppercase_think_tag_stripped"),
+            pytest.param(
+                '[THINK]planning my next call[/THINK][TOOL_CALLS]python{"code":"print(1)"}',
+                "python",
+                id = "uppercase_think_tag_stripped",
+            ),
             # When a model emits both forms in one message, the XML form is canonical and wins.
-            pytest.param('<tool_call>{"name":"primary","arguments":{}}</tool_call>[TOOL_CALLS]secondary{"k":"v"}',
-                "primary", id = "xml_wins_over_bracket"),
+            pytest.param(
+                '<tool_call>{"name":"primary","arguments":{}}</tool_call>[TOOL_CALLS]secondary{"k":"v"}',
+                "primary",
+                id = "xml_wins_over_bracket",
+            ),
         ],
     )
     def test_call_parses_to_single_named_call(self, text, name):
@@ -261,19 +366,27 @@ class TestParser:
         [
             # Bad JSON is dropped silently; caller can fall back to text.
             pytest.param("<tool_call>{not valid json}</tool_call>", id = "bad_json_does_not_raise"),
-            pytest.param("[TOOL_CALLS]web_search{not valid}", id = "mistral_bracket_bad_json_dropped"),
+            pytest.param(
+                "[TOOL_CALLS]web_search{not valid}", id = "mistral_bracket_bad_json_dropped"
+            ),
             pytest.param("python[ARGS]{not valid json}", id = "rehearsal_bad_json_dropped"),
             # Rehearsal-shaped markup inside an unclosed <think> block must not be executed as a
             # real tool call. Mid-stream the </think> tag has not arrived yet, so the strip regex
             # has to accept end-of-string as a terminator.
-            pytest.param('<think>I should call web_search[ARGS]{"query":"weather"} next to find the answer.',
-                id = "rehearsal_inside_unclosed_think_is_ignored"),
-            pytest.param('[THINK]planning to use python[ARGS]{"code":"print(1)"} but not yet.',
-                id = "rehearsal_inside_unclosed_bracket_think_is_ignored"),
+            pytest.param(
+                '<think>I should call web_search[ARGS]{"query":"weather"} next to find the answer.',
+                id = "rehearsal_inside_unclosed_think_is_ignored",
+            ),
+            pytest.param(
+                '[THINK]planning to use python[ARGS]{"code":"print(1)"} but not yet.',
+                id = "rehearsal_inside_unclosed_bracket_think_is_ignored",
+            ),
             # A call mentioned inside think is a rehearsal; the wrapper strip removes the markup.
-            pytest.param('<think>I might call <tool_call>{"name":"web_search","arguments":{}}</tool_call> '
+            pytest.param(
+                '<think>I might call <tool_call>{"name":"web_search","arguments":{}}</tool_call> '
                 "but I am not sure</think>\nLet me just answer directly.",
-                id = "think_block_hides_inner_tool_call"),
+                id = "think_block_hides_inner_tool_call",
+            ),
         ],
     )
     def test_text_yields_no_tool_calls(self, text):
@@ -609,64 +722,128 @@ class TestParserMultiFormat:
         "text, name, args",
         [
             # Llama-3 built-in tools: <|python_tag|>NAME.call(k="v", ...).
-            pytest.param('<|python_tag|>brave_search.call(query="weather in Tokyo")',
-                "brave_search", {"query": "weather in Tokyo"}, id = "llama3_python_tag_dot_call"),
-            pytest.param('<|python_tag|>get_weather.call(location="Tokyo", units="celsius", days=5)',
-                "get_weather", {"location": "Tokyo", "units": "celsius", "days": 5},
-                id = "llama3_python_tag_dot_call_multi_arg"),
-            pytest.param('<|python_tag|>{"name":"web_search","parameters":{"query":"hi","n":5}}',
-                "web_search", {"query": "hi", "n": 5}, id = "llama3_python_tag_json_form"),
+            pytest.param(
+                '<|python_tag|>brave_search.call(query="weather in Tokyo")',
+                "brave_search",
+                {"query": "weather in Tokyo"},
+                id = "llama3_python_tag_dot_call",
+            ),
+            pytest.param(
+                '<|python_tag|>get_weather.call(location="Tokyo", units="celsius", days=5)',
+                "get_weather",
+                {"location": "Tokyo", "units": "celsius", "days": 5},
+                id = "llama3_python_tag_dot_call_multi_arg",
+            ),
+            pytest.param(
+                '<|python_tag|>{"name":"web_search","parameters":{"query":"hi","n":5}}',
+                "web_search",
+                {"query": "hi", "n": 5},
+                id = "llama3_python_tag_json_form",
+            ),
             # Llama-3 emits ``<|eom_id|>`` after the JSON; must not break parsing.
-            pytest.param('<|python_tag|>{"name":"python","parameters":{"code":"print(2+2)"}}<|eom_id|>',
-                "python", {"code": "print(2+2)"}, id = "llama3_python_tag_json_form_with_eom"),
+            pytest.param(
+                '<|python_tag|>{"name":"python","parameters":{"code":"print(2+2)"}}<|eom_id|>',
+                "python",
+                {"code": "print(2+2)"},
+                id = "llama3_python_tag_json_form_with_eom",
+            ),
             # Llama-3.2-Instruct emits bare JSON directly as content; no <|python_tag|> prefix
             # per its training template.
-            pytest.param('{"name":"web_search","parameters":{"query":"Tokyo weather"}}',
-                "web_search", {"query": "Tokyo weather"}, id = "llama3_2_bare_json_parameters"),
-            pytest.param('{"name":"add","arguments":{"a":1,"b":2}}',
-                "add", {"a": 1, "b": 2}, id = "llama3_2_bare_json_arguments_key"),
+            pytest.param(
+                '{"name":"web_search","parameters":{"query":"Tokyo weather"}}',
+                "web_search",
+                {"query": "Tokyo weather"},
+                id = "llama3_2_bare_json_parameters",
+            ),
+            pytest.param(
+                '{"name":"add","arguments":{"a":1,"b":2}}',
+                "add",
+                {"a": 1, "b": 2},
+                id = "llama3_2_bare_json_arguments_key",
+            ),
             # Array object keyed on ``parameters`` (not ``arguments``) must keep its payload,
             # matching the JSON/XML paths and SGLang's base detector.
-            pytest.param('[TOOL_CALLS] [{"name":"get_weather","parameters":{"city":"Paris"}}]',
-                "get_weather", {"city": "Paris"}, id = "mistral_array_parameters_key_alias"),
+            pytest.param(
+                '[TOOL_CALLS] [{"name":"get_weather","parameters":{"city":"Paris"}}]',
+                "get_weather",
+                {"city": "Paris"},
+                id = "mistral_array_parameters_key_alias",
+            ),
             # Magistral / Mistral Small 3.1: bare ``name{json}`` after trigger.
-            pytest.param('[TOOL_CALLS]add{"a":3.5,"b":4}',
-                "add", {"a": 3.5, "b": 4}, id = "mistral_v11_single"),
+            pytest.param(
+                '[TOOL_CALLS]add{"a":3.5,"b":4}', "add", {"a": 3.5, "b": 4}, id = "mistral_v11_single"
+            ),
             # Ministral / Mistral Large 3: ``[TOOL_CALLS]name[ARGS]{json}``.
-            pytest.param('[TOOL_CALLS]add[ARGS]{"a":1,"b":2}',
-                "add", {"a": 1, "b": 2}, id = "mistral_v11_with_args_marker"),
+            pytest.param(
+                '[TOOL_CALLS]add[ARGS]{"a":1,"b":2}',
+                "add",
+                {"a": 1, "b": 2},
+                id = "mistral_v11_with_args_marker",
+            ),
             # Mistral Small 3.2: ``[TOOL_CALLS]name[CALL_ID]<id>[ARGS]{json}``. The ``[CALL_ID]``
             # segment must be skipped, not treated as a stop (llama.cpp test-chat.cpp:4785).
-            pytest.param('[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}',
-                "special_function", {"arg1": 1}, id = "mistral_call_id_form"),
+            pytest.param(
+                '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}',
+                "special_function",
+                {"arg1": 1},
+                id = "mistral_call_id_form",
+            ),
             # Magistral wraps reasoning in ``[THINK]...[/THINK]``. A ``[TOOL_CALLS]`` inside the
             # reasoning is chain-of-thought, not a real call; only the call after ``[/THINK]``
             # counts (llama.cpp test-chat.cpp:2285).
-            pytest.param('[THINK]Let me think about [TOOL_CALLS]fake[ARGS]{"x":1} '
+            pytest.param(
+                '[THINK]Let me think about [TOOL_CALLS]fake[ARGS]{"x":1} '
                 'and more[/THINK][TOOL_CALLS]real_fn[ARGS]{"y":2}',
-                "real_fn", {"y": 2}, id = "mistral_think_reasoning_ignored"),
+                "real_fn",
+                {"y": 2},
+                id = "mistral_think_reasoning_ignored",
+            ),
             # A literal ``[THINK]`` inside a real tool argument (after the call) must not be
             # stripped or corrupt the parse.
-            pytest.param('[TOOL_CALLS]search[ARGS]{"q":"explain the [THINK] token"}',
-                "search", {"q": "explain the [THINK] token"},
-                id = "mistral_think_literal_in_argument_preserved"),
-            pytest.param('<|tool_call>call:get_weather{location:<|"|>Tokyo<|"|>,units:<|"|>celsius<|"|>}<tool_call|>',
-                "get_weather", {"location": "Tokyo", "units": "celsius"}, id = "gemma4_simple_call"),
-            pytest.param("<|tool_call>call:set_pref{enabled:true,attempts:5,threshold:1.5,nickname:null}<tool_call|>",
-                "set_pref", {"enabled": True, "attempts": 5, "threshold": 1.5, "nickname": None},
-                id = "gemma4_with_primitives"),
+            pytest.param(
+                '[TOOL_CALLS]search[ARGS]{"q":"explain the [THINK] token"}',
+                "search",
+                {"q": "explain the [THINK] token"},
+                id = "mistral_think_literal_in_argument_preserved",
+            ),
+            pytest.param(
+                '<|tool_call>call:get_weather{location:<|"|>Tokyo<|"|>,units:<|"|>celsius<|"|>}<tool_call|>',
+                "get_weather",
+                {"location": "Tokyo", "units": "celsius"},
+                id = "gemma4_simple_call",
+            ),
+            pytest.param(
+                "<|tool_call>call:set_pref{enabled:true,attempts:5,threshold:1.5,nickname:null}<tool_call|>",
+                "set_pref",
+                {"enabled": True, "attempts": 5, "threshold": 1.5, "nickname": None},
+                id = "gemma4_with_primitives",
+            ),
             # Gemma 4 nests dicts / lists with bare keys and ``<|"|>`` strings.
-            pytest.param('<|tool_call>call:search{query:<|"|>foo<|"|>,'
+            pytest.param(
+                '<|tool_call>call:search{query:<|"|>foo<|"|>,'
                 'filters:{site:<|"|>example.com<|"|>,recent:true},tags:[<|"|>a<|"|>,<|"|>b<|"|>]}<tool_call|>',
-                "search", {"query": "foo", "filters": {"site": "example.com", "recent": True}, "tags": ["a", "b"]},
-                id = "gemma4_nested_args"),
+                "search",
+                {
+                    "query": "foo",
+                    "filters": {"site": "example.com", "recent": True},
+                    "tags": ["a", "b"],
+                },
+                id = "gemma4_nested_args",
+            ),
             # skip_special_tokens removes <|tool_call>/<tool_call|> and <|"|>, leaving a bare
             # call:NAME{...} with an unquoted value.
-            pytest.param("call:web_search{query:weather in San Francisco right now}",
-                "web_search", {"query": "weather in San Francisco right now"}, id = "gemma4_bare_stripped_call"),
-            pytest.param("call:web_search{query:pytorch latest, url:https://pytorch.org}",
-                "web_search", {"query": "pytorch latest", "url": "https://pytorch.org"},
-                id = "gemma4_bare_multi_arg"),
+            pytest.param(
+                "call:web_search{query:weather in San Francisco right now}",
+                "web_search",
+                {"query": "weather in San Francisco right now"},
+                id = "gemma4_bare_stripped_call",
+            ),
+            pytest.param(
+                "call:web_search{query:pytorch latest, url:https://pytorch.org}",
+                "web_search",
+                {"query": "pytorch latest", "url": "https://pytorch.org"},
+                id = "gemma4_bare_multi_arg",
+            ),
         ],
     )
     def test_family_call_parses_to_name_and_args(self, text, name, args):
@@ -676,19 +853,34 @@ class TestParserMultiFormat:
         "text, names",
         [
             # Llama-3 may chain calls with ``; `` per training template.
-            pytest.param('{"name":"a","parameters":{}}; {"name":"b","parameters":{}}',
-                ["a", "b"], id = "llama3_2_bare_json_multi_call"),
-            pytest.param('[TOOL_CALLS] [{"name":"a","arguments":{"x":1},"id":"id1"},'
+            pytest.param(
+                '{"name":"a","parameters":{}}; {"name":"b","parameters":{}}',
+                ["a", "b"],
+                id = "llama3_2_bare_json_multi_call",
+            ),
+            pytest.param(
+                '[TOOL_CALLS] [{"name":"a","arguments":{"x":1},"id":"id1"},'
                 '{"name":"b","arguments":{"y":2},"id":"id2"}]',
-                ["a", "b"], id = "mistral_pre_v11_array_multi"),
+                ["a", "b"],
+                id = "mistral_pre_v11_array_multi",
+            ),
             # v11+ parallel: ``[TOOL_CALLS]a{...}[TOOL_CALLS]b{...}``.
-            pytest.param('[TOOL_CALLS]add{"a":1}[TOOL_CALLS]sub{"b":2}',
-                ["add", "sub"], id = "mistral_v11_parallel"),
-            pytest.param('[TOOL_CALLS]special_function[CALL_ID]000000001[ARGS]{"arg1": 1}'
+            pytest.param(
+                '[TOOL_CALLS]add{"a":1}[TOOL_CALLS]sub{"b":2}',
+                ["add", "sub"],
+                id = "mistral_v11_parallel",
+            ),
+            pytest.param(
+                '[TOOL_CALLS]special_function[CALL_ID]000000001[ARGS]{"arg1": 1}'
                 '[TOOL_CALLS]special_function_with_opt[CALL_ID]000000002[ARGS]{"arg1": 1, "arg2": 2}',
-                ["special_function", "special_function_with_opt"], id = "mistral_call_id_form_parallel"),
-            pytest.param("<|tool_call>call:a{x:1}<tool_call|><|tool_call>call:b{y:2}<tool_call|>",
-                ["a", "b"], id = "gemma4_multi_call"),
+                ["special_function", "special_function_with_opt"],
+                id = "mistral_call_id_form_parallel",
+            ),
+            pytest.param(
+                "<|tool_call>call:a{x:1}<tool_call|><|tool_call>call:b{y:2}<tool_call|>",
+                ["a", "b"],
+                id = "gemma4_multi_call",
+            ),
         ],
     )
     def test_family_parallel_calls_parse_in_order(self, text, names):
@@ -699,14 +891,23 @@ class TestParserMultiFormat:
     @pytest.mark.parametrize(
         "text, name",
         [
-            pytest.param('{"name":"x","parameters":{"y":1}}<|eom_id|>',
-                "x", id = "llama3_2_bare_json_with_eom_sentinel"),
+            pytest.param(
+                '{"name":"x","parameters":{"y":1}}<|eom_id|>',
+                "x",
+                id = "llama3_2_bare_json_with_eom_sentinel",
+            ),
             # Sometimes a prior <|eot_id|> leaks into the next turn.
-            pytest.param('<|eot_id|>{"name":"x","parameters":{}}',
-                "x", id = "llama3_2_bare_json_leading_sentinel_skipped"),
+            pytest.param(
+                '<|eot_id|>{"name":"x","parameters":{}}',
+                "x",
+                id = "llama3_2_bare_json_leading_sentinel_skipped",
+            ),
             # Closing ``]`` truncated -- parser must heal off individual objects.
-            pytest.param('[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"},"id":"id"}',
-                "web_search", id = "mistral_pre_v11_unclosed_array"),
+            pytest.param(
+                '[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"},"id":"id"}',
+                "web_search",
+                id = "mistral_pre_v11_unclosed_array",
+            ),
         ],
     )
     def test_family_call_parses_to_single_named_call(self, text, name):
@@ -721,24 +922,34 @@ class TestParserMultiFormat:
             pytest.param("Hello world, how are you today?", id = "llama3_2_bare_json_plain_prose"),
             # JSON embedded in prose must NOT fire (the parser is strict about content
             # STARTING with `{`).
-            pytest.param('The tool result was: {"name":"foo"}', id = "llama3_2_bare_json_embedded_in_prose"),
+            pytest.param(
+                'The tool result was: {"name":"foo"}', id = "llama3_2_bare_json_embedded_in_prose"
+            ),
             pytest.param('{"result":"ok","data":[1,2,3]}', id = "llama3_2_bare_json_missing_name"),
             pytest.param('{"name":"x"}', id = "llama3_2_bare_json_missing_args"),
             pytest.param('{"name":"x","parameters":42}', id = "llama3_2_bare_json_args_not_dict"),
             # Llama-3 spec: parameters must be a dict, so prose in it must NOT trigger.
-            pytest.param('{"name":"foo","parameters":"this is a sentence"}',
-                id = "llama3_2_bare_json_string_parameters"),
+            pytest.param(
+                '{"name":"foo","parameters":"this is a sentence"}',
+                id = "llama3_2_bare_json_string_parameters",
+            ),
             # OpenAI ``arguments`` may be a JSON-string of a dict, but a plain non-JSON string
             # must not pass the guard.
-            pytest.param('{"name":"foo","arguments":"not json"}',
-                id = "llama3_2_bare_json_string_arguments_not_json"),
+            pytest.param(
+                '{"name":"foo","arguments":"not json"}',
+                id = "llama3_2_bare_json_string_arguments_not_json",
+            ),
             # Reasoning that merely mentions a tool call but does not emit one after
             # ``[/THINK]`` yields no calls.
-            pytest.param('[THINK]I might call [TOOL_CALLS]fake[ARGS]{"x":1}[/THINK]Done.',
-                id = "mistral_think_reasoning_no_real_call"),
+            pytest.param(
+                '[THINK]I might call [TOOL_CALLS]fake[ARGS]{"x":1}[/THINK]Done.',
+                id = "mistral_think_reasoning_no_real_call",
+            ),
             # A word ending in "call:" must not trigger a bare tool call.
-            pytest.param("I will recall:that the function{ } is helpful.",
-                id = "gemma4_bare_not_matched_in_prose"),
+            pytest.param(
+                "I will recall:that the function{ } is helpful.",
+                id = "gemma4_bare_not_matched_in_prose",
+            ),
         ],
     )
     def test_family_text_yields_no_tool_calls(self, text):
@@ -749,8 +960,10 @@ class TestParserMultiFormat:
         [
             pytest.param('<|python_tag|>brave_search.call(query="x")', id = "llama3"),
             pytest.param('[TOOL_CALLS]add{"a":1}', id = "mistral_v11"),
-            pytest.param('[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}',
-                id = "mistral_call_id_form"),
+            pytest.param(
+                '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}',
+                id = "mistral_call_id_form",
+            ),
             pytest.param("<|tool_call>call:foo{x:1}<tool_call|>", id = "gemma4"),
         ],
     )
@@ -962,17 +1175,35 @@ _DS_CALL_END = "<｜tool▁call▁end｜>"
 _DS_SEP = "<｜tool▁sep｜>"
 
 
-def _ds_call(name, args, *, closed = True):
+def _ds_call(
+    name,
+    args,
+    *,
+    closed = True,
+):
     """One DeepSeek V3 / V3.1 inner call: bare name, separator, bare JSON args."""
     return _DS_CALL_BEGIN + name + _DS_SEP + args + (_DS_CALL_END if closed else "")
 
 
-def _ds_r1_call(name, args, *, begin = True):
+def _ds_r1_call(
+    name,
+    args,
+    *,
+    begin = True,
+):
     """One DeepSeek R1 inner call: ``function`` prefix, then a Markdown ```json fence."""
-    return (_DS_CALL_BEGIN if begin else "") + f"function{_DS_SEP}{name}\n```json\n{args}\n```" + _DS_CALL_END
+    return (
+        (_DS_CALL_BEGIN if begin else "")
+        + f"function{_DS_SEP}{name}\n```json\n{args}\n```"
+        + _DS_CALL_END
+    )
 
 
-def _ds_section(*calls, opener = _DS_OPEN, closed = True):
+def _ds_section(
+    *calls,
+    opener = _DS_OPEN,
+    closed = True,
+):
     """The DeepSeek outer envelope around already-built inner calls."""
     return opener + "".join(calls) + (_DS_END if closed else "")
 
@@ -985,11 +1216,19 @@ class TestParserDeepSeek:
     @pytest.mark.parametrize(
         "text, name, args",
         [
-            pytest.param(_ds_section(_ds_r1_call("special_function", '{"arg1": 1}')),
-                "special_function", {"arg1": 1}, id = "r1_simple_call_with_code_fence"),
+            pytest.param(
+                _ds_section(_ds_r1_call("special_function", '{"arg1": 1}')),
+                "special_function",
+                {"arg1": 1},
+                id = "r1_simple_call_with_code_fence",
+            ),
             # V3 / V3.1 omit the ``function`` prefix and the code fence.
-            pytest.param(_ds_section(_ds_call("get_time", '{"city": "Tokyo"}')),
-                "get_time", {"city": "Tokyo"}, id = "v3_1_bare_json"),
+            pytest.param(
+                _ds_section(_ds_call("get_time", '{"city": "Tokyo"}')),
+                "get_time",
+                {"city": "Tokyo"},
+                id = "v3_1_bare_json",
+            ),
         ],
     )
     def test_deepseek_call_parses_to_name_and_args(self, text, name, args):
@@ -999,12 +1238,20 @@ class TestParserDeepSeek:
         "text, name",
         [
             # llama.cpp accepts the short-form opener too.
-            pytest.param(_ds_section(_ds_r1_call("get_time", '{"city": "Paris"}', begin = False),
-                opener = _DS_SHORT_OPEN), "get_time", id = "r1_short_form_outer_marker"),
+            pytest.param(
+                _ds_section(
+                    _ds_r1_call("get_time", '{"city": "Paris"}', begin = False), opener = _DS_SHORT_OPEN
+                ),
+                "get_time",
+                id = "r1_short_form_outer_marker",
+            ),
             # Reasoning <think>...</think> precedes the tool block.
-            pytest.param("<think>I'm thinking</think>\n"
+            pytest.param(
+                "<think>I'm thinking</think>\n"
                 + _ds_section(_ds_call("get_time", '{"city": "Tokyo"}')),
-                "get_time", id = "v3_1_with_reasoning"),
+                "get_time",
+                id = "v3_1_with_reasoning",
+            ),
         ],
     )
     def test_deepseek_call_parses_to_single_named_call(self, text, name):
@@ -1014,10 +1261,12 @@ class TestParserDeepSeek:
 
     def test_v3_1_multi_call_shares_envelope(self):
         # Parallel calls share one outer envelope; each inner call carries its own begin/end pair.
-        result = parse_tool_calls_from_text(_ds_section(
-            _ds_call("get_time", '{"city": "Paris"}'),
-            _ds_call("get_weather", '{"city": "Paris"}'),
-        ))
+        result = parse_tool_calls_from_text(
+            _ds_section(
+                _ds_call("get_time", '{"city": "Paris"}'),
+                _ds_call("get_weather", '{"city": "Paris"}'),
+            )
+        )
         assert len(result) == 2
         assert result[0]["function"]["name"] == "get_time"
         assert result[1]["function"]["name"] == "get_weather"
@@ -1029,10 +1278,12 @@ class TestParserDeepSeek:
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
     def test_v3_1_multi_call_recovers_when_first_end_marker_missing(self):
-        result = parse_tool_calls_from_text(_ds_section(
-            _ds_call("get_time", '{"city": "Paris"}', closed = False),
-            _ds_call("get_weather", '{"city": "Paris"}'),
-        ))
+        result = parse_tool_calls_from_text(
+            _ds_section(
+                _ds_call("get_time", '{"city": "Paris"}', closed = False),
+                _ds_call("get_weather", '{"city": "Paris"}'),
+            )
+        )
         assert [c["function"]["name"] for c in result] == ["get_time", "get_weather"]
 
     def test_v3_1_strict_recovers_after_missing_call_end(self):
@@ -1051,10 +1302,16 @@ class TestParserDeepSeek:
 
     def test_r1_strict_recovers_after_missing_close_fence(self):
         # Same recovery for the R1 fenced form: the first call never closes its ```json fence.
-        text = (_DS_OPEN
-                + f"function{_DS_SEP}get_weather\n```json\n" + '{"city": "SF"}'
-                + f"function{_DS_SEP}get_time\n```json\n" + '{"tz": "PST"}'
-                + "\n```" + _DS_CALL_END + _DS_END)
+        text = (
+            _DS_OPEN
+            + f"function{_DS_SEP}get_weather\n```json\n"
+            + '{"city": "SF"}'
+            + f"function{_DS_SEP}get_time\n```json\n"
+            + '{"tz": "PST"}'
+            + "\n```"
+            + _DS_CALL_END
+            + _DS_END
+        )
         strict = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert [c["function"]["name"] for c in strict] == ["get_time"]
 
@@ -1188,16 +1445,25 @@ class TestParserGLM:
         assert args == {"code": "    indented code    "}
 
 
-def _kimi_call(call_id, args = "{}", *, closed = True):
+def _kimi_call(
+    call_id,
+    args = "{}",
+    *,
+    closed = True,
+):
     """One Kimi K2 inner call; ``closed = False`` omits the ``<|tool_call_end|>`` terminator."""
-    return (f"<|tool_call_begin|>{call_id}<|tool_call_argument_begin|>{args}"
-            + ("<|tool_call_end|>" if closed else ""))
+    return f"<|tool_call_begin|>{call_id}<|tool_call_argument_begin|>{args}" + (
+        "<|tool_call_end|>" if closed else ""
+    )
 
 
 def _kimi_section(*calls, closed = True):
     """The Kimi section envelope wrapped around already-built inner calls."""
-    return ("<|tool_calls_section_begin|>" + "".join(calls)
-            + ("<|tool_calls_section_end|>" if closed else ""))
+    return (
+        "<|tool_calls_section_begin|>"
+        + "".join(calls)
+        + ("<|tool_calls_section_end|>" if closed else "")
+    )
 
 
 class TestParserKimi:
@@ -1221,23 +1487,38 @@ class TestParserKimi:
         [
             # A Qwen/Hermes <tool_call> whose argument contains literal Kimi markup (a user asking
             # about that syntax) must execute the OUTER call, not the embedded marker.
-            pytest.param('<tool_call>{"name":"web_search","arguments":{"query":'
+            pytest.param(
+                '<tool_call>{"name":"web_search","arguments":{"query":'
                 '"explain <|tool_call_begin|>functions.evil:0'
                 '<|tool_call_argument_begin|>{}<|tool_call_end|>"}}</tool_call>',
-                "web_search", id = "outer_tool_call_with_embedded_kimi_marker_parses_outer"),
+                "web_search",
+                id = "outer_tool_call_with_embedded_kimi_marker_parses_outer",
+            ),
             # Control: a real Kimi call with no leading <tool_call> envelope still goes through
             # the pre-pass.
-            pytest.param(_kimi_section(_kimi_call("functions.web_search:0", '{"query":"x"}')),
-                "web_search", id = "genuine_kimi_call_without_envelope_still_parses"),
+            pytest.param(
+                _kimi_section(_kimi_call("functions.web_search:0", '{"query":"x"}')),
+                "web_search",
+                id = "genuine_kimi_call_without_envelope_still_parses",
+            ),
             # A dotted Kimi id keeps its FULL name after stripping only the ``functions.`` prefix
             # and the ``:idx`` suffix, matching current vLLM.
-            pytest.param(_kimi_section(_kimi_call("a.b.c:2")), "a.b.c",
-                id = "kimi_dotted_name_keeps_full_dotted_name"),
-            pytest.param(_kimi_section(_kimi_call("functions.mcp.server-list:0")), "mcp.server-list",
-                id = "kimi_dotted_mcp_name_with_functions_prefix"),
+            pytest.param(
+                _kimi_section(_kimi_call("a.b.c:2")),
+                "a.b.c",
+                id = "kimi_dotted_name_keeps_full_dotted_name",
+            ),
+            pytest.param(
+                _kimi_section(_kimi_call("functions.mcp.server-list:0")),
+                "mcp.server-list",
+                id = "kimi_dotted_mcp_name_with_functions_prefix",
+            ),
             # End marker missing -- the parser must still extract the call.
-            pytest.param(_kimi_section(_kimi_call("functions.foo:0", '{"a":1}'), closed = False),
-                "foo", id = "kimi_handles_unclosed_section"),
+            pytest.param(
+                _kimi_section(_kimi_call("functions.foo:0", '{"a":1}'), closed = False),
+                "foo",
+                id = "kimi_handles_unclosed_section",
+            ),
         ],
     )
     def test_kimi_call_parses_to_single_named_call(self, text, name):
@@ -1248,10 +1529,12 @@ class TestParserKimi:
     def test_kimi_multi_call_with_index(self):
         # Multiple consecutive calls inside a single section, each with its own monotonically
         # incrementing ``:IDX``.
-        result = parse_tool_calls_from_text(_kimi_section(
-            _kimi_call("functions.read_file:0", '{"path":"a"}'),
-            _kimi_call("functions.web_search:1", '{"query":"x"}'),
-        ))
+        result = parse_tool_calls_from_text(
+            _kimi_section(
+                _kimi_call("functions.read_file:0", '{"path":"a"}'),
+                _kimi_call("functions.web_search:1", '{"query":"x"}'),
+            )
+        )
         assert len(result) == 2
         assert result[0]["function"]["name"] == "read_file"
         assert result[0]["id"].endswith(":0")
@@ -1259,10 +1542,12 @@ class TestParserKimi:
         assert result[1]["id"].endswith(":1")
 
     def test_kimi_multi_call_recovers_when_first_end_marker_missing(self):
-        result = parse_tool_calls_from_text(_kimi_section(
-            _kimi_call("functions.read_file:0", '{"path":"a"}', closed = False),
-            _kimi_call("functions.web_search:1", '{"query":"x"}'),
-        ))
+        result = parse_tool_calls_from_text(
+            _kimi_section(
+                _kimi_call("functions.read_file:0", '{"path":"a"}', closed = False),
+                _kimi_call("functions.web_search:1", '{"query":"x"}'),
+            )
+        )
         assert [c["function"]["name"] for c in result] == ["read_file", "web_search"]
 
     def test_kimi_strip_markup(self):
@@ -1275,7 +1560,9 @@ class TestParserKimi:
     def test_kimi_call_without_section_wrapper(self):
         # llama.cpp makes the ``<|tool_calls_section_begin|>`` wrapper optional -- Kimi K2 can
         # emit a bare ``<|tool_call_begin|>`` call.
-        result = parse_tool_calls_from_text(_kimi_call("functions.execute_command:0", '{"cmd":"ls"}'))
+        result = parse_tool_calls_from_text(
+            _kimi_call("functions.execute_command:0", '{"cmd":"ls"}')
+        )
         assert len(result) == 1
         assert result[0]["function"]["name"] == "execute_command"
         assert json.loads(result[0]["function"]["arguments"]) == {"cmd": "ls"}
@@ -1283,10 +1570,12 @@ class TestParserKimi:
     def test_kimi_malformed_json_recovers_later_calls(self):
         # A call with malformed / truncated JSON must not drop the valid calls that follow it in
         # the same section (the bad call is skipped, the good one is recovered).
-        result = parse_tool_calls_from_text(_kimi_section(
-            _kimi_call("functions.a:0", '{"city":"Beijing"'),  # missing closing brace
-            _kimi_call("functions.b:1", '{"city":"Shanghai"}'),
-        ))
+        result = parse_tool_calls_from_text(
+            _kimi_section(
+                _kimi_call("functions.a:0", '{"city":"Beijing"'),  # missing closing brace
+                _kimi_call("functions.b:1", '{"city":"Shanghai"}'),
+            )
+        )
         assert len(result) == 1
         assert result[0]["function"]["name"] == "b"
         assert json.loads(result[0]["function"]["arguments"]) == {"city": "Shanghai"}
@@ -1437,46 +1726,85 @@ def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
     "turns, expected_calls, hidden, visible",
     [
         # A rehearsal whose name and [ARGS] arrive together must drain, not stream the bare name.
-        pytest.param([['web_search[ARGS]{"query":"cats"}'], ["Found."]],
-            [("web_search", {"query": "cats"})], ["web_search"], None,
-            id = "rehearsal_call_name_is_not_streamed_before_args"),
+        pytest.param(
+            [['web_search[ARGS]{"query":"cats"}'], ["Found."]],
+            [("web_search", {"query": "cats"})],
+            ["web_search"],
+            None,
+            id = "rehearsal_call_name_is_not_streamed_before_args",
+        ),
         # Finding 5: name and [ARGS] in separate chunks, so the bare name is held until [ARGS] arrives.
-        pytest.param([["web_search", '[ARGS]{"query":"cats"}'], ["Found."]],
-            [("web_search", {"query": "cats"})], ["web_search"], None,
-            id = "rehearsal_call_name_split_before_args_is_not_streamed"),
+        pytest.param(
+            [["web_search", '[ARGS]{"query":"cats"}'], ["Found."]],
+            [("web_search", {"query": "cats"})],
+            ["web_search"],
+            None,
+            id = "rehearsal_call_name_split_before_args_is_not_streamed",
+        ),
         # After prose has streamed (STREAMING state), a split rehearsal name must still be held.
         # _make_loop accumulates these deltas into cumulative snapshots.
-        pytest.param([["Let me think. ", "I will search ", "web_search", '[ARGS]{"query":"cats"}'], ["Found."]],
-            [("web_search", {"query": "cats"})], ["web_search"], None,
-            id = "rehearsal_name_after_prose_in_streaming_is_not_streamed"),
+        pytest.param(
+            [
+                ["Let me think. ", "I will search ", "web_search", '[ARGS]{"query":"cats"}'],
+                ["Found."],
+            ],
+            [("web_search", {"query": "cats"})],
+            ["web_search"],
+            None,
+            id = "rehearsal_name_after_prose_in_streaming_is_not_streamed",
+        ),
         # Prose then ``web_search[ARGS]{...}`` in one chunk: the boundary is pulled back over the name.
-        pytest.param([["Sure. ", 'now web_search[ARGS]{"query":"cats"}'], ["Found."]],
-            [("web_search", {"query": "cats"})], ["web_search"], None,
-            id = "rehearsal_name_after_prose_same_chunk_in_streaming_is_not_streamed"),
+        pytest.param(
+            [["Sure. ", 'now web_search[ARGS]{"query":"cats"}'], ["Found."]],
+            [("web_search", {"query": "cats"})],
+            ["web_search"],
+            None,
+            id = "rehearsal_name_after_prose_same_chunk_in_streaming_is_not_streamed",
+        ),
         # First flush out of BUFFERING applies the same trailing-name hold as STREAMING.
-        pytest.param([["I will use python", '[ARGS]{"code":"print(1)"}'], ["done"]],
-            [("python", {"code": "print(1)"})], ["python"], None,
-            id = "initial_buffer_flush_holds_split_rehearsal_name"),
+        pytest.param(
+            [["I will use python", '[ARGS]{"code":"print(1)"}'], ["done"]],
+            [("python", {"code": "print(1)"})],
+            ["python"],
+            None,
+            id = "initial_buffer_flush_holds_split_rehearsal_name",
+        ),
         # Llama-3.2 ``custom_tools`` bare form ``{"name":..,"parameters":..}`` carries no XML
         # signal. The loop must BUFFER it until the object closes and execute it via the safety
         # net, never leaking the raw JSON to streaming clients as content.
-        pytest.param([['{"name":"web_search","parameters":{"query":"cats"}}'], ["Here are the results."]],
-            [("web_search", {"query": "cats"})], ['"name"', "web_search"], "Here are the results.",
-            id = "bare_json_tool_call_is_not_streamed_as_content"),
+        pytest.param(
+            [['{"name":"web_search","parameters":{"query":"cats"}}'], ["Here are the results."]],
+            [("web_search", {"query": "cats"})],
+            ['"name"', "web_search"],
+            "Here are the results.",
+            id = "bare_json_tool_call_is_not_streamed_as_content",
+        ),
         # Same, but the bare object arrives split mid-key, so the buffer is held open across
         # chunks before it balances.
-        pytest.param([['{"name":"web_', 'search","parameters":{"query":"cats"}}'], ["Done."]],
-            [("web_search", {"query": "cats"})], ['"name"', "web_search"], None,
-            id = "bare_json_tool_call_split_across_chunks_is_not_streamed"),
+        pytest.param(
+            [['{"name":"web_', 'search","parameters":{"query":"cats"}}'], ["Done."]],
+            [("web_search", {"query": "cats"})],
+            ['"name"', "web_search"],
+            None,
+            id = "bare_json_tool_call_split_across_chunks_is_not_streamed",
+        ),
         # Gemma 4 wrapper-less ``call:NAME{...}`` has no XML signal; the loop must hold it
         # (BUFFERING) and execute it, never streaming the raw call text.
-        pytest.param([["call:web_search{query:cats}"], ["Found."]],
-            [("web_search", {"query": "cats"})], ["call:web_search"], None,
-            id = "gemma_wrapperless_call_is_not_streamed_as_content"),
+        pytest.param(
+            [["call:web_search{query:cats}"], ["Found."]],
+            [("web_search", {"query": "cats"})],
+            ["call:web_search"],
+            None,
+            id = "gemma_wrapperless_call_is_not_streamed_as_content",
+        ),
         # Gemma may emit ``call : NAME{...}`` with whitespace around the colon, split across chunks.
-        pytest.param([["call", " : ", "web_search", "{query:cats}"], ["Found."]],
-            [("web_search", {"query": "cats"})], ["call"], None,
-            id = "gemma_wrapperless_call_with_whitespace_is_suppressed_when_streamed"),
+        pytest.param(
+            [["call", " : ", "web_search", "{query:cats}"], ["Found."]],
+            [("web_search", {"query": "cats"})],
+            ["call"],
+            None,
+            id = "gemma_wrapperless_call_with_whitespace_is_suppressed_when_streamed",
+        ),
     ],
 )
 def test_tool_markup_is_not_streamed_as_content(turns, expected_calls, hidden, visible):
@@ -1846,52 +2174,123 @@ class TestLoopBasic:
     @pytest.mark.parametrize(
         "chunks, answer, exec_result, expected_call, reply_fragment, tool_call_id",
         [
-            pytest.param(["<function=python><parameter=code>print(1)</parameter></function>"],
-                "Result: 1", "1\n", ("python", {"code": "print(1)"}), "Result: 1", None,
-                id = "function_xml_form"),
+            pytest.param(
+                ["<function=python><parameter=code>print(1)</parameter></function>"],
+                "Result: 1",
+                "1\n",
+                ("python", {"code": "print(1)"}),
+                "Result: 1",
+                None,
+                id = "function_xml_form",
+            ),
             # The loop must recognise Llama-3's <|python_tag|> marker, drain the rest of the
             # turn, and execute the call.
-            pytest.param(["<|python_tag|>web_search.call(", 'query="weather in Tokyo"', ")"],
-                "The weather is sunny.", "Sunny, 22C", ("web_search", {"query": "weather in Tokyo"}),
-                "sunny", None, id = "llama3_python_tag_form"),
+            pytest.param(
+                ["<|python_tag|>web_search.call(", 'query="weather in Tokyo"', ")"],
+                "The weather is sunny.",
+                "Sunny, 22C",
+                ("web_search", {"query": "weather in Tokyo"}),
+                "sunny",
+                None,
+                id = "llama3_python_tag_form",
+            ),
             # Llama-3.1 / 3.2 emit a bare-JSON tool call ``{"name":..,"parameters":..}`` with NO
             # XML signal. The loop's safety-net parse must still fire the tool instead of treating
             # the turn as "planned without calling tools" and re-prompting the model into giving
             # up. Regression for the has_tool_signal gate that dropped these; GGUF's llama-server
             # parses them natively.
-            pytest.param(['{"name": "web_search", "parameters": {"query": "weather in SF"}}'],
-                "The weather is sunny.", "Sunny, 18C", ("web_search", {"query": "weather in SF"}),
-                "sunny", None, id = "llama3_bare_json_form_fires_tool"),
+            pytest.param(
+                ['{"name": "web_search", "parameters": {"query": "weather in SF"}}'],
+                "The weather is sunny.",
+                "Sunny, 18C",
+                ("web_search", {"query": "weather in SF"}),
+                "sunny",
+                None,
+                id = "llama3_bare_json_form_fires_tool",
+            ),
             # Pre-v11 Mistral emission ``[TOOL_CALLS] [{...}]``; its ids must propagate to
             # tool_start events.
-            pytest.param(['[TOOL_CALLS] [{"name":"web_search",', '"arguments":{"query":"hi"},"id":"abc"}]'],
-                "done", "ok", ("web_search", {"query": "hi"}), None, "abc",
-                id = "mistral_pre_v11_form"),
+            pytest.param(
+                ['[TOOL_CALLS] [{"name":"web_search",', '"arguments":{"query":"hi"},"id":"abc"}]'],
+                "done",
+                "ok",
+                ("web_search", {"query": "hi"}),
+                None,
+                "abc",
+                id = "mistral_pre_v11_form",
+            ),
             # v11+ Mistral emission: bare ``name{json}`` after the trigger.
-            pytest.param(['[TOOL_CALLS]web_search{"query":"hi"}'],
-                "done", "ok", ("web_search", {"query": "hi"}), None, None, id = "mistral_v11_form"),
+            pytest.param(
+                ['[TOOL_CALLS]web_search{"query":"hi"}'],
+                "done",
+                "ok",
+                ("web_search", {"query": "hi"}),
+                None,
+                None,
+                id = "mistral_v11_form",
+            ),
             # Gemma 4 emission: ``<|tool_call>call:NAME{...}<tool_call|>``.
-            pytest.param(["<|tool_call>call:web_search{", 'query:<|"|>weather<|"|>', "}<tool_call|>"],
-                "sunny", "Sunny, 22C", ("web_search", {"query": "weather"}), None, None,
-                id = "gemma4_form"),
+            pytest.param(
+                ["<|tool_call>call:web_search{", 'query:<|"|>weather<|"|>', "}<tool_call|>"],
+                "sunny",
+                "Sunny, 22C",
+                ("web_search", {"query": "weather"}),
+                None,
+                None,
+                id = "gemma4_form",
+            ),
             # DeepSeek V3.1: the buffer state machine must wake on the opener and the parser must
             # extract the V3.1 bare-JSON body.
-            pytest.param([_DS_OPEN, _DS_CALL_BEGIN + "web_search", _DS_SEP,
-                '{"query":"Tokyo weather"}', _DS_CALL_END, _DS_END],
-                "The weather is sunny.", "Sunny, 22C", ("web_search", {"query": "Tokyo weather"}),
-                "sunny", None, id = "deepseek_v3_1_form"),
+            pytest.param(
+                [
+                    _DS_OPEN,
+                    _DS_CALL_BEGIN + "web_search",
+                    _DS_SEP,
+                    '{"query":"Tokyo weather"}',
+                    _DS_CALL_END,
+                    _DS_END,
+                ],
+                "The weather is sunny.",
+                "Sunny, 22C",
+                ("web_search", {"query": "Tokyo weather"}),
+                "sunny",
+                None,
+                id = "deepseek_v3_1_form",
+            ),
             # GLM 4.x emission: ``<tool_call>NAME\n<arg_key>...``.
-            pytest.param(["<tool_call>web_search\n", "<arg_key>query</arg_key>\n",
-                "<arg_value>Tokyo</arg_value>\n", "</tool_call>"],
-                "found", "...", ("web_search", {"query": "Tokyo"}), None, None, id = "glm_form"),
+            pytest.param(
+                [
+                    "<tool_call>web_search\n",
+                    "<arg_key>query</arg_key>\n",
+                    "<arg_value>Tokyo</arg_value>\n",
+                    "</tool_call>",
+                ],
+                "found",
+                "...",
+                ("web_search", {"query": "Tokyo"}),
+                None,
+                None,
+                id = "glm_form",
+            ),
             # Kimi K2: the BARE name must reach execute_tool even though the model emitted
             # ``functions.web_search:0``, while tool_start keeps the full id so the conversation
             # roundtrip can replay it verbatim.
-            pytest.param(["<|tool_calls_section_begin|>", "<|tool_call_begin|>functions.web_search:0",
-                "<|tool_call_argument_begin|>", '{"query":"Tokyo"}', "<|tool_call_end|>",
-                "<|tool_calls_section_end|>"],
-                "done", "...", ("web_search", {"query": "Tokyo"}), None, "functions.web_search:0",
-                id = "kimi_form"),
+            pytest.param(
+                [
+                    "<|tool_calls_section_begin|>",
+                    "<|tool_call_begin|>functions.web_search:0",
+                    "<|tool_call_argument_begin|>",
+                    '{"query":"Tokyo"}',
+                    "<|tool_call_end|>",
+                    "<|tool_calls_section_end|>",
+                ],
+                "done",
+                "...",
+                ("web_search", {"query": "Tokyo"}),
+                None,
+                "functions.web_search:0",
+                id = "kimi_form",
+            ),
         ],
     )
     def test_emission_form_reaches_execute_tool(
@@ -2614,12 +3013,21 @@ class TestLoopRePrompt:
     @pytest.mark.parametrize(
         "chunk",
         [
-            pytest.param("Let me prepare the requested summary carefully.</think>This is the final visible answer.", id = "prefilled_reasoning_intent_does_not_reprompt_a_visible_answer"),
-            pytest.param("Let me prepare the requested summary carefully."
-                "<think>more private planning</think>This is the final visible answer.", id = "prefilled_reasoning_with_reemitted_think_does_not_reprompt"),
-            pytest.param("private prefilled planning</think>"
+            pytest.param(
+                "Let me prepare the requested summary carefully.</think>This is the final visible answer.",
+                id = "prefilled_reasoning_intent_does_not_reprompt_a_visible_answer",
+            ),
+            pytest.param(
+                "Let me prepare the requested summary carefully."
+                "<think>more private planning</think>This is the final visible answer.",
+                id = "prefilled_reasoning_with_reemitted_think_does_not_reprompt",
+            ),
+            pytest.param(
+                "private prefilled planning</think>"
                 "<think>Let me prepare the requested summary carefully.</think>"
-                "This is the final visible answer.", id = "prefilled_reasoning_with_later_think_does_not_reprompt"),
+                "This is the final visible answer.",
+                id = "prefilled_reasoning_with_later_think_does_not_reprompt",
+            ),
         ],
     )
     def test_loop_does_not_re_prompt_on_prefilled_reasoning(self, chunk):
@@ -2629,13 +3037,22 @@ class TestLoopRePrompt:
             nonlocal generations
             generations += 1
             yield chunk
+
         exec_fn = FakeExecuteTool([])
-        events = _collect_events(run_safetensors_tool_loop(single_turn = _gen, messages = [{"role": "user", "content": "summarize this"}], tools = [{"type": "function", "function": {"name": "web_search"}}], execute_tool = exec_fn, nudge_tool_calls = True, reasoning_prefilled = True))
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "summarize this"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+                reasoning_prefilled = True,
+            )
+        )
         assert generations == 1
         assert exec_fn.calls == []
         contents = [e["text"] for e in events if e["type"] == "content"]
         assert contents[-1].endswith("This is the final visible answer.")
-
 
     def test_reasoning_only_intent_still_reprompts_and_uses_a_tool(self):
         loop, exec_fn = _make_loop(
@@ -2823,12 +3240,38 @@ class TestLoopCanonicalHealKey:
         [
             # The bare string must heal to {"code": "print(1)"}, not
             # {"query": ...}, so the python sandbox actually executes it.
-            pytest.param('<tool_call>{"name":"python","arguments":"print(1)"}</tool_call>', "done", "1\n", "python", "code", "print(1)", id = "python_bare_string_heals_to_code"),
-            pytest.param('<tool_call>{"name":"terminal","arguments":"ls -la"}</tool_call>', "done", "...", "terminal", "command", "ls -la", id = "terminal_bare_string_heals_to_command"),
-            pytest.param('<tool_call>{"name":"web_search","arguments":"hello"}</tool_call>', "ok", "...", "web_search", "query", "hello", id = "unknown_tool_bare_string_heals_to_query"),
+            pytest.param(
+                '<tool_call>{"name":"python","arguments":"print(1)"}</tool_call>',
+                "done",
+                "1\n",
+                "python",
+                "code",
+                "print(1)",
+                id = "python_bare_string_heals_to_code",
+            ),
+            pytest.param(
+                '<tool_call>{"name":"terminal","arguments":"ls -la"}</tool_call>',
+                "done",
+                "...",
+                "terminal",
+                "command",
+                "ls -la",
+                id = "terminal_bare_string_heals_to_command",
+            ),
+            pytest.param(
+                '<tool_call>{"name":"web_search","arguments":"hello"}</tool_call>',
+                "ok",
+                "...",
+                "web_search",
+                "query",
+                "hello",
+                id = "unknown_tool_bare_string_heals_to_query",
+            ),
         ],
     )
-    def test_loop_heals_the_call_to_its_canonical_key(self, chunk, answer, exec_result, expected_name, expected_key, expected_value):
+    def test_loop_heals_the_call_to_its_canonical_key(
+        self, chunk, answer, exec_result, expected_name, expected_key, expected_value
+    ):
         loop, exec_fn = _make_loop(turns = [[chunk], [answer]], exec_results = [exec_result])
         events = _collect_events(loop)
         assert exec_fn.calls == [(expected_name, {expected_key: expected_value})]
@@ -3794,29 +4237,53 @@ class TestRoutesPythonTagStrip:
         "text, expected",
         [
             # Floor: the original 5620 single-line behaviour still works.
-            pytest.param('<|python_tag|>brave_search.call(query="weather")', "",
-                id = "single_line_python_tag_stripped"),
+            pytest.param(
+                '<|python_tag|>brave_search.call(query="weather")',
+                "",
+                id = "single_line_python_tag_stripped",
+            ),
             # 5615 regression: literal ``<`` inside code must NOT terminate the strip early.
-            pytest.param('<|python_tag|>python.call(code="if x < 10: pass")', "",
-                id = "python_tag_with_less_than_in_code"),
+            pytest.param(
+                '<|python_tag|>python.call(code="if x < 10: pass")',
+                "",
+                id = "python_tag_with_less_than_in_code",
+            ),
             # 5620 round-1 regression: multi-line code's second line leaked.
-            pytest.param('<|python_tag|>python.call(code="line1\nline2\nline3")', "",
-                id = "python_tag_multiline_code_stripped"),
+            pytest.param(
+                '<|python_tag|>python.call(code="line1\nline2\nline3")',
+                "",
+                id = "python_tag_multiline_code_stripped",
+            ),
             # Combined: multi-line code AND literal ``<`` in code.
-            pytest.param('<|python_tag|>python.call(code="for i in range(10):\n    if i < 5:\n        print(i)")',
-                "", id = "python_tag_multiline_with_less_than"),
+            pytest.param(
+                '<|python_tag|>python.call(code="for i in range(10):\n    if i < 5:\n        print(i)")',
+                "",
+                id = "python_tag_multiline_with_less_than",
+            ),
             # Strip stops at the next Llama-3 ``<|`` sentinel so trailing assistant content survives.
-            pytest.param('<|python_tag|>python.call(code="multi\nline")<|eom_id|>final answer text',
-                "<|eom_id|>final answer text", id = "python_tag_stops_at_eom_sentinel"),
-            pytest.param('<|python_tag|>brave_search.call(query="x")<|eot_id|>after',
-                "<|eot_id|>after", id = "python_tag_stops_at_eot_sentinel"),
+            pytest.param(
+                '<|python_tag|>python.call(code="multi\nline")<|eom_id|>final answer text',
+                "<|eom_id|>final answer text",
+                id = "python_tag_stops_at_eom_sentinel",
+            ),
+            pytest.param(
+                '<|python_tag|>brave_search.call(query="x")<|eot_id|>after',
+                "<|eot_id|>after",
+                id = "python_tag_stops_at_eot_sentinel",
+            ),
             # The JSON form of python_tag with newlines inside string args.
-            pytest.param('<|python_tag|>{"name":"python","parameters":{"code":"a = 1\nb = 2\nprint(a+b)"}}',
-                "", id = "python_tag_json_form_multiline_stripped"),
+            pytest.param(
+                '<|python_tag|>{"name":"python","parameters":{"code":"a = 1\nb = 2\nprint(a+b)"}}',
+                "",
+                id = "python_tag_json_form_multiline_stripped",
+            ),
             # Two python_tag emissions back-to-back across a sentinel strip independently; the
             # ``<|eom_id|>`` between them remains.
-            pytest.param('<|python_tag|>brave_search.call(query="a")<|eom_id|><|python_tag|>python.call(code="x=1")',
-                "<|eom_id|>", id = "python_tag_with_eom_then_trailing_python_tag"),
+            pytest.param(
+                '<|python_tag|>brave_search.call(query="a")<|eom_id|><|python_tag|>python.call(code="x=1")',
+                "<|eom_id|>",
+                id = "python_tag_with_eom_then_trailing_python_tag",
+            ),
         ],
     )
     def test_python_tag_strip(self, text, expected):
@@ -3831,37 +4298,64 @@ class TestParserRobustness:
             # Hermes wrapper around a Llama-3.2 bare-JSON object that uses ``parameters`` instead
             # of ``arguments``. The bare-JSON and python_tag paths already accept both keys; this
             # path now does too. Was extracting name only and silently dropping the args.
-            pytest.param('<tool_call>\n{"name": "search", "parameters": {"q": "ramen"}}\n</tool_call>',
-                "search", {"q": "ramen"}, id = "tool_call_json_accepts_parameters_key"),
+            pytest.param(
+                '<tool_call>\n{"name": "search", "parameters": {"q": "ramen"}}\n</tool_call>',
+                "search",
+                {"q": "ramen"},
+                id = "tool_call_json_accepts_parameters_key",
+            ),
             # MiniCPM-5 / MiniMax-M2 attribute syntax:
             # ``<function name="..."><param name="...">v</param></function>``.
-            pytest.param('<function name="get_weather"><param name="city">Tokyo</param></function>',
-                "get_weather", {"city": "Tokyo"}, id = "function_xml_attribute_form"),
-            pytest.param('<function name="get_weather"><param name="city">Tokyo</param>'
+            pytest.param(
+                '<function name="get_weather"><param name="city">Tokyo</param></function>',
+                "get_weather",
+                {"city": "Tokyo"},
+                id = "function_xml_attribute_form",
+            ),
+            pytest.param(
+                '<function name="get_weather"><param name="city">Tokyo</param>'
                 '<param name="unit">celsius</param></function>',
-                "get_weather", {"city": "Tokyo", "unit": "celsius"},
-                id = "function_xml_attribute_form_multi_param"),
+                "get_weather",
+                {"city": "Tokyo", "unit": "celsius"},
+                id = "function_xml_attribute_form_multi_param",
+            ),
             # Regression guard: the old ``<function=name><parameter=k>v`` syntax must keep
             # parsing after the regex broadening.
-            pytest.param("<function=get_weather><parameter=city>Tokyo</parameter></function>",
-                "get_weather", {"city": "Tokyo"}, id = "function_xml_legacy_equals_form_still_works"),
+            pytest.param(
+                "<function=get_weather><parameter=city>Tokyo</parameter></function>",
+                "get_weather",
+                {"city": "Tokyo"},
+                id = "function_xml_legacy_equals_form_still_works",
+            ),
             # Meta's official Llama-3.x chat template prefixes every assistant turn with
             # ``<|start_header_id|>assistant<|end_header_id|>\n\n``. The sentinel-strip in
             # ``_parse_llama3_bare_json`` must reach past the role label to the JSON body, else
             # every round-tripped tool call in history silently drops.
-            pytest.param("<|start_header_id|>assistant<|end_header_id|>\n\n"
+            pytest.param(
+                "<|start_header_id|>assistant<|end_header_id|>\n\n"
                 '{"name": "get_weather", "parameters": {"city": "Tokyo"}}',
-                "get_weather", {"city": "Tokyo"}, id = "llama3_chat_template_round_trip"),
+                "get_weather",
+                {"city": "Tokyo"},
+                id = "llama3_chat_template_round_trip",
+            ),
             # Models routinely follow a tool call with explanatory prose. The body must terminate
             # at ``</function>`` even without a ``</tool_call>`` wrapper, else the trailing prose
             # leaks into the last parameter value.
-            pytest.param("<function=get_weather><parameter=city>Tokyo</parameter>"
+            pytest.param(
+                "<function=get_weather><parameter=city>Tokyo</parameter>"
                 "</function>\n\nHere is what I found.",
-                "get_weather", {"city": "Tokyo"}, id = "function_xml_followed_by_prose"),
+                "get_weather",
+                {"city": "Tokyo"},
+                id = "function_xml_followed_by_prose",
+            ),
             # Same expectation for the MiniCPM-5 attribute form.
-            pytest.param('<function name="get_weather"><param name="city">Tokyo</param>'
+            pytest.param(
+                '<function name="get_weather"><param name="city">Tokyo</param>'
                 "</function>\n\nLet me know if you need anything else.",
-                "get_weather", {"city": "Tokyo"}, id = "function_attribute_xml_followed_by_prose"),
+                "get_weather",
+                {"city": "Tokyo"},
+                id = "function_attribute_xml_followed_by_prose",
+            ),
         ],
     )
     def test_robust_form_parses_to_name_and_args(self, text, name, args):

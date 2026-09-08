@@ -35,13 +35,12 @@ def _shared_setup_1(fake_run, step_messages):
         mock.patch.object(
             ips,
             "_step",
-            side_effect = lambda label, value, color_fn = None: step_messages.append(
-                (label, value)
-            ),
+            side_effect = lambda label, value, color_fn = None: step_messages.append((label, value)),
         ),
         mock.patch("subprocess.run", side_effect = fake_run),
     ):
         ips._ensure_flash_attn()
+
 
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
 sys.path.insert(0, str(STUDIO_DIR))

@@ -32,6 +32,7 @@ def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
     return loop_mod, studio_h
 
+
 # Backend root plus the tests dir: the two harnesses this borrows sit alongside
 # and import as top-level modules.
 _TESTS_DIR = str(Path(__file__).resolve().parent)

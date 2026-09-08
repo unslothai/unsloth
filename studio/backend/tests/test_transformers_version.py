@@ -44,6 +44,7 @@ def _shared_setup_3(monkeypatch, self, tmp_path):
     self._damage(live)
     return _, live, tv
 
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -157,21 +158,42 @@ class TestResolveBaseModel:
         "cfg, adapter_cfg, expected",
         [
             # adapter_config.json wins over config.json.
-            pytest.param({"_name_or_path": "different/model"},
-                {"base_model_name_or_path": "meta-llama/Llama-3-8B"}, "meta-llama/Llama-3-8B",
-                id = "adapter-config-takes-priority"),
-            pytest.param({"model_name": "Qwen/Qwen3.5-9B"}, None, "Qwen/Qwen3.5-9B",
-                id = "config-json-fallback-model-name"),
-            pytest.param({"_name_or_path": "Qwen/Qwen3.5-9B"}, None, "Qwen/Qwen3.5-9B",
-                id = "config-json-fallback-name-or-path"),
+            pytest.param(
+                {"_name_or_path": "different/model"},
+                {"base_model_name_or_path": "meta-llama/Llama-3-8B"},
+                "meta-llama/Llama-3-8B",
+                id = "adapter-config-takes-priority",
+            ),
+            pytest.param(
+                {"model_name": "Qwen/Qwen3.5-9B"},
+                None,
+                "Qwen/Qwen3.5-9B",
+                id = "config-json-fallback-model-name",
+            ),
+            pytest.param(
+                {"_name_or_path": "Qwen/Qwen3.5-9B"},
+                None,
+                "Qwen/Qwen3.5-9B",
+                id = "config-json-fallback-name-or-path",
+            ),
             # A malformed config (list/dict for model_name) must not raise: the non-string
             # model_name is skipped and _name_or_path is used.
-            pytest.param({"model_name": ["x"], "_name_or_path": "Qwen/Qwen3.5-9B"}, None,
-                "Qwen/Qwen3.5-9B", id = "non-string-base-does-not-crash"),
-            pytest.param({"model_name": "Qwen/Qwen3.5-9B", "_name_or_path": "some/other-model"},
-                None, "Qwen/Qwen3.5-9B", id = "model-name-takes-priority-over-name-or-path"),
+            pytest.param(
+                {"model_name": ["x"], "_name_or_path": "Qwen/Qwen3.5-9B"},
+                None,
+                "Qwen/Qwen3.5-9B",
+                id = "non-string-base-does-not-crash",
+            ),
+            pytest.param(
+                {"model_name": "Qwen/Qwen3.5-9B", "_name_or_path": "some/other-model"},
+                None,
+                "Qwen/Qwen3.5-9B",
+                id = "model-name-takes-priority-over-name-or-path",
+            ),
             # A self-referencing model_name is ignored, so the original path falls through.
-            pytest.param({"model_name": _SELF}, None, _SELF, id = "config-json-skips-self-referencing"),
+            pytest.param(
+                {"model_name": _SELF}, None, _SELF, id = "config-json-skips-self-referencing"
+            ),
         ],
     )
     def test_resolve_base_model(self, tmp_path: Path, cfg, adapter_cfg, expected):
@@ -494,25 +516,55 @@ class TestCheckConfigNeeds550:
     @pytest.mark.parametrize(
         "cfg, expected",
         [
-            pytest.param({"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4"},
-                True, id = "gemma4-architecture"),
+            pytest.param(
+                {"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4"},
+                True,
+                id = "gemma4-architecture",
+            ),
             pytest.param({"model_type": "gemma4"}, True, id = "gemma4-model-type-only"),
-            pytest.param({"architectures": ["HiggsAudioV2ForConditionalGeneration"]}, True, id = "higgs-tts2-architecture"),
+            pytest.param(
+                {"architectures": ["HiggsAudioV2ForConditionalGeneration"]},
+                True,
+                id = "higgs-tts2-architecture",
+            ),
             pytest.param({"model_type": "higgs_audio_v2"}, True, id = "higgs-tts2-model-type"),
-            pytest.param({"architectures": ["HiggsMultimodalQwen3ForConditionalGeneration"]}, True, id = "higgs-tts3-architecture"),
-            pytest.param({"model_type": "higgs_multimodal_qwen3"}, True, id = "higgs-tts3-model-type"),
+            pytest.param(
+                {"architectures": ["HiggsMultimodalQwen3ForConditionalGeneration"]},
+                True,
+                id = "higgs-tts3-architecture",
+            ),
+            pytest.param(
+                {"model_type": "higgs_multimodal_qwen3"}, True, id = "higgs-tts3-model-type"
+            ),
             # mlx-vlm processors that require Transformers 5 select the 5.5 tier.
-            pytest.param({"architectures": ["KimiK3ForConditionalGeneration"]}, True, id = "kimi-k3-architecture"),
+            pytest.param(
+                {"architectures": ["KimiK3ForConditionalGeneration"]},
+                True,
+                id = "kimi-k3-architecture",
+            ),
             pytest.param({"model_type": "kimi_k3"}, True, id = "kimi-k3-model-type"),
-            pytest.param({"architectures": ["LocateAnythingForConditionalGeneration"]}, True, id = "locate-anything-architecture"),
+            pytest.param(
+                {"architectures": ["LocateAnythingForConditionalGeneration"]},
+                True,
+                id = "locate-anything-architecture",
+            ),
             pytest.param({"model_type": "locateanything"}, True, id = "locate-anything-model-type"),
-            pytest.param({"architectures": ["DiffusionGemmaForBlockDiffusion"]}, True, id = "diffusion-gemma-architecture"),
+            pytest.param(
+                {"architectures": ["DiffusionGemmaForBlockDiffusion"]},
+                True,
+                id = "diffusion-gemma-architecture",
+            ),
             pytest.param({"model_type": "diffusion_gemma"}, True, id = "diffusion-gemma-model-type"),
-            pytest.param({"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
-                False, id = "llama-architecture"),
+            pytest.param(
+                {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
+                False,
+                id = "llama-architecture",
+            ),
         ],
     )
-    def test_local_config_json_decides_the_550_tier(self, tmp_path: Path, cfg: dict, expected: bool):
+    def test_local_config_json_decides_the_550_tier(
+        self, tmp_path: Path, cfg: dict, expected: bool
+    ):
         assert _check_config_needs_550(_write_config(tmp_path, cfg)) is expected
 
     def test_no_config_json(self, tmp_path: Path):
@@ -557,22 +609,49 @@ class TestCheckConfigNeeds510:
     @pytest.mark.parametrize(
         "cfg, expected",
         [
-            pytest.param({"architectures": ["Gemma4UnifiedForConditionalGeneration"],
-                "model_type": "gemma4_unified"}, True, id = "gemma4-unified-architecture"),
-            pytest.param({"model_type": "gemma4_unified"}, True, id = "gemma4-unified-model-type-only"),
-            pytest.param({"architectures": ["Gemma4UnifiedAssistantForCausalLM"],
-                "model_type": "gemma4_unified_assistant"}, True, id = "gemma4-unified-assistant-architecture"),
-            pytest.param({"model_type": "gemma4_unified_assistant"}, True,
-                id = "gemma4-unified-assistant-model-type-only"),
-            pytest.param({"architectures": ["Gemma4AssistantForCausalLM"],
-                "model_type": "gemma4_assistant"}, True, id = "gemma4-assistant-architecture"),
-            pytest.param({"model_type": "gemma4_assistant"}, True, id = "gemma4-assistant-model-type-only"),
+            pytest.param(
+                {
+                    "architectures": ["Gemma4UnifiedForConditionalGeneration"],
+                    "model_type": "gemma4_unified",
+                },
+                True,
+                id = "gemma4-unified-architecture",
+            ),
+            pytest.param(
+                {"model_type": "gemma4_unified"}, True, id = "gemma4-unified-model-type-only"
+            ),
+            pytest.param(
+                {
+                    "architectures": ["Gemma4UnifiedAssistantForCausalLM"],
+                    "model_type": "gemma4_unified_assistant",
+                },
+                True,
+                id = "gemma4-unified-assistant-architecture",
+            ),
+            pytest.param(
+                {"model_type": "gemma4_unified_assistant"},
+                True,
+                id = "gemma4-unified-assistant-model-type-only",
+            ),
+            pytest.param(
+                {"architectures": ["Gemma4AssistantForCausalLM"], "model_type": "gemma4_assistant"},
+                True,
+                id = "gemma4-assistant-architecture",
+            ),
+            pytest.param(
+                {"model_type": "gemma4_assistant"}, True, id = "gemma4-assistant-model-type-only"
+            ),
             # Older Gemma 4 stays on the 550 tier.
-            pytest.param({"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4"},
-                False, id = "gemma4-non-unified"),
+            pytest.param(
+                {"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4"},
+                False,
+                id = "gemma4-non-unified",
+            ),
         ],
     )
-    def test_local_config_json_decides_the_510_tier(self, tmp_path: Path, cfg: dict, expected: bool):
+    def test_local_config_json_decides_the_510_tier(
+        self, tmp_path: Path, cfg: dict, expected: bool
+    ):
         assert _check_config_needs_510(_write_config(tmp_path, cfg)) is expected
 
     def test_no_config_json(self, tmp_path: Path):
@@ -620,8 +699,13 @@ class TestNemotronHNeedsMlpSupport:
             pytest.param("llama", "M-M-", False, id = "non_nemotron_with_dash_returns_false"),
         ],
     )
-    def test_nemotron_h_needs_mlp_support_cases(self, expected_model_type, expected_hybrid_override_pattern, expected):
-        cfg = {"model_type": expected_model_type, "hybrid_override_pattern": expected_hybrid_override_pattern}
+    def test_nemotron_h_needs_mlp_support_cases(
+        self, expected_model_type, expected_hybrid_override_pattern, expected
+    ):
+        cfg = {
+            "model_type": expected_model_type,
+            "hybrid_override_pattern": expected_hybrid_override_pattern,
+        }
         assert _nemotron_h_needs_mlp_support(cfg) is expected
 
     def test_layers_block_type_with_mlp(self):
@@ -630,7 +714,6 @@ class TestNemotronHNeedsMlpSupport:
             "layers_block_type": ["mamba", "mlp", "attention", "mamba"],
         }
         assert _nemotron_h_needs_mlp_support(cfg) is True
-
 
     def test_config_needs_510_includes_dense_nemotron_h(self):
         cfg = {
@@ -901,7 +984,11 @@ class TestGetTransformersTier:
         [
             pytest.param("google/gemma-4-E2B-it", "550", id = "gemma4_substring_returns_550"),
             pytest.param("unsloth/gemma-4-12b-it", "510", id = "gemma4_12b_substring_returns_510"),
-            pytest.param("google/gemma-4-E2B-it-assistant", "510", id = "gemma4_assistant_substring_returns_510"),
+            pytest.param(
+                "google/gemma-4-E2B-it-assistant",
+                "510",
+                id = "gemma4_assistant_substring_returns_510",
+            ),
             pytest.param("unsloth/gemma4-E4B-it", "550", id = "gemma4_alt_substring_returns_550"),
             # 5.5.0 is checked before 5.3.0 - a model matching both gets 550.
             pytest.param("gemma-4-model", "550", id = "550_checked_before_530"),
@@ -909,7 +996,6 @@ class TestGetTransformersTier:
     )
     def test_get_transformers_tier_cases(self, model_name, expected):
         assert get_transformers_tier(model_name) == expected
-
 
     @pytest.mark.parametrize(
         "model_id",
@@ -929,18 +1015,32 @@ class TestGetTransformersTier:
         "architecture, model_type, expected",
         [
             # Local checkpoint with Gemma4 architecture → 550.
-            pytest.param("Gemma4ForConditionalGeneration", "gemma4", "550", id = "gemma4_config_json_returns_550"),
+            pytest.param(
+                "Gemma4ForConditionalGeneration",
+                "gemma4",
+                "550",
+                id = "gemma4_config_json_returns_550",
+            ),
             # Local checkpoint with Gemma4 Unified architecture → 510.
-            pytest.param("Gemma4UnifiedForConditionalGeneration", "gemma4_unified", "510", id = "gemma4_unified_config_json_returns_510"),
+            pytest.param(
+                "Gemma4UnifiedForConditionalGeneration",
+                "gemma4_unified",
+                "510",
+                id = "gemma4_unified_config_json_returns_510",
+            ),
             # Local checkpoint with Gemma4 Assistant architecture → 510.
-            pytest.param("Gemma4AssistantForCausalLM", "gemma4_assistant", "510", id = "gemma4_assistant_config_json_returns_510"),
+            pytest.param(
+                "Gemma4AssistantForCausalLM",
+                "gemma4_assistant",
+                "510",
+                id = "gemma4_assistant_config_json_returns_510",
+            ),
         ],
     )
     def test_get_transformers_tier_cases_2(self, tmp_path, architecture, model_type, expected):
         cfg = {"architectures": [architecture], "model_type": model_type}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
         assert get_transformers_tier(str(tmp_path)) == expected
-
 
     def test_dense_nemotron_h_config_json_returns_510(self, tmp_path: Path):
         """Local dense NemotronH checkpoint → 510 (MLP layers need >= 5.10)."""
@@ -1064,7 +1164,6 @@ class TestGetTransformersTier:
             ),
         ):
             assert get_transformers_tier("meta-llama/Llama-3-8B") == "default"
-
 
     # ---- issue #6103: the tier decision must be traceable in the logs ----
 
@@ -2250,7 +2349,9 @@ class TestTierFromName:
         [
             pytest.param("meta-llama/Llama-3-8B", None, None, id = "unknown-returns-none"),
             pytest.param("google/gemma-4-E2B-it", "550", None, id = "gemma4"),
-            pytest.param("google/gemma-4-E2B-it-assistant", "510", "assistant", id = "gemma4-assistant"),
+            pytest.param(
+                "google/gemma-4-E2B-it-assistant", "510", "assistant", id = "gemma4-assistant"
+            ),
             pytest.param("unsloth/gemma-4-12b-it", "510", None, id = "gemma4-12b"),
             pytest.param("Qwen/Qwen3.5-7B", "530", "qwen3.5", id = "qwen35"),
             # The existing substring "ministral-3-" matches the 2512 naming style.
@@ -2265,7 +2366,9 @@ class TestTierFromName:
             pytest.param("org/Qwen3_Next-14B", "530", None, id = "qwen3_next_underscore"),
             pytest.param("google/gemma_4_E2B_it", "550", None, id = "gemma_4_underscore"),
             pytest.param("unsloth/gemma_4_12b_it", "510", None, id = "gemma_4_12b_underscore"),
-            pytest.param("meta_llama/Llama_3_8B", None, None, id = "unrelated-underscores-not-promoted"),
+            pytest.param(
+                "meta_llama/Llama_3_8B", None, None, id = "unrelated-underscores-not-promoted"
+            ),
             # Qwen3-6B / Qwen3-5B are size names, not the qwen3.6 / qwen3.5 release lines.
             pytest.param("Qwen/Qwen3-6B-Instruct", None, None, id = "qwen3-hyphen-6-size"),
             pytest.param("Qwen/Qwen3-5B", None, None, id = "qwen3-hyphen-5-size"),
@@ -2302,16 +2405,28 @@ class TestLocalConfig530Tier:
         "cfg, expected",
         [
             pytest.param({"model_type": "qwen3_5"}, True, id = "qwen3_5-model-type"),
-            pytest.param({"architectures": ["Qwen3_5ForConditionalGeneration"]}, True,
-                id = "qwen3_5-conditional-generation"),
+            pytest.param(
+                {"architectures": ["Qwen3_5ForConditionalGeneration"]},
+                True,
+                id = "qwen3_5-conditional-generation",
+            ),
             pytest.param({"model_type": "qwen3_moe"}, True, id = "qwen3_moe"),
             pytest.param({"model_type": "glm4_moe_lite"}, True, id = "glm4_moe_lite"),
             pytest.param({"model_type": "lfm2_vl"}, True, id = "lfm2_vl"),
             # Qwen3.5 MoE (Qwen3.5-35B-A3B / 122B-A10B) uses qwen3_5_moe ids.
-            pytest.param({"model_type": "qwen3_5_moe", "architectures": ["Qwen3_5MoeForConditionalGeneration"]},
-                True, id = "qwen3_5_moe"),
-            pytest.param({"model_type": "qwen3_next", "architectures": ["Qwen3NextForCausalLM"]},
-                True, id = "qwen3_next"),
+            pytest.param(
+                {
+                    "model_type": "qwen3_5_moe",
+                    "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+                },
+                True,
+                id = "qwen3_5_moe",
+            ),
+            pytest.param(
+                {"model_type": "qwen3_next", "architectures": ["Qwen3NextForCausalLM"]},
+                True,
+                id = "qwen3_next",
+            ),
             # Text-tower configs (architectures may be stripped) still need 5.3.0.
             pytest.param({"model_type": "qwen3_5_text"}, True, id = "qwen3_5-text-tower"),
             pytest.param({"model_type": "qwen3_5_moe_text"}, True, id = "qwen3_5_moe-text-tower"),
@@ -2327,36 +2442,66 @@ class TestLocalConfig530Tier:
         [
             # Reported case: a local Qwen3.5 folder routes to 530 via config.json.
             pytest.param("Qwen3.5-2B", {"model_type": "qwen3_5"}, "530", id = "qwen35-folder"),
-            pytest.param("my-qwen3-moe",
+            pytest.param(
+                "my-qwen3-moe",
                 {"model_type": "qwen3_moe", "architectures": ["Qwen3MoeForCausalLM"]},
-                "530", id = "qwen3-moe-checkpoint"),
-            pytest.param("my-glm-model",
+                "530",
+                id = "qwen3-moe-checkpoint",
+            ),
+            pytest.param(
+                "my-glm-model",
                 {"model_type": "glm4_moe_lite", "architectures": ["Glm4MoeLiteForCausalLM"]},
-                "530", id = "glm-4.7-flash-checkpoint"),
-            pytest.param("my-liquid-model",
+                "530",
+                id = "glm-4.7-flash-checkpoint",
+            ),
+            pytest.param(
+                "my-liquid-model",
                 {"model_type": "lfm2_vl", "architectures": ["Lfm2VlForConditionalGeneration"]},
-                "530", id = "lfm2.5-vl-checkpoint"),
+                "530",
+                id = "lfm2.5-vl-checkpoint",
+            ),
             # A renamed Qwen3.5 MoE folder (no name hint) routes to 530 via config.
-            pytest.param("my-custom-moe",
-                {"model_type": "qwen3_5_moe", "architectures": ["Qwen3_5MoeForConditionalGeneration"]},
-                "530", id = "renamed-qwen35-moe"),
+            pytest.param(
+                "my-custom-moe",
+                {
+                    "model_type": "qwen3_5_moe",
+                    "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+                },
+                "530",
+                id = "renamed-qwen35-moe",
+            ),
             # Qwen3.6 configs carry qwen3_5 ids; a higher-tier name match wins, either from the
             # folder name or from _name_or_path.
-            pytest.param("Qwen3.6-27B",
+            pytest.param(
+                "Qwen3.6-27B",
                 {"model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"]},
-                "550", id = "qwen36-folder-name"),
-            pytest.param("renamed-q36-moe",
-                {"model_type": "qwen3_5_moe", "architectures": ["Qwen3_5MoeForConditionalGeneration"],
-                 "_name_or_path": "Qwen/Qwen3.6-35B-A3B"},
-                "550", id = "qwen36-moe-via-name-or-path"),
+                "550",
+                id = "qwen36-folder-name",
+            ),
+            pytest.param(
+                "renamed-q36-moe",
+                {
+                    "model_type": "qwen3_5_moe",
+                    "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+                    "_name_or_path": "Qwen/Qwen3.6-35B-A3B",
+                },
+                "550",
+                id = "qwen36-moe-via-name-or-path",
+            ),
             # A renamed folder with an unrecognised model_type but a known HF ID in
             # _name_or_path still routes to the correct tier.
-            pytest.param("my-custom-name",
+            pytest.param(
+                "my-custom-name",
                 {"model_type": "future_unknown_type", "_name_or_path": "Qwen/Qwen3.5-7B"},
-                "530", id = "renamed-folder-falls-back-to-hf-id"),
-            pytest.param("renamed-gemma",
+                "530",
+                id = "renamed-folder-falls-back-to-hf-id",
+            ),
+            pytest.param(
+                "renamed-gemma",
                 {"model_type": "future_unknown_type", "_name_or_path": "google/gemma-4-E2B-it"},
-                "550", id = "hf-id-fallback-respects-550"),
+                "550",
+                id = "hf-id-fallback-respects-550",
+            ),
         ],
     )
     def test_local_config_selects_tier(self, tmp_path: Path, folder: str, cfg: dict, tier: str):
@@ -2366,22 +2511,32 @@ class TestLocalConfig530Tier:
         "folder, cfg",
         [
             # A non-5.x checkpoint with a stale absolute _name_or_path is not name-matched.
-            pytest.param("my-llama-ckpt",
+            pytest.param(
+                "my-llama-ckpt",
                 {"model_type": "llama", "_name_or_path": "/old/run/qwen3.5-source"},
-                id = "stale-absolute-name-or-path"),
+                id = "stale-absolute-name-or-path",
+            ),
             # _name_or_path equal to the model path itself (save_pretrained) must not be scanned
             # for tier substrings: "qwen3.5" is in the path but the config says llama.
-            pytest.param("qwen3.5-experiment", {"model_type": "llama", "_name_or_path": _SELF},
-                id = "hf-id-fallback-skipped-when-same-as-path"),
+            pytest.param(
+                "qwen3.5-experiment",
+                {"model_type": "llama", "_name_or_path": _SELF},
+                id = "hf-id-fallback-skipped-when-same-as-path",
+            ),
             # Same directory reached through its absolute path while model_name is relative: the
             # two strings differ but resolve to one directory, so the local-dir branch recurses
             # into the config checks instead of substring-matching the path.
-            pytest.param("qwen3.5-experiment", {"model_type": "llama", "_name_or_path": _SELF},
-                id = "name-or-path-is-absolute-self"),
+            pytest.param(
+                "qwen3.5-experiment",
+                {"model_type": "llama", "_name_or_path": _SELF},
+                id = "name-or-path-is-absolute-self",
+            ),
             # The directory-name false-positive guard is preserved for a plain checkpoint.
-            pytest.param("checkpoint-1000",
+            pytest.param(
+                "checkpoint-1000",
                 {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
-                id = "plain-local-model"),
+                id = "plain-local-model",
+            ),
         ],
     )
     def test_local_config_stays_on_the_default_tier(self, tmp_path: Path, folder: str, cfg: dict):
@@ -3203,6 +3358,7 @@ class TestSidecarSwapReservation:
         process, and its lock is never broken while the owner is alive."""
         import os
         import time
+
         lock, tv = _shared_setup_2(monkeypatch, tmp_path)
         # A live owner (this process): visible and never reclaimed, even once aged past
         # the cutoff -- a slow but live pip install must keep its lock.
@@ -3235,6 +3391,7 @@ class TestSidecarSwapReservation:
         created is not stolen before its PID lands."""
         import os
         import time
+
         lock, tv = _shared_setup_2(monkeypatch, tmp_path)
         lock.write_text("")  # created but metadata not yet written
         assert tv.sidecar_swap_in_progress() is True

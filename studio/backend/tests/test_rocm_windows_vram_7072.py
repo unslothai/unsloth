@@ -54,6 +54,7 @@ def _shared_setup_2(monkeypatch):
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IGPU_DGPU_ADAPTERS))
     )
 
+
 GB = 1024**3
 MiB = 1024**2
 

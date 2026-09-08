@@ -104,6 +104,7 @@ def _shared_setup_8(monkeypatch, tmp_path):
 
     from core.inference import tools
     from routes import chat_history
+
     return asyncio, chat_history, tools
 
 
@@ -167,6 +168,7 @@ def _shared_setup_14():
     from fastapi import HTTPException
 
     from routes import inference
+
     return HTTPException, asyncio, inference
 
 
@@ -177,6 +179,7 @@ def _shared_setup_15(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
 
     from routes import inference
+
     return asyncio, inference
 
 
@@ -197,6 +200,7 @@ def _shared_setup_17():
 
     from routes import chat_history
     from storage import studio_db
+
     return chat_history, inspect, studio_db
 
 
@@ -216,6 +220,7 @@ def _shared_setup_19(monkeypatch, tmp_path):
     from fastapi import HTTPException
 
     from core.inference import tools
+
     return HTTPException, tools
 
 
@@ -234,6 +239,7 @@ def _shared_setup_21(launch_dir, monkeypatch):
     monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
 
     from utils import cache_cleanup
+
     return cache_cleanup
 
 
@@ -243,6 +249,7 @@ def _shared_setup_22(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
 
     from core.inference import tools
+
     return tools
 
 
@@ -4609,6 +4616,7 @@ def test_revealing_a_sandbox_opens_the_directory_it_resolved(tmp_path, monkeypat
     from pathlib import Path as _Path
 
     from routes import inference
+
     path_utils, sandbox = _shared_setup_23(tmp_path)
     opened = []
 
@@ -4694,6 +4702,7 @@ def test_revealing_a_sandbox_demands_a_directory(tmp_path, monkeypatch):
     import inspect
 
     from routes import inference
+
     path_utils, sandbox = _shared_setup_23(tmp_path)
     seen = []
 

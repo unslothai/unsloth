@@ -670,8 +670,10 @@ def test_image_tool_support_is_classified_from_the_processor_template():
     """A VLM whose processor template advertises tools its nested tokenizer never does had
     the catalog disabled and reached generation with no schemas (#10092)."""
     import asyncio
+
     _pytest = _shared_setup_1(__file__)
     import routes.inference as inf
+
     backend, passthrough = _shared_setup_3()
     backend.models["sf-model"]["chat_template_info"] = {
         "template": _PROCESSOR_TEMPLATE_NO_TOOLS,
@@ -745,8 +747,10 @@ def test_a_named_processor_template_is_classified_without_tool_use():
     """A ProcessorMixin render never implicitly selects the "tool_use" branch, so gating on
     it advertised a catalog the prompt never shows (#10092)."""
     import asyncio
+
     _pytest = _shared_setup_1(__file__)
     import routes.inference as inf
+
     backend, passthrough = _shared_setup_3()
     backend.models["sf-model"]["chat_template_info"] = {
         "template": _PROCESSOR_TEMPLATE_NO_TOOLS,
@@ -797,6 +801,7 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it():
     """_extract_content_parts takes the newest image from anywhere in the thread while the
     renderers attach it to the newest user turn, moving it onto a later question (#10092)."""
     import asyncio
+
     _pytest = _shared_setup_1(__file__)
     import routes.inference as inf
     import test_sf_client_tools_passthrough as passthrough
@@ -966,6 +971,7 @@ def test_image_reasoning_is_classified_from_the_processor_template():
     """A processor template can carry a reasoning channel the tokenizer never declares, so
     classifying only supports_tools from it leaked <think> markup into the answer (#10092)."""
     import asyncio
+
     _pytest = _shared_setup_1(__file__)
     import routes.inference as inf
     import test_sf_client_tools_passthrough as passthrough
@@ -1010,6 +1016,7 @@ def test_the_prefill_probe_gets_the_selected_processor_body():
     """Handed the whole named collection, the prefill probe's <think> guard tests the
     dict's keys and misses a selected branch that prefills an open block (#10092)."""
     import asyncio
+
     _pytest = _shared_setup_1(__file__)
     import routes.inference as inf
     import test_sf_client_tools_passthrough as passthrough
@@ -1055,6 +1062,7 @@ def test_no_image_marker_when_the_render_falls_back_to_the_tokenizer():
     """A vision-marked model whose processor cannot handle images renders the tokenizer
     text path, so marking the owning turn handed a string-only template part lists (#10092)."""
     import asyncio
+
     _pytest = _shared_setup_1(__file__)
     backend, passthrough = _shared_setup_3()
     backend.models["sf-model"]["chat_template_info"] = {"template": _CHATML_WITH_TOOLS}

@@ -33,9 +33,7 @@ def _shared_setup_1(installs, monkeypatch):
 
 # Shared setup for test_a_failed_overlay_falls_back_to_the_staged_source, test_a_git_overlay_is_staged_before_the_uninstall_loop, test_an_editable_overlay_stages_the_checkout.
 def _shared_setup_2(monkeypatch, probes):
-    monkeypatch.setattr(
-        ips.install_manifest, "installed_versions", lambda name: next(probes[name])
-    )
+    monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: next(probes[name]))
     monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
     monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
     monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
@@ -67,6 +65,7 @@ def _shared_setup_5(tmp_path):
     (record / "METADATA").write_bytes(b"\xff\xfe")
     (record / "RECORD").write_text("unsloth/gone.py,,\n")
     return record
+
 
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
 sys.path.insert(0, str(STUDIO_DIR))
@@ -105,7 +104,6 @@ class TestBuildUvCmdTorchBackend:
         with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": backend}):
             cmd = self._call(("somepackage",))
         assert expected_flag in cmd
-
 
     def test_uv_torch_backend_empty(self):
         """UV_TORCH_BACKEND="" (empty string) should NOT add --torch-backend."""
@@ -1581,19 +1579,28 @@ class TestDuplicateCoreMetadataRepair:
             # `# from` annotation has it stripped. Taking the annotation at face value
             # hands pip an unauthenticated URL for a private index, which answers 401 and
             # aborts the repair.
-            pytest.param(b"--index-url https://user:secret@private.corp/simple\n"
+            pytest.param(
+                b"--index-url https://user:secret@private.corp/simple\n"
                 b"unsloth-zoo==1.0\n"
-                b"    # from https://private.corp/simple\n", id = "the_annotated_index_is_recovered_with_its_credentials"),
+                b"    # from https://private.corp/simple\n",
+                id = "the_annotated_index_is_recovered_with_its_credentials",
+            ),
             # uv puts a credentialed --index on the extra line and leaves --index-url as
             # the public default, so reading only --index-url would name the wrong index.
-            pytest.param(b"--index-url https://pypi.org/simple\n"
+            pytest.param(
+                b"--index-url https://pypi.org/simple\n"
                 b"--extra-index-url https://user:secret@private.corp/simple\n"
                 b"unsloth-zoo==1.0\n"
-                b"    # from https://private.corp/simple\n", id = "an_authenticated_extra_index_is_recovered_too"),
-            pytest.param(b"--index-url https://private.corp/simple\n"
+                b"    # from https://private.corp/simple\n",
+                id = "an_authenticated_extra_index_is_recovered_too",
+            ),
+            pytest.param(
+                b"--index-url https://private.corp/simple\n"
                 b"--extra-index-url https://user:secret@private.corp/simple\n"
                 b"unsloth-zoo==1.0\n"
-                b"    # from https://private.corp/simple\n", id = "the_credentialed_form_wins_over_a_bare_duplicate"),
+                b"    # from https://private.corp/simple\n",
+                id = "the_credentialed_form_wins_over_a_bare_duplicate",
+            ),
         ],
     )
     def test_duplicate_core_metadata_repair_cases(self, monkeypatch, stdout):
@@ -1601,7 +1608,6 @@ class TestDuplicateCoreMetadataRepair:
         self._uv_plan(monkeypatch, stdout = stdout)
         _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
         assert overrides["PIP_INDEX_URL"] == "https://user:secret@private.corp/simple"
-
 
     @pytest.mark.parametrize(
         "url, bare",

@@ -29,6 +29,7 @@ def _shared_setup_1(b, monkeypatch, proc):
     monkeypatch.setattr(training_mod, "_CTX", fake_ctx)
     return fake_ctx
 
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)

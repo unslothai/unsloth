@@ -23,7 +23,9 @@ def _shared_setup_1():
     sr._setup_cache_env()
 
     import os
+
     return os
+
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
