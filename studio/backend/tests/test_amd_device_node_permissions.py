@@ -41,7 +41,6 @@ def _the_account_this_process_runs_as(monkeypatch):
     environment fallback, for a uid with no passwd entry, has its own test.
     """
     import pwd
-
     monkeypatch.setattr(pwd, "getpwuid", lambda _uid: types.SimpleNamespace(pw_name = "ada"))
 
 
@@ -2624,9 +2623,7 @@ def test_a_no_torch_vulkan_installer_names_only_the_render_node(tmp_path):
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
     node.chmod(0o660)
-    out = _install_sh_hint(
-        str(node), render_present = False, skip_torch = True, backend = "vulkan"
-    )
+    out = _install_sh_hint(str(node), render_present = False, skip_torch = True, backend = "vulkan")
     assert "Docker that is --device /dev/dri." in out
     assert "--device /dev/kfd" not in out
 

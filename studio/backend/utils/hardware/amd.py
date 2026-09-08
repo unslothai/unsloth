@@ -966,7 +966,6 @@ def _repair_account() -> str:
     """
     try:
         import pwd
-
         return pwd.getpwuid(os.getuid()).pw_name
     except (ImportError, KeyError, OSError, AttributeError):
         return os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
