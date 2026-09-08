@@ -71,6 +71,35 @@ def test_user_message_names_the_binary_and_rules_out_reinstalling():
     assert "administrator" in message
 
 
+def test_an_administrator_policy_block_is_not_sent_to_smart_app_control():
+    """1260 and the AppLocker/Group Policy wording identify an admin's policy.
+
+    Turning Smart App Control off does not lift a WDAC/AppLocker/Group Policy
+    block: it is a different feature, usually already off on a managed device,
+    and switching it off is a security downgrade the user may not be able to
+    undo. Advertising it as "the only local workaround" there leaves the runtime
+    blocked and the user worse off.
+    """
+    for error in (_WinError(1260), "An Application Control policy has blocked this file"):
+        reason = code_integrity_block_reason(error)
+        assert reason is not None
+        message = code_integrity_user_message(r"C:\Users\x\.unsloth\llama.cpp", reason)
+        assert "administers this device" in message
+        assert "only local workaround" not in message
+
+    # A confirmed Smart App Control block still gets the Smart App Control remedy.
+    sac_reason = code_integrity_block_reason("This app was blocked by Smart App Control")
+    assert sac_reason is not None
+    sac_message = code_integrity_user_message(r"C:\x", sac_reason)
+    assert "only local workaround" in sac_message
+    assert "administers this device" not in sac_message
+
+    # The ambiguous status (SAC and WDAC both report 0xC0E90002) offers both.
+    ambiguous = code_integrity_user_message(r"C:\x", code_integrity_block_reason(0xC0E90002))
+    assert "Smart App Control" in ambiguous
+    assert "managed by an administrator" in ambiguous
+
+
 def test_bad_image_without_a_status_is_not_called_a_policy_block():
     """The stock Bad Image sentence is not evidence of Application Control.
 
