@@ -1098,6 +1098,23 @@ def test_blocked_replace_hint_does_not_send_acl_repair_through_a_linked_root(tmp
     assert str(linked_root) in denied
 
 
+def test_blocked_replace_hint_keeps_the_acl_repair_when_the_path_cannot_be_probed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """ACLs that also deny lstat are the case the repair exists for, not a link."""
+    target = tmp_path / "llama.cpp"
+    target.mkdir()
+
+    def denied_lstat(_self):
+        raise PermissionError(errno.EACCES, "Access is denied")
+
+    monkeypatch.setattr(Path, "lstat", denied_lstat)
+
+    denied = blocked_replace_hint(5, target)
+    assert f'takeown /F "{target}" /R /D Y' in denied
+    assert f'icacls "{target}" /reset /T' in denied
+
+
 def test_replace_with_busy_retry_reports_denied_access_as_permissions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

@@ -4231,6 +4231,22 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
     return candidate
 
 
+def _confirmed_reparse_point(path: Path) -> bool:
+    """Whether ``path`` is *known* to redirect elsewhere.
+
+    Not ``_is_link_or_junction``, which answers True when it cannot probe: ACLs bad
+    enough to deny ``lstat`` are the case the WinError 5 hint exists for, so an
+    unprobeable path must keep the repair rather than be read as a link.
+    """
+    try:
+        if os.name == "nt":
+            attributes = getattr(path.lstat(), "st_file_attributes", 0)
+            return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        return path.is_symlink()
+    except OSError:
+        return False
+
+
 def blocked_replace_hint(winerror: object, path: Path) -> str:
     """Why a replace was blocked, chosen by the error Windows actually returned.
 
@@ -4245,7 +4261,7 @@ def blocked_replace_hint(winerror: object, path: Path) -> str:
             "holding a handle, which clears on its own. If the retries do not clear it, "
         )
         antivirus = "Antivirus or Controlled folder access can deny it too"
-        if _is_link_or_junction(path):
+        if _confirmed_reparse_point(path):
             # takeown /R walks through a linked root and icacls resolves one without
             # /L, so the repair would rewrite a --with-llama-cpp-dir tree we do not own.
             return (
