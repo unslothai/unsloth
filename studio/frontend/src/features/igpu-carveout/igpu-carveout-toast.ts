@@ -33,6 +33,22 @@ export const IGPU_CARVEOUT_NOTICE_DURATION_MS = 12000;
 
 export const IGPU_CARVEOUT_NOTICE_TITLE = "This model could run faster";
 
+/** The action, outlined and right-aligned rather than sonner's filled default.
+ *
+ * Two things it fixes, both visible in a screenshot before anything else. A solid
+ * button reads as the thing to do, and the thing to do here is nothing: the model
+ * has loaded, and the setting is in someone's firmware. An outline says "a control"
+ * without saying "act now".
+ *
+ * And the shared toast CSS puts an action at `justify-self: start`, which is right
+ * when the description is one line and wrong under six: the button ends up floating
+ * mid-toast, aligned to neither edge. `!justify-self-end` walks it out to the text
+ * column's right edge. Overriding here rather than in that shared rule on purpose:
+ * every other toast's action IS the thing to do. */
+export const IGPU_CARVEOUT_ACTION_CLASS =
+  "!justify-self-end !h-[26px] !border !border-border !bg-transparent !px-3 " +
+  "!font-medium !text-foreground hover:!bg-accent";
+
 /** Hand a load response's advice field to the notice. Safe to call on every load.
  *
  * Absent on nearly every load, so callers pass the field through unconditionally
@@ -51,6 +67,7 @@ export function showCarveoutAdvice(value: unknown): void {
     id: IGPU_CARVEOUT_TOAST_ID,
     description: advice.message,
     duration: IGPU_CARVEOUT_NOTICE_DURATION_MS,
+    classNames: { actionButton: IGPU_CARVEOUT_ACTION_CLASS },
     action: {
       label: "Don't show again",
       // Fire and forget: the toast is gone by the time this resolves, and

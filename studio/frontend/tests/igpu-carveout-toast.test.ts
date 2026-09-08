@@ -20,6 +20,7 @@ register("./helpers/igpu-carveout-resolver.mjs", import.meta.url);
 const { calls } = await import("./helpers/toast-stub.mjs");
 const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 const {
+  IGPU_CARVEOUT_ACTION_CLASS,
   IGPU_CARVEOUT_NOTICE_TITLE,
   IGPU_CARVEOUT_TOAST_ID,
   showCarveoutAdvice,
@@ -65,6 +66,20 @@ test("it is not a modal, so it holds an id and a finite duration", () => {
       (calls[0].options?.duration as number) > 5000,
     "long enough to read an action, short enough to leave on its own",
   );
+});
+
+test("the action is styled down from sonner's filled default", () => {
+  // Both halves of it matter and both are invisible to every other assertion here:
+  // an outline rather than a solid fill, because nothing about this is the thing to
+  // do, and end-alignment, because the shared toast CSS starts an action at the left
+  // of the text column and under six lines of description that floats.
+  reset();
+  showCarveoutAdvice(ADVICE);
+  const classes = (calls[0].options?.classNames as { actionButton?: string })
+    ?.actionButton;
+  assert.equal(classes, IGPU_CARVEOUT_ACTION_CLASS);
+  assert.match(classes ?? "", /!justify-self-end/);
+  assert.match(classes ?? "", /!bg-transparent/);
 });
 
 test("a second load replaces the notice rather than stacking one over it", () => {
