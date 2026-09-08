@@ -989,6 +989,16 @@ def adopt_pid(pid: Optional[int]) -> None:
 
 
 _shutdown_latch = threading.Event()
+# Bumped per begin_process_lifecycle. Clearing the latch necessarily clears it for the
+# PREVIOUS session too, so work admitted then compares the value it captured instead of
+# reading a boolean that has since been reset under it.
+_lifecycle_generation = 0
+_generation_lock = threading.Lock()
+
+
+def process_lifecycle_generation() -> int:
+    with _generation_lock:
+        return _lifecycle_generation
 
 
 def mark_process_shutting_down() -> None:
@@ -1003,8 +1013,21 @@ def mark_process_shutting_down() -> None:
     _shutdown_latch.set()
 
 
-def is_process_shutting_down() -> bool:
-    return _shutdown_latch.is_set()
+def is_process_shutting_down(admitted_generation: "Optional[int]" = None) -> bool:
+    """Whether a spawn must be refused.
+
+    ``admitted_generation`` is ``process_lifecycle_generation()`` read when the work
+    began. Passing it also refuses work left over from an earlier session: an embedded
+    host's second run_server clears the latch, and a helper load still running from the
+    first would otherwise take that as permission to spawn into the new one. None means
+    the caller has no session to compare, so only the latch applies.
+    """
+    if _shutdown_latch.is_set():
+        return True
+    if admitted_generation is None:
+        return False
+    with _generation_lock:
+        return admitted_generation != _lifecycle_generation
 
 
 def begin_process_lifecycle() -> None:
@@ -1013,7 +1036,14 @@ def begin_process_lifecycle() -> None:
     Shutdown is terminal for a normal CLI run, but in-process callers reuse the
     interpreter; a latch that never cleared would refuse every spawn of the second
     session.
+
+    The generation bump is what keeps the FIRST session's work out: a helper or preview
+    load can still be running in a thread nothing joined, and clearing the latch alone
+    would hand it permission to spawn into this session.
     """
+    global _lifecycle_generation
+    with _generation_lock:
+        _lifecycle_generation += 1
     _shutdown_latch.clear()
 
 

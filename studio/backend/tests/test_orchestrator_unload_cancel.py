@@ -3042,3 +3042,98 @@ def test_shutdown_latches_the_process_before_any_subsystem_is_torn_down():
         "flight can restart it"
     )
     assert latch < sweep
+
+
+def test_a_shutdown_that_begins_during_the_spawn_reaps_the_new_worker():
+    """The pre-spawn gate is a process start away from the child existing. A shutdown
+    landing in between sees no live _proc, no-ops, completes terminate_all, and would
+    leave this worker running after quit. The post-spawn recheck is what closes it.
+    """
+    from unittest import mock
+
+    from core.inference.orchestrator import InferenceOrchestrator
+    from utils import process_lifetime
+
+    orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    torn_down = []
+    orch._shutdown_subprocess = lambda timeout = None: torn_down.append(timeout)
+
+    started = mock.Mock()
+    started.pid = 4242
+
+    class _Ctx:
+        Queue = staticmethod(lambda: mock.Mock())
+        Event = staticmethod(lambda: mock.Mock())
+
+        @staticmethod
+        def Process(**kw):
+            # Shutdown begins while the child is being born, after the gate passed.
+            process_lifetime.mark_process_shutting_down()
+            return started
+
+    try:
+        with mock.patch.object(orch_mod, "_CTX", _Ctx), mock.patch.object(
+            orch_mod, "adopt_pid", lambda pid: None, create = True
+        ):
+            with pytest.raises(RuntimeError, match = "shutting down"):
+                orch._spawn_subprocess({})
+    finally:
+        process_lifetime.begin_process_lifecycle()
+
+    assert torn_down, "the worker born during shutdown was never torn down"
+
+
+def test_a_load_from_the_previous_session_cannot_spawn_into_the_new_one():
+    """An embedded host's second run_server clears the latch. A helper or preview load
+    still running from the first session would read that as permission to spawn, and
+    load the previous session's model into the new one. The generation is what keeps it
+    out: helper backends never receive _begin_server_lifecycle, so the per-instance
+    generation cannot answer this.
+    """
+    from utils import process_lifetime
+
+    try:
+        admitted = process_lifetime.process_lifecycle_generation()
+        assert process_lifetime.is_process_shutting_down(admitted) is False
+
+        # Session 1 quits, session 2 starts.
+        process_lifetime.mark_process_shutting_down()
+        process_lifetime.begin_process_lifecycle()
+
+        assert process_lifetime.is_process_shutting_down() is False, (
+            "the new session cannot spawn at all"
+        )
+        assert process_lifetime.is_process_shutting_down(admitted) is True, (
+            "a load admitted by the previous session was released by the restart"
+        )
+        assert (
+            process_lifetime.is_process_shutting_down(
+                process_lifetime.process_lifecycle_generation()
+            )
+            is False
+        ), "a load admitted by the new session was refused"
+    finally:
+        process_lifetime.begin_process_lifecycle()
+
+
+def test_a_helper_backend_load_carries_the_process_generation():
+    """The plumbing the test above relies on: load_model must capture the generation,
+    or every instance compares None and only the boolean applies.
+    """
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+    ).read_text(encoding = "utf-8")
+    fn = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "load_model"
+    )
+    body = textwrap.dedent(ast.get_source_segment(src, fn) or "")
+    assert "process_lifecycle_generation()" in body, (
+        "load_model does not capture the process generation, so a stale load is "
+        "released by an embedded restart"
+    )

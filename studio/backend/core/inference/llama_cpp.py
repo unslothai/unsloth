@@ -18457,6 +18457,12 @@ class LlamaCppBackend:
         # Before the serial scope: a queued load still belongs to the lifecycle it
         # was requested in.
         _load_generation = getattr(self, "_lifecycle_generation", 0)
+        # The process-wide equivalent, for the same reason. Only _begin_server_lifecycle
+        # advances the per-instance one, and a helper load owns a backend that never
+        # gets it, so an embedded second session would otherwise release this load.
+        from utils.process_lifetime import process_lifecycle_generation
+        _process_generation = process_lifecycle_generation()
+        self._load_process_generation = _process_generation
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_scope():
@@ -26419,6 +26425,9 @@ class LlamaCppBackend:
             with self._spawn_lock:
                 self._shutting_down = False
                 self._torn_down_process = None
+                # Belongs to the load that set it, not to this instance; leaving it
+                # would have a fresh lifecycle compare against the old session.
+                self._load_process_generation = None
                 self._lifecycle_generation = getattr(self, "_lifecycle_generation", 0) + 1
 
     def _spawn_is_stale(self, load_generation: Optional[int]) -> bool:
@@ -26436,7 +26445,7 @@ class LlamaCppBackend:
         # still spawn a server after the sweep. Read second: the attribute is cheaper
         # and answers for the instance that actually gets torn down.
         from utils.process_lifetime import is_process_shutting_down
-        if is_process_shutting_down():
+        if is_process_shutting_down(getattr(self, "_load_process_generation", None)):
             return True
         if load_generation is None:
             return False

@@ -442,7 +442,7 @@ class InferenceOrchestrator:
         # already stopped this subprocess. Checked at the spawn itself so the answer
         # cannot go stale between the check and the child.
         from utils.process_lifetime import is_process_shutting_down
-        if is_process_shutting_down():
+        if is_process_shutting_down(getattr(self, "_load_process_generation", None)):
             raise RuntimeError("Studio is shutting down; not starting an inference subprocess")
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,
@@ -477,6 +477,19 @@ class InferenceOrchestrator:
         from utils.process_lifetime import adopt_pid
 
         adopt_pid(self._proc.pid)  # bind to parent lifetime (Windows job / sweep)
+
+        # The gate above is 30-odd lines and a process start away from here, so a
+        # shutdown can begin in between, see no live _proc, and finish its sweep
+        # while this child is still being born. Recheck now it exists and reap it,
+        # the same shape as the cancel_load recheck below the caller's spawn.
+        # A lock across the spawn would close it too, but _shutdown_subprocess holds
+        # that lock for its whole teardown, so quitting would then queue behind a
+        # spawn it is about to undo. adopt_pid runs first either way: a child that
+        # dies here must still be in the sweep record.
+        if is_process_shutting_down(getattr(self, "_load_process_generation", None)):
+            logger.info("Shutdown began during spawn; tearing the new inference worker down")
+            self._shutdown_subprocess(timeout = 5)
+            raise RuntimeError("Studio is shutting down; not starting an inference subprocess")
         logger.info("Inference subprocess started (pid=%s)", self._proc.pid)
 
     def _cancel_generation(self) -> None:
@@ -1517,7 +1530,18 @@ class InferenceOrchestrator:
 
         from utils.hf_xet_fallback import DownloadStallError
 
+        from utils.process_lifetime import process_lifecycle_generation
+
+        # Captured at admission, compared at the spawn: a preview or helper load can
+        # still be running when an embedded host starts its second session, and the
+        # latch alone would be clear again by the time it gets there.
+        load_process_generation = process_lifecycle_generation()
+
         model_name = config.identifier
+        # On the instance rather than a _spawn_subprocess argument: the signature is
+        # stubbed in a dozen places, and a load already owns the orchestrator for its
+        # duration (the lifecycle gate serialises them).
+        self._load_process_generation = load_process_generation
         self.loading_models.add(model_name)
         if load_cancel_event is not None and load_cancel_event.is_set():
             self.loading_models.discard(model_name)
