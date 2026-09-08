@@ -316,10 +316,11 @@ def write_manifest(
         # urlsplit raises on a malformed authority, which would break the never-raises contract.
         try:
             parsed = urlsplit(candidate)
+            # Scheme and host compare case-insensitively (RFC 3986); the path keeps its case.
             _woa_ok = (
-                parsed.scheme == "https"
+                parsed.scheme.lower() == "https"
                 and parsed.hostname == "pypi.nvidia.com"
-                and parsed.netloc == parsed.hostname
+                and parsed.netloc.lower() == parsed.hostname
                 and not parsed.query
                 and not parsed.fragment
             )
@@ -328,7 +329,7 @@ def write_manifest(
         # netloc, not hostname: hostname strips ":443", so a value with a port was written and
         # then refused by setup.ps1's reader. Equality drops userinfo with it.
         if _woa_ok:
-            payload["woa_torch_index"] = candidate.rstrip("/")
+            payload["woa_torch_index"] = "https://pypi.nvidia.com" + parsed.path.rstrip("/")
     path = manifest_path(root)
     try:
         tmp = path.with_suffix(".json.tmp")

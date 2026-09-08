@@ -127,18 +127,27 @@ jobs:
             exit 1
           }
 
-      # -rs so a case that silently stopped running on the row it exists for cannot report green.
+      # A skip is a failure here: these files exist for this row, and -rs only REPORTS skipped cases,
+      # so the summary line is read back and any skipped count fails the step.
       - name: WoA installer and wheelhouse tests
+        shell: pwsh
         env:
           UNSLOTH_NO_TORCH: '1'
-        run: >-
-          python -m pytest
-          tests/studio/install/test_woa_wheelhouse_prefers_pypi.py
-          tests/studio/install/test_woa_wheelhouse_guard_behaviour.py
-          tests/studio/install/test_woa_torch_index_persistence.py
-          tests/studio/install/test_diffusers_pin.py
-          tests/python/test_windows_arm64_wheelhouse_tags.py
-          -q -rs
+        run: |
+          $out = & python -m pytest `
+            tests/studio/install/test_woa_wheelhouse_prefers_pypi.py `
+            tests/studio/install/test_woa_wheelhouse_guard_behaviour.py `
+            tests/studio/install/test_woa_torch_index_persistence.py `
+            tests/studio/install/test_diffusers_pin.py `
+            tests/python/test_windows_arm64_wheelhouse_tags.py `
+            -q -rs 2>&1 | Tee-Object -Variable pytestOut
+          $rc = $LASTEXITCODE
+          $summary = ($pytestOut | Where-Object { $_ -match '\d+ (passed|failed|error)' } | Select-Object -Last 1)
+          if ($rc -ne 0) { exit $rc }
+          if ($summary -match '(\d+) skipped') {
+            Write-Host "::error::$($Matches[1]) test(s) skipped on the row they exist for: $summary"
+            exit 1
+          }
 
       # These parse scripts/uninstall.ps1 with the AST and execute only the helper under test.
       # The reparse one creates a real directory link; on an administrator runner, both kinds.

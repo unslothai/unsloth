@@ -2517,8 +2517,7 @@ def _hsa_spoofed_physical_gfx(
         re-probe."""
         if physical == [inferred_gfx]:
             _safe_print(
-                f"   {source} reports {inferred_gfx} -- {probed} is a spoof of the "
-                f"physical arch.\n"
+                f"   {source} reports {inferred_gfx} -- {probed} is a spoof of the physical arch.\n"
             )
             return inferred_gfx
         # Say so rather than leaving "Checking whether..." hanging: on a real gfx1100
@@ -3184,8 +3183,7 @@ def _ensure_cuda_torch() -> None:
         if _target_span is None or not _span_covers(_target_span, _sms):
             return
         _why = (
-            f"torch is {_family} but this host has GPUs outside its "
-            f"sm_{_span[0]}-{_span[1]} range"
+            f"torch is {_family} but this host has GPUs outside its sm_{_span[0]}-{_span[1]} range"
         )
     else:
         return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
@@ -5836,16 +5834,17 @@ def _install_wheelhouse_optionals() -> None:
             if _wheelhouse_hosts(name):
                 _note(f"windows on arm: the wheelhouse {name} is below {floor}; leaving it off")
             continue
-        if not pip_install_try(
+        installed = pip_install_try(
             f"Installing {name}=={version} from the Windows on ARM wheelhouse",
             "--no-deps",
             "--no-cache-dir",
             f"{name}=={version}",
             constrain = False,
-        ):
+        )
+        if not installed:
             _note(f"windows on arm: could not install the wheelhouse {name}; feature stays off")
-            continue
         # xFormers links its extension against ONE (torch, CUDA) pair; beside any other it is mute.
+        # Checked even when the refresh failed: the copy an earlier torch left behind is still resident.
         if _canonical_dist_name(name) == "xformers":
             built_for = _resident_xformers_build_torch()
             resident = str(_probe_installed_torch_version() or "")
@@ -5856,6 +5855,8 @@ def _install_wheelhouse_optionals() -> None:
                     f"{built_for}, not {resident} -- removed; attention uses torch SDPA"
                 )
                 continue
+        if not installed:
+            continue
         _note(f"windows on arm: installed {name}=={version} from the wheelhouse")
 
 
@@ -5920,7 +5921,12 @@ def _uv_config_index_policy() -> "dict[str, object]":
     an [[index]] entry carrying default = true. A file this cannot parse is reported rather
     than guessed at.
     """
-    policy: "dict[str, object]" = {"no_index": None, "default_index": None, "unreadable": False}
+    policy: "dict[str, object]" = {
+        "no_index": None,
+        "default_index": None,
+        "unreadable": False,
+        "extra_indexes": [],
+    }
     try:
         import tomllib
     except ImportError:  # 3.10: the native path is 3.11+, so only the x64 fallback lands here
@@ -5945,16 +5951,25 @@ def _uv_config_index_policy() -> "dict[str, object]":
             if file_no_index is None and isinstance(scope.get("no-index"), bool):
                 file_no_index = scope["no-index"]
         file_default = None
+        extras: list[str] = []
         indexes = section.get("index")
         if isinstance(indexes, list):
             for entry in indexes:
-                if (
-                    isinstance(entry, dict)
-                    and entry.get("default") is True
-                    and isinstance(entry.get("url"), str)
-                ):
-                    file_default = entry["url"]
-                    break
+                if not isinstance(entry, dict) or not isinstance(entry.get("url"), str):
+                    continue
+                if entry.get("default") is True:
+                    if file_default is None:
+                        file_default = entry["url"]
+                else:
+                    # An [[index]] without default = true is consulted in addition to the default.
+                    extras.append(entry["url"])
+        for scope in (pip_scope, section):
+            value = scope.get("extra-index-url")
+            if isinstance(value, str):
+                extras.append(value)
+            elif isinstance(value, list):
+                extras.extend(v for v in value if isinstance(v, str))
+        policy["extra_indexes"] = list(policy["extra_indexes"]) + extras
         if file_default is None:
             for scope in (pip_scope, section):
                 for key in ("default-index", "index-url"):
@@ -5994,16 +6009,26 @@ def _public_pypi_is_reachable() -> bool:
         return False
     if os.environ.get("PIP_NO_INDEX", "").strip().lower() not in ("", "0", "false"):
         return False
+    # An extra index adds to the default rather than replacing it (uv: UV_INDEX, UV_EXTRA_INDEX_URL;
+    # pip: PIP_EXTRA_INDEX_URL), so PyPI named there is still consulted.
+    extra_is_pypi = any(
+        _url_is_public_pypi(u)
+        for var in ("UV_INDEX", "UV_EXTRA_INDEX_URL", "PIP_EXTRA_INDEX_URL")
+        for u in os.environ.get(var, "").split()
+    )
     for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL"):
         value = os.environ.get(var, "").strip()
         if value:
-            return _url_is_public_pypi(value)
+            return extra_is_pypi or _url_is_public_pypi(value)
     policy = _uv_config_index_policy()
     if policy["unreadable"] or policy["no_index"] is True:
         return False
+    extra_is_pypi = extra_is_pypi or any(
+        _url_is_public_pypi(u) for u in policy["extra_indexes"] if isinstance(u, str)
+    )
     default = policy["default_index"]
     if isinstance(default, str) and not _url_is_public_pypi(default):
-        return False
+        return extra_is_pypi
     return True
 
 

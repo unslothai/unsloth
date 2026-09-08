@@ -265,12 +265,12 @@ class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
         first = block[block.index("foreach ($pyTag in") :]
         first = first[: first.index("$compatible = $true; break") + 30]
         # $WoaWheelAbi, not $WoaWheelTag: a free-threaded venv installs cp313t but is tagged cp313.
-        assert (
-            "$abiTags -contains $WoaWheelAbi" in first
-        ), "the exact-python-TAG branch must also require a usable ABI"
-        assert (
-            "$WoaWheelStable -and ($abiTags -contains 'abi3')" in first
-        ), "and abi3 is not installable on a free-threaded build"
+        assert "$abiTags -contains $WoaWheelAbi" in first, (
+            "the exact-python-TAG branch must also require a usable ABI"
+        )
+        assert "$WoaWheelStable -and ($abiTags -contains 'abi3')" in first, (
+            "and abi3 is not installable on a free-threaded build"
+        )
 
 
 class TestAHostedWheelMustAlsoSatisfyThePin:
@@ -327,9 +327,9 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
         """
         (wheelhouse / _wheel("grpcio", TAG, TAG, version = "1.60.0")).write_bytes(b"")
         req = self._req(wheelhouse.parent, "tensorboard==2.21.0\n")
-        assert "tensorboard" in ips._windows_arm64_skip_packages(
-            req
-        ), "grpcio 1.60.0 is below tensorboard's grpcio>=1.74.0"
+        assert "tensorboard" in ips._windows_arm64_skip_packages(req), (
+            "grpcio 1.60.0 is below tensorboard's grpcio>=1.74.0"
+        )
 
     def test_a_blocker_at_its_floor_lifts_the_skip(self, ips, wheelhouse):
         (wheelhouse / _wheel("grpcio", TAG, TAG, version = "1.74.0")).write_bytes(b"")
@@ -414,7 +414,7 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
 
     @classmethod
     def _rows(cls) -> str:
-        return f"MeCab==0.996.13; {cls.ACTIVE}\n" f"MeCab==0.996.5; {cls.INACTIVE}\n"
+        return f"MeCab==0.996.13; {cls.ACTIVE}\nMeCab==0.996.5; {cls.INACTIVE}\n"
 
     def test_the_shipped_file_really_has_the_duplicate(self):
         rows = [line for line in EXTRAS_SRC.splitlines() if line.lower().startswith("mecab")]
@@ -434,9 +434,9 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
         req.write_text(self._rows(), encoding = "utf-8")
         monkeypatch.setenv("UV_FIND_LINKS", str(wheels))
         monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
-        assert "mecab" in ips._windows_arm64_skip_packages(
-            req
-        ), "the hosted 0.996.5 satisfies only the row that does not apply here"
+        assert "mecab" in ips._windows_arm64_skip_packages(req), (
+            "the hosted 0.996.5 satisfies only the row that does not apply here"
+        )
 
     def test_the_active_row_still_unskips(self, ips, tmp_path, monkeypatch):
         wheels = tmp_path / "wheels"
@@ -698,9 +698,9 @@ class TestAHostedOptionalIsActuallyInstalled:
         for version in ("0.0.23", "0.0.100"):
             (tmp_path / _wheel("xformers", TAG, TAG, version = version)).write_text("")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
-        assert (
-            ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") == "0.0.100"
-        ), "sorted as text 0.0.23 would win"
+        assert ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") == "0.0.100", (
+            "sorted as text 0.0.23 would win"
+        )
 
     def test_an_xformers_built_for_another_torch_is_removed(self, ips, monkeypatch):
         """Its extension links against one exact pair; beside any other the ops vanish
@@ -715,6 +715,36 @@ class TestAHostedOptionalIsActuallyInstalled:
             _uninstall_distribution = lambda name: removed.append(name) or True,
         )
         assert removed == ["xformers"]
+
+    def test_a_failed_refresh_still_evicts_an_xformers_built_for_another_torch(
+        self, ips, monkeypatch
+    ):
+        """The update path: torch moved, the wheelhouse refresh failed, and the copy the old torch
+        left behind stayed resident, losing its ops only at import time."""
+        removed = []
+        self._calls(
+            ips,
+            monkeypatch,
+            {"xformers": "0.0.31"},
+            install_ok = False,
+            _resident_xformers_build_torch = lambda: "2.9.0+cu128",
+            _probe_installed_torch_version = lambda: "2.15.0.dev20260101+cu134",
+            _uninstall_distribution = lambda name: removed.append(name) or True,
+        )
+        assert removed == ["xformers"]
+
+    def test_a_failed_refresh_keeps_a_matching_resident_copy(self, ips, monkeypatch):
+        removed = []
+        self._calls(
+            ips,
+            monkeypatch,
+            {"xformers": "0.0.31"},
+            install_ok = False,
+            _resident_xformers_build_torch = lambda: "2.15.0.dev20260101+cu134",
+            _probe_installed_torch_version = lambda: "2.15.0.dev20260101+cu134",
+            _uninstall_distribution = lambda name: removed.append(name) or True,
+        )
+        assert removed == []
 
     def test_a_matching_xformers_is_kept(self, ips, monkeypatch):
         removed = []
@@ -783,9 +813,9 @@ class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
             if floor is None:
                 continue
             for version in tags.values():
-                assert (
-                    ips._version_satisfies(version, floor[0]) is not False
-                ), f"{name} {version} does not satisfy {floor[0]}"
+                assert ips._version_satisfies(version, floor[0]) is not False, (
+                    f"{name} {version} does not satisfy {floor[0]}"
+                )
 
     def test_nothing_is_claimed_off_win_arm64(self, ips, monkeypatch):
         """Every other platform must see exactly the availability it saw before."""
@@ -897,6 +927,9 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
             "UV_DEFAULT_INDEX",
             "UV_INDEX_URL",
             "PIP_INDEX_URL",
+            "UV_INDEX",
+            "UV_EXTRA_INDEX_URL",
+            "PIP_EXTRA_INDEX_URL",
             "UV_NO_CONFIG",
             "UV_CONFIG_FILE",
             "APPDATA",
@@ -1038,6 +1071,84 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
         self, ips, body, reachable, why
     ):
         """uv pip's own precedence, verified on uv 0.10.7 with a dry-run resolve."""
+        self._write("proj/uv.toml", body)
+        assert ips._public_pypi_is_reachable() is reachable, why
+
+    @pytest.mark.parametrize(
+        "env, reachable, why",
+        [
+            (
+                {
+                    "UV_INDEX_URL": "https://pypi.corp.test/simple",
+                    "UV_EXTRA_INDEX_URL": "https://pypi.org/simple",
+                },
+                True,
+                "an extra that is PyPI beside a corporate default",
+            ),
+            (
+                {
+                    "UV_DEFAULT_INDEX": "https://pypi.corp.test/simple",
+                    "UV_INDEX": "https://mirror.test/simple https://pypi.org/simple",
+                },
+                True,
+                "UV_INDEX, space-separated",
+            ),
+            (
+                {
+                    "PIP_INDEX_URL": "https://pypi.corp.test/simple",
+                    "PIP_EXTRA_INDEX_URL": "https://pypi.org/simple",
+                },
+                True,
+                "pip's spelling",
+            ),
+            (
+                {
+                    "UV_INDEX_URL": "https://pypi.corp.test/simple",
+                    "UV_EXTRA_INDEX_URL": "https://pypi.org.corp.example/simple",
+                },
+                False,
+                "an extra that is not PyPI changes nothing",
+            ),
+        ],
+    )
+    def test_an_extra_index_that_is_pypi_keeps_pypi_in_play(
+        self, ips, monkeypatch, env, reachable, why
+    ):
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        assert ips._public_pypi_is_reachable() is reachable, why
+
+    @pytest.mark.parametrize(
+        "body, reachable, why",
+        [
+            (
+                'index-url = "https://pypi.corp.test/simple"\nextra-index-url = ["https://pypi.org/simple"]\n',
+                True,
+                "extra-index-url in the file",
+            ),
+            (
+                'index-url = "https://pypi.corp.test/simple"\n[pip]\nextra-index-url = ["https://pypi.org/simple"]\n',
+                True,
+                "under [pip]",
+            ),
+            (
+                '[[index]]\nurl = "https://pypi.corp.test/simple"\ndefault = true\n\n[[index]]\nurl = "https://pypi.org/simple"\n',
+                True,
+                "a second [[index]] without default = true",
+            ),
+            (
+                'no-index = true\nextra-index-url = ["https://pypi.org/simple"]\n',
+                False,
+                "no-index disables extras too",
+            ),
+            (
+                'index-url = "https://pypi.corp.test/simple"\nextra-index-url = ["https://mirror.test/simple"]\n',
+                False,
+                "an extra that is not PyPI",
+            ),
+        ],
+    )
+    def test_a_configured_extra_index_that_is_pypi(self, ips, body, reachable, why):
         self._write("proj/uv.toml", body)
         assert ips._public_pypi_is_reachable() is reachable, why
 

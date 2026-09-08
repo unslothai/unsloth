@@ -2824,6 +2824,86 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
         assert result[0].runtime_line == "cuda12"
 
 
+class TestPublishedLegacyNamedArm64BundlesAreOrdered:
+    """The legacy-minor ordering synthesised -x64.zip names and called windows_cuda_attempts
+    without the arch, so an approved llama-<tag>-bin-win-cuda-13.1-arm64.zip produced no
+    runtime line and was skipped for the unchecksummed upstream fallback."""
+
+    TAG = "b8508"
+
+    def _release(
+        self,
+        minors_lines,
+        ranks = None,
+        cudart = False,
+    ):
+        artifacts = [
+            make_artifact(
+                f"llama-{self.TAG}-bin-win-cuda-{minor}-arm64.zip",
+                install_kind = "windows-arm64-cuda",
+                runtime_line = line,
+                supported_sms = ["75", "80", "86", "89", "90", "100", "120"],
+                max_sm = 120,
+                rank = (ranks or {}).get(minor, 100),
+            )
+            for minor, line in minors_lines
+        ]
+        release = make_release(artifacts, upstream_tag = self.TAG)
+        if cudart:
+            for minor, _ in minors_lines:
+                name = f"cudart-llama-bin-win-cuda-{minor}-arm64.zip"
+                release.assets[name] = f"https://example.com/{name}"
+        return release
+
+    def _host(self, driver):
+        return make_host(
+            system = "Windows", machine = "ARM64", driver_cuda_version = driver, compute_caps = ["120"]
+        )
+
+    def test_the_arm64_legacy_bundle_is_selected(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = self._release([("13.1", "cuda13"), ("12.8", "cuda12")])
+        result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")
+        assert result, "no attempt at all: the arch was lost in the legacy ordering"
+        assert result[0].runtime_line == "cuda13"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.1-arm64.zip"
+
+    def test_the_minor_gate_applies_to_arm64_too(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = self._release([("13.3", "cuda13"), ("12.8", "cuda12")])
+        result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")
+        assert result and result[0].runtime_line == "cuda12"
+        assert all(not a.name.endswith("13.3-arm64.zip") for a in result)
+
+    def test_the_artifact_gate_reads_the_arm64_name(self, monkeypatch):
+        """Two legacy minors on one line, the higher one ranked first: the line survives on
+        the lower minor, and the per-artifact gate must parse the -arm64 name to drop the
+        higher one; an x64 spelling never matches, and the preferred 13.3 build slips through."""
+        mock_windows_runtime(monkeypatch, ["cuda13"])
+        release = self._release([("13.3", "cuda13"), ("13.1", "cuda13")], ranks = {"13.3": 10})
+        result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")
+        names = [a.name for a in result]
+        assert names == [f"llama-{self.TAG}-bin-win-cuda-13.1-arm64.zip"], names
+
+    def test_the_cudart_bundle_pairs_by_the_arm64_name(self, monkeypatch):
+        """The same match feeds the cudart pairing: the arm64 runtime archive rides along."""
+        mock_windows_runtime(monkeypatch, ["cuda13"])
+        release = self._release([("13.1", "cuda13")], cudart = True)
+        result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")
+        assert result and result[0].runtime_name == f"cudart-llama-bin-win-cuda-13.1-arm64.zip"
+
+    def test_the_explicit_arch_wins_over_the_host(self, monkeypatch):
+        """The arch argument is the contract: it must reach the legacy ordering rather than
+        being re-derived from the host, or an x64 host resolving arm64 bundles finds none."""
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = self._release([("13.1", "cuda13"), ("12.8", "cuda12")])
+        host = make_host(
+            system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1), compute_caps = ["120"]
+        )
+        result = published_windows_cuda_attempts(host, release, None, arch = "arm64")
+        assert result and result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.1-arm64.zip"
+
+
 # ===========================================================================
 # N.1e. resolve_release_asset_choice -- pin on the published install path
 # ===========================================================================
@@ -3892,8 +3972,7 @@ class TestCudaDriverToolkitMismatchMessage:
             "exceeds driver CUDA major 12 (12.9)."
         ) in output
         assert (
-            "Update the NVIDIA GPU driver to run CUDA Toolkit 13.3, or install "
-            "a CUDA 12.x toolkit."
+            "Update the NVIDIA GPU driver to run CUDA Toolkit 13.3, or install a CUDA 12.x toolkit."
         ) in output
         assert "prebuilt CUDA bundle" in output
 

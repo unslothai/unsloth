@@ -169,6 +169,7 @@ function Exit-SetupFailure {
         [Parameter(Mandatory = $true)][string]$Message,
         [int]$Code = 1
     )
+    if (Get-Command Remove-WoaMergedOverrides -CommandType Function -ErrorAction SilentlyContinue) { Remove-WoaMergedOverrides }
     if ($Code -eq 0) { $Code = 1 }
     if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
         (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
@@ -3868,6 +3869,19 @@ function New-WoaTorchStepOverrideValueParity {
     return $result
 }
 
+# Parity copy of install.ps1's Test-WoaAudioMatchesTorch: torchaudio tracks torch's major.minor.
+function Test-WoaAudioMatchesTorchParity {
+    param([string]$TorchVersion, [string]$AudioVersion)
+    if (-not $TorchVersion -or -not $AudioVersion) { return $false }
+    $shorten = {
+        param($v)
+        [regex]::Match((($v -split '\+', 2)[0]), '^\d+\.\d+').Value
+    }
+    $a = & $shorten $TorchVersion
+    $b = & $shorten $AudioVersion
+    return ($a -and $b -and $a -eq $b)
+}
+
 function Get-WoaCudaWheelVersionParity {
     param([string]$IndexUrl, [string]$PyTag, [string]$AbiTag, [string]$Project = "torch",
           [string]$PairWith = "")
@@ -3893,7 +3907,12 @@ function Get-WoaCudaWheelVersionParity {
         $key = $null
         try { $key = [version]$numeric } catch { continue }
         if ($null -eq $bestKey -or $key -gt $bestKey) { $bestKey = $key; $best = $version }
-        elseif ($key -eq $bestKey -and $version -gt $best) { $best = $version }
+        elseif ($key -eq $bestKey) {
+            # Same release: a final build outranks any .dev one (PEP 440), and later stamps win among devs.
+            $devNew = [regex]::Match($version, '\.dev(\d+)'); $devBest = [regex]::Match($best, '\.dev(\d+)')
+            if ($devBest.Success -and -not $devNew.Success) { $best = $version }
+            elseif ($devBest.Success -and $devNew.Success -and ([long]$devNew.Groups[1].Value -gt [long]$devBest.Groups[1].Value)) { $best = $version }
+        }
     }
     return $best
 }
@@ -3981,7 +4000,12 @@ function Resolve-WoaOverrideLine {
     }
     if ($Line -match '^(\s*[^\s@]+\s*@\s*)(.+?)(\s*)$') {
         $head = $Matches[1]; $target = $Matches[2]; $tail = $Matches[3]
-        if ($target -match '^file:(?!//)(.*)$') { return "$head" + "file:" + (& $abs $Matches[1]) + "$tail" }
+        if ($target -match '^file:(?!//)(.*)$') {
+        # A URI, not "file:" plus a raw path: a space in the profile would otherwise end the URL early.
+        $rebasedPath = & $abs $Matches[1]
+        $uri = try { (New-Object System.Uri -ArgumentList @($rebasedPath, [System.UriKind]::Absolute)).AbsoluteUri } catch { "file:" + $rebasedPath }
+        return "$head$uri$tail"
+    }
         return $Line
     }
     if ($Line -match '^(\s*)([^\s#;]+\.(?:whl|tar\.gz|zip))(\s*.*)$') {
@@ -4044,11 +4068,21 @@ function Get-RequirementNames {
 }
 
 # Put back what install.ps1 exported: process-scoped, so a direct update starts without them.
+# The merged override file copies caller lines, which can carry credentials, so it lives only for
+# one run: removed here at exit (and by Exit-SetupFailure), and any stale copy before it is rewritten.
+function Remove-WoaMergedOverrides {
+    if ($script:WoaMergedOverrides) {
+        Remove-Item -LiteralPath $script:WoaMergedOverrides -Force -ErrorAction SilentlyContinue
+        $script:WoaMergedOverrides = $null
+    }
+}
+
 function Restore-WoaResolverEnvironment {
     if (-not (Test-WinArm64Venv)) { return }
     $woaDir = Join-Path $StudioHome "woa"
     $overrides = Join-Path $woaDir "overrides.txt"
     $wheels = Join-Path $woaDir "wheels"
+    Remove-Item -LiteralPath (Join-Path $woaDir "overrides.merged.txt") -Force -ErrorAction SilentlyContinue
     if (-not (Test-Path -LiteralPath $overrides -PathType Leaf)) {
         if (-not $env:UV_OVERRIDE) {
             substep "windows on arm: $overrides is missing, so the win_arm64 requirement" "Yellow"
@@ -4088,6 +4122,7 @@ function Restore-WoaResolverEnvironment {
                 }
                 try {
                     [System.IO.File]::WriteAllLines($_woaMerged, [string[]]$_woaLines, (New-Object System.Text.UTF8Encoding($false)))
+                    $script:WoaMergedOverrides = $_woaMerged
                     $_woaSafeMerged = Get-UvSafePath $_woaMerged
                     if ($_woaSafeMerged -match '\s') { throw "merged override path is unreadable by uv" }
                     $env:UV_OVERRIDE = $_woaSafeMerged
@@ -5388,6 +5423,14 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
             if ($_woaVisionV) { $WinArm64VisionSpec = "torchvision==$_woaVisionV" }
             $_woaAudioV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchaudio" -PairWith $_woaTorchV
             if ($_woaAudioV) { $WinArm64AudioSpec = "torchaudio==$_woaAudioV" }
+            # This probe is the same one install.ps1 ran, so it decides: a fresh shell has no handoff, and
+            # the handoff alone would drop an audio wheel the index does pair with this torch.
+            $_woaProbeHasAudio = [bool]($_woaAudioV -and (Test-WoaAudioMatchesTorchParity -TorchVersion $_woaTorchV -AudioVersion $_woaAudioV))
+            if ($WinArm64NoAudio -eq $_woaProbeHasAudio) {
+                $WinArm64NoAudio = -not $_woaProbeHasAudio
+                if ($WinArm64NoAudio) { substep "windows on arm: this index pairs no torchaudio with torch $_woaTorchV; leaving it out of the trio" }
+                else { substep "windows on arm: this index pairs torchaudio $_woaAudioV with torch $_woaTorchV; keeping it in the trio" }
+            }
             substep "windows on arm: pinning the CUDA build this index publishes ($_woaTorchV)."
         }
     }
@@ -5606,13 +5649,24 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
                          else { $TorchInstallIndexUrl }
         $_effectiveTorchIndexUrl = $_cudaIndexUrl
         # The exact WoA pins are only worth sending if the override file cannot undo them.
-        $_woaStepSaved = $null; $_woaStepSwapped = $false; $_woaStepTemps = @()
+        $_woaStepSaved = $null; $_woaStepSwapped = $false; $_woaStepTemps = @(); $_woaCutoffSaved = @{}
         if ($WinArm64Venv -and $env:UV_OVERRIDE) {
             $_woaStepSaved = $env:UV_OVERRIDE
             $_woaStep = New-WoaTorchStepOverrideValueParity -Value $_woaStepSaved -Dir (Join-Path $StudioHome "woa")
             $env:UV_OVERRIDE = $_woaStep.Value
             $_woaStepTemps = @($_woaStep.Temps)
             $_woaStepSwapped = $true
+        }
+        if ($WinArm64Venv) {
+            # The pins are exact and the index page carries no upload dates: a cutoff would reject them outright.
+            foreach ($_woaCutoffName in @("UV_EXCLUDE_NEWER", "UV_EXCLUDE_NEWER_PACKAGE")) {
+                $_woaCutoffValue = [string](Get-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue).Value
+                if ($_woaCutoffValue) {
+                    $_woaCutoffSaved[$_woaCutoffName] = $_woaCutoffValue
+                    Remove-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue
+                    substep "windows on arm: $_woaCutoffName is not applied to the exact CUDA pins (the index carries no upload dates)."
+                }
+            }
         }
         try {
             if ($script:UnslothVerbose) {
@@ -5626,6 +5680,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         } finally {
             if ($_woaStepSwapped) { $env:UV_OVERRIDE = $_woaStepSaved }
             foreach ($_woaTmp in $_woaStepTemps) { Remove-Item -LiteralPath $_woaTmp -Force -ErrorAction SilentlyContinue }
+            foreach ($_woaCutoffName in @($_woaCutoffSaved.Keys)) { Set-Item "Env:$_woaCutoffName" $_woaCutoffSaved[$_woaCutoffName] }
         }
         if ($torchInstallExit -eq 0 -or -not $_cudaKeptActive) { break }
         substep "[WARN] torch==$($env:UNSLOTH_KEPT_TORCH) not installable from this CUDA index -- using the supported release" "Yellow"
@@ -5650,11 +5705,12 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         if ($_woaAudioProbe.Ok) {
             $_woaTorchVer = if ($_woaAudioProbe.Output -match '(?m)^T=(\S+)\s*$') { $Matches[1] } else { "" }
             $_woaAudioVer = if ($_woaAudioProbe.Output -match '(?m)^A=(\S+)\s*$') { $Matches[1] } else { "" }
-            # torchaudio tracks torch's major.minor, so that is the whole ABI question.
-            $_woaTorchMm = if ($_woaTorchVer -match '^(\d+\.\d+)') { $Matches[1] } else { "" }
-            $_woaAudioMm = if ($_woaAudioVer -match '^(\d+\.\d+)') { $Matches[1] } else { "" }
-            if ($_woaAudioMm -and $_woaTorchMm -and $_woaAudioMm -ne $_woaTorchMm) {
-                substep "windows on arm: removing torchaudio $_woaAudioVer (torch is now $_woaTorchMm)" "Yellow"
+            # The whole pairing, as at selection: major.minor, and the build (dev stamp, CUDA tag) too,
+            # since the extension is linked against one libtorch.
+            if ($_woaAudioVer -and $_woaTorchVer -and -not (
+                    (Test-WoaAudioMatchesTorchParity -TorchVersion $_woaTorchVer -AudioVersion $_woaAudioVer) -and
+                    (Test-WoaPairsWithTorchParity -TorchVersion $_woaTorchVer -OtherVersion $_woaAudioVer -Project "torchaudio"))) {
+                substep "windows on arm: removing torchaudio $_woaAudioVer (torch is now $_woaTorchVer)" "Yellow"
                 Fast-Uninstall torchaudio | Out-Null
             }
         }
@@ -7281,3 +7337,5 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
         Exit-SetupFailure "llama.cpp setup did not produce a usable server"
     }
 }
+
+Remove-WoaMergedOverrides

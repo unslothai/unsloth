@@ -3276,11 +3276,12 @@ def published_windows_cuda_attempts(
                 host,
                 release.upstream_tag,
                 {
-                    f"llama-{release.upstream_tag}-bin-win-cuda-{minor}-x64.zip": "published"
+                    f"llama-{release.upstream_tag}-bin-win-cuda-{minor}-{arch}.zip": "published"
                     for minor in legacy_minors
                 },
                 preferred_runtime_line,
                 selection_log,
+                arch = arch,
             )
             if attempt.runtime_line
         ]
@@ -3321,7 +3322,10 @@ def published_windows_cuda_attempts(
             asset_url = release.assets.get(artifact.asset_name)
             if not asset_url:
                 continue
-            am = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", artifact.asset_name)
+            # Two groups (major, minor), for THIS arch: the x64 spelling never matched an arm64 bundle.
+            am = re.search(
+                rf"-bin-win-cuda-(\d+)\.(\d+)-{re.escape(arch)}\.zip$", artifact.asset_name
+            )
             # Legacy upstream-named bundles encode the minor; gate it against the
             # driver. app-named bundles carry no minor and are driver-gated at the
             # runtime-line level by windows_cuda_attempts above.
@@ -9440,9 +9444,7 @@ if __name__ == "__main__":
         fatal = _environment_fatal_reason(exc)
         if fatal:
             _fail_no_space(f"prebuilt install failed: {fatal}")
-        log(
-            f"prebuilt install failed: {textwrap.shorten(str(exc), width = 400, placeholder = '...')}"
-        )
+        log(f"prebuilt install failed: {textwrap.shorten(str(exc), width = 400, placeholder = '...')}")
         raise SystemExit(EXIT_FALLBACK)
     except Exception as exc:
         fatal = _environment_fatal_reason(exc)

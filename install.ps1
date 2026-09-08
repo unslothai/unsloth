@@ -496,7 +496,12 @@ function Install-UnslothStudio {
         }
         if ($Line -match '^(\s*[^\s@]+\s*@\s*)(.+?)(\s*)$') {
             $head = $Matches[1]; $target = $Matches[2]; $tail = $Matches[3]
-            if ($target -match '^file:(?!//)(.*)$') { return "$head" + "file:" + (& $abs $Matches[1]) + "$tail" }
+            if ($target -match '^file:(?!//)(.*)$') {
+            # A URI, not "file:" plus a raw path: a space in the profile would otherwise end the URL early.
+            $rebasedPath = & $abs $Matches[1]
+            $uri = try { (New-Object System.Uri -ArgumentList @($rebasedPath, [System.UriKind]::Absolute)).AbsoluteUri } catch { "file:" + $rebasedPath }
+            return "$head$uri$tail"
+        }
             return $Line
         }
         if ($Line -match '^(\s*)([^\s#;]+\.(?:whl|tar\.gz|zip))(\s*.*)$') {
@@ -573,15 +578,18 @@ function Install-UnslothStudio {
         param([string]$Path, [string]$Top)
         try { $lines = [System.IO.File]::ReadAllLines($Path) } catch { return $null }
         # uv pip (0.10.7): [pip] scalars beat top-level, [[index]] default = true beats both. Ranked at the end.
-        $topScope = @{ NoIndex = $null; IndexUrl = $null }
-        $pipScope = @{ NoIndex = $null; IndexUrl = $null }
+        $topScope = @{ NoIndex = $null; IndexUrl = $null; Extras = @() }
+        $pipScope = @{ NoIndex = $null; IndexUrl = $null; Extras = @() }
         $section = ""
         # A hashtable, because an assignment inside the $flush script block would be local to it.
-        $inIndex = $false; $idxUrl = $null; $idxDefault = $false; $entry = @{ DefaultUrl = $null }
+        $inIndex = $false; $idxUrl = $null; $idxDefault = $false; $entry = @{ DefaultUrl = $null; Extras = @() }
         $indexTable = if ($Top) { "$Top.index" } else { "index" }
         $pipTable = if ($Top) { "$Top.pip" } else { "pip" }
         $flush = {
-            if ($inIndex -and $idxDefault -and $idxUrl -and -not $entry.DefaultUrl) { $entry.DefaultUrl = $idxUrl }
+            if ($inIndex -and $idxUrl) {
+                if ($idxDefault) { if (-not $entry.DefaultUrl) { $entry.DefaultUrl = $idxUrl } }
+                else { $entry.Extras += $idxUrl }
+            }
         }
         foreach ($raw in $lines) {
             $line = (Remove-WoaTomlComment $raw).Trim()
@@ -623,16 +631,25 @@ function Install-UnslothStudio {
             if ($null -eq $scope) { continue }
             if ($key -eq 'no-index' -and $null -ne $bool -and $null -eq $scope.NoIndex) { $scope.NoIndex = $bool }
             if (($key -eq 'default-index' -or $key -eq 'index-url') -and $str -and -not $scope.IndexUrl) { $scope.IndexUrl = $str }
+            # A one-line array of strings; anything else is not guessed at.
+            if ($key -eq 'extra-index-url') {
+                if ($val -match '^\[(.*)\]$') {
+                    foreach ($m in [regex]::Matches($Matches[1], ('"([^"]*)"' + "|'([^']*)'"))) {
+                        $scope.Extras += $(if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value })
+                    }
+                } elseif ($str) { $scope.Extras += $str }
+            }
             if ($key -eq 'index') { return $null }
         }
         & $flush
         $noIndex = if ($null -ne $pipScope.NoIndex) { $pipScope.NoIndex } else { $topScope.NoIndex }
         $defaultIndex = if ($entry.DefaultUrl) { $entry.DefaultUrl } elseif ($pipScope.IndexUrl) { $pipScope.IndexUrl } else { $topScope.IndexUrl }
-        return @{ NoIndex = $noIndex; DefaultIndex = $defaultIndex }
+        $extras = @($entry.Extras) + @($pipScope.Extras) + @($topScope.Extras)
+        return @{ NoIndex = $noIndex; DefaultIndex = $defaultIndex; ExtraIndexes = @($extras | Where-Object { $_ }) }
     }
 
     function Get-WoaUvConfigIndexPolicy {
-        $result = @{ NoIndex = $false; DefaultIndex = $null; Unreadable = $false }
+        $result = @{ NoIndex = $false; DefaultIndex = $null; Unreadable = $false; ExtraIndexes = @() }
         $noCfg = [string](Get-Item Env:UV_NO_CONFIG -ErrorAction SilentlyContinue).Value
         if ($noCfg -and ($noCfg.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $result }
         $files = @()
@@ -662,6 +679,8 @@ function Install-UnslothStudio {
             if ($null -eq $policy) { $result.Unreadable = $true; continue }
             if (-not $noIndexSet -and $null -ne $policy.NoIndex) { $result.NoIndex = $policy.NoIndex; $noIndexSet = $true }
             if (-not $result.DefaultIndex -and $policy.DefaultIndex) { $result.DefaultIndex = $policy.DefaultIndex }
+            # Additive across files, like the option itself.
+            $result.ExtraIndexes = @($result.ExtraIndexes) + @($policy.ExtraIndexes)
         }
         return $result
     }
@@ -680,14 +699,24 @@ function Install-UnslothStudio {
             $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
             if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $false }
         }
+        # An extra index adds to the default rather than replacing it (uv: UV_INDEX,
+        # UV_EXTRA_INDEX_URL; pip: PIP_EXTRA_INDEX_URL), so PyPI named there is still consulted.
+        $extraIsPyPI = $false
+        foreach ($name in @("UV_INDEX", "UV_EXTRA_INDEX_URL", "PIP_EXTRA_INDEX_URL")) {
+            $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            foreach ($u in ($list -split '\s+' | Where-Object { $_ })) {
+                if (Test-WoaUrlIsPublicPyPI $u) { $extraIsPyPI = $true }
+            }
+        }
         foreach ($name in @("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL")) {
             $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
-            if ($url -and ($url.Trim())) { return (Test-WoaUrlIsPublicPyPI $url) }
+            if ($url -and ($url.Trim())) { return ($extraIsPyPI -or (Test-WoaUrlIsPublicPyPI $url)) }
         }
         # Doubt resolves to "not PyPI": that answer keeps a wheel, the other loses the package.
         $cfg = Get-WoaUvConfigIndexPolicy
         if ($cfg.Unreadable -or $cfg.NoIndex) { return $false }
-        if ($cfg.DefaultIndex -and -not (Test-WoaUrlIsPublicPyPI $cfg.DefaultIndex)) { return $false }
+        foreach ($u in @($cfg.ExtraIndexes)) { if (Test-WoaUrlIsPublicPyPI $u) { $extraIsPyPI = $true } }
+        if ($cfg.DefaultIndex -and -not (Test-WoaUrlIsPublicPyPI $cfg.DefaultIndex)) { return $extraIsPyPI }
         return $true
     }
 
@@ -722,7 +751,7 @@ function Install-UnslothStudio {
 
     # PyPI alone, and no lower than $Floor; an empty $Floor asks only whether any wheel exists.
     function Test-WoaPyPIWheel {
-        param([string]$Project, [string]$PyTag, [string]$AbiTag = "", [string]$Floor = "", [switch]$AllowAgnostic)
+        param([string]$Project, [string]$PyTag, [string]$AbiTag = "", [string]$Floor = "", [switch]$AllowAgnostic, [switch]$Exact)
         if (-not $Project -or -not $PyTag) { return $false }
         if (-not $AbiTag) { $AbiTag = $PyTag }
         # pypi.org/simple normalises the project name; a wheel filename carries the underscored form.
@@ -739,8 +768,12 @@ function Install-UnslothStudio {
             if ($fields.Count -lt 5) { continue }
             if (($fields[0] -replace '_', '-').ToLowerInvariant() -ne $slug) { continue }
             if (-not $Floor) { $script:WoaPyPIMatchedVersion = $fields[1]; return $true }
-            # At or above what the wheelhouse would have staged, so this never swaps in an older wheel.
-            if (Test-WoaVersionAtLeast -Version $fields[1] -Floor $Floor) {
+            # -Exact: the same version, so an exact pin the wheelhouse copy satisfies is never lost to a
+            # newer upstream release it does not. Otherwise at or above the floor.
+            $ok = if ($Exact) {
+                (Test-WoaVersionAtLeast -Version $fields[1] -Floor $Floor) -and (Test-WoaVersionAtLeast -Version $Floor -Floor $fields[1])
+            } else { Test-WoaVersionAtLeast -Version $fields[1] -Floor $Floor }
+            if ($ok) {
                 $script:WoaPyPIMatchedVersion = $fields[1]
                 return $true
             }
@@ -757,7 +790,9 @@ function Install-UnslothStudio {
         if (-not (Test-WoaResolveReachesPyPI)) { return $false }
         # Only wheels THIS venv could have used: a cp312 one is not made redundant by a cp313.
         if (-not (Test-WoaWheelTagsUsable -Name $Name -PyTag $PyTag -AbiTag $AbiTag)) { return $false }
-        return (Test-WoaPyPIWheel -Project $fields[0] -PyTag $PyTag -AbiTag $AbiTag -Floor $fields[1] -AllowAgnostic)
+        # The same version only: a newer upstream wheel leaves ours staged for an exact pin, and a floor
+        # takes the newer one under best-match anyway.
+        return (Test-WoaPyPIWheel -Project $fields[0] -PyTag $PyTag -AbiTag $AbiTag -Floor $fields[1] -AllowAgnostic -Exact)
     }
 
     # Exact tags only: the one caller is free-threaded, where abi3 and py3-none are not options.
@@ -766,7 +801,8 @@ function Install-UnslothStudio {
         $tag = "cp" + ($PythonMinor -replace '\.', '')
         if (-not $AbiTag) { $AbiTag = $tag }
         $pattern = "$Project-[^`"'<>\s]*?win_arm64\.whl"
-        if (Test-WoaPyPIWheel -Project $Project -PyTag $tag -AbiTag $AbiTag) { return $true }
+        # Only where the resolve will look: a wheel PyPI publishes is no answer on an exclusive index.
+        if ((Test-WoaResolveReachesPyPI) -and (Test-WoaPyPIWheel -Project $Project -PyTag $tag -AbiTag $AbiTag)) { return $true }
         if (-not $script:WoaWheelhouse) { return $false }
         if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
             $local = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "$Project-*win_arm64.whl" -ErrorAction SilentlyContinue |
@@ -902,6 +938,41 @@ function Install-UnslothStudio {
         return ""
     }
 
+    # ── Bound nvidia-smi so a wedged driver cannot hang the installer. ──
+    function Invoke-NvidiaSmiBounded {
+        param(
+            [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
+            [Parameter(Position = 1)][string[]]$SmiArgs = @(),
+            [int]$TimeoutSec = 10,
+            # Driver warnings on stderr would corrupt machine-readable --query-gpu
+            # output; the human-readable probes keep the default merge.
+            [switch]$StdoutOnly
+        )
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $Exe
+            $psi.Arguments = ($SmiArgs -join ' ')
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+                try { $proc.Kill() } catch {}
+                $global:LASTEXITCODE = 124
+                return ""
+            }
+            $global:LASTEXITCODE = $proc.ExitCode
+            if ($StdoutOnly) { return $outTask.Result }
+            return ($outTask.Result + "`n" + $errTask.Result)
+        } catch {
+            $global:LASTEXITCODE = 1
+            return ""
+        }
+    }
+
     function Test-WoaNvidiaPresent {
         $exe = $null
         try { $exe = (Get-Command nvidia-smi -ErrorAction SilentlyContinue).Source } catch { $exe = $null }
@@ -914,24 +985,30 @@ function Install-UnslothStudio {
             }
         }
         if (-not $exe) { return $false }
-        try {
-            $listing = & $exe -L 2>&1 | Out-String
-            return ($LASTEXITCODE -eq 0 -and $listing -match '(?m)^\s*GPU\s+\d+')
-        } catch { return $false }
+        # Bounded: this runs before the main GPU detection, and a wedged driver hangs an unbounded call.
+        $listing = Invoke-NvidiaSmiBounded $exe @('-L')
+        return ($LASTEXITCODE -eq 0 -and $listing -match '(?m)^\s*GPU\s+\d+')
     }
 
-    # Duplicates Get-TorchIndexUrl's mapping because this runs first.
-    function Get-WoaDriverCudaLeaf {
+    # The driver's CUDA version as @(major, minor), or $null when nvidia-smi does not say.
+    function Get-WoaDriverCudaVersion {
         $exe = $null
         try { $exe = (Get-Command nvidia-smi -ErrorAction SilentlyContinue).Source } catch { $exe = $null }
         if (-not $exe -and (Test-Path -LiteralPath "$env:SystemRoot\System32\nvidia-smi.exe")) {
             $exe = "$env:SystemRoot\System32\nvidia-smi.exe"
         }
         if (-not $exe) { return $null }
-        try { $out = & $exe 2>&1 | Out-String } catch { return $null }
+        $out = Invoke-NvidiaSmiBounded $exe
         # Newer drivers print "CUDA UMD Version"; accept both spellings.
         if ($out -notmatch 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') { return $null }
-        $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+        return @([int]$Matches[1], [int]$Matches[2])
+    }
+
+    # Duplicates Get-TorchIndexUrl's mapping because this runs first.
+    function Get-WoaDriverCudaLeaf {
+        $v = Get-WoaDriverCudaVersion
+        if (-not $v) { return $null }
+        $major = [int]$v[0]; $minor = [int]$v[1]
         if ($major -ge 13) { return "cu130" }
         if ($major -eq 12 -and $minor -ge 8) { return "cu128" }
         if ($major -eq 12 -and $minor -ge 6) { return "cu126" }
@@ -1020,9 +1097,11 @@ function Install-UnslothStudio {
             try { $key = [version]$numeric } catch { continue }
             if ($null -eq $bestKey -or $key -gt $bestKey) {
                 $bestKey = $key; $best = $version
-            } elseif ($key -eq $bestKey -and $version -gt $best) {
-                # Same release, different .dev stamp: the stamps sort correctly as text.
-                $best = $version
+            } elseif ($key -eq $bestKey) {
+                # Same release: a final build outranks any .dev one (PEP 440), and later stamps win among devs.
+                $devNew = [regex]::Match($version, '\.dev(\d+)'); $devBest = [regex]::Match($best, '\.dev(\d+)')
+                if ($devBest.Success -and -not $devNew.Success) { $best = $version }
+                elseif ($devBest.Success -and $devNew.Success -and ([long]$devNew.Groups[1].Value -gt [long]$devBest.Groups[1].Value)) { $best = $version }
             }
         }
         return $best
@@ -1088,6 +1167,18 @@ function Install-UnslothStudio {
             }
         }
         if (-not $torchIndex) { return }
+        # A CUDA 13 runtime does not run on a CUDA 12 driver (no forward compatibility on Windows), and
+        # the NVIDIA channel is accepted on tags alone, so the wheel's major is checked against the driver's.
+        $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -AbiTag $_woaAbiTag
+        $_woaDriver = Get-WoaDriverCudaVersion
+        if ($_woaDriver -and $_woaTorchVersion -match '\+cu(\d+)') {
+            $_woaWheelMajor = [int]($Matches[1].Substring(0, $Matches[1].Length - 1))
+            if ($_woaWheelMajor -gt [int]$_woaDriver[0]) {
+                substep "windows on arm: $torchIndex publishes torch $_woaTorchVersion (CUDA $_woaWheelMajor), but this driver supports CUDA $($_woaDriver[0]).$($_woaDriver[1])." "Yellow"
+                substep "using the x64 stack instead. Update the NVIDIA driver for the native install." "Yellow"
+                return
+            }
+        }
         # torch alone is not enough: datasets needs pyarrow, unbuildable here. Both decided up front.
         $pyarrowSource = Get-WoaPyarrowSource -PythonMinor $PythonMinor -AbiTag $_woaAbiTag
         if (-not $pyarrowSource) {
@@ -1105,7 +1196,6 @@ function Install-UnslothStudio {
         $script:WoaTorchIndexUrl = $torchIndex
         $script:WoaPyarrowSource = $pyarrowSource
         # Only when the audio wheel PAIRS with the torch one: 2.11 dropped its exact torch pin.
-        $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -AbiTag $_woaAbiTag
         $_woaAudioVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchaudio" -AbiTag $_woaAbiTag -PairWith $_woaTorchVersion
         $script:WoaTorchAudio = Test-WoaAudioMatchesTorch -TorchVersion $_woaTorchVersion -AudioVersion $_woaAudioVersion
         # Kept so the install pins what the probe SELECTED: unsafe-best-match spans ALL indexes.
@@ -5592,7 +5682,11 @@ exit 0
             }
         }
         if (-not $script:WoaNativeCudaTorch) {
-            substep "windows on arm: pyarrow could not be staged; continuing without the native stack." "Yellow"
+            # The venv is already native ARM64, and without pyarrow neither the CUDA index nor the x64 one
+            # can resolve for it: the torch step would fail on the driver-derived index with no wheels.
+            Write-StudioLine "[ERROR] windows on arm: pyarrow could not be staged, and the native ARM64 environment cannot resolve without it." -ForegroundColor Red
+            Write-StudioLine "        Re-run the installer (a transient download is the usual cause), or set UNSLOTH_WOA_NATIVE=0 for the x64 stack." -ForegroundColor Yellow
+            return (Exit-InstallFailure "windows on arm: pyarrow could not be staged")
         }
     }
     if ($script:WoaNativeCudaTorch) {
@@ -5677,6 +5771,9 @@ exit 0
         foreach ($wheel in @(Get-ChildItem -LiteralPath $WoaWheelDir -Filter "*.whl" -ErrorAction SilentlyContinue)) {
             $parts = [System.IO.Path]::GetFileNameWithoutExtension($wheel.Name) -split '-'
             if ($parts.Count -lt 5) { continue }
+            # Platform first: a win_amd64 wheel in the offline cache is not one this venv can use.
+            $platTags = $parts[-1] -split '\.'
+            if (-not (($platTags -contains 'win_arm64') -or ($platTags -contains 'any'))) { continue }
             $abiTags = $parts[-2] -split '\.'
             $compatible = $false
             foreach ($pyTag in ($parts[-3] -split '\.')) {
@@ -5858,41 +5955,6 @@ exit 0
             } else {
                 $env:__COMPAT_LAYER = $prevCompat
             }
-        }
-    }
-
-    # ── Bound nvidia-smi so a wedged driver cannot hang the installer. ──
-    function Invoke-NvidiaSmiBounded {
-        param(
-            [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
-            [Parameter(Position = 1)][string[]]$SmiArgs = @(),
-            [int]$TimeoutSec = 10,
-            # Driver warnings on stderr would corrupt machine-readable --query-gpu
-            # output; the human-readable probes keep the default merge.
-            [switch]$StdoutOnly
-        )
-        try {
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = $Exe
-            $psi.Arguments = ($SmiArgs -join ' ')
-            $psi.UseShellExecute = $false
-            $psi.RedirectStandardOutput = $true
-            $psi.RedirectStandardError = $true
-            $psi.CreateNoWindow = $true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $outTask = $proc.StandardOutput.ReadToEndAsync()
-            $errTask = $proc.StandardError.ReadToEndAsync()
-            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-                try { $proc.Kill() } catch {}
-                $global:LASTEXITCODE = 124
-                return ""
-            }
-            $global:LASTEXITCODE = $proc.ExitCode
-            if ($StdoutOnly) { return $outTask.Result }
-            return ($outTask.Result + "`n" + $errTask.Result)
-        } catch {
-            $global:LASTEXITCODE = 1
-            return ""
         }
     }
 
@@ -7312,6 +7374,7 @@ exit 0
                 $_woaOverrideSaved = $null
                 $_woaOverrideSwapped = $false
                 $_woaOverrideTemps = @()
+                $_woaCutoffSaved = @{}
                 if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64" -and $env:UV_OVERRIDE) {
                     $_woaOverrideSaved = $env:UV_OVERRIDE
                     $_woaStep = New-WoaTorchStepOverrideValue -Value $_woaOverrideSaved -Dir $script:WoaDir
@@ -7319,11 +7382,24 @@ exit 0
                     $_woaOverrideTemps = @($_woaStep.Temps)
                     $_woaOverrideSwapped = $true
                 }
+                if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64") {
+                    # The probe read the index page, which carries no upload dates, and the pin is exact:
+                    # an upload cutoff would reject the selected wheel outright. Only this one command.
+                    foreach ($_woaCutoffName in @("UV_EXCLUDE_NEWER", "UV_EXCLUDE_NEWER_PACKAGE")) {
+                        $_woaCutoffValue = [string](Get-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue).Value
+                        if ($_woaCutoffValue) {
+                            $_woaCutoffSaved[$_woaCutoffName] = $_woaCutoffValue
+                            Remove-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue
+                            substep "windows on arm: $_woaCutoffName is not applied to the exact CUDA pin (the index carries no upload dates)."
+                        }
+                    }
+                }
                 try {
                     $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { & $script:UvExe pip install --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl @_torchExtraArgs }
                 } finally {
                     if ($_woaOverrideSwapped) { $env:UV_OVERRIDE = $_woaOverrideSaved }
                     foreach ($_woaTmp in $_woaOverrideTemps) { Remove-Item -LiteralPath $_woaTmp -Force -ErrorAction SilentlyContinue }
+                    foreach ($_woaCutoffName in @($_woaCutoffSaved.Keys)) { Set-Item "Env:$_woaCutoffName" $_woaCutoffSaved[$_woaCutoffName] }
                 }
             }
             if ($torchInstallExit -ne 0) {
