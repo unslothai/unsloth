@@ -996,7 +996,7 @@ def test_a_partial_collection_is_marked_inside_the_zip():
     # as more than it is records itself.
     assert collect.count("$collectionProblems += ") == 5
     redact = collect[collect.index("$redactor = Join-Path") :]
-    assert redact.index("$collectionProblems += \"log redaction failed") < redact.index(
+    assert redact.index('$collectionProblems += "log redaction failed') < redact.index(
         "Remove-Item -LiteralPath (Join-Path $dir 'studio-logs')"
     ), "recorded before the partial redacted output is deleted"
     assert "no managed interpreter to run the redactor, so studio-logs" in collect
@@ -1057,7 +1057,10 @@ def test_acl_repair_reaches_a_custom_home_outside_the_user_profile():
     for source in ("$env:USERPROFILE", "$override", "(Get-StudioHome)", "(Get-LlamaDir)"):
         assert source in roots
     # Still two gates: prepare recorded it, and it resolves under a live root.
-    assert "if ($baseline.StudioInstalledByProbe) { $recorded = @($baseline.StudioInstallRoots) }" in revert
+    assert (
+        "if ($baseline.StudioInstalledByProbe) { $recorded = @($baseline.StudioInstallRoots) }"
+        in revert
+    )
     assert "$full.StartsWith($_ + '\\', [StringComparison]::OrdinalIgnoreCase)" in revert
 
 
