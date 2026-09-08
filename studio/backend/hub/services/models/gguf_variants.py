@@ -1004,8 +1004,8 @@ class VariantsAnswer(NamedTuple):
 
     response: GgufVariantsResponse
     context_source: Optional[str]
-    # False when the caller may not read this repo's caches, so a reader that falls back to
-    # the repo id rather than ``context_source`` does not walk them anyway.
+    # False when the caller may not read this repo's caches, for a reader that falls back
+    # to the repo id rather than ``context_source``.
     cache_authorized: bool = True
 
 
@@ -1044,8 +1044,7 @@ async def get_gguf_variants_answer(
     # A repo-shaped id resolving to a directory is answered by that directory alone, not the HF cache
     # of the same-named repo, else a GGUF-less directory could evict the resident model.
     answered_locally = [False]
-    # Whether this caller may be told anything the local caches hold about this repo. The
-    # route reads it before its own cache walk, which the listing does not cover.
+    # Read by the route before its own cache walk, which this listing does not cover.
     cache_authorized = [True]
 
     def _compute() -> GgufVariantsResponse:
@@ -1280,9 +1279,7 @@ async def get_gguf_variants_answer(
         # The HF cache answers from disk without authorizing, so a denied caller could name
         # a cached private repo and read back its filenames, sizes and vision flag. A
         # local_path the caller named itself is not the Hub cache and stays available.
-        # `offline` is this request's own flag, and the branches that honour it are below.
-        # Passing it in stops an explicit token being put on the wire for a probe whose
-        # answer the request had already decided not to use.
+        # `offline` passed in: a cache-only request must not pay a probe it will not use.
         cache_reads_authorized = hub_cache_reads_authorized(
             hf_token, repo_id = repo_id, offline = bool(offline)
         )
@@ -1407,10 +1404,9 @@ async def get_gguf_variants_answer(
         # so shared blobs are not double-counted, and keys are lowercased since cache casing can differ.
         cached_filenames_by_snapshot: list[dict[str, int]] = []
         cached_quant_bytes_by_snapshot: list[dict[str, int]] = []
-        # A gated repo can list its files publicly, so reaching here does not mean the caller
-        # was authorized: the cache-only and exception paths above both refuse them, and this
-        # walk would hand the same caller `downloaded`, `partial` and remaining-byte state for
-        # the operator's copy. Everything below reads only the local caches.
+        # A gated repo can list its files publicly, so reaching here is not authorization:
+        # everything below reads the local caches, and would report `downloaded`, `partial`
+        # and remaining bytes for the operator's copy to a caller the other paths refuse.
         if _is_valid_repo_id(repo_id) and cache_reads_authorized:
             # A pinned row resolves inside one directory, so nothing else counts as downloaded.
             scoped_snapshots = (
@@ -1673,16 +1669,14 @@ async def get_gguf_variants_answer(
 
     def _compute_response() -> GgufVariantsResponse:
         skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
-        # The enrichment reads this repo's cache dir, so it answers to the same authorization
-        # the scan does: otherwise the except branch returns 200 carrying an empty quant
-        # folder's label, which is the existence of a cached private repo. Asked only for a
-        # remote, valid id, and memoized, so it adds no probe.
+        # The enrichment reads this repo's cache dir, so it takes the same authorization:
+        # else the except branch returns 200 labelled with an empty quant folder, which is
+        # the existence of a cached private repo. Remote valid ids only, and memoized.
         if not skip and not hub_cache_reads_authorized(
             hf_token, repo_id = repo_id, offline = bool(offline)
         ):
             skip = True
-            # Carried out with the answer: the route falls back to the bare repo id for its
-            # context-length lookup, which walks the same caches this refusal just closed.
+            # Carried out: the route's context-length fallback walks these same caches.
             cache_authorized[0] = False
         try:
             response = _compute()

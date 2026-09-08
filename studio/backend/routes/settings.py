@@ -2427,11 +2427,9 @@ def _resolve_embedding_model_plan(
     so a caller who cannot reach the repo must not learn its cached state from them. A
     local path the caller named itself is not the Hub cache and stays available.
 
-    Authorization is per REPO, not per request: the artifact a lookup returns is often not
-    ``resolved`` but a stored override, a ``sentence-transformers/`` alias or a derived
-    ``-GGUF`` conversion, and /auth-check answers 200 for any string on a public base. One
-    decision taken from the base would let a token that reaches the public model select the
-    operator's cached private conversion of it.
+    Per REPO, not per request: a lookup often answers with a stored override, a
+    ``sentence-transformers/`` alias or a derived ``-GGUF`` conversion rather than
+    ``resolved``, and /auth-check answers 200 for any string on a public base.
     """
     cache_ok = cache_reads_authorized(token, repo_id = resolved)
 
@@ -2458,8 +2456,8 @@ def _resolve_embedding_model_plan(
         # The alias-aware predicate alone, which already pairs the ST file family with the loadable check per candidate;
         # the repo the cache hit came from is what the PUT verifies and scans.
         cached_source = _cached_st_source(resolved) if cache_ok else None
-        # Reading our own disk to learn WHICH repo answered is not the leak; handing that
-        # repo's cached state back is, and for an alias it is not the one just authorized.
+        # Learning WHICH repo answered is not the leak; handing its state back is, and for
+        # an alias that repo is not the one just authorized.
         if cached_source is not None and not _authorized(cached_source[0]):
             cached_source = None
         cached = cached_source is not None
@@ -2617,9 +2615,8 @@ def resolve_embedding_model(
             event = "settings.resolve_embedding_model_failed",
             log = logger,
         ) from exc
-    # Classified, not just trimmed: a bare strip makes a UI session look like an API key, and
-    # the embedding check then refuses it its own cached marker. This endpoint must refuse
-    # exactly what the PUT refuses, so both resolve the token the same way.
+    # Classified, not just trimmed: a bare strip makes a UI session look like an API key and
+    # costs it its own cached marker. The GET must refuse exactly what the PUT refuses.
     token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
     return _resolve_embedding_model_plan(resolved, token)
 
@@ -2744,8 +2741,7 @@ def update_embedding_model(
 
             # Require a genuinely loadable cache (config + weights), not just a resolved refs/main,
             # so a metadata-only partial cache still gets the forceable 409.
-            # Same rule: an unauthorized caller must not have a cached private repo accepted
-            # on its behalf, which would let it be saved as this deployment's embedder.
+            # A cached private repo accepted here becomes this deployment's embedder.
             offline_cached = (
                 local_only_load
                 and cache_reads_authorized(hf_token, repo_id = verify_target)

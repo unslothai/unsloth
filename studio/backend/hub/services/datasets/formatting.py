@@ -369,8 +369,8 @@ def check_format_response(
             refuse_unauthorized_dataset_preview(
                 hf_token,
                 request.dataset_name,
-                # A prefer-local request either reads the cache or returns the cache-miss
-                # 404 below, so the probe is a network round trip it had decided not to use.
+                # A prefer-local request reads the cache or 404s below, either way without
+                # the network, so the probe would be a round trip it had ruled out.
                 offline = bool(request.prefer_local_cache),
             )
         if dataset_exists:

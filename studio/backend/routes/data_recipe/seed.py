@@ -331,8 +331,7 @@ def inspect_seed_dataset(
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
     subset = _normalize_optional_text(payload.subset)
-    # From the caller, like every other Hub-reaching route: a hardcoded False would take
-    # the ambient fallback from UI sessions too.
+    # From the caller: a hardcoded False takes the ambient fallback from UI sessions too.
     token = hf_token_arg(
         _normalize_optional_text(payload.hf_token),
         allow_ambient_token = allow_ambient_token,

@@ -22,9 +22,8 @@ UI_CACHE_IDENTITY_PREFIX = "ui:"
 class AmbientAuthorizedToken(str):
     """A UI session's own saved token: entitled to ambient, so never behind the probe.
 
-    Indistinguishable by value from an API key's token; only ``allow_ambient_token`` tells
-    them apart. Sending your own credential must not buy less than sending none. ``str``
-    subclass so every consumer, fingerprint and cache key sees the string it is.
+    Only ``allow_ambient_token`` tells it from an API key's token. ``str`` subclass so every
+    consumer sees the string it is; sending your own credential must not buy less than none.
     """
 
     __slots__ = ()
@@ -47,8 +46,7 @@ _HF_TOKEN_ENV_KEYS = (
     "HUGGINGFACEHUB_API_TOKEN",
 )
 
-# Neither auth_check nor the session under it takes a timeout (0.x passes requests none,
-# 1.30's httpx client carries Timeout(None)), so /auth-check is called directly instead.
+# auth_check takes no timeout, nor the session under it (0.x: none; 1.30: Timeout(None)).
 _REPO_ACCESS_PROBE_TIMEOUT_S = 10.0
 
 
@@ -92,11 +90,9 @@ def is_anonymous(hf_token: HfTokenArg) -> bool:
 def qualify_cache_identity(hf_token: HfTokenArg, digest: str) -> str:
     """Tag a token digest with the caller class that produced it.
 
-    Two callers can hold the SAME token value and still have different cache authorization:
-    a UI session is entitled to ambient, an sk-unsloth API key is not. The digest alone
-    collides, so a cache keyed on it hands one caller the other's verdict, and an in-flight
-    coalescer merges their scans into one decided by whichever arrived first. Same reason
-    the forced-anonymous sentinel already takes its own identity.
+    Same token value, different authorization: a UI session is entitled to ambient, an
+    sk-unsloth API key is not. On the bare digest they collide, so a cache hands one the
+    other's verdict and a coalescer merges their scans into whichever arrived first.
     """
     return (
         f"{UI_CACHE_IDENTITY_PREFIX}{digest}"
@@ -107,8 +103,7 @@ def qualify_cache_identity(hf_token: HfTokenArg, digest: str) -> str:
 
 # Both signs: a revoked token must not keep reading, a flapping Hub must not be re-dialled.
 _REPO_ACCESS_TTL_S = 60.0
-# Says nothing about the credential. MUST exceed the probe timeout, or it expires before
-# the next request and every caller re-pays the stall.
+# Says nothing about the credential. MUST exceed the probe timeout or every caller re-stalls.
 _REPO_ACCESS_UNREACHABLE_TTL_S = 30.0
 _REPO_ACCESS_CACHE_MAX = 1024
 _repo_access_cache: dict[tuple[str, str, str], tuple[float, bool]] = {}
@@ -122,8 +117,7 @@ class _ProbeTimedOut(Exception):
     """Raised when /auth-check could not be asked at all, rather than answering."""
 
 
-# A refusal, DNS failure or dead proxy is "could not ask" exactly as a stall is. By name,
-# so neither client must be imported.
+# By name, so neither client is imported. A refusal or dead proxy is "could not ask" too.
 _UNREACHABLE_EXC_NAMES = frozenset(
     {
         "Timeout",
@@ -148,8 +142,7 @@ def _is_probe_timeout(exc: BaseException) -> bool:
         if name in {"Timeout", "ReadTimeout", "ConnectTimeout", "ConnectionError"}:
             return True
         module = getattr(cls, "__module__", "") or ""
-        # Top-level package, not a dotted prefix: httpx's live in "httpx" itself, so
-        # "httpx." matched none of PoolTimeout, WriteTimeout, TimeoutException.
+        # Top-level package, not "httpx.": that prefix matched none of httpx's own.
         if module.split(".", 1)[0] in _UNREACHABLE_PACKAGES and (
             "Timeout" in name or name in _UNREACHABLE_EXC_NAMES
         ):
@@ -173,19 +166,17 @@ def cache_reads_authorized(
 ) -> bool:
     """Whether this caller may read the host Hub disk cache for *repo_id*.
 
-    ``is_anonymous`` authenticates the caller class, not the credential: any token-shaped
-    string leaves the sentinel and would otherwise take the disk fast paths. ``repo_info``
-    cannot replace the probe, since gated public metadata still returns for an invalid token.
+    ``is_anonymous`` authenticates the caller CLASS, not the credential, so any token-shaped
+    string leaves the sentinel and takes the disk fast paths. ``repo_info`` cannot replace
+    the probe: gated public metadata still returns for an invalid token.
 
-    ``True`` does NOT mean "this token is valid": /auth-check answers "is this repo
-    reachable", and a public repo returns 200 for any string. It discriminates on private and
-    gated repos, which is where the cached reads are.
+    ``True`` does not mean the token is valid. /auth-check answers "is this repo reachable",
+    which a public repo answers 200 for any string; it discriminates on private and gated
+    repos, which is where the cached reads are.
 
-    Offline an explicit token is denied unless a recent probe is memoized: fail closed
-    without wire proof. Ambient ``None`` still reads the cache offline. ``offline`` is the
-    CALLER's own flag, for a request that asked for cache-only service; without it such a
-    request still put its token and repo id on the wire and could stall for the probe
-    timeout before reaching a branch that was never going to use the network.
+    Offline, an explicit token is denied without a memoized probe (fail closed) while ambient
+    ``None`` still reads. ``offline`` is the CALLER's own flag: without it a cache-only
+    request put its token on the wire and could stall for the probe timeout first.
     """
     if is_anonymous(hf_token):
         return False
@@ -217,10 +208,9 @@ def public_cache_read_authorized(
 ) -> bool:
     """Whether serving *repo_id* from the cache to a caller with NO credential leaks anything.
 
-    The forced-anonymous sentinel can never authorize itself, so ``cache_reads_authorized``
-    denies it outright. That is the right answer for a private repo and the wrong one for a
-    public repo the caller was always entitled to read, and the difference is exactly what an
-    unauthenticated /auth-check answers. Fail closed when it cannot be asked.
+    The sentinel can never authorize itself, which is right for a private repo and wrong for
+    a public one. An unauthenticated /auth-check is exactly that difference. Fail closed when
+    it cannot be asked.
     """
     repo = (repo_id or "").strip()
     if not repo or _is_local_path(repo):
@@ -238,19 +228,16 @@ def cached_read_refused(
 ) -> bool:
     """Refuse a read only where the operator's disk could answer it AND this caller may not.
 
-    An uncached repo has nothing to leak, so refusing it protects nothing and costs a
-    legitimate caller its answer whenever the probe is merely unavailable rather than
-    negative (a mirror without the undocumented /auth-check, one transient failure). Uncached
-    goes to the Hub, which enforces its own access. ``is_cached`` is asked FIRST, so nothing
-    on disk means no probe, and must fail closed or the guard's own failure opens the path it
-    guards. Each reader passes its own predicate: a file at a revision, a dataset in either
-    cache, or a repo dir, per site.
+    An uncached repo has nothing to leak: refusing it protects nothing and costs a legitimate
+    caller its answer whenever the probe is merely unavailable rather than negative (a mirror
+    without the undocumented /auth-check, one transient failure). ``is_cached`` is asked FIRST
+    so nothing on disk means no probe, and must fail closed or the guard's own failure opens
+    the path it guards. Each reader passes its own predicate: a file at a revision, a dataset
+    in either cache, a repo dir.
 
-    "May not read it" is not the same as "cannot authorize itself", which is where the
-    forced-anonymous sentinel sits: a public repo is one it was always entitled to read, so
-    refusing withholds a public answer and protects nothing. The dataset preview asked that
-    second question and the other readers did not, which is an asymmetry with no reason
-    behind it; asking here gives every reader the same rule.
+    "May not read it" is not "cannot authorize itself", which is where the sentinel sits: a
+    public repo is one it was always entitled to read. Asked here so every reader shares the
+    rule; the dataset preview used to be the only one asking.
     """
     if not is_cached():
         return False
@@ -301,8 +288,8 @@ def _explicit_token_reaches_repo(
     repo_type: str,
     offline: bool = False,
 ) -> bool:
-    # ``None`` asks the public question instead, and takes its own memo key: a public repo
-    # answers 200 for every token, so sharing one would let any string claim that verdict.
+    # None asks the public question, under its own key: a public repo answers 200 for every
+    # token, so a shared key would let any string claim that verdict.
     key = (
         repo_id.casefold(),
         repo_type,
@@ -325,8 +312,7 @@ def _explicit_token_reaches_repo(
         except _ProbeTimedOut:
             allowed = False
             timed_out = True
-        # AFTER the probe: `start + TTL` memoizes an already-expired entry once the probe
-        # outlasts the TTL, which a stalled Hub does.
+        # AFTER the probe: `start + TTL` memoizes an expired entry when the Hub stalls.
         finished = time.monotonic()
         if not timed_out:
             timed_out = not allowed and (finished - started) >= _REPO_ACCESS_PROBE_TIMEOUT_S
@@ -380,8 +366,8 @@ def _probe_repo_access(repo_id: str, token: Optional[str], repo_type: str) -> bo
 
         if repo_type not in constants.REPO_TYPES:
             return False
-        # A raw "?" or "#" ends the path early and lands on /api/{type}s/{id}, which answers
-        # 200 with public metadata for a gated repo.
+        # A raw "?" or "#" ends the path early at /api/{type}s/{id}, which answers 200 with
+        # public metadata for a gated repo.
         from urllib.parse import quote
 
         # quote keeps "/", so ".." survives and dot-segment removal probes a different repo
@@ -391,20 +377,18 @@ def _probe_repo_access(repo_id: str, token: Optional[str], repo_type: str) -> bo
         path = f"{_probe_endpoint()}/api/{repo_type}s/{quote(repo_id, safe = '/')}/auth-check"
         response = get_session().get(
             path,
-            # False, not None: None lets build_hf_headers fall back to the ambient login,
-            # so the public question would be asked with the operator's own credential.
+            # False, not None: None falls back to the ambient login, asking the public
+            # question with the operator's own credential.
             headers = build_hf_headers(token = token if token else False),
             timeout = _REPO_ACCESS_PROBE_TIMEOUT_S,
         )
         hf_raise_for_status(response)
-        # hf_raise_for_status passes 3xx, so a client that does not follow redirects would
-        # read a bare 307 as authorized.
+        # hf_raise_for_status passes 3xx: without this a bare 307 reads as authorized.
         if 300 <= getattr(response, "status_code", 0) < 400:
             return False
-        # get_session's client DOES follow redirects (httpx.Client(follow_redirects=True)),
-        # so the check above never sees the 3xx: a proxy that redirects /auth-check to a
-        # login page or another repo hands back a 200 that approved something else. Only the
-        # repo we asked about may answer for it.
+        # And get_session DOES follow them (httpx.Client(follow_redirects=True)), so the
+        # check above never fires: a redirect to a login page returns an approving 200 for
+        # somewhere else. Only the repo we asked about may answer for it.
         final_url = getattr(response, "url", None)
         if final_url is not None and str(final_url) != path:
             return False

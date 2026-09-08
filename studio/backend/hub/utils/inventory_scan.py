@@ -458,8 +458,8 @@ def token_fingerprint(hf_token: HfTokenArg) -> str:
         return ANONYMOUS_CACHE_IDENTITY
     if not hf_token:
         return ""
-    # A UI session and an API key can carry the same token value and still differ on cache
-    # authorization, so the digest alone would let either read back the other's verdict.
+    # Same token value, different cache authorization: on the bare digest either caller
+    # reads back the other's verdict.
     return qualify_cache_identity(hf_token, hashlib.sha256(hf_token.encode()).hexdigest()[:16])
 
 

@@ -119,8 +119,7 @@ def _is_valid_repo_id(repo_id: str) -> bool:
 def _normalize_hf_token(hf_token) -> Optional[str]:
     if not isinstance(hf_token, str):
         return None
-    # normalize_token, not str.strip(): strip() returns a plain str, dropping the marker that
-    # says this is a UI session and costing it its own cache offline.
+    # Not str.strip(): that returns a plain str, dropping the UI-session marker.
     return normalize_token(hf_token)
 
 
@@ -225,10 +224,9 @@ def _resolve_hub_token(header_token: HfTokenArg, query_token: Optional[str]) -> 
         return header_explicit
     query_explicit = _normalize_hf_token(query_token)
     if query_explicit:
-        # normalize_token can carry a marker through but cannot create one, and the query value
-        # never had it: it arrives as a bare string, not from the dependency. Rebuild it from the
-        # caller class the header already states, so the same UI session is not denied its own
-        # cache for putting its token in the legacy parameter instead of the header.
+        # normalize_token carries a marker through but cannot create one, and a query value
+        # never had it. Rebuild from the caller class the header states, so a UI session is
+        # not denied its own cache for using the legacy parameter.
         return hf_token_arg(query_explicit, allow_ambient_token = not is_anonymous(header_token))
     return False if is_anonymous(header_token) else None
 
@@ -2592,11 +2590,9 @@ async def scan_model_remote_code(
         if not local_model:
             model_name = resolve_cached_repo_id_case(model_name)
         # The scanner's hf_hub_download resolves a cached repo's configs without consulting
-        # the credential, so a definitive has_remote_code can be answered off the operator's
-        # disk. Gating only the prefer_local optimization below left the scan running anyway.
-        # _repo_in_any_hf_cache returns False when every cache root raises, which would open
-        # this path on an internal error; its other caller drives deletion semantics where
-        # that False is right, so fail closed here rather than changing it there.
+        # the credential, so has_remote_code can be answered off the operator's disk; gating
+        # only the prefer_local path below left the scan running anyway. Fail closed HERE
+        # rather than in _repo_in_any_hf_cache, whose other caller needs its False.
         def _repo_maybe_cached(repo: str) -> bool:
             try:
                 return _repo_in_any_hf_cache(repo)
@@ -2690,11 +2686,9 @@ async def scan_model_remote_code(
                     dict.fromkeys((*_subdirs, *security_load_subdirs(model_name, hf_token)))
                 )
             _target, _subdirs = load_scan_target(_requested_target, _subdirs)
-            # The gate above authorized model_name. A base model, native-audio dependency or
-            # auto_map repo reached from it is a DIFFERENT repo, scanned with the same token,
-            # and the scanner's downloads fall back to its cached configs and Python files.
-            # Refusing rather than dropping the target: a silently unscanned base would
-            # under-report has_remote_code, which is worse than no answer.
+            # A base, native-audio dependency or auto_map repo is a DIFFERENT repo from the
+            # one the gate above authorized, scanned with the same token. Refused, not
+            # dropped: a silently unscanned base would under-report has_remote_code.
             if not is_local_path(_target) and cached_read_refused(
                 hf_token, repo_id = _target, is_cached = lambda t = _target: _repo_maybe_cached(t)
             ):
@@ -4587,10 +4581,9 @@ async def get_gguf_variants(
             or hub_gguf_variants.pinned_snapshot_for_request(repo_id, local_path)
             or repo_id
         )
-        # The first two are directories the listing already authorized; the bare repo id is
-        # not, and reading it walks every local cache for that repo. A denied caller who
-        # could still list a gated repo's public metadata would get its cached context_length
-        # from that walk alone, after the service suppressed every other local fact.
+        # The first two are directories the listing authorized; the bare repo id is not, and
+        # reading it walks every local cache, which is the one local fact the service could
+        # not suppress from inside.
         if not answer.cache_authorized and not is_local_path(context_model):
             context_model = None
         local = context_model is not None and is_local_path(context_model)

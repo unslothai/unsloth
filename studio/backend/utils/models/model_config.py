@@ -763,9 +763,9 @@ def _raw_config_has_vision_config(
             }
             if revision is not None:
                 download_kwargs["revision"] = revision
-            # Measured: a planted cache entry plus a dead endpoint returns a private repo's
-            # config.json to a token that cannot read it, because hf_hub_download falls back
-            # to the cache even with local_files_only=False and never consults the credential.
+            # Measured: hf_hub_download falls back to the cache even with
+            # local_files_only=False, never consulting the credential, so a planted entry
+            # plus a dead endpoint returns a private config.json to a token that cannot read it.
             if cached_read_refused(
                 hf_token,
                 repo_id = model_name,
@@ -800,13 +800,12 @@ def _raw_config_has_vision_config(
 # why: inline _is_vlm and constants are prepended so the subprocess stays self-contained
 # and doesn't import the parent module graph. Built on demand to defer the registry read.
 def _offline_cache_read_refused(hf_token, model_name: str, repo_id: str, offline: bool) -> bool:
-    """Offline, the capability probes read the cache and never authorize, so local_files_only
-    being False does not put an unentitled caller back on the wire: it would just take the
-    disk. A local path the caller named itself is not the Hub cache and stays available.
+    """Offline the capability probes read the cache and never authorize, so an unentitled
+    caller is not put back on the wire by local_files_only being False. A local path the
+    caller named itself is not the Hub cache and stays available.
 
-    ``offline`` is forwarded, not just tested: a local_files_only call on a host whose env
-    carries no offline flag would otherwise probe /auth-check, which is the one thing that
-    kind of call promises not to do, and stall the /loras scan for the probe timeout per repo.
+    ``offline`` is forwarded, not just tested: else a local_files_only call on a host with no
+    offline env probes anyway, once per repo, which is what it promises not to do.
     """
     return (
         offline
@@ -1127,9 +1126,9 @@ def is_vision_model(
         resolved_name = model_name
     # Key on effective offline (kwarg OR env) so an offline probe can't poison a later lookup.
     effective_offline = bool(local_files_only or _env_offline())
-    # The ONLINE cache fallback is guarded inside _raw_config_has_vision_config, where a
-    # cached file can actually be served; gating the whole call would deny a legitimate token
-    # its answer on any Hub hiccup for a repo that has nothing to leak.
+    # The ONLINE fallback is guarded inside _raw_config_has_vision_config, where a cached
+    # file can actually be served; gating the whole call would deny a legitimate token its
+    # answer on any Hub hiccup, for a repo with nothing to leak.
     if _offline_cache_read_refused(hf_token, model_name, resolved_name, effective_offline):
         return False
     cache_key: _CapabilityCacheKey = (
@@ -3215,9 +3214,8 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
             return False
         return _embedding_marker_in_hf_cache(model_name)
 
-    # Fingerprinted, not the raw token: the ambient marker is a str subclass that hashes and
-    # compares equal to a plain API token of the same value, so a UI-computed classification
-    # was served straight out of this memo to an API caller, above the guard below.
+    # Fingerprinted, not the raw token: the marker is a str subclass equal to a plain token
+    # of the same value, so a UI-computed classification was served to an API caller.
     cache_key = (model_name, _token_fingerprint(hf_token))
     if cache_key in _embedding_detection_cache:
         return _embedding_detection_cache[cache_key]

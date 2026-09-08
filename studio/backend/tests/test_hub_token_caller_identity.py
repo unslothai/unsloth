@@ -3,14 +3,14 @@
 
 """The forced-anonymous sentinel is a credential of its own, not the absence of one.
 
-Tests that plant a cached repo do so deliberately: a denial gate only fires where the disk
-could actually answer, so "cached" is the premise every refusal test rests on. The uncached
-direction has its own tests, which assert the request reaches the Hub instead.
+Planting a cached repo is deliberate: a denial gate only fires where the disk could answer,
+so "cached" is the premise every refusal test rests on. The uncached direction has its own
+tests, asserting the request reaches the Hub instead.
 
 ``hf_token_arg`` returns three values where everything downstream expects ``Optional[str]``,
-so ``False`` breaks four ways: a truthiness test reaches for the ambient token anyway, an
-identity test hits ``.encode()`` on a bool, a shared cache fingerprint crosses the boundary,
-and a child env inherits what it was never granted. ``is`` throughout: ``False == 0 == ""``.
+so ``False`` breaks four ways: truthiness reaches for the ambient token, identity hits
+``.encode()`` on a bool, a shared fingerprint crosses the boundary, and a child env inherits
+what it was never granted. ``is`` throughout, since ``False == 0 == ""``.
 """
 
 import asyncio
@@ -130,10 +130,9 @@ def test_a_ui_session_that_saved_a_token_still_reads_its_own_cache(monkeypatch):
     """The UI attaches the operator's saved token on most Hub routes, so an ordinary
     single-user session is an EXPLICIT-token caller on exactly the routes this gates.
 
-    Measured before this: with a token saved in Settings and the Hub unreachable, that
-    session lost the GGUF variant list, the default chat template and the dataset format
-    check on repos already in its own cache. The same session with no token saved kept
-    all three. Sending your own credential must not buy you less than sending none.
+    Measured: with a token saved and the Hub unreachable, that session lost the GGUF variant
+    list, the chat template and the dataset format check on repos already in its own cache.
+    With no token saved it kept all three.
     """
     _hub_reachable(monkeypatch, offline = True)
     probes = _counting_probe(monkeypatch, None)
@@ -182,10 +181,6 @@ def test_trimming_does_not_demote_a_ui_session_to_an_api_key():
 @pytest.mark.parametrize(
     "cached, authorized, refused",
     [
-        # The rule, at the helper every gated reader now shares: refuse only where the disk
-        # could answer AND this caller may not read it. Uncached goes to the Hub, which
-        # enforces its own access, so an unavailable probe (a mirror without /auth-check, one
-        # transient failure) costs a legitimate caller nothing.
         (True, False, True),
         (True, True, False),
         (False, False, False),
@@ -316,21 +311,16 @@ def test_a_hanging_auth_check_probe_times_out(monkeypatch):
 @pytest.mark.parametrize(
     "exc_factory, is_timeout",
     [
-        # httpx puts its exceptions in ``httpx`` itself, so a "httpx." prefix matched none of
-        # them. On hub 1.x the session IS httpx and a pool timeout is what a burst of
-        # concurrent probes produces, so the miss sent the common case to the full TTL.
+        # A "httpx." prefix matched none of these: httpx's exceptions live in ``httpx``.
         (lambda: __import__("httpx").TimeoutException("stalled"), True),
         (lambda: __import__("httpx").ConnectTimeout("stalled"), True),
         (lambda: __import__("httpx").PoolTimeout("stalled"), True),
-        # A refusal, a DNS failure and a dead proxy are as much "could not ask" as a stall.
-        # Measured: a proxy that hung denied a valid token briefly, one that refused denied
-        # it for a full minute.
+        # A refusal, a DNS failure and a dead proxy are "could not ask" as much as a stall.
         (lambda: __import__("requests").exceptions.ConnectionError("refused"), True),
         (lambda: __import__("requests").exceptions.ProxyError("dead proxy"), True),
         (lambda: __import__("httpx").ConnectError("refused"), True),
         (lambda: ConnectionRefusedError("refused"), True),
-        # The other half: a real refusal keeps the full TTL, or a revoked token is re-probed
-        # forever.
+        # The other half: a real refusal keeps the full TTL, or a revoked token re-probes.
         (lambda: _gated_hub_error(), False),
         (lambda: OSError("refused"), False),
         (lambda: ValueError("bad token"), False),
@@ -350,16 +340,12 @@ def test_could_not_ask_is_told_apart_from_told_no(exc_factory, is_timeout):
 @pytest.mark.parametrize(
     "endpoint, repo_id, expected_url",
     [
-        # A raw "?" would end the path, landing on /api/models/{id}, which answers 200 with
-        # public metadata for a gated repo and an invalid token: the repo_info weakness this
-        # probe exists to avoid.
+        # A raw "?" ends the path at /api/models/{id}, the repo_info weakness this avoids.
         (None, "org/gated?ignored=", "/api/models/org/gated%3Fignored%3D/auth-check"),
-        # Quoting keeps "/", so an ordinary id stays two segments and is not mangled.
         (None, "unsloth/Llama-3.2-1B", "/api/models/unsloth/Llama-3.2-1B/auth-check"),
-        # HfApi().endpoint hands HF_ENDPOINT back verbatim, so a scheme-less mirror built a
-        # URL both clients reject and denied every explicit-token cache read on that machine.
+        # HfApi().endpoint returns HF_ENDPOINT verbatim, so a scheme-less mirror built a URL
+        # both clients reject, denying every explicit-token cache read on that machine.
         ("hf-mirror.example", "org/repo", "https://hf-mirror.example/api/models/org/repo/auth-check"),
-        # A well-formed endpoint keeps its scheme and loses only a trailing slash.
         ("https://hf-mirror.example/", "org/repo", "https://hf-mirror.example/api/models/org/repo/auth-check"),
     ],
 )
@@ -1523,7 +1509,6 @@ def test_an_unreachable_hub_is_a_404_not_a_500():
     assert hf_error_status(RuntimeError("boom")) is None
 
 
-# --- The four defects found reviewing this branch's own gates -------------------------
 
 
 def test_a_ui_sessions_marker_survives_the_route_level_token_normalizer():
@@ -1671,11 +1656,10 @@ def test_a_failed_cache_check_does_not_open_the_path_it_guards(monkeypatch):
 
 
 def test_the_remote_code_scan_refuses_a_cached_repo_it_cannot_authorize(monkeypatch):
-    """The scanner's _load_remote_code_configs calls hf_hub_download with no
-    local_files_only, and that serves a cached file when the Hub is unreachable without
-    consulting the credential, so a definitive has_remote_code could be answered off the
-    operator's disk. Gating only the prefer_local optimization left the scan running anyway.
-    The uncached direction is the shared gate's own test."""
+    """_load_remote_code_configs calls hf_hub_download without local_files_only, which
+    serves a cached file on an unreachable Hub without consulting the credential, so
+    has_remote_code is answered off the operator's disk; gating only the prefer_local path
+    left the scan running anyway. Uncached is the shared gate's own test."""
     import fastapi
 
     _counting_probe(monkeypatch, False)
@@ -1918,8 +1902,7 @@ def test_the_dataset_cache_predicate_counts_both_caches(monkeypatch):
 
 def test_a_redirected_probe_does_not_authorize_the_repo_it_left(monkeypatch):
     """get_session builds httpx.Client(follow_redirects=True), so the 3xx check never sees
-    the hop: a proxy that sends /auth-check to a login page or a different repo returns a
-    200 whose approval was never about the repo the memo is keyed on."""
+    the hop: a redirect to a login page returns a 200 that approved somewhere else."""
     _hub_reachable(monkeypatch)
     _patch_auth_check_get(
         monkeypatch,
@@ -1934,10 +1917,9 @@ def test_a_redirected_probe_does_not_authorize_the_repo_it_left(monkeypatch):
 
 
 def test_a_cache_only_caller_is_never_put_on_the_wire(monkeypatch):
-    """`local_files_only` and `prefer_local_cache` are promises, not hints. Both gates took
-    the process env as the only offline signal, so on a host with no offline variables set
-    they probed anyway: the /loras scan contacts the Hub once per cached repo and stalls for
-    the probe timeout, for an answer neither branch was going to use."""
+    """`local_files_only` and `prefer_local_cache` are promises, not hints. Both gates read
+    only the process env, so on a host with no offline variables they probed anyway: one Hub
+    round trip per cached repo in the /loras scan, for an answer neither branch would use."""
     from utils.models import model_config
 
     probes = _counting_probe(monkeypatch, True)
@@ -1961,10 +1943,9 @@ def test_a_cache_only_caller_is_never_put_on_the_wire(monkeypatch):
 def test_an_anonymous_caller_keeps_a_public_cached_dataset_and_loses_a_private_one(
     monkeypatch, public, refused
 ):
-    """The sentinel was refused only under a declared offline env, which missed the case
-    that matters: a Hub merely unreachable is not a Hub declared absent, and `datasets`
-    falls back to its prepared cache either way. The sentinel cannot authorize itself, so
-    ask the question it can answer, which is whether the repo is public at all."""
+    """Refused only under a declared offline env, which missed the case that matters: an
+    unreachable Hub is not a Hub declared absent, and `datasets` takes its prepared cache
+    either way. It cannot authorize itself, so ask whether the repo is public at all."""
     # Answers only for the dataset endpoint: asking /api/models/<dataset id>/auth-check
     # gets a 404 that reads as "private", which would refuse a public cached preview.
     monkeypatch.setattr(
@@ -1987,9 +1968,8 @@ def test_an_anonymous_caller_keeps_a_public_cached_dataset_and_loses_a_private_o
 
 
 def test_the_public_probe_does_not_borrow_the_operators_login(monkeypatch):
-    """`build_hf_headers(token=None)` falls back to the ambient saved login, which would ask
-    the public question with the operator's own credential and call every private repo they
-    can reach public. False is the value that means no credential."""
+    """`build_hf_headers(token=None)` falls back to the ambient login, which would call
+    every private repo the operator can reach public. False is the value meaning none."""
     _hub_reachable(monkeypatch)
     seen: dict = {}
 
@@ -2016,10 +1996,9 @@ def test_the_public_verdict_takes_its_own_memo_key(monkeypatch):
 
 
 def test_a_cached_alias_repo_is_authorized_in_its_own_right(monkeypatch):
-    """One decision taken from the base repo covered lookups that answer with a DIFFERENT
-    one: a `sentence-transformers/` alias or a derived `-GGUF` conversion. /auth-check
-    returns 200 for any string on a public base, so that decision is nearly free, and it
-    would hand back the operator's cached private conversion of a public model."""
+    """One decision from the base covered lookups answering with a DIFFERENT repo: an alias
+    or a derived `-GGUF` conversion. /auth-check returns 200 for any string on a public base,
+    so that decision is nearly free and hands back a cached private conversion."""
     from routes import settings as settings_routes
 
     reachable = {"acme/base"}
@@ -2047,9 +2026,9 @@ def test_a_cached_alias_repo_is_authorized_in_its_own_right(monkeypatch):
 
 
 def test_the_gguf_listing_withholds_local_readiness_from_a_denied_caller(monkeypatch, tmp_path):
-    """A gated repo can serve its file metadata publicly, so the lister succeeding is not
-    authorization. The cache-only and exception paths both refuse that caller; the success
-    path walked the snapshots anyway and reported `downloaded`, which is the same fact."""
+    """A gated repo can serve file metadata publicly, so the lister succeeding is not
+    authorization. The cache-only and exception paths refuse that caller; the success path
+    walked the snapshots anyway and reported `downloaded`, which is the same fact."""
     from hub.services.models import gguf_variants as gv
     from hub.utils.gguf import GgufVariantInfo
 
@@ -2082,9 +2061,9 @@ def test_the_gguf_listing_withholds_local_readiness_from_a_denied_caller(monkeyp
 
 
 def test_the_context_length_lookup_honours_the_listings_refusal(monkeypatch):
-    """The route falls back to the bare repo id when the listing names no directory, and
-    reading that walks every local cache for the repo. It is the one local fact the service
-    cannot suppress on its own, so the answer carries the verdict out to it."""
+    """With no directory named the route falls back to the bare repo id, and reading that
+    walks every local cache. The one local fact the service cannot suppress, so the answer
+    carries the verdict out to it."""
     from hub.services.models import gguf_variants as gv
     from models.models import GgufVariantsResponse as ServiceResponse
 
@@ -2116,10 +2095,9 @@ def test_the_context_length_lookup_honours_the_listings_refusal(monkeypatch):
 
 
 def test_every_scan_target_is_authorized_not_only_the_one_named(monkeypatch):
-    """The scan expands to the adapter's base, native-audio dependencies and auto_map repos,
-    and downloads each with the same token; those downloads fall back to their cached
-    configs and Python files. Refused rather than dropped: a silently unscanned base would
-    under-report has_remote_code, which is worse than no answer at all."""
+    """The scan expands to the adapter's base, native-audio dependencies and auto_map repos
+    and downloads each with the same token, falling back to their cached configs and Python
+    files. Refused, not dropped: an unscanned base would under-report has_remote_code."""
     import fastapi
 
     reachable = {"acme/adapter"}
