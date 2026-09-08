@@ -111,14 +111,10 @@ def test_all_model_registration():
 
 
 def test_unquantized_default_quant_type_is_usable():
-    # quant_type is optional on append_quant_type, on ModelInfo and on register_model,
-    # and all three default to None. QUANT_TAG_MAP is keyed by QuantType, so the default
-    # used to raise KeyError: None and the unquantized path was unreachable without
-    # naming QuantType.NONE explicitly.
+    # The None default used to raise KeyError: None out of QUANT_TAG_MAP.
     assert ModelInfo.append_quant_type("Llama-3.1-8B") == "Llama-3.1-8B"
     assert ModelInfo.append_quant_type("Llama-3.1-8B", None) == "Llama-3.1-8B"
 
-    # QuantType.NONE already meant no tag, and a real quant type still gets one.
     assert ModelInfo.append_quant_type("Llama-3.1-8B", QuantType.NONE) == "Llama-3.1-8B"
     assert (
         ModelInfo.append_quant_type("Llama-3.1-8B", QuantType.BNB)

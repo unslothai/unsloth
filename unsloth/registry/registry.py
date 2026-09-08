@@ -44,9 +44,7 @@ class ModelInfo:
     description: str = None
 
     def __post_init__(self):
-        # None is the default on this field and on register_model, and it means unquantized.
-        # Normalize it so every reader sees one value for that: search_models compares
-        # quant_type by equality, so a None would match neither QuantType.NONE nor anything else.
+        # search_models compares quant_type by equality, so None must become QuantType.NONE.
         if self.quant_type is None:
             self.quant_type = QuantType.NONE
         self.name = self.name or self.construct_model_name(
@@ -65,10 +63,7 @@ class ModelInfo:
 
     @staticmethod
     def append_quant_type(key: str, quant_type: QuantType = None):
-        # None is the default here, on ModelInfo.quant_type and on register_model, and
-        # it means what QuantType.NONE means: no tag. QUANT_TAG_MAP has no None key, so
-        # without this the default raises KeyError and an unquantized model cannot be
-        # constructed or registered without naming QuantType.NONE explicitly.
+        # register_model reaches here with a raw None default; QUANT_TAG_MAP has no None key.
         if quant_type is not None and quant_type != QuantType.NONE:
             key = "-".join([key, QUANT_TAG_MAP[quant_type]])
         return key
