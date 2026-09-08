@@ -187,7 +187,9 @@ def test_the_pinned_path_matches_install_sh_and_the_cli(monkeypatch, tmp_path):
     assert re.search(
         # _epr_default, not a bare export: portable mode DEFAULTS the caches so a caller who
         # named their own keeps it. The path it defaults to is what this test is about.
-        r'^\s*_epr_default PIP_CACHE_DIR "\$UNSLOTH_ROOT/cache/pip"$', install_text, re.MULTILINE
+        r'^\s*_epr_default PIP_CACHE_DIR "\$UNSLOTH_ROOT/cache/pip"$',
+        install_text,
+        re.MULTILINE,
     ), "install.sh no longer defaults PIP_CACHE_DIR to $UNSLOTH_ROOT/cache/pip"
 
     cli_text = _CLI_STUDIO.read_text(encoding = "utf-8", errors = "replace")

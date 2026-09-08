@@ -151,9 +151,9 @@ def test_portable_mode_keeps_an_explicit_legacy_assets_cache(monkeypatch, tmp_pa
 
     sr._setup_cache_env()
 
-    assert "HF_ASSETS_CACHE" not in os.environ, (
-        "the modern name was pinned over an explicit legacy alias"
-    )
+    assert (
+        "HF_ASSETS_CACHE" not in os.environ
+    ), "the modern name was pinned over an explicit legacy alias"
     assert os.environ["HUGGINGFACE_ASSETS_CACHE"] == str(chosen)
 
 

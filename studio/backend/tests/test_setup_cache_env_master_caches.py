@@ -299,7 +299,9 @@ def test_all_four_launcher_sites_really_do_use_the_master_root(monkeypatch, tmp_
         assert re.search(
             # _epr_default, not a bare export: portable mode DEFAULTS the caches so a caller
             # who named their own keeps it. The default path is what this test pins.
-            rf'^\s*_epr_default {var} "\$UNSLOTH_ROOT/cache/{leaf}"$', install_text, re.MULTILINE
+            rf'^\s*_epr_default {var} "\$UNSLOTH_ROOT/cache/{leaf}"$',
+            install_text,
+            re.MULTILINE,
         ), f"_export_portable_roots no longer defaults {var} to $UNSLOTH_ROOT/cache/{leaf}"
         # share/studio.conf, written by the printf block in _create_studio_shortcuts. Both it
         # and the shim below emit a guarded line rather than a bare export, so that a caller
