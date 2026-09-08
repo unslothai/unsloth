@@ -3,12 +3,9 @@
 
 """A rendered chat prompt must carry exactly one BOS.
 
-Most chat templates emit BOS themselves, so letting the tokenizer add another gives two and
-degrades generation. Some templates do not emit one (zephyr, tinyllama-chat), so suppressing
-special tokens unconditionally drops BOS instead. Both are wrong, in opposite directions, and
-the deciding fact is whether the rendered text already starts with BOS.
-
-Dependency-light: builds real tokenizers backends in memory, no model weights and no network.
+Most templates emit it, so letting the tokenizer add another doubles it; zephyr and
+tinyllama-chat emit none, so suppressing specials unconditionally drops it. The deciding
+fact is whether the rendered text already starts with BOS.
 """
 
 from __future__ import annotations
@@ -37,8 +34,8 @@ def _stub_if_missing(
     """Register a stub for a dep this job does not install. A real install is left alone.
 
     Same helper and reason as test_vision_client_tools.py: core.inference.inference imports
-    unsloth and trl at module scope, which the studio-backend-ci.yml matrix does not install,
-    so unstubbed this module fails COLLECTION and takes the whole job down.
+    unsloth and trl at module scope, which studio-backend-ci.yml does not install, so
+    unstubbed this file fails COLLECTION and takes the whole job down.
 
     ``named_spec`` gives the stub a real ModuleSpec, which only torchao needs: transformers
     probes it with find_spec, which raises ValueError on ``__spec__ = None``.

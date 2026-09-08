@@ -160,8 +160,7 @@ def test_load_correct_tokenizer_skips_instruct():
 
 
 def test_load_correct_tokenizer_uses_model_config_when_tokenizer_is_generic():
-    # Stripped local tokenizers have no processor_class; FastLanguageModel still
-    # has model.config.model_type == gemma4.
+    # Stripped local tokenizers have no processor_class, but config.model_type is still gemma4.
     def from_pretrained(model_name, **kwargs):
         return _Tok(add_bos_token = False)
 
@@ -284,8 +283,7 @@ def test_instruct_template_is_not_stripped_when_tokenizer_does_not_add_bos():
     assert "bos_token" in tok.chat_template
 
 
-# Real-backend tests. The fakes above accept any attribute, so they cannot tell a working repair
-# from an inert one; these build a real tokenizers backend in memory, no network needed.
+# Real backends: the fakes above accept any attribute, so they cannot tell a repair from a no-op.
 
 
 def _build_fast_tokenizer():
@@ -362,8 +360,8 @@ def test_real_backend_add_special_tokens_false_never_gains_bos():
 
 @requires_working_add_bos_token
 def test_real_backend_already_correct_tokenizer_is_left_alone():
-    # google base mirrors report add_bos_token = False and still prepend, so a repair keyed on
-    # the attribute would rebuild a post_processor that already works.
+    # google base mirrors report add_bos_token = False and still prepend, so keying on the
+    # attribute would rebuild a post_processor that already works.
     tok = _real_tokenizer(add_bos = True)
     before = str(tok._tokenizer.post_processor)
     ids_before = _ids(tok)
@@ -436,7 +434,7 @@ def test_bos_token_emitted_by_the_template_still_suppresses_the_fix():
 
 def test_processor_chat_template_is_deduped_too():
     # ProcessorMixin.save_pretrained writes the processor's own chat_template.jinja, so leaving
-    # that copy alone exports a second BOS on a VLM (processing_utils.py writes self.chat_template).
+    # that copy alone exports a second BOS on a VLM.
     emits_bos = "{{ bos_token }}{% for m in messages %}{{ m.content }}{% endfor %}"
     inner = _Tok(add_bos_token = True, chat_template = emits_bos)
     inner.bos_token_id = None  # force the attribute fallback in _tokenizer_auto_adds_bos
