@@ -3,6 +3,7 @@
 
 import {
   isHfCacheSnapshotPath,
+  isOllamaLinkPath,
   modelIdsMatch,
   publicModelId,
 } from "@/features/hub/lib/model-identity";
@@ -24,13 +25,18 @@ export type ChatModelSwitchTarget = {
   ggufVariant?: string | null;
 };
 
+function isExactOnlyIdentity(id: string): boolean {
+  return isExternalModelId(id) || isOllamaLinkPath(id);
+}
+
 function sameHfCacheIdentity(left: string, right: string): boolean {
   if (left === right) {
     return true;
   }
-  // Opaque `external::<provider>::<id>` values stay case-sensitive. Folding them
-  // through residentModelIdMatches would hide Switch Back across distinct models.
-  if (isExternalModelId(left) || isExternalModelId(right)) {
+  // Opaque `external::<provider>::<id>` and `ollama-manifest:` values stay
+  // case-sensitive. Folding them through residentModelIdMatches would hide
+  // Switch Back across distinct models.
+  if (isExactOnlyIdentity(left) || isExactOnlyIdentity(right)) {
     return false;
   }
   if (
@@ -64,7 +70,7 @@ export function chatModelIsResident(
 }
 
 /** The picker id Switch Back should load. Exact match first, then the live HF
- *  cache row that shares the same repo. External ids never alias. */
+ *  cache row that shares the same repo. External and Ollama ids never alias. */
 export function chatModelSelectableId(
   modelId: string,
   selectableModelIds: ReadonlySet<string>,
@@ -72,11 +78,11 @@ export function chatModelSelectableId(
   if (selectableModelIds.has(modelId)) {
     return modelId;
   }
-  if (isExternalModelId(modelId)) {
+  if (isExactOnlyIdentity(modelId)) {
     return null;
   }
   for (const id of selectableModelIds) {
-    if (isExternalModelId(id)) {
+    if (isExactOnlyIdentity(id)) {
       continue;
     }
     if (sameHfCacheIdentity(id, modelId)) {

@@ -250,6 +250,19 @@ test("a case-distinct external id is not already resident", () => {
   assert.equal(chatModelIsSelectable(upper, new Set([upper])), true);
 });
 
+test("a case-distinct ollama-manifest id is not already resident", () => {
+  const upper = `ollama-manifest:${encodeURIComponent(
+    "/home/u/.ollama/manifests/Llama",
+  )}`;
+  const lower = `ollama-manifest:${encodeURIComponent(
+    "/home/u/.ollama/manifests/llama",
+  )}`;
+  assert.equal(chatModelIsResident({ modelId: upper }, upper, null), true);
+  assert.equal(chatModelIsResident({ modelId: upper }, lower, null), false);
+  assert.equal(chatModelIsSelectable(upper, new Set([lower])), false);
+  assert.equal(chatModelIsSelectable(upper, new Set([upper])), true);
+});
+
 test("a snapshot-path chat is already on its repo-id checkpoint", () => {
   const snapshotPath =
     "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
