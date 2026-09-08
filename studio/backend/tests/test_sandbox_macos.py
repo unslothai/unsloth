@@ -260,11 +260,16 @@ def test_ip_egress_is_unrestricted_but_unix_sockets_are_not(profile):
     to /var/run/docker.sock and out of the boundary entirely, so outbound names the
     ip domain and the unix sockets a launch needs are listed one by one."""
     lines = profile.splitlines()
-    for rule in ("(allow system-socket)", "(allow network-bind)", "(allow network-inbound)"):
+    for rule in ("(allow system-socket)", "(allow network-inbound)"):
         assert rule in lines
+    # Neither direction may be unconditional: an unfiltered grant covers AF_UNIX,
+    # which no file rule governs, so it is a socket anywhere the user can write
+    # and a connect() to any host socket such as Docker's.
     assert "(allow network-outbound)" not in lines
+    assert "(allow network-bind)" not in lines
     # Host and port wildcards, so TCP and UDP over v4 and v6 are all still open.
     assert '(allow network-outbound (remote ip "*:*"))' in lines
+    assert '(allow network-bind (local ip "*:*"))' in lines
     # Nothing left of the allowlist proxy this backend deliberately does not have.
     assert "localhost" not in profile
     assert "proxy" not in profile.lower()
@@ -299,6 +304,16 @@ def test_pip_gets_a_writable_target_inside_the_workdir():
     assert env["PIP_TARGET"] == packages
     # Appended, never first: the sandbox_site startup shim must stay unshadowable.
     assert env["PYTHONPATH"].split(os.pathsep) == ["/shim", packages]
+
+
+def test_openmp_can_write_its_registration_segment(profile):
+    """libomp does not only create and unlink /__KMP_REGISTERED_LIB_<uid>, it
+    writes the registration into it, and the live probe never loads an OpenMP
+    workload so nothing else here would catch the missing operation."""
+    kmp = next(
+        block for block in profile.split("(allow ipc-posix-shm") if "__KMP_REGISTERED_LIB_" in block
+    )
+    assert "ipc-posix-shm-write-data" in kmp, kmp
 
 
 def test_sysctl_and_shm_rules_survive(profile):
@@ -551,3 +566,14 @@ def test_the_semaphore_namespace_is_named_rather_than_narrowed(profile):
     it instead."""
     assert "(allow ipc-posix-sem)" in profile
     assert "posix_semaphore_namespace_shared" in backend.LIMITATIONS
+
+
+def test_host_process_metadata_is_named_rather_than_withheld(profile):
+    """kern.proc.pid. and kern.proc.pgrp. are how ps works, and a Terminal call
+    running ps is ordinary; Seatbelt has no PID namespace to hide the host the way
+    the Linux backend does. The record has to say so rather than read as though
+    process-info* being same-sandbox settled it."""
+    sysctl = _rule(profile, "(allow sysctl-read ")
+    assert '(sysctl-name-prefix "kern.proc.pid.")' in sysctl
+    assert "host_process_metadata_readable" in backend.LIMITATIONS
+    assert "(allow process-info* (target same-sandbox))" in profile

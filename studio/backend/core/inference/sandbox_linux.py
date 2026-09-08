@@ -403,61 +403,69 @@ def _model_cache_path(workdir: str) -> str | None:
     return path
 
 
-def _make_cache_mountpoints(workdir: str, names: tuple[str, ...]) -> list[str]:
-    """Create the cache mount points, and report exactly the ones this call made.
+class _CacheMountpoints:
+    """The cache mount points this launch made, and the descriptors to take them back.
 
     bwrap creates a missing bind destination itself, but these sit under the
     workdir bind, so it creates them ON THE HOST and every chat is then left
     holding a .cache tree the user never made. Making them here instead means the
-    launch knows which directories are its own and can take back precisely those,
+    launch knows which directories are its own and can remove precisely those,
     leaving a real ``.cache`` a tool call wrote alone.
 
-    Walked with directory descriptors and ``O_NOFOLLOW`` rather than by path.
-    The workdir is the one place a tool call can write and the workdir scan
-    deliberately permits directory symlinks, so a plain ``os.mkdir`` on
-    ``<workdir>/.cache/huggingface`` would follow a ``.cache`` a previous call
-    pointed at the user's home and create directories out there, on the host,
-    before bubblewrap ever starts.
+    Both halves go through directory descriptors opened with ``O_NOFOLLOW``,
+    never through a path. The workdir is the one place a tool call can write and
+    the workdir scan deliberately permits directory symlinks, so a path-based
+    ``mkdir`` would follow a ``.cache`` an earlier call pointed at the user's home
+    and create directories out there before bubblewrap starts; and a path-based
+    ``rmdir`` afterwards would follow one the call planted DURING the launch and
+    remove a matching empty directory out there instead. Holding the descriptors
+    from one to the other is what makes the two ends name the same directories.
     """
-    levels = [*_MODEL_CACHE_RELPATH.split(os.sep)]
-    created: list[str] = []
-    fd = os.open(workdir, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        prefix = workdir
-        for name in levels:
-            _mkdir_at(fd, name, os.path.join(prefix, name), created)
-            prefix = os.path.join(prefix, name)
-            nested = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd = fd)
-            os.close(fd)
-            fd = nested
-        for name in names:
-            _mkdir_at(fd, name, os.path.join(prefix, name), created)
-    except OSError as exc:
-        _reclaim_cache_mountpoints(created)
-        raise SandboxUnavailableError(
-            f"the session workdir's model cache path is not a plain directory: {exc}"
-        ) from exc
-    finally:
-        os.close(fd)
-    return created
 
-
-def _mkdir_at(fd: int, name: str, path: str, created: list[str]) -> None:
-    """``mkdir`` relative to an open directory, recording it only if it was made here."""
-    try:
-        os.mkdir(name, dir_fd = fd)
-    except FileExistsError:
-        return
-    created.append(path)
-
-
-def _reclaim_cache_mountpoints(created: list[str]) -> None:
-    """Remove the mount points this launch made, innermost first, only while empty."""
-    for path in reversed(created):
+    def __init__(self, workdir: str, names: tuple[str, ...]) -> None:
+        self._fds: list[int] = []
+        self._made: list[tuple[int, str]] = []
+        levels = _MODEL_CACHE_RELPATH.split(os.sep)
         try:
-            os.rmdir(path)
-        except OSError:
+            self._fds.append(os.open(workdir, os.O_RDONLY | os.O_DIRECTORY))
+            for name in levels:
+                self._mkdir(name)
+                self._fds.append(
+                    os.open(
+                        name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd = self._fds[-1],
+                    )
+                )
+            for name in names:
+                self._mkdir(name)
+        except OSError as exc:
+            self.release()
+            raise SandboxUnavailableError(
+                f"the session workdir's model cache path is not a plain directory: {exc}"
+            ) from exc
+
+    def _mkdir(self, name: str) -> None:
+        """``mkdir`` in the innermost directory, recorded only if it was made here."""
+        try:
+            os.mkdir(name, dir_fd = self._fds[-1])
+        except FileExistsError:
             return
+        self._made.append((len(self._fds) - 1, name))
+
+    def release(self) -> None:
+        """Remove what this launch made, innermost first and only while empty."""
+        for depth, name in reversed(self._made):
+            try:
+                os.rmdir(name, dir_fd = self._fds[depth])
+            except OSError:
+                break
+        self._made.clear()
+        while self._fds:
+            try:
+                os.close(self._fds.pop())
+            except OSError:
+                pass
 
 
 def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
@@ -491,7 +499,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise
     # Everything from here on is owned by a PreparedSandboxLaunch that does not
     # exist yet, so this frame has to release it if the assembly raises.
-    mountpoints: list[str] = []
+    mountpoints: _CacheMountpoints | None = None
     try:
         argv: list[str] = [
             bwrap,
@@ -541,7 +549,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         argv += ["--bind", workdir, workdir, "--chdir", workdir]
         if model_cache is not None:
             inner_cache = os.path.join(workdir, _MODEL_CACHE_RELPATH)
-            mountpoints = _make_cache_mountpoints(workdir, _MODEL_CACHE_SUBDIRS)
+            mountpoints = _CacheMountpoints(workdir, _MODEL_CACHE_SUBDIRS)
             for name in _MODEL_CACHE_SUBDIRS:
                 argv += [
                     "--bind-try",
@@ -581,7 +589,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             pass_fds = (seccomp.fileno(),),
             owned_files = [seccomp],
             cleanup_paths = [identity_dir],
-            cleanup_callbacks = [lambda: _reclaim_cache_mountpoints(mountpoints)],
+            cleanup_callbacks = ([mountpoints.release] if mountpoints else []),
             timeout_seconds = plan.timeout_seconds,
             close_fds = plan.close_fds,
             terminate_descendants = plan.terminate_descendants,
@@ -589,7 +597,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     except Exception:
         seccomp.close()
         shutil.rmtree(identity_dir, ignore_errors = True)
-        _reclaim_cache_mountpoints(mountpoints)
+        if mountpoints is not None:
+            mountpoints.release()
         raise
 
 

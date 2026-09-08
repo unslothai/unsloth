@@ -809,6 +809,30 @@ def test_a_runtime_path_symlinked_out_of_the_workdir_is_not_bound(tmp_path, monk
     assert not any(sandbox_linux._within(str(secret), path) for path in paths)
 
 
+def test_a_cache_ancestor_replaced_during_the_launch_is_not_followed_on_the_way_out(
+    tmp_path, monkeypatch
+):
+    """The other end of the same hazard. When no cache source exists the whole
+    generated tree is ordinary writable directories, so a tool call can empty it
+    and leave a symlink where .cache was; an rmdir by path afterwards would follow
+    that into a matching empty host directory."""
+    cache = tmp_path / "hostcache"
+    cache.mkdir()  # no subdirectories, so every --bind-try is skipped
+    monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    outside = tmp_path / "outside"
+    (outside / "huggingface" / "hub").mkdir(parents = True)
+
+    launch = sandbox_linux.prepare(_plan(workdir))
+    # What a tool call can do from inside: empty the tree and point .cache away.
+    shutil.rmtree(workdir / ".cache")
+    (workdir / ".cache").symlink_to(outside)
+    launch.cleanup()
+    assert (outside / "huggingface" / "hub").is_dir(), "cleanup followed the planted symlink"
+    assert (workdir / ".cache").is_symlink()
+
+
 def test_a_symlinked_cache_ancestor_is_refused_rather_than_written_through(tmp_path, monkeypatch):
     """os.mkdir follows an intermediate symlink, and the workdir scan deliberately
     permits directory symlinks, so a .cache a previous call pointed at the user's

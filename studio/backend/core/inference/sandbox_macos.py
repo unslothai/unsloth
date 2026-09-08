@@ -79,6 +79,13 @@ LIMITATIONS = (
     # torch and OpenMP name theirs on a platform none of this can be run on, and
     # a wrong guess breaks multiprocessing instead of confining a filesystem.
     "posix_semaphore_namespace_shared",
+    # kern.proc.pid. and kern.proc.pgrp. are in the sysctl allowlist, so a launch
+    # can read kinfo_proc metadata for host processes even though process-info*
+    # is scoped to the same sandbox. They stay because that sysctl is how ps
+    # works, and a Terminal call running ps is ordinary; Seatbelt has no PID
+    # namespace to hide the host the way the Linux backend does. Named here so
+    # the record does not read as though it did.
+    "host_process_metadata_readable",
 )
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
@@ -600,8 +607,12 @@ def build_profile(
         '(allow file-write* (regex #"^/dev/fd/[0-9]+$"))',
         _rule("allow file-ioctl", device_filters),
         "(allow ipc-posix-sem)",
+        # write-data included, like the two rules below it: libomp does not only
+        # create and unlink its registration segment, it writes the registration
+        # into it, and OpenMP initialisation fails on the denial. The live probe
+        # never loads an OpenMP workload, so nothing here would have caught it.
         "(allow ipc-posix-shm-read-data ipc-posix-shm-write-create "
-        "ipc-posix-shm-write-unlink "
+        "ipc-posix-shm-write-data ipc-posix-shm-write-unlink "
         '(ipc-posix-name-regex #"^/__KMP_REGISTERED_LIB_[0-9]+$"))',
         "(allow ipc-posix-shm-read-data ipc-posix-shm-write-create "
         "ipc-posix-shm-write-data ipc-posix-shm-write-unlink "
@@ -625,7 +636,13 @@ def build_profile(
         # the Linux backend, where the sandbox shares the host's netns and
         # inbound cannot be withheld.
         "(allow system-socket)",
-        "(allow network-bind)",
+        # IP only, for the same reason outbound is: an unfiltered network-bind
+        # also covers AF_UNIX, and a bind() creates a socket at a path that no
+        # file rule governs, so a launch could put one anywhere the user can
+        # write. The workdir and private tmp binds it really needs are the
+        # named rule below, which an unconditional allow above it would make
+        # meaningless.
+        '(allow network-bind (local ip "*:*"))',
         "(allow network-inbound)",
         # Outbound is the one that is filtered, to "ip" rather than to nothing.
         # An unfiltered network-outbound also covers AF_UNIX, and a connect() to a
