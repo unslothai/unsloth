@@ -881,10 +881,11 @@ _SERVER_START_TIMEOUT_S = 900
 _DOWNLOAD_POLL_INTERVAL_S = 1.0
 # Ceiling on the doubling back-off the progress reader uses after a polling error.
 _DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
-# A 200 that reports no adapter can also be a failed inspection, so the answer is
-# re-asked a few times before it is trusted; the endpoint is too costly to poll.
-_COMPANION_LOOKUP_ATTEMPTS = 3
+# A 200 that reports no adapter can also be a failed inspection, so the answer is never
+# final. The endpoint runs several hub probes per request, so re-asking backs off instead
+# of stopping: giving up for good would leave a server that recovers later untracked.
 _COMPANION_LOOKUP_RETRY_S = 60.0
+_COMPANION_LOOKUP_MAX_RETRY_S = 300.0
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 
@@ -1301,18 +1302,18 @@ class _ModelDownloadProgress:
         if time.monotonic() < self._retry_at:
             return
         try:
-            if (
-                self._companions is None
-                and self._companion_lookups < _COMPANION_LOOKUP_ATTEMPTS
-                and time.monotonic() >= self._companion_retry_at
-            ):
+            if self._companions is None and time.monotonic() >= self._companion_retry_at:
                 self._companions = self._companion_repos()
                 if self._companions is None:
-                    # Every unresolved answer is rationed, errors included. This endpoint
-                    # runs hub probes per request, so retrying it once a second for the
-                    # length of a download would load the server doing the downloading.
+                    # Every unresolved answer is rationed, errors included: retrying once a
+                    # second would load the server doing the downloading. The wait doubles
+                    # to a ceiling rather than running out, so a config route that is slow
+                    # or rate-limited for a few minutes does not cost the whole startup.
                     self._companion_lookups += 1
-                    self._companion_retry_at = time.monotonic() + _COMPANION_LOOKUP_RETRY_S
+                    self._companion_retry_at = time.monotonic() + min(
+                        _COMPANION_LOOKUP_RETRY_S * 2.0 ** (self._companion_lookups - 1),
+                        _COMPANION_LOOKUP_MAX_RETRY_S,
+                    )
             try:
                 reading = self._read(self._model, gguf = self._is_gguf())
             except urllib.error.HTTPError as exc:
@@ -1325,13 +1326,20 @@ class _ModelDownloadProgress:
             readings = [(self._model, reading)] + [
                 (repo, item) for repo, item in companions if item is not None
             ]
-            # Only one candidate base is ever fetched. Once one of them is moving the rest
-            # are known dead weight, so stop spending a request per poll on them.
-            moving = [
-                repo for repo, item in companions if item is not None and _in_flight_bytes(item) > 0
+            # Only one candidate base is ever fetched, so once one is demonstrably moving
+            # the rest are dead weight and need not cost a request per poll. Growth against
+            # a reading already taken, never bytes merely being present: an abandoned
+            # transfer leaves `.incomplete` blobs behind, and pruning to a corpse would
+            # discard the repo the worker is about to fetch.
+            grew = [
+                repo
+                for repo, item in companions
+                if item is not None
+                and repo in self._repo_bytes
+                and max(0, int(item.get("downloaded_bytes") or 0)) > self._repo_bytes[repo]
             ]
-            if len(moving) == 1:
-                self._companions = moving
+            if len(grew) == 1:
+                self._companions = grew
             # The liveness baseline only ever rises. A reading falls for reasons that are
             # not "bytes left the disk": an incomplete scan reporting a lower bound, a
             # cache mount vanishing cleanly (`hf_cache_state._safe_is_dir` calls that a

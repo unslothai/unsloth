@@ -4328,10 +4328,10 @@ def test_model_download_progress_reasks_after_an_inconclusive_adapter_answer(mon
     assert progress.downloaded_bytes == 1024 + 2 * 1024**3
 
 
-def test_model_download_progress_stops_reasking_an_inconclusive_answer(monkeypatch):
+def test_model_download_progress_keeps_reasking_an_inconclusive_answer(monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(start.time, "monotonic", lambda: now[0])
-    lookups = []
+    asked_at = []
 
     def http_json(
         method,
@@ -4342,18 +4342,25 @@ def test_model_download_progress_stops_reasking_an_inconclusive_answer(monkeypat
         error = None,
     ):
         if "/api/models/config/" in url:
-            lookups.append(url)
+            asked_at.append(now[0])
             return {"is_lora": False}
         return {"downloaded_bytes": 1024, "expected_bytes": 1024, "progress": 1.0}
 
     monkeypatch.setattr(start, "_http_json", http_json)
     progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/model", None)
 
-    for _ in range(6):
+    for _ in range(4000):
         progress.poll()
-        now[0] += start._COMPANION_LOOKUP_RETRY_S + 1.0
+        now[0] += 1.0
 
-    assert len(lookups) == start._COMPANION_LOOKUP_ATTEMPTS
+    # It never stops: a config route that is slow or rate-limited for a few minutes must
+    # not cost the whole startup, since the worker may still be fetching a base.
+    assert len(asked_at) > 5
+    gaps = [b - a for a, b in zip(asked_at, asked_at[1:])]
+    # ... but the wait widens to a ceiling instead of costing a request per poll.
+    assert gaps[0] == start._COMPANION_LOOKUP_RETRY_S
+    assert gaps[1] > gaps[0]
+    assert max(gaps) == start._COMPANION_LOOKUP_MAX_RETRY_S
 
 
 def test_model_download_progress_keeps_an_unknown_total_unknown(monkeypatch, capsys):
@@ -4512,8 +4519,10 @@ def test_model_download_progress_does_not_invent_a_total_across_repos(monkeypatc
 
 
 def test_model_download_progress_stops_polling_dead_base_candidates(monkeypatch):
-    monkeypatch.setattr(start, "_QUANT_MAPPERS", [{"owner/base": "unsloth/base-unsloth-bnb-4bit"}])
+    monkeypatch.setattr(start, "_QUANT_MAPPERS", [{"owner/base": "unsloth/base-4bit"}])
+    monkeypatch.setattr(start, "_BAD_MAPPINGS", {})
     polled = []
+    substitute = iter([1024**3, 2 * 1024**3, 3 * 1024**3, 4 * 1024**3])
 
     def http_json(
         method,
@@ -4526,9 +4535,9 @@ def test_model_download_progress_stops_polling_dead_base_candidates(monkeypatch)
         if "/api/models/config/" in url:
             return {"is_lora": True, "base_model": "owner/base"}
         polled.append(url)
-        if url.endswith("repo_id=unsloth%2Fbase-unsloth-bnb-4bit"):
+        if url.endswith("repo_id=unsloth%2Fbase-4bit"):
             return {
-                "downloaded_bytes": 2 * 1024**3,
+                "downloaded_bytes": next(substitute),
                 "completed_bytes": 0,
                 "expected_bytes": 6 * 1024**3,
             }
@@ -4537,14 +4546,61 @@ def test_model_download_progress_stops_polling_dead_base_candidates(monkeypatch)
     monkeypatch.setattr(start, "_http_json", http_json)
     progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
 
-    progress.poll()
-    first = len([url for url in polled if "repo_id=owner%2Fbase" in url])
-    progress.poll()
-    second = len([url for url in polled if "repo_id=owner%2Fbase" in url])
+    def dead_polls():
+        return len([url for url in polled if "repo_id=owner%2Fbase" in url])
 
-    assert first == 1
-    assert second == 1
-    assert progress.downloaded_bytes == 2 * 1024**3
+    progress.poll()
+    # One reading is not growth, so the recorded base is still in play.
+    assert dead_polls() == 1
+    progress.poll()
+    assert dead_polls() == 2
+    progress.poll()
+    # The substitute has now grown twice; the recorded base is dropped.
+    assert dead_polls() == 2
+    assert progress.downloaded_bytes == 3 * 1024**3
+
+
+def test_model_download_progress_does_not_prune_to_an_abandoned_partial(monkeypatch):
+    # A cancelled download leaves .incomplete blobs behind. Those bytes are present but
+    # never grow, and pruning to them would drop the repo the worker actually fetches.
+    monkeypatch.setattr(start, "_QUANT_MAPPERS", [{"owner/base": "unsloth/base-4bit"}])
+    monkeypatch.setattr(start, "_BAD_MAPPINGS", {})
+    real = iter([0, 0, 1024**3, 2 * 1024**3])
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            return {"is_lora": True, "base_model": "owner/base"}
+        if url.endswith("repo_id=unsloth%2Fbase-4bit"):
+            # The corpse: bytes in flight from the first poll, never moving.
+            return {
+                "downloaded_bytes": 5 * 1024**2,
+                "completed_bytes": 0,
+                "expected_bytes": 6 * 1024**3,
+            }
+        if url.endswith("repo_id=owner%2Fbase"):
+            return {
+                "downloaded_bytes": next(real),
+                "completed_bytes": 0,
+                "expected_bytes": 40 * 1024**3,
+            }
+        return {"downloaded_bytes": 0, "completed_bytes": 0, "expected_bytes": 0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    for _ in range(4):
+        progress.poll()
+
+    # The repo that really downloaded is still watched, and its bytes are counted.
+    assert progress.downloaded_bytes == 2 * 1024**3 + 5 * 1024**2
+    assert "owner/base" in (progress._companions or [])
 
 
 def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
