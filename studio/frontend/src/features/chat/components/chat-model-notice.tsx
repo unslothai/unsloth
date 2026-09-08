@@ -4,7 +4,6 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { ggufVariantsMatch } from "@/features/hub";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   type ChatHistoryUpdatedDetail,
@@ -13,6 +12,7 @@ import { compareModelDisplayName } from "../lib/external-model-label";
 import { getStoredChatThread } from "../utils/chat-history-storage";
 import {
   type ChatModelSwitchTarget,
+  chatModelIsResident,
   chatModelIsSelectable,
   createChatModelHistoryReader,
 } from "./chat-model-notice-switch";
@@ -74,11 +74,7 @@ export function ChatModelNotice({
 }: ChatModelNoticeProps) {
   const createdModel = useChatCreatedModel(threadId);
   if (!createdModel) return null;
-  if (
-    createdModel.modelId === checkpoint &&
-    (createdModel.ggufVariant == null ||
-      ggufVariantsMatch(createdModel.ggufVariant, activeGgufVariant))
-  ) {
+  if (chatModelIsResident(createdModel, checkpoint, activeGgufVariant)) {
     return null;
   }
   // A model that has since been deleted, or a connection that is gone: the switch could not be

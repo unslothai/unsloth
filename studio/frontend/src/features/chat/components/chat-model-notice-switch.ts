@@ -7,8 +7,9 @@ import type {
 } from "@/features/model-picker/components/model-selector/types";
 import {
   ggufQuantLabel,
+  ggufVariantsMatch,
   normalizeGgufVariantIdentity,
-  publicModelId,
+  residentModelIdMatches,
 } from "../../model-picker/model-config/model-identity";
 import { resolveOnlyRememberedGgufVariant } from "../../model-picker/model-config/per-model-config";
 
@@ -17,7 +18,25 @@ export type ChatModelSwitchTarget = {
   ggufVariant?: string | null;
 };
 
-/** Exact picker id, or the namespaced HF-cache alias resolveResidentInitialConfig uses. */
+/** Snapshot path and repo id of the same HF cache row, either direction. */
+export function chatModelIsResident(
+  createdModel: ChatModelSwitchTarget,
+  checkpoint: string,
+  activeGgufVariant: string | null,
+): boolean {
+  const sameId =
+    residentModelIdMatches(checkpoint, createdModel.modelId) ||
+    residentModelIdMatches(createdModel.modelId, checkpoint);
+  if (!sameId) {
+    return false;
+  }
+  return (
+    createdModel.ggufVariant == null ||
+    ggufVariantsMatch(createdModel.ggufVariant, activeGgufVariant)
+  );
+}
+
+/** Exact picker id, or the same namespaced identity residentModelIdMatches uses. */
 export function chatModelIsSelectable(
   modelId: string,
   selectableModelIds: ReadonlySet<string>,
@@ -25,11 +44,15 @@ export function chatModelIsSelectable(
   if (selectableModelIds.has(modelId)) {
     return true;
   }
-  const alias = publicModelId(modelId);
-  if (alias === modelId || !alias.includes("/")) {
-    return false;
+  for (const id of selectableModelIds) {
+    if (
+      residentModelIdMatches(id, modelId) ||
+      residentModelIdMatches(modelId, id)
+    ) {
+      return true;
+    }
   }
-  return selectableModelIds.has(alias);
+  return false;
 }
 
 type ChatModelThreadSnapshot = {

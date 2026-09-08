@@ -19,6 +19,7 @@ import {
 registerBundlerResolver();
 const { store } = installLocalStorageFake();
 const {
+  chatModelIsResident,
   chatModelIsSelectable,
   chatModelSwitchMeta,
   createChatModelHistoryReader,
@@ -95,20 +96,15 @@ test("the notice never switches a model on its own", () => {
 
 test("the notice stays quiet when it has nothing to offer", () => {
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
-  // no stamp, already on the exact pick, or a model that has since gone away
+  // no stamp, already on the pick (including snapshot vs repo id), or a model that has since gone away
   assert.match(body, /if \(!createdModel\) return null;/);
-  assert.match(body, /createdModel\.modelId === checkpoint/);
   assert.match(
     body,
-    /ggufVariantsMatch\(createdModel\.ggufVariant, activeGgufVariant\)/,
+    /chatModelIsResident\(createdModel, checkpoint, activeGgufVariant\)/,
   );
   assert.match(
     body,
     /chatModelIsSelectable\(\s*createdModel\.modelId,\s*selectableModelIds\s*\)/,
-  );
-  assert.doesNotMatch(
-    body,
-    /selectableModelIds\.has\(createdModel\.modelId\)/,
   );
 });
 
@@ -209,6 +205,28 @@ test("a snapshot-path chat is selectable through its repo row", () => {
   assert.equal(chatModelIsSelectable(repoId, new Set([repoId])), true);
   assert.equal(
     chatModelIsSelectable("/srv/models/a/Repo-Q4_K_M.gguf", new Set(["Repo-Q4_K_M"])),
+    false,
+  );
+});
+
+test("a snapshot-path chat is already on its repo-id checkpoint", () => {
+  const snapshotPath =
+    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
+  const repoId = "unsloth/Repo-GGUF";
+  const created = { modelId: snapshotPath, ggufVariant: "Q4_K_M" };
+  assert.equal(chatModelIsResident(created, repoId, "Q4_K_M"), true);
+  assert.equal(chatModelIsResident(created, snapshotPath, "Q4_K_M"), true);
+  assert.equal(
+    chatModelIsResident(
+      { modelId: repoId, ggufVariant: "Q4_K_M" },
+      snapshotPath,
+      "Q4_K_M",
+    ),
+    true,
+  );
+  assert.equal(chatModelIsResident(created, repoId, "Q8_0"), false);
+  assert.equal(
+    chatModelIsResident(created, "unsloth/Other-GGUF", "Q4_K_M"),
     false,
   );
 });
