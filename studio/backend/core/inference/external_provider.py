@@ -182,6 +182,13 @@ _GEMINI3_FAMILY = re.compile(r"^gemini-3(?:\.\d+)?-")
 _GEMINI3_PRO = re.compile(r"^gemini-3(?:\.\d+)?-pro")
 
 
+def _anthropic_text_is_sendable(value: Any) -> bool:
+    """Anthropic rejects empty and whitespace-only text; the composer joins with "\\n"."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
+
+
 def _anthropic_sampling_params_removed(model: str) -> bool:
     """Whether Anthropic rejects non-default sampling params for ``model``."""
     normalized = model.strip().lower()
@@ -2084,7 +2091,7 @@ class ExternalProviderClient:
                 #   https://platform.claude.com/docs/en/build-with-claude/vision)
                 anthropic_parts: list[dict[str, Any]] = []
                 for part in content:
-                    if part.get("type") == "text":
+                    if part.get("type") == "text" and _anthropic_text_is_sendable(part.get("text")):
                         anthropic_parts.append({"type": "text", "text": part["text"]})
                     elif part.get("type") == "compaction":
                         # Round-trip a prior turn's compaction block back onto this
@@ -2238,7 +2245,9 @@ class ExternalProviderClient:
                 ):
                     _text_content = msg.get("content")
                     _blocks: list[dict[str, Any]] = []
-                    if isinstance(_text_content, str) and _text_content:
+                    if isinstance(_text_content, str) and _anthropic_text_is_sendable(
+                        _text_content
+                    ):
                         _blocks.append({"type": "text", "text": _text_content})
                     for _tc in msg["tool_calls"]:
                         if not isinstance(_tc, dict):
@@ -2263,6 +2272,9 @@ class ExternalProviderClient:
                         )
                     if _blocks:
                         filtered.append({"role": "assistant", "content": _blocks})
+                    continue
+                # A plain string is one text block, so an empty one 400s too.
+                if isinstance(content, str) and not content.strip():
                     continue
                 filtered.append(msg)
 

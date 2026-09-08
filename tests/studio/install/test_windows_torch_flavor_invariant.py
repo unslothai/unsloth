@@ -300,7 +300,7 @@ def _base_total(**flags) -> int:
     total fails here instead of drawing a progress bar past 100%.
     """
     lines = _STACK_SRC.splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip().startswith("base_total = 12"))
+    start = next(i for i, line in enumerate(lines) if line.strip().startswith("base_total = "))
     end = next(i for i, line in enumerate(lines) if line.strip().startswith("base_requirements ="))
     block = textwrap.dedent("\n".join(lines[start:end]))
     namespace = {
@@ -316,20 +316,20 @@ def _base_total(**flags) -> int:
 
 
 class TestStepTotals:
-    def test_windows_gained_one_step(self):
-        assert _base_total(IS_WINDOWS = True) == 14
-        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 12
+    def test_windows_totals_include_torchcodec(self):
+        assert _base_total(IS_WINDOWS = True) == 15
+        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 13
 
     @pytest.mark.parametrize(
         "flags,total",
         [
-            ({}, 16),  # Linux, torch
-            ({"NO_TORCH": True}, 13),  # Linux, GGUF-only
-            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 13),  # Apple Silicon
-            ({"IS_MACOS": True}, 12),  # Intel Mac
+            ({}, 17),  # Linux, torch
+            ({"NO_TORCH": True}, 14),  # Linux, GGUF-only
+            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 14),  # Apple Silicon
+            ({"IS_MACOS": True}, 13),  # Intel Mac
         ],
     )
-    def test_the_other_platforms_are_unchanged(self, flags, total):
+    def test_the_other_platform_totals_include_torchcodec(self, flags, total):
         assert _base_total(**flags) == total
 
 

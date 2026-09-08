@@ -80,6 +80,10 @@ CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 # Why CHAT_ONLY is True (Train/Export disabled). None when training is enabled.
 # "mlx_unavailable": Apple Silicon but the MLX stack is missing, too old, or broken
 # (the usual cause of "Train/Export greyed out" on Macs after a reinstall dropped MLX);
+# "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, so nothing is
+# broken and `unsloth studio update` cannot change it. Published at once when no mlx is
+# on disk; a present but unusable stack stays "mlx_unavailable" until the post-warm probe
+# has measured it, so a usable one that lost the warm's import race is still overturned;
 # "intel_mac": Intel Mac (no PyTorch/MLX); "no_gpu": CPU-only non-Mac host;
 # "torch_cpu_build" / "torch_cuda_unavailable": the host HAS GPUs, this PyTorch cannot
 # use them -- see classify_torch_build(). Those two must not read as "no_gpu": the fix
@@ -287,6 +291,11 @@ def _has_mlx() -> bool:
 # the detail, so a second run there can double detection latency or keep the pass from
 # reaching the repair scheduler. Written and consumed inside one locked detection pass.
 _MLX_BLOCKERS_MEASURED: Optional[list[str]] = None
+# The lifespan whose post-warm probe measured a --no-torch host's stack unusable: a later
+# detection pass in that lifespan publishes no_torch directly rather than re-arming the
+# sidebar's poll. Keyed by epoch so the next lifespan runs its own probe, and so a worker
+# retired by a shutdown mid-probe cannot settle the lifespan that replaced it.
+_NO_TORCH_SETTLED_EPOCH: Optional[int] = None
 
 
 def _has_usable_mlx_stack() -> bool:
@@ -993,6 +1002,25 @@ def _stated_torch_index_source() -> str:
     return (os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY") or "").strip()
 
 
+def _installed_without_torch() -> bool:
+    # The self-heal's reader, so the verdict and the gate that declines on it agree.
+    try:
+        from utils.mlx_repair import _installed_without_torch as recorded
+        return recorded()
+    except Exception:
+        return False
+
+
+def _mlx_distribution_installed() -> bool:
+    try:
+        pkg_version("mlx")
+    except PackageNotFoundError:
+        return False
+    except Exception:
+        return True
+    return True
+
+
 def _recorded_install_flavor() -> "tuple[str, bool]":
     """``(expected_torch_tag, expected_torch_tag_pinned)`` from the venv's manifest.
 
@@ -1573,6 +1601,27 @@ def verdict_blames_the_mlx_stack() -> bool:
     return bool(CHAT_ONLY) and CHAT_ONLY_REASON == "mlx_unavailable"
 
 
+def settle_the_no_torch_verdict(epoch: int) -> bool:
+    """For the post-warm probe that measured a --no-torch host's stack unusable: nothing will
+    overturn mlx_unavailable now, so publish no_torch and let the sidebar stop polling.
+    ``epoch`` predates the measurement, as for overturn_the_mlx_verdict: a shutdown since
+    retired that probe, and the next lifespan measures for itself."""
+    global CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, _NO_TORCH_SETTLED_EPOCH
+    with _DETECT_LOCK:
+        if epoch != current_detection_epoch():
+            return False
+        if not CHAT_ONLY or CHAT_ONLY_REASON != "mlx_unavailable":
+            return False
+        # Recorded only once the verdict this probe measured is still the live one. Set
+        # before the check, a settle that arrives after another pass has enabled training
+        # still marks the epoch, and the next transient MLX failure in that lifespan
+        # publishes no_torch straight away, which reads as settled and skips the post-warm
+        # probe that would have restored Train.
+        _NO_TORCH_SETTLED_EPOCH = epoch
+        CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = "no_torch", None
+        return True
+
+
 def overturn_the_mlx_verdict(epoch: Optional[int] = None) -> bool:
     """For a caller that has just measured the stack as usable.
 
@@ -1862,7 +1911,25 @@ def _detect_hardware_locked() -> DeviceType:
     # CHAT_ONLY is still True here (every training-capable branch returned early),
     # so record WHY so the UI can explain the greyed-out Train/Export instead of
     # silently disabling them.
-    if is_apple_silicon():
+    if (
+        is_apple_silicon()
+        and _installed_without_torch()
+        and (
+            _NO_TORCH_SETTLED_EPOCH == current_detection_epoch()
+            or not _mlx_distribution_installed()
+        )
+    ):
+        # GGUF-only by request: not a broken stack, and `unsloth studio update` cannot
+        # change it. With mlx on disk the verdict stays mlx_unavailable until the post-warm
+        # probe measures it, so a stack that only lost the import race is still overturned
+        # and the sidebar keeps polling until settle_the_no_torch_verdict() lands.
+        CHAT_ONLY_REASON = "no_torch"
+        _MLX_BLOCKERS_MEASURED = None
+        logger.info(
+            "Apple Silicon installed --no-torch (GGUF-only); Train/Export are off by "
+            "request. Reinstall without --no-torch to enable them."
+        )
+    elif is_apple_silicon():
         # Reached the CPU fallback on Apple Silicon, so the MLX stack is missing,
         # too old, or broken. This is usually an environment problem recoverable
         # with `unsloth studio update`.
@@ -2116,6 +2183,12 @@ def export_capability() -> dict:
         message = (
             "Hardware detection failed on this host, so export is disabled. The server log records "
             "the underlying error; restart Unsloth Studio to retry detection."
+        )
+    elif verdict[0] == "no_torch":
+        reason = "no_torch"
+        message = (
+            "This install was set up without the training stack (--no-torch), so export is "
+            "disabled. Reinstall Unsloth Studio without --no-torch to enable export."
         )
     elif is_apple_silicon():
         reason = "mlx_unavailable"

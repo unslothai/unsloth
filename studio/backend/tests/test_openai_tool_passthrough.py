@@ -3881,6 +3881,10 @@ class TestGgufVisionToolRouting:
         url = SimpleNamespace(path = "/v1/chat/completions")
         method = "POST"
 
+        def __init__(self, ui_events = False):
+            # Tool cards and the approval handshake ride these frames.
+            self.headers = {"X-Unsloth-Events": "1"} if ui_events else {}
+
         async def is_disconnected(self):
             return False
 
@@ -4024,7 +4028,9 @@ class TestGgufVisionToolRouting:
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(
+                payload, request = self._Request(ui_events = True), current_subject = "test"
+            )
         )
         self._consume_response(response)
 
@@ -4071,7 +4077,9 @@ class TestGgufVisionToolRouting:
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(
+                payload, request = self._Request(ui_events = True), current_subject = "test"
+            )
         )
         self._consume_response(response)
 
@@ -4276,6 +4284,105 @@ class TestGgufVisionToolRouting:
             assert "confirm_tool_calls requires stream=true" in entry["error"]
         # Neither site may leave a row running.
         assert monitor.active_count() == 0
+
+    def test_streaming_confirm_gate_refuses_a_caller_that_hid_the_frames(self, monkeypatch):
+        # A stream without X-Unsloth-Events has nowhere to be asked, so the loop would park
+        # in wait_tool_decision for the full timeout (_confirm_gate_has_no_channel).
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        def _tools(**_kwargs):
+            raise AssertionError("the tool loop must not start with nowhere to confirm")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            supports_reasoning = True,
+            reasoning_always_on = True,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = lambda **_kwargs: "unused",
+            generate_chat_completion_with_tools = _tools,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["terminal"],
+            stream = True,
+            messages = [{"role": "user", "content": "run something"}],
+        )
+        with pytest.raises(HTTPException) as exc:
+            self._drive(
+                openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            )
+        assert exc.value.status_code == 400
+        message = exc.value.detail["error"]["message"]
+        assert "X-Unsloth-Events" in message
+        # Names the way out, or a client that cannot render a prompt is stuck.
+        assert "permission_mode" in message
+
+    def test_streaming_confirm_gate_admits_a_caller_that_opted_in(self, monkeypatch):
+        # Same request with the frames on runs the loop: the guard refuses no one else.
+        def _tools(**_kwargs):
+            yield {"type": "content", "text": "done"}
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+                "finish_reason": "stop",
+            }
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            tool_generate = _tools,
+            payload_kwargs = {
+                "stream": True,
+                "enable_tools": True,
+                "enabled_tools": ["terminal"],
+                "messages": [{"role": "user", "content": "run something"}],
+            },
+            request = self._Request(ui_events = True),
+        )
+        deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
+        assert "".join(d.get("content", "") for d in deltas) == "done"
+
+    def test_an_empty_selection_is_not_refused_for_a_prompt_it_can_never_show(self, monkeypatch):
+        # mcp_enabled arms _confirm_gate_needs_stream on intent, but discovery finds no MCP
+        # tool here, so the selection is empty and the loop is skipped. Refusing on intent
+        # would 400 a request that answers fine without ever prompting.
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        async def _no_tools(*_args, **_kwargs):
+            return []
+
+        monkeypatch.setattr(inf_mod, "_select_request_tools", _no_tools)
+
+        def _generate(**_kwargs):
+            yield "hi"
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                "finish_reason": "stop",
+            }
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            generate = _generate,
+            payload_kwargs = {
+                "stream": True,
+                "mcp_enabled": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
+        assert "".join(d.get("content", "") for d in deltas) == "hi"
 
     def test_standard_gguf_stream_splits_reasoning_content(self, monkeypatch):
         def _generate(**_kwargs):
@@ -4533,7 +4640,7 @@ class TestGgufVisionToolRouting:
             )
             response = await openai_chat_completions(
                 payload,
-                request = Request(),
+                request = Request(ui_events = True),
                 current_subject = "test",
             )
             iterator = response.body_iterator
@@ -4617,7 +4724,8 @@ class TestGgufVisionToolRouting:
             )
             response = await openai_chat_completions(
                 payload,
-                request = self._Request(),
+                # A gateable request has to opt in: tool_start carries the approval_id.
+                request = self._Request(ui_events = True),
                 current_subject = "test",
             )
             iterator = response.body_iterator
@@ -4694,7 +4802,7 @@ class TestGgufVisionToolRouting:
             )
             response = await openai_chat_completions(
                 payload,
-                request = self._Request(),
+                request = self._Request(ui_events = True),
                 current_subject = "test",
             )
             iterator = response.body_iterator
@@ -5101,6 +5209,8 @@ class TestGgufVisionToolRouting:
                 "enabled_tools": ["terminal"],
                 "messages": [{"role": "user", "content": "list files"}],
             },
+            # terminal is confirmable, so the gate needs the frames it asks on.
+            request = self._Request(ui_events = True),
         )
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
 
@@ -5130,6 +5240,8 @@ class TestGgufVisionToolRouting:
                 "enabled_tools": ["terminal"],
                 "messages": [{"role": "user", "content": "say literal"}],
             },
+            # terminal is confirmable, so the gate needs the frames it asks on.
+            request = self._Request(ui_events = True),
         )
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
 

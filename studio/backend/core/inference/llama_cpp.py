@@ -7004,7 +7004,8 @@ class LlamaCppBackend:
     @property
     def reasoning_effort_levels(self) -> list:
         """Discrete reasoning_effort levels the template offers (e.g. GLM-5.2's
-        ['high', 'max']). Empty unless reasoning_style == 'enable_thinking_effort'."""
+        ['high', 'max']). Empty unless the style is 'enable_thinking_effort' or
+        'reasoning_effort' over a ladder wider than low/medium/high."""
         return self._reasoning_effort_levels
 
     @property
@@ -7065,7 +7066,12 @@ class LlamaCppBackend:
                 if not thinking_off and effort_on:
                     kwargs["reasoning_effort"] = reasoning_effort
             elif self._reasoning_style == "reasoning_effort":
-                if reasoning_effort in ("none", "low", "medium", "high"):
+                # The advertised ladder widens this list, never replaces it: a template
+                # exposing only ['high', 'max'] must keep gpt-oss's own levels and 'none'.
+                _levels = getattr(self, "_reasoning_effort_levels", None) or ()
+                if reasoning_effort in ("none", "low", "medium", "high") or (
+                    reasoning_effort in _levels
+                ):
                     kwargs["reasoning_effort"] = reasoning_effort
                 elif reasoning_effort == "minimal":
                     kwargs["reasoning_effort"] = "low"

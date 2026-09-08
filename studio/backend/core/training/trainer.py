@@ -1323,7 +1323,6 @@ class UnslothTrainer:
                     logger.info(f"  - Finetune language layers: {finetune_language_layers}")
                     logger.info(f"  - Finetune attention modules: {finetune_attention_modules}")
                     logger.info(f"  - Finetune MLP modules: {finetune_mlp_modules}")
-                logger.info()
 
                 peft_kwargs = dict(
                     r = lora_r,
@@ -2363,17 +2362,70 @@ class UnslothTrainer:
         logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
         return result_dataset
 
+    def _preprocess_audio_eval_split(self, eval_dataset, preprocess, custom_format_mapping):
+        """Preprocess eval data, warning and dropping it on failure."""
+        if eval_dataset is None:
+            return None
+        try:
+            return preprocess(eval_dataset, custom_format_mapping)
+        except Exception as e:
+            self._record_warning(
+                "The eval dataset could not be prepared for this audio model, so this run has "
+                f"no evaluation: {e}"
+            )
+            return None
+
+    def _format_audio_vlm_eval_split(self, eval_dataset, custom_format_mapping):
+        """Format the audio VLM eval split, dropping it if it resolves a different audio
+        column: audio_vlm_collate_fn reads the one recorded name for BOTH splits."""
+        if eval_dataset is None:
+            return None
+        train_audio_col = getattr(self, "_audio_vlm_audio_col", None)
+        formatted = self._preprocess_audio_eval_split(
+            eval_dataset, self._format_audio_vlm_dataset, custom_format_mapping
+        )
+        eval_audio_col = getattr(self, "_audio_vlm_audio_col", None)
+        if formatted is not None and eval_audio_col != train_audio_col:
+            self._record_warning(
+                f"The eval dataset stores audio in '{eval_audio_col}' but the training dataset "
+                f"uses '{train_audio_col}', so this run has no evaluation. Give both splits the "
+                "same audio column name."
+            )
+            formatted = None
+        self._audio_vlm_audio_col = train_audio_col
+        return formatted
+
+    def _audio_eval_config(self, training_args):
+        """Build audio evaluation arguments and return the eval dataset."""
+        eval_dataset = training_args.get("eval_dataset", None)
+        eval_steps = training_args.get("eval_steps", 0.00)
+        if eval_dataset is None:
+            return {}, None
+        if not eval_steps or eval_steps <= 0:
+            logger.info(f"⚠️  Eval dataset provided but eval_steps={eval_steps} (disabled)\n")
+            return {}, None
+        rows = len(eval_dataset) if hasattr(eval_dataset, "__len__") else "?"
+        logger.info(f"✅ Evaluation enabled: eval_steps={eval_steps}, eval rows={rows}\n")
+        return {
+            "eval_strategy": "steps",
+            "eval_steps": eval_steps,
+            # Avoid HF's default of 8, which can OOM audio runs.
+            "per_device_eval_batch_size": training_args.get("batch_size", 2),
+        }, eval_dataset
+
     def _preprocess_whisper_dataset(
         self,
         dataset,
         eval_split = None,
         custom_format_mapping = None,
+        eval_dataset = None,
     ):
         """Preprocess dataset for Whisper speech-to-text training.
 
         Mirrors Whisper.ipynb: extract audio features with Whisper's feature
         extractor, tokenize text labels. Returns (train_data, eval_data),
-        each a list of dicts with 'input_features' and 'labels'.
+        each a list of dicts with 'input_features' and 'labels'. The 6% carve-out
+        is only the fallback for when ``eval_dataset`` is absent.
         """
         from datasets import Audio
 
@@ -2390,7 +2442,32 @@ class UnslothTrainer:
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate = WHISPER_SAMPLE_RATE))
 
         eval_dataset_raw = None
-        if eval_split:
+        if eval_dataset is not None:
+            # The name check must be explicit: cast_column does not validate it for a feature
+            # with decode_example (Audio has one), it silently adds an all-null column.
+            eval_columns = list(getattr(eval_dataset, "column_names", None) or [])
+            missing = [c for c in (audio_col, text_col) if c not in eval_columns]
+            if missing:
+                self._record_warning(
+                    f"The eval dataset has no {' or '.join(missing)} column, so this run has no "
+                    f"evaluation. Its columns are: {eval_columns}"
+                )
+            else:
+                try:
+                    eval_dataset_raw = eval_dataset.cast_column(
+                        audio_col, Audio(sampling_rate = WHISPER_SAMPLE_RATE)
+                    )
+                    logger.info(
+                        "Whisper eval: using the separate eval split "
+                        f"({len(eval_dataset_raw)} rows)\n"
+                    )
+                except Exception as e:
+                    self._record_warning(
+                        "The eval dataset could not be prepared for this audio model, so this "
+                        f"run has no evaluation: {e}"
+                    )
+                    eval_dataset_raw = None
+        elif eval_split:
             splits = dataset.train_test_split(test_size = 0.06, seed = 42)
             dataset = splits["train"]
             eval_dataset_raw = splits["test"]
@@ -2448,6 +2525,13 @@ class UnslothTrainer:
 
         if not train_data:
             raise ValueError("No valid examples after Whisper preprocessing")
+
+        if eval_dataset_raw and not eval_data and not self.should_stop:
+            # Every row was skipped; the trainer branch would silently read [] as "no eval".
+            self._record_warning(
+                "No usable rows were left in the eval dataset after preprocessing, so this run "
+                "has no evaluation."
+            )
 
         return (train_data, eval_data)
 
@@ -3015,27 +3099,48 @@ class UnslothTrainer:
                     )
             if self._audio_type == "csm":
                 processed = self._preprocess_csm_dataset(dataset, custom_format_mapping)
-                return (processed, None)
+                return (
+                    processed,
+                    self._preprocess_audio_eval_split(
+                        eval_dataset, self._preprocess_csm_dataset, custom_format_mapping
+                    ),
+                )
 
             elif self._audio_type == "whisper":
                 train_data, eval_data = self._preprocess_whisper_dataset(
                     dataset,
                     eval_split = eval_split,
                     custom_format_mapping = custom_format_mapping,
+                    eval_dataset = eval_dataset,
                 )
                 return (train_data, eval_data)
 
             elif self._audio_type == "snac":
                 processed = self._preprocess_snac_dataset(dataset, custom_format_mapping)
-                return (processed, None)
+                return (
+                    processed,
+                    self._preprocess_audio_eval_split(
+                        eval_dataset, self._preprocess_snac_dataset, custom_format_mapping
+                    ),
+                )
 
             elif self._audio_type == "bicodec":
                 processed = self._preprocess_bicodec_dataset(dataset, custom_format_mapping)
-                return ({"dataset": processed, "final_format": "audio_bicodec"}, None)
+                return (
+                    {"dataset": processed, "final_format": "audio_bicodec"},
+                    self._preprocess_audio_eval_split(
+                        eval_dataset, self._preprocess_bicodec_dataset, custom_format_mapping
+                    ),
+                )
 
             elif self._audio_type == "dac":
                 processed = self._preprocess_dac_dataset(dataset, custom_format_mapping)
-                return ({"dataset": processed, "final_format": "audio_dac"}, None)
+                return (
+                    {"dataset": processed, "final_format": "audio_dac"},
+                    self._preprocess_audio_eval_split(
+                        eval_dataset, self._preprocess_dac_dataset, custom_format_mapping
+                    ),
+                )
 
             # ========== RAW TEXT BYPASS ==========
             if raw_text_mode:
@@ -3092,7 +3197,10 @@ class UnslothTrainer:
 
             elif self.is_audio_vlm:
                 formatted = self._format_audio_vlm_dataset(dataset, custom_format_mapping)
-                return (formatted, None)
+                return (
+                    formatted,
+                    self._format_audio_vlm_eval_split(eval_dataset, custom_format_mapping),
+                )
 
             # ========== FORMAT FIRST ==========
             logger.info(f"Formatting dataset with format_type='{format_type}'...\n")
@@ -3664,18 +3772,23 @@ class UnslothTrainer:
 
                 self._apply_csm_forward_fix()
 
+                eval_args, eval_dataset = self._audio_eval_config(training_args)
                 config = self._build_audio_training_args(
                     training_args,
                     output_dir,
                     extra_args = {
                         "remove_unused_columns": False,
+                        **eval_args,
                     },
                 )
-                self.trainer = HFTrainer(
-                    model = self.model,
-                    train_dataset = dataset,
-                    args = TrainingArguments(**config),
-                )
+                trainer_kwargs = {
+                    "model": self.model,
+                    "train_dataset": dataset,
+                    "args": TrainingArguments(**config),
+                }
+                if eval_dataset is not None:
+                    trainer_kwargs["eval_dataset"] = eval_dataset
+                self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
                 # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has
                 # no terminal; --verbose keeps them.
@@ -3707,17 +3820,23 @@ class UnslothTrainer:
                     DataCollatorForSeq2Seq,
                 )
 
-                config = self._build_audio_training_args(training_args, output_dir)
-                self.trainer = HFTrainer(
-                    model = self.model,
-                    train_dataset = dataset,
-                    args = TrainingArguments(**config),
-                    data_collator = DataCollatorForSeq2Seq(
+                eval_args, eval_dataset = self._audio_eval_config(training_args)
+                config = self._build_audio_training_args(
+                    training_args, output_dir, extra_args = eval_args
+                )
+                trainer_kwargs = {
+                    "model": self.model,
+                    "train_dataset": dataset,
+                    "args": TrainingArguments(**config),
+                    "data_collator": DataCollatorForSeq2Seq(
                         tokenizer = self.tokenizer,
                         padding = True,
                         pad_to_multiple_of = 8,
                     ),
-                )
+                }
+                if eval_dataset is not None:
+                    trainer_kwargs["eval_dataset"] = eval_dataset
+                self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
                 _drop_hf_stdout_callbacks(self.trainer)
 
@@ -3746,6 +3865,8 @@ class UnslothTrainer:
                 if eval_dataset:
                     extra["eval_strategy"] = "steps"
                     extra["eval_steps"] = training_args.get("eval_steps", 5)
+                    # HF's default of 8 can OOM audio runs, as the codec branches already note.
+                    extra["per_device_eval_batch_size"] = training_args.get("batch_size") or 2
 
                 config = self._build_audio_training_args(
                     training_args, output_dir, extra_args = extra
