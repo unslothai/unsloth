@@ -915,7 +915,7 @@ class ResearchPortMiddleware:
             request_app = scope.get("app")
             supervisor = getattr(getattr(request_app, "state", None), "research_supervisor", None)
             if supervisor is not None:
-                supervisor.note_server_port(scope.get("server"))
+                supervisor.note_server_address(scope.get("server"))
         await self.app(scope, receive, send)
 
 

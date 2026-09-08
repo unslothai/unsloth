@@ -3111,6 +3111,48 @@ def test_probe_reports_no_draft_ngl_flag_when_the_build_has_neither(tmp_path):
 
 
 @_NEEDS_BASH
+def test_a_code_integrity_block_escalates_the_retry_window(tmp_path, monkeypatch):
+    """Only a confirmed block earns the doubling; a merely loaded machine that
+    times out a few probes and recovers must not inherit that wait. It arrives
+    the way Windows delivers it: subprocess.run returns the NTSTATUS from a
+    loader-killed process rather than raising.
+    """
+    import types as _types
+
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,ngram-mod",
+    )
+    _clear_caps_cache()
+    now = [100.0]
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        # The Smart App Control refusal, as an exit status.
+        return _types.SimpleNamespace(stdout = "", stderr = "", returncode = 0xC0E90002)
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
+    monkeypatch.setattr("core.inference.llama_cpp.time.monotonic", lambda: now[0])
+
+    first = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert first["mtp_probe_inconclusive"] is True
+    assert len(calls) == 1
+
+    now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
+    LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert len(calls) == 2
+
+    now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
+    LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert len(calls) == 2, "a confirmed block must not be re-probed on the flat window"
+
+    now[0] += 2 * LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
+    LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert len(calls) == 3
+
+
+@_NEEDS_BASH
 def test_inconclusive_probe_retries_after_a_bounded_cache_window(tmp_path, monkeypatch):
     """A transient timeout may not be pinned for the whole process, while a
     persistent failure may not make every capability caller wait again (#8317)."""
@@ -3155,8 +3197,7 @@ def test_inconclusive_probe_retries_after_a_bounded_cache_window(tmp_path, monke
     assert LlamaCppBackend.probe_server_capabilities(str(fake)) is retried
     assert len(calls) == 2
 
-    # Once a later retry succeeds, the result returns to the normal long-lived
-    # cache.
+    # A timeout is TRANSIENT: the window stays flat, only a block doubles.
     now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
     recovered = LlamaCppBackend.probe_server_capabilities(str(fake))
     assert recovered["mtp_probe_inconclusive"] is False
