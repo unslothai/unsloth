@@ -4232,6 +4232,29 @@ def test_bad_mappings_are_read_without_importing_the_loader():
     assert ("torch" in sys.modules) == torch_before
 
 
+def test_base_model_candidates_include_the_loaders_suffix_strip():
+    # Where ALLOW_PREQUANTIZED_MODELS is false the loader strips the 4-bit suffix after
+    # mapping, so the fetched repo is a third step out from the recorded base. This base
+    # reaches unsloth/codellama-34b-bnb-4bit through the tables and the stripped repo
+    # through nothing else, so it isolates that rewrite.
+    candidates = start._base_model_candidates("codellama/CodeLlama-34b-hf")
+
+    assert "unsloth/codellama-34b-bnb-4bit" in candidates
+    assert "unsloth/codellama-34b" in candidates
+
+
+def test_unsloth_package_dirs_include_the_studio_venv(monkeypatch, tmp_path):
+    # The worker may run in the managed Studio venv, whose Unsloth can differ from the one
+    # this CLI was launched from, so both sets of tables have to be read.
+    venv_pkg = tmp_path / "unsloth_studio" / "lib" / "python3.11" / "site-packages" / "unsloth"
+    venv_pkg.mkdir(parents = True)
+    import unsloth_cli.commands.studio as studio_mod
+
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path, raising = False)
+
+    assert venv_pkg in start._unsloth_package_dirs()
+
+
 def test_base_model_candidates_leave_out_repos_the_load_path_cannot_pick():
     # Nothing in the inference path passes load_in_fp8, so an fp8 repo is never the
     # download and polling it would only cost the downloading server a request per poll.
@@ -4326,6 +4349,43 @@ def test_model_download_progress_reasks_after_an_inconclusive_adapter_answer(mon
     progress.poll()
     assert len(lookups) == 2
     assert progress.downloaded_bytes == 1024 + 2 * 1024**3
+
+
+def test_model_download_progress_survives_a_very_long_inconclusive_run(monkeypatch):
+    # The backoff is carried, not recomputed as 2 ** n: past ~1024 inconclusive lookups the
+    # power overflowed, and because the lookup runs before the model's own read, every
+    # later poll died there and the tracked bytes stopped moving.
+    now = [1000.0]
+    monkeypatch.setattr(start.time, "monotonic", lambda: now[0])
+    lookups = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            lookups.append(url)
+            return {"is_lora": False}
+        return {
+            "downloaded_bytes": 1024 * len(lookups),
+            "expected_bytes": 10 * 1024**3,
+            "cache_measured": True,
+        }
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/model", None)
+
+    for _ in range(1100):
+        progress.poll()
+        now[0] += start._COMPANION_LOOKUP_MAX_RETRY_S
+
+    assert len(lookups) > 1024
+    assert progress._failures == 0
+    assert progress.downloaded_bytes == 1024 * len(lookups)
 
 
 def test_model_download_progress_keeps_reasking_an_inconclusive_answer(monkeypatch):
@@ -4540,8 +4600,14 @@ def test_model_download_progress_stops_polling_dead_base_candidates(monkeypatch)
                 "downloaded_bytes": next(substitute),
                 "completed_bytes": 0,
                 "expected_bytes": 6 * 1024**3,
+                "cache_measured": True,
             }
-        return {"downloaded_bytes": 0, "completed_bytes": 0, "expected_bytes": 0}
+        return {
+            "downloaded_bytes": 0,
+            "completed_bytes": 0,
+            "expected_bytes": 0,
+            "cache_measured": True,
+        }
 
     monkeypatch.setattr(start, "_http_json", http_json)
     progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
@@ -4558,6 +4624,62 @@ def test_model_download_progress_stops_polling_dead_base_candidates(monkeypatch)
     # The substitute has now grown twice; the recorded base is dropped.
     assert dead_polls() == 2
     assert progress.downloaded_bytes == 3 * 1024**3
+
+
+def test_model_download_progress_does_not_prune_on_a_cache_scan_rebound(monkeypatch):
+    # An unreadable cache root makes the endpoint report a lower bound with
+    # cache_measured false; the larger figure when the root returns is a rebound, not a
+    # transfer, and must not capture the prune.
+    monkeypatch.setattr(start, "_QUANT_MAPPERS", [{"owner/base": "unsloth/base-4bit"}])
+    monkeypatch.setattr(start, "_BAD_MAPPINGS", {})
+    rebound = iter(
+        [
+            {
+                "downloaded_bytes": 2 * 1024**3,
+                "completed_bytes": 2 * 1024**3,
+                "cache_measured": False,
+            },
+            {
+                "downloaded_bytes": 9 * 1024**3,
+                "completed_bytes": 9 * 1024**3,
+                "cache_measured": True,
+            },
+            {
+                "downloaded_bytes": 9 * 1024**3,
+                "completed_bytes": 9 * 1024**3,
+                "cache_measured": True,
+            },
+        ]
+    )
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            return {"is_lora": True, "base_model": "owner/base"}
+        if url.endswith("repo_id=unsloth%2Fbase-4bit"):
+            return next(rebound)
+        return {
+            "downloaded_bytes": 0,
+            "completed_bytes": 0,
+            "expected_bytes": 40 * 1024**3,
+            "cache_measured": True,
+        }
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    progress.poll()
+    progress.poll()
+
+    # The repo that has not started yet is still watched.
+    assert "owner/base" in (progress._companions or [])
 
 
 def test_model_download_progress_does_not_prune_to_an_abandoned_partial(monkeypatch):

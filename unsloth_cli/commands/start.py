@@ -1043,6 +1043,39 @@ def _active_reading(readings: list[tuple[str, dict]]) -> tuple[str, dict]:
 _QUANT_MAPPERS: Optional[list[dict]] = None
 
 
+def _unsloth_package_dirs() -> list[Path]:
+    """Every `unsloth` package directory this CLI can see.
+
+    The server does the downloading, and it need not be this interpreter: `unsloth run`
+    re-execs into the managed Studio venv, which may hold a different Unsloth than the one
+    the CLI was launched from. Reading only the parent's tables would resolve a base by a
+    version the worker is not using, so both are read and their answers pooled.
+    """
+    dirs: list[Path] = []
+    try:
+        spec = importlib.util.find_spec("unsloth")
+        for location in list(spec.submodule_search_locations) if spec else []:
+            dirs.append(Path(location))
+    except Exception:
+        pass
+    try:
+        from unsloth_cli.commands.studio import STUDIO_HOME
+
+        venv = Path(STUDIO_HOME) / "unsloth_studio"
+        dirs.extend(venv.glob("lib/python*/site-packages/unsloth"))
+        dirs.append(venv / "Lib" / "site-packages" / "unsloth")
+    except Exception:
+        pass
+    seen: set = set()
+    unique = []
+    for directory in dirs:
+        key = str(directory)
+        if key not in seen and directory.is_dir():
+            seen.add(key)
+            unique.append(directory)
+    return unique
+
+
 def _unsloth_quant_mappers() -> list[dict]:
     """The repo substitution tables in `unsloth.models.mapper`, read without importing unsloth.
 
@@ -1052,30 +1085,39 @@ def _unsloth_quant_mappers() -> list[dict]:
     global _QUANT_MAPPERS
     if _QUANT_MAPPERS is None:
         _QUANT_MAPPERS = []
-        try:
-            spec = importlib.util.find_spec("unsloth")
-            locations = list(spec.submodule_search_locations) if spec else []
-            path = Path(locations[0]) / "models" / "mapper.py" if locations else None
-            if path is not None and path.is_file():
+        for index, directory in enumerate(_unsloth_package_dirs()):
+            path = directory / "models" / "mapper.py"
+            try:
+                if not path.is_file():
+                    continue
                 module_spec = importlib.util.spec_from_file_location(
-                    "unsloth_cli._quant_mappers", path
+                    f"unsloth_cli._quant_mappers_{index}", path
                 )
                 module = importlib.util.module_from_spec(module_spec)
                 module_spec.loader.exec_module(module)
                 # Every table except the fp8 ones: nothing in the inference path passes
                 # `load_in_fp8`, so an fp8 repo can never be what the worker fetches, and
                 # polling it would only cost the downloading server a request per poll.
-                _QUANT_MAPPERS = [
+                _QUANT_MAPPERS.extend(
                     value
                     for name, value in vars(module).items()
                     if not name.startswith("_")
                     and "fp8" not in name.lower()
                     and isinstance(value, dict)
-                ]
-        except Exception:
-            # Nothing here is required; the recorded base alone is still worth polling.
-            pass
+                )
+            except Exception:
+                # Nothing here is required; the recorded base alone is still worth polling.
+                continue
     return _QUANT_MAPPERS
+
+
+def _without_prequantized_suffix(repo: str) -> str:
+    """`loader._strip_unsloth_bnb_4bit_suffix`: the rewrite applied when a device forbids
+    pre-quantized repos (`ALLOW_PREQUANTIZED_MODELS` is false on several ROCm paths)."""
+    for suffix in ("-unsloth-bnb-4bit", "-bnb-4bit"):
+        if len(repo) >= len(suffix) and repo.lower().endswith(suffix):
+            repo = repo[: -len(suffix)]
+    return repo
 
 
 def _flattened_repo_ids(value: object, found: set) -> None:
@@ -1118,11 +1160,11 @@ def _unsloth_bad_mappings() -> dict:
     global _BAD_MAPPINGS
     if _BAD_MAPPINGS is None:
         _BAD_MAPPINGS = {}
-        try:
-            spec = importlib.util.find_spec("unsloth")
-            locations = list(spec.submodule_search_locations) if spec else []
-            path = Path(locations[0]) / "models" / "loader_utils.py" if locations else None
-            if path is not None and path.is_file():
+        for directory in _unsloth_package_dirs():
+            path = directory / "models" / "loader_utils.py"
+            try:
+                if not path.is_file():
+                    continue
                 for node in ast.parse(path.read_text(encoding = "utf-8")).body:
                     targets = getattr(node, "targets", [])
                     if not any(isinstance(t, ast.Name) and t.id == "BAD_MAPPINGS" for t in targets):
@@ -1132,10 +1174,10 @@ def _unsloth_bad_mappings() -> dict:
                     for key, value in zip(node.value.keys, node.value.values):
                         name, mapped = _literal_text(key), _literal_text(value)
                         if name and mapped:
-                            _BAD_MAPPINGS[name] = mapped
-        except Exception:
-            # Nothing here is required; the mapper candidates are still worth polling.
-            pass
+                            _BAD_MAPPINGS.setdefault(name, mapped)
+            except Exception:
+                # Nothing here is required; the mapper candidates are still worth polling.
+                continue
     return _BAD_MAPPINGS
 
 
@@ -1169,6 +1211,9 @@ def _base_model_candidates(base_model: str) -> list[str]:
                     _flattened_repo_ids(table[key], step)
             if key in bad:
                 step.add(bad[key])
+        # The loader strips the 4-bit suffix after mapping when the device forbids
+        # pre-quantized repos, so the fetched name can be a third step out.
+        step.update(_without_prequantized_suffix(repo) for repo in list(step))
         for repo in step:
             if repo not in found and repo != base_model:
                 found.add(repo)
@@ -1194,8 +1239,10 @@ class _ModelDownloadProgress:
         self._progress_prefix = "/api/hub"
         self._companions: Optional[list[str]] = None
         self._repo_bytes: dict[str, int] = {}
+        self._repo_measured: dict[str, bool] = {}
         self._companion_lookups = 0
         self._companion_retry_at = 0.0
+        self._companion_retry_s = _COMPANION_LOOKUP_RETRY_S
 
     def _is_gguf(self) -> bool:
         return bool(self._variant) or "gguf" in self._model.lower()
@@ -1310,9 +1357,9 @@ class _ModelDownloadProgress:
                     # to a ceiling rather than running out, so a config route that is slow
                     # or rate-limited for a few minutes does not cost the whole startup.
                     self._companion_lookups += 1
-                    self._companion_retry_at = time.monotonic() + min(
-                        _COMPANION_LOOKUP_RETRY_S * 2.0 ** (self._companion_lookups - 1),
-                        _COMPANION_LOOKUP_MAX_RETRY_S,
+                    self._companion_retry_at = time.monotonic() + self._companion_retry_s
+                    self._companion_retry_s = min(
+                        self._companion_retry_s * 2.0, _COMPANION_LOOKUP_MAX_RETRY_S
                     )
             try:
                 reading = self._read(self._model, gguf = self._is_gguf())
@@ -1331,11 +1378,17 @@ class _ModelDownloadProgress:
             # a reading already taken, never bytes merely being present: an abandoned
             # transfer leaves `.incomplete` blobs behind, and pruning to a corpse would
             # discard the repo the worker is about to fetch.
+            # Both readings have to be complete scans. `cache_measured` false is an
+            # explicit lower bound -- a cache root that could not be read -- so the larger
+            # figure that follows when the root returns is a rebound, not a transfer, and
+            # would otherwise prune away the repo the worker really fetches. A server too
+            # old to send the flag never prunes, which only costs a request per poll.
             grew = [
                 repo
                 for repo, item in companions
                 if item is not None
-                and repo in self._repo_bytes
+                and self._repo_measured.get(repo)
+                and item.get("cache_measured") is True
                 and max(0, int(item.get("downloaded_bytes") or 0)) > self._repo_bytes[repo]
             ]
             if len(grew) == 1:
@@ -1353,6 +1406,7 @@ class _ModelDownloadProgress:
                 self._repo_bytes[repo] = max(
                     self._repo_bytes.get(repo, 0), max(0, int(item.get("downloaded_bytes") or 0))
                 )
+                self._repo_measured[repo] = item.get("cache_measured") is True
             # Per repo, and kept after a candidate is dropped: an alternative base already
             # complete in the cache contributes its bytes to the first total, so forgetting
             # it would drop the sum below a high mark the live download may never reach on
