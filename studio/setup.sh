@@ -1214,6 +1214,40 @@ if [ -n "${UNSLOTH_HOME:-}" ]; then
     # outside the root. Pinned here rather than beside the bun cache further down so it is
     # already set for all three of those call sites.
     [ -n "$(_setup_trim_ws "${NPM_CONFIG_CACHE:-}")" ] || export NPM_CONFIG_CACHE="$UNSLOTH_HOME/cache/npm"
+    # uv is not the only installer this script reaches for, and pip is not a hypothetical
+    # here: fast_install falls through to `python -m pip install` whenever `command -v uv`
+    # misses or the `uv pip install` above it returns non-zero, the staged-root branch says
+    # "using pip inside the staged environment" outright, the Colab path runs `pip install
+    # -r`, and install_python_stack.py forces plain pip for the wheels uv's filename check
+    # rejects. pip's own default cache is $HOME/.cache/pip on Linux and
+    # $HOME/Library/Caches/pip on macOS, so a standalone portable update parked multi-GB
+    # Torch and CUDA wheels outside the root, where the advertised `rm -rf <root>` leaves
+    # them and the next update cannot reuse them either. Every other entry point already
+    # pins it -- install.sh's _export_portable_roots, the share/studio.conf it writes, the
+    # generated bin/unsloth shim and storage_roots._setup_cache_env. Defaulted, never
+    # forced, and blank counts as unset, like the three above.
+    [ -n "$(_setup_trim_ws "${PIP_CACHE_DIR:-}")" ] || export PIP_CACHE_DIR="$UNSLOTH_HOME/cache/pip"
+    # The rest of what the shim and share/studio.conf pin, for the same reason and with the
+    # same values as _export_portable_roots. UV_PYTHON_INSTALL_DIR is the one that costs
+    # real space: uv downloads a managed CPython when the host has no usable interpreter,
+    # and unpinned it lands in uv's own data directory outside the root. The two bin
+    # directories put interpreter and tool shims in the root's own bin/ rather than
+    # ~/.local/bin, which is the leak UV_NO_MODIFY_PATH alone does not close, and
+    # CUDA_CACHE_PATH keeps the JIT cache in with the rest.
+    #
+    # Found by reading the shim's exports against this block rather than by a failure, so
+    # the standalone path is now pinned for every variable install.sh pins, not just the
+    # four a report happened to name.
+    [ -n "$(_setup_trim_ws "${UV_PYTHON_INSTALL_DIR:-}")" ] \
+        || export UV_PYTHON_INSTALL_DIR="$UNSLOTH_HOME/cache/uv-python"
+    [ -n "$(_setup_trim_ws "${UV_TOOL_DIR:-}")" ] \
+        || export UV_TOOL_DIR="$UNSLOTH_HOME/cache/uv-tools"
+    [ -n "$(_setup_trim_ws "${UV_TOOL_BIN_DIR:-}")" ] \
+        || export UV_TOOL_BIN_DIR="$UNSLOTH_HOME/bin"
+    [ -n "$(_setup_trim_ws "${UV_PYTHON_BIN_DIR:-}")" ] \
+        || export UV_PYTHON_BIN_DIR="$UNSLOTH_HOME/bin"
+    [ -n "$(_setup_trim_ws "${CUDA_CACHE_PATH:-}")" ] \
+        || export CUDA_CACHE_PATH="$UNSLOTH_HOME/cache/cuda"
 fi
 _STUDIO_ROOT_IS_MASTER_ROOT=false
 if [ -n "$UNSLOTH_HOME" ]; then

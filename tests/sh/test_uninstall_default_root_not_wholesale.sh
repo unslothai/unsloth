@@ -28,6 +28,10 @@ state() { # path
 # Self-validate: the exemption has to still be in the script being tested.
 grep -q '_custom_default_root' "$UNINSTALL" \
     || { echo "FAIL: uninstall.sh has no default-root exemption"; exit 1; }
+# ...and the flat-root database branch has to still resolve a relocated database before it
+# reports on one, the way _remove_root_recording_db does for every other layout.
+grep -q '_custom_db_data' "$UNINSTALL" \
+    || { echo "FAIL: the flat-root database branch no longer tracks the symlink target"; exit 1; }
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
@@ -89,6 +93,30 @@ check "while the user's own file still stays"   present "$(state "$H4/.unsloth/m
 says() { case "$out4" in *"$1"*) printf yes ;; *) printf no ;; esac; }
 check "the flat database is reported as removed"     yes "$(says 'studio.db it found')"
 check "and not reported as never having been found"  no  "$(says 'No studio.db was found')"
+
+# Same flat root, but studio.db is a symlink to a database on another volume -- the relocation
+# _remove_root_recording_db already allows for on every other layout. `-f` reads the database
+# through the link, but `rm -rf` unlinks the LINK and never the target, so the lexical path
+# reads as absent afterwards and the before/after pair concluded the database was destroyed.
+# The run then closed by telling the user their chat history was gone while every byte of it
+# was still on the other disk: the exact inverse of the H4 case above, and a false statement
+# either way. Nothing may be deleted off the far volume here either.
+H4b="$T/home4b"; EXT="$T/elsewhere"
+mkdir -p "$H4b/.unsloth/unsloth_studio/bin" "$H4b/.unsloth/share" "$H4b/.unsloth/cache" \
+         "$H4b/.unsloth/bin" "$H4b/.local/bin" "$H4b/.local/share" "$EXT"
+: > "$H4b/.unsloth/unsloth_studio/.unsloth-studio-owned"
+printf 'the real chat history\n' > "$EXT/studio.db"
+ln -s "$EXT/studio.db" "$H4b/.unsloth/studio.db"
+printf '%s\n' "$H4b/.unsloth" > "$H4b/.unsloth/.unsloth-portable-root"
+printf "UNSLOTH_EXE='%s'\n" "$H4b/.unsloth/unsloth_studio/bin/unsloth" > "$H4b/.unsloth/share/studio.conf"
+out4b="$(env -i HOME="$H4b" PATH="$PATH" UNSLOTH_HOME="$H4b/.unsloth" sh "$UNINSTALL" 2>/dev/null || true)"
+says4b() { case "$out4b" in *"$1"*) printf yes ;; *) printf no ;; esac; }
+# The control: without it, a "reports the survivor" pass could just be a fixture whose link
+# was never followed in the first place.
+check "the link inside the root is unlinked"      gone    "$(state "$H4b/.unsloth/studio.db")"
+check "the database on the other volume survives" present "$(state "$EXT/studio.db")"
+check "so the run does NOT claim the history is gone" no  "$(says4b 'the chat history in the install(s) removed')"
+check "it says the history may still be on disk"     yes "$(says4b 'chat history may still be on disk')"
 
 # The owner marker is what licences that removal. Without it the directory is the user's.
 H5="$T/home5"

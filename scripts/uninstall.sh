@@ -730,10 +730,41 @@ _unsloth_uninstall_main() {
                 # found" and sent the user looking for it elsewhere. Same before/after pair the
                 # helper uses, so a failed removal still reports as a failure rather than a loss.
                 _custom_flat_db="$_custom_root/studio.db"
-                if [ -f "$_custom_flat_db" ]; then _custom_had_db=1; else _custom_had_db=0; fi
+                _custom_db_data="$_custom_flat_db"
+                if [ -f "$_custom_flat_db" ]; then
+                    _custom_had_db=1
+                    # ...and the database can be a symlink out of the root, the same way
+                    # _remove_root_recording_db already allows for every other layout. `-f`
+                    # reads it through the link, but `rm -rf` unlinks the LINK and never the
+                    # target ("shall not traverse directories by following symbolic links
+                    # into other parts of the hierarchy, but shall remove the links
+                    # themselves"), so the lexical path then reads as absent and the flag set
+                    # below told the user their chat history was gone while the database sat
+                    # untouched on the other volume. Deleting nothing and claiming it is as
+                    # wrong as the deleting-and-denying case this branch was added for.
+                    # Chasing the link is only for the REPORT; the removal still never
+                    # follows it. readlink without -f: BSD readlink gained -f in macOS 12.3,
+                    # so use the raw link text plus cd -P, which works on both.
+                    if [ -L "$_custom_flat_db" ]; then
+                        _custom_db_link=$(readlink "$_custom_flat_db" 2>/dev/null || true)
+                        if [ -n "$_custom_db_link" ]; then
+                            case "$_custom_db_link" in
+                                /*) ;;
+                                *) _custom_db_link="$(dirname "$_custom_flat_db")/$_custom_db_link" ;;
+                            esac
+                            # shellcheck disable=SC1007
+                            _custom_db_dir=$(CDPATH= cd -P -- "$(dirname "$_custom_db_link")" 2>/dev/null && pwd -P) \
+                                || _custom_db_dir=""
+                            [ -n "$_custom_db_dir" ] \
+                                && _custom_db_data="$_custom_db_dir/$(basename "$_custom_db_link")"
+                        fi
+                    fi
+                else
+                    _custom_had_db=0
+                fi
                 _remove_path "$_custom_flat_db"
                 if [ "$_custom_had_db" = 1 ]; then
-                    if [ -f "$_custom_flat_db" ]; then
+                    if [ -f "$_custom_db_data" ]; then
                         _set_marker "$_REMOVE_FAILED_FLAG"
                     else
                         _set_marker "$_DB_REMOVED_FLAG"
