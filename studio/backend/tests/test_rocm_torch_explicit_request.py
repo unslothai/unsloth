@@ -501,11 +501,14 @@ def test_a_mirror_whose_base_path_says_rocm_is_not_a_rocm_index():
     leaving CPU torch on a working NVIDIA card, which is the one outcome it exists to
     prevent. install.sh already carries a comment warning about this exact leaf, three
     lines below the block that got it wrong."""
-    assert _index_after_the_guard(
-        "UNSLOTH_FORCE_ROCM_TORCH=1",
-        resolved = "https://mirror.local/rocm-cache/cpu",
-        cuda_answer = _CUDA,
-    ) == _CUDA
+    assert (
+        _index_after_the_guard(
+            "UNSLOTH_FORCE_ROCM_TORCH=1",
+            resolved = "https://mirror.local/rocm-cache/cpu",
+            cuda_answer = _CUDA,
+        )
+        == _CUDA
+    )
 
 
 def test_a_mirrored_rocm_index_is_still_left_alone():
@@ -513,9 +516,14 @@ def test_a_mirrored_rocm_index_is_still_left_alone():
     an actual ROCm leaf must keep it. Without this the fix could be "call every mirror
     CPU", which passes the test above and breaks every mirrored ROCm install."""
     rocm = "https://mirror.local/rocm-cache/rocm7.2"
-    assert _index_after_the_guard(
-        "UNSLOTH_FORCE_ROCM_TORCH=1", resolved = rocm, cuda_answer = _CUDA,
-    ) == rocm
+    assert (
+        _index_after_the_guard(
+            "UNSLOTH_FORCE_ROCM_TORCH=1",
+            resolved = rocm,
+            cuda_answer = _CUDA,
+        )
+        == rocm
+    )
 
 
 def test_the_radeon_repo_leaf_counts_as_a_rocm_index():
@@ -524,9 +532,14 @@ def test_the_radeon_repo_leaf_counts_as_a_rocm_index():
     that helper here would have called a working Radeon install a dead end and replaced
     it with CUDA wheels, so the classifier is deliberately the broader one."""
     radeon = "https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/"
-    assert _index_after_the_guard(
-        "UNSLOTH_FORCE_ROCM_TORCH=1", resolved = radeon, cuda_answer = _CUDA,
-    ) == radeon
+    assert (
+        _index_after_the_guard(
+            "UNSLOTH_FORCE_ROCM_TORCH=1",
+            resolved = radeon,
+            cuda_answer = _CUDA,
+        )
+        == radeon
+    )
 
 
 def test_a_miscomputing_arch_host_keeps_the_cuda_repair(stack, monkeypatch):
@@ -576,7 +589,8 @@ def test_the_rocm_installer_bails_on_the_same_arch(stack, monkeypatch):
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
     installed = {"ran": False}
     monkeypatch.setattr(
-        stack, "pip_install",
+        stack,
+        "pip_install",
         lambda *a, **k: installed.__setitem__("ran", True),
     )
     stack._ensure_rocm_torch()
@@ -596,29 +610,39 @@ def _gpu_summary_branch(resolved: str, request: str) -> str:
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     lines = install_sh.read_text(encoding = "utf-8").splitlines()
     head = next(
-        (l for l in lines if l.startswith("if _has_usable_nvidia_gpu && ! _torch_index_url_is_rocm")),
+        (
+            l
+            for l in lines
+            if l.startswith("if _has_usable_nvidia_gpu && ! _torch_index_url_is_rocm")
+        ),
         "if _nvidia_gpu_wins_over_amd; then",
     )
     tail = next(
         (l for l in lines if l.startswith("elif _torch_index_url_is_rocm")),
         'elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then',
     )
-    script = "\n".join([
-        _shell_function("_rocm_torch_explicitly_requested"),
-        _shell_function("_torch_index_url_leaf"),
-        _shell_function("_torch_index_url_is_rocm"),
-        _shell_function("_nvidia_gpu_wins_over_amd"),
-        "_has_usable_nvidia_gpu() { return 0; }",
-        "_has_amd_rocm_gpu() { return 0; }",
-        f"TORCH_INDEX_URL={resolved!r}",
-        # export, not a VAR=VAL command prefix: a prefix applies to that one command and
-        # leaves the variable unset for everything after it, so the request would never
-        # be in effect and the first case below would pass without the fix.
-        f"export {request}" if request else ":",
-        head, "echo nvidia",
-        tail, "echo amd",
-        "else", "echo amd-cpu-fallback", "fi",
-    ])
+    script = "\n".join(
+        [
+            _shell_function("_rocm_torch_explicitly_requested"),
+            _shell_function("_torch_index_url_leaf"),
+            _shell_function("_torch_index_url_is_rocm"),
+            _shell_function("_nvidia_gpu_wins_over_amd"),
+            "_has_usable_nvidia_gpu() { return 0; }",
+            "_has_amd_rocm_gpu() { return 0; }",
+            f"TORCH_INDEX_URL={resolved!r}",
+            # export, not a VAR=VAL command prefix: a prefix applies to that one command and
+            # leaves the variable unset for everything after it, so the request would never
+            # be in effect and the first case below would pass without the fix.
+            f"export {request}" if request else ":",
+            head,
+            "echo nvidia",
+            tail,
+            "echo amd",
+            "else",
+            "echo amd-cpu-fallback",
+            "fi",
+        ]
+    )
     out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
     assert out.returncode == 0, out.stderr
     return out.stdout.strip()
@@ -637,9 +661,13 @@ def test_the_summary_reports_cuda_after_the_cuda_restore():
 def test_the_summary_still_reports_amd_when_the_request_won():
     """The control: when the request DID reach ROCm wheels, the summary must report the
     card those wheels are for, which is what the predicate was introduced to fix."""
-    assert _gpu_summary_branch(
-        "https://repo.amd.com/rocm/whl/gfx1151", "UNSLOTH_FORCE_ROCM_TORCH=1",
-    ) == "amd"
+    assert (
+        _gpu_summary_branch(
+            "https://repo.amd.com/rocm/whl/gfx1151",
+            "UNSLOTH_FORCE_ROCM_TORCH=1",
+        )
+        == "amd"
+    )
 
 
 def test_the_summary_on_a_pure_cuda_install_is_unchanged():
