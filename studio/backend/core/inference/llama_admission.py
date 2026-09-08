@@ -325,6 +325,7 @@ class LlamaAdmissionLease:
         "_budgeted",
         "_tokens",
         "_preempted",
+        "_charge_seq",
     )
 
     def __init__(
@@ -345,6 +346,13 @@ class LlamaAdmissionLease:
         # Returned to the queue on release, not on park: a parked holder has stopped decoding but llama-server still
         # holds its KV until the task ends.
         self._tokens = max(0, int(tokens or 0))
+        # Bumped by every re-charge, so a deferred yield can tell the commitment it was asked
+        # to hand back from one the holder took on again meanwhile.
+        self._charge_seq = 0
+
+    @property
+    def charge_seq(self) -> int:
+        return self._charge_seq
 
     @property
     def slot(self) -> Optional[int]:
@@ -376,7 +384,7 @@ class LlamaAdmissionLease:
             self._slot = None
         return True
 
-    def yield_parked_commitment(self) -> int:
+    def yield_parked_commitment(self, *, charged_at: Optional[int] = None) -> int:
         """Hand this lease's KV commitment back while its cells are gone.
 
         `park()` keeps `_tokens` on purpose, since a run stopped on an approval still holds
@@ -384,11 +392,19 @@ class LlamaAdmissionLease:
         holding the commitment then keeps waiters out of an empty cache. The next round's
         `recost_waiting` charges the real size again, waiting its turn.
 
+        `charged_at` is the `charge_seq` the caller read when it decided the cells were gone.
+        The erases run for seconds before this is called, and a holder whose tool came back
+        meanwhile has re-charged its real size for the prompt it is prefilling again; handing
+        that back would admit a waiter into cells that are filling. A moved sequence means
+        nothing to hand back.
+
         Returns the tokens handed back, 0 when there was nothing to hand back.
         """
         queue = self._queue
         with self._release_lock:
             if queue is None or self._released or self._tokens <= 0:
+                return 0
+            if charged_at is not None and charged_at != self._charge_seq:
                 return 0
             held, self._tokens = self._tokens, 0
         queue.yield_commitment(held)
@@ -608,6 +624,7 @@ class LlamaAdmissionLease:
                 if slot is not None:
                     self._slot = slot
                 self._tokens = want
+                self._charge_seq += 1
                 self._preempted = False
         if stranded:
             queue.release(slot, want)
@@ -633,6 +650,7 @@ class LlamaAdmissionLease:
             if not self._queue.try_recost(self._tokens, want):
                 return False
             self._tokens = want
+            self._charge_seq += 1
             return True
 
     def recost_waiting(
@@ -710,6 +728,7 @@ class LlamaAdmissionLease:
                             queue.release(None, want)
                             return True
                         self._tokens = want
+                        self._charge_seq += 1
                     return True
                 # Every pass, not only on the two exits below: release() runs from the route's teardown without touching
                 # the cancel event, so a Stop would otherwise leave this spinning on a dead lease, wait line held shut.
@@ -774,6 +793,7 @@ class LlamaAdmissionLease:
                 queue.abandon_repark()
                 return False
             self._tokens = held
+            self._charge_seq += 1
             queue.abandon_repark(restore = held)
         return False
 

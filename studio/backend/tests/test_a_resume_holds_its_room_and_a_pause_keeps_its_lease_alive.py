@@ -267,6 +267,14 @@ class TestARawHolderIsMeasuredOnceItProduces:
         assert source.count("_raw_measured = False") == 3
         assert source.count("_openai_llama_note_raw_measured(") >= 4  # the def and three calls
 
+    def test_the_non_streaming_raw_requests_are_measured_at_registration(self):
+        # No data line to mark them at, so the charge sat on top of the residency
+        # `/slots` reported for the whole answer.
+        source = inspect.getsource(inference)
+        assert source.count("measured = True,  # non-streaming") == 2
+        helper = inspect.getsource(inference._openai_llama_count_raw_holder)
+        assert "controller.note_measured(gen_id)" in helper
+
     def test_the_helper_reaches_the_controller(self, monkeypatch):
         controller = _controller()
         controller.register(

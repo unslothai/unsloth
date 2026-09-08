@@ -937,13 +937,28 @@ class PreemptionController:
                 # Whatever it was about to prefill went with the cells; `note_state`
                 # re-announces when it decodes again.
                 participant.prefill_done()
-                released.append(participant)
-        for participant in released:
+                released.append(
+                    (
+                        participant,
+                        participant.park_seq,
+                        getattr(participant.lease, "charge_seq", None),
+                    )
+                )
+        for participant, park_seq, charge_seq in released:
+            # The lease call runs outside the lock, after erases that took seconds: a holder
+            # whose tool came back in between has restated its prompt and re-charged, and
+            # that commitment is for cells now filling, not for the ones erased.
+            with self._lock:
+                if not participant.cells_reclaimed or participant.park_seq != park_seq:
+                    continue
             lease = participant.lease
             yield_parked = getattr(lease, "yield_parked_commitment", None)
             if callable(yield_parked):
                 try:
-                    yield_parked()
+                    if charge_seq is None:
+                        yield_parked()
+                    else:
+                        yield_parked(charged_at = charge_seq)
                 except Exception:  # pragma: no cover - bookkeeping must not fail a run
                     _log.debug("could not yield a parked commitment", exc_info = True)
         return len(released)
