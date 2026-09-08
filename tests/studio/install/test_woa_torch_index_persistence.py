@@ -784,7 +784,7 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         marker = body.index("host.is_windows and host.is_arm64")
         assert (
             'published_asset_choice_for_kind(release, "windows-arm64")'
-            in body[marker : marker + 4000]
+            in body[marker : marker + 5200]
         )
 
     def test_widening_does_not_strand_anyone_on_cpu(self):
@@ -2658,6 +2658,11 @@ class TestThePipFallbackKeepsTheIndexArguments:
         end = SETUP_SRC.index("} else { @() }", start) + len("} else { @() }")
         script = _script(
             _function_source(SETUP_SRC, "Remove-UvOnlyResolverFlags"),
+            # The dependency index follows the resolver policy; with none configured it is public PyPI.
+            "foreach ($n in 'UV_NO_INDEX','PIP_NO_INDEX','UV_DEFAULT_INDEX','UV_INDEX_URL','PIP_INDEX_URL','UV_INDEX','UV_EXTRA_INDEX_URL','PIP_EXTRA_INDEX_URL','UV_CONFIG_FILE') { Remove-Item \"Env:$n\" -ErrorAction SilentlyContinue }",
+            "$env:UV_NO_CONFIG = '1'",
+            _function_source(SETUP_SRC, "Get-WoaUvConfigIndexPolicy"),
+            _function_source(SETUP_SRC, "Get-WoaDependencyIndexArgs"),
             "$WinArm64Venv = $true",
             f"$UseUv = ${str(use_uv).lower()}",
             "$WinArm64TorchIndexUrl = 'https://pypi.nvidia.com/nvtorch_oot'",
@@ -5342,6 +5347,189 @@ class TestTheResolverVariablesDoNotOutliveTheInstaller:
             "Write-Output ('UV=' + [string]$env:UV_FIND_LINKS)",
         )
         assert _ps_last(script) == "UV=C:\\mine"
+
+
+class TestTheDependencyIndexFollowsTheResolverPolicy:
+    """The trio install passed a hard-coded public PyPI as the extra index for torch's shared
+    dependencies, while Invoke-InstallCommand clears every inherited index setting whenever
+    --default-index is given. A caller with an exclusive corporate index or no-index, whose
+    pyarrow came from the wheelhouse, therefore had public PyPI searched on their behalf, and
+    a network that blocks it failed after the ARM64 venv existed. The dependency index is now
+    what the policy names: its default and extras, public PyPI when it names none, and no
+    index at all under no-index."""
+
+    NAMES = "'UV_OFFLINE','UV_NO_INDEX','PIP_NO_INDEX','UV_DEFAULT_INDEX','UV_INDEX_URL','PIP_INDEX_URL','UV_INDEX','UV_EXTRA_INDEX_URL','PIP_EXTRA_INDEX_URL','UV_NO_CONFIG','UV_CONFIG_FILE'"
+
+    @classmethod
+    def _args(
+        cls,
+        tmp_path,
+        files,
+        env,
+        source = None,
+    ):
+        src = INSTALL_SRC if source is None else source
+        for name, body in files.items():
+            (tmp_path / name).parent.mkdir(parents = True, exist_ok = True)
+            (tmp_path / name).write_text(body, encoding = "utf-8")
+        (tmp_path / "proj").mkdir(exist_ok = True)
+        setenv = "\n".join(f"$env:{k} = '{v}'" for k, v in env.items())
+        script = _script(
+            f'foreach ($n in {cls.NAMES}) {{ Remove-Item "Env:$n" -ErrorAction SilentlyContinue }}',
+            f"$env:APPDATA = '{tmp_path / 'appdata'}'",
+            f"$env:ProgramData = '{tmp_path / 'programdata'}'",
+            f"Set-Location -LiteralPath '{tmp_path / 'proj'}'",
+            setenv,
+            _function_source(src, "Remove-WoaTomlComment"),
+            _function_source(src, "Split-WoaTomlKey"),
+            _function_source(src, "Read-WoaUvTomlIndexKeys"),
+            _function_source(src, "Get-WoaUvConfigIndexPolicy"),
+            _function_source(src, "Get-WoaDependencyIndexArgs"),
+            "Write-Output ('[' + ((Get-WoaDependencyIndexArgs) -join '|') + ']')",
+        )
+        return _ps_last(script)[1:-1]
+
+    PYPI = "--extra-index-url|https://pypi.org/simple"
+    CORP = "--extra-index-url|https://pypi.corp.test/simple"
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "files, env, expected, why",
+        [
+            ({}, {}, PYPI, "nothing configured: public PyPI"),
+            ({}, {"UV_NO_INDEX": "1"}, "", "uv no-index: the wheelhouse is the whole source"),
+            ({}, {"PIP_NO_INDEX": "true"}, "", "pip's spelling"),
+            ({}, {"UV_NO_INDEX": "0"}, PYPI, "a false flag is not set"),
+            (
+                {},
+                {"UV_DEFAULT_INDEX": "https://pypi.corp.test/simple"},
+                CORP,
+                "an exclusive default replaces PyPI",
+            ),
+            (
+                {},
+                {"UV_INDEX_URL": "https://pypi.corp.test/simple/"},
+                CORP.rstrip("/") + "/",
+                "the older spelling, kept as written",
+            ),
+            ({}, {"PIP_INDEX_URL": "https://pypi.corp.test/simple"}, CORP, "pip's default"),
+            (
+                {},
+                {
+                    "UV_DEFAULT_INDEX": "https://pypi.corp.test/simple",
+                    "UV_EXTRA_INDEX_URL": "https://pypi.org/simple",
+                },
+                CORP + "|" + PYPI,
+                "PyPI named as an extra stays in play, after the default",
+            ),
+            (
+                {},
+                {"UV_EXTRA_INDEX_URL": "https://pypi.corp.test/simple"},
+                PYPI + "|" + CORP,
+                "an extra alone adds to the PyPI default",
+            ),
+            (
+                {},
+                {"UV_INDEX": "https://a.test/simple https://b.test/simple"},
+                PYPI
+                + "|--extra-index-url|https://a.test/simple|--extra-index-url|https://b.test/simple",
+                "UV_INDEX is a space-separated list",
+            ),
+            ({"proj/uv.toml": "no-index = true\n"}, {}, "", "project uv.toml no-index"),
+            (
+                {"proj/uv.toml": 'default-index = "https://pypi.corp.test/simple"\n'},
+                {},
+                CORP,
+                "project default-index",
+            ),
+            (
+                {
+                    "proj/uv.toml": 'default-index = "https://pypi.corp.test/simple"\nextra-index-url = ["https://pypi.org/simple"]\n'
+                },
+                {},
+                CORP + "|" + PYPI,
+                "config default plus config extra",
+            ),
+            (
+                {
+                    "proj/uv.toml": '[[index]]\nurl = "https://pypi.corp.test/simple"\ndefault = true\n\n[[index]]\nurl = "https://extra.test/simple"\n'
+                },
+                {},
+                CORP + "|--extra-index-url|https://extra.test/simple",
+                "[[index]] entries",
+            ),
+            (
+                {"proj/uv.toml": 'default-index = "https://pypi.corp.test/simple"\n'},
+                {"UV_DEFAULT_INDEX": "https://env.test/simple"},
+                "--extra-index-url|https://env.test/simple",
+                "the environment beats the file",
+            ),
+            (
+                {"proj/uv.toml": 'default-index = "https://pypi.corp.test/simple"\n'},
+                {"UV_NO_CONFIG": "1"},
+                PYPI,
+                "UV_NO_CONFIG hides the file, as it does for uv",
+            ),
+            (
+                {},
+                {
+                    "UV_DEFAULT_INDEX": "https://pypi.org/simple",
+                    "UV_EXTRA_INDEX_URL": "https://pypi.org/simple",
+                },
+                PYPI,
+                "a duplicate is listed once",
+            ),
+        ],
+    )
+    def test_the_index_arguments(self, tmp_path, files, env, expected, why):
+        assert self._args(tmp_path, files, env) == expected, why
+
+    @requires_pwsh
+    def test_setup_answers_the_same(self, tmp_path):
+        files = {
+            "proj/uv.toml": 'default-index = "https://pypi.corp.test/simple"\nextra-index-url = ["https://pypi.org/simple"]\n'
+        }
+        assert self._args(tmp_path, files, {}, SETUP_SRC) == self.CORP + "|" + self.PYPI
+        assert self._args(tmp_path, {}, {"UV_NO_INDEX": "1"}, SETUP_SRC) == ""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Remove-WoaTomlComment",
+            "Split-WoaTomlKey",
+            "Read-WoaUvTomlIndexKeys",
+            "Get-WoaUvConfigIndexPolicy",
+            "Get-WoaDependencyIndexArgs",
+        ],
+    )
+    def test_the_two_copies_match(self, name):
+        install, setup = _ps_copies(name)
+        assert install == setup
+
+    def test_both_install_paths_use_it_and_neither_hard_codes_pypi(self):
+        trio = INSTALL_SRC[INSTALL_SRC.index("# NVIDIA's index publishes only the trio") :][:900]
+        assert "$_woaDependencyIndexArgs = @(Get-WoaDependencyIndexArgs)" in trio
+        assert '"--extra-index-url", "https://pypi.org/simple"' not in trio
+        shared = SETUP_SRC[SETUP_SRC.index("$WinArm64IndexArgs = if ($WinArm64Venv) {") :][:400]
+        assert "@(Get-WoaDependencyIndexArgs)" in shared
+        assert '"--extra-index-url", "https://pypi.org/simple"' not in shared
+
+
+class TestTheArmJobRunsForEveryRequirementsInput:
+    """The path filter named constraints.txt alone, although the selected tests read
+    pyproject.toml and the other files under studio/backend/requirements/. A change to one of
+    those skipped the workflow, so a marker or pin regression merged without the ARM checks."""
+
+    def test_both_filters_name_the_requirements_tree_and_pyproject(self):
+        text = (PACKAGE_ROOT / ".github" / "workflows" / "windows-arm64-ci.yml").read_text(
+            encoding = "utf-8"
+        )
+        head = text[: text.index("workflow_dispatch:")]
+        push = head[head.index("  push:") : head.index("  pull_request:")]
+        pull = head[head.index("  pull_request:") :]
+        for name, block in (("push", push), ("pull_request", pull)):
+            assert "- 'pyproject.toml'" in block, name
+            assert "- 'studio/backend/requirements/**'" in block, name
 
 
 class TestTheNoAudioDecisionFollowsTheProbe:

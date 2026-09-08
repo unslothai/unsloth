@@ -720,6 +720,39 @@ function Install-UnslothStudio {
         return $true
     }
 
+    # The index beside the CUDA one for torch's shared dependencies. Invoke-InstallCommand clears the
+    # inherited index settings whenever --default-index is passed, so the caller's policy is restated
+    # here: the default and extra indexes it names (env, then uv config), public PyPI when it names
+    # none, and no index at all under no-index, where the find-links wheelhouse is the whole source.
+    function Get-WoaDependencyIndexArgs {
+        foreach ($name in @("UV_NO_INDEX", "PIP_NO_INDEX")) {
+            $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return @() }
+        }
+        $default = $null
+        foreach ($name in @("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL")) {
+            $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            if ($url -and $url.Trim()) { $default = $url.Trim(); break }
+        }
+        $extras = @()
+        foreach ($name in @("UV_INDEX", "UV_EXTRA_INDEX_URL", "PIP_EXTRA_INDEX_URL")) {
+            $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            foreach ($u in ($list -split '\s+' | Where-Object { $_ })) { $extras += $u }
+        }
+        if (-not $default -or -not $extras) {
+            $cfg = Get-WoaUvConfigIndexPolicy
+            if ($cfg.NoIndex) { return @() }
+            if (-not $default -and $cfg.DefaultIndex) { $default = $cfg.DefaultIndex }
+            if (-not $extras) { $extras = @($cfg.ExtraIndexes) }
+        }
+        if (-not $default) { $default = "https://pypi.org/simple" }
+        $indexArgs = @()
+        foreach ($u in @(@($default) + @($extras) | Where-Object { $_ } | Select-Object -Unique)) {
+            $indexArgs += @("--extra-index-url", $u)
+        }
+        return $indexArgs
+    }
+
     # Exact tags, or a wheel that does not care (cp38-abi3, py3-none). Free-threaded has no abi3.
     function Test-WoaWheelTagsUsable {
         param([string]$Name, [string]$PyTag, [string]$AbiTag = "")
@@ -7398,11 +7431,15 @@ exit 0
                     $_torchSpecs += if ($script:WoaAudioWheelVersion) { "torchaudio==$($script:WoaAudioWheelVersion)" } else { "torchaudio>=2.4" }
                     substep "windows on arm: this index publishes torchaudio; installing the full trio."
                 }
-                # NVIDIA's index publishes only the trio, so PyPI serves the shared dependencies.
-                $_torchExtraArgs = @(
-                    "--index-strategy", "unsafe-best-match",
-                    "--extra-index-url", "https://pypi.org/simple"
-                )
+                # NVIDIA's index publishes only the trio; the shared dependencies come from the index the
+                # caller's resolver policy names, public PyPI by default, and from the wheelhouse alone under no-index.
+                $_woaDependencyIndexArgs = @(Get-WoaDependencyIndexArgs)
+                $_torchExtraArgs = @("--index-strategy", "unsafe-best-match") + $_woaDependencyIndexArgs
+                if ($_woaDependencyIndexArgs.Count -eq 0) {
+                    substep "windows on arm: no-index is set, so torch's dependencies must come from the find-links wheelhouse."
+                } elseif ($_woaDependencyIndexArgs -notcontains "https://pypi.org/simple") {
+                    substep "windows on arm: torch's dependencies resolve from the configured index, not public PyPI."
+                }
                 # Only a prerelease channel needs this. The URL spelling is a second signal.
                 if ($script:WoaTorchIsPrerelease -or ($script:WoaTorchIndexUrl -match 'nightly')) {
                     $_torchExtraArgs = @("--prerelease=allow") + $_torchExtraArgs

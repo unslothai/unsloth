@@ -2904,6 +2904,57 @@ class TestPublishedLegacyNamedArm64BundlesAreOrdered:
         assert result and result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.1-arm64.zip"
 
 
+class TestAnUpstreamLookupFailureCostsOnlyCuda:
+    """On a Windows ARM64 NVIDIA host with no approved CUDA bundle, the upstream asset list is
+    fetched from the release API. A rate limit or an outage there raised out of the planner,
+    which catches only PrebuiltFallback, so the whole install aborted although the published
+    ARM64 CPU bundle was there to fall through to. It now costs the CUDA bundle only, like the
+    digest fetch beside it."""
+
+    TAG = "b8508"
+    CPU = "app-b8508-windows-arm64-cpu.zip"
+
+    def _plan(self, monkeypatch, assets):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", assets)
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "github_release_asset_digests", lambda repo, tag: {}
+        )
+        monkeypatch.delenv("UNSLOTH_LLAMA_ARM64_CUDA", raising = False)
+        host = make_host(
+            system = "Windows", machine = "ARM64", driver_cuda_version = (13, 4), compute_caps = ["121"]
+        )
+        release = make_release(
+            [
+                make_artifact(
+                    self.CPU,
+                    install_kind = "windows-arm64",
+                    runtime_line = None,
+                    bundle_profile = "windows-cpu-arm64",
+                )
+            ],
+            upstream_tag = self.TAG,
+        )
+        return resolve_release_asset_choice(host, self.TAG, release, make_checksums([self.CPU]))
+
+    def test_an_api_failure_falls_through_to_the_cpu_bundle(self, monkeypatch):
+        def _boom(repo, tag):
+            raise RuntimeError("429 rate limited")
+
+        result = self._plan(monkeypatch, _boom)
+        assert [a.name for a in result] == [self.CPU]
+        assert result[0].install_kind == "windows-arm64"
+
+    def test_an_empty_listing_lands_in_the_same_place(self, monkeypatch):
+        result = self._plan(monkeypatch, lambda repo, tag: {})
+        assert [a.name for a in result] == [self.CPU]
+
+
 # ===========================================================================
 # N.1e. resolve_release_asset_choice -- pin on the published install path
 # ===========================================================================

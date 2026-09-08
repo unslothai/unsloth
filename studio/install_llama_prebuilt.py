@@ -3911,12 +3911,23 @@ def resolve_release_asset_choice(
                         "published Windows ARM64 CUDA assets ignored for install planning: "
                         f"{release.repo}@{release.release_tag} ({exc})"
                     )
+            # Same rule as the digest fetch below: a rate limit, an outage or a malformed
+            # payload from the release API costs the CUDA bundle, never the install. The
+            # published ARM64 CPU bundle is still there to fall through to.
+            try:
+                upstream_arm64_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
+            except Exception as exc:
+                log(
+                    f"could not list the upstream {UPSTREAM_REPO}@{llama_tag} release assets "
+                    f"({exc}); falling through to the ARM64 CPU bundle."
+                )
+                upstream_arm64_assets = {}
             upstream_arm64_cuda = _drop_blackwell_incapable_windows_cuda(
                 host,
                 resolve_windows_cuda_choices(
                     host,
                     llama_tag,
-                    github_release_assets(UPSTREAM_REPO, llama_tag),
+                    upstream_arm64_assets,
                     arch = "arm64",
                 ),
             )

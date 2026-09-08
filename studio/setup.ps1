@@ -3869,6 +3869,200 @@ function New-WoaTorchStepOverrideValueParity {
     return $result
 }
 
+# Parity copies of install.ps1's uv index policy readers: the index that serves torch's shared
+# dependencies beside the CUDA one has to be the same answer from a fresh shell.
+function Remove-WoaTomlComment {
+    param([string]$Line)
+    $inD = $false; $inS = $false
+    for ($i = 0; $i -lt $Line.Length; $i++) {
+        $c = $Line[$i]
+        if ($inD) {
+            if ($c -eq '\') { $i++; continue }
+            if ($c -eq '"') { $inD = $false }
+            continue
+        }
+        if ($inS) { if ($c -eq "'") { $inS = $false }; continue }
+        if ($c -eq '"') { $inD = $true; continue }
+        if ($c -eq "'") { $inS = $true; continue }
+        if ($c -eq '#') { return $Line.Substring(0, $i) }
+    }
+    return $Line
+}
+
+function Split-WoaTomlKey {
+    param([string]$Text)
+    $parts = @()
+    $i = 0
+    while ($i -lt $Text.Length) {
+        while ($i -lt $Text.Length -and [char]::IsWhiteSpace($Text[$i])) { $i++ }
+        if ($i -ge $Text.Length) { return $null }
+        $c = $Text[$i]
+        if ($c -eq '"' -or $c -eq "'") {
+            $q = $c; $i++; $sb = ""
+            while ($i -lt $Text.Length -and $Text[$i] -ne $q) {
+                # Basic strings escape; literal (single-quoted) ones do not.
+                if ($q -eq '"' -and $Text[$i] -eq '\' -and ($i + 1) -lt $Text.Length) { $i++ }
+                $sb += $Text[$i]; $i++
+            }
+            if ($i -ge $Text.Length) { return $null }
+            $i++
+            $parts += $sb
+        } else {
+            $sb = ""
+            while ($i -lt $Text.Length -and ([string]$Text[$i]) -match '[A-Za-z0-9_-]') { $sb += $Text[$i]; $i++ }
+            if (-not $sb) { return $null }
+            $parts += $sb
+        }
+        while ($i -lt $Text.Length -and [char]::IsWhiteSpace($Text[$i])) { $i++ }
+        if ($i -lt $Text.Length) {
+            if ($Text[$i] -ne '.') { return $null }
+            $i++
+        }
+    }
+    if ($parts.Count -eq 0) { return $null }
+    return ,$parts
+}
+
+function Read-WoaUvTomlIndexKeys {
+    param([string]$Path, [string]$Top)
+    try { $lines = [System.IO.File]::ReadAllLines($Path) } catch { return $null }
+    # uv pip (0.10.7): [pip] scalars beat top-level, [[index]] default = true beats both. Ranked at the end.
+    $topScope = @{ NoIndex = $null; IndexUrl = $null; Extras = @() }
+    $pipScope = @{ NoIndex = $null; IndexUrl = $null; Extras = @() }
+    $section = ""
+    # A hashtable, because an assignment inside the $flush script block would be local to it.
+    $inIndex = $false; $idxUrl = $null; $idxDefault = $false; $entry = @{ DefaultUrl = $null; Extras = @() }
+    $indexTable = if ($Top) { "$Top.index" } else { "index" }
+    $pipTable = if ($Top) { "$Top.pip" } else { "pip" }
+    $flush = {
+        if ($inIndex -and $idxUrl) {
+            if ($idxDefault) { if (-not $entry.DefaultUrl) { $entry.DefaultUrl = $idxUrl } }
+            else { $entry.Extras += $idxUrl }
+        }
+    }
+    foreach ($raw in $lines) {
+        $line = (Remove-WoaTomlComment $raw).Trim()
+        if (-not $line) { continue }
+        if ($line -match '^\[\[(.+?)\]\]$') {
+            & $flush
+            $section = $Matches[1].Trim(); $inIndex = ($section -eq $indexTable); $idxUrl = $null; $idxDefault = $false
+            continue
+        }
+        if ($line -match '^\[(.+?)\]$') { & $flush; $section = $Matches[1].Trim(); $inIndex = $false; continue }
+        $eq = -1; $inD = $false; $inS = $false
+        for ($i = 0; $i -lt $line.Length; $i++) {
+            $c = $line[$i]
+            if ($inD) { if ($c -eq '\') { $i++ } elseif ($c -eq '"') { $inD = $false }; continue }
+            if ($inS) { if ($c -eq "'") { $inS = $false }; continue }
+            if ($c -eq '"') { $inD = $true; continue }
+            if ($c -eq "'") { $inS = $true; continue }
+            if ($c -eq '=') { $eq = $i; break }
+        }
+        if ($eq -lt 1) { continue }
+        $parts = Split-WoaTomlKey $line.Substring(0, $eq)
+        if (-not $parts) { continue }
+        $key = $parts[-1]
+        $prefix = if ($parts.Count -gt 1) { ($parts[0..($parts.Count - 2)] -join '.') } else { "" }
+        $val = $line.Substring($eq + 1).Trim()
+        if (-not $val) { continue }
+        $str = if ($val -match '^"(.*)"$' -or $val -match "^'(.*)'$") { $Matches[1] } else { $null }
+        $bool = if ($val -match '^(true|false)$') { $val -eq 'true' } else { $null }
+        if ($inIndex) {
+            # A dotted key inside [[index]] names some other table, not this entry.
+            if (-not $prefix) {
+                if ($key -eq 'url' -and $str) { $idxUrl = $str }
+                if ($key -eq 'default' -and $null -ne $bool) { $idxDefault = $bool }
+            }
+            continue
+        }
+        $scopeSection = if ($prefix) { if ($section) { "$section.$prefix" } else { $prefix } } else { $section }
+        $scope = if ($scopeSection -eq $Top) { $topScope } elseif ($scopeSection -eq $pipTable) { $pipScope } else { $null }
+        if ($null -eq $scope) { continue }
+        if ($key -eq 'no-index' -and $null -ne $bool -and $null -eq $scope.NoIndex) { $scope.NoIndex = $bool }
+        if (($key -eq 'default-index' -or $key -eq 'index-url') -and $str -and -not $scope.IndexUrl) { $scope.IndexUrl = $str }
+        # A one-line array of strings; anything else is not guessed at.
+        if ($key -eq 'extra-index-url') {
+            if ($val -match '^\[(.*)\]$') {
+                foreach ($m in [regex]::Matches($Matches[1], ('"([^"]*)"' + "|'([^']*)'"))) {
+                    $scope.Extras += $(if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value })
+                }
+            } elseif ($str) { $scope.Extras += $str }
+        }
+        if ($key -eq 'index') { return $null }
+    }
+    & $flush
+    $noIndex = if ($null -ne $pipScope.NoIndex) { $pipScope.NoIndex } else { $topScope.NoIndex }
+    $defaultIndex = if ($entry.DefaultUrl) { $entry.DefaultUrl } elseif ($pipScope.IndexUrl) { $pipScope.IndexUrl } else { $topScope.IndexUrl }
+    $extras = @($entry.Extras) + @($pipScope.Extras) + @($topScope.Extras)
+    return @{ NoIndex = $noIndex; DefaultIndex = $defaultIndex; ExtraIndexes = @($extras | Where-Object { $_ }) }
+}
+
+function Get-WoaUvConfigIndexPolicy {
+    $result = @{ NoIndex = $false; DefaultIndex = $null; Unreadable = $false; ExtraIndexes = @() }
+    $noCfg = [string](Get-Item Env:UV_NO_CONFIG -ErrorAction SilentlyContinue).Value
+    if ($noCfg -and ($noCfg.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $result }
+    $files = @()
+    $cfgFile = [string](Get-Item Env:UV_CONFIG_FILE -ErrorAction SilentlyContinue).Value
+    if ($cfgFile) {
+        $files += @{ Path = $cfgFile; Top = "" }
+    } else {
+        $dir = (Get-Location).Path
+        while ($dir) {
+            $u = Join-Path $dir "uv.toml"; $pp = Join-Path $dir "pyproject.toml"
+            if (Test-Path -LiteralPath $u -PathType Leaf) { $files += @{ Path = $u; Top = "" }; break }
+            if (Test-Path -LiteralPath $pp -PathType Leaf) {
+                $txt = try { [System.IO.File]::ReadAllText($pp) } catch { "" }
+                if ($txt -match '(?m)^\s*\[+tool\.uv(\.|\])') { $files += @{ Path = $pp; Top = "tool.uv" }; break }
+            }
+            $parent = Split-Path -Parent $dir
+            if (-not $parent -or $parent -eq $dir) { break }
+            $dir = $parent
+        }
+        if ($env:APPDATA) { $files += @{ Path = (Join-Path $env:APPDATA "uv\uv.toml"); Top = "" } }
+        if ($env:ProgramData) { $files += @{ Path = (Join-Path $env:ProgramData "uv\uv.toml"); Top = "" } }
+    }
+    $noIndexSet = $false
+    foreach ($f in $files) {
+        if (-not (Test-Path -LiteralPath $f.Path -PathType Leaf)) { continue }
+        $policy = Read-WoaUvTomlIndexKeys -Path $f.Path -Top $f.Top
+        if ($null -eq $policy) { $result.Unreadable = $true; continue }
+        if (-not $noIndexSet -and $null -ne $policy.NoIndex) { $result.NoIndex = $policy.NoIndex; $noIndexSet = $true }
+        if (-not $result.DefaultIndex -and $policy.DefaultIndex) { $result.DefaultIndex = $policy.DefaultIndex }
+        # Additive across files, like the option itself.
+        $result.ExtraIndexes = @($result.ExtraIndexes) + @($policy.ExtraIndexes)
+    }
+    return $result
+}
+
+function Get-WoaDependencyIndexArgs {
+    foreach ($name in @("UV_NO_INDEX", "PIP_NO_INDEX")) {
+        $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+        if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return @() }
+    }
+    $default = $null
+    foreach ($name in @("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL")) {
+        $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+        if ($url -and $url.Trim()) { $default = $url.Trim(); break }
+    }
+    $extras = @()
+    foreach ($name in @("UV_INDEX", "UV_EXTRA_INDEX_URL", "PIP_EXTRA_INDEX_URL")) {
+        $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+        foreach ($u in ($list -split '\s+' | Where-Object { $_ })) { $extras += $u }
+    }
+    if (-not $default -or -not $extras) {
+        $cfg = Get-WoaUvConfigIndexPolicy
+        if ($cfg.NoIndex) { return @() }
+        if (-not $default -and $cfg.DefaultIndex) { $default = $cfg.DefaultIndex }
+        if (-not $extras) { $extras = @($cfg.ExtraIndexes) }
+    }
+    if (-not $default) { $default = "https://pypi.org/simple" }
+    $indexArgs = @()
+    foreach ($u in @(@($default) + @($extras) | Where-Object { $_ } | Select-Object -Unique)) {
+        $indexArgs += @("--extra-index-url", $u)
+    }
+    return $indexArgs
+}
+
 # Parity copy of install.ps1's Test-WoaAudioMatchesTorch: torchaudio tracks torch's major.minor.
 function Test-WoaAudioMatchesTorchParity {
     param([string]$TorchVersion, [string]$AudioVersion)
@@ -5464,10 +5658,12 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
 }
 # <3.7 everywhere except Windows on ARM, whose first win_arm64 wheel is 3.8.0.post28.
 $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
-# The win_arm64 index publishes only the trio, so PyPI must stay reachable for the shared
-# dependencies, and best-match comes with it. Not gated on $UseUv: pip needs the extra index too.
+# The win_arm64 index publishes only the trio, so a dependency index rides beside it (the caller's
+# configured one, public PyPI by default) and best-match comes with it. Not gated on $UseUv: pip
+# needs the extra index too.
 $WinArm64IndexArgs = if ($WinArm64Venv) {
-    $_woaIndexArgs = @("--index-strategy", "unsafe-best-match", "--extra-index-url", "https://pypi.org/simple")
+    # The dependency index follows the caller's resolver policy, as install.ps1's trio step does.
+    $_woaIndexArgs = @("--index-strategy", "unsafe-best-match") + @(Get-WoaDependencyIndexArgs)
     # install.ps1 read this off the wheel it selected; the URL spelling is only a second signal.
     if (($WinArm64HandoffApplies -and $env:UNSLOTH_WOA_TORCH_PRERELEASE -eq "1") -or
         ($WinArm64EffectiveTorchIndexUrl -match 'nightly')) {
