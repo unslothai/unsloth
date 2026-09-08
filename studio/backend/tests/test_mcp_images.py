@@ -2374,3 +2374,27 @@ def test_every_async_promotion_wrapper_hops_on_the_marker_alone():
         assert "promote and _messages_mention" not in body, wrapper.__name__
     count = inspect.getsource(inference_route.anthropic_count_tokens)
     assert "await asyncio.to_thread(_messages_have_promotable_mcp_images, openai_messages)" in count
+
+
+def test_live_image_extraction_is_gated_on_the_target_reading_them():
+    """mcp_images() json-loads the whole envelope; a text-only target discards the
+    result, and the external loop runs on the event loop, so it parses in a thread."""
+    import inspect
+
+    import routes.inference as inference_route
+    from core.inference import llama_cpp, safetensors_agentic, studio_tool_loop
+
+    assert (
+        "await asyncio.to_thread(completion.mcp_images) if run.supports_vision else []"
+        in inspect.getsource(studio_tool_loop)
+    )
+    assert (
+        'if mcp_images_mentioned_in(completion.result or "") and self.is_vision'
+        in inspect.getsource(llama_cpp)
+    )
+    assert "completion.mcp_images() if images_sink is not None else []" in inspect.getsource(
+        safetensors_agentic
+    )
+    count = inspect.getsource(inference_route.chat_count_tokens)
+    assert "openai_messages = await _promote_mcp_history_images_async(" in count
+    assert "openai_messages = promote_mcp_history_images(" not in count

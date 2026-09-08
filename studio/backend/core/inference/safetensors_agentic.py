@@ -1504,7 +1504,8 @@ def run_safetensors_tool_loop(
             _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
-            _completion_images = completion.mcp_images()
+            # Parsed only when there is a sink for them.
+            _completion_images = completion.mcp_images() if images_sink is not None else []
             if _completion_images:
                 batch_mcp_images.append(_completion_images)
 

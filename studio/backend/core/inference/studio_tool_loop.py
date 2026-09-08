@@ -1884,7 +1884,11 @@ async def stream_with_studio_tools(
             last_reprompt_text = ""
             yield _sse(completion.tool_end_event())
             tool_messages.append(completion.tool_message())
-            _completion_images = completion.mcp_images()
+            # Only for a target that reads them, and off the loop: the envelope is
+            # a 12 MB json-load, and a text-only run discards the result anyway.
+            _completion_images = (
+                await asyncio.to_thread(completion.mcp_images) if run.supports_vision else []
+            )
             if _completion_images:
                 turn_mcp_images.append(_completion_images)
 

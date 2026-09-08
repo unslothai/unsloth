@@ -30871,7 +30871,9 @@ async def chat_count_tokens(
     # does not merge adjacent user turns, so coalescing here would price a prompt it never sends
     # (two user turns split by an empty assistant sentinel, after a stopped response).
     _takes_passthrough = _takes_tool_passthrough(payload, llama_backend)
-    openai_messages = promote_mcp_history_images(
+    # Awaited: stripping parses the whole envelope, and this recount runs in the
+    # background on every turn, so it must not do that on the shared loop.
+    openai_messages = await _promote_mcp_history_images_async(
         _strip_provider_synthetic_tool_history(
             _drop_empty_assistant_sentinels(
                 [m.model_dump(exclude_none = True) for m in payload.messages]

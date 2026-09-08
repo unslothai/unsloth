@@ -433,6 +433,7 @@ from core.inference.mcp_images import (
     DETACHED_IMAGE_TURN_TEXT as MCP_DETACHED_IMAGE_TURN_TEXT,
     IMAGE_TURN_TEXT as MCP_IMAGE_TURN_TEXT,
     append_image_turn as append_mcp_image_turn,
+    mentions_images as mcp_images_mentioned_in,
 )
 from core.inference.tool_loop_controller import (
     ToolLoopController,
@@ -32640,7 +32641,13 @@ class LlamaCppBackend:
                     _forced_choice_resolved = True
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
-                    _completion_images = completion.mcp_images()
+                    # Parsed only for a result that carries them and a model that will
+                    # be shown them; the marker test first, so a text result never asks.
+                    _completion_images = (
+                        completion.mcp_images()
+                        if mcp_images_mentioned_in(completion.result or "") and self.is_vision
+                        else []
+                    )
                     if _completion_images:
                         batch_mcp_images.append(_completion_images)
                     if _compact_after_execution and decision.tool_call_id:
