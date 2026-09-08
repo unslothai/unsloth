@@ -1304,6 +1304,10 @@ def _exact_concurrency_reload_required(effective: str) -> bool:
         return False
     if not getattr(backend, "is_active", False):
         return False
+    # A diffusion runner is not llama-server: it records `off` because it cannot apply the
+    # setting, and reloading it would record `off` again.
+    if getattr(backend, "is_diffusion", False):
+        return False
     return str(getattr(backend, "requested_exact_concurrency", EXACT_OFF)) != effective
 
 

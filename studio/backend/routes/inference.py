@@ -2689,6 +2689,18 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
         pass
 
 
+def _server_parks_raw_streams(llama_backend) -> bool:
+    """Whether a stream Studio can never pause is paused all the same, by the server.
+
+    ``pausable=False`` is about Studio's own preemptor: a raw relay has no generator to
+    resume from, so it is counted and never chosen, and it paid the honest per-slot share.
+    With the server parking slots itself that stream is parked and restored in place like
+    any other, so the reason for the share is gone, and holding a raw client to a quarter of
+    the window while its peers get the whole of it was the stopgap the mode retires.
+    """
+    return bool(getattr(llama_backend, "server_preempts_kv", False))
+
+
 def _openai_llama_admission_enforced_max_tokens(
     payload,
     *,
@@ -2718,6 +2730,7 @@ def _openai_llama_admission_enforced_max_tokens(
     budget = _openai_llama_admission_budget(llama_backend)
     if not budget:
         return None
+    pausable = pausable or _server_parks_raw_streams(llama_backend)
     window = _openai_llama_admission_context_window(llama_backend)
     if cap is not None and cap < (window or budget):
         return None
@@ -2772,6 +2785,7 @@ def _openai_llama_admission_reserve(
     capacity = _openai_llama_admission_capacity(request, llama_backend)
     key = _preempt_key(llama_backend)
     budget = _openai_llama_admission_budget(llama_backend)
+    pausable = pausable or _server_parks_raw_streams(llama_backend)
     reservation = get_llama_admission_queue(key).reserve(
         capacity = capacity,
         config = config,
@@ -3600,6 +3614,25 @@ async def _aiter_llama_stream_items(
         first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
     last_item_at: Optional[float] = None
     park_since: Optional[float] = None
+    # The first-item deadline is excused the same way, bounded from the deadline it first
+    # crossed: a request parked during its prefill produces nothing for the whole park.
+    first_deadline_crossed_at: Optional[float] = None
+
+    def _first_item_excused(now: float) -> bool:
+        nonlocal first_token_deadline, first_deadline_crossed_at
+        if stall_grace is None:
+            return False
+        if first_deadline_crossed_at is None:
+            first_deadline_crossed_at = now
+        if now - first_deadline_crossed_at >= _RAW_PARK_STALL_CAP_S:
+            return False
+        try:
+            parked = bool(stall_grace())
+        except Exception:
+            parked = False
+        if parked:
+            first_token_deadline = now + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+        return parked
 
     def _post_first_timeout_s() -> Optional[float]:
         if callable(post_first_item_read_timeout_s):
@@ -3640,6 +3673,8 @@ async def _aiter_llama_stream_items(
                 item = await async_iter.__anext__()
         except asyncio.TimeoutError as exc:
             if waiting_first_item:
+                if _first_item_excused(time.monotonic()):
+                    continue
                 raise httpx.ReadTimeout("The model did not produce a first token in time.") from exc
             raise
         except StopAsyncIteration:
@@ -3648,6 +3683,8 @@ async def _aiter_llama_stream_items(
             now = time.monotonic()
             if last_item_at is None:
                 if now >= first_token_deadline:
+                    if _first_item_excused(now):
+                        continue
                     raise
                 continue
             timeout_s = _post_first_timeout_s()

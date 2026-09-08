@@ -2145,6 +2145,13 @@ def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[
         )
     if _preempt_ram_disabled_in(args, env = env):
         return "the server's parking is switched off (--preempt-ram 0)"
+    # The same condition `_stand_down_child_parking` acts on later in the launch: with
+    # Studio's preemption off and nothing naming a budget, the child is handed a zero budget.
+    if not _preemption.preemption_enabled() and _named_preempt_ram_mib(args, env) is None:
+        return (
+            "UNSLOTH_LLAMA_ADMISSION_PREEMPT=0 switches the server's parking off as well, "
+            "with no --preempt-ram named"
+        )
     return None
 
 

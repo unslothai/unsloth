@@ -373,3 +373,122 @@ class TestARawRelayWaitsThroughAServerPark:
         source = inspect.getsource(inference)
         assert source.count("stall_grace = _raw_park_grace(llama_backend),") == 4
         assert inference._RAW_PARK_STALL_CAP_S == llama_mod._SERVER_PARK_STALL_CAP_S
+
+
+class TestARawStreamIsParkableWhenTheServerParks:
+    """`pausable=False` is about Studio's preemptor. With the server parking slots itself a raw
+    relay is parked and restored like any other, so it is priced like any other."""
+
+    class _Backend:
+        _kv_cache_unified = True
+        context_length = 16384
+        effective_parallel_slots = 4
+        server_preempts_kv = True
+
+    class _StudioOnly(_Backend):
+        server_preempts_kv = False
+
+    def test_the_predicate_reads_the_backend(self):
+        assert inference._server_parks_raw_streams(self._Backend()) is True
+        assert inference._server_parks_raw_streams(self._StudioOnly()) is False
+        assert inference._server_parks_raw_streams(object()) is False
+
+    def test_both_entry_points_lift_the_share_for_a_parking_server(self):
+        source = inspect.getsource(inference._openai_llama_admission_enforced_max_tokens)
+        assert "pausable = pausable or _server_parks_raw_streams(llama_backend)" in source
+        source = inspect.getsource(inference._openai_llama_admission_reserve)
+        assert "pausable = pausable or _server_parks_raw_streams(llama_backend)" in source
+        assert source.index("pausable = pausable or") < source.index("preemption_active = pausable")
+
+    def test_the_wire_cap_is_the_window_not_a_share(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "1")
+        monkeypatch.setattr(inference, "_openai_llama_admission_budget", lambda b: 16384)
+        monkeypatch.setattr(inference, "_openai_llama_admission_context_window", lambda b: 16384)
+        monkeypatch.setattr(inference, "_openai_llama_admission_capacity", lambda r, b: 4)
+        monkeypatch.setattr(inference, "_openai_llama_admission_raw_total", lambda b: 16384)
+        monkeypatch.setattr(inference, "_openai_llama_admission_image_tokens", lambda b: 0)
+        monkeypatch.setattr(
+            inference, "_openai_llama_admission_prompt_tokens", lambda *a, **k: 1000
+        )
+        monkeypatch.setattr(
+            inference, "_openai_llama_preemption_will_apply", lambda b, budget: True
+        )
+        payload = {"messages": [{"role": "user", "content": "x"}]}
+        parked = inference._openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = self._Backend(), pausable = False
+        )
+        studio_only = inference._openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = self._StudioOnly(), pausable = False
+        )
+        assert studio_only == 16384 // 4 - 1000, "Studio-only: the honest share"
+        assert parked == 16384 - 1000, "a parking server: the window, like every other stream"
+
+
+class TestAParkDuringPrefillIsExcusedToo:
+    def test_the_first_item_deadline_takes_the_grace(self, monkeypatch):
+        # Each read times out the way httpx's own read timeout does, after the deadline has
+        # passed, and the excuse extends the deadline by a short first-token window.
+        monkeypatch.setattr(inference, "_DEFAULT_FIRST_TOKEN_TIMEOUT_S", 0.002)
+
+        class _It:
+            def __init__(self):
+                self.left = 3
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.left > 0:
+                    self.left -= 1
+                    await asyncio.sleep(0.005)
+                    raise httpx.ReadTimeout("read timed out")
+                if getattr(self, "done", False):
+                    raise StopAsyncIteration
+                self.done = True
+                return "data: first"
+
+        async def run(grace):
+            seen = []
+            async for item in inference._aiter_llama_stream_items(
+                _It(),
+                request = _Request(),
+                first_token_deadline = time.monotonic() + 0.001,
+                stall_grace = grace,
+            ):
+                seen.append(item)
+            return seen
+
+        assert asyncio.run(run(lambda: True)) == ["data: first"]
+        with pytest.raises(httpx.ReadTimeout):
+            asyncio.run(run(None))
+
+    def test_the_first_item_grace_is_bounded(self):
+        source = inspect.getsource(inference._aiter_llama_stream_items)
+        excuse = source.index("def _first_item_excused(")
+        window = source[excuse : excuse + 700]
+        assert "first_deadline_crossed_at" in window and "_RAW_PARK_STALL_CAP_S" in window
+        # Both ways the first read can time out ask it.
+        assert source.count("_first_item_excused(") == 3
+
+
+class TestTheGlobalOptOutBlocksAnAutoLaunch:
+    def test_preemption_off_with_nothing_named_is_parking_off(self, monkeypatch):
+        monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
+        monkeypatch.setattr(llama_mod._preemption, "preemption_enabled", lambda: False)
+        why = llama_mod._exact_auto_blocker(exact.EXACT_AUTO, ["llama-server"], {})
+        assert why and "UNSLOTH_LLAMA_ADMISSION_PREEMPT=0" in why
+        # A named budget keeps its say, as `_stand_down_child_parking` leaves it alone.
+        assert (
+            llama_mod._exact_auto_blocker(
+                exact.EXACT_AUTO, ["llama-server", "--preempt-ram", "4096"], {}
+            )
+            is None
+        )
+        assert (
+            llama_mod._exact_auto_blocker(
+                exact.EXACT_AUTO, ["llama-server"], {"LLAMA_ARG_PREEMPT_RAM": "4096"}
+            )
+            is None
+        )
+        monkeypatch.setattr(llama_mod._preemption, "preemption_enabled", lambda: True)
+        assert llama_mod._exact_auto_blocker(exact.EXACT_AUTO, ["llama-server"], {}) is None
