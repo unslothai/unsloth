@@ -1217,10 +1217,23 @@ jobs:
           Add-MpPreference -AttackSurfaceReductionRules_Ids $asrRules `
             -AttackSurfaceReductionRules_Actions $asrActions -ErrorAction Continue
           # Verified, not assumed: a rule that did not apply reports no events,
-          # which reads identically to a rule that found nothing.
-          $asrApplied = @((Get-MpPreference).AttackSurfaceReductionRules_Ids)
-          $asrMissing = @($asrRules | Where-Object { $asrApplied -notcontains $_ })
-          if ($asrMissing) { Write-Host "::warning::ASR rules not applied: $($asrMissing -join ', ')" }
+          # which reads identically to a rule that found nothing. Check the
+          # action, not just the id - Add-MpPreference is additive, so a rule the
+          # runner image or a policy already configured keeps its own action, and
+          # an id-only check would report Disabled or Block as audit mode. The
+          # two arrays are index-paired; Min guards a truncated read.
+          $asrPref = Get-MpPreference
+          $asrIds = @($asrPref.AttackSurfaceReductionRules_Ids)
+          $asrStates = @($asrPref.AttackSurfaceReductionRules_Actions)
+          $asrApplied = @{}
+          for ($i = 0; $i -lt [Math]::Min($asrIds.Count, $asrStates.Count); $i++) {
+            $asrApplied[[string]$asrIds[$i]] = [int]$asrStates[$i]
+          }
+          $asrBad = @($asrRules | Where-Object { $asrApplied[$_] -ne 2 } | ForEach-Object {
+            if ($asrApplied.ContainsKey($_)) { "$_ is action $($asrApplied[$_]), expected 2 (AuditMode)" }
+            else { "$_ not applied" }
+          })
+          if ($asrBad) { Write-Host "::warning::ASR audit rules not in audit mode: $($asrBad -join '; ')" }
           else { Write-Host "ASR audit rules applied: $($asrRules.Count)" }
 
           # Bounds the ASR event query below. Windows Defender/Operational is a
@@ -1281,7 +1294,9 @@ jobs:
             if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
             if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
             if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
-            if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected HighPlus" }
+            # 4 is HighPlus; a policy that refuses it leaves the previous level
+            # (2 = High) in place, which an -eq 0 check would read as applied.
+            if ([int]$pref.CloudBlockLevel -ne 4)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected 4 (HighPlus)" }
             # PUA is its own detection class and is off by default, so without
             # this a bundled installer stub that Defender rates as unwanted
             # rather than malicious passes the gate unremarked.
@@ -1446,22 +1461,22 @@ jobs:
             Write-Host "::error::Refusing to publish a Windows bundle Defender flags: $($detected -join '; ')"
             Write-Host 'If this is a false positive, submit it at https://www.microsoft.com/en-us/wdsi/filesubmission (Software developer -> incorrectly detected) and re-run once cleared.'
           }
-          # ASR audit findings. Reported, never fatal: these rules run in audit
-          # mode and 01443614 fires on low prevalence, which every freshly built
-          # binary has by definition. Failing on that would block every release.
-          # It is here because it is the one reputation-shaped signal a runner
-          # can produce, and a rule firing on something OTHER than newness is
-          # worth a human look before publishing.
+          # ASR audit findings for the scan window. These rules evaluate process
+          # launches and this job only copies and scans the bundle, so an event
+          # here is other runner activity, not a verdict on the release: report
+          # it as such, and never fatally. The rules are armed anyway because
+          # audit mode costs nothing and 01443614 is the one reputation-shaped
+          # signal a runner can produce for anything it does execute.
           $asrEvents = @(Get-WinEvent -FilterHashtable @{
             LogName = 'Microsoft-Windows-Windows Defender/Operational'; Id = 1121, 1122
           } -ErrorAction SilentlyContinue | Where-Object { $_.TimeCreated -ge $scanStart })
           if ($asrEvents) {
-            Write-Host "::warning::$($asrEvents.Count) attack surface reduction audit event(s) during the scan"
+            Write-Host "::warning::$($asrEvents.Count) attack surface reduction audit event(s) on this runner during the scan window; the bundle is never executed, so these are runner activity, not a finding against it"
             foreach ($e in $asrEvents | Select-Object -First 20) {
               Write-Host "  [$($e.Id)] $($e.TimeCreated): $(($e.Message -split "`n")[0])"
             }
           } else {
-            Write-Host 'No attack surface reduction audit events during the scan.'
+            Write-Host 'No attack surface reduction audit events on this runner during the scan window.'
           }
 
           if ($detected -or $unscanned) { exit 1 }
