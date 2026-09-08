@@ -376,8 +376,11 @@ _is_venv_dir() {
 # is deleted recursively.
 _is_installer_leftover_name() {
     _l=${1##*/}
+    # Only the rollback name carries a collision counter (install.sh:823); .venv.invalid is
+    # written once per run, so it takes no suffix.
+    _l_suffix_ok=false
     case "$_l" in
-        unsloth_studio.rollback.*) _l=${_l#unsloth_studio.rollback.} ;;
+        unsloth_studio.rollback.*) _l=${_l#unsloth_studio.rollback.}; _l_suffix_ok=true ;;
         .venv.invalid.*)           _l=${_l#.venv.invalid.} ;;
         *) return 1 ;;
     esac
@@ -393,6 +396,7 @@ _is_installer_leftover_name() {
     case "$_l_pid" in ''|*[!0-9]*) return 1 ;; esac
     _l_suffix=${_l_rest#*.}
     if [ "$_l_suffix" != "$_l_rest" ]; then
+        [ "$_l_suffix_ok" = true ] || return 1
         case "$_l_suffix" in ''|*[!0-9]*) return 1 ;; esac
     fi
     return 0

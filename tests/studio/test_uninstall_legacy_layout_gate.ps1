@@ -152,6 +152,9 @@ try {
         (-not (_IsStudioRoot (Make "leftover-freeform" @("unsloth_studio.rollback.user-data\pyvenv.cfg")) -ManagedDefaultRoot))
     Check "an invalid-venv name outside the installer's format is refused" `
         (-not (_IsStudioRoot (Make "leftover-backup" @(".venv.invalid.backup\pyvenv.cfg")) -ManagedDefaultRoot))
+    # Only the rollback name has a collision counter; .venv.invalid is written once per run.
+    Check "an invalid-venv name with a rollback-style suffix is refused" `
+        (-not (_IsStudioRoot (Make "leftover-suffixed-invalid" @(".venv.invalid.20260908120000.4242.2\pyvenv.cfg")) -ManagedDefaultRoot))
     Check "a rollback name with a non-numeric pid is refused" `
         (-not (_IsStudioRoot (Make "leftover-badpid" @("unsloth_studio.rollback.20260908120000.mine\pyvenv.cfg")) -ManagedDefaultRoot))
     # install.sh has a "time" fallback for a failed date(1); install.ps1 always formats
@@ -217,6 +220,12 @@ try {
     ClaimCheck "a custom root with share\studio.conf" $true "env" @("share\studio.conf")
     ClaimCheck "somebody's workspace" $false "env" @("pyproject.toml")
     ClaimCheck "somebody's workspace with a venv of their own" $false "env" @("unsloth_studio\pyvenv.cfg")
+    # A file called bin\unsloth.exe is any file of that name, and this list authorizes a delete.
+    ClaimCheck "a workspace holding a plain bin\unsloth.exe" $false "env" @("bin\unsloth.exe", "notes.txt")
+    # Test-DirectoryHasEntries is defined further down install.ps1 than the first call site, so
+    # the emptiness test has to be inline or the claim silently never happens.
+    Check "the claim does not depend on Test-DirectoryHasEntries" `
+        (-not ((($ifns | Where-Object { $_.Name -eq "Write-StudioRootOwnerMarker" } | Select-Object -First 1).Extent.Text) -match "Test-DirectoryHasEntries"))
 
     # A link at the marker path: WriteAllText would follow it and truncate the target.
     $linkClaim = Join-Path $tmp "claim-link"

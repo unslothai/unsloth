@@ -122,6 +122,9 @@ check "a rollback name with a non-numeric pid" foreign managed \
     "unsloth_studio.rollback.20260908120000.mine/pyvenv.cfg"
 check "a rollback name with a short stamp" foreign managed \
     "unsloth_studio.rollback.2026.4242/pyvenv.cfg"
+# Only the rollback name has a collision counter; .venv.invalid is written once per run.
+check "an invalid-venv name with a rollback-style suffix" foreign managed \
+    ".venv.invalid.20260908120000.4242.2/pyvenv.cfg"
 # install.sh refuses to prune a rollback symlink and only ever renames a directory into place,
 # so a link with the right name points at a venv it did not put there.
 _linked="$_TMP_ROOT/linked_leftover"
@@ -200,6 +203,9 @@ else
     # The case: the venv-step guard refuses this root, so the claim must not run ahead of it.
     claim_check "somebody's workspace" left env "pyproject.toml" "src/main.py"
     claim_check "somebody's workspace with a venv of their own" left env "unsloth_studio/pyvenv.cfg"
+    # A file called bin/unsloth is any file called bin/unsloth. The uninstaller reads it only as
+    # a symlink into the venv, and this list authorizes a delete, so it is not on it.
+    claim_check "a workspace holding a plain bin/unsloth" left env "bin/unsloth" "notes.txt"
 
     # A root we cannot write, holding a link to a target we can: rm fails, and writing anyway
     # would truncate the target. No marker is the correct outcome, not a truncated file.

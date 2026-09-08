@@ -788,15 +788,18 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 # written first, is what it reads instead. Never fatal: an unwritable root fails below anyway.
 #
 # Claim only what this run is allowed to take over. In env mode $STUDIO_HOME is a user-chosen
-# workspace and the guard at the venv step refuses a non-empty one carrying no Unsloth sentinel,
-# so the same sentinels decide this: claiming first and aborting there would leave our marker on
+# workspace, so an empty one, or one already carrying an unambiguous Unsloth marker, and nothing
+# else: claiming ahead of the guard at the venv step and aborting there would leave our marker on
 # somebody's project, and the uninstaller deletes a marked root recursively.
+#
+# Shorter than that guard's list on purpose. It refuses to overwrite and can afford a weak
+# signal; this one authorizes a delete, so bin/unsloth, which is any file of that name, is not
+# on it. A root that has one needs no marker anyway: the uninstaller already accepts it.
 _claim_studio_root() {
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
        && [ ! -f "$STUDIO_HOME/.unsloth-studio-owned" ] \
        && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
-       && [ ! -f "$STUDIO_HOME/share/studio.conf" ] \
-       && [ ! -f "$STUDIO_HOME/bin/unsloth" ]; then
+       && [ ! -f "$STUDIO_HOME/share/studio.conf" ]; then
         for _claim_entry in "$STUDIO_HOME"/* "$STUDIO_HOME"/.[!.]* "$STUDIO_HOME"/..?*; do
             if [ -e "$_claim_entry" ] || [ -L "$_claim_entry" ]; then return 0; fi
         done

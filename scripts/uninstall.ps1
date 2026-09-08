@@ -449,9 +449,12 @@ Environment:
     # uninstaller must not be looser about it, and the managed root is deleted recursively.
     function _IsInstallerLeftoverName {
         param([string]$Name)
-        # No "time" alternative: that is install.sh's fallback for a failed date(1), and
-        # install.ps1 always formats yyyyMMddHHmmss, so accepting it here only widens the gate.
-        return ($Name -match '^(unsloth_studio\.rollback|\.venv\.invalid)\.\d{14}\.\d+(\.\d+)?$')
+        # Two patterns, not one with a shared optional suffix: only the rollback name carries a
+        # collision counter (install.ps1:4171), and .venv.invalid is written once per run. No
+        # "time" alternative either: that is install.sh's fallback for a failed date(1), and
+        # install.ps1 always formats yyyyMMddHHmmss.
+        if ($Name -match '^unsloth_studio\.rollback\.\d{14}\.\d+(\.\d+)?$') { return $true }
+        return ($Name -match '^\.venv\.invalid\.\d{14}\.\d+$')
     }
 
     function _IsStudioRoot {

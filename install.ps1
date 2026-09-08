@@ -1262,20 +1262,33 @@ public static class UnslothStudioFinalPathV2
     # every guess is a chance to delete somebody else's files. Never fatal: an unwritable root
     # fails the install on its own.
     # Claim only what this run is allowed to take over: in env mode $StudioHome is a user-chosen
-    # workspace and the guard at the venv step refuses a non-empty one carrying no Unsloth
-    # sentinel, so the same sentinels decide this. Claiming first and aborting there would leave
+    # workspace, so an empty one, or one already carrying an unambiguous Unsloth marker, and
+    # nothing else. Claiming ahead of the guard at the venv step and aborting there would leave
     # our marker on somebody's project, and the uninstaller deletes a marked root recursively.
+    #
+    # Shorter than that guard's list on purpose. It refuses to overwrite and can afford a weak
+    # signal; this one authorizes a delete, so bin\unsloth.exe, which is any file of that name,
+    # is not on it. A root that has one needs no marker: the uninstaller already accepts it.
+    #
+    # The emptiness test is inline rather than Test-DirectoryHasEntries, which is defined further
+    # down the file than the first call to this: a CommandNotFoundException would land in the
+    # catch below and silently skip the claim. An unreadable root counts as occupied, so the
+    # failure direction is "do not claim".
     function Write-StudioRootOwnerMarker {
         param([Parameter(Mandatory = $true)][string]$Root)
         try {
             if (Test-Path -LiteralPath $Root) {
+                $occupied = $true
+                try {
+                    $occupied = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop |
+                        Select-Object -First 1).Count -gt 0
+                } catch { $occupied = $true }
                 $claimable = (
                     $StudioRedirectMode -ne 'env' -or
                     (Test-Path -LiteralPath (Join-Path $Root ".unsloth-studio-owned") -PathType Leaf) -or
                     (Test-Path -LiteralPath (Join-Path $Root "unsloth_studio\.unsloth-studio-owned") -PathType Leaf) -or
                     (Test-Path -LiteralPath (Join-Path $Root "share\studio.conf") -PathType Leaf) -or
-                    (Test-Path -LiteralPath (Join-Path $Root "bin\unsloth.exe") -PathType Leaf) -or
-                    -not (Test-DirectoryHasEntries -Path $Root)
+                    -not $occupied
                 )
                 if (-not $claimable) { return }
             } else {
