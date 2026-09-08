@@ -6219,6 +6219,12 @@ class LlamaCppBackend:
     # _kill_process are built with __new__ and never run it.
     _spawn_lock = threading.Lock()
 
+    # Bumped by each _begin_server_lifecycle. A load captures it at the start and
+    # is refused at the spawn if it no longer matches, which is what stops a
+    # request left over from a previous embedded lifecycle launching into the new
+    # one. Same reason as the lock above for living on the class.
+    _lifecycle_generation = 0
+
     def __init__(self, *, manages_processes: bool = True):
         """``manages_processes = False`` builds an INERT probe.
 
@@ -14014,6 +14020,7 @@ class LlamaCppBackend:
         model_identifier: str,
         n_ctx: int,
         extra_args: Optional[List[str]],
+        load_generation: Optional[int] = None,
         gpu_ids: Optional[List[int]] = None,
         gpu_memory_mode: Literal["auto", "manual"] = "auto",
         gpu_layers: int = -1,
@@ -14145,7 +14152,7 @@ class LlamaCppBackend:
         # its own Popen, and the parent-death backstop is not available on every
         # platform, so a runner started after the shutdown sweep can outlive it.
         with self._spawn_lock:
-            if getattr(self, "_shutting_down", False):
+            if self._spawn_is_stale(load_generation):
                 logger.info("app is shutting down; not starting the diffusion runner")
                 self._close_attempt_log()
                 self._health_wait_cancelled = True
@@ -18295,7 +18302,12 @@ class LlamaCppBackend:
         return out
 
     def _start_llama_process(
-        self, cmd: list[str], env: dict, *, child_gpu_physical_ids: Optional[tuple[int, ...]]
+        self,
+        cmd: list[str],
+        env: dict,
+        *,
+        child_gpu_physical_ids: Optional[tuple[int, ...]],
+        load_generation: Optional[int] = None,
     ) -> bool:
         """Spawn llama-server from cmd and start draining its output.
 
@@ -18303,7 +18315,8 @@ class LlamaCppBackend:
         per-attempt tee log, launches the process, and starts the drain
         thread. Used for the initial start and the text-only mmproj retry.
 
-        Returns False without spawning once app teardown has begun. Reported
+        Returns False without spawning once app teardown has begun, or once
+        ``load_generation`` no longer matches the current lifecycle. Reported
         rather than silent so the caller can stop instead of health-waiting on the
         previous child and then reading a reference the teardown is clearing.
         """
@@ -18344,7 +18357,7 @@ class LlamaCppBackend:
         # Checked with publication under one lock, as in _spawn_and_wait: the
         # text-only mmproj retry reaches a spawn without passing that boundary.
         with self._spawn_lock:
-            if getattr(self, "_shutting_down", False):
+            if self._spawn_is_stale(load_generation):
                 logger.info("app is shutting down; not starting llama-server")
                 self._close_attempt_log()
                 self._health_wait_cancelled = True
@@ -18445,6 +18458,10 @@ class LlamaCppBackend:
         cache_ram = intent.cache_ram
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
+        # Read before the serial scope, not inside it: a load that queues behind
+        # another still belongs to the lifecycle it was requested in, and an
+        # embedded restart can land while it waits.
+        _load_generation = getattr(self, "_lifecycle_generation", 0)
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_scope():
@@ -19097,6 +19114,7 @@ class LlamaCppBackend:
                         model_identifier = model_identifier,
                         n_ctx = n_ctx,
                         extra_args = extra_args,
+                        load_generation = _load_generation,
                         gpu_ids = gpu_ids,
                         gpu_memory_mode = gpu_memory_mode,
                         gpu_layers = gpu_layers,
@@ -23767,7 +23785,7 @@ class LlamaCppBackend:
                         # first and is killed by the sweep, or sees the flag and
                         # never starts. Held across Popen only, never the wait.
                         with self._spawn_lock:
-                            if getattr(self, "_shutting_down", False):
+                            if self._spawn_is_stale(_load_generation):
                                 logger.info("app is shutting down; not starting llama-server")
                                 self._close_attempt_log()
                                 self._health_wait_cancelled = True
@@ -25090,6 +25108,7 @@ class LlamaCppBackend:
                                 cmd,
                                 env,
                                 child_gpu_physical_ids = _child_gpu_physical_ids,
+                                load_generation = _load_generation,
                             ):
                                 # Shutdown refused the retry, so the old child is
                                 # still what self._process names and the teardown is
@@ -26399,10 +26418,31 @@ class LlamaCppBackend:
         run_server() more than once in one process, so "shutting down" is scoped
         to a lifecycle rather than to the interpreter. Called from run_server
         before anything can spawn.
+
+        The generation bump is what keeps the PREVIOUS lifecycle's loads out.
+        _graceful_shutdown only latches the flag: it does not cancel an in-flight
+        load nor wait for the server thread, so a request still downloading when
+        the host restarted would otherwise find the flag cleared, spawn its stale
+        model after the shutdown sweep, and hold the serial load scope against the
+        new lifecycle's own load. A load compares the generation it captured.
         """
         with self._spawn_lock:
             self._shutting_down = False
             self._torn_down_process = None
+            self._lifecycle_generation = getattr(self, "_lifecycle_generation", 0) + 1
+
+    def _spawn_is_stale(self, load_generation: Optional[int]) -> bool:
+        """Whether this load may no longer spawn. Caller holds _spawn_lock.
+
+        ``load_generation`` is the value read when the load began; None means the
+        caller is not part of a load (tests, direct calls) and only the shutdown
+        flag applies.
+        """
+        if getattr(self, "_shutting_down", False):
+            return True
+        if load_generation is None:
+            return False
+        return load_generation != getattr(self, "_lifecycle_generation", 0)
 
     def _kill_process(self, *, teardown: bool = False):
         """Terminate the subprocess if running.
@@ -28093,7 +28133,14 @@ class LlamaCppBackend:
         # iteration to notice it, so the deadline is the other way out of this
         # loop and has to ask too. Otherwise the caller reads a deliberate stop as
         # a plain timeout and the fallbacks respawn during shutdown.
-        if process is not None and getattr(self, "_torn_down_process", None) is process:
+        #
+        # Both signals, because _kill_process publishes them apart: it sets
+        # _shutting_down under the spawn lock on entry and _torn_down_process only
+        # once it has collected the descendants, so a deadline landing between the
+        # two sees an active teardown with no marker yet.
+        if getattr(self, "_shutting_down", False) or (
+            process is not None and getattr(self, "_torn_down_process", None) is process
+        ):
             logger.info("llama-server was torn down while waiting for it to become healthy")
             self._health_wait_cancelled = True
             return False

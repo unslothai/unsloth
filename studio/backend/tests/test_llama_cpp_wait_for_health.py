@@ -1342,3 +1342,98 @@ class TestHealthPublicationIsAtomicWithTeardown:
             b._healthy is False
         ), "teardown left _healthy set, so a publication that won the race is never undone"
         assert b._publish_healthy() is False, "a later publication slipped past the teardown"
+
+
+class TestAPriorLifecycleLoadCannotSpawn:
+    """_graceful_shutdown only latches the flag: it neither cancels an in-flight
+    load nor waits for the server thread. So a request still downloading when an
+    embedded host restarted would find the flag cleared by the new lifecycle,
+    spawn its stale model after the shutdown sweep, and hold the serial load scope
+    against the load the new server actually wants."""
+
+    def _backend(self):
+        b = _make_backend()
+        b._stop_mtp_crash_watchdog = lambda: None
+        b._reset_effective_parallel_slots = lambda: None
+        b._diffusion_requested_ngl = None
+        b._process = None
+        b._spawn_lock = threading.Lock()
+        return b
+
+    def test_a_load_from_the_previous_lifecycle_is_refused(self):
+        b = self._backend()
+        b._begin_server_lifecycle()
+        old_generation = b._lifecycle_generation  # what that load captured
+
+        b._kill_process(teardown = True)  # the host stops the server
+        b._begin_server_lifecycle()  # ... and starts a new one
+
+        with b._spawn_lock:
+            assert b._spawn_is_stale(old_generation) is True, (
+                "the previous lifecycle's load may still spawn, so it can launch a "
+                "stale model into the new server and hold the serial load scope"
+            )
+
+    def test_the_current_lifecycles_own_load_still_spawns(self):
+        """The other side: the generation must not refuse legitimate loads, or
+        every restart is a backend that can never load anything."""
+        b = self._backend()
+        b._begin_server_lifecycle()
+
+        with b._spawn_lock:
+            assert b._spawn_is_stale(b._lifecycle_generation) is False
+
+    def test_a_caller_outside_a_load_is_governed_by_the_flag_alone(self):
+        b = self._backend()
+        b._begin_server_lifecycle()
+
+        with b._spawn_lock:
+            assert b._spawn_is_stale(None) is False
+        b._shutting_down = True
+        with b._spawn_lock:
+            assert b._spawn_is_stale(None) is True
+
+    def test_the_refusal_reaches_the_spawn_path(self):
+        """Not just the predicate: _start_llama_process must actually decline."""
+        b = self._backend()
+        b._redacted_cmd_for_log = lambda c: c
+        b._llama_log_path = None
+        b._llama_log_fh = None
+        b._begin_server_lifecycle()
+        stale = b._lifecycle_generation
+        b._begin_server_lifecycle()
+
+        spawned = []
+        with mock.patch.object(subprocess, "Popen", lambda *a, **k: spawned.append(1)):
+            assert (
+                b._start_llama_process(
+                    ["llama-server"], {}, child_gpu_physical_ids = None,
+                    load_generation = stale,
+                )
+                is False
+            )
+        assert not spawned, "a previous lifecycle's load started a server"
+
+
+def test_the_deadline_asks_the_durable_flag_too(monkeypatch):
+    """_kill_process publishes its two signals apart: _shutting_down under the
+    spawn lock on entry, _torn_down_process only after collecting descendants. A
+    wait whose deadline lands between them saw no marker and recorded a plain
+    timeout, sending a deliberate teardown through startup-failure handling."""
+    b = _make_backend()
+    b._process.poll.return_value = None
+    b._shutting_down = False
+    b._torn_down_process = None
+
+    # Set during the LAST probe, not before the wait: setting it up front is caught
+    # by the top-of-iteration check and never reaches the deadline at all, so that
+    # version of this test passed with or without the fix.
+    def probe(*a, **kw):
+        b._shutting_down = True  # teardown, after the final iteration's check
+        return mock.Mock(status_code = 503)
+
+    monkeypatch.setattr(httpx, "get", probe)
+
+    assert b._wait_for_health(timeout = 0.01, interval = 0.05) is False
+    assert b._health_wait_cancelled is True, "a teardown was recorded as a timeout"
+    assert not any("health check timed out" in ln for ln in b._stdout_lines)
