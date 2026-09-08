@@ -268,9 +268,7 @@ def test_a_repo_id_cannot_truncate_the_probe_url(monkeypatch):
     an invalid token: the repo_info weakness this probe exists to avoid."""
     reset_repo_access_cache()
     monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
-    session = _patch_auth_check_get(
-        monkeypatch, lambda *_a, **_k: _ok_auth_check_response()
-    )
+    session = _patch_auth_check_get(monkeypatch, lambda *_a, **_k: _ok_auth_check_response())
 
     cache_reads_authorized("hf_dummy", repo_id = "org/gated?ignored=")
     url = session.calls[0]["url"]
@@ -283,14 +281,10 @@ def test_an_ordinary_repo_id_is_not_mangled_by_quoting(monkeypatch):
     """Valid repo ids are [A-Za-z0-9._-] and "/", so quoting must be invisible."""
     reset_repo_access_cache()
     monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
-    session = _patch_auth_check_get(
-        monkeypatch, lambda *_a, **_k: _ok_auth_check_response()
-    )
+    session = _patch_auth_check_get(monkeypatch, lambda *_a, **_k: _ok_auth_check_response())
 
     assert cache_reads_authorized("hf_dummy", repo_id = "unsloth/Llama-3.2-1B") is True
-    assert session.calls[0]["url"].endswith(
-        "/api/models/unsloth/Llama-3.2-1B/auth-check"
-    )
+    assert session.calls[0]["url"].endswith("/api/models/unsloth/Llama-3.2-1B/auth-check")
 
 
 @pytest.mark.parametrize("repo_type", ["model", "dataset"])

@@ -286,10 +286,7 @@ def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:
         # this is invisible to every real caller.
         from urllib.parse import quote
 
-        path = (
-            f"{HfApi().endpoint}/api/{repo_type}s/"
-            f"{quote(repo_id, safe = '/')}/auth-check"
-        )
+        path = f"{HfApi().endpoint}/api/{repo_type}s/" f"{quote(repo_id, safe = '/')}/auth-check"
         response = get_session().get(
             path,
             headers = build_hf_headers(token = token),
