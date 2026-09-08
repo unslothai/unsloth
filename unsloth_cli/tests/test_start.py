@@ -4197,6 +4197,14 @@ def test_base_model_candidates_cover_the_case_the_loader_returns():
     assert "unsloth/qwen2.5-0.5b-instruct-unsloth-bnb-4bit" in candidates
 
 
+def test_base_model_candidates_leave_out_repos_the_load_path_cannot_pick():
+    # Nothing in the inference path passes load_in_fp8, so an fp8 repo is never the
+    # download and polling it would only cost the downloading server a request per poll.
+    candidates = start._base_model_candidates("meta-llama/Llama-3.1-8B-Instruct")
+
+    assert not [repo for repo in candidates if "fp8" in repo.lower()]
+
+
 def test_quant_mappers_load_without_importing_unsloth():
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(start, "_QUANT_MAPPERS", None)

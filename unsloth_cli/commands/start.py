@@ -1050,10 +1050,15 @@ def _unsloth_quant_mappers() -> list[dict]:
                 )
                 module = importlib.util.module_from_spec(module_spec)
                 module_spec.loader.exec_module(module)
+                # Every table except the fp8 ones: nothing in the inference path passes
+                # `load_in_fp8`, so an fp8 repo can never be what the worker fetches, and
+                # polling it would only cost the downloading server a request per poll.
                 _QUANT_MAPPERS = [
                     value
                     for name, value in vars(module).items()
-                    if not name.startswith("_") and isinstance(value, dict)
+                    if not name.startswith("_")
+                    and "fp8" not in name.lower()
+                    and isinstance(value, dict)
                 ]
         except Exception:
             # Nothing here is required; the recorded base alone is still worth polling.
