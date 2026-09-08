@@ -430,12 +430,18 @@ def _developer_paths() -> tuple[str, ...]:
         return _developer_paths_cache
 
 
-def runtime_read_paths() -> tuple[str, ...]:
+def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
     """The interpreter's own runtime roots -- never arbitrary inherited sys.path.
 
     Same shape as the Linux backend's bind list: whatever the selected
     interpreter needs to start and import, and nothing that merely happens to be
     on sys.path because the parent process put it there.
+
+    *workdir* is excluded by ORIGIN, not by where a path resolves to. The workdir
+    is the one place a tool call can write, so a runtime path that starts there
+    points wherever the last call pointed it: dropping only the resolved form
+    would skip ``<workdir>/venv/lib`` and then grant file-read* on the ``~/.ssh``
+    it was symlinked to.
     """
     candidates: list[str] = [
         os.path.dirname(os.path.realpath(sys.executable)),
@@ -475,6 +481,8 @@ def runtime_read_paths() -> tuple[str, ...]:
     selected: list[str] = []
     for candidate in candidates:
         if not candidate or not posixpath.isabs(candidate):
+            continue
+        if workdir is not None and _within(posixpath.abspath(candidate), workdir):
             continue
         # Both spellings: a venv reached through a symlink needs the link's own
         # path in the read set as well as the directory it lands on. The
@@ -734,10 +742,13 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         prefix = "us-seatbelt-", dir = "/tmp" if sys.platform == "darwin" else None
     )
     try:
-        # A runtime root inside the session workdir is dropped rather than
-        # listed twice: the workdir rules already make it readable, and this
-        # keeps the read set to paths the sandbox reaches for outside it.
-        runtime_paths = tuple(path for path in runtime_read_paths() if not _within(path, workdir))
+        # A runtime root inside the session workdir is dropped rather than listed
+        # twice: the workdir rules already make it readable, and this keeps the
+        # read set to paths the sandbox reaches for outside it. The workdir goes
+        # in so the drop happens by origin as well as by target.
+        runtime_paths = tuple(
+            path for path in runtime_read_paths(workdir) if not _within(path, workdir)
+        )
         profile = build_profile(
             workdir = workdir,
             private_tmp = private_tmp,

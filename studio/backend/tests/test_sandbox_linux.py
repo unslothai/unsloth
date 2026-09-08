@@ -14,8 +14,10 @@ length check and then allows the syscall it was written to deny.
 
 from __future__ import annotations
 
+import ast
 import ctypes
 import errno
+import inspect
 import json
 import os
 import platform
@@ -783,3 +785,63 @@ def test_the_filter_file_holds_exactly_the_program_and_is_rewound():
         assert struct.unpack_from("=HBBI", payload, 0) == instructions[0]
     finally:
         stream.close()
+
+
+# ── nothing that originates in the writable workdir crosses the boundary ──
+
+
+def test_a_runtime_path_symlinked_out_of_the_workdir_is_not_bound(tmp_path, monkeypatch):
+    """The workdir is the one place a tool call can write, so a runtime path that
+    starts there points wherever the last call pointed it. Excluding only the
+    resolved spelling would skip <workdir>/venv/lib and bind the ~/.ssh behind it."""
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    secret = tmp_path / "secrets"
+    secret.mkdir()
+    (secret / "id_rsa").write_text("PRIVATE KEY")
+    venv = workdir / "venv"
+    venv.mkdir()
+    (venv / "lib").symlink_to(secret)
+    monkeypatch.setattr(sys, "prefix", str(venv))
+
+    paths = sandbox_linux._runtime_read_paths(str(workdir), ("/usr/lib",))
+    assert str(secret) not in paths
+    assert not any(sandbox_linux._within(str(secret), path) for path in paths)
+
+
+def test_a_symlinked_cache_ancestor_is_refused_rather_than_written_through(tmp_path, monkeypatch):
+    """os.mkdir follows an intermediate symlink, and the workdir scan deliberately
+    permits directory symlinks, so a .cache a previous call pointed at the user's
+    home would have the mount points created out there, on the host, before bwrap
+    starts."""
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    monkeypatch.setattr(sandbox_linux, "_model_cache_path", lambda workdir: str(cache))
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (workdir / ".cache").symlink_to(outside)
+
+    with pytest.raises(SandboxUnavailableError, match = "not a plain directory"):
+        sandbox_linux.prepare(_plan(workdir))
+    assert sorted(p.name for p in outside.iterdir()) == []
+
+
+def test_the_probe_launch_sets_no_new_privs_like_a_real_one(tmp_path):
+    """A bubblewrap installed setuid, which is how a host with unprivileged user
+    namespaces disabled gets one at all, cannot raise privileges once
+    PR_SET_NO_NEW_PRIVS is set. Without it the probe qualifies a backend on which
+    every real launch dies after Popen, where auto can no longer fall back."""
+    from core.inference import sandbox_probe
+
+    assert sandbox_probe._PR_SET_NO_NEW_PRIVS == 38
+    source = inspect.getsource(sandbox_probe._run_probe)
+    assert "preexec_fn = _no_new_privs" in source
+    # Resolved at import: the pre-exec runs in the forked child, where an import
+    # can deadlock on the lock a thread held at fork time.
+    assert not [
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(sandbox_probe._no_new_privs)))
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+    ]

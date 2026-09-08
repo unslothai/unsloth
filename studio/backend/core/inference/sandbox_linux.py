@@ -290,6 +290,13 @@ def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[st
     for candidate in candidates:
         if not candidate or not os.path.isabs(candidate):
             continue
+        # Decided on the candidate as written, before either spelling is
+        # considered: a runtime path that ORIGINATES in the workdir is the one
+        # place a tool call can write, so its target is whatever the last tool
+        # call pointed it at. Checking only the resolved form would skip
+        # <workdir>/venv/lib and then bind the ~/.ssh it was symlinked to.
+        if _within(os.path.abspath(candidate), workdir):
+            continue
         # Both spellings: a venv reached through a symlink needs the link's own
         # path to exist inside the jail as well as the directory it lands on.
         for path in (os.path.abspath(candidate), os.path.realpath(candidate)):
@@ -299,7 +306,7 @@ def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[st
                 )
             if not os.path.exists(path):
                 continue
-            if any(_within(path, root) for root in (*system_roots, workdir, *selected)):
+            if any(_within(path, root) for root in (*system_roots, *selected)):
                 continue
             selected.append(path)
     return tuple(selected)
@@ -378,20 +385,44 @@ def _make_cache_mountpoints(workdir: str, names: tuple[str, ...]) -> list[str]:
     holding a .cache tree the user never made. Making them here instead means the
     launch knows which directories are its own and can take back precisely those,
     leaving a real ``.cache`` a tool call wrote alone.
+
+    Walked with directory descriptors and ``O_NOFOLLOW`` rather than by path.
+    The workdir is the one place a tool call can write and the workdir scan
+    deliberately permits directory symlinks, so a plain ``os.mkdir`` on
+    ``<workdir>/.cache/huggingface`` would follow a ``.cache`` a previous call
+    pointed at the user's home and create directories out there, on the host,
+    before bubblewrap ever starts.
     """
-    levels = _MODEL_CACHE_RELPATH.split(os.sep)
-    wanted = [os.path.join(workdir, *levels[: index + 1]) for index in range(len(levels))]
-    wanted += [os.path.join(workdir, _MODEL_CACHE_RELPATH, name) for name in names]
+    levels = [*_MODEL_CACHE_RELPATH.split(os.sep)]
     created: list[str] = []
-    for path in wanted:
-        try:
-            os.mkdir(path)
-        except FileExistsError:
-            continue
-        except OSError:
-            break
-        created.append(path)
+    fd = os.open(workdir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        prefix = workdir
+        for name in levels:
+            _mkdir_at(fd, name, os.path.join(prefix, name), created)
+            prefix = os.path.join(prefix, name)
+            nested = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd = fd)
+            os.close(fd)
+            fd = nested
+        for name in names:
+            _mkdir_at(fd, name, os.path.join(prefix, name), created)
+    except OSError as exc:
+        _reclaim_cache_mountpoints(created)
+        raise SandboxUnavailableError(
+            f"the session workdir's model cache path is not a plain directory: {exc}"
+        ) from exc
+    finally:
+        os.close(fd)
     return created
+
+
+def _mkdir_at(fd: int, name: str, path: str, created: list[str]) -> None:
+    """``mkdir`` relative to an open directory, recording it only if it was made here."""
+    try:
+        os.mkdir(name, dir_fd = fd)
+    except FileExistsError:
+        return
+    created.append(path)
 
 
 def _reclaim_cache_mountpoints(created: list[str]) -> None:

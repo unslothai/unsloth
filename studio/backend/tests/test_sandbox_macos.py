@@ -507,3 +507,26 @@ def test_home_is_unreadable_inside_the_sandbox(tmp_path):
         assert result.returncode != 0
     finally:
         prepared.cleanup()
+
+
+def test_a_runtime_path_symlinked_out_of_the_workdir_is_not_readable(monkeypatch, tmp_path):
+    """Parity with the Linux backend. The workdir is the one place a tool call can
+    write, so a runtime path that starts there points wherever the last call
+    pointed it; dropping only the resolved spelling would grant file-read* on it."""
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    secret = tmp_path / "secrets"
+    secret.mkdir()
+    (secret / "id_rsa").write_text("PRIVATE KEY")
+    venv = workdir / "venv"
+    (venv / "bin").mkdir(parents = True)
+    (venv / "lib").symlink_to(secret)
+    for name in ("prefix", "base_prefix", "exec_prefix", "base_exec_prefix"):
+        monkeypatch.setattr(sys, name, str(venv))
+
+    paths = backend.runtime_read_paths(str(workdir))
+    assert str(secret) not in paths
+    assert not any(backend._within(str(secret), path) for path in paths)
+    # Without the workdir it is the resolved spelling that survives, which is the
+    # behaviour this excludes; asserted so the parameter cannot be dropped silently.
+    assert str(secret) in backend.runtime_read_paths()

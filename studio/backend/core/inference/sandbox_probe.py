@@ -42,6 +42,7 @@ loud rather than staying quiet.
 """
 
 from __future__ import annotations
+import ctypes
 import os
 import shutil
 import subprocess
@@ -53,6 +54,14 @@ from typing import Any
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+_PR_SET_NO_NEW_PRIVS = 38
+try:
+    # Resolved at import, never inside the forked child: an import after the fork
+    # can deadlock on the import lock a thread held at fork time.
+    _libc = ctypes.CDLL(None, use_errno = True) if sys.platform == "linux" else None
+except OSError:  # pragma: no cover - a libc that will not load
+    _libc = None
 
 # Success is this token ALONE on stdout, not merely present in it. A payload that
 # printed the token early and then died would satisfy "in" and prove nothing.
@@ -230,6 +239,20 @@ def _payload(
     )
 
 
+def _no_new_privs() -> None:
+    """PR_SET_NO_NEW_PRIVS, exactly as ``tools._sandbox_preexec`` sets it.
+
+    Runs in the forked child, so it resolves nothing it did not already have:
+    ``_libc`` is bound at import. Best effort, like the pre-exec it mirrors, but
+    a failure to set it would only make the probe MORE permissive than the launch
+    it stands in for, so it is reported rather than swallowed silently.
+    """
+    if _libc is None:
+        return
+    if _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+        logger.warning("The sandbox probe could not set PR_SET_NO_NEW_PRIVS")
+
+
 def _host_saw_the_write(outside: str) -> bool:
     """Whether the sandboxed process's write outside its workdir reached the host.
 
@@ -405,9 +428,14 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
             ),
             workdir = workdir,
             env = env,
-            # No preexec_fn: the probe answers "does this backend confine", and a
-            # setsid/rlimit pre-exec is the caller's concern, not the boundary's.
-            preexec_fn = None,
+            # The one part of a real launch's pre-exec that changes whether the
+            # sandbox starts at all. The setsid and the rlimits are the caller's
+            # concern, but PR_SET_NO_NEW_PRIVS is not: a bubblewrap installed
+            # setuid (how a host with unprivileged user namespaces disabled gets
+            # one at all) cannot raise privileges once it is set, so without this
+            # the probe would qualify a backend on which every real launch dies
+            # after Popen, where auto can no longer fall back.
+            preexec_fn = _no_new_privs,
             requested_mode = "required",
             execution_kind = "python",
         )
