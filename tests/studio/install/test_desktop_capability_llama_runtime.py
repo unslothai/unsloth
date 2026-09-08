@@ -28,6 +28,7 @@ The rest of the file is pure text and dict work and always runs.
 import importlib.util
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -182,9 +183,9 @@ def _assert_pre_pr_payload_intact(payload: dict) -> None:
         assert key in payload, f"{key} disappeared from the capability payload"
         # bool subclasses int, so an int field must not accept a bool.
         if expected is int:
-            assert isinstance(payload[key], int) and not isinstance(
-                payload[key], bool
-            ), f"{key} is {payload[key]!r}, not an int"
+            assert isinstance(payload[key], int) and not isinstance(payload[key], bool), (
+                f"{key} is {payload[key]!r}, not an int"
+            )
         else:
             assert isinstance(payload[key], expected), f"{key} is {payload[key]!r}"
     assert payload["desktop_protocol_version"] == EXPECTED_PROTOCOL_VERSION
@@ -217,9 +218,9 @@ def test_studio_is_importable_from_an_installed_wheel():
     assert result.returncode == 0, result.stderr
     module_file, callable_flag = result.stdout.strip().splitlines()
     assert callable_flag == "True"
-    assert (
-        "site-packages" in module_file
-    ), f"resolved to {module_file}, not the installed package; the checkout shadowed it"
+    assert "site-packages" in module_file, (
+        f"resolved to {module_file}, not the installed package; the checkout shadowed it"
+    )
 
 
 @NEEDS_VENV
@@ -420,9 +421,9 @@ def test_the_desktop_reads_every_emitted_key_as_optional():
     fields = dict(re.findall(r"^\s+([a-z_]+):\s*(.+),$", struct_body, flags = re.MULTILINE))
     for key in (*PRE_PR_KEYS, *NEW_KEYS):
         assert key in fields, f"the desktop struct has no field for {key}"
-        assert fields[key].startswith(
-            "Option<"
-        ), f"{key} is {fields[key]}, so a CLI that omits it fails the whole parse"
+        assert fields[key].startswith("Option<"), (
+            f"{key} is {fields[key]}, so a CLI that omits it fails the whole parse"
+        )
 
 
 def test_unknown_keys_do_not_break_the_desktop_parse():
@@ -460,33 +461,16 @@ def test_unknown_keys_do_not_break_the_cli_side_consumer():
 
 
 def test_the_managed_probe_is_skipped_when_a_custom_runtime_is_active(monkeypatch):
-    """_find_llama_server_binary prefers LLAMA_SERVER_PATH and Studio's settings folder ahead
-    of the managed tree, so grading the managed tree regardless would send a user with their
-    own build into repair over an install their backend never opens. Offline that repair
-    cannot succeed, turning a working custom runtime into a blocked launch."""
-    import importlib.util as _util
-    import sys as _sys
-    from pathlib import Path as _Path
-
-    root = _Path(__file__).resolve().parents[3]
-    spec = _util.spec_from_file_location(
-        "unsloth_cli_commands_studio_probe", root / "unsloth_cli" / "commands" / "studio.py"
-    )
-    # Importing the whole CLI module is heavy and pulls typer, so the helper is read out of
-    # the source instead, which keeps this test standalone.
-    source = (root / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
-    start = source.index("def _managed_llama_runtime_is_the_active_one")
-    end = source.index('@studio_app.command("desktop-capabilities"', start)
-    namespace = {"os": __import__("os")}
-    exec(compile(source[start:end], "<helper>", "exec"), namespace)
-    active = namespace["_managed_llama_runtime_is_the_active_one"]
-    assert spec is not None and _sys is not None
-
+    """Codex 3958908987, P2. _find_llama_server_binary prefers LLAMA_SERVER_PATH and the
+    folder chosen in Studio's settings ahead of the managed tree, so grading the managed tree
+    regardless would send a user who runs their own build into repair over an install their
+    backend never opens. Offline that repair cannot even succeed."""
+    active = _active_helper()
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     assert active() is True
 
-    # A direct binary elsewhere wins, so the managed verdict is not ours to report.
-    monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/mine/llama-server")
+    pinned = pathlib.Path(__file__).resolve().parents[3] / "studio" / "install_llama_prebuilt.py"
+    monkeypatch.setenv("LLAMA_SERVER_PATH", str(pinned))
     assert active() is False
 
     # Whitespace is not a selection: the finder strips before testing it.
@@ -496,16 +480,81 @@ def test_the_managed_probe_is_skipped_when_a_custom_runtime_is_active(monkeypatc
 
 def test_the_managed_runtime_path_override_is_not_treated_as_a_custom_runtime(monkeypatch):
     """UNSLOTH_LLAMA_CPP_PATH moves the managed root itself, so default_managed_llama_dir
-    already grades the tree it names. Skipping on it would drop coverage for every user who
-    relocated their install."""
-    source = __import__("pathlib").Path(__file__).resolve().parents[3]
-    text = (source / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
-    start = text.index("def _managed_llama_runtime_is_the_active_one")
-    end = text.index('@studio_app.command("desktop-capabilities"', start)
-    namespace = {"os": __import__("os")}
-    exec(compile(text[start:end], "<helper>", "exec"), namespace)
-    active = namespace["_managed_llama_runtime_is_the_active_one"]
-
+    already grades exactly the tree that variable names. Skipping on it would drop the
+    coverage for every user who relocated their install."""
+    active = _active_helper()
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", "/opt/relocated/llama.cpp")
     assert active() is True
+
+
+def _active_helper():
+    """The helper, read out of the CLI source: importing the module pulls in typer."""
+    text = (
+        pathlib.Path(__file__).resolve().parents[3] / "unsloth_cli" / "commands" / "studio.py"
+    ).read_text(encoding = "utf-8")
+    start = text.index("def _managed_llama_runtime_is_the_active_one")
+    end = text.index('@studio_app.command("desktop-capabilities"', start)
+    namespace = {
+        "os": __import__("os"),
+        "sys": __import__("sys"),
+        "_PACKAGE_ROOT": pathlib.Path(__file__).resolve().parents[3],
+    }
+    exec(compile(text[start:end], "<helper>", "exec"), namespace)
+    return namespace["_managed_llama_runtime_is_the_active_one"]
+
+
+def test_a_deleted_llama_server_path_does_not_suppress_the_managed_verdict(tmp_path, monkeypatch):
+    """Codex 3958908320, P2. _scan_pinned treats an absent pin as no pin and falls through to
+    the managed tree, so a LLAMA_SERVER_PATH naming a file that has since been deleted still
+    loads the managed runtime. Suppressing the verdict on the bare string left a quarantined
+    managed runtime reporting Ready and failing at model load."""
+    active = _active_helper()
+    monkeypatch.setenv("LLAMA_SERVER_PATH", str(tmp_path / "gone" / "llama-server"))
+    assert active() is True
+
+    present = tmp_path / "llama-server"
+    present.write_text("", encoding = "utf-8")
+    monkeypatch.setenv("LLAMA_SERVER_PATH", str(present))
+    assert active() is False
+
+
+def test_a_broken_symlink_pin_still_counts_as_pinned(tmp_path, monkeypatch):
+    """lexists, not exists: a dangling pin stops the finder with an unavailable-path warning
+    rather than falling through, so the managed verdict is still not ours to report."""
+    if os.name == "nt":
+        pytest.skip("POSIX symlink semantics")
+    link = tmp_path / "pinned"
+    os.symlink(tmp_path / "never-existed", link)
+    active = _active_helper()
+    monkeypatch.setenv("LLAMA_SERVER_PATH", str(link))
+    assert active() is False
+
+
+def test_the_stored_settings_lookup_can_reach_its_own_database_module(monkeypatch):
+    """Codex 3958908340, P2, reproduced before fixing: llama_cpp_path_settings imports
+    storage.studio_db as a top level package and swallows the failure, so without
+    studio/backend on sys.path the stored selection always read as absent and a user whose
+    custom folder is set in Studio would be sent to repair a tree their backend never opens.
+
+    The import is asserted through a fresh interpreter, since sys.modules in this one may
+    already carry a storage imported by an earlier test."""
+    import subprocess
+    import sys as _sys
+
+    root = pathlib.Path(__file__).resolve().parents[3]
+    without = subprocess.run(
+        [_sys.executable, "-c", "import storage.studio_db"],
+        cwd = root,
+        capture_output = True,
+        text = True,
+    )
+    assert without.returncode != 0, "storage must not already be importable from the repo root"
+    assert "No module named 'storage'" in without.stderr
+
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+    _active_helper()()
+    assert str(root / "studio" / "backend") in _sys.path, (
+        "the helper must put the backend on the path itself, or the settings lookup "
+        "silently answers None and the skip never happens"
+    )

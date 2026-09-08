@@ -7004,10 +7004,28 @@ def runtime_payload_health_groups(
             ["libggml-cuda.so*"],
         ]
     if install_kind in {"macos-arm64", "macos-x64"}:
+        # One group per library, not three broad alternatives. A real bundle
+        # ships libggml, libggml-base, libggml-blas, libggml-cpu, libggml-metal
+        # and libggml-rpc, so a single libggml*.dylib group stayed satisfied by
+        # the siblings after the one the loader needs was quarantined, and the
+        # tree reported healthy while llama-server died in dyld. The names are
+        # taken from the shipped macos-arm64 bundle rather than guessed. The dot
+        # is what keeps each pattern off its siblings: libggml.* cannot match
+        # libggml-base. Each library is a symlink chain onto one versioned file
+        # (libggml.dylib -> libggml.0.dylib -> libggml.0.23.0.dylib), so any name
+        # is enough here and losing the target is caught by the resolved is_file
+        # test in _payload_match_is_loadable.
+        #
+        # blas, metal and rpc are deliberately absent: they are the accelerator
+        # and transport backends, the way libggml-cuda is on Linux, and requiring
+        # one a bundle does not carry would reinstall every install that lacks it.
         return [
-            ["libllama*.dylib"],
-            ["libggml*.dylib"],
-            ["libmtmd*.dylib"],
+            ["libllama-common.dylib", "libllama-common.*.dylib"],
+            ["libllama.dylib", "libllama.*.dylib"],
+            ["libggml.dylib", "libggml.*.dylib"],
+            ["libggml-base.dylib", "libggml-base.*.dylib"],
+            ["libggml-cpu.dylib", "libggml-cpu.*.dylib"],
+            ["libmtmd.dylib", "libmtmd.*.dylib"],
         ]
     if install_kind == "linux-rocm":
         return [

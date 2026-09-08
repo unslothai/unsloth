@@ -120,7 +120,16 @@ _SHARED_PAYLOAD = {
         "ggml-cpu.dll",
         "mtmd.dll",
     ],
-    "macos": ["libllama.dylib", "libggml.dylib", "libmtmd.dylib"],
+    # The names the real macos-arm64 bundle ships, one per library the runtime
+    # links against.
+    "macos": [
+        "libllama-common.dylib",
+        "libllama.dylib",
+        "libggml.dylib",
+        "libggml-base.dylib",
+        "libggml-cpu.dylib",
+        "libmtmd.dylib",
+    ],
 }
 _BACKEND_PAYLOAD = {
     ("linux", "cuda"): ["libggml-cuda.so"],

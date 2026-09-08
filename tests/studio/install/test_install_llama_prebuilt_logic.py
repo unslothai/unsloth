@@ -2444,6 +2444,11 @@ def write_macos_install_shape(
     (install_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
     (runtime_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
     (runtime_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
+    # The rest of the libraries a real macos-arm64 bundle ships. The toggles above
+    # stay the ones a caller flips, so an off toggle still leaves the tree short of
+    # one whole library rather than of the whole payload.
+    for name in ("libllama-common.0.dylib", "libggml-base.0.dylib", "libggml-cpu.0.dylib"):
+        (runtime_dir / name).write_bytes(b"DLL")
     if include_libllama:
         (runtime_dir / "libllama.0.dylib").write_bytes(b"DLL")
     if include_libggml:

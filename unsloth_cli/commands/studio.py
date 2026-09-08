@@ -4977,8 +4977,23 @@ def _managed_llama_runtime_is_the_active_one() -> bool:
     ``UNSLOTH_LLAMA_CPP_PATH`` needs no skip: it moves the managed root itself, so
     ``default_managed_llama_dir`` already grades the tree it names.
     """
-    if os.environ.get("LLAMA_SERVER_PATH", "").strip():
+    pinned = os.environ.get("LLAMA_SERVER_PATH", "").strip()
+    # Nonblank is not the test: _scan_pinned treats an absent pin as no pin and
+    # falls through to the managed tree, so suppressing the verdict for a path
+    # that was deleted would leave a quarantined managed runtime reporting Ready.
+    # A pin that exists but is denied or not executable does stop the finder, so
+    # existence rather than usability is the line, and lexists answers for a
+    # broken symlink too.
+    if pinned and os.path.lexists(pinned):
         return False
+    # studio/backend on sys.path first. llama_cpp_path_settings imports
+    # storage.studio_db as a top level package and swallows the failure, so
+    # without this the stored selection always reads as absent and a user whose
+    # custom folder is set in Studio would be sent to repair a tree their backend
+    # never opens. Mirrors the backend_dir insert the other commands here do.
+    backend_dir = _PACKAGE_ROOT / "studio" / "backend"
+    if backend_dir.is_dir() and str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
     try:
         from studio.backend.utils.llama_cpp_path_settings import (
             get_stored_custom_llama_cpp_path,

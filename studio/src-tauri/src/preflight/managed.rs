@@ -357,6 +357,9 @@ fn llama_runtime_override_from(
     {
         return Some(home?.join(rest));
     }
+    if let Some(named) = named_user_home(value) {
+        return Some(named);
+    }
     let path = PathBuf::from(value);
     if path.is_absolute() {
         return Some(path);
@@ -366,6 +369,54 @@ fn llama_runtime_override_from(
     // child joins this value to this same directory, so joining it here watches
     // the tree the child was told about.
     Some(cwd?.join(path))
+}
+
+/// `~alice/llama.cpp` resolved to Alice's home, the way `Path.expanduser()` does.
+///
+/// posixpath.expanduser answers this out of the password database, so leaving it
+/// alone made the value relative, anchored it under the desktop's own directory,
+/// and fingerprinted a tree the child never opens. getpwnam is the same lookup
+/// Python makes, so the two agree for LDAP and SSSD users as well as local ones.
+/// None off unix, where ntpath has its own rule and process.rs already carries
+/// it, and None when the name is unknown, which leaves the value to be anchored
+/// like any other relative path rather than guessed at.
+#[cfg(unix)]
+fn named_user_home(value: &str) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let rest = value.strip_prefix('~')?;
+    if rest.is_empty() {
+        return None;
+    }
+    let (name, tail) = match rest.find('/') {
+        Some(at) => (&rest[..at], &rest[at + 1..]),
+        None => (rest, ""),
+    };
+    if name.is_empty() {
+        return None;
+    }
+    let c_name = std::ffi::CString::new(name).ok()?;
+    // getpwnam returns a pointer into a static buffer, so the directory is copied
+    // out before anything else can call into libc and overwrite it.
+    let home = unsafe {
+        let entry = libc::getpwnam(c_name.as_ptr());
+        if entry.is_null() {
+            return None;
+        }
+        let dir = (*entry).pw_dir;
+        if dir.is_null() {
+            return None;
+        }
+        PathBuf::from(std::ffi::OsStr::from_bytes(
+            std::ffi::CStr::from_ptr(dir).to_bytes(),
+        ))
+    };
+    Some(if tail.is_empty() { home } else { home.join(tail) })
+}
+
+#[cfg(not(unix))]
+fn named_user_home(_value: &str) -> Option<PathBuf> {
+    None
 }
 
 /// The managed llama.cpp install root, the same one default_managed_llama_dir
@@ -381,8 +432,15 @@ fn llama_runtime_root() -> Option<PathBuf> {
     // The override is asked first and its answer is final: falling back to the
     // legacy tree when it is set but unresolvable would fingerprint a directory
     // the CLI is not reporting on.
+    // Trimmed before deciding, because default_managed_llama_dir strips the value
+    // and a whitespace-only one therefore sends the child to the legacy tree. A
+    // raw is_empty test called that an override, took this branch, resolved to
+    // None, and left the tree the child actually grades with no fingerprint at
+    // all, so a library removed after a healthy result never invalidated Ready.
     #[cfg(not(test))]
-    if std::env::var_os("UNSLOTH_LLAMA_CPP_PATH").is_some_and(|value| !value.is_empty()) {
+    if std::env::var("UNSLOTH_LLAMA_CPP_PATH")
+        .is_ok_and(|value| !value.trim().is_empty())
+    {
         return llama_runtime_override();
     }
     #[cfg(not(test))]

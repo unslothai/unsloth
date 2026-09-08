@@ -226,3 +226,111 @@ def test_a_directory_matching_a_payload_pattern_is_not_a_library(tmp_path):
     groups = [["libllama.so*"]]
     (ILP.install_runtime_dir(root, host) / "libllama.so.0").mkdir()
     assert ILP._runtime_payload_has(root, host, groups) is False
+
+
+def _macos_host():
+    host = ILP.platform_only_host()
+    return type(host)(
+        **{
+            **host.__dict__,
+            "system": "Darwin",
+            "is_windows": False,
+            "is_linux": False,
+            "is_macos": True,
+            "machine": "arm64",
+            "is_x86_64": False,
+            "is_arm64": True,
+            "macos_version": (15, 5),
+        }
+    )
+
+
+def _macos_payload(runtime_dir: Path) -> None:
+    """The dylib set a real macos-arm64 bundle ships, chains and all.
+
+    Taken from llama-b10840-mix-d5c17a0-bin-macos-arm64.tar.gz rather than invented: each
+    library is libX.dylib -> libX.0.dylib -> libX.<version>.dylib, and the accelerator and
+    transport backends sit beside the core ones matching the same broad prefix.
+    """
+    for stem, version in (
+        ("libllama-common", "0.4.0"),
+        ("libllama", "0.4.0"),
+        ("libmtmd", "0.4.0"),
+        ("libggml", "0.23.0"),
+        ("libggml-base", "0.23.0"),
+        ("libggml-cpu", "0.23.0"),
+        ("libggml-metal", "0.23.0"),
+        ("libggml-blas", "0.23.0"),
+        ("libggml-rpc", "0.23.0"),
+    ):
+        (runtime_dir / f"{stem}.{version}.dylib").write_text("", encoding = "utf-8")
+        os.symlink(f"{stem}.{version}.dylib", runtime_dir / f"{stem}.0.dylib")
+        os.symlink(f"{stem}.0.dylib", runtime_dir / f"{stem}.dylib")
+
+
+def _macos_tree(tmp_path: Path) -> Path:
+    root = tmp_path / "llama.cpp"
+    runtime_dir = root / "build" / "bin"
+    runtime_dir.mkdir(parents = True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps({"tag": "b10840", "release_tag": "b10840-mix-d5c17a0", "source": "published"}),
+        encoding = "utf-8",
+    )
+    for name in ("server", "quantize"):
+        (runtime_dir / f"llama-{name}").write_text("", encoding = "utf-8")
+    _macos_payload(runtime_dir)
+    return root
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+def test_a_complete_macos_payload_is_healthy(tmp_path):
+    assert ILP.installed_runtime_health(_macos_tree(tmp_path), host = _macos_host()) == (True, "")
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+@pytest.mark.parametrize(
+    "stem",
+    ["libllama-common", "libllama", "libggml", "libggml-base", "libggml-cpu", "libmtmd"],
+)
+def test_each_essential_macos_dylib_is_required_on_its_own(tmp_path, stem):
+    """Codex 3958908349, P1. The groups used to be three broad alternatives, so
+    libggml*.dylib stayed satisfied by libggml-base, libggml-blas, libggml-cpu, libggml-metal
+    and libggml-rpc after the one the loader needs was quarantined, and the tree reported
+    healthy while llama-server died in dyld. The dot in each pattern is what keeps it off its
+    siblings."""
+    root = _macos_tree(tmp_path)
+    runtime_dir = root / "build" / "bin"
+    for path in [p for p in runtime_dir.iterdir() if p.name.split(".")[0] == stem]:
+        path.unlink()
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (
+        False,
+        "llama_runtime_payload_incomplete",
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+def test_losing_only_the_macos_chain_target_is_caught(tmp_path):
+    """The links survive quarantine of the versioned file they point at, and a name-only
+    match would still satisfy the pattern."""
+    root = _macos_tree(tmp_path)
+    (root / "build" / "bin" / "libggml.0.23.0.dylib").unlink()
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (
+        False,
+        "llama_runtime_payload_incomplete",
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+def test_the_macos_accelerator_backends_are_not_required(tmp_path):
+    """Over-strictness is the repair-loop direction. metal, blas and rpc are the accelerator
+    and transport backends, the way libggml-cuda is on Linux, so demanding one a bundle does
+    not carry would reinstall every install that lacks it."""
+    root = _macos_tree(tmp_path)
+    runtime_dir = root / "build" / "bin"
+    for path in [
+        p
+        for p in runtime_dir.iterdir()
+        if p.name.startswith(("libggml-metal", "libggml-blas", "libggml-rpc"))
+    ]:
+        path.unlink()
+    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
