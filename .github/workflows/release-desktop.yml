@@ -1195,7 +1195,8 @@ jobs:
             -DisableScriptScanning $false -DisableBehaviorMonitoring $false `
             -DisableArchiveScanning $false -MAPSReporting Advanced `
             -SubmitSamplesConsent SendAllSamples -CloudBlockLevel High `
-            -CloudExtendedTimeout 50 -DisableBlockAtFirstSeen $false -ErrorAction Continue
+            -CloudExtendedTimeout 50 -DisableBlockAtFirstSeen $false `
+            -PUAProtection Enabled -ErrorAction Continue
 
           $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
           $plat = Get-ChildItem 'C:\ProgramData\Microsoft\Windows Defender\Platform' -Directory -ErrorAction SilentlyContinue |
@@ -1251,6 +1252,10 @@ jobs:
             if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
             if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
             if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
+            # PUA is its own detection class and is off by default, so without
+            # this a bundled installer stub that Defender rates as unwanted
+            # rather than malicious passes the gate unremarked.
+            if ([int]$pref.PUAProtection -ne 1)         { $degraded += "PUAProtection=$($pref.PUAProtection), expected 1 (Enabled)" }
             if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
           }
 
