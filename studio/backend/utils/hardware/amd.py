@@ -827,6 +827,29 @@ def _groups_that_own(paths: list) -> tuple:
     return joinable, unnamed, no_group, acl
 
 
+def amd_closed_nodes_block_the_runtime(*, needs_kfd: bool = True) -> bool:
+    """Whether the closed nodes actually leave the runtime with no way in.
+
+    A closed node explains an empty GPU probe only when it is a node the runtime would
+    have used. On a multi-AMD host one render node can be shut while a sibling is open,
+    and ROCm then had /dev/kfd plus a render node and still enumerated nothing, so the
+    closed one is a second finding rather than the cause; a caller returning it as the
+    sole diagnosis sends the user after a repair that leaves the probe just as empty.
+
+    ``needs_kfd`` is the caller's backend: HIP opens /dev/kfd as well as a render node,
+    Vulkan only the render node. /dev/kfd has no sibling, so a closed one blocks outright.
+
+    True on a host this cannot read, which keeps the closed node as the stated reason and
+    is what the callers said before this existed.
+    """
+    closed = amd_nodes_closed_to_this_user()
+    if not closed:
+        return False
+    if needs_kfd and _KFD_NODE in closed:
+        return True
+    return not an_amd_render_node_is_open()
+
+
 def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     """One sentence naming the closed nodes and the command that opens them, or None.
 

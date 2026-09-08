@@ -1611,3 +1611,92 @@ def test_no_open_sibling_still_gives_the_node_hint_alone(monkeypatch, linux):
     reason = _vulkan_reason_with_open_sibling(monkeypatch, set())
     assert "the Vulkan probe reported no device" not in reason
     assert "/dev/dri/renderD128" in reason
+
+
+def test_a_hip_ordinal_is_judged_against_what_rocr_left(monkeypatch, linux):
+    """ROCr filters the physical list first and renumbers the survivors; the HIP layer then
+    indexes those. With ROCR_VISIBLE_DEVICES=0 on a two-GPU host one device survives, so
+    HIP ordinal 1 names nothing and hides everything -- judged against the physical count of
+    2 it reads as a valid selector and the user is told only about the groups.
+
+    Fails before the fix, which used the KFD count for every layer."""
+    reason = _reason_with_masks(
+        monkeypatch,
+        {"ROCR_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": "1"},
+        {"hip"},
+        gpu_count = 2,
+    )
+    assert "HIP_VISIBLE_DEVICES='1'" in reason
+    assert "which the groups do not clear" in reason
+
+
+def test_the_same_ordinal_inside_what_rocr_left_is_not_a_blocker(monkeypatch, linux):
+    """The control: ROCr leaving both devices makes HIP ordinal 1 a real device again, so
+    the composed reading must not call every stacked pair a blocker."""
+    reason = _reason_with_masks(
+        monkeypatch,
+        {"ROCR_VISIBLE_DEVICES": "0,1", "HIP_VISIBLE_DEVICES": "1"},
+        {"hip"},
+        gpu_count = 2,
+    )
+    assert "which the groups do not clear" not in reason
+
+
+def test_an_unresolvable_rocr_entry_leaves_the_hip_ordinal_alone(monkeypatch, linux):
+    """And the boundary: a UUID in the ROCr layer means the survivors cannot be counted, so
+    the HIP ordinal is judged against nothing rather than against a number this invented."""
+    reason = _reason_with_masks(
+        monkeypatch,
+        {"ROCR_VISIBLE_DEVICES": "GPU-4b2c9f1e0a7d3b58", "HIP_VISIBLE_DEVICES": "1"},
+        {"hip"},
+        gpu_count = 2,
+    )
+    assert "which the groups do not clear" not in reason
+
+
+def _hip_reason_with_nodes(monkeypatch, present: list, openable: set) -> str:
+    """The empty-probe reason for a HIP build over a given node layout."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _nodes(monkeypatch, present = present, openable = openable)
+    monkeypatch.setenv("USER", "ada")
+    for var in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_installed_ggml_backends", staticmethod(lambda _b: frozenset({"hip"}))
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _b: False))
+    return LlamaCppBackend._explain_empty_gpu_probe("/nonexistent/llama-server")
+
+
+def test_a_closed_sibling_beside_an_open_rocm_path_is_not_the_reason(monkeypatch, linux):
+    """ROCm needs /dev/kfd and a render node. With both open on a multi-AMD host, a closed
+    SECOND render node is not why the probe came back empty, and returning the group repair
+    as the sole diagnosis leaves the user fixing something that changes nothing.
+
+    Fails before the fix, which asked the sibling question of Vulkan builds only."""
+    reason = _hip_reason_with_nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128", "/dev/dri/renderD129"],
+        openable = {"/dev/kfd", "/dev/dri/renderD129"},
+    )
+    assert "Separately, and not why the probe is empty" in reason
+    assert "/dev/dri/renderD128" in reason
+
+
+def test_a_closed_kfd_is_still_the_reason_for_a_hip_build(monkeypatch, linux):
+    """The control that keeps it narrow: /dev/kfd has no sibling, so a closed one blocks
+    ROCm outright however many render nodes are open, and that host must still be told the
+    closed node IS the reason."""
+    reason = _hip_reason_with_nodes(
+        monkeypatch,
+        present = ["/dev/kfd", "/dev/dri/renderD128", "/dev/dri/renderD129"],
+        openable = {"/dev/dri/renderD129"},
+    )
+    assert "Separately, and not why the probe is empty" not in reason
+    assert "/dev/kfd" in reason

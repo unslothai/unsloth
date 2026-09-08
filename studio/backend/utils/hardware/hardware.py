@@ -2128,8 +2128,15 @@ def _gpu_present_but_unusable_message(
     node_hint = None
     if "amd" in vendors and amd_is_the_target:
         try:
-            from utils.hardware.amd import amd_node_permission_hint
-            node_hint = amd_node_permission_hint()
+            from utils.hardware.amd import (
+                amd_closed_nodes_block_the_runtime,
+                amd_node_permission_hint,
+            )
+            # Only when the closed set actually leaves the runtime no way in. A sibling
+            # render node still open means ROCm had a complete path and failed anyway, so
+            # the closed one does not explain this and must not replace the repair below.
+            if amd_closed_nodes_block_the_runtime():
+                node_hint = amd_node_permission_hint()
         except Exception:
             node_hint = None
     # It REPLACES the reinstall advice for a ROCm wheel that cannot initialise the device,

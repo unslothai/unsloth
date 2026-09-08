@@ -9873,7 +9873,32 @@ class LlamaCppBackend:
             except Exception:  # noqa: BLE001
                 _amd_gpu_count = None
 
-            def _hides_every_device(value: str) -> bool:
+            def _post_rocr_device_count() -> "int | None":
+                # ROCr filters the physical list FIRST and renumbers what survives; the HIP
+                # layer then indexes those, as _rocm_visibility_masks_are_stacked records.
+                # So a HIP ordinal has to be judged against the post-ROCr count: on two GPUs
+                # with ROCR_VISIBLE_DEVICES=0, one device survives and HIP ordinal 1 hides
+                # everything, where the physical count of 2 reads it as harmless.
+                #
+                # None when the survivors cannot be counted -- no physical count, or a ROCr
+                # entry this cannot resolve -- which leaves the HIP selector alone, the same
+                # answer an unreadable count already gets.
+                if not _rocr_filters:
+                    return _amd_gpu_count
+                _raw = (os.environ.get("ROCR_VISIBLE_DEVICES") or "").strip()
+                if not _raw or not _amd_gpu_count:
+                    return None
+                _survivors = 0
+                for _entry in _raw.split(","):
+                    _entry = _entry.strip()
+                    # The list stops at the first entry naming no device, and a UUID cannot
+                    # be resolved against an ordinal count, so both end the prefix.
+                    if not _entry.isdigit() or int(_entry) >= _amd_gpu_count:
+                        return None if not _entry.isdigit() else _survivors
+                    _survivors += 1
+                return _survivors
+
+            def _hides_every_device(value: str, count: "int | None" = None) -> bool:
                 # CUDA and HIP read the list left to right and stop at the first entry
                 # that names no device, so a value that is empty, or whose FIRST entry
                 # is empty or negative, exposes nothing; HIP_VISIBLE_DEVICES=0 still
@@ -9887,9 +9912,10 @@ class LlamaCppBackend:
                 # Only ordinals are judged -- a UUID selector is not an index into this
                 # count -- and only against a count that was actually read, since reading
                 # an unknown count as a bound would call every selector here a blocker.
-                if not _amd_gpu_count or not first.isdigit():
+                _bound = _amd_gpu_count if count is None else count
+                if not _bound or not first.isdigit():
                     return False
-                return int(first) >= _amd_gpu_count
+                return int(first) >= _bound
 
             def _cannot_be_resolved(value: str) -> bool:
                 # ROCr accepts a UUID as well as an ordinal ("0,GPU-4b2c..."), and a UUID
@@ -9926,6 +9952,8 @@ class LlamaCppBackend:
             )
             _ordinal_filters = LlamaCppBackend._gpu_device_ordinal_active()
 
+            _post_rocr_count = _post_rocr_device_count()
+
             masks = []
             blocking = []
             unresolved = []
@@ -9949,7 +9977,9 @@ class LlamaCppBackend:
                 # A Vulkan build reads none of the four, so none of them blocks it.
                 if _is_vulkan or not _consulted:
                     continue
-                if _hides_every_device(raw):
+                # ROCr indexes the physical list, the HIP layer indexes ROCr's survivors.
+                _bound = _amd_gpu_count if var == "ROCR_VISIBLE_DEVICES" else _post_rocr_count
+                if _hides_every_device(raw, _bound):
                     blocking.append(phrase)
                 elif var == "ROCR_VISIBLE_DEVICES" and _cannot_be_resolved(raw):
                     unresolved.append(phrase)
@@ -9963,14 +9993,21 @@ class LlamaCppBackend:
                 except Exception:  # noqa: BLE001
                     node_hint = None
 
-            def _an_amd_render_node_is_open() -> bool:
-                # A host this cannot read answers False, which keeps the closed node as
-                # the stated reason -- what this returned before the sibling check existed.
+            def _closed_nodes_block_the_runtime() -> bool:
+                # A host this cannot read answers True, which keeps the closed node as the
+                # stated reason -- what this returned before the sibling check existed.
                 try:
-                    from utils.hardware.amd import an_amd_render_node_is_open
-                    return an_amd_render_node_is_open()
+                    from utils.hardware.amd import amd_closed_nodes_block_the_runtime
+                    return amd_closed_nodes_block_the_runtime(needs_kfd = not _is_vulkan)
                 except Exception:  # noqa: BLE001
-                    return False
+                    return True
+
+            # The closed node when it does NOT explain the empty probe, appended to whatever
+            # reason does rather than returned in place of it.
+            _second_finding = ""
+
+            def _reason(text: str) -> str:
+                return f"{text}{_second_finding}"
             if node_hint:
                 # A mask hides devices whatever the node permissions are, so a host with
                 # both needs both fixes and the early return was hiding the second one.
@@ -9990,48 +10027,50 @@ class LlamaCppBackend:
                         f"resolve, so whether it also hides the card is unknown; check it "
                         f"if the groups do not help."
                     )
-                # A closed node explains an empty probe only when it is the node the
-                # runtime would have used. With another AMD render node OPEN, the Vulkan
-                # loader had one to enumerate and still reported nothing, so the closed
-                # one is a second finding rather than the reason, and returning it alone
-                # sends the user after a repair that leaves the probe just as empty.
-                # Asked only of a Vulkan build: HIP needs /dev/kfd, which is a single
-                # node, so there is no sibling for it to have used instead.
-                if _is_vulkan and _an_amd_render_node_is_open():
-                    return (
-                        f"the Vulkan probe reported no device even though another AMD "
-                        f"render node is open, so this is a second finding rather than "
-                        f"the reason: {node_hint}"
-                    )
-                return node_hint
+                # A closed node explains an empty probe only when it is a node the runtime
+                # would have used. On a multi-AMD host one render node can be shut while a
+                # sibling is open, and the runtime then had a complete path and enumerated
+                # nothing anyway, so the closed one is a SECOND finding: returning it as the
+                # reason sends the user after a repair that leaves the probe just as empty.
+                # Asked per backend, since HIP also needs /dev/kfd and that node has no
+                # sibling. Still reported either way, because it is still true.
+                if _closed_nodes_block_the_runtime():
+                    return node_hint
+                _second_finding = (
+                    f" Separately, and not why the probe is empty: {node_hint}"
+                )
             if _is_vulkan:
-                return "the Vulkan probe reported no device"
+                return _reason("the Vulkan probe reported no device")
 
             try:
                 import torch
             except Exception:  # noqa: BLE001
-                return f"torch is not importable, so no GPU could be enumerated{mask_note}"
+                return _reason(
+                    f"torch is not importable, so no GPU could be enumerated{mask_note}"
+                )
             if not hasattr(torch, "cuda") or not torch.cuda.is_available():
-                return f"torch reports no usable CUDA or HIP device{mask_note}"
+                return _reason(f"torch reports no usable CUDA or HIP device{mask_note}")
             # Counting devices does not create a context; reading their memory would.
             count = torch.cuda.device_count()
             if not count:
-                return f"torch enumerated 0 devices{mask_note}"
+                return _reason(f"torch enumerated 0 devices{mask_note}")
 
             if LlamaCppBackend._torch_is_rocm(torch):
                 coverage = LlamaCppBackend._installed_llama_gfx_archs(binary)
                 if coverage:
                     present = sorted(set(LlamaCppBackend._rocm_arch_by_physical_id().values()))
                     if present and not (set(present) & set(coverage)):
-                        return (
+                        return _reason(
                             f"the installed llama.cpp build covers {sorted(coverage)} but this "
                             f"host has {present}, so the arch gate dropped every device"
                         )
-                return (
+                return _reason(
                     f"torch sees {count} ROCm device(s) but the probe returned none, so "
                     f"amd-smi and the torch fallback both declined{mask_note}"
                 )
-            return f"torch sees {count} device(s) but the probe returned none{mask_note}"
+            return _reason(
+                f"torch sees {count} device(s) but the probe returned none{mask_note}"
+            )
         except Exception as e:  # noqa: BLE001 -- diagnostics must not break a load
             return f"the reason could not be determined ({type(e).__name__})"
 
