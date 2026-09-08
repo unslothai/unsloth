@@ -3944,6 +3944,8 @@ def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
     created = []
 
     class FakeProgress:
+        downloaded_bytes = 0
+
         def __init__(self, base, key, model, variant):
             created.append((base, key, model, variant, "created"))
 

@@ -175,7 +175,10 @@ export function McpComposerButton({
   );
   // Non-preset servers, shown below the presets so they stay toggleable.
   const customServers = servers.filter(
-    (s) => !PRESET_URLS.has(normalizeMcpUrl(s.url)),
+    (s) => !s.builtin_id && !PRESET_URLS.has(normalizeMcpUrl(s.url)),
+  );
+  const blenderEnabled = servers.some(
+    (server) => server.builtin_id === "blender" && server.is_enabled,
   );
   const enabledCount = servers.filter((s) => s.is_enabled).length;
   const active = usable && mcpEnabledForChat && enabledCount > 0;
@@ -356,6 +359,18 @@ export function McpComposerButton({
               disablesWebSearch: preset.disablesWebSearch,
             });
           })}
+          <DropdownMenuItem
+            onSelect={() => {
+              setMenuOpen(false);
+              setDialogOpen(true);
+            }}
+            className={blenderEnabled ? "relative text-primary font-medium" : "relative"}
+          >
+            <span className="truncate">Blender</span>
+            {blenderEnabled ? (
+              <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+            ) : null}
+          </DropdownMenuItem>
           {customServers.length > 0 ? <DropdownMenuSeparator /> : null}
           {customServers.map((server) =>
             renderRow({
