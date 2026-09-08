@@ -133,6 +133,20 @@ def test_sharded_precision_variant_is_one_family(tmp_path):
     assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
 
 
+def test_variant_after_the_shard_counter_is_the_same_family(tmp_path):
+    _write(tmp_path / "model-00001-of-00002.safetensors", 600)
+    _write(tmp_path / "model-00002-of-00002.safetensors", 400)
+    _write(tmp_path / "model-00001-of-00002.fp16.safetensors", 300)
+    _write(tmp_path / "model-00002-of-00002.fp16.safetensors", 200)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 1000
+
+
+def test_variant_only_shards_are_summed(tmp_path):
+    _write(tmp_path / "model-00001-of-00002.fp16.safetensors", 300)
+    _write(tmp_path / "model-00002-of-00002.fp16.safetensors", 200)
+    assert _get_local_weight_size_bytes(str(tmp_path)) == 500
+
+
 def test_same_directory_dual_format_still_charges_one_copy(tmp_path):
     _write(tmp_path / "model.safetensors", 1000)
     _write(tmp_path / "pytorch_model.bin", 1000)

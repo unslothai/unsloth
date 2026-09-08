@@ -5698,7 +5698,9 @@ _TRAINER_BOOKKEEPING_PREFIXES = (
     "training_args.",
     "trainer_state.",
 )
-_WEIGHT_SHARD_SUFFIX = re.compile(r"(-\d+-of-\d+|\.\d+)$")
+# A shard counter sits at the end of the stem or, with a variant, just before it:
+# model-00001-of-00004, model.fp16-00001-of-00002, model-00001-of-00002.fp16, consolidated.00.
+_WEIGHT_SHARD_INFIX = re.compile(r"(-\d+-of-\d+|\.\d+)(?=\.|$)")
 # model.fp16.safetensors is a precision variant of model.safetensors; a loader opens one.
 _WEIGHT_VARIANT_SUFFIX = re.compile(r"\.(fp16|bf16|fp32|non_ema)$")
 # pytorch_model.bin is the torch spelling of model.safetensors; consolidated.* is a
@@ -5736,7 +5738,7 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
             kind = "torch"
         else:
             continue
-        stem = _WEIGHT_SHARD_SUFFIX.sub("", stem)
+        stem = _WEIGHT_SHARD_INFIX.sub("", stem)
         base = _WEIGHT_VARIANT_SUFFIX.sub("", stem)
         family = _WEIGHT_FAMILY_ALIASES.get(base, base)
         # A top-level original/ holds the vendor's copy of the root weights (Meta).
