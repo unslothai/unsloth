@@ -2087,6 +2087,48 @@ def _gfx_route_on_host(gfx: "str | None", host_codes: "list[str] | None" = None)
     )
 
 
+def _amd_hardware_is_corroborated() -> bool:
+    """AMD silicon this host can point at, with no declared arch anywhere in the chain.
+
+    _infer_linux_amd_gfx_arch() returns UNSLOTH_ROCM_GFX_ARCH before it looks at any
+    hardware, and _physical_amd_gfx_archs() falls through to both it and the raw variable,
+    so neither can answer "is there a card". Under UNSLOTH_FORCE_ROCM_TORCH that question
+    is load-bearing: the request skips the NVIDIA precedence return, so a stale or
+    copied-in arch would otherwise force AMD wheels over a working CUDA stack on a host
+    with no AMD GPU at all. These are the evidence sources _infer_linux_amd_gfx_arch
+    applies on its own non-declared path.
+    """
+    if IS_WINDOWS or IS_MACOS:
+        return False
+    if _has_rocm_gpu() or _kfd_gfx_targets():
+        return True
+    if _is_wsl():
+        # WSL enumerates no PCI display device; /dev/dxg plus librocdxg is the evidence.
+        return _wsl_rocm_runtime_present()
+    return _linux_amd_display_device_present()
+
+
+def _forced_rocm_route_is_viable() -> bool:
+    """Whether the request has something to swap TO on this host.
+
+    The bar is the one _gfx_has_a_wheel_route already states: an arch no index can serve
+    "must never depose a card that can". Presence is not that bar. gfx1010 is present, has
+    no route at all, and a presence test trades a working NVIDIA GPU for generic wheels
+    carrying no kernels for it -- the downgrade this feature must not have.
+
+    Runtime visibility is not the bar either, in the other direction: a runtime-less but
+    inferable AMD card is deliberately served per-arch wheels on a pure-AMD host, so
+    requiring rocminfo here would answer differently for the same silicon depending only
+    on whether an NVIDIA card sits beside it.
+    """
+    if not _amd_hardware_is_corroborated():
+        return False
+    if _miscomputing_arch_host():
+        return False
+    _archs = _physical_amd_gfx_archs()
+    return any(_gfx_route_on_host(_gfx, _archs) for _gfx in _archs)
+
+
 def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
     """Whether ANY index this installer can pick carries kernels for ``gfx``.
 
@@ -3074,17 +3116,20 @@ def _ensure_cuda_torch() -> None:
     # working NVIDIA GPU with nothing to fix it. The probe runs only under the
     # request, so an ordinary install pays nothing for it.
     #
-    # A card is necessary and not sufficient: _ensure_rocm_torch declines an arch measured
-    # to compute incorrectly under ROCm and keeps CPU torch, and _ensure_cpu_torch then
-    # demotes the HIP build that is there. So a gfx1033-style host has a ROCm GPU, no ROCm
-    # route, and needs this repair -- standing down for it would leave CPU torch on a
-    # working NVIDIA card, which is the same downgrade the shell guard exists to prevent.
-    # Asked with the same helper _ensure_rocm_torch bails on, so the two cannot disagree.
+    # A card is necessary and not sufficient, and runtime visibility is not the test.
+    # _ensure_rocm_torch proceeds on an inferred arch as well as a probed one, so standing
+    # down only for _has_rocm_gpu() left a runtime-less AMD host reinstalling CUDA here and
+    # ROCm immediately after, twice per run. It also declines an arch no index serves and
+    # one measured to compute incorrectly, and _ensure_cpu_torch then demotes whatever HIP
+    # build was there -- so a gfx1010 or gfx1033 host needs this repair, and standing down
+    # for it leaves CPU torch on a working NVIDIA card.
+    #
+    # One predicate answers all three, and it is the route question the ROCm installer
+    # itself asks, so the two halves cannot drift apart about whether a route exists.
     if (
         _rocm_torch_explicitly_requested()
         and _explicit_cuda_torch_index_url() is None
-        and _has_rocm_gpu()
-        and not _miscomputing_arch_host()
+        and _forced_rocm_route_is_viable()
     ):
         return
     # An explicit CUDA pin commits to CUDA wheels and skips ALL GPU gates below.
@@ -4556,6 +4601,17 @@ def _ensure_rocm_torch() -> None:
         # the old /opt/rocm-or-hipcc gate broke runtime-only ROCm installs.
         if not _has_rocm_gpu() and not _inferred_linux_gfx:
             return  # no AMD GPU visible
+        # Under the request the NVIDIA return above was skipped, so this gate is the only
+        # thing between a DECLARED arch and AMD wheels installed over a working CUDA stack:
+        # _infer_linux_amd_gfx_arch() takes UNSLOTH_ROCM_GFX_ARCH before it looks at any
+        # hardware, so a stale one satisfies the line above on a host with no AMD card.
+        # Scoped to that pairing, so an ordinary install is judged exactly as before.
+        if (
+            _rocm_torch_explicitly_requested()
+            and _has_usable_nvidia_gpu()
+            and not _amd_hardware_is_corroborated()
+        ):
+            return
 
     ver = _detect_rocm_version()
     if ver is None:

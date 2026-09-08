@@ -3367,6 +3367,65 @@ _has_amd_rocm_gpu() {
     return 1
 }
 
+# AMD silicon this host can point at WITHOUT trusting a declared arch.
+# _infer_linux_amd_gfx_arch returns UNSLOTH_ROCM_GFX_ARCH before it looks at any hardware,
+# so it cannot answer "is there a card": a stale or copied-in arch would otherwise let the
+# request hand a working CUDA stack to a GPU that is not present. These are the same two
+# evidence sources that function applies on its own non-declared path.
+_amd_hardware_corroborated() {
+    _amd_gpu_present_via_pci && return 0
+    # WSL enumerates no PCI display device, so /dev/dxg plus librocdxg IS the evidence there.
+    if [ -e /dev/dxg ] || grep -qi microsoft /proc/version 2>/dev/null; then
+        for _ahc_d in /opt/rocm/lib /opt/rocm/lib64 /opt/rocm-*/lib /opt/rocm-*/lib64; do
+            { [ -e "$_ahc_d/librocdxg.so" ] || [ -e "$_ahc_d/librocdxg.so.1" ]; } && return 0
+        done
+    fi
+    return 1
+}
+
+# Whether ANY index this installer can pick carries kernels for this arch: the generic
+# pytorch.org wheel, or an AMD per-arch index. Mirrors _gfx_has_a_wheel_route in
+# studio/install_python_stack.py, whose _GENERIC_ROCM_WHEEL_GFX set this case list tracks --
+# keep the two in sync. An arch in neither (gfx1010, RDNA 1) cannot be fixed by picking a
+# different index, so it must never depose a card that can.
+_amd_gfx_has_wheel_route() {
+    case "$1" in
+        gfx900|gfx906|gfx908|gfx90a|gfx942|gfx950) return 0 ;;
+        gfx1030|gfx1100|gfx1101|gfx1102|gfx1150|gfx1151|gfx1200|gfx1201) return 0 ;;
+    esac
+    _amd_arch_index_family_for_gfx "$1" >/dev/null 2>&1
+}
+
+# Whether the request has something to swap TO here: a corroborated AMD card whose arch an
+# index can actually serve. Presence is not that bar. A gfx1010 is present, has no route at
+# all, and a presence test trades a working NVIDIA GPU for generic wheels carrying no
+# kernels for it -- the downgrade this feature must not have, in a new costume.
+#
+# gfx906 is dropped when a second AMD arch is present: its only route is the rocm6.3 legacy
+# tag, which opens solely when gfx906 is the sole arch, so on a mixed-AMD box it is
+# unroutable. install_python_stack.py's _MIXED_HOST_UNROUTABLE says the same.
+_amd_request_has_a_wheel_route() {
+    _arwr_all=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
+    [ -n "$_arwr_all" ] || _arwr_all=$(_kfd_gfx_targets 2>/dev/null || true)
+    if [ -z "$_arwr_all" ]; then
+        # Runtime-less but inferable, which a pure-AMD host is already served on: the
+        # reroutes below rewrite its cpu index to per-arch wheels. Requiring a working ROCm
+        # runtime here would answer differently for the same silicon depending only on
+        # whether an NVIDIA card sits beside it.
+        _amd_hardware_corroborated || return 1
+        _arwr_all=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
+    fi
+    _arwr_archs=$(printf '%s\n' "$_arwr_all" | sed 's/:.*$//' \
+        | tr '[:upper:]' '[:lower:]' | awk 'NF' | sort -u)
+    [ -n "$_arwr_archs" ] || return 1
+    _arwr_count=$(printf '%s\n' "$_arwr_archs" | awk 'NF' | wc -l | tr -d ' ')
+    for _arwr_g in $_arwr_archs; do
+        [ "$_arwr_g" = gfx906 ] && [ "$_arwr_count" -gt 1 ] && continue
+        _amd_gfx_has_wheel_route "$_arwr_g" && return 0
+    done
+    return 1
+}
+
 # One place answers "does the NVIDIA card still win here", so the index selection and
 # the per-arch reroutes cannot disagree about it. The reroutes below run at top level
 # and probe afresh, so get_torch_index_url clearing its own _nvidia_detected does not
@@ -3374,11 +3433,12 @@ _has_amd_rocm_gpu() {
 # takes the cpu index that the reroute exists to rewrite, and the reroute then declines,
 # leaving CPU torch beside a working NVIDIA card (#10450).
 #
-# The AMD presence test is kept, so a request on a pure NVIDIA box still answers "NVIDIA
-# wins" and the CUDA path is unchanged.
+# A route test, not a presence test, so a request on a pure NVIDIA box still answers
+# "NVIDIA wins" and the CUDA path is unchanged -- and so does a request beside a card no
+# index can serve, which presence alone would have handed the CUDA install to.
 _nvidia_gpu_wins_over_amd() {
     _has_usable_nvidia_gpu || return 1
-    if _rocm_torch_explicitly_requested && _has_amd_rocm_gpu; then
+    if _rocm_torch_explicitly_requested && _amd_request_has_a_wheel_route; then
         return 1
     fi
     return 0
@@ -3997,7 +4057,7 @@ get_torch_index_url() {
     # "cuda" backend. Relaxing the AMD probe alone left the request unable to swap
     # anything at all (#10450).
     if [ "$_nvidia_detected" -eq 1 ] && _rocm_torch_explicitly_requested && \
-       _has_amd_rocm_gpu; then
+       _amd_request_has_a_wheel_route; then
         echo "[INFO] UNSLOTH_FORCE_ROCM_TORCH is set and an AMD GPU is present -- selecting ROCm PyTorch over CUDA." >&2
         echo "[INFO] One torch install serves one vendor: the NVIDIA card will not be available to training until this is unset and the installer re-run." >&2
         _nvidia_detected=0

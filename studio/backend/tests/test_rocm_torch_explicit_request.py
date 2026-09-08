@@ -141,6 +141,12 @@ def _index_url(env: str, stubs: str) -> str:
         [
             _shell_function("_rocm_torch_explicitly_requested"),
             stubs,
+            # The selector asks whether the request has a wheel route, not whether a card
+            # is present, so its helpers are lifted too. Stubbing the ANSWER here would
+            # make the arch cases below assert about the stub.
+            _shell_function("_amd_hardware_corroborated"),
+            _shell_function("_amd_gfx_has_wheel_route"),
+            _shell_function("_amd_request_has_a_wheel_route"),
             _shell_function("get_torch_index_url"),
             f"{env} get_torch_index_url",
         ]
@@ -164,6 +170,7 @@ _MIXED_HOST = "\n".join(
         "_kfd_gfx_targets() { echo gfx1201; }",
         "_infer_linux_amd_gfx_arch() { echo gfx1201; }",
         "_amd_sole_index_arch() { echo gfx1201; }",
+        "_amd_gpu_present_via_pci() { return 0; }",
         "_detect_rocm_version_tag() { echo rocm7.0; }",
         "_amd_agreed_index_family() { echo gfx120X-all; }",
         "_rocm_sdk_install_hint() { echo ''; }",
@@ -185,15 +192,26 @@ def test_the_same_host_without_the_request_still_selects_cuda(stack):
     assert "rocm" not in out and "gfx" not in out, out
 
 
-def test_the_request_does_not_select_rocm_without_an_amd_card(stack):
-    """A typo on a pure NVIDIA box must not turn a working CUDA machine into a ROCm or
-    CPU one: the AMD presence test still has to pass."""
-    out = _index_url(
-        "UNSLOTH_FORCE_ROCM_TORCH=1",
+_NO_AMD_CARD = "\n".join(
+    [
         _MIXED_HOST.replace(
             "_has_amd_rocm_gpu() { return 0; }", "_has_amd_rocm_gpu() { return 1; }"
         ),
-    )
+        # Every source the route test can read, silenced together. Silencing only the
+        # ROCm runtime leaves the arch probes answering, which is the host the
+        # runtime-less reroute exists for rather than a machine with no AMD card.
+        "_probe_amd_gfx_arch() { :; }",
+        "_kfd_gfx_targets() { :; }",
+        "_infer_linux_amd_gfx_arch() { :; }",
+        "_amd_gpu_present_via_pci() { return 1; }",
+    ]
+)
+
+
+def test_the_request_does_not_select_rocm_without_an_amd_card(stack):
+    """A typo on a pure NVIDIA box must not turn a working CUDA machine into a ROCm or
+    CPU one: the AMD route test still has to pass."""
+    out = _index_url("UNSLOTH_FORCE_ROCM_TORCH=1", _NO_AMD_CARD)
     assert "rocm" not in out and "gfx" not in out, out
 
 
@@ -207,10 +225,14 @@ def test_the_cuda_repair_stands_down_under_the_request(stack, monkeypatch):
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
     monkeypatch.setattr(stack, "NO_TORCH", False)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
-    # The request stands down only for a card that is actually there, so the mixed
+    # The request stands down only for a card an index can actually serve, so the mixed
     # host this describes has to say so. Stubbed rather than left to the host, since
     # otherwise this asserts about whatever silicon the test runner happens to have.
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [])
+    monkeypatch.setattr(stack, "_is_wsl", lambda: False)
+    monkeypatch.setattr(stack, "_linux_amd_display_device_present", lambda: True)
+    monkeypatch.setattr(stack, "_physical_amd_gfx_archs", lambda: ["gfx1100"])
     monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: False)
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
     probed = {"ran": False}
@@ -287,6 +309,10 @@ def _nvidia_wins(env: str, stubs: str) -> bool:
         [
             _shell_function("_rocm_torch_explicitly_requested"),
             stubs,
+            _shell_function("_amd_hardware_corroborated"),
+            _shell_function("_amd_arch_index_family_for_gfx"),
+            _shell_function("_amd_gfx_has_wheel_route"),
+            _shell_function("_amd_request_has_a_wheel_route"),
             _shell_function("_nvidia_gpu_wins_over_amd"),
             f"{env} _nvidia_gpu_wins_over_amd && echo NVIDIA || echo AMD",
         ]
@@ -296,26 +322,35 @@ def _nvidia_wins(env: str, stubs: str) -> bool:
     return out.stdout.strip() == "NVIDIA"
 
 
-_PURE_NVIDIA = "\n".join(
+# The probes the route test reads, not its answer: stubbing _amd_request_has_a_wheel_route
+# itself would make every case below assert about the stub.
+_NO_AMD = "\n".join(
     [
-        "_has_usable_nvidia_gpu() { return 0; }",
         "_has_amd_rocm_gpu() { return 1; }",
+        "_probe_amd_gfx_arch() { :; }",
+        "_kfd_gfx_targets() { :; }",
+        "_infer_linux_amd_gfx_arch() { :; }",
+        "_amd_gpu_present_via_pci() { return 1; }",
     ]
 )
 
-_PURE_AMD = "\n".join(
+_ROUTABLE_AMD = "\n".join(
     [
-        "_has_usable_nvidia_gpu() { return 1; }",
+        # Kept so a predicate asking the OLD presence question still RUNS: an undefined
+        # function would make the unroutable case below fail for the wrong reason.
         "_has_amd_rocm_gpu() { return 0; }",
+        "_probe_amd_gfx_arch() { echo gfx1201; }",
+        "_kfd_gfx_targets() { echo gfx1201; }",
+        "_infer_linux_amd_gfx_arch() { echo gfx1201; }",
+        "_amd_gpu_present_via_pci() { return 0; }",
     ]
 )
 
-_MIXED = "\n".join(
-    [
-        "_has_usable_nvidia_gpu() { return 0; }",
-        "_has_amd_rocm_gpu() { return 0; }",
-    ]
-)
+_PURE_NVIDIA = "\n".join(["_has_usable_nvidia_gpu() { return 0; }", _NO_AMD])
+
+_PURE_AMD = "\n".join(["_has_usable_nvidia_gpu() { return 1; }", _ROUTABLE_AMD])
+
+_MIXED = "\n".join(["_has_usable_nvidia_gpu() { return 0; }", _ROUTABLE_AMD])
 
 
 def test_the_reroute_predicate_yields_to_the_request_on_a_mixed_host():
@@ -674,3 +709,245 @@ def test_the_summary_on_a_pure_cuda_install_is_unchanged():
     """And the control for the control: no request, CUDA wheels, NVIDIA reported, which
     is what every automatic install on an NVIDIA host must keep seeing."""
     assert _gpu_summary_branch(_CUDA, "") == "nvidia"
+
+
+def _route_shell(probe: str, inferred: str, pci_ok: bool) -> bool:
+    """install.sh's request route test, on a stubbed host.
+
+    The three probes are stubbed and everything else is lifted from install.sh, so the
+    answer depends only on the arch reasoning under test.
+    """
+    import subprocess
+
+    script = "\n".join([
+        f'_probe_amd_gfx_arch() {{ printf "%s\\n" {probe!r}; }}',
+        "_kfd_gfx_targets() { :; }",
+        f'_infer_linux_amd_gfx_arch() {{ [ -n {inferred!r} ] && printf "%s\\n" {inferred!r}; }}',
+        f"_amd_gpu_present_via_pci() {{ return {0 if pci_ok else 1}; }}",
+        _shell_function("_amd_hardware_corroborated"),
+        _shell_function("_amd_arch_index_family_for_gfx"),
+        _shell_function("_amd_gfx_has_wheel_route"),
+        _shell_function("_amd_request_has_a_wheel_route"),
+        "_amd_request_has_a_wheel_route && echo yes || echo no",
+    ])
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip() == "yes"
+
+
+def test_an_arch_no_index_can_serve_does_not_depose_the_nvidia_card():
+    """gfx1010 (RDNA 1) is in neither the generic wheel nor any per-arch index, so the
+    request cannot buy this host a working ROCm stack. On presence alone it cleared
+    _nvidia_detected, the AMD branch picked the generic rocm index because a ROCm version
+    was readable, and the CUDA restore then accepted that as a successful route -- so a
+    working CUDA install was replaced with wheels carrying no kernels for the card.
+
+    install_python_stack.py states the rule this now follows: an arch in neither route
+    "must never depose a card that can"."""
+    assert _route_shell("gfx1010", "", pci_ok = True) is False
+
+
+def test_a_routable_arch_still_deposes_it():
+    """The control: gfx1100 is in the generic wheel, so the request still swaps. Without
+    this the fix could be "never yield", which passes the test above and removes the
+    feature."""
+    assert _route_shell("gfx1100", "", pci_ok = True) is True
+
+
+def test_a_runtime_less_but_inferable_card_is_served_like_a_pure_amd_host():
+    """A Strix box with no rocminfo, amd-smi or KFD node is routed to per-arch wheels on a
+    pure-AMD host, by the reroute this predicate gates. Requiring a working ROCm runtime
+    answered differently for the same silicon depending only on whether an NVIDIA card sat
+    beside it, and blocked both reroutes."""
+    assert _route_shell("", "gfx1151", pci_ok = True) is True
+
+
+def test_a_declared_arch_alone_is_not_a_card():
+    """The control that keeps the case above safe. _infer_linux_amd_gfx_arch returns
+    UNSLOTH_ROCM_GFX_ARCH before it looks at any hardware, so a stale or copied-in value
+    names an arch on a host with no AMD GPU at all. Accepting inference without
+    corroborating the silicon would force AMD wheels over a working CUDA stack there."""
+    assert _route_shell("", "gfx1030", pci_ok = False) is False
+
+
+def test_gfx906_alone_is_routable():
+    """gfx906's only route is the rocm6.3 legacy tag."""
+    assert _route_shell("gfx906", "", pci_ok = True) is True
+
+
+def test_gfx906_beside_a_second_amd_arch_is_not():
+    """...and that tag opens only when gfx906 is the sole arch on the machine, so on a
+    mixed-AMD box it is unroutable. _MIXED_HOST_UNROUTABLE says the same on the Python
+    side; this keeps the two answering alike."""
+    assert _route_shell("gfx906\ngfx1010", "", pci_ok = True) is False
+
+
+def _viable(stack, monkeypatch, *, corroborated: bool, archs: list, miscomputing = False):
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: corroborated)
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [])
+    monkeypatch.setattr(stack, "_is_wsl", lambda: False)
+    monkeypatch.setattr(stack, "_linux_amd_display_device_present", lambda: corroborated)
+    monkeypatch.setattr(stack, "_physical_amd_gfx_archs", lambda: archs)
+    monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: miscomputing)
+    return stack._forced_rocm_route_is_viable()
+
+
+def test_the_python_route_test_matches_the_shell_one(stack, monkeypatch):
+    """Both halves of the installer have to answer the same question the same way, or a
+    standalone `studio update` undoes what install.sh chose."""
+    assert _viable(stack, monkeypatch, corroborated = True, archs = ["gfx1010"]) is False
+    assert _viable(stack, monkeypatch, corroborated = True, archs = ["gfx1100"]) is True
+    assert _viable(stack, monkeypatch, corroborated = False, archs = ["gfx1030"]) is False
+    assert _viable(
+        stack, monkeypatch, corroborated = True, archs = ["gfx1033"], miscomputing = True,
+    ) is False
+
+
+def test_an_unroutable_card_keeps_the_cuda_repair(stack, monkeypatch):
+    """The repair had stood down for any host with a visible AMD GPU. With an unusable HIP
+    build and a gfx1010 beside a working NVIDIA card, nothing then classified the stale
+    build, _ensure_rocm_torch found no wheel tag, and the NVIDIA GPU was left with no
+    working torch at all. Fails on the round-four condition, which excluded only the
+    miscomputing arches."""
+    monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [])
+    monkeypatch.setattr(stack, "_is_wsl", lambda: False)
+    monkeypatch.setattr(stack, "_linux_amd_display_device_present", lambda: True)
+    monkeypatch.setattr(stack, "_physical_amd_gfx_archs", lambda: ["gfx1010"])
+    monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: False)
+    monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    probed = {"ran": False}
+    monkeypatch.setattr(
+        stack,
+        "_probe_torch_runtime",
+        lambda *a, **k: (
+            probed.__setitem__("ran", True),
+            (True, True, "2.11.0+rocm7.0", True, False),
+        )[1],
+    )
+    monkeypatch.setattr(stack, "pip_install", lambda *a, **k: None)
+    stack._ensure_cuda_torch()
+    assert probed["ran"] is True
+
+
+def test_an_inferable_card_stands_the_cuda_repair_down(stack, monkeypatch):
+    """The other direction, and the control for the test above: a runtime-less host whose
+    arch is inferable is one _ensure_rocm_torch will serve, so repairing CUDA here only to
+    have ROCm force-installed immediately after is a reinstall cycle on every update."""
+    monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: False)
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [])
+    monkeypatch.setattr(stack, "_is_wsl", lambda: False)
+    monkeypatch.setattr(stack, "_linux_amd_display_device_present", lambda: True)
+    monkeypatch.setattr(stack, "_physical_amd_gfx_archs", lambda: ["gfx1151"])
+    monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: False)
+    monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+    probed = {"ran": False}
+    monkeypatch.setattr(
+        stack,
+        "_probe_torch_runtime",
+        lambda *a, **k: (
+            probed.__setitem__("ran", True),
+            (True, True, "2.11.0+rocm7.0", True, False),
+        )[1],
+    )
+    stack._ensure_cuda_torch()
+    assert probed["ran"] is False
+
+
+def test_a_declared_arch_does_not_force_rocm_over_a_working_cuda_stack(stack, monkeypatch):
+    """The request skips the NVIDIA precedence return, leaving the presence gate as the
+    only thing between a stale UNSLOTH_ROCM_GFX_ARCH and per-arch AMD wheels installed
+    over CUDA on a host with no AMD card. Fails before the corroboration gate."""
+    monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1030")
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(stack, "_explicit_rocm_torch_index_url", lambda: None)
+    monkeypatch.setattr(stack, "_explicit_unknown_family_torch_index_url", lambda: None)
+    monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: False)
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: False)
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [])
+    monkeypatch.setattr(stack, "_is_wsl", lambda: False)
+    monkeypatch.setattr(stack, "_linux_amd_display_device_present", lambda: False)
+    monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+    installed = {"ran": False}
+    monkeypatch.setattr(
+        stack, "pip_install", lambda *a, **k: installed.__setitem__("ran", True),
+    )
+    stack._ensure_rocm_torch()
+    assert installed["ran"] is False
+
+
+def test_a_real_card_with_a_declared_arch_is_still_served(stack, monkeypatch):
+    """The control: declaring an arch is the documented routing hint for a runtime-less
+    host, so it must keep working once the silicon is corroborated. A fix that simply
+    stopped trusting the variable would pass the test above and break that host."""
+    monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1151")
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(stack, "_explicit_rocm_torch_index_url", lambda: None)
+    monkeypatch.setattr(stack, "_explicit_unknown_family_torch_index_url", lambda: None)
+    monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: False)
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: False)
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [])
+    monkeypatch.setattr(stack, "_is_wsl", lambda: False)
+    monkeypatch.setattr(stack, "_linux_amd_display_device_present", lambda: True)
+    monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+    reached = {"ran": False}
+    monkeypatch.setattr(
+        stack, "_detect_rocm_version",
+        lambda *a, **k: (reached.__setitem__("ran", True), (7, 2))[1],
+    )
+    monkeypatch.setattr(stack, "pip_install", lambda *a, **k: None)
+    monkeypatch.setattr(
+        stack, "_probe_torch_runtime", lambda *a, **k: (True, True, "2.11.0", False, True),
+    )
+    stack._ensure_rocm_torch()
+    assert reached["ran"] is True
+
+
+# A card ROCm sees perfectly well and no index can serve. The two questions disagree here,
+# which is the whole point: the old predicate yields the NVIDIA GPU, the new one does not.
+_UNROUTABLE_AMD = "\n".join(
+    [
+        "_has_usable_nvidia_gpu() { return 0; }",
+        "_has_amd_rocm_gpu() { return 0; }",
+        "_probe_amd_gfx_arch() { echo gfx1010; }",
+        "_kfd_gfx_targets() { echo gfx1010; }",
+        "_infer_linux_amd_gfx_arch() { echo gfx1010; }",
+        "_amd_gpu_present_via_pci() { return 0; }",
+    ]
+)
+
+
+def test_the_reroute_predicate_keeps_cuda_for_an_unroutable_card():
+    """The call site, not the helper: both per-arch reroutes consult this predicate, and
+    on presence alone a gfx1010 cleared the way for AMD wheels that carry no kernels for
+    it. Fails on the round-four predicate, which asked _has_amd_rocm_gpu."""
+    assert _nvidia_wins("UNSLOTH_FORCE_ROCM_TORCH=1", _UNROUTABLE_AMD)
+
+
+def test_the_reroute_predicate_still_yields_for_a_routable_one():
+    """The control: same host, routable arch, and the request must still win. A fix that
+    stopped yielding altogether passes the test above and removes the feature."""
+    assert not _nvidia_wins("UNSLOTH_FORCE_ROCM_TORCH=1", _MIXED)
