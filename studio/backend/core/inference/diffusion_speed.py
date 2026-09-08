@@ -47,15 +47,33 @@ SPEED_MAX = "max"
 SPEED_MODES = (SPEED_OFF, SPEED_EAGER, SPEED_DEFAULT, SPEED_MAX)
 
 
+# torch._inductor.config attributes captured by snapshot_backend_flags, as (attribute, snapshot key). The first is
+# the one this layer sets itself (regional compile). The rest are what torchao's
+# recommended_inductor_config_setter() flips process-wide when a quantize_ call reaches it: we build every torchao
+# config quiet (diffusion_transformer_quant._quiet_config), so these are the safety net, not the primary control.
+_INDUCTOR_FLAGS = (
+    ("emulate_precision_casts", "inductor_emulate_precision_casts"),
+    ("coordinate_descent_tuning", "inductor_coordinate_descent_tuning"),
+    ("coordinate_descent_check_all_directions", "inductor_coordinate_descent_check_all_directions"),
+    ("force_fuse_int_mm_with_mul", "inductor_force_fuse_int_mm_with_mul"),
+    ("fx_graph_cache", "inductor_fx_graph_cache"),
+)
+# Nested under torch._inductor.config.triton.
+_INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
+
+
 def snapshot_backend_flags() -> Optional[dict]:
     """Capture the process-wide torch backend flags this layer may mutate, for restore on unload.
     None if torch is unavailable. Each flag is read defensively so a build missing one (e.g. no
-    cuda.matmul on CPU/MPS) still captures the rest, instead of leaking a real mutated flag."""
+    cuda.matmul on CPU/MPS) still captures the rest, instead of leaking a real mutated flag.
+
+    Also captures the inductor flags and the fp32 matmul precision that torchao's quantize_ sets
+    when a config is built with its default ``set_inductor_config=True``; see ``_INDUCTOR_FLAGS``."""
     try:
         import torch
     except Exception:  # noqa: BLE001 - no torch -> nothing to snapshot/restore
         return None
-    state: dict[str, bool] = {}
+    state: dict[str, Any] = {}
     matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
     if matmul is not None and hasattr(matmul, "allow_tf32"):
         state["matmul_tf32"] = bool(matmul.allow_tf32)
@@ -68,8 +86,21 @@ def snapshot_backend_flags() -> Optional[dict]:
         if hasattr(cudnn, "benchmark"):
             state["cudnn_benchmark"] = bool(cudnn.benchmark)
     inductor_cfg = _inductor_config()
-    if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
-        state["inductor_emulate_precision_casts"] = bool(inductor_cfg.emulate_precision_casts)
+    if inductor_cfg is not None:
+        for attr, key in _INDUCTOR_FLAGS:
+            if hasattr(inductor_cfg, attr):
+                state[key] = bool(getattr(inductor_cfg, attr))
+        triton_cfg = getattr(inductor_cfg, "triton", None)
+        if triton_cfg is not None:
+            for attr, key in _INDUCTOR_TRITON_FLAGS:
+                if hasattr(triton_cfg, attr):
+                    state[key] = bool(getattr(triton_cfg, attr))
+    getter = getattr(torch, "get_float32_matmul_precision", None)
+    if callable(getter):
+        try:
+            state["matmul_precision"] = str(getter())
+        except Exception:  # noqa: BLE001 - unreadable on this build: restore the rest
+            pass
     return state
 
 
@@ -90,13 +121,26 @@ def restore_backend_flags(state: Optional[dict]) -> None:
             except Exception:  # noqa: BLE001 - best-effort per-flag restore
                 pass
 
+    # fp32 matmul precision FIRST: on some builds set_float32_matmul_precision also writes matmul.allow_tf32, so
+    # restoring it after the TF32 booleans would clobber the captured TF32 state.
+    setter = getattr(torch, "set_float32_matmul_precision", None)
+    if state.get("matmul_precision") and callable(setter):
+        try:
+            setter(state["matmul_precision"])
+        except Exception:  # noqa: BLE001 - best-effort per-flag restore
+            pass
     matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
     _set(matmul, "allow_tf32", "matmul_tf32")
     _set(matmul, "allow_fp16_accumulation", "matmul_fp16_accum")
     cudnn = getattr(torch.backends, "cudnn", None)
     _set(cudnn, "allow_tf32", "cudnn_tf32")
     _set(cudnn, "benchmark", "cudnn_benchmark")
-    _set(_inductor_config(), "emulate_precision_casts", "inductor_emulate_precision_casts")
+    inductor_cfg = _inductor_config()
+    for attr, key in _INDUCTOR_FLAGS:
+        _set(inductor_cfg, attr, key)
+    triton_cfg = getattr(inductor_cfg, "triton", None) if inductor_cfg is not None else None
+    for attr, key in _INDUCTOR_TRITON_FLAGS:
+        _set(triton_cfg, attr, key)
 
 
 def _inductor_config() -> Any:

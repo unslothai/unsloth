@@ -16,6 +16,7 @@ import pytest
 
 import core.inference.diffusion_precision as dp
 from core.inference.diffusion_precision import (
+    _cast_fp8_dynamic,
     TE_QUANT_FP8,
     TE_QUANT_FP8_DYNAMIC,
     TE_QUANT_INT8,
@@ -81,6 +82,9 @@ def _stub_casters(monkeypatch, recorder):
     dtq.make_filter_fn = lambda min_features, exclude = (), *, require_bf16 = False: (
         lambda module, fqn = "": True
     )
+    # The real helper adds set_inductor_config=False when the class accepts it; the stub configs here take no
+    # kwargs, so a pass-through is the faithful stand-in.
+    dtq._quiet_config = lambda cls, **kw: cls(**kw)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", dtq)
 
 
@@ -321,6 +325,7 @@ def _stub_transformer_quant(monkeypatch, captured):
     dtq.TQ_FP8 = "fp8"
     dtq.DEFAULT_MIN_LINEAR_FEATURES = 512
     dtq._make_quant_config = lambda scheme, *a, **k: f"cfg:{scheme}"
+    dtq._quiet_config = lambda cls, **kw: cls(**kw)
     dtq.exclude_tokens_for_scheme = lambda scheme: ("modulation",)
 
     def _make_filter_fn(
@@ -519,3 +524,67 @@ def test_int8_without_a_schedule_reports_fp8_as_the_effective_mode():
     # Every other mode is its own effective mode, and absent stays absent.
     assert effective_te_quant(TE_QUANT_FP8_DYNAMIC, "z-image-turbo") == TE_QUANT_FP8_DYNAMIC
     assert effective_te_quant(None, "qwen-image") is None
+
+
+# ── torchao configs are built quiet (set_inductor_config=False) ───────────────
+
+
+def test_nvfp4_te_cast_builds_its_config_through_quiet_config(monkeypatch):
+    """The prototype NVFP4 config has no set_inductor_config knob, so routing it through _quiet_config must be a
+    no-op that still constructs (the regression risk of the routing is a TypeError, not a wrong flag)."""
+    _stub_torch(monkeypatch, cc = (10, 0))
+    captured: dict = {}
+    _stub_transformer_quant(monkeypatch, captured)
+    seen: list = []
+    dtq = sys.modules["core.inference.diffusion_transformer_quant"]
+    dtq._quiet_config = lambda cls, **kw: seen.append((cls, kw)) or cls(**kw)
+    outcome = quantize_text_encoders(
+        types.SimpleNamespace(text_encoder = object()), _target(), mode = "nvfp4"
+    )
+    assert outcome.mode == TE_QUANT_NVFP4
+    assert len(seen) == 1 and seen[0][1] == {}
+    assert captured["config"] == "nvfp4cfg"
+
+
+def test_int8_and_fp8_dynamic_te_casts_reuse_the_quiet_factory(monkeypatch):
+    """Both torchao text-encoder casts must keep building through _make_quant_config (which is where
+    set_inductor_config=False is applied), never a bare torchao constructor."""
+    torch = _stub_torch(monkeypatch, cc = (10, 0))
+    captured: dict = {}
+    _stub_transformer_quant(monkeypatch, captured)
+    layers = torch.nn.ModuleList([object() for _ in range(8)])
+    enc = types.SimpleNamespace(_keep_in_fp32_modules = ["wo"])
+    enc.named_modules = lambda: [("model.layers", layers)]
+    _cast_int8_selective(enc, _target(), 3, 0)
+    assert captured["config"] == "cfg:int8"
+    _cast_fp8_dynamic(enc, _target())
+    assert captured["config"] == "cfg:fp8"
+
+
+def test_no_torchao_config_is_constructed_outside_quiet_config():
+    """AST guard: every torchao ``*WeightConfig(...)`` / ``*WeightOnlyConfig(...)`` call under core/inference and the
+    DiT trainer must be the first argument of ``_quiet_config``. torchao's dataclass default
+    ``set_inductor_config=True`` flips coordinate-descent tuning and the fp32 matmul precision for the whole process
+    (non-deterministic compiled renders across processes), so a bare constructor is the bug this guards against."""
+    import ast
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    files = sorted((backend / "core" / "inference").glob("*.py")) + [
+        backend / "core" / "training" / "diffusion_dit_trainer.py",
+    ]
+    offenders: list[str] = []
+    for path in files:
+        tree = ast.parse(path.read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            if not (name.endswith("WeightConfig") or name.endswith("WeightOnlyConfig")):
+                continue
+            offenders.append(f"{path.relative_to(backend)}:{node.lineno} {name}(...)")
+    assert not offenders, (
+        "torchao config constructed outside _quiet_config (pass the CLASS as its first argument instead):\n  "
+        + "\n  ".join(offenders)
+    )

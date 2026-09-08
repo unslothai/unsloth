@@ -23,6 +23,8 @@ probe is best-effort: an unsupported scheme yields None and the caller loads GGU
 
 from __future__ import annotations
 
+import inspect as _inspect
+import os as _os
 import re as _re
 import sys as _sys
 import threading as _threading
@@ -964,6 +966,40 @@ def _resolve_fast_accum(fast_accum: Optional[bool]) -> bool:
     return True if fast_accum is None else bool(fast_accum)
 
 
+# torchao's config handlers call ``recommended_inductor_config_setter()`` once per quantised Linear when
+# ``set_inductor_config`` is left at its dataclass default of True. That setter is PROCESS-WIDE and permanent:
+# coordinate_descent_tuning, coordinate_descent_check_all_directions, force_fuse_int_mm_with_mul, fx_graph_cache,
+# triton.unique_kernel_names, and torch.set_float32_matmul_precision("high"). Coordinate-descent tuning benchmarks
+# candidate kernel configs at compile time, so the winning kernel, and therefore the render, differs between
+# processes on the same seed (measured on z-image int8 and fp8: max abs 0.83 on the transformer output between
+# two identical processes, bit-identical with the flags left alone). The fp32 matmul precision change reaches
+# every fp32 op in the pipeline (VAE, norms), not just the Linears we quantised. diffusion_speed.py owns the
+# inductor policy; a quantise call must not silently reset it.
+#
+# UNSLOTH_TORCHAO_INDUCTOR_CONFIG=1 restores the upstream behaviour, for A/B benchmarking only.
+_TORCHAO_INDUCTOR_CONFIG_ENV = "UNSLOTH_TORCHAO_INDUCTOR_CONFIG"
+
+
+def _torchao_may_set_inductor_config() -> bool:
+    return (_os.environ.get(_TORCHAO_INDUCTOR_CONFIG_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def _quiet_config(cls: Any, **kwargs: Any) -> Any:
+    """Build a torchao config with ``set_inductor_config = False`` when the class accepts it.
+
+    Signature-guarded rather than version-guarded: the kwarg is on every ``torchao.quantization`` config class
+    (int8 / fp8 dynamic activation, int8 / int4 / fp8 weight-only) and on none of the ``prototype.mx_formats``
+    ones, which never call the setter either. Both answers are correct, and a future rename degrades to today's
+    behaviour instead of a TypeError."""
+    if not _torchao_may_set_inductor_config():
+        try:
+            if "set_inductor_config" in _inspect.signature(cls).parameters:
+                kwargs = {**kwargs, "set_inductor_config": False}
+        except (TypeError, ValueError):  # C-implemented or otherwise unintrospectable: leave it alone
+            pass
+    return cls(**kwargs)
+
+
 def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     """The torchao dynamic-activation config for ``scheme`` (lazy imports per branch).
 
@@ -974,7 +1010,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     )
 
     if scheme == TQ_INT8:
-        return Int8DynamicActivationInt8WeightConfig()
+        return _quiet_config(Int8DynamicActivationInt8WeightConfig)
     if scheme == TQ_FP8:
         # Per-ROW granularity (per-token activation + per-channel weight scale) is REQUIRED: torchao defaults to
         # per-TENSOR, where one Z-Image outlier near 6.6e4 forces a tensor-wide scale that pushes normal values below
@@ -982,11 +1018,10 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         # it falls to int8. fast accumulate (fp8 only) follows GPU class unless forced: consumer cards run fp8 ~2x
         # faster with FP16 accumulate. activation_value_lb floors the per-row scale: an ALL-ZERO row otherwise yields
         # scale 0, NaN qdata, black frames.
-        import inspect
         from torchao.quantization import PerRow
 
         fp8_kwargs: dict = {"granularity": PerRow()}
-        config_params = inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
+        config_params = _inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
         if "activation_value_lb" in config_params:
             fp8_kwargs["activation_value_lb"] = 1e-12
         # Pin the plain-torch quantize kernel: the default AUTO switches to the MSLK kernel whenever an mslk package is
@@ -1002,32 +1037,34 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
                 pass
         try:
             from torchao.float8 import Float8MMConfig
-            return Float8DynamicActivationFloat8WeightConfig(
+            return _quiet_config(
+                Float8DynamicActivationFloat8WeightConfig,
                 mm_config = Float8MMConfig(use_fast_accum = _resolve_fast_accum(fast_accum)),
                 **fp8_kwargs,
             )
         except Exception:  # noqa: BLE001 - older torchao without the explicit mm knob
-            return Float8DynamicActivationFloat8WeightConfig(**fp8_kwargs)
+            return _quiet_config(Float8DynamicActivationFloat8WeightConfig, **fp8_kwargs)
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
 
         # Select the CUTLASS FP4 path, not the default Triton kernel (which needs MSLK): on a Blackwell box with CUTLASS
         # FP4 but no MSLK the default fails the smoke probe and falls back to GGUF.
         try:
-            return NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False)
+            return _quiet_config(NVFP4DynamicActivationNVFP4WeightConfig, use_triton_kernel = False)
         except TypeError:  # older torchao without the knob
-            return NVFP4DynamicActivationNVFP4WeightConfig()
+            return _quiet_config(NVFP4DynamicActivationNVFP4WeightConfig)
     if scheme == TQ_MXFP8:
         import torch
         from torchao.prototype.mx_formats import MXDynamicActivationMXWeightConfig
         try:
-            return MXDynamicActivationMXWeightConfig(
-                activation_dtype = torch.float8_e4m3fn, weight_dtype = torch.float8_e4m3fn
+            return _quiet_config(
+                MXDynamicActivationMXWeightConfig,
+                activation_dtype = torch.float8_e4m3fn, weight_dtype = torch.float8_e4m3fn,
             )
         except (TypeError, AttributeError):
             # TypeError: older torchao without the explicit dtype knobs. AttributeError: a torch build without
             # torch.float8_e4m3fn.
-            return MXDynamicActivationMXWeightConfig()
+            return _quiet_config(MXDynamicActivationMXWeightConfig)
     raise ValueError(f"unknown transformer quant scheme '{scheme}'")
 
 

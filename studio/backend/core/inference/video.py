@@ -3791,6 +3791,14 @@ class VideoBackend:
         # _SecondDiTView(pipe)); single-DiT resolves to (pipe,).
         views = _views_for(pipe, fam)
 
+        # Snapshot the process-wide backend flags BEFORE the first thing that can mutate them, which is the torchao
+        # transformer quant below (its configs are built quiet, but the snapshot is the safety net if a torchao path
+        # still reaches recommended_inductor_config_setter). Until the state commit hands ownership to
+        # _teardown_state_locked, a failure has to restore these flags itself, so register them for
+        # _rollback_precommit_globals right away.
+        backend_flags = snapshot_backend_flags()
+        self._precommit_globals = (_load_token, backend_flags)
+
         # dense transformer quant (opt-in, pipeline-kind only): torchao-quantise the dense bf16 DiT in place onto the
         # low-precision tensor cores. CUDA + bf16 only, best-effort. Quant must precede compile (eager is ~30x slower).
         transformer_quant_engaged: Optional[str] = None
@@ -3938,10 +3946,7 @@ class VideoBackend:
                 "(quantized transformer must be compiled; eager is ~30x slower)"
             )
             effective_speed = SPEED_DEFAULT
-        backend_flags = snapshot_backend_flags()
-        # Until the state commit hands ownership to _teardown_state_locked, a failure has to restore these process-wide
-        # flags itself. Registered BEFORE the first mutation, as above.
-        self._precommit_globals = (_load_token, backend_flags)
+        # backend_flags was snapshotted (and registered in _precommit_globals) before the transformer quant above.
         # Step cache tri-state: unset/"auto" -> FBCACHE_MIN_STEPS policy (re-checked per generation); "off"/"fbcache"
         # pinned. Run per expert.
         cache_request = normalize_transformer_cache(transformer_cache)
