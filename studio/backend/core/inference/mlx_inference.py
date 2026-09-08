@@ -2992,6 +2992,12 @@ class MLXInferenceBackend:
             if tools or preserve_native_channels
             else None
         )
+        # Consulted per token on the reasoning path below, so resolved once here.
+        stop_token_ids = (
+            _mlx_stop_token_ids(self._tokenizer, self._model)
+            if native_token_decoder is not None
+            else ()
+        )
         token_ids = []
         normalizer = (
             make_reasoning_normalizer(
@@ -3054,9 +3060,20 @@ class MLXInferenceBackend:
                     final_response = response
                     token_ids.append(response.token)
                     if preserve_native_channels:
-                        sampled += native_token_decoder.decode_stream_token(
+                        _tok = native_token_decoder.decode_stream_token(
                             response.token, getattr(response, "text", None) or ""
                         )
+                        # Generation ends on a stop id, so this one is trailing. Same rule as
+                        # the non-reasoning branch: drop it unless it closes a real tool
+                        # envelope, or an allowlisted control used as EOS ends the reply as
+                        # raw markup.
+                        if (
+                            _tok
+                            and response.token in stop_token_ids
+                            and not closes_an_open_envelope(sampled + _tok, _tok)
+                        ):
+                            _tok = ""
+                        sampled += _tok
                         if sequences:
                             cut, stopped = _mlx_stop_cut(sampled, sequences)
                         else:

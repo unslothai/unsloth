@@ -640,6 +640,156 @@ def blocked_markerless_prefix_end(text: str, start: int, enabled_tool_names) -> 
         return cursor + len(text[cursor:]) - len(text[cursor:].lstrip(" \t\n\r;"))
 
 
+# A blocked call is prose, so its arguments are text the model QUOTED, not markup it emitted.
+# The other passes do not know that: nested markup there was stripped out of the displayed body,
+# and a wrapped call inside it promoted -- reopening execution from quoted text, which is the
+# whole point of the block. Masking the body to an equal-length run of a character no pattern
+# matches keeps every offset (and so every anchor) intact while the passes run over it.
+# A private-use character: valid inside a JSON string (``\x00`` is not, and using it broke the
+# chain walk over a blocked object) and matched by no pattern here.
+_BLOCKED_BODY_MASK = ""
+_BLOCKED_BODY_MASK_RUN_RE = re.compile("+")
+# The aliases ``_parse_bare_json_call`` accepts for the argument object.
+_BARE_JSON_ARGS_RE = re.compile(r'"(?:arguments|parameters|args)"\s*:\s*\{')
+
+
+def _string_content_spans(text: str, start: int, end: int) -> list:
+    """Interiors of the string literals in ``text[start:end]``.
+
+    Only string CONTENT is masked, never the structure around it: the scans that decide a
+    call is blocked read the name and keys out of the same body, and a body left unparseable
+    dropped the calls behind it. Markup quoted by the model lands in a string value, which is
+    what this covers. Gemma's ``<|"|>`` counts as a quote, or masking would start at the ``"``
+    inside it and run past the real delimiter."""
+    spans: list = []
+    i = start
+    while i < end:
+        if text.startswith(_tool_healing._GEMMA_QUOTE, i):
+            close = text.find(
+                _tool_healing._GEMMA_QUOTE, i + len(_tool_healing._GEMMA_QUOTE), end
+            )
+            if close < 0:
+                break
+            spans.append((i + len(_tool_healing._GEMMA_QUOTE), close))
+            i = close + len(_tool_healing._GEMMA_QUOTE)
+            continue
+        if text[i] == '"':
+            j = i + 1
+            while j < end:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    break
+                j += 1
+            if j >= end:
+                break
+            spans.append((i + 1, j))
+            i = j + 1
+            continue
+        i += 1
+    return spans
+
+
+# A wrapper immediately in front makes the call trusted, not markerless: this mask runs before
+# the passes that consume those wrappers, so without this check it blanked the arguments of a
+# real ``<|tool_call>call:terminal{..}`` and the call stopped executing.
+_MARKERLESS_TRUSTED_PREFIXES = (
+    "<|tool_call>", "[TOOL_CALLS]", "[CALL_ID]", "<tool_call>", "<|python_tag|>",
+)
+
+
+def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
+    """``(start, end)`` of the argument body of every blocked markerless call, ordered."""
+    spans: list = []
+    # No body can close past the last ``}``. Without this the balanced scan restarts at every
+    # opener and runs to EOF, which a stream of unclosed ``NAME[ARGS]{`` makes quadratic (the
+    # shape ``test_blocked_span_collection_is_one_forward_pass`` exists to keep out).
+    last_close = text.rfind("}")
+    if last_close < 0:
+        return []
+    if _GEMMA_BARE_SENTINEL in text:
+        for m in _GEMMA_BARE_TC_RE.finditer(text):
+            head = text[: m.start()].rstrip()
+            if (
+                m.end() > last_close
+                or any(head.endswith(p) for p in _MARKERLESS_TRUSTED_PREFIXES)
+                or not _markerless_blocked_execution(m.group(1), enabled_tool_names)
+            ):
+                continue
+            end = _gemma_body_brace_end(text, m.end() - 1)
+            if end is not None:
+                spans.extend(_string_content_spans(text, m.end(), end))
+    if "[ARGS]" in text:
+        for m in _tool_healing._REHEARSAL_RE.finditer(text):
+            head = text[: m.start()].rstrip()
+            if (
+                m.end() > last_close
+                or any(head.endswith(p) for p in _MARKERLESS_TRUSTED_PREFIXES)
+                or not _markerless_blocked_execution(m.group(1), enabled_tool_names)
+            ):
+                continue
+            end = _tool_healing._balanced_json_span(text, m.end())
+            if end is not None:
+                spans.extend(_string_content_spans(text, m.end() + 1, end))
+    lead = _leading_json_value_end(text)
+    if lead and _markerless_blocked_execution(
+        _top_level_bare_json_name(text[:lead]), enabled_tool_names
+    ):
+        # Only the arguments object: the NAME lives in this body too, and the scans that
+        # decide the call is blocked (and anchor the peer behind it) read it from there.
+        args = _BARE_JSON_ARGS_RE.search(text, 0, lead)
+        if args is not None:
+            end = _balanced_brace_end(text, args.end() - 1)
+            if end is not None:
+                spans.extend(_string_content_spans(text, args.end(), end))
+    spans = [(start, end) for start, end in spans if end > start]
+    spans.sort()
+    # Nested blocked calls are already covered by the outer body; keep spans disjoint so the
+    # mask runs stay one-to-one with the bodies restored afterwards.
+    merged: list = []
+    for start, end in spans:
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            continue
+        merged.append((start, end))
+    return merged
+
+
+def _mask_blocked_bodies(text: str, enabled_tool_names) -> tuple:
+    """``(masked_text, bodies)``; ``bodies`` restores them in order."""
+    spans = _blocked_markerless_body_spans(text, enabled_tool_names)
+    if not spans:
+        return text, []
+    out: list = []
+    bodies: list = []
+    prev = 0
+    for start, end in spans:
+        out.append(text[prev:start])
+        bodies.append(text[start:end])
+        out.append(_BLOCKED_BODY_MASK * (end - start))
+        prev = end
+    out.append(text[prev:])
+    return "".join(out), bodies
+
+
+def _unmask_blocked_bodies(text: str, bodies: list) -> Optional[str]:
+    """Put the bodies back, or ``None`` when a pass disturbed the runs and the caller
+    should fall back to the unmasked result rather than emit a mangled body."""
+    if not bodies:
+        return text
+    restored = iter(bodies)
+    count = 0
+
+    def _put(_m):
+        nonlocal count
+        count += 1
+        return next(restored, "")
+
+    result = _BLOCKED_BODY_MASK_RUN_RE.sub(_put, text)
+    return result if count == len(bodies) else None
+
+
 def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] = None) -> str:
     """Strip closed wrapper-less Gemma ``call:NAME{...}`` calls with balanced brace
     scanning (nested arguments are removed whole). Gated like the parser: a name that is
@@ -925,7 +1075,14 @@ def strip_tool_markup(
     # ``<think>`` / ``[THINK]`` reasoning is preserved verbatim (a rehearsed call inside it is not executed, so it must
     # not be stripped from display either); a literal think marker inside a real call's arguments is that call's data
     # and is stripped with the call.
-    result = _tool_healing.strip_outside_think(text, _strip_segment)
+    # A blocked call's body is quoted prose: hide it from the passes, then put it back.
+    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names)
+    result = _tool_healing.strip_outside_think(masked, _strip_segment)
+    if bodies:
+        restored = _unmask_blocked_bodies(result, bodies)
+        result = restored if restored is not None else _tool_healing.strip_outside_think(
+            text, _strip_segment
+        )
     return result.strip() if final else result
 
 
@@ -1695,6 +1852,10 @@ def parse_tool_calls_from_text(
     # Drop Magistral [THINK]...[/THINK] BEFORE dispatch: a rehearsed call inside it must never be promoted, and the
     # parse path must agree with the display strip.
     content = _strip_mistral_reasoning(content)
+
+    # Equal-length mask, so the spans this returns still index the caller's text: a blocked
+    # call's arguments are quoted prose, and a wrapped call nested there was promoted.
+    content, _blocked_bodies = _mask_blocked_bodies(content, enabled_tool_names)
 
     # A leading bare-JSON value is decided FIRST: a string argument quoting tool markup (XML or a Mistral trigger) must
     # stay data, so the bare-JSON parser takes the outer call before any other pass. Precedes the Mistral guard, whose

@@ -4712,3 +4712,84 @@ def test_vlm_add_special_tokens_falls_back_to_the_inline_rule(monkeypatch):
     assert rule("qwen2_vl", template) is True
     sys.modules["mlx_vlm.utils"].should_add_special_tokens = lambda *_: "mlx-vlm's answer"
     assert rule("gemma4", template) == "mlx-vlm's answer"
+
+
+def _run_mlx_reasoning_stream(monkeypatch, pieces, special_ids, eos_id):
+    """Drive the MLX text reasoning path over ``pieces``, stopping on ``eos_id``."""
+    _install_fake_mlx(monkeypatch)
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: "prompt",
+        raising = True,
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kwargs: SimpleNamespace(
+            prompt = formatted_prompt,
+            reasoning_channel_markers = ("<|channel>thought", "<channel|>"),
+        ),
+        raising = True,
+    )
+
+    mlx_lm_pkg = types.ModuleType("mlx_lm")
+    mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kwargs: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kwargs: None
+
+    def _stream_generate(_model, _tokenizer, **_kwargs):
+        for token_id, piece in pieces.items():
+            yield SimpleNamespace(token = token_id, text = piece)
+
+    mlx_lm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    class _Tokenizer:
+        chat_template = "x"
+        all_special_ids = list(special_ids)
+        all_special_tokens = [pieces[token_id] for token_id in special_ids]
+        eos_token_id = eos_id
+
+        def convert_ids_to_tokens(self, token_id):
+            return pieces[token_id]
+
+        def decode(self, ids, *, skip_special_tokens = False, **_kwargs):
+            skipped = special_ids if skip_special_tokens else set()
+            return "".join(pieces[int(t)] for t in ids if t not in skipped)
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = _Tokenizer()
+    backend._is_vlm = False
+    return list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "terminal"}}],
+            max_new_tokens = len(pieces),
+        )
+    )
+
+
+def test_mlx_reasoning_reply_does_not_end_in_a_preserved_eos_control(monkeypatch):
+    """The non-reasoning branch trims a trailing stop id that is also an allowlisted
+    control; the reasoning branch appended it, ending an ordinary reply in raw markup."""
+    pieces = {
+        1: "<|channel>", 2: "thought", 3: "reasoned", 4: "<channel|>",
+        5: "Done.", 6: "<|end_message|>",
+    }
+    snapshots = _run_mlx_reasoning_stream(monkeypatch, pieces, {1, 4, 6}, 6)
+    assert "<|end_message|>" not in snapshots[-1]
+    assert snapshots[-1].endswith("Done.")
+
+
+def test_mlx_reasoning_keeps_an_eos_control_that_closes_a_tool_envelope(monkeypatch):
+    """The trim is envelope-aware: the same marker terminates a real Inkling call."""
+    pieces = {
+        1: "<|channel>", 2: "thought", 3: "reasoned", 4: "<channel|>",
+        5: "<|content_invoke_tool_json|>", 6: '{"name":"terminal","args":{}}',
+        7: "<|end_message|>",
+    }
+    snapshots = _run_mlx_reasoning_stream(monkeypatch, pieces, {1, 4, 5, 7}, 7)
+    assert snapshots[-1].endswith("<|end_message|>")

@@ -290,6 +290,10 @@ _ARG_FIXTURES = {
     "pos": lambda text: len(text),
     "body_start": lambda text: max(text.find("[") + 1, 0),
     "body_end": lambda text: len(text),
+    "end": lambda text: len(text),
+    # Nothing to restore: the masker's own output is what pairs with it, and an invented
+    # list would pin a substitution the corpus never produced.
+    "bodies": lambda text: [],
     "body": lambda text: text,
     "hard_stop": lambda text: len(text),
     "i": lambda text: 0,

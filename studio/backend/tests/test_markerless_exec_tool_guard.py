@@ -1350,3 +1350,39 @@ def test_a_cancel_still_emits_a_blocked_call_held_as_prose(snapshot):
     content = "".join(e["text"] for e in events if e.get("type") == "content")
     assert snapshot in content
     assert not any(e.get("type") == "tool_start" for e in events)
+
+
+# A blocked call's arguments are text the model QUOTED. Nested markup there is not markup the
+# model emitted, so no pass may strip it or promote it.
+BLOCKED_BODY_CASES = [
+    'call:terminal{command:"web_search[ARGS]{}"}',
+    'call:terminal{command:"<tool_call>{\\"name\\":\\"web_search\\"}</tool_call>"}',
+    'terminal[ARGS]{"c":"<tool_call>python</tool_call>"}',
+    'terminal[ARGS]{"c":"[TOOL_CALLS]python[ARGS]{}"}',
+    'terminal[ARGS]{"c":"<function=python></function>"}',
+    '{"name":"terminal","arguments":{"command":"web_search[ARGS]{}"}}',
+]
+
+
+@pytest.mark.parametrize("text", BLOCKED_BODY_CASES)
+def test_a_blocked_calls_body_is_opaque_to_every_other_pass(text):
+    """The block only moved the hole: the outer call stayed prose, but a wrapped call inside
+    its arguments still promoted (an execution-class one, from quoted text), and the other
+    strip passes edited the body that is supposed to stay visible verbatim."""
+    gate = {"terminal", "python", "web_search"}
+    assert strip_tool_markup(text, final = True, enabled_tool_names = gate) == text
+    assert parse_tool_calls_from_text(text, enabled_tool_names = gate) == []
+
+
+@pytest.mark.parametrize("text,expected", [
+    ('<|tool_call>call:terminal{command:<|"|>id<|"|>}<tool_call|>', "terminal"),
+    ('[TOOL_CALLS]terminal[ARGS]{"command":"id"}', "terminal"),
+    ('<tool_call>{"name":"python","arguments":{"code":"1"}}</tool_call>', "python"),
+    ('call:web_search{q:"x"}', "web_search"),
+    ('web_search[ARGS]{"q":"x"}', "web_search"),
+])
+def test_a_wrapped_or_benign_call_still_executes_alongside_the_body_mask(text, expected):
+    """The mask keys off the name alone, so it must not fire behind a trusted wrapper: doing
+    so blanked a real call's arguments and it stopped executing."""
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"terminal", "python", "web_search"})
+    assert [call["function"]["name"] for call in calls] == [expected]
