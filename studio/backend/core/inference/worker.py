@@ -1016,14 +1016,18 @@ def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
     )
 
 
-def _decline_count_tokens(cmd: dict, resp_queue: Any) -> None:
+def _decline_count_tokens(
+    cmd: dict,
+    resp_queue: Any,
+    reason: str = "Counting is not supported on the transformers backend.",
+) -> None:
     """Answer a count this backend cannot serve; dropping it costs the caller its timeout."""
     _send_response(
         resp_queue,
         {
             "type": "count_tokens_response",
             "request_id": cmd.get("request_id"),
-            "error": "Counting is not supported on the transformers backend.",
+            "error": reason,
         },
     )
 
@@ -1048,8 +1052,13 @@ def _generate_rows_apart(backend, requests, request_id, resp_queue, cancel_event
     for row, request in enumerate(requests):
         stats = None
         if not cancel_event.is_set():
+            # Row overrides arrive unvetted, so the backend is given only what it declares.
             generator = backend.generate_chat_response(
-                **request,
+                **{
+                    name: value
+                    for name, value in request.items()
+                    if _backend_declares(backend, name)
+                },
                 cancel_event = cancel_event,
             )
             try:
@@ -1957,7 +1966,11 @@ def run_inference_process(
                         },
                     )
                 elif cmd_type == "count_tokens":
-                    _handle_count_tokens(backend, cmd, resp_queue)
+                    if batch.rows_in_flight:
+                        # A dispatched generation holds no orchestrator lock to wait behind.
+                        _decline_count_tokens(cmd, resp_queue, "A generation is in progress.")
+                    else:
+                        _handle_count_tokens(backend, cmd, resp_queue)
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":

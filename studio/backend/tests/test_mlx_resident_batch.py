@@ -3,6 +3,8 @@
 
 """Replies joining and leaving a batch the MLX worker keeps open."""
 
+import functools
+import inspect
 import multiprocessing as _mp
 import queue as _queue
 import threading
@@ -11,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.inference import worker
+from core.inference.inference import InferenceBackend
 from core.inference.worker import RowRefused
 from core.inference.worker import StopLedger
 
@@ -295,20 +298,29 @@ class _DecliningBackend:
     def batch_unavailable_reason(self, requests):
         return None if len(requests) < 2 else self._reason
 
-    def generate_chat_response(self, **kwargs):
+    def generate_chat_response(
+        self,
+        seed = None,
+        **kwargs,
+    ):
         # Echoes this row: a fallback decoding row zero twice would look the same.
-        yield f"seed {kwargs['seed']}"
-        yield f"seed {kwargs['seed']} done"
+        yield f"seed {seed}"
+        yield f"seed {seed} done"
 
     def generate_chat_batch(self, requests, **kwargs):
         self.batched += 1
         raise AssertionError("a declined request set must not reach the batch")
 
 
-def _run(reason, cancelled = False):
+def _run(
+    reason,
+    cancelled = False,
+    backend = None,
+):
     from core.inference import worker
 
-    sent, backend, cancel = [], _DecliningBackend(reason), threading.Event()
+    sent, cancel = [], threading.Event()
+    backend = backend or _DecliningBackend(reason)
     if cancelled:
         cancel.set()
     worker._handle_generate_rows(
@@ -373,3 +385,37 @@ def test_a_batch_that_will_not_open_still_answers_the_reply(monkeypatch):
 
     assert [m["type"] for m in resp.sent if m["type"] != "status"] == ["token", "gen_done"]
     assert len(backend.apart) == 1, "it was decoded one reply at a time"
+
+
+class _NoSeedBackend(_DecliningBackend):
+    """Transformers-shaped: wraps() carries the real signature, which declares no seed."""
+
+    @functools.wraps(InferenceBackend.generate_chat_response)
+    def generate_chat_response(self, *args, **kwargs):
+        inspect.signature(InferenceBackend.generate_chat_response).bind(self, *args, **kwargs)
+        yield "reply"
+
+
+def test_a_row_override_the_backend_cannot_take_is_dropped_not_raised():
+    """The route varies the seed per row, and the fallback decodes on backends without one."""
+    _backend, sent = _run(None, backend = _NoSeedBackend("a reply asks for stop sequences"))
+    kinds = [event["type"] for event in sent if event["type"] != "batch_state"]
+
+    assert kinds == ["token", "row_done", "token", "row_done", "gen_done"], f"{sent}"
+
+
+def test_a_count_is_refused_while_the_batch_decodes(monkeypatch):
+    """Dispatched generations hold no orchestrator lock, so the loop keeps its promise."""
+    backend = _Backend(script = {("r1", None): ["a", None]})
+    backend.count_chat_tokens, backend.active_model_name = (lambda *a, **k: 7), "m"
+    count = {"type": "count_tokens", "request_id": "c1", "messages": []}
+    cmds = [_cmd("r1", parallel_slots = 2), count, IDLE, IDLE, IDLE, count, IDLE]
+
+    sent = _run_loop(monkeypatch, backend, cmds).sent
+    counts = [m for m in sent if m["type"] == "count_tokens_response"]
+
+    assert [m.get("error") for m in counts] == [
+        "A generation is in progress.",
+        None,
+    ], f"the count was served mid-decode, or never ran once the batch drained: {counts}"
+    assert counts[1]["input_tokens"] == 7
