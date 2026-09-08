@@ -4197,6 +4197,28 @@ def test_base_model_candidates_cover_the_case_the_loader_returns():
     assert "unsloth/qwen2.5-0.5b-instruct-unsloth-bnb-4bit" in candidates
 
 
+def test_base_model_candidates_follow_the_loaders_second_rewrite():
+    # get_model_name maps Qwen/Qwen3-32B to unsloth/Qwen3-32B-unsloth-bnb-4bit and then
+    # rewrites that through BAD_MAPPINGS, so the repo that downloads is two steps out.
+    candidates = start._base_model_candidates("Qwen/Qwen3-32B")
+
+    assert "unsloth/qwen3-32b-bnb-4bit" in candidates
+
+
+def test_bad_mappings_are_read_without_importing_the_loader():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(start, "_BAD_MAPPINGS", None)
+    try:
+        table = start._unsloth_bad_mappings()
+    finally:
+        monkeypatch.undo()
+
+    assert table and all(isinstance(k, str) and isinstance(v, str) for k, v in table.items())
+    # The source spells these as "...".lower(), which only evaluating the literal resolves.
+    assert all(key == key.lower() for key in table)
+    assert "torch" not in sys.modules
+
+
 def test_base_model_candidates_leave_out_repos_the_load_path_cannot_pick():
     # Nothing in the inference path passes load_in_fp8, so an fp8 repo is never the
     # download and polling it would only cost the downloading server a request per poll.
@@ -4351,27 +4373,86 @@ def test_model_download_progress_keeps_an_unknown_total_unknown(monkeypatch, cap
 
 
 def test_active_reading_follows_the_repo_with_bytes_in_flight():
-    model = {"downloaded_bytes": 1024, "completed_bytes": 1024, "expected_bytes": 1024}
-    cached_base = {
-        "downloaded_bytes": 16 * 1024**3,
-        "completed_bytes": 16 * 1024**3,
-        "expected_bytes": 16 * 1024**3,
-    }
-    transferring = {
-        "downloaded_bytes": 2 * 1024**3,
-        "completed_bytes": 0,
-        "expected_bytes": 6 * 1024**3,
-    }
+    model = ("owner/adapter", {"downloaded_bytes": 1024, "completed_bytes": 1024})
+    cached_base = (
+        "owner/base",
+        {"downloaded_bytes": 16 * 1024**3, "completed_bytes": 16 * 1024**3},
+    )
+    transferring = ("unsloth/base-4bit", {"downloaded_bytes": 2 * 1024**3, "completed_bytes": 0})
 
     # A base already complete in the cache is not the transfer to render, even though it
     # carries by far the most bytes.
     assert start._active_reading([model, cached_base, transferring]) is transferring
     # Nothing moving: fall back to the model's own reading rather than a stale companion.
     assert start._active_reading([model, cached_base]) is model
-    # Liveness still counts every repo.
-    assert start._total_downloaded_bytes([model, cached_base, transferring]) == (
-        1024 + 16 * 1024**3 + 2 * 1024**3
+
+
+def test_model_download_progress_keeps_a_dropped_candidates_bytes(monkeypatch):
+    # The recorded base sits complete in the cache and is dropped once the substitute
+    # starts moving; its bytes must stay in the total or the high-water mark it set would
+    # never be beaten again and the deadline would never renew.
+    monkeypatch.setattr(start, "_QUANT_MAPPERS", [{"owner/base": "unsloth/base-4bit"}])
+    monkeypatch.setattr(start, "_BAD_MAPPINGS", {})
+    substitute = iter([2 * 1024**3, 3 * 1024**3, 4 * 1024**3])
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            return {"is_lora": True, "base_model": "owner/base"}
+        if url.endswith("repo_id=owner%2Fbase"):
+            return {
+                "downloaded_bytes": 16 * 1024**3,
+                "completed_bytes": 16 * 1024**3,
+                "expected_bytes": 16 * 1024**3,
+            }
+        if url.endswith("repo_id=unsloth%2Fbase-4bit"):
+            return {
+                "downloaded_bytes": next(substitute),
+                "completed_bytes": 0,
+                "expected_bytes": 6 * 1024**3,
+            }
+        return {"downloaded_bytes": 0, "completed_bytes": 0, "expected_bytes": 0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    first = progress.downloaded_bytes
+    progress.poll()
+    second = progress.downloaded_bytes
+
+    assert first == 18 * 1024**3
+    assert second == 19 * 1024**3
+
+
+def test_download_progress_display_restarts_when_the_repo_changes(monkeypatch, capsys):
+    monkeypatch.setattr(start.sys.stdout, "isatty", lambda: False, raising = False)
+    display = start._DownloadProgressDisplay()
+
+    # An adapter finishing near the top of its bar.
+    display.update(
+        {"downloaded_bytes": 95, "completed_bytes": 0, "expected_bytes": 100, "progress": 0.95},
+        "owner/adapter",
     )
+    # Then a multi-gigabyte base starting from nothing.
+    display.update(
+        {
+            "downloaded_bytes": 1024**3,
+            "completed_bytes": 0,
+            "expected_bytes": 40 * 1024**3,
+            "progress": 0.025,
+        },
+        "owner/base",
+    )
+
+    out = capsys.readouterr().out
+    assert "1.0 GiB / 40.0 GiB" in out
 
 
 def test_model_download_progress_does_not_invent_a_total_across_repos(monkeypatch, capsys):

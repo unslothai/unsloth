@@ -10,6 +10,8 @@ import errno
 import functools
 import hashlib
 import http.client
+import ast
+import ast
 import importlib.util
 import json
 import os
@@ -918,9 +920,23 @@ class _DownloadProgressDisplay:
         self._last_bucket = -1
         self._last_line_length = 0
         self._last_expected = 0
+        self._source: Optional[str] = None
         self._interactive = bool(getattr(sys.stdout, "isatty", lambda: False)())
 
-    def update(self, progress: dict) -> None:
+    def update(
+        self,
+        progress: dict,
+        source: Optional[str] = None,
+    ) -> None:
+        if source != self._source:
+            # A different repo is a different transfer: its bytes and percentage are not a
+            # continuation of the last one. Without this the redirected-output branch below,
+            # which only prints when the bucket rises, stays silent for a whole base
+            # download that starts near zero after an adapter finished near the top.
+            self._source = source
+            self._samples.clear()
+            self._last_bucket = -1
+            self._shown = False
         downloaded = max(0, int(progress.get("downloaded_bytes") or 0))
         completed = max(0, int(progress.get("completed_bytes") or 0))
         expected = max(0, int(progress.get("expected_bytes") or 0))
@@ -1010,11 +1026,7 @@ def _in_flight_bytes(reading: dict) -> int:
     return downloaded - completed
 
 
-def _total_downloaded_bytes(readings: list[dict]) -> int:
-    return sum(max(0, int(reading.get("downloaded_bytes") or 0)) for reading in readings)
-
-
-def _active_reading(readings: list[dict]) -> dict:
+def _active_reading(readings: list[tuple[str, dict]]) -> tuple[str, dict]:
     """The one repo whose transfer the progress line should follow.
 
     A model, its base, and the repos the loader may substitute for that base are separate
@@ -1024,8 +1036,8 @@ def _active_reading(readings: list[dict]) -> dict:
     exist. Bytes are still summed for liveness, since any repo moving is progress, but the
     line follows whichever repo has bytes in flight, and the model itself when none does.
     """
-    active = max(readings, key = _in_flight_bytes)
-    return active if _in_flight_bytes(active) > 0 else readings[0]
+    active = max(readings, key = lambda item: _in_flight_bytes(item[1]))
+    return active if _in_flight_bytes(active[1]) > 0 else readings[0]
 
 
 _QUANT_MAPPERS: Optional[list[dict]] = None
@@ -1077,6 +1089,56 @@ def _flattened_repo_ids(value: object, found: set) -> None:
             _flattened_repo_ids(item, found)
 
 
+_BAD_MAPPINGS: Optional[dict] = None
+
+
+def _literal_text(node: object) -> Optional[str]:
+    """A string literal, or a literal with `.lower()` applied, as written in the source."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "lower"
+        and not node.args
+    ):
+        inner = _literal_text(node.func.value)
+        return inner.lower() if inner is not None else None
+    return None
+
+
+def _unsloth_bad_mappings() -> dict:
+    """`unsloth.models.loader_utils.BAD_MAPPINGS`, read out of the source.
+
+    The loader rewrites a mapped name a second time through this table, so a candidate set
+    built from the mapper alone stops one step short. Unlike the mapper this module cannot
+    be executed for its data -- it imports torch -- so the literal is read from the syntax
+    tree instead.
+    """
+    global _BAD_MAPPINGS
+    if _BAD_MAPPINGS is None:
+        _BAD_MAPPINGS = {}
+        try:
+            spec = importlib.util.find_spec("unsloth")
+            locations = list(spec.submodule_search_locations) if spec else []
+            path = Path(locations[0]) / "models" / "loader_utils.py" if locations else None
+            if path is not None and path.is_file():
+                for node in ast.parse(path.read_text(encoding = "utf-8")).body:
+                    targets = getattr(node, "targets", [])
+                    if not any(isinstance(t, ast.Name) and t.id == "BAD_MAPPINGS" for t in targets):
+                        continue
+                    if not isinstance(node.value, ast.Dict):
+                        continue
+                    for key, value in zip(node.value.keys, node.value.values):
+                        name, mapped = _literal_text(key), _literal_text(value)
+                        if name and mapped:
+                            _BAD_MAPPINGS[name] = mapped
+        except Exception:
+            # Nothing here is required; the mapper candidates are still worth polling.
+            pass
+    return _BAD_MAPPINGS
+
+
 def _base_model_candidates(base_model: str) -> list[str]:
     """`base_model` plus every repo the loader may download in its place.
 
@@ -1089,15 +1151,28 @@ def _base_model_candidates(base_model: str) -> list[str]:
     Unsloth builds. Polling one repo too many is a measured zero; missing the right one
     costs the user their server.
     """
+    tables = _unsloth_quant_mappers()
+    bad = _unsloth_bad_mappings()
     found: set = set()
-    for table in _unsloth_quant_mappers():
+    pending = [base_model]
+    # Followed to a fixed point: the loader maps a name, then rewrites the result through
+    # BAD_MAPPINGS, so the repo it downloads can be two steps from the recorded base.
+    while pending:
+        current = pending.pop()
+        step: set = set()
         # Both cases: the tables carry the name as written and a lower-cased copy, and
         # `__get_model_name` looks up the lower-cased one, so it can return a repo id whose
         # case differs from the entry reached by the recorded spelling.
-        for key in (base_model, base_model.lower()):
-            if key in table:
-                _flattened_repo_ids(table[key], found)
-    found.discard(base_model)
+        for key in (current, current.lower()):
+            for table in tables:
+                if key in table:
+                    _flattened_repo_ids(table[key], step)
+            if key in bad:
+                step.add(bad[key])
+        for repo in step:
+            if repo not in found and repo != base_model:
+                found.add(repo)
+                pending.append(repo)
     return [base_model] + sorted(repo for repo in found if _is_hub_model_id(repo))
 
 
@@ -1118,6 +1193,7 @@ class _ModelDownloadProgress:
         self._disabled = not _is_hub_model_id(model)
         self._progress_prefix = "/api/hub"
         self._companions: Optional[list[str]] = None
+        self._repo_bytes: dict[str, int] = {}
         self._companion_lookups = 0
         self._companion_retry_at = 0.0
 
@@ -1247,7 +1323,9 @@ class _ModelDownloadProgress:
                 self.poll()
                 return
             companions = [(repo, self._companion_reading(repo)) for repo in self._companions or []]
-            readings = [reading] + [item for _, item in companions if item is not None]
+            readings = [(self._model, reading)] + [
+                (repo, item) for repo, item in companions if item is not None
+            ]
             # Only one candidate base is ever fetched. Once one of them is moving the rest
             # are known dead weight, so stop spending a request per poll on them.
             moving = [
@@ -1264,10 +1342,19 @@ class _ModelDownloadProgress:
             # flapping mount could do that forever. The cost is that a transfer which truly
             # restarts is not counted again until it passes its own high mark; that failure
             # is bounded and says so, where a false renewal is an unbounded wait.
-            self._downloaded_bytes = max(self._downloaded_bytes, _total_downloaded_bytes(readings))
+            for repo, item in readings:
+                self._repo_bytes[repo] = max(
+                    self._repo_bytes.get(repo, 0), max(0, int(item.get("downloaded_bytes") or 0))
+                )
+            # Per repo, and kept after a candidate is dropped: an alternative base already
+            # complete in the cache contributes its bytes to the first total, so forgetting
+            # it would drop the sum below a high mark the live download may never reach on
+            # its own, and the deadline would never renew again.
+            self._downloaded_bytes = max(self._downloaded_bytes, sum(self._repo_bytes.values()))
             self._failures = 0
             self._retry_at = 0.0
-            self._display.update(_active_reading(readings))
+            active_repo, active = _active_reading(readings)
+            self._display.update(active, active_repo)
         except Exception:
             # Progress is best-effort and never fails the load, but `_start_studio_server`
             # reads `downloaded_bytes` to tell a live transfer from a wedged one. Backing
