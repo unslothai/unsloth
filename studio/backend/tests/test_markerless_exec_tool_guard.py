@@ -1311,3 +1311,42 @@ def test_an_mcp_name_is_not_held_as_a_rehearsal_prefix():
         assert is_prefix("web_search", tools)
         assert is_prefix("web_sea", tools)
         assert held("the tool is called web_search", tools) == len("web_search")
+
+
+def _cancel_after_snapshot(snapshot: str):
+    """Run the safetensors loop over one snapshot, cancelling once the stream ends."""
+    import threading
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    cancel = threading.Event()
+
+    def _single_turn(_messages, **_kwargs):
+        yield snapshot
+        cancel.set()
+
+    return list(
+        run_safetensors_tool_loop(
+            single_turn = _single_turn,
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": n}} for n in ("terminal", "web_search")],
+            execute_tool = lambda *a, **k: "ok",
+            nudge_tool_calls = False,
+            max_tool_iterations = 2,
+            permission_mode = "off",
+            cancel_event = cancel,
+        )
+    )
+
+
+@pytest.mark.parametrize("snapshot", [
+    'call:terminal{command:"id"}',
+    '{"name": "terminal", "arguments": {"command": "id"}}',
+])
+def test_a_cancel_still_emits_a_blocked_call_held_as_prose(snapshot):
+    """A blocked call buffers waiting for a promotable peer that may never arrive. The
+    cancel checks returned before the end-of-stream resolution, so text the parser
+    deliberately treats as prose was lost outright instead of being shown."""
+    events = _cancel_after_snapshot(snapshot)
+    content = "".join(e["text"] for e in events if e.get("type") == "content")
+    assert snapshot in content
+    assert not any(e.get("type") == "tool_start" for e in events)

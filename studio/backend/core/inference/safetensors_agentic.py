@@ -727,6 +727,20 @@ def run_safetensors_tool_loop(
             # Safetensors-only Magistral leading-reasoning removal first, then the shared strip.
             return _streaming_stripper.strip(_strip_mistral_reasoning(text))
 
+        def _cancelled_buffer_text() -> str:
+            """Display text still held in BUFFERING, which a cancel would otherwise drop:
+            a blocked call is prose the parser never executes, so returning before the
+            resolution below loses text the stream never sent. The strip removes promotable
+            markup, so an aborted real call contributes only its surrounding prose."""
+            if detect_state != _state_buffering or not content_buffer:
+                return ""
+            cleaned = strip_tool_markup(
+                cumulative_display + content_buffer,
+                final = True,
+                enabled_tool_names = _enabled_tool_names,
+            )
+            return cleaned if len(cleaned) > len(last_emitted) else ""
+
         detect_state = _state_buffering
         content_buffer = ""
         content_accum = ""
@@ -805,6 +819,9 @@ def run_safetensors_tool_loop(
                 raise
 
             if cancel_event is not None and cancel_event.is_set():
+                emit = _cancelled_buffer_text()
+                if emit:
+                    yield {"type": "content", "text": emit}
                 return
 
             if not isinstance(cumulative, str):
@@ -1084,6 +1101,9 @@ def run_safetensors_tool_loop(
 
         # Stream finished -- resolve what we collected.
         if cancel_event is not None and cancel_event.is_set():
+            emit = _cancelled_buffer_text()
+            if emit:
+                yield {"type": "content", "text": emit}
             return
 
         if detect_state == _state_buffering:
