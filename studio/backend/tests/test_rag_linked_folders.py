@@ -722,7 +722,9 @@ def test_reauthorizing_same_path_refreshes_root_identity_and_retains_mappings(
     source_stat = source.stat()
     assert reauthorized.is_set()
     assert refreshed["id"] == folder["id"]
-    assert (refreshed["root_device"], refreshed["root_inode"]) == (
+    # Read back through the loader: an identity above SQLite's signed maximum is stored as
+    # a hex string, which is the ordinary case for a Windows device id.
+    assert folder_sync._load_identity(refreshed["root_device"], refreshed["root_inode"]) == (
         source_stat.st_dev,
         source_stat.st_ino,
     )
