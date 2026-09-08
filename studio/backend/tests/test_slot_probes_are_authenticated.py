@@ -94,7 +94,9 @@ class TestTheRouteHandsThemTheBackendsKey:
         ) + flat.count("fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))")
         assert flat.count("erase_llama_slot(") == flat.count(
             "erase_llama_slot( base, slot_id, headers = _llama_slot_headers(llama_backend) )"
-        ) + flat.count("erase_llama_slot(base, slot_id, headers = _llama_slot_headers(llama_backend))")
+        ) + flat.count(
+            "erase_llama_slot(base, slot_id, headers = _llama_slot_headers(llama_backend))"
+        )
 
     def test_the_helper_reads_the_backends_own_bearer(self):
         from routes.inference import _llama_slot_headers

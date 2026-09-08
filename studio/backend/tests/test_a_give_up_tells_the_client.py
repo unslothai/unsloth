@@ -218,7 +218,8 @@ class TestTheToolLoopPath:
         assert len(recorder.payloads) == 1
         assert len(_gave_up(chunks)) == 1, "the tool loop gave up without telling anyone"
         finishes = [
-            c.get("finish_reason") for c in chunks
+            c.get("finish_reason")
+            for c in chunks
             if isinstance(c, dict) and c.get("type") == "metadata"
         ]
         assert finishes and finishes[-1] == "length", "the client resumes from a length finish"

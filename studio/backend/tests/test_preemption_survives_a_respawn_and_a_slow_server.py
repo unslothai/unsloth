@@ -51,7 +51,13 @@ def _frozen():
     return (0,)
 
 
-async def _lease(queue, *, tokens, capacity = 1, budget = 16384):
+async def _lease(
+    queue,
+    *,
+    tokens,
+    capacity = 1,
+    budget = 16384,
+):
     reservation = queue.reserve(
         capacity = capacity,
         config = LlamaAdmissionConfig(),
@@ -86,9 +92,9 @@ class TestTheKeySurvivesARespawn:
         backend._port = 65003
         backend._stamp_admission_key()
         assert backend.base_url == "http://127.0.0.1:65003", "the wire still goes to the new port"
-        assert backend.admission_key == "http://127.0.0.1:65001", (
-            "the ledger and the queue must still be the ones the live chats registered in"
-        )
+        assert (
+            backend.admission_key == "http://127.0.0.1:65001"
+        ), "the ledger and the queue must still be the ones the live chats registered in"
 
     def test_a_backend_without_a_key_falls_back_to_its_url(self):
         backend = self._backend(65004)
@@ -122,10 +128,10 @@ class TestTheKeySurvivesARespawn:
         picks = [m.end() for m in re.finditer(r"self\._port = self\._find_free_port\(\)", module)]
         assert picks, "expected the port picks this test guards"
         for end in picks:
-            following = module[end:end + 120]
-            assert "self._stamp_admission_key()" in following, (
-                "a port pick without a stamp leaves admission_key pointing at a dead server"
-            )
+            following = module[end : end + 120]
+            assert (
+                "self._stamp_admission_key()" in following
+            ), "a port pick without a stamp leaves admission_key pointing at a dead server"
 
 
 class TestAParkedResumeWaitsThroughAMovingPool:
@@ -203,9 +209,7 @@ class TestAParkedResumeWaitsThroughAMovingPool:
 
         asyncio.ensure_future(_release_later())
         started = time.monotonic()
-        resumed = await first.resume_async(
-            1200, poll_s = 0.01, timeout_s = 0.15, progress = _ticking()
-        )
+        resumed = await first.resume_async(1200, poll_s = 0.01, timeout_s = 0.15, progress = _ticking())
         assert resumed is True, "a preempted chat waiting behind a live answer must get its turn"
         assert time.monotonic() - started >= 0.4
         assert queue.snapshot().committed == 1200
@@ -268,7 +272,12 @@ def slow_probe(monkeypatch):
         lambda scrape: (scrape() and {"idle": [0], "resident": 2000, "idle_tokens": 2000}),
     )
 
-    def _reclaim(occupancy, erase, *, needed = 0):
+    def _reclaim(
+        occupancy,
+        erase,
+        *,
+        needed = 0,
+    ):
         for slot_id in occupancy.get("idle", []):
             seen["erased"].append(slot_id)
             erase(slot_id)

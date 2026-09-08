@@ -579,9 +579,7 @@ class LlamaAdmissionLease:
         deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
         patience = None if deadline is None else float(timeout_s)
         hard_deadline = (
-            None
-            if patience is None
-            else time.monotonic() + patience * _MAX_REPARK_WAIT_MULTIPLE
+            None if patience is None else time.monotonic() + patience * _MAX_REPARK_WAIT_MULTIPLE
         )
         last_progress = progress() if progress is not None else None
         if commitment_only:
