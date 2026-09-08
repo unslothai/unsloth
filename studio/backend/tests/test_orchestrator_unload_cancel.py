@@ -2712,7 +2712,11 @@ def test_a_running_attempt_already_in_the_pending_map_is_not_counted_twice():
             inf._pending_load_attempts.pop(both.token, None)
 
 
-def _mk_attempt(inf, token, path = "owner/model"):
+def _mk_attempt(
+    inf,
+    token,
+    path = "owner/model",
+):
     return inf._ScopedLoadAttempt(
         token = token,
         request_id = None,
@@ -2784,9 +2788,9 @@ def test_the_latch_is_scoped_to_a_lifecycle_not_the_process():
 
         inf.begin_load_lifecycle()
         with inf._scoped_load_attempts_lock:
-            assert inf._loads_shutting_down is False, (
-                "the second session would cancel every load it admitted"
-            )
+            assert (
+                inf._loads_shutting_down is False
+            ), "the second session would cancel every load it admitted"
     finally:
         inf.begin_load_lifecycle()
 

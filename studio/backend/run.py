@@ -2885,6 +2885,7 @@ def run_server(
     # above that must come first.
     try:
         from routes.inference import _llama_cpp_backend, begin_load_lifecycle
+
         # The route latch as well as the backend's: shutdown sets both, and a second
         # session that cleared only one would refuse every /load it admitted.
         begin_load_lifecycle()
