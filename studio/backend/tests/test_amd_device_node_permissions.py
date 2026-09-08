@@ -1940,7 +1940,6 @@ def test_a_container_missing_kfd_is_told_to_map_it_rather_than_reinstall(monkeyp
     assert "the kernel driver is loaded" in hint
 
 
-
 def _install_sh_missing_kfd(*, topology: bool, amd_smi_sees_it: bool) -> str:
     """What the installer says when /dev/kfd is absent, for a given pair of probes.
 
@@ -2029,7 +2028,7 @@ def test_the_installer_denies_the_same_groups_the_runtime_does():
     either: a group added to one half alone fails here."""
     install_sh = Path(__file__).resolve().parents[3] / "install.sh"
     text = install_sh.read_text(encoding = "utf-8")
-    match = re.search(r'\$2 ~ /\^\(([a-z|]+)\)\$/', text)
+    match = re.search(r"\$2 ~ /\^\(([a-z|]+)\)\$/", text)
     assert match, "install.sh no longer carries the privileged-group alternation"
     assert set(match.group(1).split("|")) == set(amd._PRIVILEGED_GROUPS)
 

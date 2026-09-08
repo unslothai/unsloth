@@ -1266,6 +1266,7 @@ def _torch_reports_another_vendors_runtime() -> bool:
         return False
     try:
         import torch
+
         _version = getattr(torch, "version", None)
         # A ROCm build sets torch.version.hip and can carry a cuda attribute besides, so
         # that reading is taken first and this answers only about the other vendors.
