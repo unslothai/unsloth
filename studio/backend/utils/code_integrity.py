@@ -45,9 +45,7 @@ _SMART_APP_CONTROL_REASONS = frozenset({_REASON_SMART_APP_CONTROL})
 # 5038 names disk error and unauthorized modification beside it, so a truncated
 # or damaged copy of an otherwise acceptable file lands here too -- and there
 # replacing the file IS the remedy. These two must not deny corruption.
-_INVALID_HASH_REASONS = frozenset(
-    {_REASON_INVALID_HASH_STATUS, _REASON_INVALID_HASH_WINERROR}
-)
+_INVALID_HASH_REASONS = frozenset({_REASON_INVALID_HASH_STATUS, _REASON_INVALID_HASH_WINERROR})
 
 _STATUS_TEXT_RE = re.compile(r"0x(c0e90002|c0000428|c0000602)\b", re.IGNORECASE)
 _BAD_IMAGE_RE = re.compile(
