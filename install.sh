@@ -3481,8 +3481,15 @@ _amd_visible_masks_select_no_gpu() {
 # CUDA and HIP read the list left to right and stop at the first entry naming no device, so
 # what survives is the PREFIX of resolvable ordinals. A non-numeric entry cannot be resolved
 # here (ROCr accepts UUIDs) and ends the prefix rather than being guessed at.
+#
+# A third argument of "rocr" additionally ends the prefix at a REPEATED ordinal. ROCr's own
+# filter (ROCR-Runtime, core/inc/amd_filter_device.h) terminates on an index that "maps to a
+# device that has been previously selected", so ROCR_VISIBLE_DEVICES=0,0 exposes ONE device;
+# printing it twice invents a second, and the HIP layer above then resolves an ordinal
+# against a device the runtime never surfaced. The HIP layer gets no such rule here because
+# clr documents none, and only the first survivor is read one line down in any case.
 _amd_mask_survivors() {
-    printf '%s\n' "$1" | awk -v vis="$2" '
+    printf '%s\n' "$1" | awk -v vis="$2" -v layer="${3:-}" '
         NF { vals[n++] = $0 }
         END {
             count = split(vis, want, ",")
@@ -3491,6 +3498,8 @@ _amd_mask_survivors() {
                 if (want[i] !~ /^[0-9]+$/) break
                 idx = want[i] + 0
                 if (idx >= n) break
+                if (layer == "rocr" && (idx in seen)) break
+                seen[idx] = 1
                 print vals[idx]
             }
         }'
@@ -3515,7 +3524,7 @@ _amd_mask_survivors() {
 _amd_runtime_gfx_target() {
     _argt_list="$1"
     if [ -n "${ROCR_VISIBLE_DEVICES:-}" ]; then
-        _argt_list=$(_amd_mask_survivors "$_argt_list" "$ROCR_VISIBLE_DEVICES")
+        _argt_list=$(_amd_mask_survivors "$_argt_list" "$ROCR_VISIBLE_DEVICES" rocr)
         [ -n "$_argt_list" ] || return 0
     fi
     # CUDA_VISIBLE_DEVICES is the HIP alias and clr reads it only when HIP itself is unset.

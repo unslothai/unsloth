@@ -1941,8 +1941,9 @@ _LAST_AMD_GFX_PROBE: "str | None" = None
 _LAST_HIP_MASK_RESOLVED = True
 
 # The same question one layer down. ROCr filters BENEATH HIP and is not covered by the flag
-# above: _rocr_visible_subset keeps the whole list for an ordinal past the last device, so a
-# mask exposing nothing to ROCr still reaches the HIP layer as a full list and resolves.
+# above: _rocr_visible_subset keeps the whole list when the mask's first ordinal names no
+# device, so a mask exposing nothing to ROCr still reaches the HIP layer as a full list and
+# resolves.
 _LAST_ROCR_MASK_RESOLVED = True
 
 
@@ -2328,7 +2329,14 @@ def _runtime_gfx_target(
         if _visible_devices_pinned():
             # The kernel's topology first: KFD node order IS the order HIP and ROCr index,
             # and it answers on the runtime-less hosts a declared arch exists for.
-            _mask_devices = _kfd_gfx_targets() or _detect_amd_gfx_codes(dedup = False)
+            # ignore_visible_masks, because rocminfo is renumbered by ROCR_VISIBLE_DEVICES
+            # and the ordinals below index the list BEFORE that mask. Without it a valid
+            # ROCR_VISIBLE_DEVICES=1 is checked against the one agent rocminfo then reports,
+            # reads as out of range, and declines the very request the user declared. KFD
+            # sysfs is filtered by nothing, so it is unaffected and still leads.
+            _mask_devices = _kfd_gfx_targets() or _detect_amd_gfx_codes(
+                dedup = False, ignore_visible_masks = True
+            )
             if _mask_devices:
                 _LAST_ROCR_MASK_RESOLVED = _rocr_layer_mask_names_a_device(len(_mask_devices))
                 _LAST_HIP_MASK_RESOLVED = _hip_layer_mask_names_a_device(
@@ -2788,6 +2796,7 @@ def _rocr_visible_subset(gfx_devices: "list[str]") -> "tuple[list[str], bool]":
     if not _raw or not gfx_devices:
         return gfx_devices, False
     _kept: "list[str]" = []
+    _seen: "set[int]" = set()
     _unresolved = False
     for _tok in _raw.split(","):
         _tok = _tok.strip()
@@ -2796,12 +2805,21 @@ def _rocr_visible_subset(gfx_devices: "list[str]") -> "tuple[list[str], bool]":
         except ValueError:
             _unresolved = True  # a UUID: this names a device, but not a position
             continue
-        if 0 <= _idx < len(gfx_devices):
-            _kept.append(gfx_devices[_idx])
-    # An out-of-range index keeps the whole list, deliberately: _pick_visible_index warns and
-    # falls back to GPU 0 for that value (matching setup.ps1's Resolve-VisibleGpuIndex), and a
-    # stricter rule here would split the two. ROCR_VISIBLE_DEVICES=1 on a one-GPU box is a
-    # typo, and reading it as "no GPU" withdraws the repair from the hosts this exists for.
+        # The survivors are a PREFIX, per the rule _rocr_layer_mask_names_a_device cites: an
+        # index terminates the mask when it falls outside the device list OR names a device
+        # already selected. Appending past either point invents a device the runtime never
+        # exposes, and the HIP layer above then resolves an ordinal against it -- ROCR=0,0
+        # with HIP=1 read as a two-device list and approved a swap onto nothing.
+        if _idx in _seen or not (0 <= _idx < len(gfx_devices)):
+            break
+        _seen.add(_idx)
+        _kept.append(gfx_devices[_idx])
+    # A mask whose FIRST index resolves to nothing keeps the whole list, deliberately:
+    # _pick_visible_index warns and falls back to GPU 0 for that value (matching setup.ps1's
+    # Resolve-VisibleGpuIndex), and a stricter rule here would split the two.
+    # ROCR_VISIBLE_DEVICES=1 on a one-GPU box is a typo, and reading it as "no GPU" withdraws
+    # the repair from the hosts this exists for. _LAST_ROCR_MASK_RESOLVED is the fail-closed
+    # half of the same question and is judged by the prefix rule above.
     return (_kept or gfx_devices), _unresolved
 
 

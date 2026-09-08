@@ -1413,7 +1413,9 @@ def test_a_rocm_pin_is_still_honoured_over_an_nvidia_card(stack, monkeypatch):
     assert reached["ran"] is True
 
 
-def _viable_masked(stack, monkeypatch, *, devices: list, **mask: str) -> bool:
+def _viable_masked(
+    stack, monkeypatch, *, devices: list, masked: "list | None" = None, **mask: str
+) -> bool:
     """_forced_rocm_route_is_viable on a masked host, with the resolution left live.
 
     Only the probe is stubbed, so _runtime_gfx_target does the real ROCr/HIP composition:
@@ -1427,7 +1429,11 @@ def _viable_masked(stack, monkeypatch, *, devices: list, **mask: str) -> bool:
     monkeypatch.setattr(stack, "_linux_amd_display_device_present", lambda: True)
     monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: False)
     monkeypatch.setattr(stack, "_infer_linux_amd_gfx_arch", lambda: None)
-    monkeypatch.setattr(stack, "_detect_amd_gfx_codes", lambda **k: list(devices))
+    monkeypatch.setattr(
+        stack,
+        "_detect_amd_gfx_codes",
+        lambda **k: list(devices if masked is None or k.get("ignore_visible_masks") else masked),
+    )
     monkeypatch.setattr(stack, "_physical_amd_gfx_archs", lambda: list(devices))
     for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising = False)
@@ -1944,3 +1950,137 @@ def test_the_presence_rule_is_unchanged_for_a_host_that_did_not_ask(stack):
         ),
     )
     assert out.strip().endswith("/cpu"), out
+
+
+
+def test_a_repeated_rocr_ordinal_does_not_invent_a_device(stack, monkeypatch):
+    """ROCr terminates on an index that "maps to a device that has been previously selected"
+    (ROCR-Runtime, core/inc/amd_filter_device.h), so ROCR_VISIBLE_DEVICES=0,0 surfaces ONE
+    device and HIP_VISIBLE_DEVICES=1 above it then indexes nothing. _rocr_visible_subset kept
+    both copies, so the HIP layer resolved its ordinal against a device that does not exist
+    and the swap was approved for a runtime that hands torch no GPU at all."""
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1100", "gfx1010"],
+            ROCR_VISIBLE_DEVICES = "0,0",
+            HIP_VISIBLE_DEVICES = "1",
+        )
+        is False
+    )
+
+
+def test_two_distinct_rocr_ordinals_still_expose_both_devices(stack, monkeypatch):
+    """The control. The rule is "a repeat ends the prefix", not "a two-token mask exposes one
+    device": ROCR_VISIBLE_DEVICES=1,0 surfaces both, renumbered, so HIP ordinal 1 is the
+    routable gfx1100 and the swap stands. A fix that shortened every mask would answer False
+    here and withdraw the feature from the hosts that pin two cards."""
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1100", "gfx1010"],
+            ROCR_VISIBLE_DEVICES = "1,0",
+            HIP_VISIBLE_DEVICES = "1",
+        )
+        is True
+    )
+
+
+def test_the_rocr_subset_is_the_prefix_of_devices_the_mask_surfaces(stack, monkeypatch):
+    """The buckets behind the two cases above, since a route verdict cannot show WHICH list
+    the HIP layer was handed. Each mask is paired with what ROCr surfaces for it: a repeat
+    and an out-of-range index both end the prefix, and a mask whose FIRST index resolves to
+    nothing keeps the whole list on purpose, so arch selection still answers."""
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    _devices = ["gfx1100", "gfx1010", "gfx1201"]
+    for _mask, _expected in (
+        ("0,0", ["gfx1100"]),
+        ("1,1,2", ["gfx1010"]),
+        ("0,7,1", ["gfx1100"]),
+        ("2,0", ["gfx1201", "gfx1100"]),
+        ("7", _devices),
+    ):
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", _mask)
+        assert stack._rocr_visible_subset(list(_devices))[0] == _expected, _mask
+
+
+def test_a_declared_arch_resolves_its_mask_against_the_unmasked_list(stack, monkeypatch):
+    """With no KFD topology (WSL) the declared-arch path falls back to rocminfo, and rocminfo
+    is the one probe ROCR_VISIBLE_DEVICES renumbers. Asking it with the mask still in place
+    returned the single agent it leaves, so a valid ROCR_VISIBLE_DEVICES=1 was checked against
+    a list of length 1, read as out of range, and declined the very request the user declared:
+    standalone `studio update` kept CUDA on a host that asked for ROCm."""
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1100")
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1100", "gfx1010"],
+            masked = ["gfx1010"],
+            ROCR_VISIBLE_DEVICES = "1",
+        )
+        is True
+    )
+
+
+def test_the_same_declared_host_with_a_mask_past_its_last_device_still_declines(
+    stack, monkeypatch
+):
+    """The control: the unmasked list is asked for so the ordinals can be judged, not so that
+    every ordinal passes. ROCR_VISIBLE_DEVICES=7 is out of range on the whole two-GPU machine,
+    so it surfaces nothing and the declared arch has no runtime to build for."""
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1100")
+    assert (
+        _viable_masked(
+            stack,
+            monkeypatch,
+            devices = ["gfx1100", "gfx1010"],
+            masked = [],
+            ROCR_VISIBLE_DEVICES = "7",
+        )
+        is False
+    )
+
+
+def test_the_installer_stops_the_rocr_prefix_at_a_repeat_too():
+    """The shell half of the duplicate rule: _amd_mask_survivors printed the repeated device
+    a second time, so the HIP layer read a two-entry list and selected a phantom."""
+    assert (
+        _route_shell_masked(
+            ["gfx1100", "gfx1010"],
+            devices = ["gfx1100", "gfx1010"],
+            ROCR_VISIBLE_DEVICES = "0,0",
+            HIP_VISIBLE_DEVICES = "1",
+        )
+        is False
+    )
+
+
+def test_the_installer_still_exposes_both_devices_for_distinct_ordinals():
+    """The control, matching the Python one: ROCR_VISIBLE_DEVICES=1,0 renumbers rather than
+    truncates, so HIP ordinal 1 is the routable card and the request still deposes CUDA."""
+    assert (
+        _route_shell_masked(
+            ["gfx1100", "gfx1010"],
+            devices = ["gfx1100", "gfx1010"],
+            ROCR_VISIBLE_DEVICES = "1,0",
+            HIP_VISIBLE_DEVICES = "1",
+        )
+        is True
+    )
+
+
+def test_the_installer_does_not_apply_the_repeat_rule_to_the_hip_layer():
+    """The rule is ROCr's, cited from its own filter; clr documents no such termination for
+    HIP_VISIBLE_DEVICES, so the third argument scopes it to the layer it was read from.
+    HIP_VISIBLE_DEVICES=1,1 therefore still selects the second card, which is routable."""
+    assert (
+        _route_shell_masked(
+            ["gfx1010", "gfx1100"],
+            devices = ["gfx1010", "gfx1100"],
+            HIP_VISIBLE_DEVICES = "1,1",
+        )
+        is True
+    )
