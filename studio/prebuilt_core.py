@@ -831,6 +831,33 @@ def release_asset_map(release: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def release_asset_digests(release: dict[str, Any]) -> dict[str, str]:
+    """asset name -> bare sha256 hex, for the assets whose digest GitHub reports.
+
+    Separate from release_asset_map because the name -> url mapping is what nearly every
+    caller wants and widening its return type would touch all of them. GitHub returns
+    `digest` as an algorithm-prefixed string ("sha256:<hex>"); anything else is skipped
+    rather than guessed at, so a future algorithm cannot be read as a sha256.
+    """
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        return {}
+    digests: dict[str, str] = {}
+    for asset in assets:
+        if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+            continue
+        raw = asset.get("digest")
+        # The prefix is required, not stripped for convenience: normalize_sha256_digest
+        # accepts a bare 64-hex string, and an unprefixed digest is one whose algorithm
+        # GitHub did not state.
+        if not isinstance(raw, str) or not raw.lower().startswith("sha256:"):
+            continue
+        digest = normalize_sha256_digest(raw)
+        if digest:
+            digests[asset["name"]] = digest
+    return digests
+
+
 def github_release(
     ops: ModuleOps,
     repo: str,

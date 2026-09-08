@@ -1373,6 +1373,22 @@ def detected_linux_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
 
 
 release_asset_map = _core.release_asset_map
+release_asset_digests = _core.release_asset_digests
+
+
+def github_release_asset_digests(repo: str, tag: str) -> dict[str, str]:
+    """asset name -> sha256, from the release GitHub already serves us.
+
+    Separate call rather than a second return value from github_release_assets: that one is
+    mocked in a dozen suites and used on every platform, while this is read on one branch
+    only. Any failure is an empty mapping, which that branch reads as "refuse", so a rate
+    limit or an outage costs the CUDA bundle rather than installing it unchecked.
+    """
+    try:
+        return release_asset_digests(github_release(repo, tag))
+    except Exception as exc:
+        log(f"could not read release asset digests for {repo}@{tag}: {exc}")
+        return {}
 
 
 def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
@@ -3905,14 +3921,32 @@ def resolve_release_asset_choice(
                     return apply_approved_hashes(upstream_arm64_cuda, checksums)
                 except PrebuiltFallback as exc:
                     # The fork publishes no windows-arm64-cuda bundle yet, so take upstream
-                    # ggml-org's: the same release this fork repackages, over HTTPS.
+                    # ggml-org's: the same release this fork repackages. Verified against
+                    # GitHub's own per-asset digest, which the API now reports for every
+                    # asset. Weaker than our manifest, which we compute ourselves, but it
+                    # pins the bytes to what the API listed and is what makes this the only
+                    # branch that does not simply refuse. An asset GitHub states no digest
+                    # for is refused rather than installed unchecked, so this is never the
+                    # path by which an unverified archive lands.
+                    verified = _apply_release_digests(
+                        upstream_arm64_cuda,
+                        github_release_asset_digests(UPSTREAM_REPO, llama_tag),
+                    )
+                    if verified:
+                        log(
+                            "no approved checksum covers a Windows ARM64 CUDA bundle "
+                            f"({exc}); installing the upstream {UPSTREAM_REPO} bundle "
+                            f"{verified[0].name}, verified against the release asset digest "
+                            "GitHub reports. Set UNSLOTH_LLAMA_ARM64_CUDA=0 to use the CPU "
+                            "bundle instead."
+                        )
+                        return verified
                     log(
                         "no approved checksum covers a Windows ARM64 CUDA bundle "
-                        f"({exc}); installing the upstream {UPSTREAM_REPO} bundle "
-                        f"{upstream_arm64_cuda[0].name} without one. Set "
-                        "UNSLOTH_LLAMA_ARM64_CUDA=0 to use the CPU bundle instead."
+                        f"({exc}), and GitHub reports no asset digest for the upstream "
+                        f"{UPSTREAM_REPO} bundle either; refusing to install it unverified "
+                        "and falling through to the ARM64 CPU bundle."
                     )
-                    return upstream_arm64_cuda
         published_choice = published_asset_choice_for_kind(release, "windows-arm64")
     elif host.is_macos and host.is_arm64:
         published_choice = published_asset_choice_for_kind(release, "macos-arm64")
@@ -6393,6 +6427,34 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
                 lines.append(f"otool error: {exc}")
 
     return "\n".join(lines)
+
+
+def _apply_release_digests(
+    attempts: Iterable[AssetChoice], digests: dict[str, str]
+) -> list[AssetChoice]:
+    """apply_approved_hashes against GitHub's per-asset digests instead of our manifest.
+
+    Same two rules, because they are the ones that matter: an attempt with no digest is
+    dropped rather than installed unverified, and a paired runtime archive with no digest
+    unpairs rather than riding along unchecked. Returns [] when nothing survives, which the
+    one caller reads as "refuse and fall through", not as "install anyway".
+    """
+    kept: list[AssetChoice] = []
+    for attempt in attempts:
+        digest = digests.get(attempt.name)
+        if digest is None:
+            continue
+        attempt.expected_sha256 = digest
+        if attempt.runtime_name and attempt.runtime_url:
+            runtime_digest = digests.get(attempt.runtime_name)
+            if runtime_digest is None:
+                attempt.runtime_name = None
+                attempt.runtime_url = None
+                attempt.runtime_sha256 = None
+            else:
+                attempt.runtime_sha256 = runtime_digest
+        kept.append(attempt)
+    return kept
 
 
 def apply_approved_hashes(
