@@ -97,6 +97,7 @@ def test_platform_only_host_agrees_with_a_detected_host_on_the_platform_facts():
 def test_platform_only_host_does_not_probe_for_gpus(monkeypatch):
     """The point of it. detect_host() shells out to nvidia-smi and friends and costs over a
     second; a launch probe that only wants to know whether files are missing must not."""
+
     def refuse(*args, **kwargs):
         raise AssertionError("platform_only_host must not run a subprocess")
 
