@@ -10,9 +10,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useInventoryVersion } from "@/features/hub/stores/inventory-events";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type CacheEntry,
   type CacheInventory,
@@ -71,6 +72,22 @@ const OPT_IN_COST_KEYS: Partial<Record<CacheKey, TranslationKey>> = {
 /** What a confirmation is about: everything reclaimable, or one opt-in cache. */
 type PurgeTarget = { kind: "bulk" } | { kind: "single"; key: CacheKey };
 
+/**
+ * The body of the confirmation for clearing one cache, as translation keys.
+ *
+ * The generic assurance ends with "downloaded models ... are not touched". That
+ * is true of a bulk clear, which never includes an opt-in cache, and it is the
+ * opposite of the truth for the model cache itself: putting both sentences in
+ * one dialog contradicts itself immediately before deleting those models. The
+ * hub clear therefore says only what it costs.
+ */
+export function singleClearDescriptionKeys(key: CacheKey): TranslationKey[] {
+  const cost = OPT_IN_COST_KEYS[key];
+  const spared: TranslationKey[] =
+    key === "hf_hub" ? [] : ["settings.resources.storage.caches.safety"];
+  return cost ? [cost, ...spared] : spared;
+}
+
 function presentCaches(inventory: CacheInventory | null): CacheEntry[] {
   if (!inventory) return [];
   return inventory.caches.filter((entry) => entry.present);
@@ -104,9 +121,22 @@ export function CacheStorageRows() {
     [t],
   );
 
+  // Models Folder sits directly above these rows in the same section, and saving
+  // it bumps the inventory version. Without this the Hugging Face rows would go
+  // on showing the path and the size of the folder the user just moved off,
+  // beside the field that now names the new one, with a Clear button that acts
+  // on the new one.
+  const inventoryVersion = useInventoryVersion();
+  const measuredVersion = useRef(inventoryVersion);
+
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    // The backend memoises a size for a minute, so the reading that has to be
+    // thrown away is exactly the one a plain load would return. The first load
+    // is not forced: a cold walk of a large uv cache costs tens of seconds.
+    const moved = measuredVersion.current !== inventoryVersion;
+    measuredVersion.current = inventoryVersion;
+    void refresh(moved ? { refresh: true } : {});
+  }, [refresh, inventoryVersion]);
 
   const entries = presentCaches(inventory);
   const bulkKeys = inventory ? bulkPurgeKeys(inventory) : [];
@@ -147,13 +177,8 @@ export function CacheStorageRows() {
       : t("settings.resources.storage.caches.confirmTitle");
   const confirmDescription =
     target?.kind === "single"
-      ? [
-          OPT_IN_COST_KEYS[target.key]
-            ? t(OPT_IN_COST_KEYS[target.key] as TranslationKey)
-            : "",
-          t("settings.resources.storage.caches.safety"),
-        ]
-          .filter(Boolean)
+      ? singleClearDescriptionKeys(target.key)
+          .map((key) => t(key))
           .join(" ")
       : `${t("settings.resources.storage.caches.confirmDescription", {
           size: formatCacheSize(reclaimable),

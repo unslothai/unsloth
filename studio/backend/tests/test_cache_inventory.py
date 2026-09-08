@@ -413,3 +413,85 @@ def test_the_compiled_cache_is_never_swept_up_by_a_bulk_purge():
         e for e in inventory["caches"] if e["key"] == "unsloth_compiled"
     )
     assert entry["opt_in"] is True
+
+
+def test_a_junctioned_cache_root_is_refused_like_a_symlink(tmp_path, monkeypatch):
+    """A junction is the same hazard as a symlink and fails the same test.
+
+    Since 3.8 only IO_REPARSE_TAG_SYMLINK sets S_IFLNK, so ``is_symlink()`` is
+    False for a Windows directory junction while ``realpath()`` follows it to
+    its target. Without a tag check, UV_CACHE_DIR pointed at a junction would
+    empty whatever the junction names.
+    """
+    target = tmp_path / "somewhere" / "deep"
+    target.mkdir(parents = True)
+    kept = _write(target / "not-a-cache.txt", "mine")
+    junction = tmp_path / "cache"
+    junction.mkdir()
+
+    # os.path.isjunction is the 3.12+ answer and is always False on POSIX, so
+    # the platform test is what a Windows host would report here.
+    monkeypatch.setattr(
+        os.path, "isjunction", lambda path: Path(path) == junction, raising = False
+    )
+    assert not junction.is_symlink()
+
+    with pytest.raises(CachePurgeRefused) as excinfo:
+        assert_purgeable_root(junction)
+    assert "junction" in str(excinfo.value)
+    assert kept.exists()
+
+
+def test_a_bulk_clear_cannot_reach_an_opt_in_cache_nested_in_another_root(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """An opt-in cache is only ever cleared when it is asked for by name.
+
+    Nothing stops a variable from putting one inside another cache, and emptying
+    the outer root would then delete it anyway: HF_DATASETS_CACHE below
+    UV_CACHE_DIR costs the re-download the opt-in exists to prevent.
+    """
+    uv = tmp_path / "uv"
+    datasets = uv / "hf-datasets"
+    _write(uv / "wheels" / "wheel.whl", "w" * 10)
+    dataset_file = _write(datasets / "squad" / "data.arrow", "d" * 10)
+    monkeypatch.setenv("HF_DATASETS_CACHE", str(datasets))
+
+    described = describe_cache(definition_for("uv"))
+    assert described["purgeable"] is False
+    assert "opt-in cache" in (described["blocked_reason"] or "")
+
+    result = purge_caches(["uv"])
+    assert dataset_file.exists()
+    assert result["freed_bytes"] == 0
+
+    # ...and the nested cache is still clearable when it is the one asked for.
+    purge_caches(["hf_datasets"])
+    assert not dataset_file.exists()
+
+
+def test_an_explicit_hub_cache_outside_a_hub_folder_stays_clearable(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """HF_HUB_CACHE=/mnt/hf-cache makes the DISPLAY home the hub itself.
+
+    Protecting the display home there would mark the model cache permanently
+    unclearable and say so in the row, while protecting no credential: the token
+    lives in the HF home, which is protected on its own.
+    """
+    from utils import hf_cache_settings
+
+    hub = tmp_path / "hf-cache"
+    _write(hub / "models--org--model" / "blob", "m" * 10)
+    paths = hf_cache_settings.HuggingFaceCachePaths(
+        hub, hub, tmp_path / "xet", "environment", "HF_HUB_CACHE"
+    )
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [hub])
+
+    described = describe_cache(definition_for("hf_hub"))
+    assert described["purgeable"] is True, described["blocked_reason"]
+
+    # ...and the HF home that holds the token is still refused.
+    with pytest.raises(CachePurgeRefused):
+        assert_purgeable_root(isolated_caches)

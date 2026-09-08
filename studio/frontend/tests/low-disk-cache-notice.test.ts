@@ -6,7 +6,7 @@
 // until free space climbs clear of the level that was announced.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -20,6 +20,20 @@ import {
   observeDiskPressure,
   resetLowDiskNotices,
 } from "../src/features/settings/low-disk.ts";
+
+/** Every .ts/.tsx file under a directory, so "mounted once" can be checked. */
+function sourceFiles(directory: URL): URL[] {
+  const found: URL[] = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const child = new URL(
+      `${entry.name}${entry.isDirectory() ? "/" : ""}`,
+      directory,
+    );
+    if (entry.isDirectory()) found.push(...sourceFiles(child));
+    else if (/\.tsx?$/.test(entry.name)) found.push(child);
+  }
+  return found;
+}
 
 function disk(freeGb: number, totalGb = 500) {
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -107,7 +121,7 @@ test("the session state is shared across mounts, not reset by them", () => {
   assert.equal(observeDiskPressure(disk(10)), "low");
 });
 
-test("the notice is app-level and still adds no polling", () => {
+test("the notice fetches its own readings rather than waiting to be told", () => {
   const hook = readFileSync(
     new URL(
       "../src/features/settings/hooks/use-low-disk-notice.ts",
@@ -115,29 +129,56 @@ test("the notice is app-level and still adds no polling", () => {
     ),
     "utf8",
   );
-  // subscribeSystemInfo attaches to the poll the app already runs. A
-  // useSystemInfo/setInterval here would double /api/system traffic for a warning.
-  assert.match(hook, /subscribeSystemInfo\(/);
-  assert.doesNotMatch(hook, /setInterval|useSystemInfo\(/);
-  assert.match(hook, /observeDiskPressure\(info\.disk\)/);
+  // This assertion used to be its own inverse: it required subscribeSystemInfo
+  // and BANNED useSystemInfo, on the belief that the app runs a system poll to
+  // attach to. It does not. subscribeSystemInfo only adds a callback to a Set;
+  // it never requests /api/system and never replays the cached reading, so a
+  // bare subscriber hears something only when the floating monitor or the
+  // resources tab happens to be open and fetching. Both are lazily mounted and
+  // gated on being open, which left this notice silent for precisely the user
+  // who never opens Settings. The test passed the whole time.
+  assert.match(hook, /useSystemInfo\(\{ pollMs: LOW_DISK_POLL_MS \}\)/);
+  assert.match(hook, /observeDiskPressure\(systemInfo\.disk\)/);
   assert.match(hook, /toast\.warning\(/);
+  // Slow on purpose: a disk fills over hours, and this one runs on every route.
+  assert.match(hook, /LOW_DISK_POLL_MS = 60_000/);
   // The toast has to lead somewhere: the Storage section it is about.
   assert.match(hook, /scrollTarget: "resources-caches"/);
 });
 
-test("the notice is mounted outside Settings", () => {
-  // It lived in the resources tab first, which meant the only people warned that
-  // the disk was filling were the ones already looking at the disk figure.
-  const page = readFileSync(
-    new URL("../src/features/studio/studio-page.tsx", import.meta.url),
+test("the notice is mounted in the app shell, not on one route", () => {
+  // It lived in the resources tab first, which warned only the people already
+  // looking at the disk figure, and then on /studio, which warned only the
+  // people who were training. A full disk belongs to whichever route the user
+  // is on. The root layout wraps every signed-in route and, unlike a page,
+  // stays mounted across navigation.
+  const root = readFileSync(
+    new URL("../src/app/routes/__root.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(page, /useLowDiskNotice\(\)/);
+  assert.match(root, /function LowDiskNoticeMount\(\)/);
+  assert.match(root, /useLowDiskNotice\(\)/);
+  // Not during the auth flow: there is no session to warn, and no Settings to
+  // send the toast's action to.
+  assert.match(root, /!isAuthFlowRoute && <LowDiskNoticeMount \/>/);
+
+  // Exactly one mount in the whole app, or the toast arrives twice on the route
+  // that also mounts it.
+  const callers = sourceFiles(new URL("../src/", import.meta.url)).filter(
+    // The declaration itself reads "function useLowDiskNotice(): void".
+    (file) =>
+      /(?<!function )useLowDiskNotice\(\)/.test(readFileSync(file, "utf8")),
+  );
+  assert.deepEqual(
+    callers.map((file) => file.pathname.split("/src/")[1]),
+    ["app/routes/__root.tsx"],
+  );
+
   const tab = readFileSync(
     new URL("../src/features/settings/tabs/resources-tab.tsx", import.meta.url),
     "utf8",
   );
-  // ...and it is not ALSO in the tab, or the warning arrives twice.
+  // ...and the level is still not observed a second time inside Settings.
   assert.doesNotMatch(tab, /observeDiskPressure/);
 });
 

@@ -13,11 +13,14 @@ The rules a purge obeys, in the order they are checked:
 
 * The key must be one of ``CACHE_DEFINITIONS``.
 * Its resolved root must be an absolute existing directory, at least two
-  components below the filesystem anchor, and must not itself be a symlink.
+  components below the filesystem anchor, and must be neither a symlink nor a
+  Windows junction.
 * The root must not be, or contain, anything in ``protected_paths()``: the
   studio home, studio.db, projects, models, datasets, outputs, exports, auth,
   the Hugging Face cache HOME (which holds the token), or a managed asset home
   such as DATA_DESIGNER_HOME.
+* The root must not contain an opt-in cache belonging to another key, which is
+  only ever cleared when it is asked for by name.
 * The root is emptied, never removed, so nothing recreates it at the wrong
   place with the wrong permissions.
 * A symlink inside the root is unlinked, never followed, and a directory whose
@@ -29,6 +32,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import shutil
+import stat
 import sys
 import threading
 import time
@@ -296,13 +300,16 @@ def _purge_unsloth_compiled() -> PurgeOutcome:
         # than letting the others carry it through.
         protected = protected_paths()
         trees = protected_trees()
+        keep = opt_in_roots("unsloth_compiled")
         for directory, dedicated in _cleanable_cache_dirs():
             if not dedicated:
                 # Only generated module files are touched there, never the
                 # directory's other contents.
                 continue
             try:
-                assert_purgeable_root(directory, protected = protected, trees = trees)
+                assert_purgeable_root(
+                    directory, protected = protected, trees = trees, keep = keep
+                )
             except CachePurgeRefused as exc:
                 outcome.errors.append(str(exc))
                 return outcome
@@ -380,6 +387,31 @@ def _safe_resolve(path: Path) -> Optional[Path]:
         return None
 
 
+def _is_junction(path: Path) -> bool:
+    """True for a Windows directory junction or volume mount point.
+
+    A junction is the same hazard as a symlink and does not answer to the same
+    test: since 3.8 only IO_REPARSE_TAG_SYMLINK sets S_IFLNK, so is_symlink()
+    is False for a junction while realpath() still follows it to its target.
+    Without this, UV_CACHE_DIR pointed at a junction would have the TARGET
+    emptied. os.path.isjunction arrived in 3.12 and this package supports 3.9,
+    so the reparse tag is read directly when it is missing.
+    """
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is not None:
+        try:
+            return bool(isjunction(path))
+        except (OSError, ValueError):
+            return False
+    if os.name != "nt":
+        return False
+    try:
+        tag = getattr(os.lstat(path), "st_reparse_tag", 0)
+    except (OSError, ValueError, AttributeError):
+        return False
+    return tag == getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+
+
 def protected_paths() -> set[Path]:
     """Locations a purge must never delete, nor delete anything containing them.
 
@@ -431,7 +463,14 @@ def protected_paths() -> set[Path]:
             candidates.append(home)
             # HF writes the access token here.
             candidates.append(home / "token")
-        candidates.append(_hf_paths().cache_home)
+        paths = _hf_paths()
+        # cache_home is what Settings DISPLAYS, and an explicit HF_HUB_CACHE whose
+        # basename is not "hub" (HF_HUB_CACHE=/mnt/hf-cache) makes that the hub
+        # directory itself. Protecting it there would mark the model cache
+        # permanently unclearable while protecting no credential: the token lives
+        # in the HF home, which the loop above covers on its own.
+        if _safe_resolve(paths.cache_home) != _safe_resolve(paths.hub_cache):
+            candidates.append(paths.cache_home)
     except Exception as exc:  # noqa: BLE001 - a broken HF setting must not widen the allow-list
         logger.debug(f"Could not resolve the Hugging Face cache homes: {exc}")
         candidates.append(Path.home() / ".cache" / "huggingface")
@@ -496,11 +535,33 @@ def _is_within(child: Path, parent: Path) -> bool:
         return False
 
 
+def opt_in_roots(exclude_key: Optional[str] = None) -> set[Path]:
+    """Resolved roots of the caches that are only ever cleared when asked for.
+
+    An opt-in cache costs a re-download, or a running job, so it is never swept
+    up by a bulk clear. Nothing stops a variable from putting one INSIDE another
+    cache (``UNSLOTH_COMPILE_LOCATION=/cache/uv/compiled`` under
+    ``UV_CACHE_DIR=/cache/uv``), and emptying the outer root would then delete it
+    anyway. The key being cleared is excluded, so asking for a cache by name
+    still clears it.
+    """
+    roots: set[Path] = set()
+    for definition in CACHE_DEFINITIONS:
+        if not definition.opt_in or definition.key == exclude_key:
+            continue
+        for root in _resolve_roots(definition):
+            resolved = _safe_resolve(root)
+            if resolved is not None:
+                roots.add(resolved)
+    return roots
+
+
 def assert_purgeable_root(
     root: Path,
     *,
     protected: Optional[set[Path]] = None,
     trees: Optional[set[Path]] = None,
+    keep: Optional[set[Path]] = None,
 ) -> Path:
     """Return the real path of *root*, or raise if emptying it is not allowed.
 
@@ -517,6 +578,8 @@ def assert_purgeable_root(
     # a location nobody named, and unlinking it would remove the user's link.
     if raw.is_symlink():
         raise CachePurgeRefused(f"Cache root is a symlink: {raw}")
+    if _is_junction(raw):
+        raise CachePurgeRefused(f"Cache root is a junction: {raw}")
     resolved = _safe_resolve(raw)
     if resolved is None:
         raise CachePurgeRefused(f"Cache root cannot be resolved: {raw}")
@@ -536,6 +599,12 @@ def assert_purgeable_root(
         if _is_within(resolved, tree):
             raise CachePurgeRefused(
                 f"Refusing to empty {resolved}: it sits inside the protected folder {tree}"
+            )
+    for reserved in () if keep is None else keep:
+        if resolved == reserved or _is_within(reserved, resolved):
+            raise CachePurgeRefused(
+                f"Refusing to empty {resolved}: it holds the opt-in cache {reserved}, "
+                "which is only ever cleared when it is asked for by name"
             )
     return resolved
 
@@ -596,7 +665,7 @@ def _measure_root(root: Path, *, patterns: Optional[Iterable[str]] = None) -> tu
     total = 0
     entries = 0
     try:
-        if Path(root).is_symlink() or not Path(root).is_dir():
+        if Path(root).is_symlink() or _is_junction(root) or not Path(root).is_dir():
             return 0, 0
     except OSError:
         return 0, 0
@@ -663,9 +732,10 @@ def describe_cache(definition: CacheDefinition) -> dict:
     if roots and definition.custom_purge is None:
         protected = protected_paths()
         trees = protected_trees()
+        keep = opt_in_roots(definition.key)
         for root in roots:
             try:
-                assert_purgeable_root(root, protected = protected, trees = trees)
+                assert_purgeable_root(root, protected = protected, trees = trees, keep = keep)
             except CachePurgeRefused as exc:
                 purgeable = False
                 blocked_reason = str(exc)
@@ -795,10 +865,11 @@ def empty_cache_root(
     patterns: Optional[Iterable[str]] = None,
     protected: Optional[set[Path]] = None,
     trees: Optional[set[Path]] = None,
+    keep: Optional[set[Path]] = None,
 ) -> PurgeOutcome:
     """Delete the contents of one cache root, leaving the root itself in place."""
     outcome = PurgeOutcome()
-    resolved = assert_purgeable_root(root, protected = protected, trees = trees)
+    resolved = assert_purgeable_root(root, protected = protected, trees = trees, keep = keep)
     seen: set = set()
     try:
         with os.scandir(resolved) as scan:
@@ -823,10 +894,11 @@ def purge_cache(key: str) -> dict:
     patterns = _patterns_for(definition)
     protected = protected_paths()
     trees = protected_trees()
+    keep = opt_in_roots(definition.key)
     for root in _resolve_roots(definition):
         try:
             root_outcome = empty_cache_root(
-                root, patterns = patterns, protected = protected, trees = trees
+                root, patterns = patterns, protected = protected, trees = trees, keep = keep
             )
         except CachePurgeRefused as exc:
             logger.warning(f"Refusing to purge the {key} cache at {root}: {exc}")
