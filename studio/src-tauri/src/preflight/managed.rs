@@ -381,7 +381,7 @@ fn llama_runtime_override_from(
 /// other relative path rather than guessed at. Windows has its own rule and its
 /// own arm below.
 #[cfg(unix)]
-fn named_user_home(value: &str, _home: Option<&Path>) -> Option<PathBuf> {
+pub(crate) fn named_user_home(value: &str, _home: Option<&Path>) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
 
     let rest = value.strip_prefix('~')?;
@@ -439,12 +439,12 @@ fn named_user_home(value: &str, _home: Option<&Path>) -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-fn named_user_home(value: &str, home: Option<&Path>) -> Option<PathBuf> {
+pub(crate) fn named_user_home(value: &str, home: Option<&Path>) -> Option<PathBuf> {
     named_windows_user_home(value, home?, std::env::var("USERNAME").ok().as_deref())
 }
 
 #[cfg(not(any(unix, windows)))]
-fn named_user_home(_value: &str, _home: Option<&Path>) -> Option<PathBuf> {
+pub(crate) fn named_user_home(_value: &str, _home: Option<&Path>) -> Option<PathBuf> {
     None
 }
 
