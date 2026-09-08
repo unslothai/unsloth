@@ -376,9 +376,13 @@ _is_studio_root() {
     done
     # An install that died between moving the old venv aside (install.sh:3027, :819) and writing
     # the marker (install.sh:3190) leaves the root with neither, so it would be refused as
-    # somebody else's. Only install.sh produces either name.
+    # somebody else's. Only install.sh produces either name, and only ever by renaming a venv,
+    # so the shape is required as well: on a name alone, one file in a hand-made ~/.unsloth/studio
+    # would hand the whole directory to rm -rf.
     for _p in "$_r"/unsloth_studio.rollback.* "$_r"/.venv.invalid.*; do
-        [ -e "$_p" ] && return 0
+        [ -d "$_p" ] || continue
+        [ -f "$_p/pyvenv.cfg" ] && return 0
+        [ -x "$_p/bin/python" ] && return 0
     done
     return 1
 }

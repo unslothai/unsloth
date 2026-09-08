@@ -440,9 +440,14 @@ Environment:
         }
         # An install that died between moving the old venv aside (install.ps1:4487, :4165) and
         # writing the marker (install.ps1:4524) leaves the root with neither, so it would be
-        # refused as somebody else's. Only install.ps1 produces either name.
+        # refused as somebody else's. Only install.ps1 produces either name, and only ever by
+        # renaming a venv, so the shape is required as well: on a name alone, one file in a
+        # hand-made ~\.unsloth\studio would hand the whole directory to Remove-Item -Recurse.
         foreach ($leftover in @("unsloth_studio.rollback.*", ".venv.invalid.*")) {
-            if (Get-ChildItem -LiteralPath $Path -Filter $leftover -Force -ErrorAction SilentlyContinue) { return $true }
+            foreach ($dir in @(Get-ChildItem -LiteralPath $Path -Filter $leftover -Directory -Force -ErrorAction SilentlyContinue)) {
+                if (Test-Path -LiteralPath (Join-Path $dir.FullName "pyvenv.cfg") -PathType Leaf) { return $true }
+                if (Test-Path -LiteralPath (Join-Path $dir.FullName "Scripts\python.exe") -PathType Leaf) { return $true }
+            }
         }
         return $false
     }

@@ -80,6 +80,11 @@ check "a partial-install leftover at a custom root" foreign custom \
     ".venv.invalid.20260908120000.4242/pyvenv.cfg"
 # The literal glob must not match itself when the directory holds nothing.
 check "a directory named like the glob is not conjured" foreign managed "notes.txt"
+# The name alone is not proof: only a renamed venv carries the shape.
+check "a FILE named like a leftover" foreign managed ".venv.invalid.20260908120000.4242"
+check "an empty directory named like a leftover" foreign managed "unsloth_studio.rollback.20260908120000.4242/"
+check "a leftover-named directory holding the user's own files" foreign managed \
+    ".venv.invalid.20260908120000.4242/notes.txt"
 
 echo
 echo "Edge cases:"
