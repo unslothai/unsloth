@@ -4020,6 +4020,8 @@ def test_model_download_progress_counts_a_lora_base_model(monkeypatch, capsys):
 
 
 def test_model_download_progress_retries_base_model_resolution(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(start.time, "monotonic", lambda: now[0])
     lookups = []
 
     def http_json(
@@ -4044,6 +4046,7 @@ def test_model_download_progress_retries_base_model_resolution(monkeypatch):
 
     progress.poll()
     assert progress.downloaded_bytes == 1024
+    now[0] += start._COMPANION_LOOKUP_RETRY_S
     progress.poll()
     assert progress.downloaded_bytes == 1024 + 3 * 1024**3
     assert len(lookups) == 2
@@ -4073,6 +4076,198 @@ def test_model_download_progress_asks_for_a_base_model_once_when_the_answer_is_f
 
     assert progress.downloaded_bytes == 1024
     assert len(lookups) == 1
+
+
+def test_model_download_progress_keeps_its_own_reading_when_a_base_read_fails(monkeypatch):
+    adapter_bytes = iter([4 * 1024**2, 9 * 1024**2])
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            return {"is_lora": True, "base_model": "owner/base"}
+        if url.endswith("repo_id=owner%2Fbase"):
+            # The base repo's cache walk is the big one, so its request is the one that
+            # times out; that must not discard the adapter's own reading.
+            raise TimeoutError("the server took too long to answer")
+        return {"downloaded_bytes": next(adapter_bytes), "expected_bytes": 40 * 1024**2}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    assert progress.downloaded_bytes == 4 * 1024**2
+    progress.poll()
+
+    assert progress.downloaded_bytes == 9 * 1024**2
+    assert progress._failures == 0
+
+
+def test_model_download_progress_counts_the_quantized_base_the_loader_substitutes(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        start, "_QUANT_MAPPER", {"meta-llama/Llama-3.1-8B": "unsloth/Llama-3.1-8B-bnb-4bit"}
+    )
+    polled = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            return {"is_lora": True, "base_model": "meta-llama/Llama-3.1-8B"}
+        polled.append(url)
+        # The loader downloads the mapped repo, so the recorded base never moves.
+        if url.endswith("repo_id=unsloth%2FLlama-3.1-8B-bnb-4bit"):
+            return {"downloaded_bytes": 3 * 1024**3, "expected_bytes": 4 * 1024**3}
+        return {"downloaded_bytes": 0, "expected_bytes": 0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+
+    assert progress.downloaded_bytes == 3 * 1024**3
+    assert any("repo_id=meta-llama%2FLlama-3.1-8B" in url for url in polled)
+    assert any("repo_id=unsloth%2FLlama-3.1-8B-bnb-4bit" in url for url in polled)
+
+
+def test_quant_mapper_loads_without_importing_unsloth():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(start, "_QUANT_MAPPER", None)
+    try:
+        table = start._unsloth_quant_mapper()
+    finally:
+        monkeypatch.undo()
+
+    assert isinstance(table, dict) and table
+    assert all(isinstance(key, str) for key in table)
+    assert "torch" not in sys.modules
+
+
+def test_model_download_progress_reasks_after_an_inconclusive_adapter_answer(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(start.time, "monotonic", lambda: now[0])
+    answers = [
+        # A failed adapter_config.json inspection is served as a plain 200 is_lora=False.
+        {"is_lora": False},
+        {"is_lora": True, "base_model": "owner/base"},
+    ]
+    lookups = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            lookups.append(url)
+            return answers[min(len(lookups) - 1, len(answers) - 1)]
+        if url.endswith("repo_id=owner%2Fbase"):
+            return {"downloaded_bytes": 2 * 1024**3, "expected_bytes": 4 * 1024**3}
+        return {"downloaded_bytes": 1024, "expected_bytes": 1024, "progress": 1.0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+    assert progress.downloaded_bytes == 1024
+    assert len(lookups) == 1
+
+    # Inside the retry window the costly endpoint is left alone.
+    now[0] += 1.0
+    progress.poll()
+    assert len(lookups) == 1
+
+    now[0] += start._COMPANION_LOOKUP_RETRY_S
+    progress.poll()
+    assert len(lookups) == 2
+    assert progress.downloaded_bytes == 1024 + 2 * 1024**3
+
+
+def test_model_download_progress_stops_reasking_an_inconclusive_answer(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(start.time, "monotonic", lambda: now[0])
+    lookups = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            lookups.append(url)
+            return {"is_lora": False}
+        return {"downloaded_bytes": 1024, "expected_bytes": 1024, "progress": 1.0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/model", None)
+
+    for _ in range(6):
+        progress.poll()
+        now[0] += start._COMPANION_LOOKUP_RETRY_S + 1.0
+
+    assert len(lookups) == start._COMPANION_LOOKUP_ATTEMPTS
+
+
+def test_model_download_progress_keeps_an_unknown_total_unknown(monkeypatch, capsys):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/config/" in url:
+            return {"is_lora": True, "base_model": "owner/base"}
+        if url.endswith("repo_id=owner%2Fadapter"):
+            return {
+                "downloaded_bytes": 20 * 1024**2,
+                "completed_bytes": 20 * 1024**2,
+                "expected_bytes": 20 * 1024**2,
+                "progress": 1.0,
+            }
+        # The base's total is not resolvable yet: unknown, not zero.
+        return {"downloaded_bytes": 3 * 1024**3, "expected_bytes": 0}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+    progress.poll()
+
+    out = capsys.readouterr().out
+    assert progress.downloaded_bytes == 20 * 1024**2 + 3 * 1024**3
+    assert "100%" not in out
+    assert "3.0 GiB" in out
+
+
+def test_combined_reading_keeps_a_known_total_when_every_part_is_known():
+    combined = start._combined_reading(
+        [
+            {"downloaded_bytes": 1024, "completed_bytes": 1024, "expected_bytes": 2048},
+            {"downloaded_bytes": 1024, "completed_bytes": 0, "expected_bytes": 2048},
+        ]
+    )
+
+    assert combined["expected_bytes"] == 4096
+    assert combined["progress"] == 0.5
 
 
 def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):

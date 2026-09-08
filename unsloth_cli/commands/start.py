@@ -10,6 +10,7 @@ import errno
 import functools
 import hashlib
 import http.client
+import importlib.util
 import json
 import os
 import re
@@ -879,6 +880,10 @@ _SERVER_START_TIMEOUT_S = 900
 _DOWNLOAD_POLL_INTERVAL_S = 1.0
 # Ceiling on the doubling back-off the progress reader uses after a polling error.
 _DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
+# A 200 that reports no adapter can also be a failed inspection, so the answer is
+# re-asked a few times before it is trusted; the endpoint is too costly to poll.
+_COMPANION_LOOKUP_ATTEMPTS = 3
+_COMPANION_LOOKUP_RETRY_S = 60.0
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 
@@ -1005,9 +1010,61 @@ def _combined_reading(readings: list[dict]) -> dict:
         field: sum(max(0, int(reading.get(field) or 0)) for reading in readings)
         for field in ("downloaded_bytes", "completed_bytes", "expected_bytes")
     }
+    # Zero expected bytes means "total unknown", not "contributes nothing". Summing it
+    # would divide by one repo's total and report a finished adapter next to a base still
+    # transferring as 100%, so an unknown part makes the combined total unknown too and
+    # the display falls back to bytes.
+    if any(int(reading.get("expected_bytes") or 0) <= 0 for reading in readings):
+        combined["expected_bytes"] = 0
     expected = combined["expected_bytes"]
     combined["progress"] = min(1.0, combined["downloaded_bytes"] / expected) if expected else 0.0
     return combined
+
+
+_QUANT_MAPPER: Optional[dict] = None
+
+
+def _unsloth_quant_mapper() -> dict:
+    """`unsloth.models.mapper.FLOAT_TO_INT_MAPPER`, read without importing unsloth.
+
+    The table is plain data with no imports of its own, so it loads straight from the
+    package directory; importing `unsloth` would pull in torch to answer a dict lookup.
+    """
+    global _QUANT_MAPPER
+    if _QUANT_MAPPER is None:
+        _QUANT_MAPPER = {}
+        try:
+            spec = importlib.util.find_spec("unsloth")
+            locations = list(spec.submodule_search_locations) if spec else []
+            path = Path(locations[0]) / "models" / "mapper.py" if locations else None
+            if path is not None and path.is_file():
+                module_spec = importlib.util.spec_from_file_location(
+                    "unsloth_cli._quant_mapper", path
+                )
+                module = importlib.util.module_from_spec(module_spec)
+                module_spec.loader.exec_module(module)
+                table = getattr(module, "FLOAT_TO_INT_MAPPER", None)
+                if isinstance(table, dict):
+                    _QUANT_MAPPER = table
+        except Exception:
+            # Nothing here is required; the recorded base alone is still worth polling.
+            pass
+    return _QUANT_MAPPER
+
+
+def _base_model_candidates(base_model: str) -> list[str]:
+    """`base_model` plus the pre-quantized repo the loader substitutes for it.
+
+    `get_model_name` rewrites a PEFT adapter's recorded base to an Unsloth 4-bit repo
+    before fetching it, which is the default for a QLoRA adapter, so the recorded name
+    on its own can name a repo that never moves while the real download runs unwatched.
+    Both are polled and summed: the one that is not being fetched reports zero bytes.
+    """
+    candidates = [base_model]
+    mapped = _unsloth_quant_mapper().get(base_model)
+    if isinstance(mapped, str) and mapped and mapped not in candidates:
+        candidates.append(mapped)
+    return candidates
 
 
 class _ModelDownloadProgress:
@@ -1027,6 +1084,8 @@ class _ModelDownloadProgress:
         self._disabled = not _is_hub_model_id(model)
         self._progress_prefix = "/api/hub"
         self._companions: Optional[list[str]] = None
+        self._companion_lookups = 0
+        self._companion_retry_at = 0.0
 
     def _is_gguf(self) -> bool:
         return bool(self._variant) or "gguf" in self._model.lower()
@@ -1076,15 +1135,22 @@ class _ModelDownloadProgress:
             return []
         try:
             info = _http_json(
-                "GET", f"{self._base}/api/models/config/{quote(self._model)}", self._key
+                "GET",
+                f"{self._base}/api/models/config/{quote(self._model)}",
+                self._key,
+                timeout = 10,
             )
         except urllib.error.HTTPError as exc:
             return [] if exc.code < 500 else None
         except Exception:
             return None
+        if not info.get("is_lora"):
+            # The server reports is_lora=False both for a plain model and for an adapter
+            # whose adapter_config.json it could not read, so this answer is not final.
+            return None
         base_model = str(info.get("base_model") or "")
-        if info.get("is_lora") and base_model != self._model and _is_hub_model_id(base_model):
-            return [base_model]
+        if base_model != self._model and _is_hub_model_id(base_model):
+            return _base_model_candidates(base_model)
         return []
 
     def _read(
@@ -1102,6 +1168,19 @@ class _ModelDownloadProgress:
             url = f"{self._base}{self._progress_prefix}/download-progress?{params}"
         return _http_json("GET", url, self._key, timeout = 10)
 
+    def _companion_reading(self, repo: str) -> Optional[dict]:
+        """A companion's reading, or None when its request failed.
+
+        Isolated on purpose: a companion is an extra request per poll against the same
+        server that is busy downloading, so a slow or failed one must not discard the
+        model's own good reading. Dropping the companion's bytes only ever lowers the
+        total, and the liveness baseline never follows a reading down.
+        """
+        try:
+            return self._read(repo)
+        except Exception:
+            return None
+
     def poll(self) -> None:
         if not self._configured:
             self._configure()
@@ -1110,8 +1189,18 @@ class _ModelDownloadProgress:
         if time.monotonic() < self._retry_at:
             return
         try:
-            if self._companions is None:
+            if (
+                self._companions is None
+                and self._companion_lookups < _COMPANION_LOOKUP_ATTEMPTS
+                and time.monotonic() >= self._companion_retry_at
+            ):
                 self._companions = self._companion_repos()
+                if self._companions is None:
+                    # Every unresolved answer is rationed, errors included. This endpoint
+                    # runs hub probes per request, so retrying it once a second for the
+                    # length of a download would load the server doing the downloading.
+                    self._companion_lookups += 1
+                    self._companion_retry_at = time.monotonic() + _COMPANION_LOOKUP_RETRY_S
             try:
                 reading = self._read(self._model, gguf = self._is_gguf())
             except urllib.error.HTTPError as exc:
@@ -1120,8 +1209,9 @@ class _ModelDownloadProgress:
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
+            companions = (self._companion_reading(repo) for repo in self._companions or [])
             reading = _combined_reading(
-                [reading, *(self._read(repo) for repo in self._companions or [])]
+                [reading, *(item for item in companions if item is not None)]
             )
             # The liveness baseline only ever rises. A reading falls for reasons that are
             # not "bytes left the disk": an incomplete scan reporting a lower bound, a
