@@ -25,8 +25,6 @@ GIB = 2**30
 
 
 class StubCluster:
-    """The slice of studio.spark_cluster the orchestrator uses, recording every call."""
-
     RPC_DEFAULT_PORT = 50052
     SPARK_USABLE_GIB = 121.69
     SERVE_OVERHEAD_GIB = 8.0
@@ -105,8 +103,6 @@ def cluster(monkeypatch, tmp_path):
     # An empty bundle, so the test machine never decides whether a split gets groups.
     stub.bundle = tmp_path / "bundle"
     stub.bundle.mkdir()
-    # HOME and PATH are redirected too, or the resolver walks on to ~/.unsloth/llama.cpp and
-    # every test here depends on what the machine happens to have installed.
     (tmp_path / "home").mkdir(exist_ok = True)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     _which = shutil.which
@@ -130,7 +126,6 @@ def cluster(monkeypatch, tmp_path):
     ss.reset_for_tests()
 
 
-# Records every run beside itself, so a test can see whether the probe ran at all.
 _FAKE_HELP_WITH_FLAG = """usage: llama-server [options]
   -np, --parallel N            number of server slots (default: 4)
   --pipeline-groups N          number of pipeline groups the slots are split over
@@ -141,7 +136,6 @@ _FAKE_HELP_WITHOUT_FLAG = """usage: llama-server [options]
   -np, --parallel N            number of server slots (default: 4)
   --kv-unified                 one KV buffer shared by all slots
 """
-# b10796 without the fork: speculation, no pipeline groups.
 _FAKE_HELP_SPEC_ONLY = """usage: llama-server [options]
   -np, --parallel N            number of server slots (default: 4)
   --spec-type none,draft-simple,draft-mtp,ngram-simple
@@ -157,13 +151,10 @@ def write_fake_llama_server(
     hidden_flags: tuple = (),
     refuses_groups_with_drafter: bool = False,
 ) -> Path:
-    """A stand-in for the real parser and the real load path.
-
-    An argument the usage does not name is rejected as llama.cpp does unless it is in
-    ``hidden_flags``, which is how the fork behaves. With ``-m`` it validates the groups
-    inside ``load_model`` and then fails on the model file. ``refuses_groups_with_drafter``
-    is the fork before PR #187, which -- like the real one -- refuses there and NOT at
-    ``--help``, which is why the usage text cannot probe it."""
+    """A stand-in for the real parser and the real load path. ``hidden_flags`` is a flag the
+    fork strips from argv and never prints; ``refuses_groups_with_drafter`` is the fork before
+    PR #187, which -- like the real one -- refuses inside ``load_model`` and NOT at ``--help``,
+    which is why the usage text cannot probe it."""
     directory.mkdir(parents = True, exist_ok = True)
     script = directory / "llama-server"
     reject = "--pipeline-groups" not in help_text and "--pipeline-groups" not in hidden_flags
@@ -396,7 +387,6 @@ def test_rpc_server_and_layer_split_arguments():
         "0",
     ]
     assert not any("pipeline" in a for a in extra), "no groups asked for: today's launch"
-    # -np / --parallel is denied in a pass-through, so the slot count travels as n_parallel.
     grouped = ss.layer_split_extra_args("192.168.200.13", 50052, pipeline_groups = 2)
     assert grouped == [
         "--rpc",
@@ -451,7 +441,6 @@ def test_peer_process_remote_command_prints_the_servers_pid_and_reaps_it():
     assert "watch=$PPID" in command and 'kill -0 "$watch"' in command
     assert 'kill "$srv"' in command and 'kill -9 "$srv"' in command
     assert 'wait "$srv"' in command, "a server that exits on its own still reports its status"
-    # Nothing matches on a name, so another Studio's rpc-server is never hit.
     for statement in command.split(";"):
         if "kill " in statement and "kill -0" not in statement:
             assert (
@@ -486,7 +475,6 @@ class _FakeRequest:
         self.llama_extra_args = kw.get("llama_extra_args")
         self.speculative_type = kw.get("speculative_type")
         self.spec_draft_n_max = kw.get("spec_draft_n_max")
-        # The only route: a pass-through -np / --parallel is refused by llama_server_args.
         self.n_parallel = kw.get("n_parallel")
         self.disable_vision = bool(kw.get("disable_vision", False))
         self.force_reload = bool(kw.get("force_reload", False))
@@ -523,8 +511,7 @@ def _patch_remote(
         remote,
         timeout = 20.0,
     ):
-        # As the real remote shell: the lookup prints the first executable and exits, or
-        # MISSING, and nothing after it runs.
+        # As the real remote shell: the lookup exits at the first hit, so nothing after it runs.
         calls.append(remote)
         if remote.startswith("test -f"):
             return 0, "YES\n" if model_present else "NO\n", ""
@@ -774,7 +761,6 @@ def test_before_load_reuses_a_live_rpc_server_and_after_load_reconciles(
     _calls, started = _patch_remote(monkeypatch)
     first = run(ss.before_load(_FakeRequest(str(model)), 4))
     assert len(started) == 1 and "--rpc" in first.llama_extra_args
-    # A reload (no-op or not) keeps the running rpc-server: it is model-agnostic.
     again = run(ss.before_load(_FakeRequest(str(model)), 4))
     assert len(started) == 1 and "--rpc" in again.llama_extra_args
     assert ss.state().peer_process is started[0]
@@ -879,7 +865,6 @@ def test_llama_server_supports_probes_help_once_per_binary_and_mtime(cluster, tm
     assert ss.llama_server_supports("--pipeline") is False, "a prefix is not the flag"
     assert ss.llama_server_supports("--no-such-flag") is False
     assert probe_runs(script) == 1, "one --help run answers every flag"
-    # A reinstall at the same path is a new mtime and is probed again.
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITHOUT_FLAG)
     os.utime(script, (time.time() + 5, time.time() + 5))
     assert ss.llama_server_supports("--pipeline-groups") is False
@@ -890,7 +875,6 @@ def test_llama_server_supports_is_false_without_the_flag_or_binary(cluster, tmp_
     assert ss.llama_server_binary() is None
     assert ss.llama_server_supports("--pipeline-groups") is False, "no binary in the bundle"
     assert ss.llama_server_supports("--pipeline-groups", str(tmp_path / "missing")) is False
-    # <root>/bin is NOT a layout the backend launches from.
     write_fake_llama_server(cluster.bundle / "bin", _FAKE_HELP_WITH_FLAG)
     assert ss.llama_server_binary() is None
     assert ss.llama_server_supports("--pipeline-groups") is False
@@ -898,7 +882,6 @@ def test_llama_server_supports_is_false_without_the_flag_or_binary(cluster, tmp_
     assert ss.llama_server_binary() == str(script)
     assert ss.llama_server_supports("--pipeline-groups") is False
     assert ss.llama_server_supports("", str(script)) is False
-    # A binary that dies before printing anything is a binary without the flag.
     crashing = write_fake_llama_server(tmp_path / "crash", _FAKE_HELP_WITH_FLAG, body = "exit 3\n")
     assert ss.llama_server_supports("--pipeline-groups", str(crashing)) is False
     dud = tmp_path / "dud" / "llama-server"
@@ -924,8 +907,7 @@ def test_the_orchestrator_probes_the_binary_the_backend_launches(cluster, monkey
             f"layout {parts or ('flat',)}: the orchestrator would probe "
             f"{ss.llama_server_binary()} while the backend launches {backend_choice}"
         )
-    # And not vacuously equal: the supported layout resolves, the spark_cluster-only one
-    # resolves to nothing on both sides.
+    # And not vacuously equal: without this the loop passes with both resolvers finding nothing.
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "layout_build_bin"))
     ss.reset_for_tests()
     assert ss.llama_server_binary() == str(tmp_path / "layout_build_bin/build/bin/llama-server")
@@ -935,8 +917,7 @@ def test_the_orchestrator_probes_the_binary_the_backend_launches(cluster, monkey
 
 
 def test_the_rpc_server_is_taken_from_beside_the_launched_llama_server(cluster, tmp_path):
-    """Both ends of the link have to be one build, so the peer's copy comes from beside the
-    llama-server this node launches."""
+    """The peer's copy comes from beside the llama-server this node launches."""
     launched = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
     beside = launched.parent / "ggml-rpc-server"
     beside.write_text("#!/bin/sh\nexit 0\n")
@@ -981,7 +962,6 @@ def test_pipeline_groups_plan_gives_every_group_a_slot(cluster, monkeypatch):
         assert plan["pipeline_groups"] == 2 and plan["slots"] == slots, (asked, plan)
         assert plan["slots"] % 2 == 0 and plan["slots"] >= 2
         assert plan["requested_slots"] == asked and plan["reason"] is None
-    # A pass-through slot count wins over the request's, as it does in the launch.
     plan = ss.pipeline_groups_plan(8, ["--seed", "1", "-np", "3"])
     assert plan["requested_slots"] == 3 and plan["slots"] == 4
     assert ss.pipeline_groups_plan(8, ["--parallel=5"])["slots"] == 6
@@ -1135,7 +1115,6 @@ def test_llama_server_accepts_finds_a_flag_the_usage_hides(cluster, tmp_path):
     plan = ss.pipeline_groups_plan(3)
     assert plan["pipeline_groups"] == 2 and plan["slots"] == 4 and plan["reason"] is None
     assert probe_runs(hidden) == 2
-    # A build without it rejects the flag the way llama.cpp does: exit 1, nothing printed.
     plain = write_fake_llama_server(tmp_path / "plain", _FAKE_HELP_WITHOUT_FLAG)
     assert ss.llama_server_accepts("--pipeline-groups", binary = str(plain)) is False
     assert ss.llama_server_accepts("--pipeline-groups", binary = str(plain)) is False
@@ -1154,7 +1133,6 @@ def test_gguf_nextn_predict_layers_reads_the_header_and_never_raises(tmp_path):
     zero = write_gguf(tmp_path / "zero.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 0})
     assert ss.gguf_nextn_predict_layers(str(zero)) == 0
     assert ss.gguf_has_mtp_head(str(zero)) is False
-    # The key is scoped to the file's own architecture.
     other = write_gguf(tmp_path / "other.gguf", "llama", **{"qwen35.nextn_predict_layers": 1})
     assert ss.gguf_has_mtp_head(str(other)) is False
     # A split file keeps its header in the first shard; any shard of it answers.
@@ -1198,7 +1176,6 @@ def test_mtp_plan_verdicts(cluster, monkeypatch, tmp_path):
         assert f"--spec-draft-n-max {depth}" in plan["reason"], rows
         if depth != 3:
             assert f"measured best at {rows} rows" in plan["reason"], rows
-    # A depth the caller set is still theirs, whatever the row count would have chosen.
     plan = ss.mtp_plan(head, spec_draft_n_max = 3, users = 64)
     assert plan["mtp"] == "user override" and plan["request"] == {}
     assert ss.mtp_plan(head, ["--seed", "1", "-np", "4"])["mtp"] == "enabled"
@@ -1288,7 +1265,6 @@ def test_before_load_asks_for_the_spark_draft_depth_in_every_topology(
 def test_layer_split_with_no_head_keeps_its_groups_and_launches_without_speculation(
     cluster, monkeypatch, tmp_path
 ):
-    """Saying off keeps the backend from adding a sidecar drafter, which loses here."""
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
     head = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
     plain = write_gguf(tmp_path / "plain.gguf", "qwen35moe")
@@ -1401,8 +1377,7 @@ def test_split_crossover_sits_at_the_measured_row_count(cluster, monkeypatch, tm
 def test_a_split_stops_speculating_at_the_row_count_where_the_drafter_starts_losing(
     cluster, monkeypatch, tmp_path
 ):
-    """From SPLIT_MTP_OFF_ROWS rows up a layer split keeps its groups and emits no draft flag
-    of any kind. The split alone: single and replicas keep the drafter at the same rows."""
+    """Above the boundary a split keeps its groups and emits no draft flag of any kind."""
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
     head = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
     _patch_remote(monkeypatch)
@@ -1415,7 +1390,6 @@ def test_a_split_stops_speculating_at_the_row_count_where_the_drafter_starts_los
         assert out.speculative_type is None, rows
         assert ss.launched_spec_flags(out.llama_extra_args or []) == (None, None), rows
         run(ss.shutdown())
-    # At and above it the groups stay with no drafter, the fastest arm at these rows.
     for rows in (64, 128):
         out = run(ss.before_load(_FakeRequest(str(head)), rows))
         assert out.speculative_type == "off", rows
@@ -1468,12 +1442,10 @@ def test_a_split_stops_speculating_at_the_row_count_where_the_drafter_starts_los
     assert _best_over_off(32) > 1.0, "speculation is a win at the point below the boundary"
     for rows in (64, 128):
         assert _best_over_off(rows) < 1.0, rows
-    # The quoted percentages come from the unrounded leg means, so they must agree with the
-    # rounded table to a fifth of a point.
+    # The quoted percentages come from the unrounded leg means, not from the rounded table.
     for rows, pct in sc.SPLIT_MTP_BEST_DEPTH_VS_OFF_PCT.items():
         assert abs((_best_over_off(rows) - 1) * 100 - pct) < 0.2, rows
     assert sc.SPLIT_MTP_BEST_DEPTH_VS_OFF_PCT == {32: 11.0, 64: -7.9, 128: -22.9}
-    # A different question from the groups crossover, which does not move.
     assert sc.GROUPS_X_MTP_CROSSOVER_ROWS == ss.GROUPS_X_MTP_MIN_ROWS == 16
     assert sc.SPLIT_MTP_OFF_ROWS != sc.GROUPS_X_MTP_CROSSOVER_ROWS
     assert sc.MTP_DRAFT_N_MAX_BY_ROWS == ss.MTP_DRAFT_N_MAX_BY_ROWS == {32: 2, 64: 1}
@@ -1490,7 +1462,6 @@ def test_a_split_stops_speculating_at_the_row_count_where_the_drafter_starts_los
 def test_split_keeps_todays_behaviour_when_the_server_refuses_the_pair(
     cluster, monkeypatch, tmp_path
 ):
-    """The fallback on a refusal keeps the speculation and drops the groups."""
     script = write_fake_llama_server(
         cluster.bundle / "build" / "bin",
         _FAKE_HELP_WITH_FLAG,
@@ -1615,7 +1586,6 @@ def test_a_users_override_of_either_flag_wins_over_the_crossover(cluster, monkey
 
 
 def test_the_crossover_constants_are_the_planners_measured_numbers(cluster):
-    """The mirrors must not drift, and the ratios stay the measured cells divided out."""
     import importlib.util
 
     path = Path(ss.__file__).resolve().parents[3] / "spark_cluster.py"
@@ -1664,12 +1634,9 @@ def _load_spark_cluster():
 
 
 def test_the_draft_depth_follows_the_rows_and_the_crossover_does_not_move():
-    """The depth table picks the depth that won each measured row count, and moves nothing
-    about when a split speculates at all."""
     sc = _load_spark_cluster()
     assert ss.MTP_DRAFT_N_MAX == sc.MTP_DRAFT_N_MAX == 3
     assert ss.MTP_DRAFT_N_MAX_BY_ROWS == sc.MTP_DRAFT_N_MAX_BY_ROWS == {32: 2, 64: 1}
-    # Below the lowest row count measured on a split, the one-Spark answer stands.
     for rows in (None, 1, 4, 8, 16, 31):
         assert ss.mtp_draft_n_max(rows) == sc.mtp_draft_n_max(rows) == 3, rows
     for rows, want in ((32, 2), (48, 2), (63, 2), (64, 1), (128, 1), (512, 1)):
@@ -1687,7 +1654,6 @@ def test_the_draft_depth_follows_the_rows_and_the_crossover_does_not_move():
     # A DEPTH change only: whether a split runs groups AND speculation is unchanged.
     assert sc.GROUPS_X_MTP_CROSSOVER_ROWS == ss.GROUPS_X_MTP_MIN_ROWS == 16
     assert sc.groups_x_mtp_wins(16) and not sc.groups_x_mtp_wins(8)
-    # And whether a drafter runs at all is a third question, with its own constant.
     assert sc.SPLIT_MTP_OFF_ROWS == ss.SPLIT_MTP_OFF_ROWS == 64
     assert sc.SPLIT_MTP_OFF_ROWS not in (sc.GROUPS_X_MTP_CROSSOVER_ROWS,)
     for rows in (1, 8, 16, 31, 32, 63):
@@ -1715,13 +1681,10 @@ def test_the_layer_boundary_is_explicit_and_the_rows_table_is_consistent():
     for blocks in (30, 34, 36, 27):
         assert by_blocks[blocks] < by_blocks[33], blocks
 
-    # Anyone re-measuring has to say which argv they used, one --parallel per client.
     rows = sorted(sc.SPLIT_GROUPS_ROWS_TOKS)
     assert rows == [8, 16, 32, 64, 128], "five points; the whole value of the block was the fifth"
     gains = [sc.SPLIT_GROUPS_ROWS_TOKS[r][1] / sc.SPLIT_GROUPS_ROWS_TOKS[r][0] for r in rows]
     assert all(g > 1.0 for g in gains), "two groups won at every measured concurrency"
-    # NOT between 8 and 16: those two agree within the spread of the passes, and calling that
-    # a trend would be reading noise.
     assert abs(gains[0] - gains[1]) < 0.02, "8 and 16 rows are one point, not two"
     assert gains[1:] == sorted(gains[1:]), "from 16 rows up the gain grows with rows"
     assert gains[-1] / gains[1] > 1.25, "and it grows a lot: 1.33x at 16 rows, 1.74x at 128"
@@ -1748,7 +1711,6 @@ def test_rows_sizing_is_capped_by_ttft_and_never_rounds_the_slot_count_up():
     p90 = [sc.SPLIT_ROWS_TTFT[r][2] for r in rows]
     assert toks == sorted(toks), "throughput rises with rows"
     assert med == sorted(med) and p90 == sorted(p90), "and so does TTFT"
-    # The trade gets WORSE with rows, which is the whole reason for a cap.
     assert (toks[2] / toks[0]) / (med[2] / med[0]) > 0.7
     assert (toks[4] / toks[2]) / (med[4] / med[2]) < 0.45, "above 32 rows TTFT wins the race"
     assert sc.SPLIT_ROWS_INTERACTIVE_MAX == 64
@@ -1779,13 +1741,11 @@ def test_rows_sizing_is_capped_by_ttft_and_never_rounds_the_slot_count_up():
     assert ss.SPLIT_ROWS_INTERACTIVE_MAX == sc.SPLIT_ROWS_INTERACTIVE_MAX, "mirror drifted"
     assert ss.SPLIT_ROWS_THROUGHPUT_MAX == sc.SPLIT_ROWS_THROUGHPUT_MAX, "mirror drifted"
 
-    # A saturating burst, and the measurement string has to say so: read as steady-state
-    # latency these overstate the cost of every rows point.
+    # A saturating burst: read as steady-state latency these overstate every rows point.
     assert "arriving at once" in sc.SPLIT_ROWS_TTFT_MEASUREMENT
     assert "saturating burst" in sc.SPLIT_ROWS_TTFT_MEASUREMENT
     assert "--kv-unified" in sc.SPLIT_ROWS_TTFT_MEASUREMENT
     assert "512*R" in sc.SPLIT_ROWS_TTFT_MEASUREMENT
-    # No cell here carried a drafter, so this must not read as having moved the crossover.
     assert "no speculation" in sc.SPLIT_ROWS_TTFT_MEASUREMENT
     assert sc.GROUPS_X_MTP_CROSSOVER_ROWS == 16
     assert ss.GROUPS_X_MTP_MIN_ROWS == sc.GROUPS_X_MTP_CROSSOVER_ROWS
@@ -1848,7 +1808,6 @@ def test_after_load_reports_the_spec_type_that_launched(cluster, monkeypatch, tm
     run(ss.after_load(_FakeBackend(41000, str(model), 4), 4))
     status = ss.status()
     assert status["mtp"] == "not launched" and "without --spec-type" in status["mtp_reason"]
-    # A chained value still counts as the head running; another kind does not.
     run(ss.before_load(_FakeRequest(str(model)), 4))
     run(
         ss.after_load(
@@ -1931,7 +1890,6 @@ def test_the_drafter_probe_is_a_load_not_a_help(cluster, tmp_path):
         refuses_groups_with_drafter = True,
     )
     taking = write_fake_llama_server(tmp_path / "new" / "build" / "bin", _FAKE_HELP_WITH_FLAG)
-    # The old --help probe cannot tell them apart: both exit 0 and print the usage.
     assert (
         ss.llama_server_accepts(
             "--pipeline-groups", "2", str(refusing), extra = ("--spec-type", "draft-mtp")
@@ -1964,8 +1922,6 @@ def test_studios_own_projector_costs_the_groups_not_the_load(cluster, monkeypatc
     projector on disk failed the same way, because the backend downloaded one during the load,
     so a directory scan cannot clear a repo and only the Vision switch can."""
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
-    # An HF snapshot is symlinks into blobs/, so a projector neighbours the link and never
-    # the blob it resolves to.
     repo = tmp_path / "hub" / "models--unsloth--Qwen3.8-27B-GGUF"
     blobs = repo / "blobs"
     blobs.mkdir(parents = True)
@@ -2017,8 +1973,6 @@ def test_a_peer_that_stopped_answering_is_restarted_not_reused(cluster, monkeypa
     first = ss.state().peer_process
     run(ss.before_load(_FakeRequest(str(model)), 4))
     assert len(started) == 1 and ss.state().peer_process is first
-    # The peer serves one client at a time, and the outgoing llama-server still holds the
-    # connection while the replacement starts.
     run(ss.before_load(_FakeRequest(str(model), force_reload = True), 4))
     assert len(started) == 2, "a forced reload reused the peer the old server still holds"
     monkeypatch.setattr(ss, "wait_for_port", _port_answers(False, then = True))

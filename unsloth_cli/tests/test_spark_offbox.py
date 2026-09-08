@@ -914,8 +914,6 @@ def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
     ):
         assert text in reason, (text, reason)
     assert "without them expect 0.85x to 1.01x on decode and 1.7x to 1.85x on prefill" in reason
-    # And the other half of the split's launch: the drafter is on below the boundary at the
-    # depth measured best for the row count, and off entirely at or above it.
     for text in (
         "speculates only below 64 concurrent rows",
         "+11.0 percent at 32 rows",
@@ -942,7 +940,6 @@ def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
     plan = sc.plan_deployment(budget * 1.5, n_nodes = 2, intent = "throughput", concurrency = 32)
     assert plan["serving"]["topology"] == "layer_split"
     assert "pipeline groups" in plan["serving"]["reason"]
-    # The ratios are the measured tok/s, nothing rounded in the planner's favour.
     for rows, ratio in sc.PIPELINE_GROUPS_SPLIT_SPEEDUP.items():
         one, _one_context, groups = sc.PIPELINE_GROUPS_DECODE_TOKS[rows]
         assert ratio == round(groups / one, 2), (rows, ratio, groups / one)
@@ -1866,8 +1863,7 @@ def test_training_planner_picks_data_parallel_for_a_model_that_fits() -> None:
     assert out["speedup"] == sc.TRAIN_DP_SPEEDUP_RANGE[0]
     assert f"{sc.TRAIN_DP_SPEEDUP_RANGE[0]:.2f}x" in out["recommendation"]
     assert f"{sc.TRAIN_PP_SPEEDUP_RANGE[0]:.2f}x" in out["recommendation"]
-    # A recommendation that does not say DP costs the WHOLE model per node invites the user
-    # to size a job by half the weights and OOM on the first step.
+    # Without this the user sizes a job by half the weights and OOMs on the first step.
     assert "WHOLE model per node" in out["recommendation"]
 
 
@@ -1881,11 +1877,10 @@ def test_training_planner_splits_a_model_that_does_not_fit() -> None:
     assert "--layer-split big" in cmd and "--shard-load" in cmd and "--grad-checkpoint" in cmd
     assert f"--schedule {sc.TRAIN_PP_SCHEDULE}" in cmd
     assert "--data-parallel" not in cmd
-    # No speedup may be claimed for the capacity case: at this size a single Spark cannot
-    # run the job at all, so there is no control to divide by.
+    # No speedup for the capacity case: there is no single-Spark control to divide by.
     assert out["speedup"] is None and out["measured"] is False
-    # At the size this branch fires for, dualpipev could not train at any batch tried, so the
-    # recommendation must warn against the substitution a reader of the 2B/9B tie would make.
+    # dualpipev could not train at this size at any batch tried, so the recommendation has to
+    # warn against the substitution a reader of the 2B/9B tie would make.
     assert out["schedule"] == "1f1b"
     assert "1f1b" in out["recommendation"]
     assert "Do NOT substitute dualpipev" in out["recommendation"]
@@ -1913,7 +1908,6 @@ def test_training_planner_constants_are_measured_and_consistent() -> None:
         assert abs(sc.TRAIN_PP_SPEEDUP[name] - best_pp / one) < 0.02, name
         assert sc.TRAIN_DP_SPEEDUP[name] > sc.TRAIN_PP_SPEEDUP[name], name
         ddp_gib, pp_gib = sc.TRAIN_PEAK_GIB[name]
-        # DP replicates and PP halves, so the memory price has to be visible in the table.
         assert ddp_gib > pp_gib > 0, name
     assert sc.TRAIN_DP_SPEEDUP_RANGE == (
         min(sc.TRAIN_DP_SPEEDUP.values()),
@@ -1924,8 +1918,8 @@ def test_training_planner_constants_are_measured_and_consistent() -> None:
         max(sc.TRAIN_PP_SPEEDUP.values()),
     )
     assert sc.TRAIN_PP_SCHEDULE in ("dualpipev", "1f1b")
-    # The margin is a SPEED tie-break on models that fit; if it ever grows past a percent
-    # that claim has to be rewritten rather than silently strengthened.
+    # A SPEED tie-break on models that fit: if it grows past a percent the claim has to be
+    # rewritten, not silently strengthened.
     assert 0 < sc.TRAIN_PP_SCHEDULE_MARGIN <= 0.01
 
 
@@ -1936,41 +1930,33 @@ def test_capacity_schedule_is_the_one_that_actually_ran_a_70b() -> None:
     sc = _load("studio/spark_cluster.py")
     ev = sc.TRAIN_PP_70B
     assert sc.TRAIN_PP_SCHEDULE == "1f1b"
-    # dualpipev is faster on both models that FIT, which is why the default cannot come
-    # from those two rows alone.
     for name, arms in sc.TRAIN_DP_VS_PP_TOKS.items():
         assert arms["dualpipev"] >= arms["1f1b"], name
-    # No 70B number at all, because it never completed a step: a peak recorded for an arm
-    # that died would read as though it ran.
+    # A peak recorded for an arm that died would read as though it ran.
     assert ev["dualpipev_toks"] is None and ev["dualpipev_peak_gib"] is None
     assert "out of memory" in ev["dualpipev_outcome"]
     assert ev["1f1b_toks"] > 0 and ev["1f1b_s_per_step"] > 0
     lo, hi = ev["1f1b_peak_gib"]
-    # Both ranks need real headroom, or the arm that "ran" was one bad allocation from the
-    # same fate.
+    # Both ranks need real headroom, or the arm that "ran" was one allocation from the same fate.
     assert 0 < lo <= hi < sc.SPARK_USABLE_GIB
-    # The V layout's selling point is a co-located hop that saves bandwidth, and the link was
-    # nowhere near its limit, so that saving cannot pay for the memory it costs. The step
-    # count and time here are the LINK cell's, not the headline cell's: bytes per step do not
-    # depend on M, so the conclusion carries, but the arithmetic must use its own cell.
+    # The V layout's co-located hop saves bandwidth the link never needed. The step count and
+    # time here are the LINK cell's, not the headline cell's, so the arithmetic must use them.
     used_gbs = (
         ev["link_mb_moved"]
         / 1000.0
         / (ev["link_measured_s_per_step"] * ev["link_measured_over_steps"])
     )
     assert used_gbs < ev["link_busbw_gbs"] / 100
-    # A later edit that lowers the microbatch count has to break this rather than quietly
-    # cost 20 percent.
+    # A later edit that lowers the microbatch count has to break this, not quietly cost 20%.
     by_m = ev["1f1b_toks_by_microbatches"]
     assert ev["1f1b_microbatches"] == max(by_m), ev
     assert by_m[ev["1f1b_microbatches"]] == ev["1f1b_toks"] == max(by_m.values())
     assert sorted(by_m) == sorted(by_m, key = lambda m: by_m[m]), by_m  # monotone in M
-    # At this size the best M is also the CHEAPEST, so there is no trade-off to argue about.
     peaks = ev["1f1b_peak_gib_by_microbatches"]
     assert peaks[ev["1f1b_microbatches"]] == ev["1f1b_peak_gib"]
     assert max(peaks[ev["1f1b_microbatches"]]) == min(max(v) for v in peaks.values())
-    # Settled by exhaustion, not by two failed cells: the record has to say that the smallest
-    # configuration the V layout admits was the one that failed.
+    # The record has to say the smallest configuration the V layout admits was the one that
+    # failed, or this reads as two unlucky cells.
     assert "batch 4 with M=4" in ev["dualpipev_outcome"]
     assert ev["dualpipev_rank0_weights_gib"] > ev["dualpipev_rank1_weights_gib"]
 
@@ -2001,8 +1987,6 @@ def test_microbatch_sweep_constants_agree_with_the_rule() -> None:
             best = max(by_m, key = lambda m: by_m[m])
             assert best == max(by_m), (name, batch, by_m)  # the largest M is the best M
             assert sorted(by_m) == sorted(by_m, key = lambda m: by_m[m]), (name, by_m)
-    # The global-batch axis saturates and the control is flat, which is why the best speedup
-    # is barely above the one at batch 64.
     g = sc.TRAIN_PP_GLOBAL_BATCH_SWEPT
     pp = [g[b][0] for b in sorted(g)]
     ctl = [g[b][1] for b in sorted(g)]
@@ -2010,8 +1994,7 @@ def test_microbatch_sweep_constants_agree_with_the_rule() -> None:
     assert max(ctl) / min(ctl) < 1.01  # flat: a single Spark here is bandwidth bound
     best_b = max(g, key = lambda b: g[b][0] / g[b][1])
     assert abs(sc.TRAIN_PP_BEST_SPEEDUP - g[best_b][0] / g[best_b][1]) < 0.01
-    # The best PP speedup must stay BELOW the DDP numbers, or the size-gated rule that sends
-    # models which fit to data parallel is wrong.
+    # The best PP speedup must stay BELOW the DDP numbers, or the size-gated rule is wrong.
     assert sc.TRAIN_PP_BEST_SPEEDUP < min(sc.TRAIN_DP_SPEEDUP.values())
     assert 0 < sc.TRAIN_SPEEDUP_INFLATION_FROM_UNSWEPT_CONTROL < 0.05
 
