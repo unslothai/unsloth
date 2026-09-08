@@ -688,20 +688,32 @@ class TestTheGraceStartsAtTheDeadlineAndTheProbeLeavesTheLoopAlone:
         import httpcore
 
         # A 30ms window and a 50ms grace: the retries after the first deadline add up to the
-        # grace, and not to the grace less the window it took to reach the deadline.
+        # grace, and not to the grace less the window it took to reach the deadline. The clock
+        # is faked and advanced by exactly each window: real sleeps overshoot on a loaded
+        # runner and read as a short grace.
         monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", 0.05)
         windows = []
+        clock = [1000.0]
+
+        class _Clock:
+            monotonic = staticmethod(lambda: clock[0])
+
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+        monkeypatch.setattr(inference, "time", _Clock())
 
         async def silent(max_bytes, timeout = None):
             windows.append(timeout)
-            await asyncio.sleep(timeout)
+            clock[0] += timeout
+            await asyncio.sleep(0)
             raise httpcore.ReadTimeout("silence")
 
         stream = self._wrapped(monkeypatch, silent, lambda: True)
         with pytest.raises(httpcore.ReadTimeout):
             asyncio.run(stream.read(65536, timeout = 1200.0))
         assert windows[0] == pytest.approx(0.03)
-        assert sum(windows[1:]) == pytest.approx(0.05, abs = 0.002), windows
+        assert sum(windows[1:]) == pytest.approx(0.05, abs = 1e-9), windows
         assert len(windows) >= 3
 
     def test_the_probe_runs_off_the_event_loop(self, monkeypatch):
