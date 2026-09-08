@@ -2191,6 +2191,17 @@ def _terminal_password_gate(
     if not tunnel_will_start and not bind_is_exposed:
         return True, False
 
+    # A raw-bind-only launch decides promptability BEFORE opening auth storage.
+    # Before this gate learned about non-tunnel exposure it returned above, so a
+    # headless container never reached ensure_default_admin() from here. Doing so
+    # now would move first seeding earlier, open the SQLite file sooner and give a
+    # read-only or locked home a new place to fail, none of which a container
+    # operator asked for. Tunnel launches are unaffected: they always came here.
+    if not tunnel_will_start and not (
+        _stream_isatty(sys.stdin) and _stream_isatty(sys.stderr)
+    ):
+        return True, False
+
     from auth import hashing as _auth_hashing
     from auth import storage as _auth_storage
     from auth.bootstrap_timeout import (
@@ -2285,7 +2296,29 @@ def _terminal_password_gate(
         out = sys.stderr,
         exposure = ("on the public internet" if tunnel_will_start else "on every network interface"),
     )
-    return (True, True) if changed else (False, False)
+    if changed:
+        return True, True
+    if tunnel_will_start:
+        # Refusing to secure a launch that is about to publish a public URL
+        # aborts it, exactly as before.
+        return False, False
+    # A raw bind is different: this launch worked before the prompt existed, and
+    # aborting it would turn Ctrl+C into "no Studio" for anyone who just wanted
+    # the old behaviour. `docker run -it` on a fresh volume is precisely that
+    # case (docker/studio_run.sh execs `unsloth studio -H 0.0.0.0` and only
+    # supplies a password when the initial-password file is non-empty), so
+    # aborting would stop a container that starts today. Warn and proceed at the
+    # protection level this launch already had: the bootstrap deadline.
+    print(
+        "  WARNING: continuing with the auto-generated admin password on a bind "
+        "that is reachable from the network. Unsloth shuts down after the "
+        "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
+        "unless the password is changed. Change it by logging in, or with "
+        "`unsloth studio reset-password`.",
+        file = sys.stderr,
+        flush = True,
+    )
+    return True, False
 
 
 def _apply_supplied_password(password_value: "Optional[str]") -> None:

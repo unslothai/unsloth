@@ -437,6 +437,73 @@ def test_a_headless_raw_bind_is_byte_for_byte_unchanged(monkeypatch):
     assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
 
 
+def test_a_headless_raw_bind_does_not_open_auth_storage(monkeypatch):
+    """"Unchanged" has to mean it does not touch the database either.
+
+    Before this gate learned about non-tunnel exposure, a headless raw bind
+    returned at `if not tunnel_will_start` without importing auth storage. If it
+    now calls ensure_default_admin() first, first seeding moves earlier and the
+    SQLite file is opened sooner, which gives a read-only or locked STUDIO_HOME a
+    brand new place to fail on a launch that used to work. So the promptability
+    decision has to happen before storage is consulted.
+    """
+    _patch_streams(monkeypatch, tty = False)
+
+    def _boom(*_a, **_k):
+        raise AssertionError(
+            "auth storage was opened on a headless raw bind; the gate must "
+            "decide it cannot prompt before touching the database"
+        )
+
+    from auth import storage as _storage
+    monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
+    monkeypatch.setattr(_storage, "requires_password_change", _boom)
+
+    assert run._terminal_password_gate(
+        tunnel_will_start = False, **_RAW_BIND_KWARGS
+    ) == (True, False)
+
+
+def test_refusing_the_prompt_on_a_raw_bind_still_launches(monkeypatch):
+    """Ctrl+C must not turn a working launch into no Studio.
+
+    `docker/studio_run.sh` execs `unsloth studio -H 0.0.0.0` and only supplies a
+    password when the initial-password file is non-empty, so a fresh
+    `docker run -it` meets this prompt. Aborting there would stop a container
+    that starts today. The launch proceeds at the protection level it already
+    had, which is the bootstrap deadline.
+    """
+    _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    from auth import terminal_prompt
+    monkeypatch.setattr(
+        terminal_prompt, "prompt_for_password_change",
+        lambda **_kw: False,          # Ctrl+C / EOF
+    )
+
+    # proceed = True, and the bootstrap credential keeps being injected exactly
+    # as it was before this prompt existed.
+    assert run._terminal_password_gate(
+        tunnel_will_start = False, **_RAW_BIND_KWARGS
+    ) == (True, False)
+
+
+def test_refusing_the_prompt_on_a_tunnel_still_aborts(monkeypatch):
+    """The tunnel case is unchanged: refusing to secure a public URL fails closed."""
+    _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    from auth import terminal_prompt
+    monkeypatch.setattr(
+        terminal_prompt, "prompt_for_password_change", lambda **_kw: False
+    )
+
+    assert run._terminal_password_gate(
+        tunnel_will_start = True, **_GATE_KWARGS
+    ) == (False, False)
+
+
 def test_a_raw_bind_with_a_terminal_reaches_the_prompt(monkeypatch):
     """The fix. Before this, `if not tunnel_will_start` returned first."""
     _patch_streams(monkeypatch, tty = True)

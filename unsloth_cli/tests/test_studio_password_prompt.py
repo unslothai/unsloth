@@ -82,25 +82,39 @@ def test_launch_publishes_tunnel_matrix(cloudflare, host, secure, api_only, expe
         # fallback is handled downstream, not here.
         *[(c, h, s, a, False, e) for c, h, s, a, e in _TUNNEL_MATRIX if e],
         *[(c, h, s, a, True, e) for c, h, s, a, e in _TUNNEL_MATRIX if e],
-        # The change: a RAW wildcard bind with a terminal attached. Reachable by
-        # every host on the network with the seeded password live, and it starts
-        # no tunnel, so before this it got no prompt at all.
+        # The change: a RAW non-loopback bind with a terminal attached. Reachable
+        # by every host on the network with the seeded password live, and it
+        # starts no tunnel, so before this it got no prompt at all.
         (None, "0.0.0.0", False, False, True, True),
         (False, "0.0.0.0", False, False, True, True),
         (None, "::", False, False, True, True),
         (None, "0", False, False, True, True),
         (None, "::ffff:0.0.0.0", False, False, True, True),
+        # Concrete LAN addresses and hostnames, NOT just wildcard spellings. The
+        # backend counts these as exposed, so the parent must too; otherwise an
+        # older re-exec'd child, which has no backend gate, prompts nowhere.
+        (None, "192.168.1.50", False, False, True, True),
+        (None, "10.0.0.5", False, False, True, True),
+        (None, "172.16.4.9", False, False, True, True),
+        (None, "example.com", False, False, True, True),
+        (None, "myhost.local", False, False, True, True),
+        (None, "[::]", False, False, True, True),
         # Headless raw binds stay exactly as they were: no prompt, no strip, no
         # refusal. Long-running containers are the common use of this flag and
         # the bootstrap deadline is what covers them.
         (None, "0.0.0.0", False, False, False, False),
         (False, "0.0.0.0", False, False, False, False),
         (None, "::", False, False, False, False),
+        (None, "192.168.1.50", False, False, False, False),
         # --api-only authenticates by API key, not the admin password.
         (None, "0.0.0.0", False, True, True, False),
+        (None, "192.168.1.50", False, True, True, False),
         # Loopback is not exposed, so nothing changes for plain `unsloth studio`.
         (None, "127.0.0.1", False, False, True, False),
         (None, "localhost", False, False, True, False),
+        (None, "::1", False, False, True, False),
+        # An empty host is rejected by the CLI long before this; never prompt on
+        # it, even though is_external_host("") is True.
         (None, "", False, False, True, False),
     ],
 )
@@ -1753,3 +1767,56 @@ def test_studio_default_password_applies_on_headless_wildcard_no_tunnel(monkeypa
     assert after["must_change_password"] == 0
     assert after["password_hash"] != before["password_hash"]
     assert "--password" not in _exec_argv(events)
+
+
+# ── CLI / backend exposure agreement ─────────────────────────────────
+
+
+_EXPOSURE_HOSTS = [
+    # wildcard spellings
+    "0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "0", "::ffff:0.0.0.0",
+    # loopback aliases
+    "127.0.0.1", "localhost", "::1",
+    # concrete external addresses and names
+    "192.168.1.50", "10.0.0.5", "172.16.4.9", "example.com", "myhost.local",
+    # odd spellings
+    "[::]", "0.0.0.0.0",
+]
+
+
+@pytest.mark.parametrize("host", _EXPOSURE_HOSTS)
+def test_cli_and_backend_agree_on_which_hosts_are_exposed(monkeypatch, host):
+    """The parent and the child must classify exposure identically.
+
+    They are separate implementations in separate packages (the CLI cannot import
+    the backend), and they are consulted at different moments: the parent decides
+    before re-exec, the child decides after. When they disagree the prompt lands
+    in the child instead of the parent, and against an OLDER studio-venv child,
+    which the mixed-version path explicitly supports and which has no gate at all,
+    it lands nowhere and the seeded password is served.
+
+    Measured before the fix: wildcard was False but exposed was True for
+    192.168.1.50, 10.0.0.5, example.com, myhost.local, [::] and 0.0.0.0.0.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_bootstrap_timeout_probe",
+        _REPO_ROOT / "studio" / "backend" / "auth" / "bootstrap_timeout.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(_REPO_ROOT / "studio" / "backend"))
+    try:
+        spec.loader.exec_module(module)
+        backend_exposed = module._is_exposed_bind(host, False)
+    finally:
+        sys.path.remove(str(_REPO_ROOT / "studio" / "backend"))
+
+    monkeypatch.setattr(_studio(), "_prompt_streams_interactive", lambda: True)
+    cli_prompts = _studio()._should_prompt_password_change(
+        cloudflare = None, host = host, secure = False, api_only = False
+    )
+    assert cli_prompts is backend_exposed, (
+        f"{host!r}: CLI prompts={cli_prompts} but the backend considers it "
+        f"exposed={backend_exposed}; the parent gate and the child gate disagree"
+    )

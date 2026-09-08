@@ -2,7 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Interactive terminal prompt that forces a bootstrap password change before
-Unsloth is exposed on a public Cloudflare URL (``--secure`` / ``--cloudflare``).
+Unsloth is put where others can reach it: a public Cloudflare URL (``--secure``
+/ ``--cloudflare``) or a raw non-loopback bind such as ``-H 0.0.0.0``.
 
 Masked input echoes one ``*`` per keystroke (unlike ``getpass``). Works on
 Windows (``msvcrt``) and Linux/macOS (``termios``). All output goes to stderr so

@@ -1203,11 +1203,22 @@ def _should_prompt_password_change(
     through this CLI path). --secure implies the tunnel; --cloudflare only
     tunnels non-api-only wildcard binds.
 
-    A raw wildcard bind counts too, and only when a terminal is attached. It is
-    reachable by every host on the network, and by the internet on a machine
+    A raw non-loopback bind counts too, and only when a terminal is attached. It
+    is reachable by every host on the network, and by the internet on a machine
     with a public address, while starting no tunnel, so it previously got no
     prompt, no warning and no strip: the seeded admin password stayed live and
     was served in the page to anyone who loaded it.
+
+    is_external_host, NOT is_wildcard_host. The backend gate classifies exposure
+    with auth/bootstrap_timeout._is_exposed_bind, which counts anything that is
+    not one of the three loopback aliases; wildcard is a strict subset of that.
+    Using the narrower test here meant `unsloth studio -H 192.168.1.50`, an
+    ordinary LAN bind, skipped the parent prompt and prompted in the re-exec'd
+    child instead, and against an OLDER studio-venv child, which the mixed-version
+    path explicitly supports and which has no backend gate, it prompted nowhere at
+    all and served the seeded password. It is also cheaper: is_wildcard_host runs
+    socket.getaddrinfo for any non-literal host, while is_external_host is a
+    frozenset membership test.
 
     The interactivity condition is deliberate and is what keeps this safe to
     ship. Everything downstream of here is calibrated to publishing a public
@@ -1219,13 +1230,15 @@ def _should_prompt_password_change(
     """
     if secure:
         return True
-    from unsloth_cli._tool_policy import is_wildcard_host
-
-    if not is_wildcard_host(host) or api_only:
+    if not host or api_only:
         return False
-    if cloudflare is True:
+    from unsloth_cli._tool_policy import is_external_host, is_wildcard_host
+
+    if cloudflare is True and is_wildcard_host(host):
+        # A tunnel launch prompts regardless of the terminal; the headless
+        # fallback is handled downstream.
         return True
-    return _prompt_streams_interactive()
+    return is_external_host(host) and _prompt_streams_interactive()
 
 
 def _prompt_streams_interactive() -> bool:
