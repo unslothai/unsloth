@@ -11,6 +11,11 @@ const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
 // Mirrors the backend's _looks_like_mlx_repo: owner prefix, or a bounded mlx token in the leaf.
 const MLX_RE = /(?:^|[-_.])mlx(?:$|[-_.])/i;
 const MLX_OWNER_PREFIX = "mlx-community/";
+// localModelIsMlx feeds LocalModelInfo.id, which is a filesystem PATH for models_dir/lmstudio/custom
+// rows, so the leaf is taken on either separator. A repo id can never contain a backslash, so repo
+// ids are unaffected; this only stops a Windows path from being judged by its parent directories,
+// the way a POSIX one already is.
+const PATH_SEP_RE = /[\\/]/;
 
 export function isGgufId(id: string, hintedIsGguf?: boolean): boolean {
   return Boolean(hintedIsGguf) || GGUF_SUFFIX_RE.test(id);
@@ -19,7 +24,7 @@ export function isGgufId(id: string, hintedIsGguf?: boolean): boolean {
 export function isMlxId(id: string): boolean {
   const trimmed = id.trim();
   if (trimmed.toLowerCase().startsWith(MLX_OWNER_PREFIX)) return true;
-  const leaf = trimmed.split("/").filter(Boolean).at(-1) ?? trimmed;
+  const leaf = trimmed.split(PATH_SEP_RE).filter(Boolean).at(-1) ?? trimmed;
   return MLX_RE.test(leaf);
 }
 
