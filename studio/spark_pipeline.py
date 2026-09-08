@@ -323,7 +323,6 @@ def _materialise(model, model_name, cfg, device, dtype, log):
 
 
 class _Stage:
-
     def __init__(
         self,
         model,

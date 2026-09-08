@@ -1187,7 +1187,6 @@ def _print_manual_steps(
     *,
     extra_plans: Optional[List[List[Dict[str, str]]]] = None,
 ) -> None:
-
     def emit(where: str, entries: List[Dict[str, str]]) -> None:
         print(f"\n  Run these on {where}:")
         print("    sudo tee /etc/netplan/40-unsloth-cx7.yaml >/dev/null <<'EOF'")

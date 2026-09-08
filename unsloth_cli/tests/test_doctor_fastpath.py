@@ -48,7 +48,6 @@ def _node(host: str, **overrides) -> dict:
 
 @pytest.fixture
 def fake_probes(monkeypatch):
-
     def install(
         local,
         peer,
