@@ -603,3 +603,112 @@ class TestTheParkGraceLivesBelowTheHttpxIterators:
             + source.count("                response = resp,\n")
             >= 4
         )
+
+
+class TestTheGraceStartsAtTheDeadlineAndTheProbeLeavesTheLoopAlone:
+    @staticmethod
+    def _wrapped(
+        monkeypatch,
+        read,
+        grace,
+        *,
+        read_timeout = 0.03,
+    ):
+        stream = SimpleNamespace(read = read)
+        response = SimpleNamespace(
+            extensions = {"network_stream": stream},
+            request = SimpleNamespace(extensions = {"timeout": {"read": read_timeout}}),
+        )
+        assert inference._install_park_aware_read(response, grace) is True
+        return stream
+
+    def test_the_cap_is_measured_from_the_deadline_it_first_crossed(self, monkeypatch):
+        import httpcore
+
+        # A 30ms window and a 50ms grace: the retries after the first deadline add up to the
+        # grace, and not to the grace less the window it took to reach the deadline.
+        monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", 0.05)
+        windows = []
+
+        async def silent(max_bytes, timeout = None):
+            windows.append(timeout)
+            await asyncio.sleep(timeout)
+            raise httpcore.ReadTimeout("silence")
+
+        stream = self._wrapped(monkeypatch, silent, lambda: True)
+        with pytest.raises(httpcore.ReadTimeout):
+            asyncio.run(stream.read(65536, timeout = 1200.0))
+        assert windows[0] == pytest.approx(0.03)
+        assert sum(windows[1:]) == pytest.approx(0.05, abs = 0.002), windows
+        assert len(windows) >= 3
+
+    def test_the_probe_runs_off_the_event_loop(self, monkeypatch):
+        import httpcore
+
+        calls = {"n": 0}
+
+        async def read(max_bytes, timeout = None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpcore.ReadTimeout("silence")
+            return b"data: a\n\n"
+
+        def slow_probe():
+            time.sleep(0.2)  # `/metrics` over urllib, blocking
+            return True
+
+        stream = self._wrapped(monkeypatch, read, slow_probe)
+
+        async def run():
+            ticks = []
+
+            async def ticker():
+                while True:
+                    ticks.append(time.monotonic())
+                    await asyncio.sleep(0.005)
+
+            task = asyncio.create_task(ticker())
+            try:
+                got = await stream.read(65536, timeout = 1200.0)
+            finally:
+                task.cancel()
+            return got, len(ticks)
+
+        got, ticks = asyncio.run(run())
+        assert got == b"data: a\n\n"
+        assert ticks > 10, f"the loop was held while the probe ran ({ticks} ticks)"
+
+    def test_the_grace_above_the_iterator_asks_off_the_loop_too(self):
+        source = inspect.getsource(inference._aiter_llama_stream_items)
+        assert "grace_above()" not in source
+        assert source.count("await _probe_off_the_loop(grace_above)") == 2
+
+
+class TestAnExplicitOptOutOfTheUnifiedCacheIsKept:
+    _CAPS = {"supports_kv_unified": True}
+
+    def test_the_launch_line_does_not_reverse_it(self):
+        add = LlamaCppBackend._exact_missing_launch_flags
+        assert add(["llama-server", "--parallel", "1"], self._CAPS) == ["--kv-unified"]
+        assert add(["llama-server", "--parallel", "1", "--no-kv-unified"], self._CAPS) == []
+        assert add(["llama-server", "-no-kvu"], self._CAPS) == []
+        assert add(["llama-server", "--no-kv-unified", "--kv-unified"], self._CAPS) == []
+
+    def test_it_is_the_contradiction_it_is(self):
+        assert exact.contradicting_args(["--no-kv-unified"]) == ["--no-kv-unified"]
+        assert exact.contradicting_args(["-no-kvu"]) == ["-no-kvu"]
+        # A later spelling of the same option decides for it, as llama-server applies argv.
+        assert exact.contradicting_args(["--no-kv-unified", "--kv-unified"]) == []
+        assert exact.contradicting_args(["--kv-unified", "-no-kvu"]) == ["-no-kvu"]
+
+    def test_auto_does_not_start_a_mode_the_extras_contradict(self, monkeypatch):
+        monkeypatch.delenv(preemption_mod.PREEMPT_MODE_ENV, raising = False)
+        monkeypatch.delenv(preemption_mod.PREEMPT_ENV, raising = False)
+        reason = llama_mod._exact_auto_blocker(
+            exact.EXACT_AUTO, ["llama-server", "--kv-unified", "--no-kv-unified"], {}
+        )
+        assert reason is not None and "--no-kv-unified" in reason
+        assert (
+            llama_mod._exact_auto_blocker(exact.EXACT_AUTO, ["llama-server", "--kv-unified"], {})
+            is None
+        )

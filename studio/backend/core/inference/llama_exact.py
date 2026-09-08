@@ -150,6 +150,8 @@ _BARE_CONTRADICTIONS = (
     "--no-kv-offload",
     "-nkvo",
     "--no-flash-attn",
+    "--no-kv-unified",
+    "-no-kvu",
 )
 # A later spelling of the same option replaces an earlier one, as llama-server applies argv,
 # so `--flash-attn off --flash-attn on` runs with flash attention and is no contradiction.
@@ -162,6 +164,9 @@ _OPTION_FAMILY = {
     "-nkvo": "--no-kv-offload",
     "-kvo": "--no-kv-offload",
     "--kv-offload": "--no-kv-offload",
+    "-kvu": "--kv-unified",
+    "-no-kvu": "--kv-unified",
+    "--no-kv-unified": "--kv-unified",
 }
 
 
@@ -195,7 +200,7 @@ def contradicting_args(args: Optional[Sequence[str]]) -> list[str]:
             contradicts = value in ("off", "0", "false", "disabled")
         elif name in _BARE_CONTRADICTIONS:
             contradicts = True
-        elif name in ("--no-context-shift", "-kvo", "--kv-offload"):
+        elif name in ("--no-context-shift", "-kvo", "--kv-offload", "-kvu", "--kv-unified"):
             contradicts = False
         else:
             continue

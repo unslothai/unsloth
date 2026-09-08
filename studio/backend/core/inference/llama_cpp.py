@@ -2145,6 +2145,13 @@ def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[
         )
     if _preempt_ram_disabled_in(args, env = env):
         return "the server's parking is switched off (--preempt-ram 0)"
+    conflicts = _exact.contradicting_args(args)
+    if conflicts:
+        return (
+            "the extra arguments pass "
+            + ", ".join(conflicts)
+            + ", which llama-server cannot combine with it"
+        )
     # The same condition `_stand_down_child_parking` acts on later in the launch (studio mode,
     # above, is its other): with Studio's preemption off and nothing naming a budget, the child
     # is handed a zero budget.
@@ -7197,8 +7204,13 @@ class LlamaCppBackend:
         env: Optional[Mapping[str, str]] = None,
     ) -> list[str]:
         """What Studio's own launch line is missing for exact concurrency. One flag today:
-        ``--parallel 1`` skips ``--kv-unified``, which the paged pool needs."""
+        ``--parallel 1`` skips ``--kv-unified``, which the paged pool needs. An explicit
+        ``--no-kv-unified`` in the extras is an opt-out, not an omission: appended after it,
+        the flag reversed it by last-arg. It is left alone and reported as the contradiction
+        it is."""
         if _kv_unified_from_args(args, env = env) or not caps.get("supports_kv_unified"):
+            return []
+        if any(_flag_name(str(a)) in ("-no-kvu", "--no-kv-unified") for a in (args or ())):
             return []
         return ["--kv-unified"]
 
@@ -29248,23 +29260,34 @@ class LlamaCppBackend:
                     started = time.monotonic()
                     deadline = None if effective is None else started + effective
 
-                    def _parked_by_the_server() -> bool:
-                        # Asked only at the deadline, so an idle stream costs nothing.
+                    # The grace starts at the deadline, not at the read: the normal window
+                    # is not park. Each retry is bounded by what is left of it.
+                    crossed_at = None
+
+                    def _parked_by_the_server():
+                        """The next deadline while the server holds the slot parked, else None.
+                        Asked only at the deadline, so an idle stream costs nothing."""
+                        nonlocal crossed_at
                         if stall_grace is None or effective is None:
-                            return False
-                        if time.monotonic() - started >= _SERVER_PARK_STALL_CAP_S:
-                            return False
+                            return None
+                        now = time.monotonic()
+                        if crossed_at is None:
+                            crossed_at = now
+                        grace_left = crossed_at + _SERVER_PARK_STALL_CAP_S - now
+                        if grace_left <= 0:
+                            return None
                         try:
                             parked = bool(stall_grace())
                         except Exception:
                             parked = False
-                        if parked:
-                            logger.info(
-                                "llama stream silent for %.0fs with a slot parked by the "
-                                "server; waiting",
-                                time.monotonic() - started,
-                            )
-                        return parked
+                        if not parked:
+                            return None
+                        logger.info(
+                            "llama stream silent for %.0fs with a slot parked by the "
+                            "server; waiting",
+                            now - started,
+                        )
+                        return now + min(effective, grace_left)
 
                     while True:
                         if cancel_event.is_set():
@@ -29274,8 +29297,8 @@ class LlamaCppBackend:
                         else:
                             remaining = deadline - time.monotonic()
                             if remaining <= 0:
-                                if _parked_by_the_server():
-                                    deadline = time.monotonic() + effective
+                                deadline = _parked_by_the_server()
+                                if deadline is not None:
                                     continue
                                 raise httpcore.ReadTimeout("read operation timed out")
                             step = min(poll_s, remaining)
@@ -29283,8 +29306,8 @@ class LlamaCppBackend:
                             return _orig(max_bytes, timeout = step)
                         except httpcore.ReadTimeout:
                             if deadline is not None and time.monotonic() >= deadline:
-                                if _parked_by_the_server():
-                                    deadline = time.monotonic() + effective
+                                deadline = _parked_by_the_server()
+                                if deadline is not None:
                                     continue
                                 raise
                             continue  # slow but alive: keep reading
@@ -34814,10 +34837,12 @@ class LlamaCppBackend:
                 def _final_pause_gave_up():
                     """End the turn the way a client can read, not by falling silent: the notice
                     saying why the answer stopped, then terminal metadata carrying `length`.
-                    This pass has nothing after it, so the two events are all the user gets."""
+                    This pass has nothing after it, so the two events are all the user gets.
+                    The attempt is already in the accumulators at both callers, so the event
+                    takes its prompt side only; with the whole reading it counted twice."""
                     yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
                     _gave_up_meta = _build_metadata_event(
-                        _metadata_usage, _metadata_timings, "length"
+                        *_folded_attempt(_metadata_usage, _metadata_timings), "length"
                     )
                     if _gave_up_meta is not None:
                         yield _gave_up_meta
@@ -34836,6 +34861,12 @@ class LlamaCppBackend:
                     _decline_the_pause(preempt_policy, "final pass")
                     if preempt_event is not None:
                         preempt_event.clear()
+                    # The attempt really did decode these: without the fold, an interrupted
+                    # stream with no terminal usage chunk reported none of them.
+                    _accumulated_completion_tokens += _pre_charged_f
+                    _it_d_f = _metadata_timings or {}
+                    _accumulated_predicted_ms += _it_d_f.get("predicted_ms", 0)
+                    _accumulated_predicted_n += _it_d_f.get("predicted_n", 0)
                     yield from _final_pause_gave_up()
                     return
                 _preempt_resumes += 1

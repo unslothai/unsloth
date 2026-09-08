@@ -3620,8 +3620,10 @@ def _install_park_aware_read(response: httpx.Response, stall_grace: Callable[[],
     returns StopAsyncIteration, and the relay ended as if the parked answer were complete.
     So the read timeout is handled here, where nothing above it unwinds: at the deadline the
     park probe is asked, and a parked slot buys another read window, up to
-    `_RAW_PARK_STALL_CAP_S`. The live read timeout is re-read per call, so the stall bound
-    written after the first item applies. Returns False when there is no stream to wrap."""
+    `_RAW_PARK_STALL_CAP_S` past the deadline it first crossed. The live read timeout is
+    re-read per call, so the stall bound written after the first item applies. The probe
+    blocks on `/metrics`, so it runs off the event loop. Returns False when there is no
+    stream to wrap."""
     import httpcore
 
     try:
@@ -3647,29 +3649,41 @@ def _install_park_aware_read(response: httpx.Response, stall_grace: Callable[[],
         effective = timeout if live is _NO_LIVE_READ_TIMEOUT else live
         if effective is None:
             return await _orig(max_bytes, timeout = None)
-        started = time.monotonic()
+        # The grace starts at the deadline, not at the read: the normal window is not park.
+        crossed_at: Optional[float] = None
+        window = effective
         while True:
             try:
-                return await _orig(max_bytes, timeout = effective)
+                return await _orig(max_bytes, timeout = window)
             except httpcore.ReadTimeout:
-                # Asked only at the deadline, so an idle stream costs nothing.
-                if time.monotonic() - started >= _RAW_PARK_STALL_CAP_S:
+                now = time.monotonic()
+                if crossed_at is None:
+                    crossed_at = now
+                grace_left = crossed_at + _RAW_PARK_STALL_CAP_S - now
+                if grace_left <= 0:
                     raise
-                try:
-                    parked = bool(current["stall_grace"]())
-                except Exception:
-                    parked = False
-                if not parked:
+                # Asked only at the deadline, so an idle stream costs nothing.
+                if not await _probe_off_the_loop(current["stall_grace"]):
                     raise
                 logger.info(
                     "llama stream silent for %.0fs with a slot parked by the server; waiting",
-                    time.monotonic() - started,
+                    now - crossed_at + effective,
                 )
+                window = min(effective, grace_left)
 
     stream.read = read
     stream._unsloth_park_wrapped = True
     stream._unsloth_park_state = state
     return True
+
+
+async def _probe_off_the_loop(stall_grace: Callable[[], bool]) -> bool:
+    """The park probe scrapes `/metrics` with a blocking read of up to three seconds, which
+    inline would hold the event loop, every other stream with it."""
+    try:
+        return bool(await asyncio.to_thread(stall_grace))
+    except Exception:
+        return False
 
 
 def _async_iterator_is_closed(async_iter) -> bool:
@@ -3719,7 +3733,7 @@ async def _aiter_llama_stream_items(
     )
     grace_above = None if grace_below else stall_grace
 
-    def _first_item_excused(now: float) -> bool:
+    async def _first_item_excused(now: float) -> bool:
         nonlocal first_token_deadline, first_deadline_crossed_at
         if grace_above is None or _async_iterator_is_closed(async_iter):
             return False
@@ -3727,10 +3741,7 @@ async def _aiter_llama_stream_items(
             first_deadline_crossed_at = now
         if now - first_deadline_crossed_at >= _RAW_PARK_STALL_CAP_S:
             return False
-        try:
-            parked = bool(grace_above())
-        except Exception:
-            parked = False
+        parked = await _probe_off_the_loop(grace_above)
         if parked:
             first_token_deadline = now + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
         return parked
@@ -3777,7 +3788,7 @@ async def _aiter_llama_stream_items(
                 item = await async_iter.__anext__()
         except asyncio.TimeoutError as exc:
             if waiting_first_item:
-                if _first_item_excused(time.monotonic()):
+                if await _first_item_excused(time.monotonic()):
                     continue
                 raise httpx.ReadTimeout("The model did not produce a first token in time.") from exc
             raise
@@ -3787,7 +3798,7 @@ async def _aiter_llama_stream_items(
             now = time.monotonic()
             if last_item_at is None:
                 if now >= first_token_deadline:
-                    if _first_item_excused(now):
+                    if await _first_item_excused(now):
                         continue
                     raise
                 if _async_iterator_is_closed(async_iter):
@@ -3802,11 +3813,7 @@ async def _aiter_llama_stream_items(
                 if park_since is None:
                     park_since = last_item_at
                 if now - park_since < _RAW_PARK_STALL_CAP_S:
-                    try:
-                        parked = bool(grace_above())
-                    except Exception:
-                        parked = False
-                    if parked:
+                    if await _probe_off_the_loop(grace_above):
                         last_item_at = now
                         continue
             raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")

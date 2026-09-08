@@ -427,6 +427,14 @@ class TestAParkIsNotAStall:
         assert len(asked) == 3
         assert clock["t"] == pytest.approx(3 * self._STALL, abs = 1.0)
 
+    def test_the_grace_is_measured_from_the_deadline_it_first_crossed(self, monkeypatch):
+        # Parked for good: the wait is the stall window and then the whole grace, not the
+        # grace less the window it took to reach the deadline.
+        read, clock = self._drive(monkeypatch, lambda: True)
+        self._read_until_stall(read)
+        cap = llama_cpp_mod._SERVER_PARK_STALL_CAP_S
+        assert clock["t"] == pytest.approx(self._STALL + cap, abs = 1.0)
+
     def test_the_open_stream_hands_the_grace_down_only_when_the_build_can_park(self, monkeypatch):
         seen = []
 
