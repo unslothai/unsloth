@@ -1101,3 +1101,62 @@ def test_a_cancel_after_audio_setup_unloads_the_codec(tmp_path, monkeypatch):
     codec.unload.assert_called_once_with()
     assert LlamaCppBackend._codec_mgr is None
     assert emptied == [1]
+
+
+def _run_server_body() -> str:
+    """run_server's source, without importing run.py.
+
+    Importing it pulls in fastapi and the whole route tree, which is exactly the
+    cost the ordering below exists to keep out of the early startup path.
+    """
+    import ast
+
+    run_py = Path(__file__).resolve().parent.parent / "run.py"
+    tree = ast.parse(run_py.read_text(encoding = "utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "run_server":
+            return ast.get_source_segment(run_py.read_text(encoding = "utf-8"), node) or ""
+    raise AssertionError("run_server not found in run.py")
+
+
+def test_the_lifecycle_reset_does_not_import_the_route_module_early():
+    """The reset must not be what first builds the llama-server backend.
+
+    `from routes.inference import ...` constructs the module singleton, which
+    sweeps orphan llama-servers and registers an atexit handler. run_server
+    documents five things as having to happen before any of that: the Windows
+    UTF-8 reconfigure, the session log that catches import-time crashes, the
+    structlog setup (whose cache_logger_on_first_use pins any logger that has
+    already emitted), initialize_parent_lifetime() before a child can spawn, and
+    write_startup_marker() before a sweep can reap a sibling's server.
+
+    Ordering it after `from main import app` makes the import free: main imports
+    the route package, so the singleton already exists and this is a lookup.
+    """
+    body = _run_server_body()
+
+    main_import = body.index("from main import app")
+    reset = body.index("_begin_server_lifecycle()")
+    assert reset > main_import, (
+        "the lifecycle reset imports routes.inference before `from main import app`, "
+        "so it, not main, builds the backend singleton -- ahead of the startup steps "
+        "run_server requires to come first"
+    )
+
+    for earlier in (
+        'sys.stdout.reconfigure(encoding = "utf-8"',
+        "_setup_server_disk_logging()",
+        "LogConfig.setup_logging(",
+        "initialize_parent_lifetime()",
+        "write_startup_marker()",
+    ):
+        assert body.index(earlier) < reset, f"{earlier} must precede the lifecycle reset"
+
+
+def test_the_lifecycle_reset_stays_below_the_argument_checks():
+    """A rejected invocation must not touch the backend at all."""
+    body = _run_server_body()
+
+    assert body.index("choose an explicit port.") < body.index("_begin_server_lifecycle()"), (
+        "the reset runs before run_server has finished rejecting bad arguments"
+    )

@@ -2455,19 +2455,6 @@ def run_server(
                 "choose an explicit port."
             )
 
-    # A new server lifecycle. The backend is a module singleton, so an embedded
-    # host that stops and calls this again reuses the instance _graceful_shutdown
-    # marked as shutting down, and without this every launch of the second session
-    # would be refused. Below the argument checks on purpose: importing the route
-    # module builds that singleton, which sweeps orphan llama-servers and registers
-    # an atexit handler, and an invocation about to be rejected must not do that.
-    try:
-        from routes.inference import _llama_cpp_backend
-        if _llama_cpp_backend is not None:
-            _llama_cpp_backend._begin_server_lifecycle()
-    except Exception as e:
-        logger.warning("Could not reset llama-server shutdown state: %s", e)
-
     # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8. Before the tee, so
     # it reaches the console stream rather than the wrapper.
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
@@ -2596,6 +2583,26 @@ def run_server(
     # shutdown, when a sibling may have started since. On app.state rather than
     # imported, because main.py must not import this module back.
     app.state.live_sibling_backend = live_sibling_backend
+
+    # A new server lifecycle. The backend is a module singleton, so an embedded
+    # host that stops and calls this again reuses the instance _graceful_shutdown
+    # marked as shutting down, and without this every launch of the second session
+    # would be refused.
+    #
+    # Here rather than at the top of this function because `main` imports the route
+    # module, so by this line the singleton already exists and the import below is a
+    # lookup with no side effects. Reaching for it any earlier would build that
+    # singleton itself -- which sweeps orphan llama-servers and registers an atexit
+    # handler -- ahead of the UTF-8 reconfigure, the session log, the structlog
+    # setup, initialize_parent_lifetime() and write_startup_marker(), each of which
+    # this function documents as having to come first. Still long before uvicorn
+    # serves, so nothing can have asked for a load yet.
+    try:
+        from routes.inference import _llama_cpp_backend
+        if _llama_cpp_backend is not None:
+            _llama_cpp_backend._begin_server_lifecycle()
+    except Exception as e:
+        logger.warning("Could not reset llama-server shutdown state: %s", e)
 
     logger.info(
         "Imported FastAPI app in %.1fms",
