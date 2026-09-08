@@ -919,15 +919,22 @@ class TestParserMultiFormat:
         "text",
         [
             # Defensive: must NOT fire on plain assistant prose.
-            pytest.param("Hello world, how are you today?", id = "llama3_2_bare_json_plain_prose_does_not_fire"),
+            pytest.param(
+                "Hello world, how are you today?", id = "llama3_2_bare_json_plain_prose_does_not_fire"
+            ),
             # JSON embedded in prose must NOT fire (the parser is strict about content
             # STARTING with `{`).
             pytest.param(
-                'The tool result was: {"name":"foo"}', id = "llama3_2_bare_json_embedded_in_prose_does_not_fire"
+                'The tool result was: {"name":"foo"}',
+                id = "llama3_2_bare_json_embedded_in_prose_does_not_fire",
             ),
-            pytest.param('{"result":"ok","data":[1,2,3]}', id = "llama3_2_bare_json_missing_name_does_not_fire"),
+            pytest.param(
+                '{"result":"ok","data":[1,2,3]}', id = "llama3_2_bare_json_missing_name_does_not_fire"
+            ),
             pytest.param('{"name":"x"}', id = "llama3_2_bare_json_missing_args_does_not_fire"),
-            pytest.param('{"name":"x","parameters":42}', id = "llama3_2_bare_json_args_not_dict_does_not_fire"),
+            pytest.param(
+                '{"name":"x","parameters":42}', id = "llama3_2_bare_json_args_not_dict_does_not_fire"
+            ),
             # Llama-3 spec: parameters must be a dict, so prose in it must NOT trigger.
             pytest.param(
                 '{"name":"foo","parameters":"this is a sentence"}',
@@ -958,7 +965,9 @@ class TestParserMultiFormat:
     @pytest.mark.parametrize(
         "text",
         [
-            pytest.param('<|python_tag|>brave_search.call(query="x")', id = "llama3_strip_markup_final"),
+            pytest.param(
+                '<|python_tag|>brave_search.call(query="x")', id = "llama3_strip_markup_final"
+            ),
             pytest.param('[TOOL_CALLS]add{"a":1}', id = "mistral_strip_markup_v11"),
             pytest.param(
                 '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}',
