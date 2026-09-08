@@ -3,13 +3,17 @@
 
 """The seccomp program bubblewrap installs on a sandboxed tool process.
 
-Three holes a mount namespace cannot close on its own. AF_VSOCK addresses a
+Four holes a mount namespace cannot close on its own. AF_VSOCK addresses a
 hypervisor rather than a path, so no filesystem view hides it. io_uring submits
 work from a kernel thread holding credentials captured at setup time, which is
-the wrong side of the boundary. And a nested user namespace hands the process
-back a full capability set to work with: bubblewrap closes that one itself with
-``--disable-userns``, but only since 0.8.0, and Ubuntu 22.04 still ships 0.6.1,
-so on those hosts this filter is the only thing that does.
+the wrong side of the boundary. The kernel keyrings are not namespaced at all:
+a session keyring is a process credential, inherited across fork and exec, so a
+Kerberos KEYRING: cache or an fscrypt key the operator's login session holds is
+readable from inside the jail without touching a single host path. And a nested
+user namespace hands the process back a full capability set to work with:
+bubblewrap closes that one itself with ``--disable-userns``, but only since
+0.8.0, and Ubuntu 22.04 still ships 0.6.1, so on those hosts this filter is the
+only thing that does.
 
 AF_UNIX and AF_INET stay allowed. This sandbox confines the filesystem, not the
 network, and a filter that quietly broke sockets would make that claim false.
@@ -40,6 +44,16 @@ _USERNS_SYSCALLS = {
     "arm64": (220, 97, 435),
 }
 _IO_URING = (425, 426, 427)  # setup, enter, register: the same numbers on both ABIs
+# machine -> (add_key, request_key, keyctl). Unlike io_uring these differ per ABI.
+# Denied rather than joining an empty session keyring: joining needs the very
+# syscall being taken away, and nothing a Python or Terminal tool call does
+# touches a keyring.
+_KEYRING_SYSCALLS = {
+    "x86_64": (248, 249, 250),
+    "amd64": (248, 249, 250),
+    "aarch64": (217, 218, 219),
+    "arm64": (217, 218, 219),
+}
 _X32_SYSCALL_BIT = 0x40000000
 _CLONE_NEWUSER = 0x10000000
 _AF_VSOCK = 40
@@ -86,7 +100,7 @@ def program(machine: str, *, block_userns: bool = False) -> tuple[tuple[int, int
         # x32 numbers alias the 64-bit table, so an unfiltered x32 call would
         # reach a syscall this filter believes it inspected.
         code += [(_JSET, 0, 1, _X32_SYSCALL_BIT), (_RET, 0, 0, _KILL)]
-    for number in _IO_URING:
+    for number in (*_IO_URING, *_KEYRING_SYSCALLS[key]):
         code += [(_JEQ, 0, 1, number), (_RET, 0, 0, _EPERM)]
     code += [
         (_JEQ, 1, 0, socket_nr),

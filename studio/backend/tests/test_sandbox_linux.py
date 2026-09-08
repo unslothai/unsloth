@@ -134,9 +134,38 @@ def test_the_private_tmpfs_replaces_the_shared_directories(prepared):
     argv = prepared.argv
     remount = argv.index("--remount-ro")
     tmpfs = [argv[i + 1] for i, token in enumerate(argv) if token == "--tmpfs"]
-    assert tmpfs == ["/dev/shm", "/tmp"]
+    assert tmpfs[:2] == ["/dev/shm", "/tmp"]
     # After the remount, or they would be read-only and every temp file would fail.
     assert argv.index("--tmpfs") > remount
+
+
+def test_the_tls_private_key_directories_are_masked(prepared):
+    """/etc/ssl and /etc/pki are bound whole because the CA bundle's spelling moves
+    between distributions, and each carries a private-key directory beside the
+    public trust material. A Studio running as root in a container can read it, and
+    the network in here is open. An empty tmpfs cannot break certificate validation
+    the way naming the bundle by hand could."""
+    argv = prepared.argv
+    tmpfs = [argv[i + 1] for i, token in enumerate(argv) if token == "--tmpfs"]
+    present = [path for path in sandbox_linux._TLS_PRIVATE_DIRS if os.path.isdir(path)]
+    assert present, "no TLS private-key directory on this host, so this proves nothing"
+    for path in present:
+        assert path in tmpfs
+        # After the trust tree is bound, or the bind would put it back.
+        assert tmpfs.index(path) > tmpfs.index("/tmp")
+
+
+def test_pip_gets_a_writable_target_inside_the_workdir(prepared):
+    """Every runtime path is read-only in here, so pip's default target is not
+    writable and `pip install X` failed with a read-only filesystem error. The
+    session-local target is on PYTHONPATH so the install imports in the same call."""
+    argv = prepared.argv
+    packages = os.path.join(prepared.workdir, sandbox_linux._PACKAGE_TARGET_RELPATH)
+    assert argv[argv.index("PIP_TARGET") + 1] == packages
+    pythonpath = argv[argv.index("PYTHONPATH") + 1].split(os.pathsep)
+    assert packages in pythonpath
+    # Appended, never first: the sandbox_site startup shim must stay unshadowable.
+    assert pythonpath[-1] == packages
 
 
 def test_system_directories_are_bound_whole_and_never_file_by_file(prepared):
@@ -606,6 +635,15 @@ def test_io_uring_is_denied_on_all_three_entry_points(program):
         assert _evaluate(program, nr = number) == _EPERM
 
 
+def test_the_keyring_syscalls_are_denied(program):
+    """Keyrings are not namespaced. A session keyring is a process credential
+    carried across fork and exec, so a Kerberos KEYRING: cache or an fscrypt key
+    the operator's login session holds is readable from inside the jail without
+    touching a host path, and the network in here is open."""
+    for number in sandbox_seccomp._KEYRING_SYSCALLS[platform.machine().lower()]:
+        assert _evaluate(program, nr = number) == _EPERM
+
+
 def test_an_unrelated_syscall_is_allowed(program):
     assert _evaluate(program, nr = 1) == _ALLOW  # write on x86_64, close on aarch64
 
@@ -658,6 +696,7 @@ def _kernel_verdicts(block_userns):
     which is the same program bwrap would have installed. 0 means allowed.
     """
     clone3_nr, unshare_nr = 435, sandbox_seccomp._USERNS_SYSCALLS[platform.machine().lower()][1]
+    keyctl_nr = sandbox_seccomp._KEYRING_SYSCALLS[platform.machine().lower()][2]
     read_fd, write_fd = os.pipe()
     pid = os.fork()
     if pid == 0:  # pragma: no cover - this child never returns into pytest
@@ -683,6 +722,7 @@ def _kernel_verdicts(block_userns):
                     verdicts[name] = error.errno
             for name, number, argument in (
                 ("io_uring", 425, 0),
+                ("keyctl", keyctl_nr, 0),
                 ("clone3", clone3_nr, None),
                 ("unshare_userns", unshare_nr, 0x10000000),
             ):
@@ -710,6 +750,7 @@ def test_the_kernel_loads_the_filter_and_denies_the_channels_it_names():
         verdicts = _kernel_verdicts(block_userns)
         assert verdicts["vsock"] == errno.EPERM
         assert verdicts["io_uring"] == errno.EPERM
+        assert verdicts["keyctl"] == errno.EPERM
         # The network is not confined, and a filter that broke sockets would
         # make the "filesystem isolation only" claim false in the other direction.
         assert verdicts["inet"] == 0 and verdicts["unix"] == 0

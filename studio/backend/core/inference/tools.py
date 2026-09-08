@@ -16297,6 +16297,12 @@ def _python_exec(
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            # close_fds leaves 0, 1 and 2 alone, so an unset stdin is the server's
+            # own: an operator terminal, or whatever `unsloth studio < file`
+            # redirected it to. That descriptor is already open, so no path rule
+            # in either sandbox applies to it, and neither tool has an API for
+            # supplying input anyway.
+            stdin = subprocess.DEVNULL,
             text = True,
             # Decode child output as utf-8 (it emits utf-8 via PYTHONIOENCODING);
             # replace so non-ASCII output never crashes the read on Windows.
@@ -16486,6 +16492,8 @@ def _bash_exec(
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            # See _python_exec: the server's own stdin must not reach a tool call.
+            stdin = subprocess.DEVNULL,
             text = True,
             # Match _python_exec: decode utf-8 with "replace" so invalid output
             # bytes never raise UnicodeDecodeError (which the streaming reader

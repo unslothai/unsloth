@@ -109,6 +109,25 @@ _NETWORK_FILES = (
     "/etc/ca-certificates.conf",
     "/etc/crypto-policies",
 )
+# Shadowed with an empty tmpfs after those trees are bound. /etc/ssl and /etc/pki
+# are bound whole because the CA bundle's spelling moves between distributions,
+# and both carry a private-key directory beside the public trust material. It is
+# mode 0700 root, so an ordinary Studio cannot read it and the mask costs
+# nothing; a Studio running as root in a container can, and the network in here
+# is open by design. Emptying the directory cannot break certificate validation
+# the way naming the bundle by hand could.
+_TLS_PRIVATE_DIRS = (
+    "/etc/ssl/private",
+    "/etc/pki/tls/private",
+)
+# pip installs into the running interpreter's site-packages, which is bound
+# read-only here, so `pip install X` failed with a read-only filesystem error on
+# a workflow this backend is meant to leave working. It goes to a session-local
+# directory instead, on PYTHONPATH so the install is importable in the same call
+# and the next one. Better than main, where the same command mutates the venv the
+# Unsloth server itself runs from. A dot directory so _snapshot_workdir_files
+# does not offer site-packages to the user as artifacts of their tool call.
+_PACKAGE_TARGET_RELPATH = ".unsloth-packages"
 # The one deliberate hole in the home mask. Model weights are gigabytes and a
 # private empty cache per tool call would re-download them every time, which is
 # how a sandbox gets turned off. Bound at the jail's own HOME so the default
@@ -330,6 +349,17 @@ def _tmpdir(plan: ToolLaunchPlan, workdir: str) -> str:
     return resolved if _within(resolved, workdir) else "/tmp"
 
 
+def _pythonpath(plan: ToolLaunchPlan, packages: str) -> str:
+    """The caller's PYTHONPATH with the session package target appended.
+
+    Appended, never prepended: the first entry is tools.py's sandbox_site shim,
+    a startup hook every launch depends on, and a package installed in here must
+    not be able to shadow it.
+    """
+    inherited = plan.env.get("PYTHONPATH") or ""
+    return os.pathsep.join(part for part in (inherited, packages) if part)
+
+
 def _model_cache_path(workdir: str) -> str | None:
     home = os.path.expanduser("~")
     if not os.path.isabs(home):
@@ -446,6 +476,9 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         # writable bind onto it, and the private /tmp, come after.
         argv += ["--dir", workdir, "--remount-ro", "/"]
         argv += ["--tmpfs", "/dev/shm", "--tmpfs", "/tmp"]
+        for path in _TLS_PRIVATE_DIRS:
+            if os.path.isdir(path):
+                argv += ["--tmpfs", path]
         for path in tmp_runtime_paths:
             argv += ["--ro-bind", path, path]
         argv += ["--bind", workdir, workdir, "--chdir", workdir]
@@ -459,7 +492,22 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
                     os.path.join(inner_cache, name),
                 ]
             argv += ["--setenv", "HF_HOME", inner_cache]
-        argv += ["--setenv", "HOME", workdir, "--setenv", "TMPDIR", _tmpdir(plan, workdir), "--"]
+        packages = os.path.join(workdir, _PACKAGE_TARGET_RELPATH)
+        argv += [
+            "--setenv",
+            "HOME",
+            workdir,
+            "--setenv",
+            "TMPDIR",
+            _tmpdir(plan, workdir),
+            "--setenv",
+            "PIP_TARGET",
+            packages,
+            "--setenv",
+            "PYTHONPATH",
+            _pythonpath(plan, packages),
+            "--",
+        ]
         argv += list(plan.argv)
 
         return PreparedSandboxLaunch(

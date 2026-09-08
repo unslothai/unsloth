@@ -23,12 +23,10 @@ can still send it. Keeping that gap honest is why the record says
 """
 
 from __future__ import annotations
-import ctypes
 import hashlib
 import os
 import platform
 import shutil
-import signal
 import stat
 import subprocess
 import sys
@@ -43,10 +41,6 @@ logger = get_logger(__name__)
 # unisolated. "full" is the pre-existing bypass and keeps its old meaning.
 ToolExecutionMode = Literal["auto", "required", "full"]
 TOOL_EXECUTION_MODES = ("auto", "required", "full")
-
-_NR_PIDFD_SEND_SIGNAL = 424
-_NR_PIDFD_OPEN = 434
-_pidfd_support = None
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
 
@@ -215,52 +209,6 @@ class PreparedSandboxLaunch:
 def spawn_prepared_launch(prepared: PreparedSandboxLaunch, **popen_kwargs: Any) -> object:
     """Spawn exactly one prepared launch."""
     return subprocess.Popen(prepared.argv, **popen_kwargs)
-
-
-def _pidfd_open(pid: int) -> int:
-    """A file descriptor pinned to exactly this process (raises OSError)."""
-    if hasattr(os, "pidfd_open"):
-        return os.pidfd_open(pid, 0)
-    libc = ctypes.CDLL(None, use_errno = True)
-    fd = libc.syscall(_NR_PIDFD_OPEN, ctypes.c_int(pid), ctypes.c_uint(0))
-    if fd < 0:
-        errno_value = ctypes.get_errno()
-        raise OSError(errno_value, os.strerror(errno_value))
-    return int(fd)
-
-
-def _pidfd_send_signal(pidfd: int, signum: int) -> None:
-    if hasattr(signal, "pidfd_send_signal"):
-        signal.pidfd_send_signal(pidfd, signum)
-        return
-    libc = ctypes.CDLL(None, use_errno = True)
-    result = libc.syscall(
-        _NR_PIDFD_SEND_SIGNAL, ctypes.c_int(pidfd), ctypes.c_int(signum), None, ctypes.c_uint(0)
-    )
-    if result < 0:
-        errno_value = ctypes.get_errno()
-        raise OSError(errno_value, os.strerror(errno_value))
-
-
-def descendant_sweep_supported() -> bool:
-    """Whether unisolated launches can reap detached descendants after the leader exits.
-
-    Matches processes by a per-call marker in ``/proc/<pid>/environ`` and signals
-    them through a pidfd taken before the match, so a pid recycled between the
-    match and the signal is never hit. Without ``/proc`` or pidfds (macOS, Linux
-    before 5.3) there is no safe sweep. An OS-isolated launch does not need this
-    at all: its PID namespace dies with the leader.
-    """
-    global _pidfd_support
-    if sys.platform != "linux" or not os.path.isdir("/proc"):
-        return False
-    if _pidfd_support is None:
-        try:
-            os.close(_pidfd_open(os.getpid()))
-            _pidfd_support = True
-        except (OSError, AttributeError, TypeError):
-            _pidfd_support = False
-    return _pidfd_support
 
 
 # ── the session workdir ──────────────────────────────────────────────
@@ -494,8 +442,14 @@ def _record(
 
 
 def _software_only_limitations() -> tuple[str, ...]:
+    # Unconditional off Windows. descendant_sweep_supported() says only that this
+    # kernel COULD host the marker-and-pidfd sweep it describes; nothing stamps
+    # the marker and nothing performs the sweep, so teardown is still killpg on
+    # the captured group. A tool that calls setsid (an accepted Terminal wrapper)
+    # and closes stdout survives that, which is exactly what the limitation is
+    # for. It comes off when the sweep is implemented, not when /proc exists.
     limitations = ["no_os_isolation", "host_files_readable", "unrestricted_network"]
-    if sys.platform != "win32" and not descendant_sweep_supported():
+    if sys.platform != "win32":
         limitations.append("detached_descendant_cleanup_unverified")
     return tuple(limitations)
 

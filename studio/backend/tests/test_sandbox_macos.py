@@ -254,11 +254,17 @@ def test_no_read_root_reaches_the_users_home(profile):
     assert not any("Library/Keychains" in path and path.startswith(home) for path in tables)
 
 
-def test_network_is_unrestricted_and_unix_sockets_stay_reachable(profile):
-    """The claim is a filesystem boundary; the network is deliberately open."""
+def test_ip_egress_is_unrestricted_but_unix_sockets_are_not(profile):
+    """The claim is a filesystem boundary and IP stays open, but an unfiltered
+    network-outbound also covers AF_UNIX, which no file rule governs. That is a way
+    to /var/run/docker.sock and out of the boundary entirely, so outbound names the
+    ip domain and the unix sockets a launch needs are listed one by one."""
     lines = profile.splitlines()
-    for rule in ("(allow system-socket)", "(allow network-outbound)", "(allow network-bind)"):
+    for rule in ("(allow system-socket)", "(allow network-bind)", "(allow network-inbound)"):
         assert rule in lines
+    assert "(allow network-outbound)" not in lines
+    # Host and port wildcards, so TCP and UDP over v4 and v6 are all still open.
+    assert '(allow network-outbound (remote ip "*:*"))' in lines
     # Nothing left of the allowlist proxy this backend deliberately does not have.
     assert "localhost" not in profile
     assert "proxy" not in profile.lower()
@@ -266,8 +272,33 @@ def test_network_is_unrestricted_and_unix_sockets_stay_reachable(profile):
     # Seatbelt, not a file operation, so multiprocessing needs its own rule.
     assert f'(allow network-outbound (remote unix-socket (subpath "{_PRIVATE_TMP}")' in profile
     assert f'(allow network-bind (local unix-socket (subpath "{_PRIVATE_TMP}")' in profile
-    assert '(literal "/private/var/run/mDNSResponder")' in profile
+    # Both spellings for the DNS socket: a missed one would read as a name
+    # resolution bug on every Mac and no test here can pick the right one.
+    assert '(allow network-outbound (literal "/private/var/run/mDNSResponder")' in profile
+    assert "(allow network-outbound (remote unix-socket (literal " in profile
     assert '(literal "/var/run/mDNSResponder")' in profile
+    # Nothing grants a host socket such as Docker's.
+    assert "docker.sock" not in profile
+
+
+def test_process_substitution_descriptors_are_readable(profile):
+    """`diff <(sort a) <(sort b)` hands the child /dev/fd/63. Limiting the rule to
+    0, 1 and 2 fails a command that works unisolated and on the Linux backend."""
+    assert '(allow file-read* (regex #"^/dev/fd/[0-9]+$"))' in profile
+    assert '(allow file-write* (regex #"^/dev/fd/[0-9]+$"))' in profile
+
+
+def test_pip_gets_a_writable_target_inside_the_workdir():
+    """Parity with the Linux backend: the runtime paths are not in the write set,
+    so pip's default target is unwritable and the install has to go somewhere the
+    launch can write and then import from."""
+    env = backend._sandbox_environment(
+        {"PATH": "/usr/bin", "PYTHONPATH": "/shim"}, _WORKDIR, _PRIVATE_TMP
+    )
+    packages = f"{_WORKDIR}/{backend.PACKAGE_TARGET_RELPATH}"
+    assert env["PIP_TARGET"] == packages
+    # Appended, never first: the sandbox_site startup shim must stay unshadowable.
+    assert env["PYTHONPATH"].split(os.pathsep) == ["/shim", packages]
 
 
 def test_sysctl_and_shm_rules_survive(profile):

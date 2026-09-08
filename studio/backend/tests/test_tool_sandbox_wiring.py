@@ -678,3 +678,48 @@ def test_an_unknown_mode_is_still_refused_rather_than_run_unisolated():
     )
     assert "SHOULD_NOT_RUN" not in out
     assert "nonsense" in out
+
+
+# ── what the launch does not carry in from the server ─────────────────
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        lambda: tools._python_exec(
+            "import sys; print('IN', repr(sys.stdin.read()))", None, 60, _SESSION
+        ),
+        lambda: tools._bash_exec("printf 'IN %s\\n' \"$(cat)\"", None, 60, _SESSION),
+    ],
+    ids = ["python", "terminal"],
+)
+def test_a_tool_call_cannot_read_the_servers_stdin(run):
+    """close_fds leaves 0, 1 and 2 alone, so an unset stdin is whatever Studio was
+    started with: an operator terminal, or the file `unsloth studio < f` redirected
+    in. That descriptor is already open, so no path rule in either sandbox applies
+    to it, and neither tool has an API for supplying input."""
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"OPERATOR SECRET\n")
+    os.close(write_fd)
+    saved = os.dup(0)
+    try:
+        os.dup2(read_fd, 0)
+        out = run()
+    finally:
+        os.dup2(saved, 0)
+        os.close(saved)
+        os.close(read_fd)
+    assert "OPERATOR SECRET" not in out
+    assert "IN" in out
+
+
+def test_the_fallback_never_claims_a_descendant_sweep_it_does_not_perform():
+    """Nothing stamps the per-call marker and nothing signals through a pidfd:
+    teardown is killpg on the captured group, which a tool that calls setsid and
+    closes stdout survives. The limitation comes off when the sweep is written."""
+    limitations = os_sandbox._software_only_limitations()
+    if sys.platform == "win32":
+        assert "detached_descendant_cleanup_unverified" not in limitations
+    else:
+        assert "detached_descendant_cleanup_unverified" in limitations
+    assert not hasattr(os_sandbox, "descendant_sweep_supported")

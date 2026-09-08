@@ -9,10 +9,14 @@ frameworks and command-line tools, the session workdir, and a private tmp. The
 user's home is not in that set, so ``~/.ssh``, ``~/.aws`` and the login Keychain
 are unreadable even though the process still runs as the user.
 
-The network is deliberately NOT confined, matching the Linux backend and what
+The IP network is deliberately NOT confined, matching the Linux backend and what
 ``os_sandbox`` reports (``network_policy = "unrestricted"``): tool calls still
 pip-install and download models, so a script that reaches a secret can still
-send it. The filesystem boundary is the claim; the network is not.
+send it. The filesystem boundary is the claim; IP egress is not. AF_UNIX is the
+exception, and it belongs to the filesystem claim rather than to the network
+one: a connect() to a host socket such as Docker's is a way out of the boundary
+that no file rule governs, so outbound is filtered to the ip domain and the two
+unix sockets a launch needs are named.
 
 SBPL is deprecated and undocumented for third-party products, so the filesystem
 and process rules are carried over from a profile that was iterated against a
@@ -21,11 +25,13 @@ until they bite -- dual path spellings, ancestor metadata, and optional literals
 -- and each is commented where it is implemented.
 
 The network rules and the DNS/TLS mach services are the part that has no such
-history: they replace an allowlist proxy that used to make them unnecessary, and
-they are written in the broadest form that expresses "unrestricted" precisely
-because a narrower one that compiles but silently denies UDP would read as a DNS
-bug forever. ``test_profile_compiles_under_sandbox_exec`` is what checks them,
-and it only runs on Darwin.
+history: they replace an allowlist proxy that used to make them unnecessary. IP
+egress is written in the broadest form that still expresses "unrestricted"
+(``(remote ip "*:*")``, so TCP and UDP over v4 and v6), because a narrower one
+that compiles but silently denies UDP would read as a DNS bug forever, and the
+DNS socket carries two spellings for the same reason.
+``test_profile_compiles_under_sandbox_exec`` is what checks them, and it only
+runs on Darwin.
 """
 
 from __future__ import annotations
@@ -69,6 +75,10 @@ LIMITATIONS = (
 )
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+
+# Where `pip install` writes, relative to the session workdir. Shared spelling
+# with the Linux backend so a chat behaves the same on both.
+PACKAGE_TARGET_RELPATH = ".unsloth-packages"
 
 _READ_ROOTS = (
     "/Library/Apple/System/Library/Frameworks",
@@ -562,8 +572,14 @@ def build_profile(
         _rule("allow file-map-executable", read_filters),
         _rule("allow file-write*", write_filters),
         _rule("allow file-read* file-test-existence file-write-data", device_filters),
-        '(allow file-read* (regex #"^/dev/fd/(0|1|2)$"))',
-        '(allow file-write* (regex #"^/dev/fd/(1|2)$"))',
+        # Every descriptor, not only the standard three: bash process substitution
+        # (`diff <(sort a) <(sort b)`) hands the child /dev/fd/63, and denying it
+        # fails a command that works unisolated and on the Linux backend, where
+        # --dev gives the jail a whole /dev/fd. Opening /dev/fd/N is a dup of a
+        # descriptor the process already holds, so this grants no new authority;
+        # /dev/fd/0 is the launch's stdin, which tools.py pins to DEVNULL.
+        '(allow file-read* (regex #"^/dev/fd/[0-9]+$"))',
+        '(allow file-write* (regex #"^/dev/fd/[0-9]+$"))',
         _rule("allow file-ioctl", device_filters),
         "(allow ipc-posix-sem)",
         "(allow ipc-posix-shm-read-data ipc-posix-shm-write-create "
@@ -581,31 +597,40 @@ def build_profile(
         "(allow ipc-posix-shm-read-data ipc-posix-shm-write-create "
         "ipc-posix-shm-write-data ipc-posix-shm-write-unlink "
         '(ipc-posix-name-regex #"^/psm_[0-9a-f]+$"))',
-        # The network is NOT confined here -- see the module docstring, and the
-        # "unrestricted_network" limitation the record carries. Unfiltered on
-        # purpose: an unfiltered operation is the one spelling of "unrestricted"
-        # that cannot be got subtly wrong on a host nobody can test from, and a
-        # narrowed one that compiles but denies UDP would look like a DNS bug
-        # forever. system-socket is a separate operation because it gates
-        # socket() itself, and it is open rather than domain-filtered because a
-        # configd-backed resolver creates route and AF_SYSTEM sockets: that
-        # admits raw and kernel-control sockets too, which is authority over the
-        # network, never over the filesystem this profile is confining.
-        # network-inbound is included for parity with the Linux backend, where
-        # the sandbox shares the host's netns and inbound cannot be withheld.
+        # The IP network is NOT confined here -- see the module docstring, and the
+        # "unrestricted_network" limitation the record carries. system-socket is a
+        # separate operation because it gates socket() itself, and it is open
+        # rather than domain-filtered because a configd-backed resolver creates
+        # route and AF_SYSTEM sockets: that admits raw and kernel-control sockets
+        # too, which is authority over the network, never over the filesystem
+        # this profile is confining. network-inbound is included for parity with
+        # the Linux backend, where the sandbox shares the host's netns and
+        # inbound cannot be withheld.
         "(allow system-socket)",
         "(allow network-bind)",
         "(allow network-inbound)",
-        "(allow network-outbound)",
-        # AF_UNIX, subsumed by the rule above and kept explicit anyway. A
-        # connect()/bind() on a unix socket is network-outbound / network-bind
-        # in Seatbelt, not a file operation, so multiprocessing's socket in the
-        # private tmp and mDNSResponder's socket are NOT covered by any file
-        # rule. Narrowing network-outbound later without these would break
-        # multiprocessing and DNS with a denial that names neither.
+        # Outbound is the one that is filtered, to "ip" rather than to nothing.
+        # An unfiltered network-outbound also covers AF_UNIX, and a connect() to a
+        # unix socket is governed by NO file rule, so on a Mac running Docker
+        # Desktop a tool call could reach /var/run/docker.sock and start an
+        # unconfined container with host bind mounts: a way out of the whole
+        # filesystem boundary, through the operation this profile leaves open on
+        # purpose. "*:*" is host and port wildcards, so TCP and UDP, v4 and v6,
+        # are all still unrestricted -- the "unrestricted" that was meant.
+        '(allow network-outbound (remote ip "*:*"))',
+        # The AF_UNIX destinations a launch actually needs, now that the rule
+        # above no longer covers them. multiprocessing's listener lives under
+        # TMPDIR and mDNSResponder's socket is how libsystem_info resolves names,
+        # and neither is reachable through a file rule.
         f"(allow network-bind (local unix-socket {tmp_subpaths}))",
         f"(allow network-outbound (remote unix-socket {tmp_subpaths}))",
+        # Both spellings for mDNSResponder. A bare path filter and a
+        # (remote unix-socket ...) filter are both accepted for this operation,
+        # and which one a given macOS release matches is exactly the sort of thing
+        # no test here can answer; a missed DNS socket would read as a name
+        # resolution bug on every Mac, so the redundant rule is worth its line.
         f"(allow network-outbound {mdns_filters})",
+        f"(allow network-outbound (remote unix-socket {mdns_filters}))",
         _rule("allow sysctl-read", sysctl_filters),
         '(allow iokit-open (iokit-registry-entry-class "RootDomainUserClient"))',
         "(allow mach-lookup\n"
@@ -653,6 +678,11 @@ def _sandbox_environment(env: dict[str, str], workdir: str, private_tmp: str) ->
         }
     }
     tmpdir = _tmpdir(env, workdir, private_tmp)
+    # Same reasoning as the Linux backend: the interpreter's site-packages is not
+    # in the write set, so `pip install X` would fail on a permission error. It
+    # goes to a session-local target on PYTHONPATH instead, appended so a package
+    # installed in here cannot shadow the sandbox_site startup shim.
+    packages = posixpath.join(workdir, PACKAGE_TARGET_RELPATH)
     sanitized.update(
         {
             "HOME": workdir,
@@ -660,6 +690,10 @@ def _sandbox_environment(env: dict[str, str], workdir: str, private_tmp: str) ->
             "TMP": tmpdir,
             "TEMP": tmpdir,
             "XDG_RUNTIME_DIR": private_tmp,
+            "PIP_TARGET": packages,
+            "PYTHONPATH": os.pathsep.join(
+                part for part in (env.get("PYTHONPATH") or "", packages) if part
+            ),
         }
     )
     developer_paths = _developer_paths()
