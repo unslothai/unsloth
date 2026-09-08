@@ -19905,6 +19905,8 @@ def _extract_content_parts(
     latest_user_image_b64: Optional[str] = None
 
     _resolved_tool_names = _mcp_resolve_tool_names(messages)
+    # Same provenance correlation generation applies, for results the caller left unnamed.
+    _extract_tool_names = _mcp_resolve_tool_names(messages)
     for _msg_index, msg in enumerate(messages):
         # ── System / developer messages → extract as system_prompt ────────
         if msg.role in ("system", "developer"):
@@ -19958,11 +19960,17 @@ def _extract_content_parts(
         if combined_text is None:
             continue
         if msg.role == "tool" and not keep_tool_images:
-            # Cut, not parsed: the awaited audio and count paths call this on the
-            # event loop, and the exact split json-loads a permitted 12 MB envelope.
-            # The same text whenever the suffix is a real envelope; a malformed one
-            # loses its tail here, which is base64 the model must never read anyway.
-            combined_text = mcp_text_before_envelope(combined_text)
+            # The awaited audio and count paths call this on the event loop, and the
+            # exact split json-loads a permitted 12 MB envelope. A result the backend
+            # stamped as an MCP tool's is cut at the marker unparsed: its suffix IS the
+            # backend's envelope. Any other result keeps the exact split, so a tool
+            # whose text merely contains the marker line loses nothing -- those are
+            # rare and small; the multi-megabyte envelopes are the MCP ones.
+            _tool_name = getattr(msg, "name", None) or _extract_tool_names.get(_msg_index)
+            if isinstance(_tool_name, str) and _tool_name.startswith("mcp__"):
+                combined_text = mcp_text_before_envelope(combined_text)
+            else:
+                combined_text = split_mcp_images(combined_text)[0]
         chat_message = {"role": msg.role, "content": combined_text}
         # Carried through: promote_history reads it to decide whether an envelope
         # came from an MCP server, and dropping it here made an unnamed tool

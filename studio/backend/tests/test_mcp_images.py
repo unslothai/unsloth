@@ -2606,11 +2606,24 @@ def test_the_content_part_extractor_never_parses_the_envelope(monkeypatch):
     _system, chat_messages, _image_b64 = inference_route._extract_content_parts(
         [
             ChatMessage(role = "user", content = "look"),
-            ChatMessage(role = "tool", tool_call_id = "c0", content = content),
+            ChatMessage(role = "tool", tool_call_id = "c0", name = "mcp__fs__shot", content = content),
         ]
     )
     tool = next(m for m in chat_messages if m.get("role") == "tool")
     assert tool["content"] == "what the tool said"
+    monkeypatch.undo()
+
+    # Any other tool keeps the exact split: text that merely contains the marker line
+    # is not an envelope and loses nothing.
+    docs = "the sentinel is\n" + mcp_images.SENTINEL + " followed by a JSON array"
+    _system, chat_messages, _image_b64 = inference_route._extract_content_parts(
+        [
+            ChatMessage(role = "user", content = "look"),
+            ChatMessage(role = "tool", tool_call_id = "c1", name = "read_file", content = docs),
+        ]
+    )
+    tool = next(m for m in chat_messages if m.get("role") == "tool")
+    assert tool["content"] == docs
 
 
 def test_the_note_counts_only_the_tools_pictures_in_a_mixed_turn():
@@ -2642,3 +2655,28 @@ def test_the_note_counts_only_the_tools_pictures_in_a_mixed_turn():
     )
     assert note == f"{mcp_images.IMAGE_TURN_TEXT} (3 of 4)", note
     assert all(p in parts for p in attachments), "the attachments were not the ones dropped"
+
+
+def _first_note(conversation: list) -> str:
+    return next(
+        part["text"]
+        for message in conversation
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "text" and part["text"].startswith("Images returned by")
+    )
+
+
+def test_a_replay_batch_of_two_picture_results_is_detached():
+    """Two parallel calls both returned pictures and share the turn; "the tool call
+    above" would hand every picture to whichever ran last."""
+    history = [
+        {"role": "tool", "name": "mcp__s__a", "content": _envelope("[1]", _image())},
+        {"role": "tool", "name": "mcp__s__b", "content": _envelope("[1]", _image())},
+        {"role": "assistant", "content": "two shots"},
+    ]
+    assert _first_note(promote_history(history, vision = True)).startswith(
+        mcp_images.DETACHED_IMAGE_TURN_TEXT
+    )
+    out, _payloads = mcp_images.promote_history_local(history, vision = True)
+    assert _first_note(out).startswith(mcp_images.DETACHED_IMAGE_TURN_TEXT)

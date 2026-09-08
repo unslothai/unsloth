@@ -1142,7 +1142,11 @@ def _promote(
             returned_totals.clear()
             return into
         returned = sum(returned_totals) or sum(len(result) for result in pending)
-        lead = DETACHED_IMAGE_TURN_TEXT if interrupted[0] else IMAGE_TURN_TEXT
+        # Detached wording for a batch of several results too, not only an interrupted
+        # one: two parallel calls both returning pictures share the turn, and "the tool
+        # call above" would hand every picture to whichever ran last. The loops apply
+        # the same rule to a live batch.
+        lead = DETACHED_IMAGE_TURN_TEXT if interrupted[0] or len(pending) > 1 else IMAGE_TURN_TEXT
         interrupted[0] = False
         if local:
             encoded = png_payloads_per_result(pending, cache = decode_cache)
