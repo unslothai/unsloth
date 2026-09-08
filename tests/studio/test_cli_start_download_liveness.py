@@ -95,6 +95,7 @@ class Harness:
         marker_at = None,
         ready_tail = None,
         flap_every = 0,
+        healthy_until = None,
         step = STEP_S,
     ):
         self.clock = FakeClock(step)
@@ -118,6 +119,7 @@ class Harness:
         self.startup_key_at = startup_key_at
         self.marker_at = marker_at
         self.flap_every = flap_every
+        self.healthy_until = healthy_until
         self.ready_tail = ready_tail or f"{KEY_LINE}Model loaded: {MODEL}\n"
         self.mints = 0
         self.server = FakePopen()
@@ -227,6 +229,11 @@ class Harness:
             with open(self.log_path, "ab") as handle:
                 handle.write(self.chatter(self.iterations).encode())
         if self.flap_every and self.iterations % self.flap_every == 0:
+            return False
+        if self.healthy_until is not None and self.iterations > self.healthy_until:
+            if self.ready_at is not None and self.iterations >= self.ready_at:
+                self.tail = self.ready_tail
+                return True
             return False
         if self.marker_at is not None and self.iterations >= self.marker_at:
             self.tail = KEY_LINE
@@ -574,3 +581,26 @@ def test_a_health_probe_that_times_out_under_load_does_not_retire_minting(monkey
     assert harness.shutdowns == []
     assert harness.mints == 1
     assert harness.polls > 0
+
+
+def test_one_healthy_answer_is_enough_to_start_minting(monkeypatch):
+    # Under download pressure the 3s health probe can miss every pass after the first.
+    # The marker grace period is wall clock, so that first answer is all it takes.
+    harness = Harness(
+        monkeypatch,
+        tail = "starting\n",
+        healthy = True,
+        healthy_until = 1,
+        startup_key = "sk-unsloth-minted",
+        chunk_bytes = 1024**3,
+        ready_at = 500,
+        step = 2.0,
+    )
+
+    server = harness.start()
+
+    assert server is harness.server
+    assert harness.shutdowns == []
+    assert harness.mints == 1
+    assert harness.polls > 0
+    assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
