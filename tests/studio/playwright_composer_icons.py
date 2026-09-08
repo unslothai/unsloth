@@ -27,8 +27,16 @@ MEASURE = """() => [...document.querySelectorAll('button[data-case]')].map(butto
     const buttonBox = button.getBoundingClientRect();
     const svgBox = svg.getBoundingClientRect();
     const glyph = svg.getBBox();
-    const glyphCenter = new DOMPoint(glyph.x + glyph.width / 2, glyph.y + glyph.height / 2)
-        .matrixTransform(svg.getScreenCTM());
+    // Scale from the rendered box, not from getScreenCTM(). Firefox leaves CSS `zoom` out of
+    // the CTM while getBoundingClientRect() applies it, so a CTM-mapped centre lands 1/zoom
+    // out and reads as a misaligned glyph on a correctly aligned icon.
+    const view = svg.viewBox.baseVal;
+    const scaleX = view.width ? svgBox.width / view.width : 1;
+    const scaleY = view.height ? svgBox.height / view.height : 1;
+    const glyphCenter = {
+        x: svgBox.x + (glyph.x + glyph.width / 2 - view.x) * scaleX,
+        y: svgBox.y + (glyph.y + glyph.height / 2 - view.y) * scaleY,
+    };
     const centerX = buttonBox.x + buttonBox.width / 2;
     const centerY = buttonBox.y + buttonBox.height / 2;
     return {

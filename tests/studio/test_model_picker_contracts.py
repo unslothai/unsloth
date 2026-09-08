@@ -1962,18 +1962,20 @@ def test_staged_download_callbacks_only_answer_their_own_variant():
 
 
 def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
-    """Each gallery record's src is a blob holding the whole MP4 until the page closes, so
-    fetching a full page of them up front pinned hundreds of MB (gigabytes across "load more"
-    pages) for cards the user may never scroll to. Fetch on visibility instead, and always
-    fetch the selected clip, since that is the one the preview player plays."""
+    """A card was a <video> pointed at a signed MP4 link, so a whole page of them made WebKit build
+    a demux and decode pipeline per clip, for cards the user may never scroll to. Cards now draw a
+    still poster fetched as they near the viewport, and only the selected clip mints a playback
+    link, since that is the one the preview player plays."""
     src = _read("features/video/video-page.tsx")
     assert "new IntersectionObserver(" in src
     assert "ref={stripRef}" in src and "data-clip-id={video.id}" in src
     assert 'root.querySelectorAll("[data-clip-id]")' in src
     # rootMargin applies to the root box only, so the strip (the clipping scroller) must BE the root or the prefetch margin never reaches a clipped card.
     assert '{ root, rootMargin: "0px 600px" }' in src
-    # The only surviving whole-page fetches are the no-IntersectionObserver fallbacks.
-    eager = list(re.finditer(r"page\.videos\.forEach\(\(video\) => void ensureSrc\(video\)\)", src))
+    # A whole page of playback links is what the pipelines were built from, so no path may mint one.
+    assert not re.search(r"forEach\(\(video\) => void ensureSrc\(video\)\)", src)
+    # The only surviving whole-page fetches are the no-IntersectionObserver poster fallbacks.
+    eager = list(re.finditer(r"forEach\(\(video\) => void ensureThumbnail\(video\)\)", src))
     assert eager, "the jsdom/old-webview fallback fetch is missing"
     for match in eager:
         assert (
@@ -1981,7 +1983,8 @@ def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
             in src[max(0, match.start() - 260) : match.start()]
         )
     assert re.search(
-        r"if \(!selected\) return;\s*\n\s*void \(async \(\) => \{\s*\n\s*await ensureSrc\(selected\);",
+        r"if \(!selected\) return;\s*\n\s*void ensureThumbnail\(selected\);"
+        r"\s*\n\s*void ensureSrc\(selected\);",
         src,
     )
 
@@ -2987,7 +2990,9 @@ def test_the_backfill_fills_in_fields_rather_than_skipping_known_keys():
 
     # The merge is the server's, in the write's transaction: a client-side one reopens the race.
     db = _read_backend("storage/studio_db.py")
-    assert "merged = {**entry_value, **stored}" in db
+    # `incoming` is entry_value minus any coupled group the stored row already states,
+    # so a field-by-field backfill cannot pair one half of a pin with the other's.
+    assert "merged = {**incoming, **stored}" in db
     assert "BEGIN IMMEDIATE" in db
 
 
@@ -3272,13 +3277,17 @@ def test_detail_settings_defers_a_derived_quant_to_a_fresh_status_read():
     assert "onOpenSettings(selectedQuant ?? null, quantIsUserPicked)" in card
 
 
-def test_only_a_physical_gpu_pin_is_mirrored_to_the_server():
-    """The same integers are Vulkan ordinals under Vulkan and device indices elsewhere,
-    and the server override carries no namespace, so a backend change would pin the model
-    to a different device with ids that validate."""
+def test_a_gpu_pin_is_mirrored_to_the_server_with_its_index_space():
+    """The same integers are Vulkan ordinals under Vulkan and device indices elsewhere, so
+    a pin mirrored without its namespace would, after a backend change, address a different
+    device with ids that validate. The namespace travels with it and the server drops the
+    pin on a mismatch instead."""
     mirror = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
     assert 'const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";' in mirror
-    assert 'gpuIndexKind === "physical"' in mirror
+    assert "payload.gpu_ids = config.selectedGpuIds;" in mirror
+    # Omitted at the legacy default, so a physical pin's payload is what it always was and
+    # a row written before this field still reads as physical.
+    assert 'if (gpuIndexKind !== "physical") { payload.gpu_index_kind = gpuIndexKind; }' in mirror
 
 
 def test_a_cached_repo_keeps_the_settings_saved_under_its_old_key():

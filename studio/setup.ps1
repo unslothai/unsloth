@@ -6295,6 +6295,8 @@ if ($LocalLlamaCppLinked) {
                 $existingMeta = Get-Content -LiteralPath $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
                 # ROCm hosts carry windows-rocm or -hip; CPU covers -cpu and -arm64. Inert for now.
+                # windows-vulkan is in every branch: any x64 Windows host can land there,
+                # and a guard without it deletes a working Vulkan install on every run.
                 # The VENV's arch, not the machine's: a WoA host on the x64 fallback wants windows-cuda.
                 $_arm64CudaOptOut = ("$env:UNSLOTH_LLAMA_ARM64_CUDA").Trim().ToLowerInvariant() -in @("0", "false", "no", "off")
                 # Still valid unopted: the selector falls back to it when no ARM64 CUDA asset exists.
@@ -6314,7 +6316,7 @@ if ($LocalLlamaCppLinked) {
                     }
                 $_nvidiaEvidence = $HasNvidiaSmi -or ((Test-WinArm64Venv) -and $_woaEvidenceIndex -and
                     (Test-WoaPersistableIndex $_woaEvidenceIndex))
-                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($_nvidiaEvidence) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64") }
+                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip", "windows-vulkan") } elseif ($_nvidiaEvidence) { $_nvidiaKinds + "windows-vulkan" } else { @("windows-cpu", "windows-arm64", "windows-vulkan") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
