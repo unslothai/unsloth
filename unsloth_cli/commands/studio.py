@@ -1640,7 +1640,14 @@ def _enforce_password_change_before_exposure(
     # bind is every network interface, which is the LAN behind a NAT router and
     # the internet on a cloud box. Naming the wrong one in an error trains people
     # to ignore it, and would be plainly wrong for `unsloth studio -H 0.0.0.0`.
-    tunnel_will_start = secure or cloudflare is True
+    # The real predicate, not `cloudflare is True`. A non-secure tunnel only
+    # starts for a wildcard host, so `--cloudflare -H 192.168.1.50` starts no
+    # tunnel and is reachable through the raw bind instead. Naming the wrong one
+    # here would tell the operator their credential is about to go on a public
+    # Cloudflare URL when it is not, in the one message they are meant to act on.
+    tunnel_will_start = _launch_publishes_tunnel(
+        cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
+    )
     exposure = "on a public Cloudflare URL" if tunnel_will_start else "on every network interface"
     # Before public exposure we must PROVE the admin password is no longer the
     # seeded default. If we cannot (auth DB won't open, or a fresh admin cannot be

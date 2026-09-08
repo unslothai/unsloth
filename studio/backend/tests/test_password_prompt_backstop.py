@@ -755,3 +755,44 @@ def test_the_gate_deadlines_a_raw_bind_prompt_and_never_the_tunnel(monkeypatch):
     _patch_seeded_admin(monkeypatch, requires_change = True)
     run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS)
     assert seen["first_key_timeout"] is None
+
+
+def test_a_refusal_does_not_promise_a_deadline_that_is_disabled(monkeypatch):
+    """With TIMEOUT=0 nothing will shut this instance down; do not say otherwise.
+
+    The refusal path proceeds on purpose, because the launch worked before the
+    prompt existed. What it must not do is tell the operator a deadline will
+    rescue them when `should_arm_bootstrap_timeout` will not arm one: that is the
+    single sentence they would act on.
+    """
+    monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", "0")
+    stderr = _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    from auth import terminal_prompt
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change",
+                        lambda **_kw: False)
+
+    assert run._terminal_password_gate(
+        tunnel_will_start = False, **_RAW_BIND_KWARGS
+    ) == (True, False)
+    err = stderr.getvalue()
+    assert "DISABLED for this launch" in err, err
+    assert "shuts down after the bootstrap deadline" not in err, err
+
+
+def test_a_refusal_still_names_the_deadline_when_one_will_arm(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    stderr = _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    from auth import terminal_prompt
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change",
+                        lambda **_kw: False)
+
+    assert run._terminal_password_gate(
+        tunnel_will_start = False, **_RAW_BIND_KWARGS
+    ) == (True, False)
+    err = stderr.getvalue()
+    assert "shuts down after the bootstrap deadline" in err, err
+    assert "DISABLED" not in err, err

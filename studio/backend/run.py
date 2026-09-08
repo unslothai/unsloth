@@ -2351,13 +2351,40 @@ def _terminal_password_gate(
     # case (docker/studio_run.sh execs `unsloth studio -H 0.0.0.0` and only
     # supplies a password when the initial-password file is non-empty), so
     # aborting would stop a container that starts today. Warn and proceed at the
-    # protection level this launch already had: the bootstrap deadline.
+    # protection level this launch already had.
+    #
+    # Which is sometimes NO protection: with UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0
+    # the deadline never arms, so promising a shutdown would be false, and it is
+    # the one sentence an operator would act on. Say what will actually happen.
+    # Still proceed rather than fail closed: this launch worked before the prompt
+    # existed, the operator disabled the deadline deliberately and cancelled the
+    # prompt deliberately, and refusing to start would break the very case the
+    # paragraph above exists to protect.
+    deadline_arms = should_arm_bootstrap_timeout(
+        host = host,
+        secure = secure,
+        api_only = api_only,
+        frontend_served = frontend_served,
+        is_colab = is_colab,
+        requires_change = True,
+        timeout_seconds = bootstrap_timeout_seconds(),
+    )
+    if deadline_arms:
+        tail = (
+            "Unsloth shuts down after the bootstrap deadline "
+            "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) unless the password "
+            "is changed."
+        )
+    else:
+        tail = (
+            "The bootstrap shutdown deadline is DISABLED for this launch "
+            "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0), so nothing will stop it "
+            "serving that credential."
+        )
     print(
         "  WARNING: continuing with the auto-generated admin password on a bind "
-        "that is reachable from the network. Unsloth shuts down after the "
-        "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
-        "unless the password is changed. Change it by logging in, or with "
-        "`unsloth studio reset-password`.",
+        f"that is reachable from the network. {tail} Change it by logging in, or "
+        "with `unsloth studio reset-password`.",
         file = sys.stderr,
         flush = True,
     )

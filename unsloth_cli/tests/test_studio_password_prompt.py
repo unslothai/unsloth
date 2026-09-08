@@ -1989,3 +1989,36 @@ def test_read_masked_gives_up_on_a_pty_nobody_types_into(monkeypatch):
     finally:
         os.close(master)
         os.close(slave)
+
+
+@pytest.mark.parametrize(
+    "cloudflare,host,secure,expect_tunnel_wording",
+    [
+        # --secure always publishes a tunnel.
+        (None, "127.0.0.1", True, True),
+        # --cloudflare tunnels only WILDCARD hosts...
+        (True, "0.0.0.0", False, True),
+        # ...so a concrete bind is reachable through the raw socket, not a URL.
+        (True, "192.168.1.50", False, False),
+        (True, "example.com", False, False),
+        # No tunnel requested at all.
+        (None, "0.0.0.0", False, False),
+        (None, "192.168.1.50", False, False),
+    ],
+)
+def test_the_exposure_wording_matches_what_will_actually_happen(
+    monkeypatch, tmp_path, cloudflare, host, secure, expect_tunnel_wording
+):
+    """The prompt must not claim a public Cloudflare URL that never starts.
+
+    `--cloudflare -H 192.168.1.50` requests a tunnel that _launch_publishes_tunnel
+    will not start, because a non-secure tunnel needs a wildcard host. Deriving the
+    message from the request rather than the predicate told the operator their
+    credential was about to go on a public URL when it was going on the LAN.
+    """
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "_prompt_streams_interactive", lambda: True)
+    tunnel = studio_mod._launch_publishes_tunnel(
+        cloudflare = cloudflare, host = host, secure = secure, api_only = False
+    )
+    assert tunnel is expect_tunnel_wording
