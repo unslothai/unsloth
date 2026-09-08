@@ -21705,9 +21705,16 @@ class LlamaCppBackend:
                         # The prompt shape the cost gate prices. Per slot, capped at the
                         # depth the dense win was measured at (1.48x at PP 8192) and the
                         # context Auto settles for on the fallback it competes with.
+                        # One shared stream under --kv-unified, so a single request
+                        # may fill the whole window; N private windows without it.
                         "workload_prompt_tokens": int(
                             min(
-                                max(512, _spill_ctx // max(1, int(n_parallel or 1))),
+                                max(
+                                    512,
+                                    _spill_ctx
+                                    if planned_kv_unified
+                                    else _spill_ctx // max(1, int(n_parallel or 1)),
+                                ),
                                 _AUTO_OFFLOAD_CTX,
                             )
                         ),
@@ -22340,6 +22347,12 @@ class LlamaCppBackend:
                     cmd.extend(["--alias", _alias])
 
                 fully_gpu_offloaded = False
+                # A plan belongs to the load that made it. Left over from a previous
+                # one, its -ngl -1 --fit off would match the fits branch of this argv
+                # and a retry would strip it and write the old model's --parallel,
+                # -c and --cache-ram into this command.
+                self._spill_plan_flags = []
+                self._spill_plan_restore = {}
                 # A spill plan that moved no weight (fewer slots, the projector on
                 # the CPU, the draft dropped, a shorter context) pins every layer on
                 # the GPU with -ngl -1 --fit off, exactly as the fits branch does.
@@ -22486,6 +22499,9 @@ class LlamaCppBackend:
                                 self._spill_plan_restore["--cache-ram"] = cmd[_cr_at + 1]
                                 cmd[_cr_at + 1] = str(_spill.cache_ram_mib)
                             else:
+                                # Absent before the plan, so the revocation removes it
+                                # rather than restoring a value that was never there.
+                                self._spill_plan_restore["--cache-ram"] = None
                                 cmd.extend(["--cache-ram", str(_spill.cache_ram_mib)])
                         # The plan's footprint is the accurate one for the load mode
                         # once the plan is taken; the fit's rule priced a different
@@ -26474,6 +26490,8 @@ class LlamaCppBackend:
             self._mtp_draft_path = None
             self._mtp_draft_suppressed_path = None
             self._spec_fallback_reason = None
+            self._spill_plan_flags = []
+            self._spill_plan_restore = {}
 
             self._mmproj_fallback_reason = None
             self._capability_probe_inconclusive = False
@@ -27820,8 +27838,14 @@ class LlamaCppBackend:
         # The drafter drop and the projector pin are NOT undone, since both reduce
         # VRAM, which is the direction a crashed launch wants.
         for flag, value in (getattr(self, "_spill_plan_restore", None) or {}).items():
-            if flag in stripped:
-                stripped[stripped.index(flag) + 1] = value
+            if flag not in stripped:
+                continue
+            at = stripped.index(flag)
+            if value is None:
+                # The plan appended it; the fitter's argv never had it.
+                del stripped[at : at + 2]
+            else:
+                stripped[at + 1] = value
         logger.info("Tensor spill: dropping the plan for the %s retry; %s", why, "using --fit on")
         return [*stripped, "--fit", "on"]
 

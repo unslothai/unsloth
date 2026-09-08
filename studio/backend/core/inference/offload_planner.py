@@ -947,8 +947,13 @@ def _fit_fallback_placement(
     quantised: bool,
     kv_bytes_floor: int,
     kv_on_host: bool,
+    n_seq: int = 1,
 ) -> Optional[Placement]:
     """What llama.cpp's own fitter would place here, priced the same way.
+
+    ``n_seq`` is the slot count the child serves: the recurrent state is one copy
+    per sequence, resident and moved alike, so the fitter modelled at one copy
+    reaches the budget at the wrong layer count on a multi-slot hybrid.
 
     This is the arm the planner is really competing against. When the planner
     abstains the launch path emits ``--fit on`` and no ``-ngl``, and fitting
@@ -983,6 +988,7 @@ def _fit_fallback_placement(
         kv_quantised = quantised,
         kv_bytes_floor = kv_bytes_floor,
         kv_on_host = kv_on_host,
+        n_seq = max(1, n_seq),
     )
     # The cache follows the layer, so a layer moved to host takes its share with
     # it. Per-layer rather than per-attention-layer: SWA already makes the
@@ -1112,7 +1118,9 @@ def _fit_fallback_placement(
     # modeled fitter reached the budget two or three layers early on a
     # Nemotron-H-shaped hybrid -- and then billed a host recurrent group that
     # BOTH placements pay, which is state common to the two arms and cancels.
-    recurrent_per_layer = 0.0 if kv_on_host else layout.recurrent_bytes / len(blocks)
+    recurrent_per_layer = (
+        0.0 if kv_on_host else layout.recurrent_bytes * max(1, n_seq) / len(blocks)
+    )
     host_weights = 0
     host_spillable = 0
     for moved, block in enumerate(blocks, start = 1):
@@ -2014,7 +2022,17 @@ def _plan_at(
         knobs = _Knobs(knobs.n_parallel, True, knobs.draft_dropped)
         needed, budget, floor = price(knobs)  # type: ignore[misc]
     # Rung 1: one slot at a time. A step the floor cannot be re-priced for ends it.
-    while needed > budget and knobs.n_parallel > max(1, opts.min_parallel):
+    # Not across a layer split on a windowed cache: the per-layer cache weights
+    # were measured at the caller's slot count, and under iSWA the windowed
+    # layers grow with the slots while the full-attention ones do not, so the
+    # per-device check would split a re-priced total by ratios that no longer
+    # hold and could pass a card that then fails allocation under --fit off.
+    slots_repriceable_per_device = not (n_devices > 1 and layout.has_swa)
+    while (
+        needed > budget
+        and slots_repriceable_per_device
+        and knobs.n_parallel > max(1, opts.min_parallel)
+    ):
         cand = _Knobs(knobs.n_parallel - 1, knobs.mmproj_to_host, knobs.draft_dropped)
         got = price(cand)
         if got is None:
@@ -2422,6 +2440,7 @@ def _cost_gate(
         quantised = quantised,
         kv_bytes_floor = kv_bytes_floor,
         kv_on_host = opts.kv_on_host,
+        n_seq = n_slots,
     )
     if fallback is None:
         # Nothing to COMPARE to. This is not the same as "the fitter cannot place

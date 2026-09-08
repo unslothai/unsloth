@@ -505,3 +505,61 @@ def test_the_layout_cache_identity_covers_every_shard(tmp_path, monkeypatch):
     second.write_bytes(b"22")
     c = LlamaCppBackend._tensor_spill_layout(self, str(first), all_shards = True)
     assert c is not a and len(reads) == 2
+
+
+def test_a_plan_does_not_outlive_the_load_that_made_it(tmp_path, monkeypatch):
+    """A knob-only plan leaves -ngl -1 --fit off on record. The next load's fits
+    branch emits the same four tokens, so a retry there would strip them as if
+    they were a plan and write the previous model's --parallel back into a
+    command that never had one."""
+    plan = Plan(changed = True, n_ctx = 8192, n_parallel = 1)
+    _cmd, backend, _ = _launch_with(tmp_path, monkeypatch, plan)
+    assert backend._spill_plan_flags and backend._spill_plan_restore
+    gguf = backend._gguf_path
+    backend._planned_tensor_spill = lambda inputs, **_kw: None
+    _launch(backend, gguf, speculative_type = "off", n_ctx = 16384, n_parallel = 4)
+    assert backend._spill_plan_flags == [] and backend._spill_plan_restore == {}
+    backend._spill_plan_flags, backend._spill_plan_restore = ["-ngl", "-1"], {"--parallel": "4"}
+    backend.unload_model()
+    assert backend._spill_plan_flags == [] and backend._spill_plan_restore == {}
+
+
+def test_a_clamp_the_plan_appended_leaves_with_the_plan(tmp_path, monkeypatch):
+    """On a roomy host the fallback carries no --cache-ram, so the plan's clamp is
+    appended rather than rewritten. The revocation restored only values that were
+    there before, so the clamp survived the plan it belonged to and the fitter
+    placement ran with a prompt cache it never asked to shrink."""
+    plan = Plan(
+        changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), cache_ram_mib = 1024
+    )
+    cmd, backend, _ = _launch_with(tmp_path, monkeypatch, plan)
+    assert _flag(cmd, "--cache-ram") == "1024"
+    assert backend._spill_plan_restore.get("--cache-ram", "missing") is None
+    reverted = backend._drop_tensor_spill(list(cmd), "test")
+    assert reverted != cmd and "--cache-ram" not in reverted
+    assert reverted[-2:] == ["--fit", "on"]
+
+    # Where the fallback had its own bound, that value comes back.
+    cmd, backend, _ = _launch_with(tmp_path, monkeypatch, plan, avail_mib = 12 * 1024)
+    before = backend._spill_plan_restore.get("--cache-ram")
+    assert before is not None and _flag(cmd, "--cache-ram") == "1024"
+    reverted = backend._drop_tensor_spill(list(cmd), "test")
+    assert _flag(reverted, "--cache-ram") == before
+
+
+def test_the_workload_prompt_is_the_whole_window_under_a_unified_cache(tmp_path, monkeypatch):
+    """Studio appends --kv-unified on every multi-slot launch the build supports it
+    on, and under a unified cache a single request may fill all of n_ctx. Pricing
+    the prompt at n_ctx / slots under-charged the spill's prefill by the slot
+    count, on exactly the loads Studio starts."""
+    plan = Plan(changed = True, n_ctx = 4096, ot_patterns = ("x",), spilled_blocks = (1,))
+    _cmd, _b, seen = _launch_with(tmp_path, monkeypatch, plan, n_ctx = 4096)
+    assert seen["inputs"]["kv_unified"] is True
+    assert seen["inputs"]["workload_prompt_tokens"] == 4096
+    # The user turned the unified cache off: four private windows of a quarter each.
+    _cmd, _b, seen = _launch_with(
+        tmp_path, monkeypatch, plan, n_ctx = 4096, extra_args = ["--no-kv-unified"]
+    )
+    assert seen["inputs"]["kv_unified"] is False
+    assert seen["inputs"]["n_parallel"] == 4
+    assert seen["inputs"]["workload_prompt_tokens"] == 1024

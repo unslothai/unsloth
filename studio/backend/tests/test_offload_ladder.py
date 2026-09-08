@@ -1041,3 +1041,43 @@ def test_the_per_device_selection_grades_its_boundary_block_too():
     for u in graded:
         moved[u.index] = moved.get(u.index, 0) + u.nbytes
     assert _per_device_shortfall(layout, PlanOptions(), 8192, moved, False, cards, **kwargs) is None
+
+
+def test_the_slot_rung_stays_off_a_windowed_cache_split_across_devices():
+    """Under iSWA the windowed layers' cache grows with the slot count and the
+    full-attention layers' does not, so the per-layer weights measured at the
+    caller's slots no longer split a re-priced total. On one card rung 1 fires;
+    across two the check would pass a card that fails allocation, so the rung is
+    skipped there and the ladder goes on to the weights."""
+    import dataclasses
+
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = dataclasses.replace(graded_moe(), has_swa = True)
+    ctx, floor = 4096, GIB
+    table = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4}
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 4)
+    # Short by exactly what going to one slot recovers, and nothing else.
+    card = needed + GIB - (3 * floor // 4 + 3 * layout.recurrent_bytes) + 16 * 1024 * 1024
+    o = opts(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        n_parallel = 4,
+        kv_bytes_floor_by_parallel = table,
+    )
+    weights = [1] * layout.n_layers
+    single = plan_placement(
+        layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = o, kv_layer_weights = weights
+    )
+    assert single.n_parallel == 1 and not single.ot_patterns, single.reason
+    split = plan_placement(
+        layout,
+        [card // 2, card - card // 2],
+        64 * GIB,
+        ctx,
+        kv_bytes_floor = floor,
+        opts = o,
+        split_weights_per_device = [card // 2, card - card // 2],
+        kv_layer_weights = weights,
+    )
+    assert split.n_parallel == 0, split

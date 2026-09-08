@@ -746,3 +746,25 @@ def test_the_dense_fallback_moves_the_fitters_leading_block_prefix():
         "the trailing blocks of this layout weigh the same as the leading ones, "
         "so the assertion above proves nothing"
     )
+
+
+def test_the_fallback_charges_the_recurrent_state_once_per_slot():
+    """The state is one copy per sequence, resident and moved alike; a fitter
+    modelled at one copy on a four-slot hybrid frees a quarter of what moving a
+    layer really frees and pays a quarter of the host work, so it stops at the
+    wrong layer count and the gate scores an arm the child never runs."""
+    import dataclasses
+
+    hybrid = dataclasses.replace(dense_layout(), recurrent_bytes = GIB)
+    args = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = False)
+    one = _fit_fallback_placement(hybrid, gated(), 12 * GIB, 32768, n_seq = 1, **args)
+    four = _fit_fallback_placement(hybrid, gated(), 12 * GIB, 32768, n_seq = 4, **args)
+    assert one is not None and four is not None
+
+    def per_moved_layer(placement):
+        layers = next(g for g in placement.host_groups if g.name == "layers").bytes_total
+        moved = layers / hybrid.blocks[0].resident_bytes
+        state = next(g for g in placement.host_groups if g.name.startswith("recurrent"))
+        return state.bytes_total / moved
+
+    assert abs(per_moved_layer(four) / per_moved_layer(one) - 4) < 0.05
