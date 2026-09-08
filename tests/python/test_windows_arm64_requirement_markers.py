@@ -192,7 +192,7 @@ def test_no_row_is_dead_on_arrival(label, reqs):
 # check stays green when one loses a row.
 WOA_ROWS_BY_SOURCE = {
     "extras.txt": {"av": "split", "scikit-learn": "split"},
-    "no-torch-runtime.txt": {"pymupdf": "split", "hf-transfer": "dropped"},
+    "no-torch-runtime.txt": {"pymupdf": "split", "hf-transfer": "dropped", "sqlite-vec": "dropped"},
     "constraints.txt": {
         "av": "split",
         "cryptography": "split",

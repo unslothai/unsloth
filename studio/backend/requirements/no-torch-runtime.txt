@@ -94,7 +94,9 @@ pillow==11.3.0; python_version < "3.10"
 
 # RAG store + document parsing, mirroring studio.txt. Pinned here because
 # this file installs --no-deps; without them Unsloth runs with RAG disabled.
-sqlite-vec==0.1.9
+# sqlite-vec publishes win_amd64 only and no sdist; the RAG store treats a missing sqlite_vec as
+# "RAG unavailable". Same marker as studio.txt: this file is installed directly on an update.
+sqlite-vec==0.1.9; sys_platform != "win32" or platform_machine != "ARM64"
 # pymupdf publishes a win_arm64 wheel from 1.28 only.
 pymupdf==1.27.2.3; sys_platform != "win32" or platform_machine != "ARM64"
 pymupdf>=1.28.2; sys_platform == "win32" and platform_machine == "ARM64"

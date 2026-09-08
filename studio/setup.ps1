@@ -4207,12 +4207,16 @@ function Resolve-WoaOverrideLine {
     }
     if ($Line -match '^(\s*[^\s@]+\s*@\s*)(.+?)(\s*)$') {
         $head = $Matches[1]; $target = $Matches[2]; $tail = $Matches[3]
+        # PEP 508 separates a marker from a URL with whitespace before the ";": kept aside, or it
+        # would be rebased as part of the path.
+        $marker = ""
+        if ($target -match '^(.*?)(\s+;.*)$') { $target = $Matches[1]; $marker = $Matches[2] }
         if ($target -match '^file:(?!//)(.*)$') {
-        # A URI, not "file:" plus a raw path: a space in the profile would otherwise end the URL early.
-        $rebasedPath = & $abs $Matches[1]
-        $uri = try { (New-Object System.Uri -ArgumentList @($rebasedPath, [System.UriKind]::Absolute)).AbsoluteUri } catch { "file:" + $rebasedPath }
-        return "$head$uri$tail"
-    }
+            # A URI, not "file:" plus a raw path: a space in the profile would otherwise end the URL early.
+            $rebasedPath = & $abs $Matches[1]
+            $uri = try { (New-Object System.Uri -ArgumentList @($rebasedPath, [System.UriKind]::Absolute)).AbsoluteUri } catch { "file:" + $rebasedPath }
+            return "$head$uri$marker$tail"
+        }
         return $Line
     }
     if ($Line -match '^(\s*)([^\s#;]+\.(?:whl|tar\.gz|zip))(\s*.*)$') {
@@ -5447,6 +5451,10 @@ if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {
     # Written BEFORE the manifest is dropped below, so an interrupted run still leaves this index.
     Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex
 }
+# A terminating error after this point (a throw) reaches neither Exit-SetupFailure nor the last
+# statement of the script, so the merged override file, which copies caller lines that can carry
+# credentials, would stay on disk. The trap removes it and rethrows.
+trap { Remove-WoaMergedOverrides; break }
 Restore-WoaResolverEnvironment
 
 # install_python_stack.py drops the manifest before its own dependency pass, but

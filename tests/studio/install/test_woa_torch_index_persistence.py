@@ -4954,6 +4954,49 @@ class TestARebasedFileReferenceIsAUri:
         expected = "pkg @ " + (tmp_path / "First Last" / "wheels" / "p.whl").resolve().as_uri()
         assert got == expected
 
+    @requires_pwsh
+    @pytest.mark.parametrize("src", ["INSTALL", "SETUP"])
+    @pytest.mark.parametrize(
+        "line, marker, why",
+        [
+            (
+                'pkg @ file:../wheels/p.whl ; python_version < "3.13"',
+                ' ; python_version < "3.13"',
+                "a marker rides after the URI",
+            ),
+            (
+                "pkg @ file:../wheels/p.whl;python_version",
+                "",
+                "no whitespace before the semicolon: part of the path (PEP 508)",
+            ),
+        ],
+    )
+    def test_a_marker_is_kept_aside_while_the_path_is_rebased(
+        self, tmp_path, src, line, marker, why
+    ):
+        """The marker was captured with the target and handed to GetFullPath and System.Uri, so it was
+        either encoded into the URL or made the fallback keep a relative path against the wrong base."""
+        base = tmp_path / "woa"
+        base.mkdir(parents = True)
+        text = INSTALL_SRC if src == "INSTALL" else SETUP_SRC
+        script = _script(
+            _function_source(text, "Resolve-WoaOverrideLine"),
+            f"Write-Output ('[' + (Resolve-WoaOverrideLine -Line '{line}' -BaseDir '{base}') + ']')",
+        )
+        got = _ps_last(script)[1:-1]
+        leaf = "p.whl" if marker else "p.whl;python_version"
+        # pathlib percent-encodes the ";" that System.Uri keeps in the path (a sub-delim).
+        uri = (tmp_path / "wheels" / leaf).resolve().as_uri().replace("%3B", ";")
+        assert got == "pkg @ " + uri + marker, why
+
+    @requires_pwsh
+    def test_a_marked_url_reference_is_left_alone(self, tmp_path):
+        script = _script(
+            _function_source(INSTALL_SRC, "Resolve-WoaOverrideLine"),
+            f"Write-Output ('[' + (Resolve-WoaOverrideLine -Line 'pkg @ https://x.test/a.whl ; os_name == \"nt\"' -BaseDir '{tmp_path}') + ']')",
+        )
+        assert _ps_last(script)[1:-1] == 'pkg @ https://x.test/a.whl ; os_name == "nt"'
+
     def test_the_two_copies_are_identical(self):
         install, setup = _ps_copies("Resolve-WoaOverrideLine")
         assert install == setup
@@ -5609,6 +5652,210 @@ class TestTheArmJobRunsForEveryRequirementsInput:
         for name, block in (("push", push), ("pull_request", pull)):
             assert "- 'pyproject.toml'" in block, name
             assert "- 'studio/backend/requirements/**'" in block, name
+
+
+class TestATerminatingErrorStillRemovesTheMergedOverrides:
+    """Exit-SetupFailure and the last statement of the script both remove the merged file, but a
+    throw after the restore (the unsupported-Vulkan one, for instance) reaches neither. A trap
+    at script scope removes it and rethrows."""
+
+    def test_the_trap_precedes_the_restore(self):
+        trap = SETUP_SRC.index("trap { Remove-WoaMergedOverrides; break }")
+        assert trap < SETUP_SRC.index("\nRestore-WoaResolverEnvironment\n")
+
+    @requires_pwsh
+    def test_a_throw_after_the_restore_removes_the_file_and_still_fails(self, tmp_path):
+        merged = tmp_path / "overrides.merged.txt"
+        merged.write_text("secret @ https://user:token@x.test/w.whl\n", encoding = "utf-8")
+        done = _ps(
+            _script(
+                _function_source(SETUP_SRC, "Remove-WoaMergedOverrides"),
+                f"$script:WoaMergedOverrides = '{merged}'",
+                "trap { Remove-WoaMergedOverrides; break }",
+                'throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published."',
+                'Write-Output "REACHED_UNREACHABLE"',
+            )
+        )
+        assert done.returncode != 0
+        assert "REACHED_UNREACHABLE" not in done.stdout
+        assert "Vulkan was requested" in done.stderr + done.stdout, (
+            "the error is rethrown, not swallowed"
+        )
+        assert not merged.exists()
+
+
+class TestAnUnwritableWheelDirectoryIsAStop:
+    """The catch stood native mode down after the ARM64 venv existed, and the torch step then went
+    to the driver-derived index, which has no win_arm64 wheel. It stops with the reason now, as
+    the pyarrow staging failure does."""
+
+    @staticmethod
+    def _block():
+        start = INSTALL_SRC.index(
+            '    if ($script:WoaNativeCudaTorch) {\n        $WoaDir = Join-Path $StudioHome "woa"'
+        )
+        end = INSTALL_SRC.index(
+            '    if ($script:WoaNativeCudaTorch) {\n        if ($script:WoaPyarrowSource -eq "local") {',
+            start,
+        )
+        return INSTALL_SRC[start:end]
+
+    def test_the_catch_exits_with_the_reason(self):
+        block = self._block()
+        assert (
+            'return (Exit-InstallFailure "windows on arm: could not create $WoaWheelDir")' in block
+        )
+        assert "UNSLOTH_WOA_NATIVE=0" in block
+        assert "falling back to the x64 stack" not in block
+
+    @requires_pwsh
+    def test_a_file_in_the_way_stops_the_install(self, tmp_path):
+        (tmp_path / "woa").write_text("not a directory", encoding = "utf-8")
+        script = _script(
+            "$script:Lines = @()",
+            "function Write-StudioLine { param($m, $ForegroundColor) $script:Lines += $m }",
+            "function substep { param($m, $c) $script:Lines += $m }",
+            'function Exit-InstallFailure { param($m, $c) return "STOPPED: $m" }',
+            "function Install-Probe {",
+            "  $script:WoaNativeCudaTorch = $true",
+            f"  $StudioHome = '{tmp_path}'",
+            self._block(),
+            "  return 'CONTINUED'",
+            "}",
+            "$r = Install-Probe",
+            "Write-Output ('RESULT=' + $r)",
+            "Write-Output ('NATIVE=' + $script:WoaNativeCudaTorch)",
+            "Write-Output ('MSG=' + ($script:Lines -join ' | '))",
+        )
+        out = dict(l.split("=", 1) for l in _ps_ok(script).stdout.splitlines() if "=" in l)
+        assert out["RESULT"].startswith("STOPPED: windows on arm: could not create"), out
+        assert out["NATIVE"] == "True", "not silently stood down"
+        assert "[ERROR]" in out["MSG"] and "UNSLOTH_WOA_NATIVE=0" in out["MSG"]
+
+
+class TestANoIndexNativeTrioStillSeesItsSources:
+    """Under UV_NO_INDEX the trio command carried --default-index, so Invoke-InstallCommand
+    cleared UV_FIND_LINKS while --no-index stayed on: neither the CUDA index nor the staged
+    wheelhouse was visible and the exact pin failed. The wheelhouse now rides on the command
+    line, and UV_NO_INDEX yields for this one command and is put back after it."""
+
+    @staticmethod
+    def _extra_args(tmp_path, env):
+        start = INSTALL_SRC.index("                # NVIDIA's index publishes only the trio")
+        end = INSTALL_SRC.index("                # Only a prerelease channel needs this.", start)
+        setenv = "\n".join(f"$env:{k} = '{v}'" for k, v in env.items())
+        script = _script(
+            "foreach ($n in 'UV_NO_INDEX','UV_DEFAULT_INDEX','UV_INDEX_URL','UV_INDEX','UV_EXTRA_INDEX_URL','UV_CONFIG_FILE') { Remove-Item \"Env:$n\" -ErrorAction SilentlyContinue }",
+            "$env:UV_NO_CONFIG = '1'",
+            setenv,
+            "function substep { param($m, $c) }",
+            _function_source(INSTALL_SRC, "Get-UvSafePath"),
+            _function_source(INSTALL_SRC, "Get-WoaUvConfigIndexPolicy"),
+            _function_source(INSTALL_SRC, "Get-WoaDependencyIndexArgs"),
+            f"$script:WoaDir = '{tmp_path / 'woa'}'",
+            INSTALL_SRC[start:end],
+            "Write-Output ('[' + ($_torchExtraArgs -join '|') + ']')",
+        )
+        return _ps_last(script)[1:-1].split("|")
+
+    @requires_pwsh
+    def test_the_wheelhouse_is_named_on_the_command_line(self, tmp_path):
+        args = self._extra_args(tmp_path, {})
+        i = args.index("--find-links")
+        assert args[i + 1] == str(tmp_path / "woa" / "wheels")
+        assert "--extra-index-url" in args, "with no policy the dependencies come from PyPI as well"
+
+    @requires_pwsh
+    def test_under_no_index_the_wheelhouse_is_the_only_dependency_source(self, tmp_path):
+        args = self._extra_args(tmp_path, {"UV_NO_INDEX": "1"})
+        assert "--find-links" in args
+        assert "--extra-index-url" not in args
+
+    @staticmethod
+    def _swap_block():
+        start = INSTALL_SRC.index(
+            '                if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64") {\n                    # The probe read the index page'
+        )
+        end = INSTALL_SRC.index(
+            '                try {\n                    $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch"',
+            start,
+        )
+        return INSTALL_SRC[start:end]
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "value, yields", [("1", True), ("true", True), ("0", False), ("false", False)]
+    )
+    def test_no_index_yields_for_the_command_and_is_put_back(self, value, yields):
+        script = _script(
+            "$script:Messages = @()",
+            "function substep { param($m, $c) $script:Messages += $m }",
+            "$script:WoaNativeCudaTorch = $true",
+            "$VenvPlatform = 'win-arm64'",
+            f"$env:UV_NO_INDEX = '{value}'",
+            "Remove-Item Env:UV_EXCLUDE_NEWER -ErrorAction SilentlyContinue",
+            "Remove-Item Env:UV_EXCLUDE_NEWER_PACKAGE -ErrorAction SilentlyContinue",
+            "$_woaCutoffSaved = @{}",
+            self._swap_block(),
+            "Write-Output ('DURING=' + [string]$env:UV_NO_INDEX)",
+            'foreach ($_woaCutoffName in @($_woaCutoffSaved.Keys)) { Set-Item "Env:$_woaCutoffName" $_woaCutoffSaved[$_woaCutoffName] }',
+            "Write-Output ('AFTER=' + [string]$env:UV_NO_INDEX)",
+            "Write-Output ('MSG=' + ($script:Messages -join ' | '))",
+        )
+        out = dict(l.split("=", 1) for l in _ps_ok(script).stdout.splitlines() if "=" in l)
+        assert out["DURING"] == ("" if yields else value)
+        assert out["AFTER"] == value, "the caller's value comes back either way"
+        assert ("UV_NO_INDEX yields" in out["MSG"]) is yields
+
+
+class TestProbeWarningsDoNotPrintIndexCredentials:
+    """Two warnings printed the candidate index URL as configured. An authenticated mirror that
+    lags on torchvision, or whose torch outruns the driver, put its token in the installer output
+    and the Tauri log."""
+
+    URL = "https://user:s3cret@mirror.test/simple?token=abc"
+
+    def _native(self, driver, vision):
+        script = _script(
+            "$SkipTorch = $false",
+            "$script:Messages = @()",
+            "function substep { param($m, $c) $script:Messages += $m }",
+            "function Get-HostMachineArch { 'arm64' }",
+            "function Get-WoaAbiTag { param($PythonMinor, $FreeThreaded) 'cp313' }",
+            "function Test-WoaNvidiaPresent { $true }",
+            "function Test-WoaResolverPathsUsable { $true }",
+            "function Get-WoaDriverCudaLeaf { $null }",
+            f"function Get-WoaDriverCudaVersion {{ @({driver[0]}, {driver[1]}) }}",
+            f"$env:UNSLOTH_TORCH_INDEX_URL = '{self.URL}'",
+            "function Test-WoaCudaWheel { param($IndexUrl, $PythonMinor, $AbiTag, $Project) $true }",
+            "function Get-WoaCudaWheelVersion { param($IndexUrl, $PythonMinor, $AbiTag, $Project, $PairWith)",
+            f"  if ($Project -eq 'torchvision') {{ return '{vision}' }}",
+            "  if ($Project -eq 'torchaudio') { return '' }",
+            "  return '2.14.0+cu134' }",
+            "function Get-WoaPyarrowSource { param($PythonMinor, $AbiTag) 'pypi' }",
+            "function Test-WoaWheelAvailable { $true }",
+            _function_source(INSTALL_SRC, "Remove-IndexUrlCredentials"),
+            _function_source(INSTALL_SRC, "Test-WoaAudioMatchesTorch"),
+            _function_source(INSTALL_SRC, "Initialize-WoaNativeCudaTorch"),
+            "Initialize-WoaNativeCudaTorch -PythonMinor '3.13'",
+            "Write-Output ('NATIVE=' + $script:WoaNativeCudaTorch)",
+            "Write-Output ('MSG=' + ($script:Messages -join ' | '))",
+        )
+        return dict(l.split("=", 1) for l in _ps_ok(script).stdout.splitlines() if "=" in l)
+
+    @requires_pwsh
+    def test_the_unpaired_torchvision_warning(self):
+        out = self._native((13, 4), "")
+        assert out["NATIVE"] == "False"
+        assert "mirror.test" in out["MSG"] and "no torchvision paired" in out["MSG"]
+        assert "s3cret" not in out["MSG"] and "token=abc" not in out["MSG"]
+
+    @requires_pwsh
+    def test_the_driver_warning(self):
+        out = self._native((12, 8), "0.29.0+cu134")
+        assert out["NATIVE"] == "False"
+        assert "mirror.test" in out["MSG"] and "Update the NVIDIA driver" in out["MSG"]
+        assert "s3cret" not in out["MSG"] and "token=abc" not in out["MSG"]
 
 
 class TestTheNoAudioDecisionFollowsTheProbe:

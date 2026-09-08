@@ -496,12 +496,16 @@ function Install-UnslothStudio {
         }
         if ($Line -match '^(\s*[^\s@]+\s*@\s*)(.+?)(\s*)$') {
             $head = $Matches[1]; $target = $Matches[2]; $tail = $Matches[3]
+            # PEP 508 separates a marker from a URL with whitespace before the ";": kept aside, or it
+            # would be rebased as part of the path.
+            $marker = ""
+            if ($target -match '^(.*?)(\s+;.*)$') { $target = $Matches[1]; $marker = $Matches[2] }
             if ($target -match '^file:(?!//)(.*)$') {
-            # A URI, not "file:" plus a raw path: a space in the profile would otherwise end the URL early.
-            $rebasedPath = & $abs $Matches[1]
-            $uri = try { (New-Object System.Uri -ArgumentList @($rebasedPath, [System.UriKind]::Absolute)).AbsoluteUri } catch { "file:" + $rebasedPath }
-            return "$head$uri$tail"
-        }
+                # A URI, not "file:" plus a raw path: a space in the profile would otherwise end the URL early.
+                $rebasedPath = & $abs $Matches[1]
+                $uri = try { (New-Object System.Uri -ArgumentList @($rebasedPath, [System.UriKind]::Absolute)).AbsoluteUri } catch { "file:" + $rebasedPath }
+                return "$head$uri$marker$tail"
+            }
             return $Line
         }
         if ($Line -match '^(\s*)([^\s#;]+\.(?:whl|tar\.gz|zip))(\s*.*)$') {
@@ -1225,7 +1229,7 @@ function Install-UnslothStudio {
             # a torch it was not built for, after the ARM64 venv exists.
             $_woaVisionVersion = Get-WoaCudaWheelVersion -IndexUrl $candidate -PythonMinor $PythonMinor -Project "torchvision" -AbiTag $_woaAbiTag -PairWith $_woaTorchVersion
             if (-not $_woaVisionVersion) {
-                substep "windows on arm: $candidate publishes torch $_woaTorchVersion but no torchvision paired with it; trying the next index." "Yellow"
+                substep "windows on arm: $(Remove-IndexUrlCredentials $candidate) publishes torch $_woaTorchVersion but no torchvision paired with it; trying the next index." "Yellow"
                 if (-not $_woaUnpairedIndex) { $_woaUnpairedIndex = $candidate }
                 continue
             }
@@ -1244,7 +1248,7 @@ function Install-UnslothStudio {
         if ($_woaDriver -and $_woaTorchVersion -match '\+cu(\d+)') {
             $_woaWheelMajor = [int]($Matches[1].Substring(0, $Matches[1].Length - 1))
             if ($_woaWheelMajor -gt [int]$_woaDriver[0]) {
-                substep "windows on arm: $torchIndex publishes torch $_woaTorchVersion (CUDA $_woaWheelMajor), but this driver supports CUDA $($_woaDriver[0]).$($_woaDriver[1])." "Yellow"
+                substep "windows on arm: $(Remove-IndexUrlCredentials $torchIndex) publishes torch $_woaTorchVersion (CUDA $_woaWheelMajor), but this driver supports CUDA $($_woaDriver[0]).$($_woaDriver[1])." "Yellow"
                 substep "using the x64 stack instead. Update the NVIDIA driver for the native install." "Yellow"
                 return
             }
@@ -5695,9 +5699,14 @@ exit 0
         $WoaWheelDir = Join-Path $WoaDir "wheels"
         try {
             New-Item -ItemType Directory -Force -Path $WoaWheelDir -ErrorAction Stop | Out-Null
+            # Checked, not assumed: with a file in the way New-Item can return without creating anything.
+            if (-not (Test-Path -LiteralPath $WoaWheelDir -PathType Container)) { throw "$WoaWheelDir was not created; a file may occupy part of the path" }
         } catch {
-            substep "could not create $WoaWheelDir -- falling back to the x64 stack." "Yellow"
-            $script:WoaNativeCudaTorch = $false
+            # The venv is already native ARM64: standing down here would send the torch step to an
+            # index with no win_arm64 wheel. A stop with the reason, like the staging failure below.
+            Write-StudioLine "[ERROR] windows on arm: could not create $WoaWheelDir ($($_.Exception.Message)), and the native ARM64 environment cannot resolve without it." -ForegroundColor Red
+            Write-StudioLine "        Move aside whatever occupies that path, or set UNSLOTH_WOA_NATIVE=0 for the x64 stack." -ForegroundColor Yellow
+            return (Exit-InstallFailure "windows on arm: could not create $WoaWheelDir")
         }
     }
     if ($script:WoaNativeCudaTorch) {
@@ -7444,6 +7453,11 @@ exit 0
                 # caller's resolver policy names, public PyPI by default, and from the wheelhouse alone under no-index.
                 $_woaDependencyIndexArgs = @(Get-WoaDependencyIndexArgs)
                 $_torchExtraArgs = @("--index-strategy", "unsafe-best-match") + $_woaDependencyIndexArgs
+                # Invoke-InstallCommand clears UV_FIND_LINKS beside the other inherited index settings, so the
+                # staged wheelhouse is named on the command line; under no-index it is the only dependency source.
+                if ($script:WoaDir) {
+                    $_torchExtraArgs += @("--find-links", (Get-UvSafePath (Join-Path $script:WoaDir "wheels")))
+                }
                 if ($_woaDependencyIndexArgs.Count -eq 0) {
                     substep "windows on arm: no-index is set, so torch's dependencies must come from the find-links wheelhouse."
                 } elseif ($_woaDependencyIndexArgs -notcontains "https://pypi.org/simple") {
@@ -7494,6 +7508,15 @@ exit 0
                             Remove-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue
                             substep "windows on arm: $_woaCutoffName is not applied to the exact CUDA pin (the index carries no upload dates)."
                         }
+                    }
+                    # --no-index ignores every registry index, the selected CUDA one included, so the trio could not
+                    # install at all. It yields for this one command: torch comes from the index the probe chose, and
+                    # the dependencies from the wheelhouse alone, since Get-WoaDependencyIndexArgs named no other source.
+                    $_woaNoIndexValue = [string](Get-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue).Value
+                    if ($_woaNoIndexValue -and ($_woaNoIndexValue.Trim().ToLowerInvariant() -notin @("", "0", "false"))) {
+                        $_woaCutoffSaved["UV_NO_INDEX"] = $_woaNoIndexValue
+                        Remove-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue
+                        substep "windows on arm: UV_NO_INDEX yields for the CUDA trio, which only the selected index carries; its dependencies still come from the wheelhouse."
                     }
                 }
                 try {
