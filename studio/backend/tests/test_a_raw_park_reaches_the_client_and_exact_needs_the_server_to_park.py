@@ -880,6 +880,18 @@ class TestAnAbandonedExactAttemptLeavesNoUnlimitedParkingBudget:
         assert "continue" in window
         assert "run_cmd" not in window.split("continue")[0]
 
+    def test_a_short_budget_is_reported_as_the_mode_running_short_not_as_absent(self):
+        # The child keeps the mode after a late shortfall, so the warning, and the `on`
+        # refusal, say it runs but cannot hold every park, not that it came up without it.
+        spawn = inspect.getsource(LlamaCppBackend.load_model)
+        judged = spawn.index("_exact_running = self._server_reports_exact_concurrency()")
+        window = spawn[judged : judged + 6000]
+        assert "if _exact_running:" in window
+        assert "runs the mode, but it cannot hold every " in window
+        assert "park, and a chat re-prefilled after a park it could not hold" in window
+        assert "came up without it" in window.split("if _exact_running:")[1]
+        assert window.count("_exact_what") >= 4
+
     def test_the_default_budget_the_child_keeps_is_the_one_that_gets_judged(self):
         # An auto-fit pool the server's default cannot hold is reported, not papered over
         # with an unlimited budget; one it can hold certifies as before.

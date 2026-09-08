@@ -25875,12 +25875,13 @@ class LlamaCppBackend:
                     else:
                         _exact_short = (_PREEMPT_RAM_DEFAULT_MIB, 0, 0)
                     self._exact_parking_short = _exact_short
+                # The server's own answer, not the launch's intent. See the helper.
+                _exact_running = self._server_reports_exact_concurrency()
                 self._exact_concurrency = self._exact_state_after_launch(
                     setting = _exact_setting,
                     env = env,
                     args = _last_spawn_cmd or cmd,
-                    # The server's own answer, not the launch's intent. See the helper.
-                    supports_exact = self._server_reports_exact_concurrency(),
+                    supports_exact = _exact_running,
                     server_parks = self.server_preempts_kv,
                     parking_holds = _exact_short is None,
                 )
@@ -25904,24 +25905,36 @@ class LlamaCppBackend:
                         )
                     else:
                         _exact_why = ""
+                    if _exact_running:
+                        # The mode is up and its decode cost paid, but a park the budget
+                        # cannot hold is re-prefilled, which is not exact.
+                        _exact_what = (
+                            "this llama-server runs the mode, but it cannot hold every "
+                            "park, and a chat re-prefilled after a park it could not hold "
+                            "can differ depending on which other chats share the KV cache."
+                        )
+                    else:
+                        _exact_what = (
+                            "this llama-server came up without it: either this build does "
+                            "not implement the mode, or the launch it recovered to has no "
+                            "flash attention or no unified KV cache, which the mode "
+                            "requires, so a chat's output can differ depending on which "
+                            "other chats share the KV cache."
+                        )
                     if _exact_setting == _exact.EXACT_ON:
-                        # `on` means require it, and a server up without the mode is what `on` rules out.
+                        # `on` means require it, and a server that cannot keep it is what `on` rules out.
                         self._kill_process()
                         self._healthy = False
                         _raise_terminal_load_failure(
-                            "Exact concurrency is set to 'on', but this llama-server "
-                            "came up without it: either this build does not implement "
-                            "the mode, or the launch it recovered to has no flash "
-                            "attention or no unified KV cache, which the mode requires."
+                            "Exact concurrency is set to 'on', but "
+                            + _exact_what
                             + _exact_why
                             + " Set exact concurrency to 'auto' to load anyway, or 'off' "
                             "to stop asking for it."
                         )
                     self._record_load_warning(
-                        "Exact concurrency was requested but this llama-server does not "
-                        "implement it or would not run with it, so the model is loaded "
-                        "without it: a chat's output can differ depending on which other "
-                        "chats share the KV cache."
+                        "Exact concurrency was requested, but "
+                        + _exact_what
                         + _exact_why
                         + " Set exact concurrency to 'on' to fail the load instead."
                     )
