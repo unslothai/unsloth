@@ -120,9 +120,9 @@ def test_azure_openai_base_url_carries_compaction_block(monkeypatch):
     # a *.openai.azure.com base URL. Treat it as cloud so the compaction
     # field reaches the API.
     captured = _capture_at_threshold(
-                   monkeypatch,
-                   base_url = "https://my-resource.openai.azure.com/openai/v1",
-               )
+        monkeypatch,
+        base_url = "https://my-resource.openai.azure.com/openai/v1",
+    )
     assert captured["body"].get("context_management") == [
         {"type": "compaction", "compact_threshold": 200_000}
     ]

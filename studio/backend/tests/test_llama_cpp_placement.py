@@ -149,7 +149,11 @@ def _launch(backend, gguf, **load_kwargs):
 
 
 def _launch_auto_8k(*args, n_ctx = 8192, speculative_type = "auto", **kwargs):
-    """_launch at 8k context with auto speculation."""
+    """_launch at 8k context with auto speculation.
+
+    A caller passing ``n_ctx = 0`` means Auto context (the branch that caps); the native
+    8192 named here is then the target it caps down from, not a requested context.
+    """
     return _launch(*args, n_ctx = n_ctx, speculative_type = speculative_type, **kwargs)
 
 
@@ -322,9 +326,9 @@ def test_cuda_selection_uses_visibility_and_removes_environment_placement(tmp_pa
     monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
     monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "0")
     backend, gguf = _backend_non_vulkan(
-                        tmp_path,
-                        memory = [(0, 10_000, 16_000), (1, 8_000, 16_000)],
-                    )
+        tmp_path,
+        memory = [(0, 10_000, 16_000), (1, 8_000, 16_000)],
+    )
     backend._select_gpus = lambda *args, **kwargs: ([1], False)
 
     result = _launch(backend, gguf, gpu_ids = [1])
@@ -399,9 +403,9 @@ def _hybrid_mtp_backend(
     memory = None,
 ):
     backend, gguf = _backend_non_vulkan(
-                        tmp_path,
-                        memory = [(0, 12 * 1024, 12 * 1024)] if memory is None else memory,
-                    )
+        tmp_path,
+        memory = [(0, 12 * 1024, 12 * 1024)] if memory is None else memory,
+    )
 
     def read_metadata(_path):
         backend._nextn_predict_layers = 1
@@ -525,10 +529,10 @@ def test_a_hand_pinned_device_is_gpu_evidence_when_the_probe_found_none(tmp_path
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
 
     result = _launch_auto_spec(
-                 backend,
-                 gguf,
-                 extra_args = ["--device", "Vulkan0", "--gpu-layers", "42"],
-             )
+        backend,
+        gguf,
+        extra_args = ["--device", "Vulkan0", "--gpu-layers", "42"],
+    )
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--device") + 1] == "Vulkan0"
@@ -572,12 +576,12 @@ def test_manual_auto_layers_still_reads_a_pass_through_layer_count(tmp_path):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
     result = _launch_auto_spec(
-                 backend,
-                 gguf,
-                 gpu_memory_mode = "manual",
-                 gpu_layers = -1,
-                 extra_args = ["--gpu-layers", "42"],
-             )
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = -1,
+        extra_args = ["--gpu-layers", "42"],
+    )
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--spec-type") + 1] == "none"
@@ -717,12 +721,12 @@ def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
     backend, gguf, sidecar = _hybrid_reserve_backend(tmp_path)
 
     charged = _recorded_mtp_reserve_std(
-                  backend,
-                  gguf,
-                  dflash_draft_path = str(sidecar),
-                  speculative_type = "dflash",
-                  extra_args = ["--spec-draft-ngl", "0"],
-              )
+        backend,
+        gguf,
+        dflash_draft_path = str(sidecar),
+        speculative_type = "dflash",
+        extra_args = ["--spec-draft-ngl", "0"],
+    )
 
     # After the launch: the GGUF dims land when the load reads the metadata.
     expected = backend._mamba_recurrent_state_bytes(n_parallel = 4) * 2
@@ -986,11 +990,11 @@ def test_forcing_the_drafter_overrides_the_vram_drop(tmp_path):
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
 
     result = _launch_auto_8k(
-                 backend,
-                 gguf,
-                 dspark_draft_path = str(sidecar),
-                 speculative_type = "dspark",
-             )
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "dspark",
+    )
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
@@ -1055,11 +1059,11 @@ def test_a_standalone_model_draft_in_extras_is_not_auto_dropped(tmp_path):
     user_draft.write_bytes(b"draft")
 
     result = _launch_auto_8k(
-                 backend,
-                 gguf,
-                 dspark_draft_path = str(sidecar),
-                 extra_args = ["--model-draft", str(user_draft)],
-             )
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        extra_args = ["--model-draft", str(user_draft)],
+    )
 
     cmd = result["cmd"]
     assert "ngram-mod" not in cmd
@@ -1167,11 +1171,11 @@ def test_tensor_parallel_keeps_its_own_sizing(tmp_path):
     backend._tensor_split_aborts = lambda *args, **kwargs: False
 
     result = _launch_auto_8k(
-                 backend,
-                 gguf,
-                 dspark_draft_path = str(sidecar),
-                 tensor_parallel = True,
-             )
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        tensor_parallel = True,
+    )
 
     assert backend.spec_fallback_reason != "drafter_no_vram"
     assert "--model-draft" in result["cmd"]
@@ -1186,11 +1190,11 @@ def test_a_tensor_request_that_aborted_before_is_probed_as_the_layer_load_it_is(
     backend._tensor_split_aborts = lambda *args, **kwargs: True
 
     result = _launch_auto_8k(
-                 backend,
-                 gguf,
-                 dspark_draft_path = str(sidecar),
-                 tensor_parallel = True,
-             )
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        tensor_parallel = True,
+    )
 
     cmd = result["cmd"]
     assert "--split-mode" not in cmd
@@ -1206,11 +1210,11 @@ def test_a_single_gpu_tensor_request_is_probed_as_the_layer_load_it_is(tmp_path)
     backend._tensor_split_aborts = lambda *args, **kwargs: False
 
     result = _launch_auto_8k(
-                 backend,
-                 gguf,
-                 dspark_draft_path = str(sidecar),
-                 tensor_parallel = True,
-             )
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        tensor_parallel = True,
+    )
 
     cmd = result["cmd"]
     assert "--split-mode" not in cmd
@@ -1242,9 +1246,9 @@ def test_a_dropped_tensor_request_launches_as_a_layer_split(
     Extras are appended last, so a --split-mode tensor left among them would
     re-engage the mode the downgrade just dropped."""
     backend, gguf = _backend_non_vulkan(
-                        tmp_path,
-                        memory = [(i, 24_000, 24_000) for i in range(n_gpus)],
-                    )
+        tmp_path,
+        memory = [(i, 24_000, 24_000) for i in range(n_gpus)],
+    )
     backend._tensor_split_aborts = lambda *args, **kwargs: aborts
     # _backend stubs the weights at 1 KB; only a real size trips the pooled-VRAM case.
     backend._get_gguf_size_bytes = lambda _path: model_gb * 1024**3
@@ -1355,11 +1359,11 @@ def test_a_cpu_offloaded_sidecar_is_not_probed_because_a_head_also_exists(tmp_pa
     backend._read_gguf_metadata = lambda _path: setattr(backend, "_nextn_predict_layers", 1)
 
     result = _launch_auto_8k(
-                 backend,
-                 gguf,
-                 dspark_draft_path = str(sidecar),
-                 extra_args = ["--spec-draft-ngl", "0"],
-             )
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        extra_args = ["--spec-draft-ngl", "0"],
+    )
 
     assert backend.spec_fallback_reason != "drafter_no_vram"
     assert "--model-draft" in result["cmd"]
@@ -2553,9 +2557,9 @@ def test_a_fit_derived_load_mode_is_recorded_too(tmp_path, monkeypatch):
 
 def _tensor_backend(tmp_path):
     backend, gguf = _backend_non_vulkan(
-                        tmp_path,
-                        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
-                    )
+        tmp_path,
+        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
+    )
     backend._tensor_split_aborts = lambda *args, **kwargs: False
     return backend, gguf
 
@@ -2672,13 +2676,14 @@ def _apu_and_discrete_shortfall_backend(tmp_path, monkeypatch, *, avail_mib):
     The overlap is the point: two guards, two messages, and _record_load_warning keeps
     the first."""
     backend, gguf = _offload_backend_std(
-                        tmp_path,
-                        avail_mib = avail_mib,
-                        monkeypatch = monkeypatch,
-                        _amd_apu_wants_unified_memory = lambda *_a, **_kw: True,
-                        _apu_ram_shortfall_message = LlamaCppBackend._apu_ram_shortfall_message,
-                        _arch_gate_survivors = lambda _binary = None: [],
-                    )
+        tmp_path,
+        avail_mib = avail_mib,
+        monkeypatch = monkeypatch,
+        _amd_apu_wants_unified_memory = lambda *_a, **_kw: True,
+        _apu_ram_shortfall_message = LlamaCppBackend._apu_ram_shortfall_message,
+        # nothing pinned, so the preflight re-asks the gate; no marker, so it abstains
+        _arch_gate_survivors = lambda _binary = None: [],
+    )
     monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
     return backend, gguf
 

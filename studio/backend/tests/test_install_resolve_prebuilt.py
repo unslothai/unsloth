@@ -1534,10 +1534,10 @@ def test_route_to_vulkan_prebuilt_hidden_physical_nvidia_amd_not_rerouted():
     # Vulkan ignores CUDA_VISIBLE_DEVICES, so a CUDA-masked NVIDIA card next to a legacy
     # AMD gfx must not auto-route: Vulkan could grab the reserved NVIDIA GPU.
     host = _windows_gfx803_host(
-               rocm_gfx_targets = ["gfx803"],
-               has_physical_nvidia = True,
-               has_usable_nvidia = False,
-           )
+        rocm_gfx_targets = ["gfx803"],
+        has_physical_nvidia = True,
+        has_usable_nvidia = False,
+    )
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert routed is host
     assert repo == FORK
@@ -1548,10 +1548,10 @@ def test_route_to_vulkan_prebuilt_explicit_opt_in_overrides_hidden_nvidia(monkey
     # The physical-NVIDIA guard only gates the AMD auto path; an explicit opt-in wins.
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "vulkan")
     host = _windows_gfx803_host(
-               rocm_gfx_targets = ["gfx803"],
-               has_physical_nvidia = True,
-               has_usable_nvidia = False,
-           )
+        rocm_gfx_targets = ["gfx803"],
+        has_physical_nvidia = True,
+        has_usable_nvidia = False,
+    )
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == FORK
     assert persist == "vulkan"

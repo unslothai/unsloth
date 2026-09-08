@@ -169,11 +169,11 @@ class TestMtpReserveFollowsTheLoader:
     def test_headless_mla_is_not_charged_a_duplicate_kv(self, monkeypatch, tmp_path, mode):
         gguf = _write_gguf(tmp_path / "plain-model-Q4_K_M.gguf", _MLA_NO_HEAD)
         out = _call_std_route(
-                  monkeypatch,
-                  path = gguf,
-                  repo_id = "org/plain-model",
-                  speculative_type = mode,
-              )
+            monkeypatch,
+            path = gguf,
+            repo_id = "org/plain-model",
+            speculative_type = mode,
+        )
         # The KV itself must still be reported; only the reserve goes away.
         assert out["kv_bytes"] and out["kv_bytes"] > 0
         assert out["spec_bytes"] is None, (
@@ -187,22 +187,22 @@ class TestMtpReserveFollowsTheLoader:
         fields["nextn_predict_layers"] = 1
         gguf = _write_gguf(tmp_path / "headed-Q4_K_M.gguf", fields)
         out = _call_std_route(
-                  monkeypatch,
-                  path = gguf,
-                  repo_id = "org/headed",
-                  speculative_type = "mtp",
-              )
+            monkeypatch,
+            path = gguf,
+            repo_id = "org/headed",
+            speculative_type = "mtp",
+        )
         assert out["spec_bytes"] and out["spec_bytes"] > 0
 
     def test_ngram_costs_nothing(self, monkeypatch, tmp_path):
         """ngram drafts from generated text, so it holds no VRAM."""
         gguf = _write_gguf(tmp_path / "plain-Q4_K_M.gguf", _MLA_NO_HEAD)
         out = _call_std_route(
-                  monkeypatch,
-                  path = gguf,
-                  repo_id = "org/plain",
-                  speculative_type = "ngram",
-              )
+            monkeypatch,
+            path = gguf,
+            repo_id = "org/plain",
+            speculative_type = "ngram",
+        )
         assert out["spec_bytes"] is None
 
     def test_binary_without_mtp_support_reserves_nothing(self, monkeypatch, tmp_path):
@@ -210,12 +210,12 @@ class TestMtpReserveFollowsTheLoader:
         fields["nextn_predict_layers"] = 1
         gguf = _write_gguf(tmp_path / "headed-Q4_K_M.gguf", fields)
         out = _call_std_route(
-                  monkeypatch,
-                  path = gguf,
-                  repo_id = "org/headed",
-                  speculative_type = "mtp",
-                  mtp_token = False,
-              )
+            monkeypatch,
+            path = gguf,
+            repo_id = "org/headed",
+            speculative_type = "mtp",
+            mtp_token = False,
+        )
         assert out["spec_bytes"] is None
 
 
@@ -513,12 +513,12 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         gguf = _write_gguf(tmp_path / "swa-Q4_K_M.gguf", fields)
         none = _call_std_route(monkeypatch, path = gguf, repo_id = "org/swa", n_parallel = 4)
         many = _call_std_route(
-                   monkeypatch,
-                   path = gguf,
-                   repo_id = "org/swa",
-                   n_parallel = 4,
-                   ctx_checkpoints = 32,
-               )
+            monkeypatch,
+            path = gguf,
+            repo_id = "org/swa",
+            n_parallel = 4,
+            ctx_checkpoints = 32,
+        )
         assert (
             many["kv_bytes"] > none["kv_bytes"]
         ), "saved ctx_checkpoints did not reach the KV estimator"
@@ -544,13 +544,13 @@ class TestTheEstimateMatchesTheConfiguredLoad:
 
         def at(depth):
             return _call_std_route(
-                       monkeypatch,
-                       path = gguf,
-                       repo_id = "org/mamba",
-                       speculative_type = "mtp",
-                       n_parallel = 4,
-                       spec_draft_n_max = depth,
-                   )
+                monkeypatch,
+                path = gguf,
+                repo_id = "org/mamba",
+                speculative_type = "mtp",
+                n_parallel = 4,
+                spec_draft_n_max = depth,
+            )
 
         none = at(None)
         zero = at(0)
@@ -590,11 +590,11 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         gguf = _write_gguf(tmp_path / "plain-Q4_K_M.gguf", _MLA_NO_HEAD)
         for mode in ("dspark", "dflash"):
             out = _call_std_route(
-                      monkeypatch,
-                      path = gguf,
-                      repo_id = "org/plain",
-                      speculative_type = mode,
-                  )
+                monkeypatch,
+                path = gguf,
+                repo_id = "org/plain",
+                speculative_type = mode,
+            )
             assert out["spec_unpriced"] is True, f"{mode} claimed to be priced"
             assert out["spec_bytes"] is None
 
@@ -602,11 +602,11 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         gguf = _write_gguf(tmp_path / "plain-Q4_K_M.gguf", _MLA_NO_HEAD)
         for mode in (None, "ngram", "mtp", "auto"):
             out = _call_std_route(
-                      monkeypatch,
-                      path = gguf,
-                      repo_id = "org/plain",
-                      speculative_type = mode,
-                  )
+                monkeypatch,
+                path = gguf,
+                repo_id = "org/plain",
+                speculative_type = mode,
+            )
             assert out["spec_unpriced"] is False, f"{mode} wrongly marked unpriced"
 
     def test_the_vision_projector_is_charged_unless_vision_is_off(self, monkeypatch, tmp_path):
@@ -620,12 +620,12 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         ), "the projector is charged above its file size (_MMPROJ_VRAM_SAFETY)"
 
         off = _call_std_route(
-                  monkeypatch,
-                  path = gguf,
-                  repo_id = str(tmp_path),
-                  is_local = True,
-                  disable_vision = True,
-              )
+            monkeypatch,
+            path = gguf,
+            repo_id = str(tmp_path),
+            is_local = True,
+            disable_vision = True,
+        )
         assert off["projector_bytes"] is None, "vision off must free the projector"
 
     def test_a_model_with_no_projector_reports_none(self, monkeypatch, tmp_path):
@@ -643,17 +643,17 @@ class TestHostMemoryIsNotChargedToTheCard:
     def test_checkpoints_are_reported_as_their_own_share(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "swa-model-Q4_K_M.gguf", _SWA_MODEL)
         with_checkpoints = _call_std_route(
-                               monkeypatch,
-                               path = gguf,
-                               repo_id = "org/swa",
-                               ctx_checkpoints = 8,
-                           )
+            monkeypatch,
+            path = gguf,
+            repo_id = "org/swa",
+            ctx_checkpoints = 8,
+        )
         without = _call_std_route(
-                      monkeypatch,
-                      path = gguf,
-                      repo_id = "org/swa",
-                      ctx_checkpoints = 0,
-                  )
+            monkeypatch,
+            path = gguf,
+            repo_id = "org/swa",
+            ctx_checkpoints = 0,
+        )
         share = with_checkpoints["kv_checkpoint_bytes"]
         assert share, "checkpoints were requested but no host share was reported"
         # By difference against the same call with none, which is how the load

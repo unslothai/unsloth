@@ -509,7 +509,7 @@ def test_same_repo_same_variant_does_not_reload(monkeypatch):
     rec = _LoadRecorder(backend)
     _wire_on(
         monkeypatch,
-        resolves_to = ("unsloth/B-GGUF", "q4_k_m", "unsloth/B-GGUF"),
+        resolves_to = ("unsloth/B-GGUF", "q4_k_m", "unsloth/B-GGUF"),  # case-insensitive
         backend = backend,
         recorder = rec,
     )
@@ -3951,11 +3951,11 @@ def test_chat_confirm_with_bypass_permissions_reaches_hook(monkeypatch):
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _boom)
     payload = _chat_request_b(
-                  enable_tools = True,
-                  confirm_tool_calls = True,
-                  stream = False,
-                  bypass_permissions = True,
-              )
+        enable_tools = True,
+        confirm_tool_calls = True,
+        stream = False,
+        bypass_permissions = True,
+    )
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
 
@@ -4016,9 +4016,9 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     # An image in the same request does need the vision tower.
     img = ImageContentPart(type = "image_url", image_url = ImageUrl(url = "data:image/png;base64,AAAA"))
     payload = _chat_request_b(
-                  audio_base64 = "AAAA",
-                  messages = [ChatMessage(role = "user", content = [img])],
-              )
+        audio_base64 = "AAAA",
+        messages = [ChatMessage(role = "user", content = [img])],
+    )
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
     assert captured == {

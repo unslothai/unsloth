@@ -318,12 +318,12 @@ def test_forced_dspark_without_a_sidecar_stops_reloading():
     none". The second is the permanent state of every repo but one, so retrying
     it relaunched an identical server on every Apply."""
     backend = _mtp_backend_default(
-                  _model_identifier = "unsloth/Qwen3-7B-GGUF",
-                  _requested_spec_mode = "dspark",
-                  _spec_fallback_reason = "drafter_not_found",
-                  _spec_drafter_kind = "dspark",
-                  _dspark_sidecar_absent = True,
-              )
+        _model_identifier = "unsloth/Qwen3-7B-GGUF",
+        _requested_spec_mode = "dspark",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "dspark",
+        _dspark_sidecar_absent = True,
+    )
     assert (
         _matches_mtp(
             backend,
@@ -338,12 +338,12 @@ def test_forced_dspark_retries_when_the_fetch_failed_rather_than_the_repo():
     """The other half: the repo does publish a sidecar and the download failed, so
     the next Apply should reload and re-run _download_dspark."""
     backend = _mtp_backend_default(
-                  _model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
-                  _requested_spec_mode = "dspark",
-                  _spec_fallback_reason = "drafter_not_found",
-                  _spec_drafter_kind = "dspark",
-                  _dspark_sidecar_absent = False,
-              )
+        _model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        _requested_spec_mode = "dspark",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "dspark",
+        _dspark_sidecar_absent = False,
+    )
     assert (
         _matches_mtp(
             backend,
@@ -357,11 +357,11 @@ def test_forced_dspark_retries_when_the_fetch_failed_rather_than_the_repo():
 def test_mtp_without_a_drafter_still_reloads_to_retry_the_fetch():
     """Negative control for the above: the MTP retry must survive."""
     backend = _mtp_backend_default(
-                  _model_identifier = "unsloth/gemma-4-12b-it-GGUF",
-                  _requested_spec_mode = "mtp",
-                  _spec_fallback_reason = "drafter_not_found",
-                  _spec_drafter_kind = "mtp",
-              )
+        _model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        _requested_spec_mode = "mtp",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "mtp",
+    )
     assert (
         _matches_mtp(
             backend,
@@ -1230,10 +1230,10 @@ def test_mtp_draft_n_max_compares_saved_runtime_fallback_intent(saved_draft_n_ma
 
 def test_mtp_draft_n_max_ignored_when_binary_lacks_mtp():
     backend = _mtp_backend_default(
-                  _requested_spec_mode = "mtp",
-                  _spec_draft_n_max = None,
-                  _spec_fallback_reason = "binary_no_mtp",
-              )
+        _requested_spec_mode = "mtp",
+        _spec_draft_n_max = None,
+        _spec_fallback_reason = "binary_no_mtp",
+    )
     assert _draft_n_max_matches(backend, 8, speculative_type = "mtp")
 
 
@@ -1307,9 +1307,9 @@ def test_already_in_target_state_sub_3b_falls_back_to_off_when_no_ngram(monkeypa
     # 0.8B + binary lacks ngram-mod -> fall back to off.
     _patch_probe(monkeypatch, ngram_supported = False)
     backend = _ngram_mod_backend(
-                  _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
-                  _speculative_type = None,
-              )
+        _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
+        _speculative_type = None,
+    )
     assert (
         _matches_mtp(backend, model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF")
         is True
@@ -1320,9 +1320,9 @@ def test_already_in_target_state_4b_mtp_request_promotes_as_before(monkeypatch):
     # 4B is above the 3B threshold -> auto-promote still applies.
     _patch_probe(monkeypatch, ngram_supported = True)
     backend = _ngram_mod_backend(
-                  _model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
-                  _speculative_type = "draft-mtp",
-              )
+        _model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
+        _speculative_type = "draft-mtp",
+    )
     assert (
         _matches_mtp(backend, model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF")
         is True
@@ -2849,13 +2849,13 @@ def test_already_in_target_state_settles_a_dflash_listing_that_never_answered():
     another go" and relaunched a healthy drafter-free server on every Apply. DFlash
     asks through _dflash_retry_needed instead, which a permanent error never sets."""
     backend = _mtp_backend_default(
-                  _model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
-                  _gguf_path = None,
-                  _spec_fallback_reason = "drafter_not_found",
-                  _spec_drafter_kind = "dflash",
-                  _dflash_sidecar_absent = False,
-                  _dflash_retry_needed = False,
-              )
+        _model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
+        _gguf_path = None,
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "dflash",
+        _dflash_sidecar_absent = False,
+        _dflash_retry_needed = False,
+    )
     assert _matches(backend, **_binary_fallback_kwargs()) is True
 
 
@@ -2863,9 +2863,9 @@ def test_already_in_target_state_reloads_after_a_dflash_fetch_that_dropped():
     """Under Auto a lost sidecar leaves no fallback reason at all -- the promotion
     never ran -- so the flag is the only thing that can ask for one more attempt."""
     backend = _mtp_backend_default(
-                  _model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
-                  _gguf_path = None,
-              )
+        _model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
+        _gguf_path = None,
+    )
     assert _matches(backend, **_binary_fallback_kwargs()) is True
 
     backend._dflash_retry_needed = True
@@ -3097,10 +3097,10 @@ def _inconclusive_fallback_backend():
     """A backend that asked for MTP, got an inconclusive probe, and launched without
     speculative decoding. _spec_fallback_reason stays None so the UI banner is suppressed."""
     return _mtp_backend_default(
-               _spec_fallback_reason = None,
-               _capability_probe_inconclusive = True,
-               _gguf_path = None,
-           )
+        _spec_fallback_reason = None,
+        _capability_probe_inconclusive = True,
+        _gguf_path = None,
+    )
 
 
 def _same_settings_apply():
@@ -3178,10 +3178,10 @@ def test_a_slot_clamp_from_an_inconclusive_probe_is_also_retried(monkeypatch):
         supports_kv_unified = True,
     )
     clamped = _mtp_backend_default(
-                  _capability_probe_inconclusive = True,
-                  _requested_n_parallel = 4,
-                  _gguf_path = None,
-              )
+        _capability_probe_inconclusive = True,
+        _requested_n_parallel = 4,
+        _gguf_path = None,
+    )
     assert _matches(clamped, n_parallel = 4, **_same_settings_apply()) is False
 
 
@@ -3235,10 +3235,10 @@ def test_a_diffusion_runtime_is_never_reloaded_by_the_capability_recovery(monkey
     # otherwise identical diffusion Apply tear it down and start it again.
     _stub_found_caps(monkeypatch, mtp_token = "draft-mtp", supports_mtp = True)
     diffusion = _mtp_backend_default(
-                    _capability_probe_inconclusive = True,
-                    _is_diffusion = True,
-                    _gguf_path = None,
-                )
+        _capability_probe_inconclusive = True,
+        _is_diffusion = True,
+        _gguf_path = None,
+    )
     assert _matches(diffusion, **_same_settings_apply()) is True
     # The same stale marker on a llama-server runtime still earns its reload.
     assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is False

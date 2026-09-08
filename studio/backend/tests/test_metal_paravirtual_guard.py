@@ -382,10 +382,10 @@ def test_the_drafter_pin_falls_back_before_it_gives_up(caps, expected):
 def test_a_failed_probe_does_not_cost_the_user_their_drafter():
     """The drop half of the same decision: an unanswered probe must not drop."""
     drafter, _extras, _warnings = _paravirtual_gate(
-                                      caps = {"spec_draft_ngl_flag": None, "mtp_probe_inconclusive": True},
-                                      drafter = "/m/mtp-model.gguf",
-                                      extra_args = None,
-                                  )
+        caps = {"spec_draft_ngl_flag": None, "mtp_probe_inconclusive": True},
+        drafter = "/m/mtp-model.gguf",
+        extra_args = None,
+    )
     assert drafter == "/m/mtp-model.gguf"
 
 
