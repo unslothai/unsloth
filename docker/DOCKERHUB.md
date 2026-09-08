@@ -75,7 +75,7 @@ docker run -d -e UNSLOTH_ALLOW_CPU=1 -p 8000:8000 -p 8888:8888 unsloth/unsloth
 
 ## Supported GPUs
 
-Compiled for `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` plus PTX: Turing (T4, RTX 20), Ampere (A100, A10, RTX 30), Ada (L4, L40, RTX 40), Hopper (H100, H200, GH200) and Blackwell (B200, GB200, RTX 50, RTX PRO 6000) run native code; GB10 (DGX Spark, `sm_121`) runs through PTX JIT on first use. The container prints the detected GPU on start and explains what to do when the driver is too old.
+Compiled for `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120`: Turing (T4, RTX 20), Ampere (A100, A10, RTX 30), Ada (L4, L40, RTX 40), Hopper (H100, H200, GH200) and Blackwell (B200, GB200, RTX 50, RTX PRO 6000). GB10 (DGX Spark, `sm_121`) runs the `sm_120` binaries through Blackwell forward compatibility; only kernels compiled at run time, such as Triton, use the CUDA 13 compiler the container switches to on that GPU. The container prints the detected GPU on start and explains what to do when the driver is too old.
 
 Driver requirements:
 
