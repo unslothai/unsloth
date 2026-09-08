@@ -304,10 +304,46 @@ class TestTheTokenizerPricesThePrompt:
                 ]
             )
 
-        routes_inference._openai_llama_count_gate = None
         results = _run(burst())
         assert all(r is not None for r in results)
         assert live["peak"] <= routes_inference._OPENAI_LLAMA_COUNT_CONCURRENCY
+
+    def test_a_second_event_loop_still_gets_counted(self):
+        """The gate is per loop, so a restarted server keeps pricing with the tokenizer.
+
+        A single module-level Semaphore stays bound to the loop it first WAITED on, and the
+        next loop to contend for it raises "is bound to a different event loop", which
+        `_openai_llama_counted_prompt_tokens` catches like any other count failure. The
+        symptom is silent: every request from then on is priced by the byte bound.
+        """
+        import asyncio as _asyncio
+
+        counted = {"n": 0}
+
+        def counting(*a, **k):
+            counted["n"] += 1
+            time.sleep(0.02)
+            return 700
+
+        backend = self._counting_backend(700)
+        backend.count_chat_tokens = counting
+
+        async def burst():
+            return await _asyncio.gather(
+                *[
+                    routes_inference._openai_llama_uncapped_max_tokens(
+                        _uncapped(), request = None, llama_backend = backend
+                    )
+                    for _ in range(4)
+                ]
+            )
+
+        first = _run(burst())
+        counted_in_first = counted["n"]
+        second = _run(burst())
+        assert counted["n"] > counted_in_first, "the second loop never reached the tokenizer"
+        # Sized on the count (700), not on the bound a dead gate would have fallen back to.
+        assert {r.max_tokens for r in first + second} == {SHARE - HEADROOM - 700}
 
     def test_a_burst_declines_the_count_instead_of_queueing_for_it(self):
         """Ahead of admission there is no queue_limit and no queue timeout to catch a
@@ -335,7 +371,6 @@ class TestTheTokenizerPricesThePrompt:
                 ]
             )
 
-        routes_inference._openai_llama_count_gate = None
         started_at = time.monotonic()
         results = _run(burst())
         elapsed = time.monotonic() - started_at

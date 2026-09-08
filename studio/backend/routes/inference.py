@@ -2206,14 +2206,28 @@ _OPENAI_LLAMA_COUNT_CONCURRENCY = 2
 # the bound is always available and only ever over-prices -- so the wait is sized to absorb a
 # couple of ordinary counts (3-36ms) and nothing longer.
 _OPENAI_LLAMA_COUNT_WAIT_S = 0.1
-_openai_llama_count_gate: Optional[asyncio.Semaphore] = None
+_openai_llama_count_gates: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
 def _openai_llama_count_slot() -> asyncio.Semaphore:
-    global _openai_llama_count_gate
-    if _openai_llama_count_gate is None:
-        _openai_llama_count_gate = asyncio.Semaphore(_OPENAI_LLAMA_COUNT_CONCURRENCY)
-    return _openai_llama_count_gate
+    """Per running loop, since an asyncio primitive cannot be shared across loops.
+
+    One module-level Semaphore stays bound to the loop it first WAITED on, and the next
+    loop to contend for it raises "is bound to a different event loop". The count's own
+    except catches that like any other failure, so the symptom is silent: every request
+    from then on is priced by the byte bound, which reads about four times the real prompt
+    and is exactly what the count is here to avoid. `run_server` is callable more than once
+    in a process (colab.py re-runs it), so the loop does change under a live module.
+
+    Keyed weakly, as `routes/models.py:_native_context_slots` and
+    `mcp_client.mcp_server_snapshot_guard` do, so a finished loop takes its gate with it.
+    """
+    loop = asyncio.get_running_loop()
+    gate = _openai_llama_count_gates.get(loop)
+    if gate is None:
+        gate = asyncio.Semaphore(_OPENAI_LLAMA_COUNT_CONCURRENCY)
+        _openai_llama_count_gates[loop] = gate
+    return gate
 
 
 async def _openai_llama_counted_prompt_tokens(
