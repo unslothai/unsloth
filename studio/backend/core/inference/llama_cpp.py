@@ -7029,7 +7029,12 @@ class LlamaCppBackend:
         if self._reasoning_style == "reasoning_effort":
             return _coerce_reasoning_effort(
                 getattr(self, "_architecture", None),
-                {"reasoning_effort": "high" if enable_thinking else "low"},
+                # medium, not high, when thinking is on. This is the value a request that omits
+                # reasoning_effort falls back to, and gpt-oss already defaults to medium on its own:
+                # the Harmony template sets it when the key is undefined, and the harmony library
+                # does the same. Sending high here made a raw /v1/chat/completions call reason
+                # harder than the same model does anywhere else.
+                {"reasoning_effort": "medium" if enable_thinking else "low"},
             )
         return {"enable_thinking": enable_thinking}
 
