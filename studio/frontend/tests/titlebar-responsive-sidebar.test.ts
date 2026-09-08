@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// At mobile widths the sidebar is a Sheet overlay, so it occupies no layout
+// width. The titlebar decoration used to draw the pinned corner at the desktop
+// sidebar width anyway, leaving a rounded stub floating over the content
+// (unslothai/unsloth#8600). The separator underneath it is not sidebar
+// geometry and has to survive.
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -10,29 +16,64 @@ const source = () =>
     new URL("../src/components/tauri/window-titlebar.tsx", import.meta.url),
     "utf8",
   );
-const DESKTOP_SURFACE_PATTERN =
-  /const showDesktopSidebarSurface = showSidebarSurface && !isMobile;/;
-const SIDEBAR_WIDTH_PATTERN =
-  /const sidebarWidth = showDesktopSidebarSurface[\s\S]*?: "0px";/;
-const NAVIGATION_WIDTH_PATTERN =
-  /showSidebarSurface && \(!showDesktopSidebarSurface \|\| !pinned\)[\s\S]*?\? "7rem"/;
-const CONTENT_BORDER_PATTERN =
-  /showDesktopSidebarSurface && pinned[\s\S]*?`calc\(\$\{sidebarWidth\} \+ 12px\)`/;
 
-test("mobile titlebar excludes desktop sidebar geometry", async () => {
+const DECORATION_SLOT = 'data-slot="window-titlebar-decoration"';
+
+async function decorationBlock(): Promise<{ gate: string; body: string }> {
   const titlebar = await source();
-  const decorationIndex = titlebar.indexOf(
-    'data-slot="window-titlebar-decoration"',
-  );
-  const decorationGateIndex = titlebar.lastIndexOf(
-    "{showDesktopSidebarSurface && (",
-    decorationIndex,
-  );
+  const slot = titlebar.indexOf(DECORATION_SLOT);
+  assert.notEqual(slot, -1, "the decoration slot is gone");
+  const gateStart = titlebar.lastIndexOf("{", slot);
+  const open = titlebar.indexOf("<div", gateStart);
+  const end = titlebar.indexOf("<header", slot);
+  assert.notEqual(end, -1);
+  return {
+    gate: titlebar.slice(gateStart, open),
+    body: titlebar.slice(open, end),
+  };
+}
 
-  assert.match(titlebar, DESKTOP_SURFACE_PATTERN);
-  assert.match(titlebar, SIDEBAR_WIDTH_PATTERN);
-  assert.match(titlebar, NAVIGATION_WIDTH_PATTERN);
-  assert.match(titlebar, CONTENT_BORDER_PATTERN);
-  assert.notEqual(decorationIndex, -1);
-  assert.notEqual(decorationGateIndex, -1);
+test("the desktop sidebar surface is the mobile-aware flag", async () => {
+  const titlebar = await source();
+  assert.match(
+    titlebar,
+    /const showDesktopSidebarSurface =[^;]*\bisMobile\b[^;]*;/,
+    "showDesktopSidebarSurface has to fold isMobile into showSidebarSurface",
+  );
+});
+
+test("both pinned corners are drawn only on the desktop surface", async () => {
+  const { body } = await decorationBlock();
+  const corners = [...body.matchAll(/\{([^{}]*?)&&\s*\(\s*<div/g)].map(
+    (match) => match[1],
+  );
+  assert.equal(corners.length, 2, "expected the two pinned corner squares");
+  for (const gate of corners) {
+    assert.match(gate, /showDesktopSidebarSurface/);
+    assert.match(gate, /pinned/);
+  }
+});
+
+test("the titlebar separator survives at mobile widths", async () => {
+  const { gate, body } = await decorationBlock();
+  // Gating the wrapper on the desktop surface would take the separator with it.
+  assert.doesNotMatch(gate, /showDesktopSidebarSurface/);
+  assert.match(gate, /showSidebarSurface/);
+  assert.match(body, /h-px bg-sidebar-border/);
+});
+
+test("mobile never offsets geometry by the desktop sidebar width", async () => {
+  const titlebar = await source();
+  for (const pattern of [
+    /const sidebarWidth = showDesktopSidebarSurface/,
+    /const contentBorderLeft =\s*showDesktopSidebarSurface && pinned/,
+  ]) {
+    assert.match(titlebar, pattern);
+  }
+  // The navigation slot keeps its fixed width on mobile: the sidebar toggle is
+  // Navbar's there, and a spacer holds the slot open.
+  assert.match(
+    titlebar,
+    /const titlebarNavigationWidth =\s*showSidebarSurface && \(isMobile \|\| !pinned\) \? "7rem" : sidebarWidth;/,
+  );
 });

@@ -216,9 +216,7 @@ export function WindowTitlebar({
     : "0px";
 
   const titlebarNavigationWidth =
-    showSidebarSurface && (!showDesktopSidebarSurface || !pinned)
-      ? "7rem"
-      : sidebarWidth;
+    showSidebarSurface && (isMobile || !pinned) ? "7rem" : sidebarWidth;
   const contentBorderLeft =
     showDesktopSidebarSurface && pinned
       ? `calc(${sidebarWidth} + 12px)`
@@ -354,7 +352,7 @@ export function WindowTitlebar({
 
   return (
     <>
-      {showDesktopSidebarSurface && (
+      {showSidebarSurface && (
         <div
           data-slot="window-titlebar-decoration"
           // Marks a consumer of --studio-sidebar-live-width. Only this and the
@@ -365,7 +363,7 @@ export function WindowTitlebar({
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-3"
         >
-          {pinned && (
+          {showDesktopSidebarSurface && pinned && (
             <div
               className="absolute top-0 size-3 -translate-x-px bg-sidebar"
               style={{ left: sidebarWidth }}
@@ -375,7 +373,7 @@ export function WindowTitlebar({
             className="absolute top-0 h-px bg-sidebar-border"
             style={{ left: contentBorderLeft, right: 0 }}
           />
-          {pinned && (
+          {showDesktopSidebarSurface && pinned && (
             <div
               className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
               style={{ left: sidebarWidth }}
