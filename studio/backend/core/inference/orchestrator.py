@@ -436,6 +436,14 @@ class InferenceOrchestrator:
             raise SidecarSwapInProgress(
                 "A transformers repair is replacing the latest sidecar; retry when it completes."
             )
+        # Last gate before Popen. A preview or auto-switch load is not a
+        # _ScopedLoadAttempt, so the route's shutdown sweep cannot cancel it; it can
+        # clear the load's own checks and only then reach here, after the shutdown
+        # already stopped this subprocess. Checked at the spawn itself so the answer
+        # cannot go stale between the check and the child.
+        from utils.process_lifetime import is_process_shutting_down
+        if is_process_shutting_down():
+            raise RuntimeError("Studio is shutting down; not starting an inference subprocess")
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,

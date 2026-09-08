@@ -2939,3 +2939,106 @@ def test_the_impl_cancel_check_refuses_a_load_once_shutdown_has_latched():
     ns["load_cancel_event"].set()
     with pytest.raises(HTTPException):
         check()
+
+
+def test_a_second_backend_instance_is_covered_by_the_shutdown_latch():
+    """A helper/advisor load builds its OWN LlamaCppBackend (hub/utils/llm_assist.py,
+    utils/datasets/llm_assist.py). run.py only tears down the routes singleton, and
+    _shutting_down is per-instance, so that second backend would still consider a
+    spawn valid and Popen a server after terminate_all took its snapshot.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend
+    from utils import process_lifetime
+
+    torn_down = LlamaCppBackend.__new__(LlamaCppBackend)
+    helper = LlamaCppBackend.__new__(LlamaCppBackend)
+    try:
+        assert helper._spawn_is_stale(None) is False, "a fresh backend must be able to spawn"
+
+        # What _kill_process(teardown = True) does to the singleton, without the kill.
+        torn_down._shutting_down = True
+        process_lifetime.mark_process_shutting_down()
+
+        assert helper._spawn_is_stale(None) is True, (
+            "a backend the shutdown never touched still thinks it may spawn"
+        )
+    finally:
+        process_lifetime.begin_process_lifecycle()
+
+    assert helper._spawn_is_stale(None) is False, (
+        "the latch outlived the lifecycle, so an embedded second session cannot spawn"
+    )
+
+
+def test_the_worker_spawn_refuses_once_shutdown_has_latched():
+    """The preview path supplies no load_cancel_event and is not a _ScopedLoadAttempt,
+    so its latch read is one-shot: it can pass that check, spend time in the drain and
+    teardown, and only then reach the worker spawn. Guarding at the spawn is what makes
+    the answer un-stale.
+    """
+    from core.inference.orchestrator import InferenceOrchestrator
+    from utils import process_lifetime
+
+    orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    try:
+        process_lifetime.mark_process_shutting_down()
+        with pytest.raises(RuntimeError, match = "shutting down"):
+            orch._spawn_subprocess({})
+    finally:
+        process_lifetime.begin_process_lifecycle()
+
+
+def test_the_process_latch_clears_between_the_backend_and_the_route():
+    """Ordering, for the same reason the route latch clears late: the process latch is
+    what every other spawner reads, so it must outlast the teardown _begin_server_lifecycle
+    waits on, and be clear before uvicorn admits anything.
+    """
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    tree = ast.parse(run_py)
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_server")
+    src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
+
+    # Indented statements, not bare names: the comments above these calls name them too.
+    backend = src.index("_llama_cpp_backend._begin_server_lifecycle()")
+    process = src.index("\n        begin_process_lifecycle()")
+    route = src.index("\n        begin_load_lifecycle()")
+    serve = src.index("\n    thread.start()")
+
+    assert backend < process < route < serve, (
+        "the process latch must clear after the backend teardown completes and "
+        "before the server starts serving"
+    )
+
+
+def test_shutdown_latches_the_process_before_any_subsystem_is_torn_down():
+    """The orchestrator is stopped at step 2 but loads are swept at step 5. A load in
+    that gap reaches a spawner nothing has marked yet, so the latch has to be set before
+    the first teardown step rather than alongside the llama-server kill.
+    """
+    import ast
+    import textwrap
+    from pathlib import Path
+
+    run_py = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding = "utf-8")
+    tree = ast.parse(run_py)
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.name == "_graceful_shutdown"
+    )
+    src = textwrap.dedent(ast.get_source_segment(run_py, fn) or "")
+
+    latch = src.index("mark_process_shutting_down()")
+    orchestrator_stop = src.index("_shutdown_subprocess(timeout = 5.0)")
+    sweep = src.index("cancel_pending_loads()")
+
+    assert latch < orchestrator_stop, (
+        "the inference subprocess is stopped before anything latches, so a load in "
+        "flight can restart it"
+    )
+    assert latch < sweep

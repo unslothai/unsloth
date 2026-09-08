@@ -967,3 +967,22 @@ def _no_carried_over_hardware_measurements():
     _clear()
     yield
     _clear()
+
+
+@pytest.fixture(autouse = True)
+def _process_shutdown_latch_is_clear():
+    """Clear the process-wide shutdown latch around every test.
+
+    The latch is deliberately sticky in production: quitting is terminal, and only an
+    embedded host calling run_server again clears it. In a suite that makes it a
+    global one test can leave set for the rest of the file, and any test that tears a
+    backend down sets it, so a later spawn test sees a stale "quitting" and fails in
+    whatever order pytest happens to pick.
+    """
+    from utils import process_lifetime
+
+    process_lifetime.begin_process_lifecycle()
+    try:
+        yield
+    finally:
+        process_lifetime.begin_process_lifecycle()

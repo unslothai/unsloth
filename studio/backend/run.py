@@ -1600,6 +1600,17 @@ def _graceful_shutdown(server = None):
     """
     logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
 
+    # 0a. Latch "quitting" before any subsystem is torn down. Each step below refuses
+    # to respawn its OWN child once it has run, but a load still in flight can reach a
+    # different spawner afterwards: the orchestrator is stopped at step 2 and swept at
+    # step 5, and a helper load owns a backend no step touches at all. One flag read at
+    # every spawn covers the gaps between the steps.
+    try:
+        from utils.process_lifetime import mark_process_shutting_down
+        mark_process_shutting_down()
+    except Exception as e:
+        logger.warning("Could not latch the process shutdown flag: %s", e)
+
     # 0. Drop the LAN listener first: it shares the loop uvicorn is about to stop.
     try:
         from lan_access import close_lan_listener_lifecycle
@@ -2894,8 +2905,14 @@ def run_server(
         # would then capture the freshly advanced generation and load the previous
         # session's model into this one. Nothing legitimate is refused by the later
         # clear, since uvicorn does not serve until thread.start() below.
+        # The process latch clears between the two for the same reason: it is what
+        # every OTHER spawner reads, so it must stay set until the teardown this waits
+        # on has finished, and be clear before anything is admitted.
+        from utils.process_lifetime import begin_process_lifecycle
+
         if _llama_cpp_backend is not None:
             _llama_cpp_backend._begin_server_lifecycle()
+        begin_process_lifecycle()
         begin_load_lifecycle()
     except Exception as e:
         logger.warning("Could not reset llama-server shutdown state: %s", e)

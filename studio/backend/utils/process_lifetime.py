@@ -988,6 +988,35 @@ def adopt_pid(pid: Optional[int]) -> None:
             pass
 
 
+_shutdown_latch = threading.Event()
+
+
+def mark_process_shutting_down() -> None:
+    """Latch "this process is quitting" for every spawner in it.
+
+    Each subsystem already refuses to spawn during its OWN teardown, but that state
+    lives on the object being torn down: a second LlamaCppBackend built for a helper
+    load, or the inference orchestrator, never sees it and can Popen a child after
+    terminate_all has taken its snapshot. Set once here, read everywhere, so the
+    answer does not depend on which object a spawn happens to belong to.
+    """
+    _shutdown_latch.set()
+
+
+def is_process_shutting_down() -> bool:
+    return _shutdown_latch.is_set()
+
+
+def begin_process_lifecycle() -> None:
+    """Clear the latch for an embedded host that calls run_server again.
+
+    Shutdown is terminal for a normal CLI run, but in-process callers reuse the
+    interpreter; a latch that never cleared would refuse every spawn of the second
+    session.
+    """
+    _shutdown_latch.clear()
+
+
 def terminate_all(timeout: float = 5.0) -> "list[int]":
     """Backstop sweep over adopted pids, after per-subsystem cleanup. SIGTERM,
     then SIGKILL the survivors after `timeout`. Idempotent and teardown-safe.

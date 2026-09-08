@@ -26430,6 +26430,14 @@ class LlamaCppBackend:
         """
         if getattr(self, "_shutting_down", False):
             return True
+        # Per-instance state only covers the singleton run.py tears down. A helper or
+        # advisor load builds its own backend (hub/utils/llm_assist.py,
+        # utils/datasets/llm_assist.py), which nothing marks, so without this it would
+        # still spawn a server after the sweep. Read second: the attribute is cheaper
+        # and answers for the instance that actually gets torn down.
+        from utils.process_lifetime import is_process_shutting_down
+        if is_process_shutting_down():
+            return True
         if load_generation is None:
             return False
         return load_generation != getattr(self, "_lifecycle_generation", 0)
@@ -26454,6 +26462,11 @@ class LlamaCppBackend:
         recorded.
         """
         if teardown:
+            # Process-wide as well as per-instance: the atexit teardown reaches here
+            # without going through run.py, and the backends a helper load builds for
+            # itself are only ever covered by the shared latch.
+            from utils.process_lifetime import mark_process_shutting_down
+            mark_process_shutting_down()
             with self._teardown_lock:
                 with self._spawn_lock:
                     self._shutting_down = True
