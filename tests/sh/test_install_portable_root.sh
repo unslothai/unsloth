@@ -30,7 +30,7 @@ blockC="$(awk '
 ' "$INSTALL")"
 
 # Self-validate: a refactor must fail here, not silently test "".
-case "$blockA" in *"--portable) _PORTABLE_MODE=true ;;"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
+case "$blockA" in *"--portable) _PORTABLE_MODE=true"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
 case "$blockA" in *"--root) _next_is_root=true ;;"*) : ;; *) echo "FAIL: blockA lost --root"; exit 1 ;; esac
 case "$blockB" in *'_STUDIO_HOME_REDIRECT=env'*) : ;; *) echo "FAIL: blockB extraction broke"; exit 1 ;; esac
 case "$blockB" in *'STUDIO_HOME="$UNSLOTH_ROOT/studio"'*) : ;; *) echo "FAIL: blockB lost the portable branch"; exit 1 ;; esac

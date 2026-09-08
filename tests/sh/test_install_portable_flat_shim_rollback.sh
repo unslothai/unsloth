@@ -67,7 +67,7 @@ blockFULL="$(awk '
 ' "$INSTALL")"
 
 # Self-validate: a refactor must fail here, not silently test "".
-case "$blockA" in *"--portable) _PORTABLE_MODE=true ;;"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
+case "$blockA" in *"--portable) _PORTABLE_MODE=true"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
 case "$blockB" in *'_PORTABLE_FLAT=true'*) : ;; *) echo "FAIL: blockB lost the flat-layout branch"; exit 1 ;; esac
 case "$blockM" in *'_PORTABLE_SHIM_BACKUP'*) : ;; *) echo "FAIL: blockM lost the launcher slot"; exit 1 ;; esac
 case "$blockE" in *'.unsloth-portable-root'*) : ;; *) echo "FAIL: blockE extraction broke"; exit 1 ;; esac

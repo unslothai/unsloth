@@ -66,7 +66,7 @@ blockB="$(blk '/^_resolve_studio_destinations\(\) \{$/ {grab=1} grab {print} gra
 blockD="$(blk '/^_clear_stale_portable_marker\(\) \{$/ {grab=1} grab {print} grab && /^\}$/ {exit}')"
 
 # Self-validate: a refactor must fail here, not silently test "".
-case "$blockA" in *"--portable) _PORTABLE_MODE=true ;;"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
+case "$blockA" in *"--portable) _PORTABLE_MODE=true"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
 case "$blockB" in *'_STUDIO_HOME_REDIRECT=env'*) : ;; *) echo "FAIL: blockB extraction broke"; exit 1 ;; esac
 case "$blockD" in *'.unsloth-portable-root'*) : ;; *) echo "FAIL: blockD extraction broke"; exit 1 ;; esac
 # The two halves of the rule. Without the fold the cased checks below would pass

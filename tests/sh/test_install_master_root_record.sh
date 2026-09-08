@@ -45,7 +45,7 @@ blockD="$(blk '/^_clear_stale_portable_marker\(\) \{$/ {grab=1} grab {print} gra
 blockR="$(blk '/^_VENV_ROLLBACK_DIR=""$/ {grab=1} grab {print} /^trap ._on_install_signal 143. TERM$/ {exit}')"
 
 # Self-validate: a refactor must fail here, not silently test "".
-case "$blockA" in *"--portable) _PORTABLE_MODE=true ;;"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
+case "$blockA" in *"--portable) _PORTABLE_MODE=true"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
 case "$blockB" in *'_STUDIO_HOME_REDIRECT=env'*) : ;; *) echo "FAIL: blockB extraction broke"; exit 1 ;; esac
 case "$blockM" in *'_PORTABLE_MARKER_PRIOR_3'*) : ;; *) echo "FAIL: blockM lost the record slot"; exit 1 ;; esac
 # blockM is delimited by the LAST slot declaration; a new slot appended after it would make

@@ -28,7 +28,11 @@ blockA="$(awk '
     s && /^fi$/ {exit}
 ' "$INSTALL")"
 
-case "$blockA" in *'--portable) _PORTABLE_MODE=true ;;'*) : ;; *) echo "FAIL: extraction broke"; exit 1 ;; esac
+case "$blockA" in *'--portable) _PORTABLE_MODE=true'*) : ;; *) echo "FAIL: extraction broke"; exit 1 ;; esac
+case "$blockA" in
+    *'_ROOT_FROM_FLAG=false'*) : ;;
+    *) echo "FAIL: the escape hatch's typed-vs-inherited distinction is not in range"; exit 1 ;;
+esac
 case "$blockA" in
     *'.unsloth-portable-root'*) : ;;
     *) echo "FAIL: the parser no longer adopts the on-disk layout"; exit 1 ;;
@@ -38,14 +42,15 @@ T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 SNIP="$T/snip.sh"
 printf '%s\n' 'substep() { :; }' "$blockA" \
-    'printf "PORTABLE=%s ROOT=%s\n" "$_PORTABLE_MODE" "$_UNSLOTH_ROOT"' > "$SNIP"
+    'printf "PORTABLE=%s ROOT=%s STUDIO=%s\n" "$_PORTABLE_MODE" "$_UNSLOTH_ROOT" "${UNSLOTH_STUDIO_HOME:-}"' > "$SNIP"
 
 parse() { # home [env assignments...] -- passed through env
     _h="$1"; shift
     env -i HOME="$_h" PATH="$PATH" USER="${USER:-tester}" "$@" sh "$SNIP"
 }
 mode() { printf '%s' "$1" | sed -n 's/^PORTABLE=\([^ ]*\).*/\1/p'; }
-root() { printf '%s' "$1" | sed -n 's/.*ROOT=//p'; }
+root() { printf '%s' "$1" | sed -n 's/.* ROOT=\(.*\) STUDIO=.*/\1/p'; }
+studio_of() { printf '%s' "$1" | sed -n 's/.* STUDIO=//p'; }
 
 # 1. A nested portable install at the default location, recorded by a previous run.
 H1="$T/h1"; mkdir -p "$H1/.unsloth/studio"
@@ -102,6 +107,36 @@ check "a relative master record is ignored" "false" \
     "$(mode "$(parse "$H5c" UNSLOTH_STUDIO_HOME="$T/rel/studio")")"
 check "an empty master record is ignored"   "false" \
     "$(mode "$(parse "$H5c" UNSLOTH_STUDIO_HOME="$T/empty/studio")")"
+
+# 7. The documented escape has to work from where a user would actually run it: a shell opened
+# from the portable install, where the shim and share/studio.conf have already exported
+# UNSLOTH_HOME. "A root is what makes it portable" used to outrank the off value they typed, so
+# `UNSLOTH_PORTABLE=0 curl ... | sh` there did nothing at all.
+H7="$T/h7"; R7="$T/escroot"
+mkdir -p "$H7" "$R7/studio/unsloth_studio"
+o7="$(parse "$H7" UNSLOTH_HOME="$R7" UNSLOTH_PORTABLE=0)"
+check "an inherited root does not beat a typed off value" "false" "$(mode "$o7")"
+# ...and it converts THAT install, not a fresh one at the default location.
+check "and it targets the install the root names" "$R7/studio" "$(studio_of "$o7")"
+
+# A flat root converts in place too.
+H7b="$T/h7b"; R7b="$T/escflat"
+mkdir -p "$H7b" "$R7b/unsloth_studio"
+check "a flat root converts in place" "$R7b" \
+    "$(studio_of "$(parse "$H7b" UNSLOTH_HOME="$R7b" UNSLOTH_PORTABLE=0)")"
+
+# An inherited root with no off value is still portable: this must not become a way to lose it.
+check "an inherited root alone is still portable" "true" \
+    "$(mode "$(parse "$H7" UNSLOTH_HOME="$R7")")"
+
+# A root TYPED on this command line together with an off value is a contradiction, not an
+# inheritance. Refusing beats guessing which half they meant.
+contradicts() { # extra args
+    env -i HOME="$H7" PATH="$PATH" USER="${USER:-tester}" UNSLOTH_PORTABLE=0 \
+        sh "$SNIP" "$@" >/dev/null 2>&1; printf '%s' "$?"
+}
+check "--root plus an off value is refused"     "1" "$(contradicts --root "$R7")"
+check "--portable plus an off value is refused" "1" "$(contradicts --portable)"
 
 # 6. An explicit --root still wins over whatever is on disk.
 H6="$T/h6"; mkdir -p "$H6/.unsloth/studio" "$T/elsewhere"

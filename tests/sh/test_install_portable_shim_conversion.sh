@@ -49,7 +49,7 @@ blockSHIM="$(awk '
 fi"
 
 # Self-validate: a refactor must fail here, not silently test "".
-case "$blockA" in *"--portable) _PORTABLE_MODE=true ;;"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
+case "$blockA" in *"--portable) _PORTABLE_MODE=true"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
 case "$blockB" in *'_STUDIO_HOME_REDIRECT=env'*) : ;; *) echo "FAIL: blockB extraction broke"; exit 1 ;; esac
 case "$blockM" in *'_PORTABLE_SHIM_BACKUP'*) : ;; *) echo "FAIL: blockM lost the launcher slot"; exit 1 ;; esac
 case "$blockM" in *'_PORTABLE_MARKER_PRIOR_2'*) : ;; *) echo "FAIL: blockM extraction broke"; exit 1 ;; esac

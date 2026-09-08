@@ -38,7 +38,7 @@ blockBUN="$(awk '
 ' "$SETUP")"
 
 # Self-validate: a refactor must fail here, not silently test "".
-case "$blockA" in *"--portable) _PORTABLE_MODE=true ;;"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
+case "$blockA" in *"--portable) _PORTABLE_MODE=true"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
 case "$blockB" in *'_STUDIO_HOME_REDIRECT=env'*) : ;; *) echo "FAIL: blockB extraction broke"; exit 1 ;; esac
 case "$blockC" in *'_epr_default NPM_CONFIG_CACHE '*) : ;; *) echo "FAIL: blockC extraction broke"; exit 1 ;; esac
 case "$blockBUN" in *'BUN_INSTALL_CACHE_DIR'*) : ;; *) echo "FAIL: the setup.sh bun block extraction broke"; exit 1 ;; esac

@@ -35,7 +35,7 @@ blockA="$(awk '
 ' "$INSTALL")"
 
 # Self-validate: a refactor must fail here, not silently test "".
-case "$blockA" in *"--portable) _PORTABLE_MODE=true ;;"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
+case "$blockA" in *"--portable) _PORTABLE_MODE=true"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
 case "$blockA" in *'UNSLOTH_PORTABLE'*) : ;; *) echo "FAIL: blockA lost the UNSLOTH_PORTABLE branch"; exit 1 ;; esac
 
 # set -e is on: a bare `[ cond ] && action` as the last statement of a block would kill the run.
@@ -100,7 +100,11 @@ check "the refusal goes to stderr, not stdout" "" "$(cat "$T/out")"
 _ps1_off="$(sed -n 's/.*\$env:UNSLOTH_PORTABLE\.Trim() -notin @(\([^)]*\)).*/\1/p' "$PS1_FILE" \
     | head -n1 | tr -d '" ' | tr ',' '\n' | sort | tr '\n' ' ')"
 check "install.ps1 off-list found" "0 false no off " "$_ps1_off"
-_sh_off="$(printf '%s\n' "$blockA" | sed -n "s/^    ''|\(.*\)) ;;$/\1/p" | head -n1 \
+# The empty value has its own arm now (it is not an off value asked for, it is nothing said
+# at all, and only a typed off value may convert an install back), so read the off-list from
+# the arm that sets _PORTABLE_OFF_ASKED.
+_sh_off="$(printf '%s\n' "$blockA" \
+    | sed -n 's/^    \(.*\)) _PORTABLE_OFF_ASKED=true ;;$/\1/p' | head -n1 \
     | tr '|' '\n' | sort | tr '\n' ' ')"
 check "install.sh accepts the same off-list" "$_ps1_off" "$_sh_off"
 

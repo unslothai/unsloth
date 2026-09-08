@@ -75,6 +75,11 @@ _trim_ws() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//
 # Trimmed here, not at the first use: a whitespace-only value passes -n, enables
 # portable mode, then resolves to "" and builds roots like /bin and /cache/uv.
 _UNSLOTH_ROOT=$(_trim_ws "${UNSLOTH_HOME:-}")
+# Whether the root above was TYPED on this command line rather than inherited. The portable
+# shim and share/studio.conf both export UNSLOTH_HOME, so a shell opened from a portable
+# install carries one the user never typed, and "root wins" then quietly outranked the
+# UNSLOTH_PORTABLE=0 they did type. See the off-value handling below.
+_ROOT_FROM_FLAG=false
 # Seed from the environment so a caller who exports UNSLOTH_LOCAL_LLAMA_CPP_DIR
 # (the documented piped-install style) is honored; the --with-llama-cpp-dir
 # flag below overrides it when given.
@@ -103,6 +108,7 @@ for arg in "$@"; do
         _UNSLOTH_ROOT=$(_trim_ws "$arg")
         [ -n "$_UNSLOTH_ROOT" ] || { echo "ERROR: --root requires a path argument." >&2; exit 1; }
         _PORTABLE_MODE=true
+        _ROOT_FROM_FLAG=true
         _next_is_root=false
         continue
     fi
@@ -116,12 +122,13 @@ for arg in "$@"; do
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
         --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
-        --portable) _PORTABLE_MODE=true ;;
+        --portable) _PORTABLE_MODE=true; _ROOT_FROM_FLAG=true ;;
         --root) _next_is_root=true ;;
         --root=*)
             _UNSLOTH_ROOT=$(_trim_ws "${arg#--root=}")
             [ -n "$_UNSLOTH_ROOT" ] || { echo "ERROR: --root requires a path argument." >&2; exit 1; }
             _PORTABLE_MODE=true
+            _ROOT_FROM_FLAG=true
             ;;
     esac
 done
@@ -140,9 +147,11 @@ case "${UNSLOTH_ISOLATE_UV_CACHE:-}" in 1|true|TRUE|yes|YES|on|ON) _ISOLATE_UV_C
 # variable. Neither guess is safe on its own: reading it as ON relocates the tree of someone
 # who meant off, reading it as OFF is that split. install.ps1 already fails the install for
 # exactly these values.
+_PORTABLE_OFF_ASKED=false
 case "$(_trim_ws "${UNSLOTH_PORTABLE:-}" | tr '[:upper:]' '[:lower:]')" in
     1|true|yes|on) _PORTABLE_MODE=true ;;
-    ''|0|false|off|no) ;;
+    '') ;;
+    0|false|off|no) _PORTABLE_OFF_ASKED=true ;;
     *)
         echo "ERROR: UNSLOTH_PORTABLE='${UNSLOTH_PORTABLE:-}' is not a recognized value." >&2
         echo "       Use 1, true, yes or on to keep the whole install in one directory," >&2
@@ -152,6 +161,36 @@ case "$(_trim_ws "${UNSLOTH_PORTABLE:-}" | tr '[:upper:]' '[:lower:]')" in
 esac
 [ "$_next_is_root" = true ] && { echo "ERROR: --root requires a path argument." >&2; exit 1; }
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
+# An off value the user typed beats a root they may not have. The portable shim and
+# share/studio.conf both export UNSLOTH_HOME, so `UNSLOTH_PORTABLE=0 curl ... | sh` run from a
+# portable install's own shell carried a root nobody typed, "a root is what makes it portable"
+# fired, and the documented way back did nothing. Nobody exports UNSLOTH_PORTABLE=0 by
+# accident; an inherited UNSLOTH_HOME is the common case.
+#
+# A root from --root or --portable is different: that WAS typed, on this command line, and
+# together with an off value it is a contradiction rather than an inheritance. Refuse instead
+# of guessing which half they meant.
+if [ "$_PORTABLE_OFF_ASKED" = true ] && [ "$_ROOT_FROM_FLAG" = true ]; then
+    echo "ERROR: --portable/--root ask for a portable install and UNSLOTH_PORTABLE='${UNSLOTH_PORTABLE:-}' asks for a normal one." >&2
+    echo "       Drop one of them: the flag to convert this install back, or the variable to keep it portable." >&2
+    exit 1
+fi
+if [ "$_PORTABLE_OFF_ASKED" = true ] && [ -n "$_UNSLOTH_ROOT" ]; then
+    # Convert the install the inherited root names, rather than the default location, or the
+    # run would build a second install at ~/.unsloth and leave the portable one untouched.
+    # Its Studio root is the nested child when there is one, and the root itself when flat.
+    if [ -z "$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")" ] \
+        && [ -z "$(_trim_ws "${STUDIO_HOME:-}")" ]; then
+        if [ -d "$_UNSLOTH_ROOT/studio/unsloth_studio" ] || [ -d "$_UNSLOTH_ROOT/studio" ]; then
+            UNSLOTH_STUDIO_HOME="$_UNSLOTH_ROOT/studio"
+        else
+            UNSLOTH_STUDIO_HOME="$_UNSLOTH_ROOT"
+        fi
+        export UNSLOTH_STUDIO_HOME
+        substep "converting the portable install at $_UNSLOTH_ROOT back to a normal one"
+    fi
+    _UNSLOTH_ROOT=""
+fi
 [ -n "$_UNSLOTH_ROOT" ] && _PORTABLE_MODE=true
 # Nothing on the command line and nothing in the environment: adopt the layout already on
 # disk. The documented update path is `curl ... | sh` with no arguments and no exports, and
