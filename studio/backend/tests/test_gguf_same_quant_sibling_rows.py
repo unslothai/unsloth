@@ -399,7 +399,9 @@ def test_the_loaders_refuse_a_bare_pin_that_names_two_builds(tmp_path):
         tmp_path / "two", [("model-Q4_K_M-mtp.gguf", 1), ("model-Q4_K_M-fp16.gguf", 2)]
     )
     assert _find_local_gguf_by_variant(str(snapshot), "Q4_K_M") is None
-    assert _gguf_files_for_variant(["model-Q4_K_M-mtp.gguf", "model-Q4_K_M-fp16.gguf"], "q4_k_m") == []
+    assert (
+        _gguf_files_for_variant(["model-Q4_K_M-mtp.gguf", "model-Q4_K_M-fp16.gguf"], "q4_k_m") == []
+    )
 
 
 def test_a_lone_tagged_build_still_loads_under_its_legacy_bare_pin(tmp_path):
